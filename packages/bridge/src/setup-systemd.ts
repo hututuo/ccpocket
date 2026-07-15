@@ -2,11 +2,13 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   defaultCodexSharedAppServerUrl,
   readCodexSharedAppServerUrl,
 } from "./codex-app-server-config.js";
 import { parseBridgePort } from "./bridge-port.js";
+import { validateArtifactBaseUrl } from "./artifact-url.js";
 
 const SERVICE_NAME = "ccpocket-bridge";
 
@@ -53,6 +55,7 @@ interface SetupOptions {
   host?: string;
   apiKey?: string;
   publicWsUrl?: string;
+  artifactBaseUrl?: string;
   disableMdns?: boolean;
   codexAppServerMode?: string;
   codexSharedAppServerUrl?: string;
@@ -90,7 +93,11 @@ function buildServicePath(nodeBinDir: string): string {
 }
 
 const START_BRIDGE_COMMAND =
-  'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; nvm use --silent default >/dev/null 2>&1 || nvm use --silent node >/dev/null 2>&1 || true; fi; export PATH="$HOME/.local/bin:$HOME/bin:$PATH"; exec npx --yes @ccpocket/bridge@latest';
+  'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; nvm use --silent default >/dev/null 2>&1 || nvm use --silent node >/dev/null 2>&1 || true; fi; export PATH="$HOME/.local/bin:$HOME/bin:$PATH"; exec node "$BRIDGE_CLI_ENTRY"';
+
+function escapeSystemdEnvironment(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
 export function setupSystemd(opts: SetupOptions): void {
   const port = parseBridgePort(opts.port ?? process.env.BRIDGE_PORT);
@@ -99,6 +106,14 @@ export function setupSystemd(opts: SetupOptions): void {
   const allowedDirs = process.env.BRIDGE_ALLOWED_DIRS ?? "";
   const publicWsUrl =
     opts.publicWsUrl ?? process.env.BRIDGE_PUBLIC_WS_URL ?? "";
+  const rawArtifactBaseUrl =
+    opts.artifactBaseUrl ?? process.env.BRIDGE_ARTIFACT_BASE_URL ?? "";
+  const artifactBaseUrl = validateArtifactBaseUrl(rawArtifactBaseUrl);
+  if (rawArtifactBaseUrl && !artifactBaseUrl) {
+    throw new Error(
+      "BRIDGE_ARTIFACT_BASE_URL must be a mobile-reachable HTTP(S) origin",
+    );
+  }
   const disableMdns = opts.disableMdns || process.env.BRIDGE_DISABLE_MDNS;
   const codexAppServerMode =
     opts.codexAppServerMode ?? process.env.BRIDGE_CODEX_APP_SERVER_MODE ?? "";
@@ -121,27 +136,18 @@ export function setupSystemd(opts: SetupOptions): void {
     );
   }
   const servicePath = getServicePath();
+  const bridgeCliEntry = fileURLToPath(new URL("./cli.js", import.meta.url));
+  console.log(`==> Bridge CLI: ${bridgeCliEntry}`);
 
-  // Resolve the npx binary path
-  let npxPath: string;
-  try {
-    npxPath = execSync("command -v npx", { encoding: "utf-8" }).trim();
-  } catch {
-    console.error("ERROR: npx not found in PATH. Install Node.js first.");
-    process.exit(1);
-    return; // unreachable, but helps TypeScript and tests
-  }
-  console.log(`==> npx: ${npxPath}`);
-
-  // Resolve the directory containing npx (and node)
-  // This is needed because systemd doesn't load .bashrc, so tools like
-  // nvm/mise/volta won't add node to PATH automatically.
-  const nodeBinDir = dirname(npxPath);
+  // Keep the current Node directory as a fallback while preferring stable
+  // user-level shims when the service starts.
+  const nodeBinDir = dirname(process.execPath);
 
   // Build environment lines
   let envLines = `Environment=PATH=${buildServicePath(nodeBinDir)}
 Environment=BRIDGE_PORT=${port}
-Environment=BRIDGE_HOST=${host}`;
+Environment=BRIDGE_HOST=${host}
+Environment="BRIDGE_CLI_ENTRY=${escapeSystemdEnvironment(bridgeCliEntry)}"`;
 
   if (apiKey) {
     envLines += `\nEnvironment=BRIDGE_API_KEY=${apiKey}`;
@@ -151,6 +157,9 @@ Environment=BRIDGE_HOST=${host}`;
   }
   if (publicWsUrl) {
     envLines += `\nEnvironment=BRIDGE_PUBLIC_WS_URL=${publicWsUrl}`;
+  }
+  if (artifactBaseUrl) {
+    envLines += `\nEnvironment=BRIDGE_ARTIFACT_BASE_URL=${artifactBaseUrl}`;
   }
   if (disableMdns) {
     envLines += "\nEnvironment=BRIDGE_DISABLE_MDNS=1";
@@ -163,9 +172,8 @@ Environment=BRIDGE_HOST=${host}`;
   }
 
   // Generate systemd user service unit
-  // Run through bash so npx is resolved when the service starts. That lets the
-  // service follow stable shims/current symlinks instead of pinning one NVM
-  // version forever, while still falling back to the npx path found at setup.
+  // Run through bash so Node and provider CLIs follow stable shims/current
+  // symlinks instead of pinning one version-managed runtime forever.
   const unit = `[Unit]
 Description=CC Pocket Bridge Server
 After=network.target

@@ -2,13 +2,22 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   defaultCodexSharedAppServerUrl,
   readCodexSharedAppServerUrl,
 } from "./codex-app-server-config.js";
 import { parseBridgePort } from "./bridge-port.js";
+import { validateArtifactBaseUrl } from "./artifact-url.js";
 
 const PLIST_LABEL = "com.ccpocket.bridge";
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 function getPlistPath(): string {
   const dir = join(homedir(), "Library", "LaunchAgents");
@@ -34,6 +43,7 @@ interface SetupOptions {
   host?: string;
   apiKey?: string;
   publicWsUrl?: string;
+  artifactBaseUrl?: string;
   disableMdns?: boolean;
   codexAppServerMode?: string;
   codexSharedAppServerUrl?: string;
@@ -50,6 +60,14 @@ export function setupLaunchd(opts: SetupOptions): void {
   const allowedDirs = process.env.BRIDGE_ALLOWED_DIRS ?? "";
   const publicWsUrl =
     opts.publicWsUrl ?? process.env.BRIDGE_PUBLIC_WS_URL ?? "";
+  const rawArtifactBaseUrl =
+    opts.artifactBaseUrl ?? process.env.BRIDGE_ARTIFACT_BASE_URL ?? "";
+  const artifactBaseUrl = validateArtifactBaseUrl(rawArtifactBaseUrl);
+  if (rawArtifactBaseUrl && !artifactBaseUrl) {
+    throw new Error(
+      "BRIDGE_ARTIFACT_BASE_URL must be a mobile-reachable HTTP(S) origin",
+    );
+  }
   const disableMdns = opts.disableMdns || process.env.BRIDGE_DISABLE_MDNS;
   const codexAppServerMode =
     opts.codexAppServerMode ?? process.env.BRIDGE_CODEX_APP_SERVER_MODE ?? "";
@@ -72,22 +90,16 @@ export function setupLaunchd(opts: SetupOptions): void {
     );
   }
   const plistPath = getPlistPath();
-
-  // Resolve the npx binary path
-  let npxPath: string;
-  try {
-    npxPath = execSync("which npx", { encoding: "utf-8" }).trim();
-  } catch {
-    console.error("ERROR: npx not found in PATH. Install Node.js first.");
-    process.exit(1);
-  }
-  console.log(`==> npx: ${npxPath}`);
+  const bridgeCliEntry = fileURLToPath(new URL("./cli.js", import.meta.url));
+  console.log(`==> Bridge CLI: ${bridgeCliEntry}`);
 
   // Build environment variables block
   let envBlock = `        <key>BRIDGE_PORT</key>
         <string>${port}</string>
         <key>BRIDGE_HOST</key>
-        <string>${host}</string>`;
+        <string>${host}</string>
+        <key>BRIDGE_CLI_ENTRY</key>
+        <string>${escapeXml(bridgeCliEntry)}</string>`;
 
   if (apiKey) {
     envBlock += `
@@ -105,6 +117,12 @@ export function setupLaunchd(opts: SetupOptions): void {
     envBlock += `
         <key>BRIDGE_PUBLIC_WS_URL</key>
         <string>${publicWsUrl}</string>`;
+  }
+
+  if (artifactBaseUrl) {
+    envBlock += `
+        <key>BRIDGE_ARTIFACT_BASE_URL</key>
+        <string>${artifactBaseUrl}</string>`;
   }
 
   if (disableMdns) {
@@ -140,7 +158,7 @@ export function setupLaunchd(opts: SetupOptions): void {
         <string>/bin/zsh</string>
         <string>-li</string>
         <string>-c</string>
-        <string>exec npx --yes @ccpocket/bridge@latest</string>
+        <string>exec node "$BRIDGE_CLI_ENTRY"</string>
     </array>
 
     <key>EnvironmentVariables</key>

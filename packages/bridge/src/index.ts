@@ -22,6 +22,9 @@ import {
 import { parseAllowedDirectories } from "./path-utils.js";
 import { parseBridgePort } from "./bridge-port.js";
 import { listenForStartup } from "./server-listen.js";
+import { ArtifactStore } from "./artifact-store.js";
+import { ArtifactHttpHandler } from "./artifact-http.js";
+import { resolveArtifactBaseUrl } from "./artifact-url.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -62,6 +65,25 @@ export async function startServer() {
       ALLOWED_DIRS.length > 0 ? ALLOWED_DIRS.join(", ") : "(unrestricted)"
     }`,
   );
+
+  const artifactBaseUrl = resolveArtifactBaseUrl({
+    port: PORT,
+    host: HOST,
+    explicitBaseUrl: process.env.BRIDGE_ARTIFACT_BASE_URL,
+    publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
+  });
+  const artifactStore = new ArtifactStore({
+    baseUrl: artifactBaseUrl,
+    allowedDirs: ALLOWED_DIRS,
+  });
+  const artifactHttp = new ArtifactHttpHandler(artifactStore);
+  if (artifactBaseUrl) {
+    console.log(`[bridge] Artifact previews: ${artifactBaseUrl}/artifacts/<token>`);
+  } else {
+    console.warn(
+      "[bridge] Artifact preview URL unavailable; share with --base-url",
+    );
+  }
 
   // Initialize Firebase Anonymous Auth for push notifications
   let firebaseAuth: FirebaseAuthClient | undefined;
@@ -132,6 +154,9 @@ export async function startServer() {
   let wsServer: BridgeWebSocketServer | null = null;
 
   const httpServer = createServer((req, res) => {
+    // Artifact routes intentionally do not inherit the permissive CORS policy.
+    if (artifactHttp.handleRequest(req, res)) return;
+
     // CORS headers for Flutter Web clients
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -228,6 +253,7 @@ export async function startServer() {
   function shutdown() {
     console.log("\n[bridge] Shutting down gracefully...");
     mdns?.stop();
+    artifactStore.close();
     wsServer?.close();
     httpServer.close();
     process.exit(0);
@@ -236,6 +262,7 @@ export async function startServer() {
   try {
     await listenForStartup(httpServer, PORT, HOST);
   } catch (err) {
+    artifactStore.close();
     wsServer.close();
     httpServer.close();
     throw err;

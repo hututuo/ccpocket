@@ -4,6 +4,7 @@ import { platform } from "node:os";
 import { startServer } from "./index.js";
 import { getPackageVersion } from "./version.js";
 import { hasFlag, parseCliArgs, parseFlag } from "./cli-args.js";
+import { parseBridgePort } from "./bridge-port.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -24,6 +25,7 @@ Commands:
   version               Show the installed Bridge version
   doctor [--json]       Check the local Bridge environment
   setup [options]       Register Bridge as a macOS launchd or Linux systemd service
+  share <path>          Create a temporary mobile preview link for a local file
 
 Options:
   -h, --help            Show this help
@@ -33,20 +35,28 @@ Options:
       --api-key <key>   Enable API key authentication
       --public-ws-url <url>
                          Public ws:// or wss:// URL used in QR codes
+      --artifact-base-url <url>
+                         Mobile-reachable HTTP(S) origin for artifact links
       --no-mdns         Disable mDNS auto-discovery advertisement
       --codex-app-server-mode <mode>
                          Codex app-server mode: private, managed, or external
       --codex-shared-app-server-url <url>
                          Shared Codex app-server ws:// URL
 
+Share options:
+      --ttl <seconds>    Link lifetime from 60 to 86400 seconds (default: 3600)
+      --base-url <url>   Mobile-reachable HTTP(S) Bridge URL
+      --json             Print structured artifact metadata
+
 Setup options:
       --uninstall       Remove the registered service
       setup persists --port, --host, --api-key, --public-ws-url,
-      --no-mdns, Codex app-server options, and BRIDGE_ALLOWED_DIRS
+      --artifact-base-url, --no-mdns, Codex app-server options,
+      and BRIDGE_ALLOWED_DIRS
 
 Configuration can also be provided with BRIDGE_PORT, BRIDGE_HOST,
 BRIDGE_API_KEY, BRIDGE_ALLOWED_DIRS, BRIDGE_PUBLIC_WS_URL, and
-BRIDGE_DISABLE_MDNS. Codex app-server configuration can be provided with
+BRIDGE_ARTIFACT_BASE_URL, and BRIDGE_DISABLE_MDNS. Codex app-server configuration can be provided with
 BRIDGE_CODEX_APP_SERVER_MODE and BRIDGE_CODEX_SHARED_APP_SERVER_URL.`);
 }
 
@@ -81,6 +91,7 @@ if (parsed.helpRequested) {
     host: parseFlag(parsed, "host"),
     apiKey: parseFlag(parsed, "api-key"),
     publicWsUrl: parseFlag(parsed, "public-ws-url"),
+    artifactBaseUrl: parseFlag(parsed, "artifact-base-url"),
     disableMdns: hasFlag(parsed, "no-mdns"),
     codexAppServerMode: parseFlag(parsed, "codex-app-server-mode"),
     codexSharedAppServerUrl: parseFlag(parsed, "codex-shared-app-server-url"),
@@ -116,6 +127,34 @@ if (parsed.helpRequested) {
     );
     process.exit(1);
   }
+} else if (parsed.command === "share") {
+  const filePath = parsed.positionals[1];
+  if (!filePath) {
+    console.error("Share failed: file path is required");
+    process.exitCode = 1;
+  } else {
+    import("./artifact-share-command.js")
+      .then(async ({ parseShareTtl, publishArtifactViaBridge }) => {
+        const artifact = await publishArtifactViaBridge({
+          filePath,
+          projectPath: process.cwd(),
+          port: parseBridgePort(parseFlag(parsed, "port")),
+          ttlSeconds: parseShareTtl(parseFlag(parsed, "ttl")),
+          baseUrl: parseFlag(parsed, "base-url"),
+        });
+        if (hasFlag(parsed, "json")) {
+          console.log(JSON.stringify(artifact));
+        } else {
+          console.log(artifact.markdown);
+        }
+      })
+      .catch((err) => {
+        console.error(
+          `Share failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        process.exitCode = 1;
+      });
+  }
 } else {
   // Configure global fetch proxy before any network calls
   setupProxy();
@@ -124,6 +163,7 @@ if (parsed.helpRequested) {
   const host = parseFlag(parsed, "host");
   const apiKey = parseFlag(parsed, "api-key");
   const publicWsUrl = parseFlag(parsed, "public-ws-url");
+  const artifactBaseUrl = parseFlag(parsed, "artifact-base-url");
   const codexAppServerMode = parseFlag(parsed, "codex-app-server-mode");
   const codexSharedAppServerUrl = parseFlag(
     parsed,
@@ -136,6 +176,9 @@ if (parsed.helpRequested) {
   if (host) process.env.BRIDGE_HOST = host;
   if (apiKey) process.env.BRIDGE_API_KEY = apiKey;
   if (publicWsUrl) process.env.BRIDGE_PUBLIC_WS_URL = publicWsUrl;
+  if (artifactBaseUrl) {
+    process.env.BRIDGE_ARTIFACT_BASE_URL = artifactBaseUrl;
+  }
   if (codexAppServerMode) {
     process.env.BRIDGE_CODEX_APP_SERVER_MODE = codexAppServerMode;
   }

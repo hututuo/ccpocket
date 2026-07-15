@@ -40,6 +40,7 @@ ccpocket-bridge --version
 | `BRIDGE_API_KEY` | (none) | API key authentication (enabled when set) |
 | `BRIDGE_ALLOWED_DIRS` | `$HOME` | Comma-separated list of project directories the Bridge may access; set exactly to `*` to allow any directory |
 | `BRIDGE_PUBLIC_WS_URL` | (none) | Public `ws://` / `wss://` URL used for startup deep link and QR code |
+| `BRIDGE_ARTIFACT_BASE_URL` | auto-detected | Mobile-reachable `http://` / `https://` base URL used by temporary file preview links |
 | `BRIDGE_CODEX_APP_SERVER_MODE` | `private` | Experimental Codex app-server mode: `private`, `managed`, or `external` |
 | `BRIDGE_CODEX_SHARED_APP_SERVER_URL` | `ws://127.0.0.1:8767` in `managed` mode | Experimental shared Codex app-server URL for Codex CLI co-presence |
 | `BRIDGE_DEMO_MODE` | (none) | Demo mode: hide Tailscale IPs and API key from QR code / logs |
@@ -92,12 +93,61 @@ is reachable through a reverse proxy, tunnel, or public domain.
 Without it, the printed QR code is LAN-oriented by default and typically encodes
 something like `ws://192.168.x.x:8765`.
 
+## Temporary file preview links
+
+Publish a file through the running Bridge and print a Markdown link that can be
+sent in an existing CC Pocket chat:
+
+```bash
+ccpocket-bridge share "/absolute/path/report.pdf"
+```
+
+The link opens a responsive preview page in the phone's browser. Images, PDFs,
+text/code, audio, video, and DOCX files render in the page; other Office formats
+offer system-open and download fallbacks. The mobile app and WebSocket protocol
+do not require an update. DOCX files above 25 MiB use the fallback instead of
+browser rendering to avoid excessive mobile memory use.
+
+Useful options:
+
+```bash
+# Keep the link for two hours
+ccpocket-bridge share report.docx --ttl 7200
+
+# Override the address embedded in the phone link
+ccpocket-bridge share report.docx \
+  --base-url http://192.168.1.20:8765
+
+# Machine-readable output
+ccpocket-bridge share report.docx --json
+```
+
+`--base-url` must be an HTTP(S) origin without a path, query, or fragment.
+
+Links use a random capability token, expire after one hour by default, and are
+stored only in Bridge memory. Restarting Bridge invalidates them. The source
+file must remain unchanged and inside `BRIDGE_ALLOWED_DIRS`; changed files must
+be shared again.
+
+The publish control endpoint accepts loopback requests only. Public artifact
+routes do not expose source paths, support no directory listing, and do not
+inherit the Bridge's permissive Flutter Web CORS policy.
+
 ## Persistent service setup
 
 Register the Bridge as a user-level background service:
 
 ```bash
-npx @ccpocket/bridge@latest setup
+ccpocket-bridge setup
+```
+
+When working from this compatibility branch, build and register that exact
+local CLI so service restarts cannot silently fall back to the official npm
+package:
+
+```bash
+npm run bridge:build
+node packages/bridge/dist/cli.js setup
 ```
 
 Setup supports macOS launchd and Linux systemd. It persists the Bridge settings
@@ -108,6 +158,7 @@ that affect startup:
 - `BRIDGE_API_KEY` / `--api-key`
 - `BRIDGE_ALLOWED_DIRS`
 - `BRIDGE_PUBLIC_WS_URL` / `--public-ws-url`
+- `BRIDGE_ARTIFACT_BASE_URL` / `--artifact-base-url`
 - `BRIDGE_DISABLE_MDNS` / `--no-mdns`
 - `BRIDGE_CODEX_APP_SERVER_MODE` / `--codex-app-server-mode`
 - `BRIDGE_CODEX_SHARED_APP_SERVER_URL` / `--codex-shared-app-server-url`
@@ -117,7 +168,7 @@ Example:
 ```bash
 BRIDGE_ALLOWED_DIRS="$HOME,/scratch/$USER" \
 BRIDGE_API_KEY=my-secret \
-npx @ccpocket/bridge@latest setup
+node packages/bridge/dist/cli.js setup
 ```
 
 On Linux, setup gives standalone Codex installs priority by including

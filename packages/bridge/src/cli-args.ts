@@ -3,10 +3,13 @@ const VALUE_FLAGS = new Set([
   "host",
   "api-key",
   "public-ws-url",
+  "artifact-base-url",
   "codex-app-server-mode",
   "codex-shared-app-server-url",
   "codex-app-server-port",
   "codex-app-server-url",
+  "base-url",
+  "ttl",
 ]);
 
 const BOOLEAN_FLAGS = new Set([
@@ -17,6 +20,7 @@ const BOOLEAN_FLAGS = new Set([
 
 export interface ParsedCliArgs {
   command?: string;
+  positionals: string[];
   flags: Map<string, string | true>;
   helpRequested: boolean;
   versionRequested: boolean;
@@ -73,6 +77,7 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
 
   return {
     command,
+    positionals,
     flags,
     helpRequested: flags.has("help") || command === "help",
     versionRequested: flags.has("version") || command === "version",

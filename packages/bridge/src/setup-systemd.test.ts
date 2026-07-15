@@ -32,6 +32,7 @@ const originalBridgeEnv = {
   port: process.env.BRIDGE_PORT,
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
+  artifactBaseUrl: process.env.BRIDGE_ARTIFACT_BASE_URL,
   disableMdns: process.env.BRIDGE_DISABLE_MDNS,
   codexAppServerMode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
   codexSharedAppServerUrl: process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL,
@@ -69,17 +70,20 @@ describe("setup-systemd", () => {
       expect(content).toContain("[Unit]");
       expect(content).toContain("Description=CC Pocket Bridge Server");
       expect(content).toContain(
-        'ExecStart=/bin/bash -lc \'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; nvm use --silent default >/dev/null 2>&1 || nvm use --silent node >/dev/null 2>&1 || true; fi; export PATH="$HOME/.local/bin:$HOME/bin:$PATH"; exec npx --yes @ccpocket/bridge@latest\'',
+        'ExecStart=/bin/bash -lc \'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; nvm use --silent default >/dev/null 2>&1 || nvm use --silent node >/dev/null 2>&1 || true; fi; export PATH="$HOME/.local/bin:$HOME/bin:$PATH"; exec node "$BRIDGE_CLI_ENTRY"\'',
       );
       expect(content).toContain(
-        "Environment=PATH=/home/testuser/.local/bin:/home/testuser/bin:/home/testuser/.nvm/versions/node/current/bin:/home/testuser/.volta/bin:/home/testuser/.mise/shims:/home/testuser/.asdf/shims:/home/testuser/.bun/bin:/home/testuser/.npm-global/bin:/usr/local/bin:/usr/bin:/bin",
+        "Environment=PATH=/home/testuser/.local/bin:/home/testuser/bin:/home/testuser/.nvm/versions/node/current/bin",
       );
+      expect(content).toContain('Environment="BRIDGE_CLI_ENTRY=');
+      expect(content).toContain('/src/cli.js"');
       expect(content).toContain("Environment=BRIDGE_PORT=8765");
       expect(content).toContain("Environment=BRIDGE_HOST=0.0.0.0");
       expect(content).toContain("Restart=on-failure");
       expect(content).toContain("WantedBy=default.target");
       expect(content).not.toContain("BRIDGE_API_KEY");
       expect(content).not.toContain("BRIDGE_ALLOWED_DIRS");
+      expect(content).not.toContain("BRIDGE_ARTIFACT_BASE_URL");
       expect(content).not.toContain("BRIDGE_DISABLE_MDNS");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
@@ -118,19 +122,16 @@ describe("setup-systemd", () => {
       expect(content).toContain("Environment=BRIDGE_DISABLE_MDNS=1");
     });
 
-    it("keeps standalone Codex paths before npm-managed Node paths", () => {
-      mockExecSync.mockImplementation((cmd: string) => {
-        if (cmd === "command -v npx") {
-          return "/home/testuser/.nvm/versions/node/v22.18.0/bin/npx\n";
-        }
-        return "";
-      });
-
+    it("keeps standalone Codex paths before the current Node fallback", () => {
       setupSystemd({});
 
       const content = mockWriteFileSync.mock.calls[0]![1] as string;
-      expect(content).toContain(
-        "Environment=PATH=/home/testuser/.local/bin:/home/testuser/bin:/home/testuser/.nvm/versions/node/current/bin:/home/testuser/.volta/bin:/home/testuser/.mise/shims:/home/testuser/.asdf/shims:/home/testuser/.bun/bin:/home/testuser/.npm-global/bin:/home/testuser/.nvm/versions/node/v22.18.0/bin:/usr/local/bin:/usr/bin:/bin",
+      const pathLine = content
+        .split("\n")
+        .find((line) => line.startsWith("Environment=PATH="));
+      expect(pathLine).toBeDefined();
+      expect(pathLine!.indexOf("/home/testuser/.local/bin")).toBeLessThan(
+        pathLine!.indexOf(process.execPath.slice(0, process.execPath.lastIndexOf("/"))),
       );
     });
 
@@ -141,6 +142,22 @@ describe("setup-systemd", () => {
       expect(content).toContain(
         "Environment=BRIDGE_PUBLIC_WS_URL=wss://example.com/ws",
       );
+    });
+
+    it("includes a validated artifact base URL", () => {
+      setupSystemd({ artifactBaseUrl: "http://192.168.1.20:8765" });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain(
+        "Environment=BRIDGE_ARTIFACT_BASE_URL=http://192.168.1.20:8765",
+      );
+    });
+
+    it("rejects an invalid artifact base URL", () => {
+      expect(() =>
+        setupSystemd({ artifactBaseUrl: "http://127.0.0.1:8765" }),
+      ).toThrow("BRIDGE_ARTIFACT_BASE_URL");
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
 
     it("prefers explicit publicWsUrl over environment", () => {
@@ -290,20 +307,16 @@ describe("setup-systemd", () => {
       expect(() => setupSystemd({})).not.toThrow();
     });
 
-    it("exits with code 1 when npx is not found", () => {
+    it("does not depend on npx to restart the compatible CLI", () => {
       mockExecSync.mockImplementation((cmd: string) => {
         if (cmd === "command -v npx") throw new Error("not found");
         return "";
       });
 
-      const mockExit = vi
-        .spyOn(process, "exit")
-        .mockImplementation(() => undefined as never);
-
-      setupSystemd({});
-
-      expect(mockExit).toHaveBeenCalledWith(1);
-      mockExit.mockRestore();
+      expect(() => setupSystemd({})).not.toThrow();
+      expect(mockExecSync).not.toHaveBeenCalledWith("command -v npx", {
+        encoding: "utf-8",
+      });
     });
   });
 
@@ -350,6 +363,7 @@ function clearBridgeEnv(): void {
   delete process.env.BRIDGE_PORT;
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
+  delete process.env.BRIDGE_ARTIFACT_BASE_URL;
   delete process.env.BRIDGE_DISABLE_MDNS;
   delete process.env.BRIDGE_CODEX_APP_SERVER_MODE;
   delete process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL;
@@ -361,6 +375,10 @@ function restoreBridgeEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalBridgeEnv.port);
   restoreEnvVar("BRIDGE_ALLOWED_DIRS", originalBridgeEnv.allowedDirs);
   restoreEnvVar("BRIDGE_PUBLIC_WS_URL", originalBridgeEnv.publicWsUrl);
+  restoreEnvVar(
+    "BRIDGE_ARTIFACT_BASE_URL",
+    originalBridgeEnv.artifactBaseUrl,
+  );
   restoreEnvVar("BRIDGE_DISABLE_MDNS", originalBridgeEnv.disableMdns);
   restoreEnvVar(
     "BRIDGE_CODEX_APP_SERVER_MODE",

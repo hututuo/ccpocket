@@ -97,9 +97,10 @@ expiry information, system-open, and download actions.
   provides a mature viewer and the PDF.js viewer/worker would add substantial
   package weight.
 - Text, source, Markdown, JSON, CSV, and logs: escaped, size-limited text
-  preview with line numbers; the full file remains available through download.
+  preview; the full file remains available through download.
 - Audio and video: native media controls.
-- DOCX: render client-side with the Apache-2.0 `docx-preview` package.
+- DOCX: render client-side with the Apache-2.0 `docx-preview` package; files
+  above 25 MiB fall back to system-open/download to protect mobile memory.
 - XLSX/PPTX and unknown formats: polished metadata fallback with a direct
   system-open action and download. iOS Quick Look supports Microsoft Office
   documents; heavy document-server stacks are intentionally out of scope.

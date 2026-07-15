@@ -27,6 +27,7 @@ const originalBridgeEnv = {
   port: process.env.BRIDGE_PORT,
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
+  artifactBaseUrl: process.env.BRIDGE_ARTIFACT_BASE_URL,
   disableMdns: process.env.BRIDGE_DISABLE_MDNS,
   codexAppServerMode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
   codexSharedAppServerUrl: process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL,
@@ -57,11 +58,14 @@ describe("setup-launchd", () => {
       expect(content).toContain("<string>8765</string>");
       expect(content).toContain("<key>BRIDGE_HOST</key>");
       expect(content).toContain(
-        "<string>exec npx --yes @ccpocket/bridge@latest</string>",
+        '<string>exec node "$BRIDGE_CLI_ENTRY"</string>',
       );
+      expect(content).toContain("<key>BRIDGE_CLI_ENTRY</key>");
+      expect(content).toContain("/src/cli.js</string>");
       expect(content).not.toContain("BRIDGE_API_KEY");
       expect(content).not.toContain("BRIDGE_ALLOWED_DIRS");
       expect(content).not.toContain("BRIDGE_PUBLIC_WS_URL");
+      expect(content).not.toContain("BRIDGE_ARTIFACT_BASE_URL");
       expect(content).not.toContain("BRIDGE_DISABLE_MDNS");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
@@ -103,6 +107,21 @@ describe("setup-launchd", () => {
       const content = mockWriteFileSync.mock.calls[0]![1] as string;
       expect(content).toContain("<key>BRIDGE_PUBLIC_WS_URL</key>");
       expect(content).toContain("<string>wss://example.com/ws</string>");
+    });
+
+    it("includes a validated artifact base URL", () => {
+      setupLaunchd({ artifactBaseUrl: "http://192.168.1.20:8765" });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("<key>BRIDGE_ARTIFACT_BASE_URL</key>");
+      expect(content).toContain("<string>http://192.168.1.20:8765</string>");
+    });
+
+    it("rejects an invalid artifact base URL", () => {
+      expect(() =>
+        setupLaunchd({ artifactBaseUrl: "http://127.0.0.1:8765" }),
+      ).toThrow("BRIDGE_ARTIFACT_BASE_URL");
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
 
     it("prefers explicit publicWsUrl over environment", () => {
@@ -184,6 +203,7 @@ function clearBridgeEnv(): void {
   delete process.env.BRIDGE_PORT;
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
+  delete process.env.BRIDGE_ARTIFACT_BASE_URL;
   delete process.env.BRIDGE_DISABLE_MDNS;
   delete process.env.BRIDGE_CODEX_APP_SERVER_MODE;
   delete process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL;
@@ -195,6 +215,10 @@ function restoreBridgeEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalBridgeEnv.port);
   restoreEnvVar("BRIDGE_ALLOWED_DIRS", originalBridgeEnv.allowedDirs);
   restoreEnvVar("BRIDGE_PUBLIC_WS_URL", originalBridgeEnv.publicWsUrl);
+  restoreEnvVar(
+    "BRIDGE_ARTIFACT_BASE_URL",
+    originalBridgeEnv.artifactBaseUrl,
+  );
   restoreEnvVar("BRIDGE_DISABLE_MDNS", originalBridgeEnv.disableMdns);
   restoreEnvVar(
     "BRIDGE_CODEX_APP_SERVER_MODE",

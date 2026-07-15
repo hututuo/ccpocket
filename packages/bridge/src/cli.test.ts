@@ -19,7 +19,15 @@ function runCli(args: string[], bridgePort?: string) {
   });
 }
 
-describe("ccpocket-bridge CLI", () => {
+describe("ccpocket-bridge CLI", { timeout: 15_000 }, () => {
+  it("reports a missing share path without starting the server", () => {
+    const result = runCli(["share"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Share failed: file path is required");
+    expect(result.stdout).not.toContain("Starting ccpocket bridge server");
+  });
+
   it("rejects an invalid --port value before server startup", () => {
     const result = runCli(["--port", "abc"]);
 

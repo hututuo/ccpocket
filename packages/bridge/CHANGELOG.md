@@ -2,6 +2,17 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.66.1-compat.1] - 2026-07-16
+
+### Added
+- Add `ccpocket-bridge share <path>` for short-lived, token-protected file links.
+- Add responsive browser previews for images, PDFs, text, audio, video, and DOCX, with system-open and download fallbacks.
+- Stream inline and attachment content with HEAD and single-range support.
+
+### Security
+- Restrict path publication to a loopback-only control route and canonical paths inside `BRIDGE_ALLOWED_DIRS`.
+- Keep artifact capabilities in memory, omit source paths from URLs and responses, and isolate artifact routes from permissive CORS headers.
+
 ## [1.66.1] - 2026-07-16
 
 ### Fixed
