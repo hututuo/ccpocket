@@ -1114,5 +1114,21 @@
   "approvalQuestionNotificationTitle": "有一个问题 - ccpocket",
   "approvalRequiredNotificationTitle": "等待审批 - ccpocket",
   "exitPlanModeNotificationBody": "生成的计划需要你确认",
-  "renderErrorFallback": "无法显示此内容。"
+  "renderErrorFallback": "无法显示此内容。",
+  "artifactFile": "文件",
+  "artifactSource": "源文件",
+  "artifactLineLabel": "第 {line} 行",
+  "@artifactLineLabel": {
+    "placeholders": {
+      "line": {
+        "type": "int"
+      }
+    }
+  },
+  "artifactOpenFailed": "无法打开文件。",
+  "artifactUnavailable": "此文件已不可用。",
+  "artifactReconnect": "请重新连接 Bridge 后重试。",
+  "artifactBridgeUpdateRequired": "请更新电脑上的 Bridge，然后重新连接。",
+  "artifactTimeout": "文件准备超时。",
+  "artifactPrepareFailed": "无法准备文件。"
 }

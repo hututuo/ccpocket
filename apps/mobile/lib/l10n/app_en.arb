@@ -983,5 +983,21 @@
   "approvalQuestionNotificationTitle": "Question - ccpocket",
   "approvalRequiredNotificationTitle": "Approval Required - ccpocket",
   "exitPlanModeNotificationBody": "The generated plan needs your review",
-  "renderErrorFallback": "This content couldn't be displayed."
+  "renderErrorFallback": "This content couldn't be displayed.",
+  "artifactFile": "File",
+  "artifactSource": "Source",
+  "artifactLineLabel": "Line {line}",
+  "@artifactLineLabel": {
+    "placeholders": {
+      "line": {
+        "type": "int"
+      }
+    }
+  },
+  "artifactOpenFailed": "Unable to open the file.",
+  "artifactUnavailable": "This file is no longer available.",
+  "artifactReconnect": "Reconnect to the Bridge and try again.",
+  "artifactBridgeUpdateRequired": "Update the Bridge on your computer, then reconnect.",
+  "artifactTimeout": "Preparing the file timed out.",
+  "artifactPrepareFailed": "Unable to prepare the file."
 }

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show protected, visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -123,6 +124,11 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, _DeliveryPendingInputState> _deliveryPendingInputs = {};
   final Map<String, Timer> _deliveryPendingVisibilityTimers = {};
   final Map<String, Set<String>> _respondedToolUseIds = {};
+  final Map<String, Completer<ArtifactResolvedMessage>>
+      _pendingArtifactResolutions = {};
+  final Random _artifactRequestRandom = Random.secure();
+  Future<void> _fileReadSerial = Future<void>.value();
+  _PendingFileRead? _pendingFileRead;
   List<OfflinePendingAction> _offlinePendingActions = const [];
 
   // Diff image cache: survives screen navigation, cleared on session stop.
@@ -252,6 +258,410 @@ class BridgeService implements BridgeServiceBase {
     unawaited(_ensureOfflineQueueRestored());
   }
 
+  /// Reads one file at a time so a legacy Bridge response without requestId
+  /// cannot be confused with another in-flight File Peek request. New Bridges
+  /// echo requestId, which is still checked together with the exact file path.
+  Future<FileContentMessage> readFile({
+    required String projectPath,
+    required String filePath,
+    int? maxLines,
+    Duration timeout = const Duration(seconds: 15),
+  }) {
+    return _enqueueFileRead(
+      filePath: filePath,
+      requestType: 'read_file',
+      timeout: timeout,
+      buildRequest: (requestId) => ClientMessage.readFile(
+        projectPath,
+        filePath,
+        requestId: requestId,
+        maxLines: maxLines,
+      ),
+    );
+  }
+
+  /// Reads a source artifact through an identity-authorized one-shot RPC.
+  /// The Bridge derives the current project/worktree roots from [sessionId].
+  Future<FileContentMessage> readArtifactSource({
+    required String sessionId,
+    required String messageId,
+    required String artifactId,
+    required String filePath,
+    int? maxLines,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    if ([sessionId, messageId, artifactId, filePath]
+        .any((value) => value.trim().isEmpty)) {
+      throw ArgumentError('Artifact source identity is incomplete.');
+    }
+    try {
+      return await _enqueueFileRead(
+        filePath: filePath,
+        requestType: 'read_artifact_source',
+        timeout: timeout,
+        buildRequest: (requestId) => ClientMessage.readArtifactSource(
+          requestId: requestId,
+          sessionId: sessionId,
+          messageId: messageId,
+          artifactId: artifactId,
+          filePath: filePath,
+          maxLines: maxLines,
+        ),
+      );
+    } on TimeoutException catch (error) {
+      throw ArtifactSourceReadException(
+        code: 'artifact_source_read_timeout',
+        message: error.message ?? 'Timed out while reading the artifact source.',
+      );
+    } on StateError catch (error) {
+      final message = error.message.toString();
+      final code = message.contains('does not support')
+          ? 'artifact_source_read_unsupported'
+          : message.contains('changed')
+          ? 'bridge_changed'
+          : 'bridge_disconnected';
+      throw ArtifactSourceReadException(code: code, message: message);
+    }
+  }
+
+  Future<FileContentMessage> _enqueueFileRead({
+    required String filePath,
+    required String requestType,
+    required Duration timeout,
+    required ClientMessage Function(String requestId) buildRequest,
+  }) {
+    final result = _fileReadSerial.then(
+      (_) => _readFileOnce(
+        filePath: filePath,
+        requestType: requestType,
+        timeout: timeout,
+        buildRequest: buildRequest,
+      ),
+    );
+    _fileReadSerial = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return result;
+  }
+
+  Future<FileContentMessage> _readFileOnce({
+    required String filePath,
+    required String requestType,
+    required Duration timeout,
+    required ClientMessage Function(String requestId) buildRequest,
+  }) async {
+    if (!isConnected) {
+      throw StateError('Bridge is not connected.');
+    }
+    final requestEpoch = _connectionEpoch;
+    final requestId = _newFileReadRequestId();
+    bool matchesResponse(FileContentMessage message) {
+      final responseRequestId = message.requestId?.trim();
+      if (responseRequestId != null && responseRequestId.isNotEmpty) {
+        return responseRequestId == requestId && message.filePath == filePath;
+      }
+      return requestType == 'read_file' && message.filePath == filePath;
+    }
+    final responseCompleter = Completer<FileContentMessage>();
+    final pendingRead = _PendingFileRead(
+      requestType: requestType,
+      completer: responseCompleter,
+    );
+    _pendingFileRead = pendingRead;
+    late final StreamSubscription<FileContentMessage> responseSubscription;
+    responseSubscription = fileContent.listen(
+      (message) {
+        if (matchesResponse(message) && !responseCompleter.isCompleted) {
+          responseCompleter.complete(message);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!responseCompleter.isCompleted) {
+          responseCompleter.completeError(error, stackTrace);
+        }
+      },
+      onDone: () {
+        if (!responseCompleter.isCompleted) {
+          responseCompleter.completeError(
+            StateError('Bridge file response stream closed.'),
+          );
+        }
+      },
+    );
+    final connectionSubscription = connectionStatus.listen((state) {
+      if (state != BridgeConnectionState.connected &&
+          !responseCompleter.isCompleted) {
+        responseCompleter.completeError(
+          StateError('Bridge disconnected while reading the file.'),
+        );
+      }
+    });
+    final errorSubscription = messages.listen((message) {
+      final isUnsupportedRead =
+          message is ErrorMessage &&
+          message.errorCode == 'unsupported_message' &&
+          message.message == requestType;
+      final isLegacyInvalidFormat =
+          message is ErrorMessage &&
+          message.errorCode == null &&
+          message.message == 'Invalid message format';
+      if ((isUnsupportedRead || isLegacyInvalidFormat) &&
+          !responseCompleter.isCompleted) {
+        responseCompleter.completeError(
+          StateError('Bridge does not support this file read request.'),
+        );
+      }
+    });
+
+    late final FileContentMessage response;
+    try {
+      send(buildRequest(requestId));
+      response = await responseCompleter.future.timeout(timeout);
+    } finally {
+      if (identical(_pendingFileRead, pendingRead)) {
+        _pendingFileRead = null;
+      }
+      await responseSubscription.cancel();
+      await connectionSubscription.cancel();
+      await errorSubscription.cancel();
+    }
+    if (!isConnected || _connectionEpoch != requestEpoch) {
+      throw StateError('Bridge changed while reading the file.');
+    }
+    return response;
+  }
+
+  String _newFileReadRequestId() {
+    final random = _artifactRequestRandom.nextInt(0x7fffffff).toRadixString(16);
+    return 'file-${DateTime.now().microsecondsSinceEpoch}-$random';
+  }
+
+  /// Resolves a Bridge-owned artifact reference to a short-lived URL on the
+  /// currently connected Bridge. Absolute URLs from the server are rejected so
+  /// an artifact response cannot redirect the client to another origin.
+  Future<ResolvedArtifact> resolveArtifact({
+    required String sessionId,
+    required String messageId,
+    required String artifactId,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final requestEpoch = _connectionEpoch;
+    final baseUrl = httpBaseUrl;
+    if (!isConnected || baseUrl == null) {
+      throw const ArtifactResolveException(
+        code: 'bridge_disconnected',
+        message: 'Bridge is not connected.',
+      );
+    }
+    if (sessionId.isEmpty || messageId.isEmpty || artifactId.isEmpty) {
+      throw const ArtifactResolveException(
+        code: 'invalid_artifact_request',
+        message: 'The file reference is incomplete.',
+      );
+    }
+
+    final requestId = _newArtifactRequestId();
+    final completer = Completer<ArtifactResolvedMessage>();
+    _pendingArtifactResolutions[requestId] = completer;
+
+    try {
+      try {
+        send(
+          ClientMessage.resolveArtifact(
+            requestId: requestId,
+            sessionId: sessionId,
+            messageId: messageId,
+            artifactId: artifactId,
+          ),
+        );
+      } catch (error, stackTrace) {
+        logger.warning(
+          'WS artifact resolution dispatch failed',
+          error,
+          stackTrace,
+        );
+        final connectionChanged =
+            _connectionEpoch != requestEpoch || httpBaseUrl != baseUrl;
+        _failArtifactResolution(
+          requestId,
+          ArtifactResolveException(
+            code: connectionChanged
+                ? 'bridge_changed'
+                : 'bridge_disconnected',
+            message: connectionChanged
+                ? 'Bridge changed while preparing the file.'
+                : 'Bridge disconnected while preparing the file.',
+          ),
+        );
+      }
+      final response = await completer.future.timeout(
+        timeout,
+        onTimeout: () => throw const ArtifactResolveException(
+          code: 'artifact_resolve_timeout',
+          message: 'Timed out while preparing the file.',
+        ),
+      );
+      if (!isConnected) {
+        throw const ArtifactResolveException(
+          code: 'bridge_disconnected',
+          message: 'Bridge disconnected while preparing the file.',
+        );
+      }
+      if (_connectionEpoch != requestEpoch || httpBaseUrl != baseUrl) {
+        throw const ArtifactResolveException(
+          code: 'bridge_changed',
+          message: 'Bridge changed while preparing the file.',
+        );
+      }
+      if (response.artifactId != artifactId) {
+        throw const ArtifactResolveException(
+          code: 'artifact_response_mismatch',
+          message: 'Bridge returned a mismatched file reference.',
+        );
+      }
+      if (!response.isSuccess) {
+        throw ArtifactResolveException(
+          code: response.errorCode ?? 'artifact_resolve_failed',
+          message: response.error ?? 'Unable to prepare the file.',
+        );
+      }
+      final url = resolveArtifactRelativeUrl(baseUrl, response.relativeUrl!);
+      return ResolvedArtifact(
+        artifactId: response.artifactId,
+        url: url,
+        expiresAt: response.expiresAt,
+      );
+    } finally {
+      _pendingArtifactResolutions.remove(requestId);
+    }
+  }
+
+  String _newArtifactRequestId() {
+    final random = _artifactRequestRandom.nextInt(0x7fffffff).toRadixString(16);
+    return 'artifact-${DateTime.now().microsecondsSinceEpoch}-$random';
+  }
+
+  void _completeArtifactResolution(ArtifactResolvedMessage message) {
+    final completer = _pendingArtifactResolutions.remove(message.requestId);
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(message);
+    }
+  }
+
+  void _failArtifactResolution(
+    String requestId,
+    ArtifactResolveException error,
+  ) {
+    final completer = _pendingArtifactResolutions.remove(requestId);
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(error);
+    }
+  }
+
+  bool _consumeArtifactInfrastructureMessage(ServerMessage message) {
+    if (message is ArtifactResolvedMessage) {
+      _completeArtifactResolution(message);
+      return true;
+    }
+    if (message is! ErrorMessage) return false;
+
+    var consumed = false;
+    final pendingRead = _pendingFileRead;
+    final isExplicitUnsupportedRead =
+        pendingRead != null &&
+        !pendingRead.completer.isCompleted &&
+        message.errorCode == 'unsupported_message' &&
+        message.message == pendingRead.requestType;
+    final isLegacyInvalidFormat =
+        message.errorCode == null && message.message == 'Invalid message format';
+    final isLegacyUnsupportedArtifactRead =
+        pendingRead != null &&
+        !pendingRead.completer.isCompleted &&
+        pendingRead.requestType == 'read_artifact_source' &&
+        isLegacyInvalidFormat;
+    if (isExplicitUnsupportedRead || isLegacyUnsupportedArtifactRead) {
+      pendingRead!.completer.completeError(
+        StateError('Bridge does not support ${pendingRead.requestType}.'),
+      );
+      consumed = true;
+    }
+
+    final isExplicitUnsupported =
+        message.errorCode == 'unsupported_message' &&
+        message.message == 'resolve_artifact';
+    final isLegacyUnsupportedResolve =
+        _pendingArtifactResolutions.isNotEmpty &&
+        message.errorCode == null &&
+        message.message == 'Invalid message format';
+    if (isExplicitUnsupported || isLegacyUnsupportedResolve) {
+      _failPendingArtifactResolutions(
+        const ArtifactResolveException(
+          code: 'artifact_resolve_unsupported',
+          message: 'Bridge does not support file resolution.',
+        ),
+      );
+      consumed = true;
+    }
+    return consumed;
+  }
+
+  @visibleForTesting
+  void completeArtifactResolutionForTest(ArtifactResolvedMessage message) {
+    _completeArtifactResolution(message);
+  }
+
+  @visibleForTesting
+  bool consumeArtifactInfrastructureMessageForTest(ServerMessage message) {
+    return _consumeArtifactInfrastructureMessage(message);
+  }
+
+  @visibleForTesting
+  int get queuedMessageCountForTest => _messageQueue.length;
+
+  @visibleForTesting
+  Future<void> flushQueuedMessagesForTest() => _flushMessageQueueAsync();
+
+  void _failPendingArtifactResolutions(ArtifactResolveException error) {
+    final completers = _pendingArtifactResolutions.values.toList();
+    _pendingArtifactResolutions.clear();
+    for (final completer in completers) {
+      if (!completer.isCompleted) completer.completeError(error);
+    }
+  }
+
+  static Uri resolveArtifactRelativeUrl(String baseUrl, String relativeUrl) {
+    final relative = Uri.tryParse(relativeUrl);
+    final base = Uri.tryParse(baseUrl);
+    final isArtifactPath = RegExp(
+      r'^/artifacts/[A-Za-z0-9_-]{43}$',
+    ).hasMatch(relativeUrl);
+    if (relative == null ||
+        base == null ||
+        !isArtifactPath ||
+        relative.hasScheme ||
+        relative.hasAuthority ||
+        (base.scheme != 'http' && base.scheme != 'https')) {
+      throw const ArtifactResolveException(
+        code: 'invalid_artifact_url',
+        message: 'Bridge returned an invalid file URL.',
+      );
+    }
+    final origin = Uri.parse(
+      '${base.toString().replaceFirst(RegExp(r'/+$'), '')}/',
+    );
+    final resolved = origin.resolveUri(relative);
+    if (resolved.scheme != base.scheme ||
+        resolved.host != base.host ||
+        resolved.port != base.port) {
+      throw const ArtifactResolveException(
+        code: 'invalid_artifact_url',
+        message: 'Bridge returned an invalid file URL.',
+      );
+    }
+    return resolved;
+  }
+
   /// The last WebSocket URL used for connection (or reconnection).
   String? get lastUrl => _lastUrl;
 
@@ -339,6 +749,12 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void connect(String url) {
+    _failPendingArtifactResolutions(
+      const ArtifactResolveException(
+        code: 'bridge_changed',
+        message: 'Bridge changed while preparing the file.',
+      ),
+    );
     final previousUrl = _lastUrl;
     final isBridgeSwitch =
         previousUrl != null && !_sameBridgeTarget(previousUrl, url);
@@ -373,6 +789,7 @@ class BridgeService implements BridgeServiceBase {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
             final sessionId = json['sessionId'] as String?;
             final msg = ServerMessage.fromJson(json);
+            if (_consumeArtifactInfrastructureMessage(msg)) return;
             if (sessionId != null && msg is HistoryDeltaMessage) {
               _handleHistoryDelta(sessionId, msg);
               return;
@@ -620,6 +1037,12 @@ class BridgeService implements BridgeServiceBase {
           if (epoch != _connectionEpoch) return;
           logger.error('WS stream error', error, stackTrace);
           _setBridgeConnectionState(BridgeConnectionState.disconnected);
+          _failPendingArtifactResolutions(
+            const ArtifactResolveException(
+              code: 'bridge_disconnected',
+              message: 'Bridge disconnected while preparing the file.',
+            ),
+          );
           _requeueInFlightInputMessages();
           _requeueInFlightPendingMessages();
           _messageController.add(
@@ -632,6 +1055,12 @@ class BridgeService implements BridgeServiceBase {
           _channel = null;
           if (!_intentionalDisconnect) {
             _setBridgeConnectionState(BridgeConnectionState.disconnected);
+            _failPendingArtifactResolutions(
+              const ArtifactResolveException(
+                code: 'bridge_disconnected',
+                message: 'Bridge disconnected while preparing the file.',
+              ),
+            );
             _requeueInFlightInputMessages();
             _requeueInFlightPendingMessages();
             _scheduleReconnect();
@@ -664,6 +1093,12 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _clearBridgeScopedState({required bool clearOfflineQueue}) {
+    _failPendingArtifactResolutions(
+      const ArtifactResolveException(
+        code: 'bridge_changed',
+        message: 'Bridge changed while preparing the file.',
+      ),
+    );
     _sessions = const [];
     _recentSessions = const [];
     _lastRecentSessionsMessage = null;
@@ -822,6 +1257,30 @@ class BridgeService implements BridgeServiceBase {
   @override
   void send(ClientMessage message) {
     onOutgoingMessage?.call(message);
+    if (_isEphemeralRpc(message)) {
+      if (message.type != 'resolve_artifact') {
+        sendEphemeralRpc(message);
+        return;
+      }
+      try {
+        sendArtifactResolutionRequest(message);
+      } on ArtifactResolveException catch (error) {
+        _failPendingArtifactResolutions(error);
+      } catch (error, stackTrace) {
+        logger.warning(
+          'WS artifact resolution send failed',
+          error,
+          stackTrace,
+        );
+        _failPendingArtifactResolutions(
+          const ArtifactResolveException(
+            code: 'bridge_disconnected',
+            message: 'Bridge disconnected while preparing the file.',
+          ),
+        );
+      }
+      return;
+    }
     if (_channel != null && isConnected) {
       if (!_trackInFlightPendingMessage(message)) return;
       _trackInFlightInputMessage(message);
@@ -838,7 +1297,63 @@ class BridgeService implements BridgeServiceBase {
     }
   }
 
+  /// Sends a one-shot artifact RPC only on the current socket. Unlike regular
+  /// client messages, it is never eligible for offline queueing or replay.
+  @protected
+  void sendArtifactResolutionRequest(ClientMessage message) {
+    try {
+      sendEphemeralRpc(message);
+    } catch (error, stackTrace) {
+      logger.warning(
+        'WS artifact resolution send failed',
+        error,
+        stackTrace,
+      );
+      throw const ArtifactResolveException(
+        code: 'bridge_disconnected',
+        message: 'Bridge disconnected while preparing the file.',
+      );
+    }
+  }
+
+  /// Sends an ephemeral RPC on the live socket without tracking or queueing.
+  @protected
+  void sendEphemeralRpc(ClientMessage message) {
+    final channel = _channel;
+    if (channel == null || !isConnected) {
+      throw StateError('Bridge is not connected.');
+    }
+    try {
+      channel.sink.add(message.toJson());
+    } catch (error, stackTrace) {
+      logger.warning(
+        'WS ephemeral RPC send failed (${message.type})',
+        error,
+        stackTrace,
+      );
+      _setBridgeConnectionState(BridgeConnectionState.disconnected);
+      _scheduleReconnect();
+      throw StateError('Bridge disconnected while sending ${message.type}.');
+    }
+  }
+
+  bool _isEphemeralRpc(ClientMessage message) =>
+      message.type == 'resolve_artifact' ||
+      message.type == 'read_file' ||
+      message.type == 'read_artifact_source';
+
   void _queueOfflineMessage(ClientMessage message) {
+    if (_isEphemeralRpc(message)) {
+      if (message.type == 'resolve_artifact') {
+        _failPendingArtifactResolutions(
+          const ArtifactResolveException(
+            code: 'bridge_disconnected',
+            message: 'Bridge disconnected while preparing the file.',
+          ),
+        );
+      }
+      return;
+    }
     final dedupeKey = _offlineMessageDedupeKey(message);
     if (dedupeKey != null) {
       _clearInFlightPendingMessage(dedupeKey);
@@ -1032,7 +1547,9 @@ class BridgeService implements BridgeServiceBase {
   Future<void> _flushMessageQueueAsync() async {
     await _ensureOfflineQueueRestored();
     if (_messageQueue.isEmpty || !isConnected) return;
-    final queued = List<ClientMessage>.from(_messageQueue);
+    final queued = _messageQueue
+        .where((message) => !_isEphemeralRpc(message))
+        .toList(growable: false);
     _messageQueue.clear();
     await _persistOfflinePendingMessages();
     _publishOfflinePendingActions();
@@ -2319,6 +2836,12 @@ class BridgeService implements BridgeServiceBase {
     _deliveryPendingVisibilityTimers.clear();
     _deliveryPendingInputs.clear();
     _inFlightInputMessages.clear();
+    _failPendingArtifactResolutions(
+      const ArtifactResolveException(
+        code: 'bridge_disposed',
+        message: 'Bridge connection was closed.',
+      ),
+    );
     _channelSub?.cancel();
     _channelSub = null;
     _channel?.sink.close();
@@ -2366,11 +2889,53 @@ class BridgeService implements BridgeServiceBase {
   }
 }
 
+class _PendingFileRead {
+  const _PendingFileRead({
+    required this.requestType,
+    required this.completer,
+  });
+
+  final String requestType;
+  final Completer<FileContentMessage> completer;
+}
+
 class _DeliveryPendingInputState {
   _DeliveryPendingInputState(this.item);
 
   final QueuedInputItem item;
   bool visible = false;
+}
+
+class ResolvedArtifact {
+  final String artifactId;
+  final Uri url;
+  final String? expiresAt;
+
+  const ResolvedArtifact({
+    required this.artifactId,
+    required this.url,
+    this.expiresAt,
+  });
+}
+
+class ArtifactResolveException implements Exception {
+  final String code;
+  final String message;
+
+  const ArtifactResolveException({required this.code, required this.message});
+
+  @override
+  String toString() => 'ArtifactResolveException($code): $message';
+}
+
+class ArtifactSourceReadException implements Exception {
+  final String code;
+  final String message;
+
+  const ArtifactSourceReadException({required this.code, required this.message});
+
+  @override
+  String toString() => 'ArtifactSourceReadException($code): $message';
 }
 
 /// Cached diff image data for a single file.

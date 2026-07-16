@@ -973,5 +973,21 @@
   "approvalQuestionNotificationTitle": "질문이 있습니다 - ccpocket",
   "approvalRequiredNotificationTitle": "승인 대기 중 - ccpocket",
   "exitPlanModeNotificationBody": "작성된 계획을 확인해야 합니다",
-  "renderErrorFallback": "이 콘텐츠를 표시할 수 없습니다."
+  "renderErrorFallback": "이 콘텐츠를 표시할 수 없습니다.",
+  "artifactFile": "파일",
+  "artifactSource": "소스",
+  "artifactLineLabel": "{line}행",
+  "@artifactLineLabel": {
+    "placeholders": {
+      "line": {
+        "type": "int"
+      }
+    }
+  },
+  "artifactOpenFailed": "파일을 열 수 없습니다.",
+  "artifactUnavailable": "이 파일은 더 이상 사용할 수 없습니다.",
+  "artifactReconnect": "Bridge에 다시 연결한 후 시도하세요.",
+  "artifactBridgeUpdateRequired": "컴퓨터의 Bridge를 업데이트한 다음 다시 연결하세요.",
+  "artifactTimeout": "파일 준비 시간이 초과되었습니다.",
+  "artifactPrepareFailed": "파일을 준비할 수 없습니다."
 }

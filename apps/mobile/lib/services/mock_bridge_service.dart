@@ -251,13 +251,15 @@ class MockBridgeService extends BridgeService {
           'You said: "$text". This is a mock response echoing your input.',
           startDelay: const Duration(milliseconds: 500),
         );
-      case 'read_file':
+      case 'read_file' || 'read_artifact_source':
         final filePath = json['filePath'] as String? ?? '';
-        final image = _mockImageFile(filePath);
+        final requestId = json['requestId'] as String?;
+        final image = _mockImageFile(filePath, requestId: requestId);
         _scheduleMessage(
           const Duration(milliseconds: 400),
           image ??
               FileContentMessage(
+                requestId: requestId,
                 filePath: filePath,
                 kind: 'text',
                 content: _mockFileContent(filePath),
@@ -545,7 +547,10 @@ class MockBridgeService extends BridgeService {
     };
   }
 
-  static FileContentMessage? _mockImageFile(String filePath) {
+  static FileContentMessage? _mockImageFile(
+    String filePath, {
+    String? requestId,
+  }) {
     final ext = filePath.split('.').lastOrNull?.toLowerCase();
     final mimeType = switch (ext) {
       'png' => 'image/png',
@@ -561,6 +566,7 @@ class MockBridgeService extends BridgeService {
         ? base64Encode(utf8.encode(_mockSvgImage))
         : _mockPngBase64;
     return FileContentMessage(
+      requestId: requestId,
       filePath: filePath,
       kind: 'image',
       content: '',

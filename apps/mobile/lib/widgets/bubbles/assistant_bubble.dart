@@ -17,7 +17,9 @@ import '../../utils/structured_error_inference.dart';
 import '../../utils/diff_parser.dart';
 import '../../utils/tool_categories.dart';
 import '../../utils/codex_plan_update.dart';
+import '../../utils/artifact_link_matcher.dart';
 import '../../features/file_peek/file_path_syntax.dart';
+import 'artifact_attachment_chip.dart';
 import 'error_bubble.dart';
 import '../plan_detail_sheet.dart';
 import '../google_search_text_selection.dart';
@@ -40,6 +42,9 @@ class AssistantBubble extends StatefulWidget {
 
   /// Callback for tapping file paths in markdown content.
   final FilePathTapCallback? onFileTap;
+  final ArtifactOpenCallback? onArtifactOpen;
+  final String? sessionId;
+  final String? projectPath;
   final VoidCallback? onFork;
 
   const AssistantBubble({
@@ -47,6 +52,9 @@ class AssistantBubble extends StatefulWidget {
     required this.message,
     this.resolvedPlanText,
     this.onFileTap,
+    this.onArtifactOpen,
+    this.sessionId,
+    this.projectPath,
     this.onFork,
   });
 
@@ -98,6 +106,11 @@ class _AssistantBubbleState extends State<AssistantBubble> {
         allText: _allText(),
         plainTextMode: _plainTextMode,
         onFork: widget.onFork,
+        artifacts: widget.message.artifacts,
+        onArtifactOpen: widget.onArtifactOpen,
+        onFileTap: widget.onFileTap,
+        artifactContentIndexOffset:
+            widget.message.artifactContentIndexOffset,
         onTogglePlainText: () {
           setState(() => _plainTextMode = !_plainTextMode);
         },
@@ -110,6 +123,10 @@ class _AssistantBubbleState extends State<AssistantBubble> {
       plainTextMode: _plainTextMode,
       allText: _allText(),
       onFileTap: widget.onFileTap,
+      artifacts: widget.message.artifacts,
+      onArtifactOpen: widget.onArtifactOpen,
+      artifactContentIndexOffset:
+          widget.message.artifactContentIndexOffset,
       onFork: widget.onFork,
       onTogglePlainText: () {
         setState(() => _plainTextMode = !_plainTextMode);
@@ -125,6 +142,10 @@ class _PlanLayout extends StatelessWidget {
   final String allText;
   final bool plainTextMode;
   final VoidCallback? onFork;
+  final List<ArtifactRef> artifacts;
+  final ArtifactOpenCallback? onArtifactOpen;
+  final FilePathTapCallback? onFileTap;
+  final int artifactContentIndexOffset;
   final VoidCallback onTogglePlainText;
 
   const _PlanLayout({
@@ -134,6 +155,10 @@ class _PlanLayout extends StatelessWidget {
     required this.allText,
     required this.plainTextMode,
     this.onFork,
+    this.artifacts = const [],
+    this.onArtifactOpen,
+    this.onFileTap,
+    this.artifactContentIndexOffset = 0,
     required this.onTogglePlainText,
   });
 
@@ -150,6 +175,32 @@ class _PlanLayout extends StatelessWidget {
     if (originalPlanText.split('\n').length < 10 && resolvedPlanText != null) {
       originalPlanText = resolvedPlanText!;
     }
+    final textContentIndexes = <int>[
+      for (var i = 0; i < contents.length; i++)
+        if (contents[i] is TextContent) i - artifactContentIndexOffset,
+    ];
+    final artifactTextContentIndex = textContentIndexes.length == 1
+        ? textContentIndexes.single
+        : -1;
+    Future<void> handlePlanLink(
+      String label,
+      String? href,
+      String title,
+    ) => _handlePlanLink(
+      context,
+      label,
+      href,
+      title,
+      artifactTextContentIndex,
+    );
+    Widget buildPlanImage(Uri uri, String? title, String? alt) =>
+        _buildPlanImage(
+          context,
+          uri,
+          title,
+          alt,
+          artifactTextContentIndex,
+        );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -168,7 +219,32 @@ class _PlanLayout extends StatelessWidget {
           },
         PlanCard(
           planText: originalPlanText,
-          onViewFullPlan: () => showPlanDetailSheet(context, originalPlanText),
+          onTapLink: handlePlanLink,
+          imageBuilder: buildPlanImage,
+          onViewFullPlan: () => showPlanDetailSheet(
+            context,
+            originalPlanText,
+            onTapLink: handlePlanLink,
+            imageBuilder: buildPlanImage,
+          ),
+        ),
+        ArtifactAttachmentGroup(
+          artifacts: artifacts
+              .where(
+                (artifact) =>
+                    plainTextMode || artifact.originalHref == null,
+              )
+              .toList(growable: false),
+          onOpen: (artifact) => _openArtifact(
+            artifact,
+            onFileTap: onFileTap,
+            onArtifactOpen: onArtifactOpen,
+          ),
+          canOpen: (artifact) => _canOpenArtifact(
+            artifact,
+            onFileTap: onFileTap,
+            onArtifactOpen: onArtifactOpen,
+          ),
         ),
         if (hasTextContent)
           MessageActionBar(
@@ -180,6 +256,101 @@ class _PlanLayout extends StatelessWidget {
       ],
     );
   }
+
+  Future<void> _handlePlanLink(
+    BuildContext context,
+    String label,
+    String? href,
+    String title,
+    int textContentIndex,
+  ) async {
+    if (href == null || href.isEmpty) return;
+    if (isExternalWebHref(href)) {
+      await handleMarkdownLink(label, href, title);
+      return;
+    }
+    final artifact = matchArtifactHref(
+      artifacts: artifacts,
+      textContentIndex: textContentIndex,
+      href: href,
+    );
+    if (artifact != null) {
+      if (_canOpenArtifact(
+        artifact,
+        onFileTap: onFileTap,
+        onArtifactOpen: onArtifactOpen,
+      )) {
+        await _openArtifact(
+          artifact,
+          onFileTap: onFileTap,
+          onArtifactOpen: onArtifactOpen,
+        );
+      } else {
+        _showArtifactUnavailable(context);
+      }
+      return;
+    }
+    if (isLocalFileLikeHref(href)) {
+      _showArtifactUnavailable(context);
+    } else {
+      await handleMarkdownLink(label, href, title);
+    }
+  }
+
+  Widget _buildPlanImage(
+    BuildContext context,
+    Uri uri,
+    String? title,
+    String? alt,
+    int textContentIndex,
+  ) {
+    final href = uri.toString();
+    final artifact = matchArtifactHref(
+      artifacts: artifacts,
+      textContentIndex: textContentIndex,
+      href: href,
+    );
+    if (artifact != null) {
+      return ArtifactAttachmentChip(
+        artifact: artifact,
+        compact: true,
+        onOpen: _canOpenArtifact(
+          artifact,
+          onFileTap: onFileTap,
+          onArtifactOpen: onArtifactOpen,
+        )
+            ? (value) => _openArtifact(
+                value,
+                onFileTap: onFileTap,
+                onArtifactOpen: onArtifactOpen,
+              )
+            : null,
+      );
+    }
+    if (uri.scheme == 'http' || uri.scheme == 'https') {
+      return Image.network(href, semanticLabel: alt);
+    }
+    if (uri.scheme == 'data' && uri.data != null) {
+      try {
+        return Image.memory(uri.data!.contentAsBytes(), semanticLabel: alt);
+      } on FormatException {
+        // Fall through to the non-broken placeholder below.
+      }
+    }
+    final label = alt?.trim().isNotEmpty == true ? alt!.trim() : 'Image';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.broken_image_outlined,
+          size: 16,
+          color: Theme.of(context).colorScheme.outline,
+        ),
+        const SizedBox(width: 5),
+        Flexible(child: Text(label)),
+      ],
+    );
+  }
 }
 
 class _DefaultLayout extends StatelessWidget {
@@ -188,6 +359,9 @@ class _DefaultLayout extends StatelessWidget {
   final bool plainTextMode;
   final String allText;
   final FilePathTapCallback? onFileTap;
+  final List<ArtifactRef> artifacts;
+  final ArtifactOpenCallback? onArtifactOpen;
+  final int artifactContentIndexOffset;
   final VoidCallback? onFork;
   final VoidCallback onTogglePlainText;
 
@@ -197,6 +371,9 @@ class _DefaultLayout extends StatelessWidget {
     required this.plainTextMode,
     required this.allText,
     this.onFileTap,
+    this.artifacts = const [],
+    this.onArtifactOpen,
+    this.artifactContentIndexOffset = 0,
     this.onFork,
     required this.onTogglePlainText,
   });
@@ -209,12 +386,15 @@ class _DefaultLayout extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (final content in contents)
-          switch (content) {
+        for (var contentIndex = 0;
+            contentIndex < contents.length;
+            contentIndex++)
+          switch (contents[contentIndex]) {
             TextContent(:final text) => _buildTextContent(
               context,
               text,
               fileSuffixes,
+              contentIndex - artifactContentIndexOffset,
             ),
             ToolUseContent(:final id, :final name, :final input) =>
               name == 'TodoWrite' || isCodexUpdatePlanTool(name)
@@ -224,6 +404,24 @@ class _DefaultLayout extends StatelessWidget {
               thinking: thinking,
             ),
           },
+        ArtifactAttachmentGroup(
+          artifacts: artifacts
+              .where(
+                (artifact) =>
+                    plainTextMode || artifact.originalHref == null,
+              )
+              .toList(growable: false),
+          onOpen: (artifact) => _openArtifact(
+            artifact,
+            onFileTap: onFileTap,
+            onArtifactOpen: onArtifactOpen,
+          ),
+          canOpen: (artifact) => _canOpenArtifact(
+            artifact,
+            onFileTap: onFileTap,
+            onArtifactOpen: onArtifactOpen,
+          ),
+        ),
         if (hasTextContent)
           MessageActionBar(
             textToCopy: allText,
@@ -239,6 +437,7 @@ class _DefaultLayout extends StatelessWidget {
     BuildContext context,
     String text,
     Set<String> fileSuffixes,
+    int textContentIndex,
   ) {
     final planInput = plainTextMode ? null : codexPlanUpdateInputFromText(text);
     if (planInput != null) {
@@ -261,7 +460,20 @@ class _DefaultLayout extends StatelessWidget {
                 data: text,
                 selectable: !googleSearchSelectionMenuEnabled,
                 styleSheet: buildMarkdownStyle(context),
-                onTapLink: handleMarkdownLink,
+                onTapLink: (label, href, title) => _handleLink(
+                  context,
+                  label,
+                  href,
+                  title,
+                  textContentIndex,
+                ),
+                imageBuilder: (uri, title, alt) => _buildImage(
+                  context,
+                  uri,
+                  title,
+                  alt,
+                  textContentIndex,
+                ),
                 inlineSyntaxes: [
                   if (onFileTap != null) ...[
                     FilePathSyntax(knownPathSuffixes: fileSuffixes),
@@ -278,6 +490,143 @@ class _DefaultLayout extends StatelessWidget {
             ),
     );
   }
+
+  Future<void> _handleLink(
+    BuildContext context,
+    String label,
+    String? href,
+    String title,
+    int textContentIndex,
+  ) async {
+    if (href == null || href.isEmpty) return;
+    if (isExternalWebHref(href)) {
+      await handleMarkdownLink(label, href, title);
+      return;
+    }
+    final artifact = matchArtifactHref(
+      artifacts: artifacts,
+      textContentIndex: textContentIndex,
+      href: href,
+    );
+    if (artifact != null) {
+      if (_canOpenArtifact(
+        artifact,
+        onFileTap: onFileTap,
+        onArtifactOpen: onArtifactOpen,
+      )) {
+        await _openArtifact(
+          artifact,
+          onFileTap: onFileTap,
+          onArtifactOpen: onArtifactOpen,
+        );
+      } else {
+        _showArtifactUnavailable(context);
+      }
+      return;
+    }
+    if (isLocalFileLikeHref(href)) {
+      _showArtifactUnavailable(context);
+    } else {
+      await handleMarkdownLink(label, href, title);
+    }
+  }
+
+  Widget _buildImage(
+    BuildContext context,
+    Uri uri,
+    String? title,
+    String? alt,
+    int textContentIndex,
+  ) {
+    final href = uri.toString();
+    final artifact = matchArtifactHref(
+      artifacts: artifacts,
+      textContentIndex: textContentIndex,
+      href: href,
+    );
+    if (artifact != null) {
+      return ArtifactAttachmentChip(
+        artifact: artifact,
+        compact: true,
+        onOpen: _canOpenArtifact(
+          artifact,
+          onFileTap: onFileTap,
+          onArtifactOpen: onArtifactOpen,
+        )
+            ? (value) => _openArtifact(
+                value,
+                onFileTap: onFileTap,
+                onArtifactOpen: onArtifactOpen,
+              )
+            : null,
+      );
+    }
+    if (uri.scheme == 'http' || uri.scheme == 'https') {
+      return Image.network(href, semanticLabel: alt);
+    }
+    if (uri.scheme == 'data' && uri.data != null) {
+      try {
+        return Image.memory(
+          uri.data!.contentAsBytes(),
+          semanticLabel: alt,
+        );
+      } on FormatException {
+        // Fall through to the non-broken placeholder below.
+      }
+    }
+    final label = alt?.trim().isNotEmpty == true ? alt!.trim() : 'Image';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.broken_image_outlined,
+          size: 16,
+          color: Theme.of(context).colorScheme.outline,
+        ),
+        const SizedBox(width: 5),
+        Flexible(child: Text(label)),
+      ],
+    );
+  }
+}
+
+bool _canOpenArtifact(
+  ArtifactRef artifact, {
+  FilePathTapCallback? onFileTap,
+  ArtifactOpenCallback? onArtifactOpen,
+}) {
+  if (artifact.isSource) {
+    return onFileTap != null &&
+        onArtifactOpen != null &&
+        isSafeProjectRelativePath(artifact.projectRelativePath);
+  }
+  return artifact.isPreview && onArtifactOpen != null;
+}
+
+Future<void> _openArtifact(
+  ArtifactRef artifact, {
+  FilePathTapCallback? onFileTap,
+  ArtifactOpenCallback? onArtifactOpen,
+}) async {
+  if (artifact.isSource) {
+    final path = artifact.projectRelativePath;
+    if (onFileTap != null &&
+        onArtifactOpen != null &&
+        isSafeProjectRelativePath(path)) {
+      await onArtifactOpen(artifact);
+    }
+    return;
+  }
+  if (artifact.isPreview) await onArtifactOpen?.call(artifact);
+}
+
+void _showArtifactUnavailable(BuildContext context) {
+  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+    SnackBar(
+      content: Text(AppLocalizations.of(context).artifactUnavailable),
+      duration: const Duration(seconds: 2),
+    ),
+  );
 }
 
 class ToolUseTile extends StatefulWidget {

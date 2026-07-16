@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -183,6 +182,11 @@ Future<void> showFilePeekSheet(
   required BridgeService bridge,
   required String projectPath,
   required String filePath,
+  int? initialLine,
+  String? artifactSessionId,
+  String? artifactMessageId,
+  String? artifactId,
+  FileContentMessage? initialContent,
   VoidCallback? onOpened,
 }) {
   onOpened?.call();
@@ -204,6 +208,11 @@ Future<void> showFilePeekSheet(
         bridge: bridge,
         projectPath: projectPath,
         filePath: filePath,
+        initialLine: initialLine,
+        artifactSessionId: artifactSessionId,
+        artifactMessageId: artifactMessageId,
+        artifactId: artifactId,
+        initialContent: initialContent,
         scrollController: scrollController,
       ),
     ),
@@ -214,12 +223,22 @@ class _FilePeekContent extends StatefulWidget {
   final BridgeService bridge;
   final String projectPath;
   final String filePath;
+  final int? initialLine;
+  final String? artifactSessionId;
+  final String? artifactMessageId;
+  final String? artifactId;
+  final FileContentMessage? initialContent;
   final ScrollController scrollController;
 
   const _FilePeekContent({
     required this.bridge,
     required this.projectPath,
     required this.filePath,
+    this.initialLine,
+    this.artifactSessionId,
+    this.artifactMessageId,
+    this.artifactId,
+    this.initialContent,
     required this.scrollController,
   });
 
@@ -230,29 +249,72 @@ class _FilePeekContent extends StatefulWidget {
 class _FilePeekContentState extends State<_FilePeekContent> {
   FileContentMessage? _result;
   bool _loading = true;
-  bool _showRaw = false;
-  StreamSubscription<FileContentMessage>? _sub;
+  late bool _showRaw;
+  bool _didJumpToInitialLine = false;
 
   @override
   void initState() {
     super.initState();
-    _sub = widget.bridge.fileContent.listen((msg) {
-      if (msg.filePath == widget.filePath) {
-        setState(() {
-          _result = msg;
-          _loading = false;
-        });
-      }
-    });
-    widget.bridge.send(
-      ClientMessage.readFile(widget.projectPath, widget.filePath),
-    );
+    _showRaw = widget.initialLine != null;
+    final initialContent = widget.initialContent;
+    if (initialContent == null) {
+      _loadFile();
+    } else {
+      _result = initialContent;
+      _loading = false;
+      _scheduleInitialLineJump();
+    }
   }
 
-  @override
-  void dispose() {
-    _sub?.cancel();
-    super.dispose();
+  Future<void> _loadFile() async {
+    try {
+      final maxLines = filePeekMaxLinesForInitialLine(widget.initialLine);
+      final result = await readFilePeekContent(
+        bridge: widget.bridge,
+        projectPath: widget.projectPath,
+        filePath: widget.filePath,
+        artifactSessionId: widget.artifactSessionId,
+        artifactMessageId: widget.artifactMessageId,
+        artifactId: widget.artifactId,
+        maxLines: maxLines,
+      );
+      if (!mounted) return;
+      setState(() {
+        _result = result;
+        _loading = false;
+      });
+      _scheduleInitialLineJump();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _result = FileContentMessage(
+          filePath: widget.filePath,
+          content: '',
+          error: error.toString(),
+        );
+        _loading = false;
+      });
+    }
+  }
+
+  void _scheduleInitialLineJump() {
+    final line = normalizedFilePeekInitialLine(widget.initialLine);
+    if (line == null || _didJumpToInitialLine) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _didJumpToInitialLine) return;
+      final controller = widget.scrollController;
+      if (!controller.hasClients) return;
+      final fontSize = codeTextSettingsOf(context).style().fontSize ?? 14;
+      final position = controller.position;
+      final offset = filePeekOffsetForLine(
+        line: line,
+        lineExtent: fontSize * 1.5,
+        viewportExtent: position.viewportDimension,
+        maxScrollExtent: position.maxScrollExtent,
+      );
+      _didJumpToInitialLine = true;
+      controller.jumpTo(offset);
+    });
   }
 
   void _copyPath() {
@@ -376,6 +438,23 @@ class _FilePeekContentState extends State<_FilePeekContent> {
               ),
             ),
           ),
+        if (normalizedFilePeekInitialLine(widget.initialLine)
+            case final initialLine?)
+          Padding(
+            padding: const EdgeInsets.only(left: 42, top: 2, bottom: 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                AppLocalizations.of(context).artifactLineLabel(initialLine),
+                key: const ValueKey('file_peek_initial_line_label'),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
         if (_result != null && _result!.kind == 'image')
           Padding(
             padding: const EdgeInsets.only(left: 42, top: 2, bottom: 4),
@@ -491,6 +570,10 @@ class _FilePeekContentState extends State<_FilePeekContent> {
     final gutterStyle = baseStyle.copyWith(
       color: appColors.subtleText.withValues(alpha: 0.5),
     );
+    final targetLine = normalizedFilePeekInitialLine(widget.initialLine);
+    final targetBackground = Theme.of(
+      context,
+    ).colorScheme.primary.withValues(alpha: 0.14);
 
     // Get highlighted spans for each line.
     final highlightedLines = <List<InlineSpan>>[];
@@ -527,9 +610,19 @@ class _FilePeekContentState extends State<_FilePeekContent> {
                 for (var i = 0; i < highlightedLines.length; i++) ...[
                   TextSpan(
                     text: '${' ${i + 1}'.padLeft(gutterWidth + 1)}  ',
-                    style: gutterStyle,
+                    style: i + 1 == targetLine
+                        ? gutterStyle.copyWith(backgroundColor: targetBackground)
+                        : gutterStyle,
                   ),
-                  ...highlightedLines[i],
+                  if (i + 1 == targetLine)
+                    TextSpan(
+                      style: baseStyle.copyWith(
+                        backgroundColor: targetBackground,
+                      ),
+                      children: highlightedLines[i],
+                    )
+                  else
+                    ...highlightedLines[i],
                   const TextSpan(text: '\n'),
                 ],
               ],
@@ -574,6 +667,75 @@ class _FilePeekContentState extends State<_FilePeekContent> {
     }
     return result;
   }
+}
+
+/// Selects the identity-authorized source RPC whenever File Peek belongs to an
+/// artifact. Keeping this decision in the reload path prevents retries from
+/// silently falling back to the unrestricted project file reader.
+@visibleForTesting
+Future<FileContentMessage> readFilePeekContent({
+  required BridgeService bridge,
+  required String projectPath,
+  required String filePath,
+  String? artifactSessionId,
+  String? artifactMessageId,
+  String? artifactId,
+  int? maxLines,
+}) {
+  final artifactIdentity = [
+    artifactSessionId,
+    artifactMessageId,
+    artifactId,
+  ];
+  final hasAnyArtifactIdentity = artifactIdentity.any((value) => value != null);
+  final hasCompleteArtifactIdentity = artifactIdentity.every(
+    (value) => value?.trim().isNotEmpty == true,
+  );
+  if (hasAnyArtifactIdentity && !hasCompleteArtifactIdentity) {
+    return Future<FileContentMessage>.error(
+      ArgumentError('Artifact source identity is incomplete.'),
+    );
+  }
+  if (hasCompleteArtifactIdentity) {
+    return bridge.readArtifactSource(
+      sessionId: artifactSessionId!,
+      messageId: artifactMessageId!,
+      artifactId: artifactId!,
+      filePath: filePath,
+      maxLines: maxLines,
+    );
+  }
+  return bridge.readFile(
+    projectPath: projectPath,
+    filePath: filePath,
+    maxLines: maxLines,
+  );
+}
+
+@visibleForTesting
+int? normalizedFilePeekInitialLine(int? line) {
+  if (line == null) return null;
+  return line.clamp(1, 100000).toInt();
+}
+
+@visibleForTesting
+int? filePeekMaxLinesForInitialLine(int? line) {
+  final normalized = normalizedFilePeekInitialLine(line);
+  if (normalized == null) return null;
+  final requested = normalized + 100;
+  final withDefaultWindow = requested < 5000 ? 5000 : requested;
+  return withDefaultWindow.clamp(1, 100000).toInt();
+}
+
+@visibleForTesting
+double filePeekOffsetForLine({
+  required int line,
+  required double lineExtent,
+  required double viewportExtent,
+  required double maxScrollExtent,
+}) {
+  final centered = (line - 1) * lineExtent - viewportExtent / 3;
+  return centered.clamp(0.0, maxScrollExtent).toDouble();
 }
 
 String _formatFileSize(int bytes) {

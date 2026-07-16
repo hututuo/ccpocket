@@ -4469,6 +4469,33 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'このコンテンツを表示できませんでした'**
   String get renderErrorFallback;
+
+  /// Label for a generic artifact attachment.
+  String get artifactFile;
+
+  /// Label for a source-code artifact attachment.
+  String get artifactSource;
+
+  /// Label for a source location opened at a specific line.
+  String artifactLineLabel(int line);
+
+  /// Shown when the resolved artifact URL cannot be opened.
+  String get artifactOpenFailed;
+
+  /// Shown when the referenced local file changed or disappeared.
+  String get artifactUnavailable;
+
+  /// Shown when artifact resolution loses its Bridge connection.
+  String get artifactReconnect;
+
+  /// Shown when the connected Bridge predates artifact resolution support.
+  String get artifactBridgeUpdateRequired;
+
+  /// Shown when artifact resolution exceeds its timeout.
+  String get artifactTimeout;
+
+  /// Generic artifact resolution failure.
+  String get artifactPrepareFailed;
 }
 
 class _AppLocalizationsDelegate

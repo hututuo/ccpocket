@@ -818,6 +818,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     ChatEntry b, {
     bool allowWeakMatch = false,
   }) {
+    if (a is ServerChatEntry && b is ServerChatEntry) {
+      final aMessage = a.message;
+      final bMessage = b.message;
+      if (aMessage is AssistantServerMessage &&
+          bMessage is AssistantServerMessage) {
+        final aId = aMessage.message.id;
+        final bId = bMessage.message.id;
+        if (aId.isNotEmpty && bId.isNotEmpty && aId == bId) return true;
+        final aUuid = aMessage.messageUuid;
+        final bUuid = bMessage.messageUuid;
+        if (aUuid != null &&
+            aUuid.isNotEmpty &&
+            bUuid != null &&
+            aUuid == bUuid) {
+          return true;
+        }
+      }
+    }
     final aKey = _entryStableKey(a);
     final bKey = _entryStableKey(b);
     if (aKey != null && bKey != null) return aKey == bKey;
@@ -1003,7 +1021,153 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         timestamp: existing.timestamp,
       );
     }
+    if (existing is ServerChatEntry && incoming is ServerChatEntry) {
+      final existingMessage = existing.message;
+      final incomingMessage = incoming.message;
+      if (existingMessage is AssistantServerMessage &&
+          incomingMessage is AssistantServerMessage) {
+        final existingContent = existingMessage.message.content;
+        final incomingContent = incomingMessage.message.content;
+        final existingOwner = existingMessage.artifactMessageId;
+        final incomingOwner = incomingMessage.artifactMessageId;
+        final sameArtifactOwner =
+            existingOwner.isNotEmpty && existingOwner == incomingOwner;
+        var useIncomingContent = _assistantContentWeight(incomingContent) >=
+            _assistantContentWeight(existingContent);
+        var mergedId = incomingMessage.message.id.isNotEmpty
+            ? incomingMessage.message.id
+            : existingMessage.message.id;
+        var mergedUuid =
+            incomingMessage.messageUuid ?? existingMessage.messageUuid;
+        late final List<ArtifactRef> artifacts;
+        if (sameArtifactOwner) {
+          artifacts = _mergeArtifacts(
+            existingMessage.artifacts,
+            incomingMessage.artifacts,
+          );
+        } else if (incomingMessage.artifacts.isNotEmpty) {
+          // Artifact authorization is bound to one owner message key. Never
+          // union refs from a UUID-equivalent message with a different id.
+          artifacts = incomingMessage.artifacts;
+          mergedId = incomingMessage.message.id;
+          mergedUuid = incomingMessage.messageUuid;
+          useIncomingContent = true;
+        } else if (existingMessage.artifacts.isNotEmpty) {
+          artifacts = existingMessage.artifacts;
+          mergedId = existingMessage.message.id;
+          mergedUuid = existingMessage.messageUuid;
+          useIncomingContent = false;
+        } else {
+          artifacts = const [];
+        }
+        final content = useIncomingContent ? incomingContent : existingContent;
+        return ServerChatEntry(
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: mergedId,
+              role: incomingMessage.message.role.isNotEmpty
+                  ? incomingMessage.message.role
+                  : existingMessage.message.role,
+              content: content,
+              model: incomingMessage.message.model.isNotEmpty
+                  ? incomingMessage.message.model
+                  : existingMessage.message.model,
+            ),
+            messageUuid: mergedUuid,
+            artifacts: artifacts,
+            artifactContentIndexOffset: useIncomingContent
+                ? incomingMessage.artifactContentIndexOffset
+                : existingMessage.artifactContentIndexOffset,
+          ),
+          timestamp: existing.timestamp,
+        );
+      }
+      if (existingMessage is ToolResultMessage &&
+          incomingMessage is ToolResultMessage) {
+        return ServerChatEntry(
+          ToolResultMessage(
+            toolUseId: incomingMessage.toolUseId,
+            content: incomingMessage.content.length >=
+                    existingMessage.content.length
+                ? incomingMessage.content
+                : existingMessage.content,
+            toolName: incomingMessage.toolName ?? existingMessage.toolName,
+            images: _mergeImages(
+              existingMessage.images,
+              incomingMessage.images,
+            ),
+            userMessageUuid: incomingMessage.userMessageUuid ??
+                existingMessage.userMessageUuid,
+            artifacts: _mergeArtifacts(
+              existingMessage.artifacts,
+              incomingMessage.artifacts,
+            ),
+          ),
+          timestamp: existing.timestamp,
+        );
+      }
+    }
     return existing;
+  }
+
+  int _assistantContentWeight(List<AssistantContent> content) {
+    return content.fold<int>(0, (total, item) {
+      final weight = switch (item) {
+        TextContent(:final text) => text.length,
+        ThinkingContent(:final thinking) => thinking.length,
+        ToolUseContent(:final input) => input.toString().length + 1,
+      };
+      return total + weight;
+    });
+  }
+
+  List<ArtifactRef> _mergeArtifacts(
+    List<ArtifactRef> existing,
+    List<ArtifactRef> incoming,
+  ) {
+    final merged = List<ArtifactRef>.from(existing);
+    for (final artifact in incoming) {
+      var index = merged.indexWhere((item) => item.id == artifact.id);
+      final semanticKey = _markdownArtifactSemanticKey(artifact);
+      if (index < 0 && semanticKey != null) {
+        index = merged.indexWhere(
+          (item) => _markdownArtifactSemanticKey(item) == semanticKey,
+        );
+      }
+      if (index >= 0) {
+        // The latest Bridge descriptor is authoritative after registry
+        // retention, eviction, or recovery assigns a replacement opaque id.
+        merged[index] = artifact;
+      } else {
+        merged.add(artifact);
+      }
+    }
+    return List<ArtifactRef>.unmodifiable(merged);
+  }
+
+  String? _markdownArtifactSemanticKey(ArtifactRef artifact) {
+    final originalHref = artifact.originalHref;
+    if (originalHref == null) return null;
+    return [
+      artifact.source,
+      artifact.kind,
+      artifact.textContentIndex ?? -1,
+      originalHref,
+      artifact.projectRelativePath ?? '',
+      artifact.line ?? -1,
+      artifact.column ?? -1,
+    ].join('\u0000');
+  }
+
+  List<ImageRef> _mergeImages(
+    List<ImageRef> existing,
+    List<ImageRef> incoming,
+  ) {
+    final merged = <String, ImageRef>{
+      for (final image in existing) image.id: image,
+      for (final image in incoming) image.id: image,
+    };
+    return merged.values.toList(growable: false);
   }
 
   List<ChatEntry> _appendDeliveredPendingInputEntry(

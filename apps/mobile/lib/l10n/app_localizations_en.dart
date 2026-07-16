@@ -2459,4 +2459,34 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get renderErrorFallback => 'This content couldn\'t be displayed.';
+
+  @override
+  String get artifactFile => 'File';
+
+  @override
+  String get artifactSource => 'Source';
+
+  @override
+  String artifactLineLabel(int line) {
+    return 'Line $line';
+  }
+
+  @override
+  String get artifactOpenFailed => 'Unable to open the file.';
+
+  @override
+  String get artifactUnavailable => 'This file is no longer available.';
+
+  @override
+  String get artifactReconnect => 'Reconnect to the Bridge and try again.';
+
+  @override
+  String get artifactBridgeUpdateRequired =>
+      'Update the Bridge on your computer, then reconnect.';
+
+  @override
+  String get artifactTimeout => 'Preparing the file timed out.';
+
+  @override
+  String get artifactPrepareFailed => 'Unable to prepare the file.';
 }

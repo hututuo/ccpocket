@@ -3,6 +3,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../../theme/app_spacing.dart';
 import '../../theme/markdown_style.dart';
+import '../../utils/artifact_link_matcher.dart';
 
 /// A visually distinct card for rendering implementation plans inline in chat.
 ///
@@ -11,6 +12,8 @@ import '../../theme/markdown_style.dart';
 class PlanCard extends StatelessWidget {
   final String planText;
   final VoidCallback onViewFullPlan;
+  final Future<void> Function(String, String?, String)? onTapLink;
+  final Widget Function(Uri, String?, String?)? imageBuilder;
 
   /// Lines threshold below which the full plan is shown without a button.
   static const int _shortPlanLineThreshold = 10;
@@ -22,6 +25,8 @@ class PlanCard extends StatelessWidget {
     super.key,
     required this.planText,
     required this.onViewFullPlan,
+    this.onTapLink,
+    this.imageBuilder,
   });
 
   bool get _isLongPlan => planText.split('\n').length > _shortPlanLineThreshold;
@@ -52,7 +57,12 @@ class PlanCard extends StatelessWidget {
           children: [
             _PlanHeader(sectionCount: _sectionCount),
             Divider(height: 1, color: cs.primary.withValues(alpha: 0.15)),
-            _PlanBody(planText: planText, isLongPlan: _isLongPlan),
+            _PlanBody(
+              planText: planText,
+              isLongPlan: _isLongPlan,
+              onTapLink: onTapLink,
+              imageBuilder: imageBuilder,
+            ),
             if (_isLongPlan) _PlanFooter(onViewFullPlan: onViewFullPlan),
           ],
         ),
@@ -110,8 +120,15 @@ class _PlanHeader extends StatelessWidget {
 class _PlanBody extends StatelessWidget {
   final String planText;
   final bool isLongPlan;
+  final Future<void> Function(String, String?, String)? onTapLink;
+  final Widget Function(Uri, String?, String?)? imageBuilder;
 
-  const _PlanBody({required this.planText, required this.isLongPlan});
+  const _PlanBody({
+    required this.planText,
+    required this.isLongPlan,
+    this.onTapLink,
+    this.imageBuilder,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -121,7 +138,8 @@ class _PlanBody extends StatelessWidget {
         data: planText,
         selectable: true,
         styleSheet: buildMarkdownStyle(context),
-        onTapLink: handleMarkdownLink,
+        onTapLink: onTapLink ?? _handleSafePlanLink,
+        imageBuilder: imageBuilder,
         inlineSyntaxes: colorCodeInlineSyntaxes,
         builders: markdownBuilders,
       ),
@@ -154,6 +172,15 @@ class _PlanBody extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<void> _handleSafePlanLink(
+  String label,
+  String? href,
+  String title,
+) async {
+  if (href != null && isLocalFileLikeHref(href)) return;
+  await handleMarkdownLink(label, href, title);
 }
 
 class _PlanFooter extends StatelessWidget {

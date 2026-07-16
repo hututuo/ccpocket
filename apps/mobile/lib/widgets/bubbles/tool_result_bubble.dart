@@ -9,7 +9,10 @@ import '../../router/app_router.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/tool_categories.dart';
+import '../../utils/artifact_link_matcher.dart';
+import '../../features/file_peek/file_path_syntax.dart';
 import '../google_search_text_selection.dart';
+import 'artifact_attachment_chip.dart';
 import 'image_preview.dart';
 
 /// Three-level expansion state for tool result content.
@@ -20,6 +23,10 @@ const _imageGenerationToolName = 'ImageGeneration';
 class ToolResultBubble extends StatefulWidget {
   final ToolResultMessage message;
   final String? httpBaseUrl;
+  final String? sessionId;
+  final String? projectPath;
+  final FilePathTapCallback? onFileTap;
+  final ArtifactOpenCallback? onArtifactOpen;
 
   /// When this notifier's value changes, the bubble auto-collapses.
   /// ClaudeSessionScreen increments it whenever a new assistant message arrives.
@@ -29,6 +36,10 @@ class ToolResultBubble extends StatefulWidget {
     super.key,
     required this.message,
     this.httpBaseUrl,
+    this.sessionId,
+    this.projectPath,
+    this.onFileTap,
+    this.onArtifactOpen,
     this.collapseNotifier,
   });
 
@@ -224,40 +235,77 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
     );
   }
 
+  bool _canOpenArtifact(ArtifactRef artifact) {
+    if (artifact.isSource) {
+      return widget.onFileTap != null &&
+          widget.onArtifactOpen != null &&
+          isSafeProjectRelativePath(artifact.projectRelativePath);
+    }
+    return artifact.isPreview && widget.onArtifactOpen != null;
+  }
+
+  Future<void> _openArtifact(ArtifactRef artifact) async {
+    if (artifact.isSource) {
+      final path = artifact.projectRelativePath;
+      if (widget.onFileTap != null &&
+          widget.onArtifactOpen != null &&
+          isSafeProjectRelativePath(path)) {
+        await widget.onArtifactOpen!(artifact);
+      }
+      return;
+    }
+    if (artifact.isPreview) await widget.onArtifactOpen?.call(artifact);
+  }
+
   @override
   Widget build(BuildContext context) {
+    late final Widget result;
     if (_isImageGenerationResult && _hasRenderableImage) {
-      return _ImageGenerationResultCard(
+      result = _ImageGenerationResultCard(
         message: widget.message,
         httpBaseUrl: widget.httpBaseUrl!,
         onLongPress: () => _copyContent(context),
       );
-    }
-
-    final l = AppLocalizations.of(context);
-    final summary = _buildSummary(
-      widget.message.content,
-      widget.message.toolName,
-      l,
-    );
-
-    if (_expansion == ToolResultExpansion.collapsed) {
-      return _CollapsedToolResult(
-        toolName: widget.message.toolName,
-        category: _category,
-        summary: summary,
-        onTap: _onTap,
-        onLongPress: () => _copyContent(context),
+    } else {
+      final l = AppLocalizations.of(context);
+      final summary = _buildSummary(
+        widget.message.content,
+        widget.message.toolName,
+        l,
       );
+
+      if (_expansion == ToolResultExpansion.collapsed) {
+        result = _CollapsedToolResult(
+          toolName: widget.message.toolName,
+          category: _category,
+          summary: summary,
+          onTap: _onTap,
+          onLongPress: () => _copyContent(context),
+        );
+      } else {
+        result = _ExpandedToolResult(
+          message: widget.message,
+          httpBaseUrl: widget.httpBaseUrl,
+          category: _category,
+          summary: summary,
+          expansion: _expansion,
+          onTap: _onTap,
+          onLongPress: () => _copyContent(context),
+        );
+      }
     }
-    return _ExpandedToolResult(
-      message: widget.message,
-      httpBaseUrl: widget.httpBaseUrl,
-      category: _category,
-      summary: summary,
-      expansion: _expansion,
-      onTap: _onTap,
-      onLongPress: () => _copyContent(context),
+
+    if (widget.message.artifacts.isEmpty) return result;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        result,
+        ArtifactAttachmentGroup(
+          artifacts: widget.message.artifacts,
+          onOpen: _openArtifact,
+          canOpen: _canOpenArtifact,
+        ),
+      ],
     );
   }
 }

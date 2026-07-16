@@ -31,6 +31,9 @@ class _TestBridgeService extends BridgeService {
   }
 
   @override
+  bool get isConnected => true;
+
+  @override
   void send(ClientMessage message) {
     sentMessages.add(message);
   }
@@ -247,6 +250,7 @@ void main() {
       expect(payload['type'], 'read_file');
       expect(payload['projectPath'], '/tmp/project');
       expect(payload['filePath'], 'lib/main.dart');
+      expect(payload['requestId'], isNotEmpty);
     });
   });
 }

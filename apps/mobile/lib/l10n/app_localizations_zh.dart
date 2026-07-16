@@ -2339,4 +2339,33 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get renderErrorFallback => '无法显示此内容。';
+
+  @override
+  String get artifactFile => '文件';
+
+  @override
+  String get artifactSource => '源文件';
+
+  @override
+  String artifactLineLabel(int line) {
+    return '第 $line 行';
+  }
+
+  @override
+  String get artifactOpenFailed => '无法打开文件。';
+
+  @override
+  String get artifactUnavailable => '此文件已不可用。';
+
+  @override
+  String get artifactReconnect => '请重新连接 Bridge 后重试。';
+
+  @override
+  String get artifactBridgeUpdateRequired => '请更新电脑上的 Bridge，然后重新连接。';
+
+  @override
+  String get artifactTimeout => '文件准备超时。';
+
+  @override
+  String get artifactPrepareFailed => '无法准备文件。';
 }

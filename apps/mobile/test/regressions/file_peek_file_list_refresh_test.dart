@@ -129,7 +129,7 @@ Future<Widget> _wrap(Widget child, _RecordingBridgeService bridge) async {
 
 void main() {
   group('file list refresh for file peek', () {
-    testWidgets('Codex refreshes file list after write-like tool results', (
+    testWidgets('Codex requests and refreshes the worktree file list', (
       tester,
     ) async {
       final bridge = _RecordingBridgeService();
@@ -140,13 +140,14 @@ void main() {
           const CodexSessionScreen(
             sessionId: 'codex-session',
             projectPath: '/tmp/project',
+            worktreePath: '/tmp/worktree',
           ),
           bridge,
         ),
       );
       await tester.pump();
 
-      expect(bridge.requestedFileLists, ['/tmp/project']);
+      expect(bridge.requestedFileLists, ['/tmp/worktree']);
 
       bridge.emitMessage(
         const ToolResultMessage(
@@ -158,7 +159,46 @@ void main() {
       );
       await tester.pump();
 
-      expect(bridge.requestedFileLists, ['/tmp/project', '/tmp/project']);
+      expect(bridge.requestedFileLists, [
+        '/tmp/worktree',
+        '/tmp/worktree',
+      ]);
+    });
+
+    testWidgets('Claude requests and refreshes the worktree file list', (
+      tester,
+    ) async {
+      final bridge = _RecordingBridgeService();
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(
+        await _wrap(
+          const ClaudeSessionScreen(
+            sessionId: 'claude-session',
+            projectPath: '/tmp/project',
+            worktreePath: '/tmp/worktree',
+          ),
+          bridge,
+        ),
+      );
+      await tester.pump();
+
+      expect(bridge.requestedFileLists, ['/tmp/worktree']);
+
+      bridge.emitMessage(
+        const ToolResultMessage(
+          toolUseId: 'tool-1',
+          toolName: 'Write',
+          content: 'created docs/install/index.html',
+        ),
+        sessionId: 'claude-session',
+      );
+      await tester.pump();
+
+      expect(bridge.requestedFileLists, [
+        '/tmp/worktree',
+        '/tmp/worktree',
+      ]);
     });
 
     testWidgets('Claude requests file list after pending session resolves', (

@@ -2389,4 +2389,34 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get renderErrorFallback => '이 콘텐츠를 표시할 수 없습니다.';
+
+  @override
+  String get artifactFile => '파일';
+
+  @override
+  String get artifactSource => '소스';
+
+  @override
+  String artifactLineLabel(int line) {
+    return '$line행';
+  }
+
+  @override
+  String get artifactOpenFailed => '파일을 열 수 없습니다.';
+
+  @override
+  String get artifactUnavailable => '이 파일은 더 이상 사용할 수 없습니다.';
+
+  @override
+  String get artifactReconnect => 'Bridge에 다시 연결한 후 시도하세요.';
+
+  @override
+  String get artifactBridgeUpdateRequired =>
+      '컴퓨터의 Bridge를 업데이트한 다음 다시 연결하세요.';
+
+  @override
+  String get artifactTimeout => '파일 준비 시간이 초과되었습니다.';
+
+  @override
+  String get artifactPrepareFailed => '파일을 준비할 수 없습니다.';
 }

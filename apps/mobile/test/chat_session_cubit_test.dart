@@ -1539,6 +1539,233 @@ void main() {
       expect(cubit.state.status, ProcessStatus.idle);
     });
 
+    test(
+      'canonical history enriches a cached assistant with artifacts',
+      () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      mockBridge.emitMessage(
+        const AssistantServerMessage(
+          messageUuid: 'uuid-a1',
+          message: AssistantMessage(
+            id: 'a1',
+            role: 'assistant',
+            content: [TextContent(text: 'Report ready')],
+            model: 'codex',
+          ),
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      mockBridge.emitMessage(
+        const HistoryMessage(
+          messages: [
+            AssistantServerMessage(
+              messageUuid: 'uuid-a1',
+              message: AssistantMessage(
+                id: 'a1',
+                role: 'assistant',
+                content: [TextContent(text: 'Report ready')],
+                model: 'codex',
+              ),
+              artifacts: [
+                ArtifactRef(
+                  id: 'artifact-1',
+                  filename: 'report.pdf',
+                  mimeType: 'application/pdf',
+                  sizeBytes: 10,
+                  kind: 'preview',
+                  source: 'assistant_markdown',
+                ),
+              ],
+            ),
+          ],
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      final assistants = cubit.state.entries
+          .whereType<ServerChatEntry>()
+          .map((entry) => entry.message)
+          .whereType<AssistantServerMessage>()
+          .toList();
+      expect(assistants, hasLength(1));
+      expect(assistants.single.artifacts.single.id, 'artifact-1');
+      },
+    );
+
+    test(
+      'enriched duplicate assistant merges artifacts without duplication',
+      () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      const baseMessage = AssistantMessage(
+        id: 'a-merge',
+        role: 'assistant',
+        content: [TextContent(text: 'Bundle ready')],
+        model: 'codex',
+      );
+      mockBridge.emitMessage(
+        const AssistantServerMessage(message: baseMessage),
+        sessionId: 's1',
+      );
+      mockBridge.emitMessage(
+        const AssistantServerMessage(
+          messageUuid: 'uuid-a-merge',
+          message: baseMessage,
+          artifacts: [
+            ArtifactRef(
+              id: 'artifact-merge',
+              filename: 'bundle.zip',
+              mimeType: 'application/zip',
+              sizeBytes: 20,
+              kind: 'preview',
+              source: 'structured_tool',
+            ),
+          ],
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      final assistants = cubit.state.entries
+          .whereType<ServerChatEntry>()
+          .map((entry) => entry.message)
+          .whereType<AssistantServerMessage>()
+          .toList();
+      expect(assistants, hasLength(1));
+      expect(assistants.single.messageUuid, 'uuid-a-merge');
+      expect(assistants.single.artifacts.single.id, 'artifact-merge');
+      },
+    );
+
+    test(
+      'replacement id supersedes the same Markdown artifact candidate',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        const message = AssistantMessage(
+          id: 'owner-stable',
+          role: 'assistant',
+          content: [TextContent(text: '[Report](docs/report.pdf)')],
+          model: 'codex',
+        );
+        const oldArtifact = ArtifactRef(
+          id: 'artifact-before-registry-recovery',
+          filename: 'report.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 20,
+          kind: 'preview',
+          source: 'assistant_markdown',
+          originalHref: 'docs/report.pdf',
+          textContentIndex: 0,
+        );
+        const replacementArtifact = ArtifactRef(
+          id: 'artifact-after-registry-recovery',
+          filename: 'report.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 20,
+          kind: 'preview',
+          source: 'assistant_markdown',
+          originalHref: 'docs/report.pdf',
+          textContentIndex: 0,
+        );
+
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            message: message,
+            artifacts: [oldArtifact],
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            message: message,
+            artifacts: [replacementArtifact],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        final assistant = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .single;
+        expect(
+          assistant.artifacts.map((artifact) => artifact.id),
+          ['artifact-after-registry-recovery'],
+        );
+      },
+    );
+
+    test(
+      'same UUID with different message ids keeps only the selected owner refs',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            messageUuid: 'shared-uuid',
+            message: AssistantMessage(
+              id: 'owner-old',
+              role: 'assistant',
+              content: [TextContent(text: 'Old response')],
+              model: 'codex',
+            ),
+            artifacts: [
+              ArtifactRef(
+                id: 'artifact-old',
+                filename: 'old.pdf',
+                mimeType: 'application/pdf',
+                sizeBytes: 10,
+                kind: 'preview',
+                source: 'assistant_markdown',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            messageUuid: 'shared-uuid',
+            message: AssistantMessage(
+              id: 'owner-new',
+              role: 'assistant',
+              content: [TextContent(text: 'New response with artifact')],
+              model: 'codex',
+            ),
+            artifacts: [
+              ArtifactRef(
+                id: 'artifact-new',
+                filename: 'new.pdf',
+                mimeType: 'application/pdf',
+                sizeBytes: 20,
+                kind: 'preview',
+                source: 'assistant_markdown',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        final assistants = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList();
+        expect(assistants, hasLength(1));
+        expect(assistants.single.artifactMessageId, 'owner-new');
+        expect(
+          assistants.single.artifacts.map((artifact) => artifact.id),
+          ['artifact-new'],
+        );
+      },
+    );
+
     test('restores cached runtime messages before requesting history', () {
       mockBridge.cachedMessagesBySession['s1'] = [
         const StatusMessage(status: ProcessStatus.running),

@@ -2365,4 +2365,34 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get renderErrorFallback => 'このコンテンツを表示できませんでした';
+
+  @override
+  String get artifactFile => 'ファイル';
+
+  @override
+  String get artifactSource => 'ソース';
+
+  @override
+  String artifactLineLabel(int line) {
+    return '$line 行目';
+  }
+
+  @override
+  String get artifactOpenFailed => 'ファイルを開けませんでした。';
+
+  @override
+  String get artifactUnavailable => 'このファイルは利用できなくなりました。';
+
+  @override
+  String get artifactReconnect => 'Bridge に再接続して、もう一度お試しください。';
+
+  @override
+  String get artifactBridgeUpdateRequired =>
+      'パソコン側の Bridge を更新してから、再接続してください。';
+
+  @override
+  String get artifactTimeout => 'ファイルの準備がタイムアウトしました。';
+
+  @override
+  String get artifactPrepareFailed => 'ファイルを準備できませんでした。';
 }

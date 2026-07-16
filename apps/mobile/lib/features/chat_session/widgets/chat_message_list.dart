@@ -2,16 +2,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
 import '../../../providers/bridge_cubits.dart';
 import '../../../services/bridge_service.dart';
+import '../../../utils/artifact_link_matcher.dart';
 import '../../../widgets/message_bubble.dart';
 import '../../file_peek/file_peek_sheet.dart';
 import '../../message_images/message_images_screen.dart';
 import '../state/chat_session_cubit.dart';
 import '../state/streaming_state.dart';
 import '../state/streaming_state_cubit.dart';
+
+String? resolveChatFileRoot({String? worktreePath, String? projectPath}) {
+  final worktree = worktreePath?.trim();
+  if (worktree != null && worktree.isNotEmpty) return worktree;
+  final project = projectPath?.trim();
+  return project == null || project.isEmpty ? null : project;
+}
 
 @visibleForTesting
 bool shouldShowForkForAssistant(List<ChatEntry> entries, int entryIndex) {
@@ -106,6 +116,131 @@ class _ChatMessageListState extends State<ChatMessageList> {
     // Reset the notifier
     widget.scrollToUserEntry?.value = null;
     _scrollToUserEntry(entry);
+  }
+
+  Future<void> _openArtifact(
+    String messageId,
+    ArtifactRef artifact,
+  ) async {
+    final requestSessionId = widget.sessionId;
+    final requestProjectPath = widget.projectPath;
+    final sourcePath = artifact.projectRelativePath;
+    if (artifact.isSource &&
+        (requestProjectPath == null ||
+            requestProjectPath.isEmpty ||
+            !isSafeProjectRelativePath(sourcePath))) {
+      _showArtifactError(AppLocalizations.of(context).artifactUnavailable);
+      return;
+    }
+    final bridge = context.read<BridgeService>();
+    if (artifact.isSource) {
+      final safeSourcePath = sourcePath!;
+      try {
+        // Source refs are opened atomically by identity. Resolving a download
+        // URL first creates a TOCTOU window and is unnecessary for File Peek.
+        final sourceContent = await bridge.readArtifactSource(
+          sessionId: requestSessionId,
+          messageId: messageId,
+          artifactId: artifact.id,
+          filePath: safeSourcePath,
+          maxLines: filePeekMaxLinesForInitialLine(artifact.line),
+        );
+        if (!mounted || widget.sessionId != requestSessionId) return;
+        if (widget.projectPath != requestProjectPath) {
+          _showArtifactError(AppLocalizations.of(context).artifactUnavailable);
+          return;
+        }
+        if (sourceContent.error != null) {
+          _showArtifactError(
+            _artifactErrorMessage(sourceContent.errorCode, sourceRead: true),
+          );
+          return;
+        }
+        return showFilePeekSheet(
+          context,
+          bridge: bridge,
+          projectPath: requestProjectPath!,
+          filePath: safeSourcePath,
+          initialLine: artifact.line,
+          artifactSessionId: requestSessionId,
+          artifactMessageId: messageId,
+          artifactId: artifact.id,
+          initialContent: sourceContent,
+          onOpened: () => widget.onFilePeekOpened?.call(safeSourcePath),
+        );
+      } on ArtifactSourceReadException catch (error) {
+        if (!mounted || widget.sessionId != requestSessionId) return;
+        if (widget.projectPath != requestProjectPath) return;
+        _showArtifactError(_artifactErrorMessage(error.code, sourceRead: true));
+      } catch (_) {
+        if (mounted &&
+            widget.sessionId == requestSessionId &&
+            widget.projectPath == requestProjectPath) {
+          _showArtifactError(AppLocalizations.of(context).artifactOpenFailed);
+        }
+      }
+      return;
+    }
+    try {
+      final resolved = await bridge.resolveArtifact(
+        sessionId: requestSessionId,
+        messageId: messageId,
+        artifactId: artifact.id,
+      );
+      if (!mounted || widget.sessionId != requestSessionId) return;
+      final launched = await launchUrl(
+        resolved.url,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!mounted || widget.sessionId != requestSessionId) return;
+      if (!launched) {
+        _showArtifactError(AppLocalizations.of(context).artifactOpenFailed);
+      }
+    } on ArtifactResolveException catch (error) {
+      if (!mounted || widget.sessionId != requestSessionId) return;
+      _showArtifactError(_artifactErrorMessage(error.code));
+    } catch (_) {
+      if (mounted && widget.sessionId == requestSessionId) {
+        _showArtifactError(AppLocalizations.of(context).artifactOpenFailed);
+      }
+    }
+  }
+
+  String _artifactErrorMessage(String? code, {bool sourceRead = false}) {
+    final localizations = AppLocalizations.of(context);
+    return switch (code) {
+      'artifact_expired' ||
+      'artifact_gone' ||
+      'artifact_changed' ||
+      'artifact_not_found' ||
+      'artifact_unavailable' ||
+      'file_gone' ||
+      'file_changed' ||
+      'file_unreadable' ||
+      'path_not_allowed' ||
+      'source_path_mismatch' ||
+      'session_not_found' => localizations.artifactUnavailable,
+      'bridge_disconnected' ||
+      'bridge_changed' ||
+      'bridge_reconnecting' => localizations.artifactReconnect,
+      'artifact_resolve_unsupported' ||
+      'artifact_source_read_unsupported' ||
+      'unsupported_message' => localizations.artifactBridgeUpdateRequired,
+      'artifact_resolve_timeout' ||
+      'artifact_source_read_timeout' => localizations.artifactTimeout,
+      _ => sourceRead
+          ? localizations.artifactOpenFailed
+          : localizations.artifactPrepareFailed,
+    };
+  }
+
+  void _showArtifactError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -215,6 +350,8 @@ class _ChatMessageListState extends State<ChatMessageList> {
                   entry: StreamingChatEntry(text: streamingState.text),
                   previous: null,
                   httpBaseUrl: widget.httpBaseUrl,
+                  sessionId: widget.sessionId,
+                  projectPath: widget.projectPath,
                   onRetryMessage: null,
                   collapseToolResults: null,
                   hiddenToolUseIds: const {},
@@ -231,29 +368,33 @@ class _ChatMessageListState extends State<ChatMessageList> {
                   shouldShowForkForAssistant(allEntries, entryIndex)
               ? widget.onForkMessage
               : null;
+          final fileRoot = widget.projectPath;
 
           Widget child = ChatEntryWidget(
             entry: entry,
             previous: previous,
             httpBaseUrl: widget.httpBaseUrl,
+            sessionId: widget.sessionId,
+            projectPath: widget.projectPath,
             onRetryMessage: widget.onRetryMessage,
             onRewindMessage: widget.onRewindMessage,
             onForkMessage: onForkMessage,
             collapseToolResults: widget.collapseToolResults,
             resolvedPlanText: _resolvePlanText(entry),
             hiddenToolUseIds: hiddenToolUseIds,
-            onFileTap: (filePath) {
-              final projectPath = widget.projectPath;
-              if (projectPath == null || projectPath.isEmpty) return;
-              openFilePeek(
-                context,
-                bridge: context.read<BridgeService>(),
-                projectPath: projectPath,
-                filePath: filePath,
-                projectFiles: context.read<FileListCubit>().state,
-                onResolvedFilePath: widget.onFilePeekOpened,
-              );
-            },
+            onArtifactOpen: _openArtifact,
+            onFileTap: fileRoot?.isNotEmpty == true
+                ? (filePath) {
+                    openFilePeek(
+                      context,
+                      bridge: context.read<BridgeService>(),
+                      projectPath: fileRoot!,
+                      filePath: filePath,
+                      projectFiles: context.read<FileListCubit>().state,
+                      onResolvedFilePath: widget.onFilePeekOpened,
+                    );
+                  }
+                : null,
             onImageTap: (user) {
               final claudeSessionId = context
                   .read<ChatSessionCubit>()

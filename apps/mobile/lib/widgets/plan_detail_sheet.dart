@@ -3,10 +3,16 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../theme/app_theme.dart';
 import '../theme/markdown_style.dart';
+import '../utils/artifact_link_matcher.dart';
 import 'workspace_pane_chrome.dart';
 
 /// Shows a full-screen bottom sheet with the complete plan text.
-Future<void> showPlanDetailSheet(BuildContext context, String planText) {
+Future<void> showPlanDetailSheet(
+  BuildContext context,
+  String planText, {
+  Future<void> Function(String, String?, String)? onTapLink,
+  Widget Function(Uri, String?, String?)? imageBuilder,
+}) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -15,14 +21,24 @@ Future<void> showPlanDetailSheet(BuildContext context, String planText) {
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
     ),
-    builder: (context) => _PlanDetailContent(planText: planText),
+    builder: (context) => _PlanDetailContent(
+      planText: planText,
+      onTapLink: onTapLink,
+      imageBuilder: imageBuilder,
+    ),
   );
 }
 
 class _PlanDetailContent extends StatelessWidget {
   final String planText;
+  final Future<void> Function(String, String?, String)? onTapLink;
+  final Widget Function(Uri, String?, String?)? imageBuilder;
 
-  const _PlanDetailContent({required this.planText});
+  const _PlanDetailContent({
+    required this.planText,
+    this.onTapLink,
+    this.imageBuilder,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -74,7 +90,13 @@ class _PlanDetailContent extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           const Divider(height: 1),
-          Expanded(child: _PlanViewMode(planText: planText)),
+          Expanded(
+            child: _PlanViewMode(
+              planText: planText,
+              onTapLink: onTapLink,
+              imageBuilder: imageBuilder,
+            ),
+          ),
           SizedBox(height: MediaQuery.of(context).padding.bottom),
         ],
       ),
@@ -84,8 +106,14 @@ class _PlanDetailContent extends StatelessWidget {
 
 class _PlanViewMode extends StatelessWidget {
   final String planText;
+  final Future<void> Function(String, String?, String)? onTapLink;
+  final Widget Function(Uri, String?, String?)? imageBuilder;
 
-  const _PlanViewMode({required this.planText});
+  const _PlanViewMode({
+    required this.planText,
+    this.onTapLink,
+    this.imageBuilder,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -95,10 +123,20 @@ class _PlanViewMode extends StatelessWidget {
         data: planText,
         selectable: true,
         styleSheet: buildMarkdownStyle(context),
-        onTapLink: handleMarkdownLink,
+        onTapLink: onTapLink ?? _handleSafePlanLink,
+        imageBuilder: imageBuilder,
         inlineSyntaxes: colorCodeInlineSyntaxes,
         builders: markdownBuilders,
       ),
     );
   }
+}
+
+Future<void> _handleSafePlanLink(
+  String label,
+  String? href,
+  String title,
+) async {
+  if (href != null && isLocalFileLikeHref(href)) return;
+  await handleMarkdownLink(label, href, title);
 }

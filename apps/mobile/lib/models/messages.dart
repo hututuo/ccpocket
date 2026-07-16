@@ -719,6 +719,123 @@ String _normalizeToolResultContent(dynamic content) {
   return content?.toString() ?? '';
 }
 
+List<ArtifactRef> _parseArtifactRefs(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map((item) => ArtifactRef.fromJson(Map<String, dynamic>.from(item)))
+      .where((artifact) => artifact.id.isNotEmpty)
+      .toList(growable: false);
+}
+
+/// A Bridge-owned reference to a local file mentioned by an assistant or tool
+/// result. [originalHref] preserves the assistant's text for exact UI matching;
+/// the client can resolve only the opaque [id], never an arbitrary path.
+class ArtifactRef {
+  final String id;
+  final String filename;
+  final String mimeType;
+  final int sizeBytes;
+
+  /// `source` opens in File Peek; `preview` is resolved to a short-lived URL.
+  final String kind;
+
+  /// Origin of the reference, such as `assistant_markdown`.
+  final String source;
+  final int? textContentIndex;
+  final String? originalHref;
+  final String? projectRelativePath;
+  final int? line;
+  final int? column;
+
+  const ArtifactRef({
+    required this.id,
+    required this.filename,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.kind,
+    required this.source,
+    this.textContentIndex,
+    this.originalHref,
+    this.projectRelativePath,
+    this.line,
+    this.column,
+  });
+
+  factory ArtifactRef.fromJson(Map<String, dynamic> json) {
+    return ArtifactRef(
+      id: json['id'] as String? ?? '',
+      filename: json['filename'] as String? ?? '',
+      mimeType: json['mimeType'] as String? ?? 'application/octet-stream',
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+      kind: json['kind'] as String? ?? '',
+      source: json['source'] as String? ?? '',
+      textContentIndex: (json['textContentIndex'] as num?)?.toInt(),
+      originalHref: json['originalHref'] as String?,
+      projectRelativePath: json['projectRelativePath'] as String?,
+      line: (json['line'] as num?)?.toInt(),
+      column: (json['column'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'id': id,
+    'filename': filename,
+    'mimeType': mimeType,
+    'sizeBytes': sizeBytes,
+    'kind': kind,
+    'source': source,
+    if (textContentIndex != null) 'textContentIndex': textContentIndex,
+    if (originalHref != null) 'originalHref': originalHref,
+    if (projectRelativePath != null)
+      'projectRelativePath': projectRelativePath,
+    if (line != null) 'line': line,
+    if (column != null) 'column': column,
+  };
+
+  bool get isSource => kind == 'source';
+  bool get isPreview => kind == 'preview';
+
+  String get sizeLabel {
+    if (sizeBytes < 1024) return '$sizeBytes B';
+    if (sizeBytes < 1024 * 1024) {
+      return '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ArtifactRef &&
+          id == other.id &&
+          filename == other.filename &&
+          mimeType == other.mimeType &&
+          sizeBytes == other.sizeBytes &&
+          kind == other.kind &&
+          source == other.source &&
+          textContentIndex == other.textContentIndex &&
+          originalHref == other.originalHref &&
+          projectRelativePath == other.projectRelativePath &&
+          line == other.line &&
+          column == other.column;
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    filename,
+    mimeType,
+    sizeBytes,
+    kind,
+    source,
+    textContentIndex,
+    originalHref,
+    projectRelativePath,
+    line,
+    column,
+  );
+}
+
 // ---- Server messages ----
 
 sealed class ServerMessage {
@@ -794,6 +911,7 @@ sealed class ServerMessage {
           json['message'] as Map<String, dynamic>,
         ),
         messageUuid: json['messageUuid'] as String?,
+        artifacts: _parseArtifactRefs(json['artifacts']),
       ),
       'tool_result' => ToolResultMessage(
         toolUseId: json['toolUseId'] as String,
@@ -805,6 +923,15 @@ sealed class ServerMessage {
                 .toList() ??
             const [],
         userMessageUuid: json['userMessageUuid'] as String?,
+        artifacts: _parseArtifactRefs(json['artifacts']),
+      ),
+      'artifact_resolved' => ArtifactResolvedMessage(
+        requestId: json['requestId'] as String? ?? '',
+        artifactId: json['artifactId'] as String? ?? '',
+        relativeUrl: json['relativeUrl'] as String?,
+        expiresAt: json['expiresAt'] as String?,
+        error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
       ),
       'result' => ResultMessage(
         subtype: json['subtype'] as String? ?? '',
@@ -991,11 +1118,13 @@ sealed class ServerMessage {
         diffError: json['diffError'] as String?,
       ),
       'file_content' => FileContentMessage(
+        requestId: json['requestId'] as String?,
         filePath: json['filePath'] as String,
         kind: json['kind'] as String? ?? 'text',
         content: json['content'] as String? ?? '',
         language: json['language'] as String?,
         error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
         totalLines: json['totalLines'] as int?,
         truncated: json['truncated'] as bool? ?? false,
         base64: json['base64'] as String?,
@@ -1511,7 +1640,20 @@ class CodexCliJoinTarget {
 class AssistantServerMessage implements ServerMessage {
   final AssistantMessage message;
   final String? messageUuid;
-  const AssistantServerMessage({required this.message, this.messageUuid});
+  final List<ArtifactRef> artifacts;
+
+  /// Number of UI-only content blocks prepended after the Bridge assigned
+  /// [ArtifactRef.textContentIndex]. Never serialized on the wire.
+  final int artifactContentIndexOffset;
+  const AssistantServerMessage({
+    required this.message,
+    this.messageUuid,
+    this.artifacts = const [],
+    this.artifactContentIndexOffset = 0,
+  });
+
+  String get artifactMessageId =>
+      message.id.isNotEmpty ? message.id : messageUuid?.trim() ?? '';
 }
 
 class ToolResultMessage implements ServerMessage {
@@ -1520,13 +1662,36 @@ class ToolResultMessage implements ServerMessage {
   final String? toolName;
   final List<ImageRef> images;
   final String? userMessageUuid;
+  final List<ArtifactRef> artifacts;
   const ToolResultMessage({
     required this.toolUseId,
     required this.content,
     this.toolName,
     this.images = const [],
     this.userMessageUuid,
+    this.artifacts = const [],
   });
+}
+
+class ArtifactResolvedMessage implements ServerMessage {
+  final String requestId;
+  final String artifactId;
+  final String? relativeUrl;
+  final String? expiresAt;
+  final String? error;
+  final String? errorCode;
+
+  const ArtifactResolvedMessage({
+    required this.requestId,
+    required this.artifactId,
+    this.relativeUrl,
+    this.expiresAt,
+    this.error,
+    this.errorCode,
+  });
+
+  bool get isSuccess =>
+      error == null && relativeUrl != null && relativeUrl!.isNotEmpty;
 }
 
 class ResultMessage implements ServerMessage {
@@ -2442,22 +2607,26 @@ class FileListMessage implements ServerMessage {
 }
 
 class FileContentMessage implements ServerMessage {
+  final String? requestId;
   final String filePath;
   final String kind;
   final String content;
   final String? language;
   final String? error;
+  final String? errorCode;
   final int? totalLines;
   final bool truncated;
   final String? base64;
   final String? mimeType;
   final int? sizeBytes;
   const FileContentMessage({
+    this.requestId,
     required this.filePath,
     this.kind = 'text',
     required this.content,
     this.language,
     this.error,
+    this.errorCode,
     this.totalLines,
     this.truncated = false,
     this.base64,
@@ -3195,6 +3364,7 @@ class PastMessage {
   final List<ImageRef> images;
   final String? toolResultContent;
   final List<AssistantContent> content;
+  final List<ArtifactRef> artifacts;
   const PastMessage({
     required this.role,
     this.uuid,
@@ -3206,6 +3376,7 @@ class PastMessage {
     this.images = const [],
     this.toolResultContent,
     required this.content,
+    this.artifacts = const [],
   });
 
   factory PastMessage.fromJson(Map<String, dynamic> json) {
@@ -3236,6 +3407,7 @@ class PastMessage {
           const [],
       toolResultContent: rawContent is String ? rawContent : null,
       content: contentList,
+      artifacts: _parseArtifactRefs(json['artifacts']),
     );
   }
 }
@@ -3714,6 +3886,7 @@ class ClientMessage {
       'history_snapshot',
       'git_status_result',
       'prompt_history_status',
+      'artifact_resolved',
     ],
   }) {
     return ClientMessage._(<String, dynamic>{
@@ -3722,6 +3895,21 @@ class ClientMessage {
       'appVersion': ?appVersion,
       if (supportedServerMessages.isNotEmpty)
         'supportedServerMessages': supportedServerMessages,
+    });
+  }
+
+  factory ClientMessage.resolveArtifact({
+    required String requestId,
+    required String sessionId,
+    required String messageId,
+    required String artifactId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'resolve_artifact',
+      'requestId': requestId,
+      'sessionId': sessionId,
+      'messageId': messageId,
+      'artifactId': artifactId,
     });
   }
 
@@ -4129,13 +4317,38 @@ class ClientMessage {
   factory ClientMessage.readFile(
     String projectPath,
     String filePath, {
+    String? requestId,
     int? maxLines,
   }) => ClientMessage._(<String, dynamic>{
     'type': 'read_file',
+    'requestId': ?requestId,
     'projectPath': projectPath,
     'filePath': filePath,
     'maxLines': ?maxLines,
   });
+
+  factory ClientMessage.readArtifactSource({
+    required String requestId,
+    required String sessionId,
+    required String messageId,
+    required String artifactId,
+    required String filePath,
+    int? maxLines,
+  }) {
+    if ([requestId, sessionId, messageId, artifactId, filePath]
+        .any((value) => value.trim().isEmpty)) {
+      throw ArgumentError('Artifact source request is incomplete.');
+    }
+    return ClientMessage._(<String, dynamic>{
+      'type': 'read_artifact_source',
+      'requestId': requestId,
+      'sessionId': sessionId,
+      'messageId': messageId,
+      'artifactId': artifactId,
+      'filePath': filePath,
+      'maxLines': ?maxLines,
+    });
+  }
 
   factory ClientMessage.listFiles(String projectPath) =>
       ClientMessage._({'type': 'list_files', 'projectPath': projectPath});

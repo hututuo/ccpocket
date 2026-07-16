@@ -19,10 +19,15 @@ import 'bubbles/user_bubble.dart';
 
 export 'bubbles/ask_user_question_widget.dart';
 
+typedef MessageArtifactOpenCallback =
+    Future<void> Function(String messageId, ArtifactRef artifact);
+
 class ChatEntryWidget extends StatelessWidget {
   final ChatEntry entry;
   final ChatEntry? previous;
   final String? httpBaseUrl;
+  final String? sessionId;
+  final String? projectPath;
   final void Function(UserChatEntry)? onRetryMessage;
   final void Function(UserChatEntry)? onRewindMessage;
   final void Function(AssistantServerMessage)? onForkMessage;
@@ -37,6 +42,7 @@ class ChatEntryWidget extends StatelessWidget {
 
   /// Callback for tapping file paths in assistant messages.
   final FilePathTapCallback? onFileTap;
+  final MessageArtifactOpenCallback? onArtifactOpen;
   final bool isCodex;
 
   const ChatEntryWidget({
@@ -44,6 +50,8 @@ class ChatEntryWidget extends StatelessWidget {
     required this.entry,
     this.previous,
     this.httpBaseUrl,
+    this.sessionId,
+    this.projectPath,
     this.onRetryMessage,
     this.onRewindMessage,
     this.onForkMessage,
@@ -52,6 +60,7 @@ class ChatEntryWidget extends StatelessWidget {
     this.hiddenToolUseIds = const {},
     this.onImageTap,
     this.onFileTap,
+    this.onArtifactOpen,
     this.isCodex = false,
   });
 
@@ -65,10 +74,13 @@ class ChatEntryWidget extends StatelessWidget {
           ServerChatEntry(:final message) => ServerMessageWidget(
             message: message,
             httpBaseUrl: httpBaseUrl,
+            sessionId: sessionId,
+            projectPath: projectPath,
             collapseToolResults: collapseToolResults,
             resolvedPlanText: resolvedPlanText,
             hiddenToolUseIds: hiddenToolUseIds,
             onFileTap: onFileTap,
+            onArtifactOpen: onArtifactOpen,
             onForkMessage: onForkMessage,
             isCodex: isCodex,
           ),
@@ -145,6 +157,8 @@ class _TimestampWidget extends StatelessWidget {
 class ServerMessageWidget extends StatelessWidget {
   final ServerMessage message;
   final String? httpBaseUrl;
+  final String? sessionId;
+  final String? projectPath;
   final ValueNotifier<int>? collapseToolResults;
   final String? resolvedPlanText;
 
@@ -153,6 +167,7 @@ class ServerMessageWidget extends StatelessWidget {
 
   /// Callback for tapping file paths in assistant messages.
   final FilePathTapCallback? onFileTap;
+  final MessageArtifactOpenCallback? onArtifactOpen;
   final void Function(AssistantServerMessage)? onForkMessage;
   final bool isCodex;
 
@@ -160,10 +175,13 @@ class ServerMessageWidget extends StatelessWidget {
     super.key,
     required this.message,
     this.httpBaseUrl,
+    this.sessionId,
+    this.projectPath,
     this.collapseToolResults,
     this.resolvedPlanText,
     this.hiddenToolUseIds = const {},
     this.onFileTap,
+    this.onArtifactOpen,
     this.onForkMessage,
     this.isCodex = false,
   });
@@ -177,15 +195,29 @@ class ServerMessageWidget extends StatelessWidget {
         message: msg,
         resolvedPlanText: resolvedPlanText,
         onFileTap: onFileTap,
+        sessionId: sessionId,
+        projectPath: projectPath,
+        onArtifactOpen: onArtifactOpen != null &&
+                msg.artifactMessageId.isNotEmpty
+            ? (artifact) =>
+                onArtifactOpen!(msg.artifactMessageId, artifact)
+            : null,
         onFork: onForkMessage != null ? () => onForkMessage!(msg) : null,
       ),
       // Hide tool results that are summarized by a tool_use_summary
       final ToolResultMessage msg =>
-        hiddenToolUseIds.contains(msg.toolUseId)
+        hiddenToolUseIds.contains(msg.toolUseId) && msg.artifacts.isEmpty
             ? const SizedBox.shrink()
             : ToolResultBubble(
                 message: msg,
                 httpBaseUrl: httpBaseUrl,
+                sessionId: sessionId,
+                projectPath: projectPath,
+                onFileTap: onFileTap,
+                onArtifactOpen: onArtifactOpen != null &&
+                        msg.toolUseId.isNotEmpty
+                    ? (artifact) => onArtifactOpen!(msg.toolUseId, artifact)
+                    : null,
                 collapseNotifier: collapseToolResults,
               ),
       final ResultMessage msg => ResultChip(message: msg),
@@ -226,6 +258,7 @@ class ServerMessageWidget extends StatelessWidget {
       InputRejectedMessage() => const SizedBox.shrink(),
       ConversationQueueMessage() => const SizedBox.shrink(),
       GoalStateMessage() => const SizedBox.shrink(),
+      ArtifactResolvedMessage() => const SizedBox.shrink(),
       UsageResultMessage() => const SizedBox.shrink(),
       RecordingListMessage() => const SizedBox.shrink(),
       RecordingContentMessage() => const SizedBox.shrink(),

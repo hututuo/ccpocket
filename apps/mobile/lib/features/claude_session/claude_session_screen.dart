@@ -570,7 +570,11 @@ class _ChatScreenBody extends HookWidget {
       projectPath,
       sessionState.projectPath,
     );
-    final gitProjectPath = worktreePath ?? effectiveProjectPath;
+    final chatFileRoot = resolveChatFileRoot(
+      worktreePath: worktreePath,
+      projectPath: effectiveProjectPath,
+    );
+    final gitProjectPath = chatFileRoot;
     final gitBadgeTone = _gitBadgeToneOf(
       context,
       sessionId,
@@ -641,8 +645,8 @@ class _ChatScreenBody extends HookWidget {
       () {
         final bridge = context.read<BridgeService>();
         final path = gitProjectPath;
-        if (effectiveProjectPath != null) {
-          bridge.requestFileList(effectiveProjectPath);
+        if (chatFileRoot != null) {
+          bridge.requestFileList(chatFileRoot);
         }
         if (path != null && path.isNotEmpty) {
           try {
@@ -659,15 +663,14 @@ class _ChatScreenBody extends HookWidget {
       },
       [
         sessionId,
-        effectiveProjectPath,
-        gitProjectPath,
+        chatFileRoot,
         showRemoteGitStatusBadge,
       ],
     );
 
     useEffect(
       () {
-        if (effectiveProjectPath == null) return null;
+        if (chatFileRoot == null) return null;
 
         final bridge = context.read<BridgeService>();
         GitStatusCubit? gitStatusCubit;
@@ -680,10 +683,10 @@ class _ChatScreenBody extends HookWidget {
           if (msg case ToolResultMessage(
             :final toolName,
           ) when _fileListRefreshToolNames.contains(toolName)) {
-            bridge.requestFileList(effectiveProjectPath);
+            bridge.requestFileList(chatFileRoot);
           } else if (msg case ResultMessage(:final fileEdits)) {
             if ((fileEdits ?? 0) > 0) {
-              bridge.requestFileList(effectiveProjectPath);
+              bridge.requestFileList(chatFileRoot);
             }
             gitStatusCubit?.refresh(
               sessionId: sessionId,
@@ -697,8 +700,7 @@ class _ChatScreenBody extends HookWidget {
       },
       [
         sessionId,
-        effectiveProjectPath,
-        gitProjectPath,
+        chatFileRoot,
         showRemoteGitStatusBadge,
       ],
     );
@@ -1220,7 +1222,7 @@ class _ChatScreenBody extends HookWidget {
                       sessionId: sessionId,
                       scrollController: scroll.controller,
                       httpBaseUrl: context.read<BridgeService>().httpBaseUrl,
-                      projectPath: effectiveProjectPath,
+                      projectPath: chatFileRoot,
                       onRetryMessage: (entry) {
                         context.read<ChatSessionCubit>().retryMessage(entry);
                       },

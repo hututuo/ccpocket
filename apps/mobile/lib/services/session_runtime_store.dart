@@ -213,6 +213,7 @@ class SessionRuntimeStore {
         message is ThinkingDeltaMessage ||
         message is InputAckMessage ||
         message is InputRejectedMessage ||
+        message is ArtifactResolvedMessage ||
         message is GoalStateMessage;
   }
 

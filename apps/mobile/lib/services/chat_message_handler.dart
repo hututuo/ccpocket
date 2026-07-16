@@ -144,6 +144,8 @@ const _unsupportedActions = <String, UnsupportedAction>{
   'take_screenshot': UnsupportedAction.showUpdateHint,
   'archive_session': UnsupportedAction.showUpdateHint,
   'read_file': UnsupportedAction.showUpdateHint,
+  'read_artifact_source': UnsupportedAction.showUpdateHint,
+  'resolve_artifact': UnsupportedAction.showUpdateHint,
   'steer_queued_input': UnsupportedAction.showUpdateHint,
   'set_codex_model': UnsupportedAction.showUpdateHint,
   'set_codex_speed': UnsupportedAction.showUpdateHint,
@@ -265,6 +267,9 @@ class ChatMessageHandler {
           entriesToAdd: [ServerChatEntry(msg)],
           toolUseIdsToHide: precedingToolUseIds.toSet(),
         );
+      case ArtifactResolvedMessage():
+        // Request/response infrastructure; never add it to the transcript.
+        return const ChatStateUpdate();
       case UserInputMessage(
         :final text,
         :final clientMessageId,
@@ -434,6 +439,9 @@ class ChatMessageHandler {
             ],
             model: message.model,
           ),
+          messageUuid: msg.messageUuid,
+          artifacts: msg.artifacts,
+          artifactContentIndexOffset: msg.artifactContentIndexOffset + 1,
         );
       }
       currentThinkingText = '';
@@ -512,6 +520,7 @@ class ChatMessageHandler {
                       .join('\n'),
               toolName: m.toolName,
               images: m.images,
+              artifacts: m.artifacts,
             ),
             timestamp: ts,
           ),
@@ -549,6 +558,7 @@ class ChatMessageHandler {
                 model: '',
               ),
               messageUuid: m.uuid,
+              artifacts: m.artifacts,
             ),
             timestamp: ts,
           ),

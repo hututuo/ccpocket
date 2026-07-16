@@ -199,6 +199,7 @@ void main() {
     test('parses legacy text file content as text kind', () {
       final msg = ServerMessage.fromJson({
         'type': 'file_content',
+        'requestId': 'file-request-1',
         'filePath': 'README.md',
         'content': '# Hello',
         'language': 'markdown',
@@ -207,6 +208,7 @@ void main() {
 
       expect(msg, isA<FileContentMessage>());
       final file = msg as FileContentMessage;
+      expect(file.requestId, 'file-request-1');
       expect(file.kind, 'text');
       expect(file.content, '# Hello');
       expect(file.language, 'markdown');
@@ -293,6 +295,7 @@ void main() {
         'history_snapshot',
         'git_status_result',
         'prompt_history_status',
+        'artifact_resolved',
       ]);
     });
 

@@ -164,6 +164,41 @@ void main() {
       expect(handler.currentThinkingText, isEmpty);
     });
 
+    test('thinking reconstruction preserves identity and artifacts', () {
+      const artifact = ArtifactRef(
+        id: 'artifact-1',
+        filename: 'report.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 10,
+        kind: 'preview',
+        source: 'assistant_markdown',
+      );
+      handler.handle(
+        const ThinkingDeltaMessage(text: 'Thinking...'),
+        isBackground: false,
+      );
+      final update = handler.handle(
+        const AssistantServerMessage(
+          messageUuid: 'uuid-1',
+          message: AssistantMessage(
+            id: 'message-1',
+            role: 'assistant',
+            content: [TextContent(text: 'Response')],
+            model: 'codex',
+          ),
+          artifacts: [artifact],
+        ),
+        isBackground: false,
+      );
+
+      final entry = update.entriesToAdd.single as ServerChatEntry;
+      final rebuilt = entry.message as AssistantServerMessage;
+      expect(rebuilt.messageUuid, 'uuid-1');
+      expect(rebuilt.artifacts, [artifact]);
+      expect(rebuilt.artifactContentIndexOffset, 1);
+      expect(rebuilt.message.content.first, isA<ThinkingContent>());
+    });
+
     test('detects AskUserQuestion tool use', () {
       final update = handler.handle(
         AssistantServerMessage(
@@ -431,6 +466,16 @@ void main() {
                   mimeType: 'image/png',
                 ),
               ],
+              artifacts: [
+                ArtifactRef(
+                  id: 'artifact-image-1',
+                  filename: 'generated.png',
+                  mimeType: 'image/png',
+                  sizeBytes: 100,
+                  kind: 'preview',
+                  source: 'image_generation',
+                ),
+              ],
               content: [TextContent(text: 'status: completed')],
             ),
           ],
@@ -444,6 +489,7 @@ void main() {
       expect(message.toolUseId, 'ig-1');
       expect(message.toolName, 'ImageGeneration');
       expect(message.images.single.id, 'img-1');
+      expect(message.artifacts.single.id, 'artifact-image-1');
     });
   });
 
