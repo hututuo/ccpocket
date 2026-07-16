@@ -1,10 +1,11 @@
 # CC Pocket 自动文件链接方案 v01
 
-Status: `draft`
+Status: `accepted` — implementation baseline on `feature/automatic-artifact-links`
 
 Date: 2026-07-16
 
-Scope: 只制定方案；本轮不修改 Bridge、Flutter 客户端、运行服务或会话数据。
+Scope: 方案与实现基线。Bridge、Flutter 客户端和协议已在独立功能分支实现；
+运行中的 8765 服务和 Codex 原始会话数据不在本轮修改范围内。
 
 ## 结论
 
@@ -20,6 +21,29 @@ Bridge 保留 Codex 原文不变，额外附加稳定的 `ArtifactRef`。手机�
 opaque `artifactId` 发回 Bridge，由 Bridge 重新校验文件并签发短期相对 URL。
 这样既能自动打开当前文件，也能在 Bridge 重启、Tailscale/LAN 地址变化或
 历史会话重载后重新生成有效链接。
+
+## 实施结果
+
+2026-07-16 用户确认进入实现后，本方案在独立分支
+`feature/automatic-artifact-links` 落地。Bridge 实现提交为 `9ae7158`，移动端
+实现提交为 `f856690`。最终边界比草案进一步收紧：
+
+- preview 产物点击时使用 `resolve_artifact`，Bridge 只返回当前连接 origin 下的
+  短期相对 URL；
+- project-local source 不签发未使用的 HTTP token，而是使用独立
+  `read_artifact_source` RPC；请求绑定 session、message、artifact 和安全的项目
+  相对路径，Bridge 从当前 runtime session 重新取得 worktree/allowed roots；
+- source 由 registry identity 授权后，通过同一个已验证的文件句柄限量读取，
+  防止路径替换、symlink escape、历史引用静默改绑和大文件内存占用；
+- `imageGeneration.savedPath` 必须先从 Codex 专用临时目录复制到 Bridge 私有
+  managed storage，实时、Gallery/ImageStore 和历史 replay 均不得直接读取原始
+  provider path；
+- live 与 canonical history 走同一个 enrichment，原始 assistant text、rollout
+  和 provider transcript 不写入 token 或被重写；
+- Gallery metadata 内部保留稳定 provider session id；history repair 复用已有图片
+  并补齐旧条目，因此 Bridge runtime id 改变后仍可见且不会重复复制；
+- Phase 1、2 和历史/图片一致性的核心部分已实现；白名单 MCP、裸路径和目录
+  浏览仍属于 Phase 4，默认不启用。
 
 ## 证据基线
 
@@ -154,6 +178,7 @@ interface ArtifactRef {
 
 interface ResolveArtifactRequest {
   type: "resolve_artifact";
+  requestId: string;
   sessionId: string;
   messageId: string;
   artifactId: string;
@@ -161,18 +186,30 @@ interface ResolveArtifactRequest {
 
 interface ArtifactResolvedMessage {
   type: "artifact_resolved";
+  requestId: string;
   artifactId: string;
   relativeUrl: string;        // /artifacts/<short-lived-token>
   expiresAt: string;
+}
+
+interface ReadArtifactSourceRequest {
+  type: "read_artifact_source";
+  requestId: string;
+  sessionId: string;
+  messageId: string;
+  artifactId: string;
+  filePath: string;           // ArtifactRef.projectRelativePath only
+  maxLines?: number;
 }
 ```
 
 约束：
 
-- 手机不提交任意本地路径，只能提交 Bridge 已签发的 `artifactId`；
+- 手机不提交任意绝对路径；preview 只提交 `artifactId`，source 只能回传 Bridge
+  已附带的安全项目相对路径，并由四元身份和当前 session roots 再次约束；
 - 新字段放在 assistant/tool_result 顶层 `artifacts`，不要新增未知
   `AssistantContent` 类型，以便旧客户端忽略未知字段；
-- 只有声明 `artifact_refs_v1` capability 的客户端才能发送
+- 只有声明支持 `artifact_resolved` server message 的客户端才能发送
   `resolve_artifact`；
 - 原始 provider transcript 和 Codex rollout 不写入临时 HTTP URL；
 - 当前显式 `ccpocket-bridge share` 保留，作为人工兜底和回滚路径。
@@ -252,7 +289,8 @@ Codex 对“用户要拿走的最终文件”使用明确 Markdown 本地路径�
 - assistant/tool_result 模型增加可选顶层 `artifacts`；
 - Markdown link tap 先查 `ArtifactRef`，匹配时发送 `artifactId`，否则沿用外部
   URL handler；
-- source ref 进入 File Peek；preview ref 显示附件 chip 并按需换取相对 URL；
+- source ref 通过独立、不可离线排队或重放的 `read_artifact_source` 进入 File
+  Peek；preview ref 显示附件 chip 并按需换取相对 URL；
 - tool result 不再依赖 Markdown 是否渲染；图片生成的 savedPath 也能显示附件；
 - `ChatMessageHandler` 重建 assistant 消息时必须保留 artifacts 和 message id。
 
@@ -324,6 +362,41 @@ Flutter：
 7. 新构建单实例运行，分别用 LAN 和 Tailscale 真机点击；
 8. 重启 Bridge 后重新打开同一历史会话，确认链接可重新签发。
 
+### 2026-07-16 实施验证
+
+已完成的本地门禁：
+
+- Bridge 全量测试通过：43 个 test files、950 个 tests；
+- `npx tsc --noEmit -p packages/bridge/tsconfig.json` 通过；
+- `npm run build --workspace=packages/bridge` 通过，构建版本为
+  `1.66.1-compat.2`；
+- `npm pack --workspace=packages/bridge --dry-run` 通过，自动 artifact 模块
+  已进入发布清单；
+- `git diff --check` 和四份 Flutter ARB JSON 解析通过；
+- 8766 clean-env 隔离实例启动成功，`/health`、`/version`、WebSocket
+  capability/list_sessions 均通过；该实例 HOME、allowed roots、registry 和 prompt
+  history 均与 8765 隔离，会话数为 0；
+- 使用包含中文和空格的 `报告 final.txt` 做显式 share 冒烟，preview、content、
+  download 均返回 200，content/download 与源文件逐字节一致，下载响应为
+  attachment；冒烟后 8766 已释放；
+- 冒烟前后 8765 始终为 PID 58728、`1.66.0-compat.1`，7 个 sessions、1 个
+  client；未重载、未安装新构建、未修改会话数据。
+
+依赖审计仍报告上游基线已有的 8 项 production advisories（4 high、4
+moderate，来自 Hono/Anthropic/MCP、undici、ws 等链路）；本轮新增的 `marked`
+没有引入新的 advisory。依赖大版本维护不混入本功能提交。
+
+尚未完成、不能冒充已经验收的门禁：
+
+- 本机没有 Flutter/Dart SDK，因此本轮不能实际运行 `flutter analyze`、widget
+  tests 或移动端构建；已有 Dart 测试与 UI 代码仅完成静态复核；
+- 最新客户端没有部署到手机，LAN/Tailscale 真机点击和 Bridge 重启后的同一历史
+  会话点击仍待后续独立验收；
+- `:line:column` 会完整保留并显示，但 File Peek 当前只自动滚动到行，尚未定位
+  到列；
+- Claude plan 的跨消息 Write-tool fallback、白名单 MCP、裸路径和目录浏览仍属于
+  Phase 4，不纳入本次 Codex 高置信自动转换。
+
 ## 验收定义
 
 - 明确 Markdown 指向、当前真实存在且在允许目录内的普通文件，可在手机一击
@@ -338,6 +411,8 @@ Flutter：
 
 ## 当前决策边界
 
-本方案尚未替代 `docs/design/artifact-preview-links.md` 的 accepted 显式 share
-设计。只有用户确认进入实现后，才在 `compat/artifact-download` 上新建独立功能
-提交；不自动合并稳定分支、不推远端、不在有活跃会话时擅自重启 Bridge。
+本方案扩展而不替代 `docs/design/artifact-preview-links.md` 的 accepted 显式
+share 设计；`ccpocket-bridge share` 继续作为人工兜底。实现只保留在
+`feature/automatic-artifact-links`，不自动合并稳定分支、不推远端，也不在有
+活跃会话时擅自重启 8765 Bridge。`BRIDGE_AUTO_ARTIFACTS=0` 可完整关闭自动 refs，
+不会关闭显式 share。
