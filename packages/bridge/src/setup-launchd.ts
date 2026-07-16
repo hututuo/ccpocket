@@ -63,6 +63,9 @@ export function setupLaunchd(opts: SetupOptions): void {
   const rawArtifactBaseUrl =
     opts.artifactBaseUrl ?? process.env.BRIDGE_ARTIFACT_BASE_URL ?? "";
   const artifactBaseUrl = validateArtifactBaseUrl(rawArtifactBaseUrl);
+  const autoArtifacts = process.env.BRIDGE_AUTO_ARTIFACTS?.trim() ?? "";
+  const artifactRegistryFile =
+    process.env.BRIDGE_ARTIFACT_REGISTRY_FILE?.trim() ?? "";
   if (rawArtifactBaseUrl && !artifactBaseUrl) {
     throw new Error(
       "BRIDGE_ARTIFACT_BASE_URL must be a mobile-reachable HTTP(S) origin",
@@ -123,6 +126,18 @@ export function setupLaunchd(opts: SetupOptions): void {
     envBlock += `
         <key>BRIDGE_ARTIFACT_BASE_URL</key>
         <string>${artifactBaseUrl}</string>`;
+  }
+
+  if (autoArtifacts) {
+    envBlock += `
+        <key>BRIDGE_AUTO_ARTIFACTS</key>
+        <string>${escapeXml(autoArtifacts)}</string>`;
+  }
+
+  if (artifactRegistryFile) {
+    envBlock += `
+        <key>BRIDGE_ARTIFACT_REGISTRY_FILE</key>
+        <string>${escapeXml(artifactRegistryFile)}</string>`;
   }
 
   if (disableMdns) {

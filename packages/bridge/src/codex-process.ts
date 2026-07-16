@@ -9,6 +9,7 @@ import type {
   ServerMessage,
   ProcessStatus,
 } from "./parser.js";
+import type { ArtifactCandidate } from "./artifact-types.js";
 import {
   createCodexTransport,
   buildCodexSpawnSpec,
@@ -297,12 +298,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   // Collaboration mode & plan completion state
   private _approvalPolicy: string | undefined = undefined;
   private _approvalsReviewer: string | undefined = undefined;
-  private _codexPermissionsMode: CodexStartOptions["codexPermissionsMode"] | undefined;
+  private _codexPermissionsMode:
+    CodexStartOptions["codexPermissionsMode"] | undefined;
   private _collaborationMode: "plan" | "default" = "default";
   private _runtimeModel: string | undefined;
   private _runtimeModelReasoningEffort:
-    | CodexStartOptions["modelReasoningEffort"]
-    | undefined;
+    CodexStartOptions["modelReasoningEffort"] | undefined;
   private _runtimeServiceTier: string | null | undefined;
   private lastPlanItemText: string | null = null;
   /** Last assistant text message — used as `result` in completion notification. */
@@ -359,7 +360,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
   }
 
-  get codexPermissionsMode(): CodexStartOptions["codexPermissionsMode"] | undefined {
+  get codexPermissionsMode():
+    CodexStartOptions["codexPermissionsMode"] | undefined {
     return this._codexPermissionsMode;
   }
 
@@ -372,8 +374,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   get modelReasoningEffort():
-    | CodexStartOptions["modelReasoningEffort"]
-    | undefined {
+    CodexStartOptions["modelReasoningEffort"] | undefined {
     return this._runtimeModelReasoningEffort;
   }
 
@@ -1319,25 +1320,25 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         ...(sanitizeCodexModel(this.startModel)
           ? { model: sanitizeCodexModel(this.startModel) }
           : {}),
-        ...(resolvedSettings.approvalPolicy ?? options?.approvalPolicy
+        ...((resolvedSettings.approvalPolicy ?? options?.approvalPolicy)
           ? {
               approvalPolicy:
                 resolvedSettings.approvalPolicy ?? requestedApprovalPolicy,
             }
           : {}),
-        ...(resolvedSettings.approvalsReviewer ?? options?.approvalsReviewer
+        ...((resolvedSettings.approvalsReviewer ?? options?.approvalsReviewer)
           ? {
               approvalsReviewer: resolvedSettings.approvalsReviewer
                 ? normalizeApprovalsReviewerForClient(
-                    resolvedSettings.approvalsReviewer as CodexStartOptions[
-                      "approvalsReviewer"
-                    ],
+                    resolvedSettings.approvalsReviewer as CodexStartOptions["approvalsReviewer"],
                   )
                 : requestedClientApprovalsReviewer,
             }
           : {}),
-        ...(resolvedSettings.sandboxMode ?? options?.sandboxMode
-          ? { sandboxMode: resolvedSettings.sandboxMode ?? requestedSandboxMode }
+        ...((resolvedSettings.sandboxMode ?? options?.sandboxMode)
+          ? {
+              sandboxMode: resolvedSettings.sandboxMode ?? requestedSandboxMode,
+            }
           : {}),
         ...(options?.codexPermissionsMode
           ? { codexPermissionsMode: options.codexPermissionsMode }
@@ -1346,7 +1347,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           ? { modelReasoningEffort: resolvedSettings.modelReasoningEffort }
           : requestedReasoningEffort
             ? { modelReasoningEffort: requestedReasoningEffort }
-          : {}),
+            : {}),
         serviceTier: normalizeServiceTierForClient(
           resolvedSettings.serviceTier ?? options?.serviceTier,
         ),
@@ -1424,9 +1425,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.notify("initialized", {});
   }
 
-  async readProfileConfig(
-    cwd?: string,
-  ): Promise<CodexProfileConfig> {
+  async readProfileConfig(cwd?: string): Promise<CodexProfileConfig> {
     const response = (await this.request("config/read", {
       includeLayers: false,
       ...(cwd ? { cwd } : {}),
@@ -1451,9 +1450,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (this._completionFetchInFlight) {
       return this._completionFetchInFlight;
     }
-    this._completionFetchInFlight = this._fetchCompletionEntitiesInternal(
-      projectPath,
-    );
+    this._completionFetchInFlight =
+      this._fetchCompletionEntitiesInternal(projectPath);
     try {
       await this._completionFetchInFlight;
     } finally {
@@ -1559,7 +1557,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       const optionalFirstString = (value: unknown): string | undefined => {
         if (typeof value === "string") return value;
         if (!Array.isArray(value)) return undefined;
-        return value.find((entry): entry is string => typeof entry === "string");
+        return value.find(
+          (entry): entry is string => typeof entry === "string",
+        );
       };
 
       const skills: string[] = [];
@@ -1612,7 +1612,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             installed: plugin.installed,
             enabled: plugin.enabled,
             displayName: optionalString(plugin.interface?.displayName),
-            shortDescription: optionalString(plugin.interface?.shortDescription),
+            shortDescription: optionalString(
+              plugin.interface?.shortDescription,
+            ),
             longDescription: optionalString(plugin.interface?.longDescription),
             defaultPrompt: optionalFirstString(plugin.interface?.defaultPrompt),
             brandColor: optionalString(plugin.interface?.brandColor),
@@ -1729,9 +1731,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         // Omitting it causes the server to persist the previous turn's mode.
         const modeSettings: Record<string, unknown> = {
           model:
-            requestedModel
-            || sanitizeCodexModel(this.startModel)
-            || DEFAULT_CODEX_MODEL,
+            requestedModel ||
+            sanitizeCodexModel(this.startModel) ||
+            DEFAULT_CODEX_MODEL,
         };
         if (requestedReasoningEffort) {
           modeSettings.reasoning_effort = requestedReasoningEffort;
@@ -1747,8 +1749,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         void this.request("turn/start", params)
           .then((result) => {
             const turn = (result as Record<string, unknown>).turn as
-              | Record<string, unknown>
-              | undefined;
+              Record<string, unknown> | undefined;
             if (typeof turn?.id === "string") {
               this.pendingTurnId = turn.id;
             }
@@ -2564,6 +2565,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           ...(normalized.rawContentBlocks.length > 0
             ? { rawContentBlocks: normalized.rawContentBlocks }
             : {}),
+          ...(normalized.artifactCandidates.length > 0
+            ? { artifactCandidates: normalized.artifactCandidates }
+            : {}),
         });
         break;
       }
@@ -2970,12 +2974,11 @@ function normalizeReasoningEffort(
 }
 
 function extractReasoningEfforts(raw: Record<string, unknown>): string[] {
-  const values =
-    Array.isArray(raw.supportedReasoningEfforts)
-      ? raw.supportedReasoningEfforts
+  const values = Array.isArray(raw.supportedReasoningEfforts)
+    ? raw.supportedReasoningEfforts
     : Array.isArray(raw.supported_reasoning_levels)
       ? raw.supported_reasoning_levels
-    : [];
+      : [];
   const seen = new Set<string>();
   const efforts: string[] = [];
   for (const value of values) {
@@ -3055,15 +3058,13 @@ function extractResolvedSettingsFromThreadResponse(
   const thread = response.thread as Record<string, unknown> | undefined;
   const sandbox = response.sandbox as Record<string, unknown> | undefined;
   const collaborationMode = response.collaborationMode as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const collaborationSettings = collaborationMode?.settings as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
 
   return {
-    model: sanitizeCodexModel(response.model)
-      ?? sanitizeCodexModel(thread?.model),
+    model:
+      sanitizeCodexModel(response.model) ?? sanitizeCodexModel(thread?.model),
     approvalPolicy:
       typeof response.approvalPolicy === "string"
         ? response.approvalPolicy
@@ -3078,7 +3079,7 @@ function extractResolvedSettingsFromThreadResponse(
         ? response.reasoningEffort
         : typeof collaborationSettings?.reasoning_effort === "string"
           ? collaborationSettings.reasoning_effort
-        : undefined,
+          : undefined,
     serviceTier:
       typeof response.serviceTier === "string"
         ? response.serviceTier
@@ -3232,7 +3233,11 @@ function toImageGenerationToolInput(
 ): Record<string, unknown> {
   const input: Record<string, unknown> = {};
   const status = typeof item.status === "string" ? item.status : undefined;
-  const revisedPrompt = readStringField(item, "revisedPrompt", "revised_prompt");
+  const revisedPrompt = readStringField(
+    item,
+    "revisedPrompt",
+    "revised_prompt",
+  );
   if (status) input.status = status;
   if (revisedPrompt) input.revisedPrompt = revisedPrompt;
   return input;
@@ -3272,9 +3277,14 @@ function formatDynamicToolResult(item: Record<string, unknown>): string {
 function formatImageGenerationResult(item: Record<string, unknown>): {
   content: string;
   rawContentBlocks: Array<Record<string, unknown>>;
+  artifactCandidates: ArtifactCandidate[];
 } {
   const status = typeof item.status === "string" ? item.status : "completed";
-  const revisedPrompt = readStringField(item, "revisedPrompt", "revised_prompt");
+  const revisedPrompt = readStringField(
+    item,
+    "revisedPrompt",
+    "revised_prompt",
+  );
   const savedPath = readStringField(item, "savedPath", "saved_path");
   const result = typeof item.result === "string" ? item.result.trim() : "";
   const parts = [`status: ${status}`];
@@ -3282,7 +3292,17 @@ function formatImageGenerationResult(item: Record<string, unknown>): {
   if (revisedPrompt) parts.push(`revisedPrompt: ${revisedPrompt}`);
   if (savedPath) {
     parts.push(`savedPath: ${savedPath}`);
-    return { content: parts.join("\n"), rawContentBlocks: [] };
+    return {
+      content: parts.join("\n"),
+      rawContentBlocks: [],
+      artifactCandidates: [
+        {
+          source: "image_generation",
+          linkKind: "generated",
+          localPath: savedPath,
+        },
+      ],
+    };
   }
 
   const rawContentBlocks: Array<Record<string, unknown>> = [];
@@ -3299,7 +3319,11 @@ function formatImageGenerationResult(item: Record<string, unknown>): {
     parts.push("Generated 1 image");
   }
 
-  return { content: parts.join("\n"), rawContentBlocks };
+  return {
+    content: parts.join("\n"),
+    rawContentBlocks,
+    artifactCandidates: [],
+  };
 }
 
 function readStringField(
@@ -3681,10 +3705,7 @@ function buildApprovalElicitationResponse(
   const selection = resolveApprovalElicitationSelection(pending, rawResult);
   const normalized = selection.trim().toLowerCase();
 
-  if (
-    normalized === "cancel" ||
-    normalized.includes("cancel")
-  ) {
+  if (normalized === "cancel" || normalized.includes("cancel")) {
     return {
       action: "cancel",
       content: null,
@@ -3803,11 +3824,10 @@ function createElicitationInput(params: Record<string, unknown>): {
         serverName,
         message,
         _meta: elicitationMeta ?? null,
-        availableDecisions:
-          buildApprovalActionElicitationAvailableDecisions(
-            elicitationMeta,
-            isToolApproval,
-          ),
+        availableDecisions: buildApprovalActionElicitationAvailableDecisions(
+          elicitationMeta,
+          isToolApproval,
+        ),
         questions: [
           {
             id: questionId,

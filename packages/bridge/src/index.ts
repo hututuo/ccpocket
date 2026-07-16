@@ -25,6 +25,9 @@ import { listenForStartup } from "./server-listen.js";
 import { ArtifactStore } from "./artifact-store.js";
 import { ArtifactHttpHandler } from "./artifact-http.js";
 import { resolveArtifactBaseUrl } from "./artifact-url.js";
+import { ArtifactRegistry } from "./artifact-registry.js";
+import { ArtifactManager } from "./artifact-manager.js";
+import { GeneratedArtifactStore } from "./generated-artifact-store.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -66,6 +69,23 @@ export async function startServer() {
     }`,
   );
 
+  const autoArtifactsEnabled = !["0", "false", "off"].includes(
+    (process.env.BRIDGE_AUTO_ARTIFACTS ?? "").trim().toLowerCase(),
+  );
+  const generatedArtifactStore = autoArtifactsEnabled
+    ? new GeneratedArtifactStore()
+    : undefined;
+  const artifactAllowedDirs =
+    ALLOWED_DIRS.length === 0
+      ? []
+      : [
+          ...new Set([
+            ...ALLOWED_DIRS,
+            ...(generatedArtifactStore
+              ? [generatedArtifactStore.directory]
+              : []),
+          ]),
+        ];
   const artifactBaseUrl = resolveArtifactBaseUrl({
     port: PORT,
     host: HOST,
@@ -74,11 +94,38 @@ export async function startServer() {
   });
   const artifactStore = new ArtifactStore({
     baseUrl: artifactBaseUrl,
-    allowedDirs: ALLOWED_DIRS,
+    allowedDirs: artifactAllowedDirs,
   });
+  let artifactManager: ArtifactManager | undefined;
+  if (autoArtifactsEnabled) {
+    try {
+      const artifactRegistry = new ArtifactRegistry({
+        port: PORT,
+        ...(process.env.BRIDGE_ARTIFACT_REGISTRY_FILE?.trim()
+          ? { filePath: process.env.BRIDGE_ARTIFACT_REGISTRY_FILE.trim() }
+          : {}),
+      });
+      // Finish disk recovery before any session can register a candidate.
+      await artifactRegistry.init();
+      artifactManager = new ArtifactManager({
+        store: artifactStore,
+        registry: artifactRegistry,
+        generatedArtifactStore,
+      });
+      console.log("[bridge] Automatic artifact links enabled");
+    } catch (error) {
+      console.warn(
+        `[bridge] Automatic artifact links disabled: ${startupErrorMessage(error)}`,
+      );
+    }
+  } else {
+    console.log("[bridge] Automatic artifact links disabled by configuration");
+  }
   const artifactHttp = new ArtifactHttpHandler(artifactStore);
   if (artifactBaseUrl) {
-    console.log(`[bridge] Artifact previews: ${artifactBaseUrl}/artifacts/<token>`);
+    console.log(
+      `[bridge] Artifact previews: ${artifactBaseUrl}/artifacts/<token>`,
+    );
   } else {
     console.warn(
       "[bridge] Artifact preview URL unavailable; share with --base-url",
@@ -104,49 +151,68 @@ export async function startServer() {
   const recordingStore = RECORDING_ENABLED ? new RecordingStore() : undefined;
   const promptHistoryBackup = new PromptHistoryBackupStore();
   const promptHistoryStore = new PromptHistoryStore(
-    promptHistoryStoreFileForPort(
-      PORT,
-      process.env.BRIDGE_PROMPT_HISTORY_FILE,
-    ),
+    promptHistoryStoreFileForPort(PORT, process.env.BRIDGE_PROMPT_HISTORY_FILE),
   );
   const mdns = MDNS_ENABLED ? new MdnsAdvertiser() : undefined;
 
-  // Initialize stores (async)
-  galleryStore.init().then(() => {
+  // Gallery history repair depends on the persisted index being loaded before
+  // WebSocket clients can request canonical history.
+  await galleryStore
+    .init()
+    .then(() => {
     console.log("[bridge] Gallery store initialized");
-  }).catch((err) => {
+    })
+    .catch((err) => {
     console.error("[bridge] Failed to initialize gallery store:", err);
   });
 
-  projectHistory.init().then(() => {
+  projectHistory
+    .init()
+    .then(() => {
     console.log("[bridge] Project history initialized");
-  }).catch((err) => {
+    })
+    .catch((err) => {
     console.error("[bridge] Failed to initialize project history:", err);
   });
 
-  debugTraceStore.init().then(() => {
+  debugTraceStore
+    .init()
+    .then(() => {
     console.log("[bridge] Debug trace store initialized");
-  }).catch((err) => {
+    })
+    .catch((err) => {
     console.error("[bridge] Failed to initialize debug trace store:", err);
   });
 
   if (recordingStore) {
-    recordingStore.init().then(() => {
+    recordingStore
+      .init()
+      .then(() => {
       console.log("[bridge] Recording enabled");
-    }).catch((err) => {
+      })
+      .catch((err) => {
       console.error("[bridge] Failed to initialize recording store:", err);
     });
   }
 
-  promptHistoryBackup.init().then(() => {
+  promptHistoryBackup
+    .init()
+    .then(() => {
     console.log("[bridge] Prompt history backup store initialized");
-  }).catch((err) => {
-    console.error("[bridge] Failed to initialize prompt history backup store:", err);
+    })
+    .catch((err) => {
+      console.error(
+        "[bridge] Failed to initialize prompt history backup store:",
+        err,
+      );
   });
 
-  await promptHistoryStore.init().then(() => {
+  await promptHistoryStore
+    .init()
+    .then(() => {
     console.log("[bridge] Prompt history store initialized");
-  }).catch((err) => {
+    })
+    .catch((err) => {
     console.error("[bridge] Failed to initialize prompt history store:", err);
   });
 
@@ -224,12 +290,15 @@ export async function startServer() {
     if (galleryStore.handleRequest(req, res)) return;
 
     // Upload images via POST /api/gallery/upload
-    if (galleryStore.handleUploadRequest(req, res, (meta) => {
+    if (
+      galleryStore.handleUploadRequest(req, res, (meta) => {
       if (wsServer) {
         const info = galleryStore.metaToInfo(meta);
         wsServer.broadcastGalleryNewImage(info);
       }
-    })) return;
+      })
+    )
+      return;
 
     // Default 404 for unknown HTTP requests
     res.writeHead(404, { "Content-Type": "text/plain" });
@@ -248,6 +317,7 @@ export async function startServer() {
     firebaseAuth,
     promptHistoryBackup,
     promptHistoryStore,
+    artifactManager,
   });
 
   function shutdown() {
@@ -280,8 +350,7 @@ export async function startServer() {
 
 // Auto-start when executed directly (node dist/index.js, tsx src/index.ts)
 const isDirectExecution =
-  process.argv[1] &&
-  fileURLToPath(import.meta.url) === process.argv[1];
+  process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 
 if (isDirectExecution) {
   setupProxy();

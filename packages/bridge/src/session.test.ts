@@ -27,6 +27,24 @@ const { codexInstances, sdkInstances, fakeDirs, fakeFiles } = vi.hoisted(
     fakeFiles: new Map<string, string>(),
   }),
 );
+const { extractArtifactCandidatesMock } = vi.hoisted(() => ({
+  extractArtifactCandidatesMock: vi.fn(),
+}));
+
+vi.mock("./artifact-candidates.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("./artifact-candidates.js")
+  >("./artifact-candidates.js");
+  return {
+    ...actual,
+    extractArtifactCandidates: (
+      ...args: Parameters<typeof actual.extractArtifactCandidates>
+    ) => {
+      extractArtifactCandidatesMock(...args);
+      return actual.extractArtifactCandidates(...args);
+    },
+  };
+});
 
 vi.mock("node:fs", () => {
   const normalize = (value: unknown): string =>
@@ -108,6 +126,7 @@ describe("SessionManager codex path", () => {
   beforeEach(() => {
     codexInstances.length = 0;
     sdkInstances.length = 0;
+    extractArtifactCandidatesMock.mockClear();
   });
 
   it("creates a codex session and forwards codex start options", () => {
@@ -174,8 +193,9 @@ describe("SessionManager codex path", () => {
       sandboxMode: "read-only",
     });
 
-    expect(manager.get(sessionId)?.codexSettings?.codexPermissionsMode)
-      .toBeUndefined();
+    expect(
+      manager.get(sessionId)?.codexSettings?.codexPermissionsMode,
+    ).toBeUndefined();
     expect(manager.list()[0].codexSettings?.codexPermissionsMode).toBe(
       "custom",
     );
@@ -659,6 +679,272 @@ describe("SessionManager codex path", () => {
     ).toBe(true);
   });
 
+  it("keeps delayed artifact enrichment ahead of result and queued input drain", async () => {
+    let markRegistrationStarted!: (input: any) => void;
+    const registrationStarted = new Promise<any>((resolve) => {
+      markRegistrationStarted = resolve;
+    });
+    let releaseRegistration!: () => void;
+    const registrationGate = new Promise<void>((resolve) => {
+      releaseRegistration = resolve;
+    });
+    const artifactManager = {
+      registerCandidates: vi.fn(async (input: any) => {
+        markRegistrationStarted(input);
+        await registrationGate;
+        return [
+          {
+            id: "artifact-delayed",
+            filename: "report.md",
+            mimeType: "text/markdown",
+            sizeBytes: 12,
+            kind: "source",
+            source: "assistant_markdown",
+            originalHref: "/tmp/project-codex/report.md",
+            textContentIndex: 0,
+          },
+        ];
+      }),
+    };
+    const forwarded: Array<{ sessionId: string; msg: ServerMessage }> = [];
+    let markQueuedInputPromoted!: () => void;
+    const queuedInputPromoted = new Promise<void>((resolve) => {
+      markQueuedInputPromoted = resolve;
+    });
+    const manager = new SessionManager(
+      (sessionId, msg) => {
+        forwarded.push({ sessionId, msg });
+        if (msg.type === "user_input" && msg.text === "queued follow-up") {
+          markQueuedInputPromoted();
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      artifactManager as any,
+    );
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+    proc.emit("message", {
+      type: "system",
+      subtype: "init",
+      sessionId: "thread-stable-owner",
+    } satisfies ServerMessage);
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-after-result",
+        text: "queued follow-up",
+        createdAt: "2026-07-16T05:00:00.000Z",
+      }),
+    ).toBe(true);
+    forwarded.length = 0;
+
+    proc.emit("message", {
+      type: "assistant",
+      message: {
+        id: "assistant-delayed",
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "Open [report](/tmp/project-codex/report.md)",
+          },
+        ],
+        model: "codex",
+      },
+    } satisfies ServerMessage);
+    const registrationInput = await registrationStarted;
+    proc.emit("message", {
+      type: "result",
+      subtype: "success",
+      result: "done",
+      sessionId: "thread-stable-owner",
+    } satisfies ServerMessage);
+    proc.isWaitingForInput = true;
+    proc.emit("input_ready");
+
+    expect(registrationInput).toMatchObject({
+      ownerId: "thread-stable-owner",
+      messageId: "assistant-delayed",
+      cwd: "/tmp/project-codex",
+    });
+    expect(forwarded).toEqual([]);
+    expect(proc.sendInputStructured).not.toHaveBeenCalled();
+
+    releaseRegistration();
+    await queuedInputPromoted;
+
+    expect(forwarded.map(({ msg }) => msg.type)).toEqual([
+      "assistant",
+      "result",
+      "conversation_queue",
+      "user_input",
+    ]);
+    expect(forwarded[0].msg).toMatchObject({
+      type: "assistant",
+      artifacts: [{ id: "artifact-delayed" }],
+    });
+    expect(proc.sendInputStructured).toHaveBeenCalledWith(
+      "queued follow-up",
+      expect.objectContaining({
+        images: undefined,
+        skills: undefined,
+        mentions: undefined,
+      }),
+    );
+    const historyTail = manager.get(sessionId)?.history.slice(-3) ?? [];
+    expect(historyTail.map((message) => message.type)).toEqual([
+      "assistant",
+      "result",
+      "user_input",
+    ]);
+    expect(JSON.stringify(historyTail)).not.toContain("artifactCandidates");
+    expect(JSON.stringify(forwarded)).not.toContain("artifactCandidates");
+  });
+
+  it("strips structured artifact candidates before enabled history and broadcast", async () => {
+    const artifactManager = {
+      registerCandidates: vi.fn(async () => [
+        {
+          id: "artifact-image",
+          filename: "generated image.png",
+          mimeType: "image/png",
+          sizeBytes: 24,
+          kind: "preview",
+          source: "image_generation",
+        },
+      ]),
+    };
+    let markForwarded!: (message: ServerMessage) => void;
+    const forwardedMessage = new Promise<ServerMessage>((resolve) => {
+      markForwarded = resolve;
+    });
+    const manager = new SessionManager(
+      (_sessionId, msg) => {
+        if (msg.type === "tool_result") markForwarded(msg);
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      artifactManager as any,
+    );
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+    proc.emit("message", {
+      type: "system",
+      subtype: "init",
+      sessionId: "thread-stable-owner",
+    } satisfies ServerMessage);
+    proc.emit("message", {
+      type: "tool_result",
+      toolUseId: "image-generation-1",
+      toolName: "ImageGeneration",
+      content: "status: completed",
+      artifactCandidates: [
+        {
+          source: "image_generation",
+          linkKind: "generated",
+          localPath: "/tmp/project-codex/generated image.png",
+        },
+      ],
+    } satisfies ServerMessage);
+
+    const forwarded = await forwardedMessage;
+    const historyMessage = manager.get(sessionId)?.history.at(-1);
+    expect(artifactManager.registerCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerId: "thread-stable-owner",
+        messageId: "image-generation-1",
+        candidates: [
+          expect.objectContaining({
+            localPath: "/tmp/project-codex/generated image.png",
+          }),
+        ],
+      }),
+    );
+    expect(forwarded).toMatchObject({
+      type: "tool_result",
+      artifacts: [{ id: "artifact-image" }],
+    });
+    expect(historyMessage).toMatchObject({
+      type: "tool_result",
+      artifacts: [{ id: "artifact-image" }],
+    });
+    expect(JSON.stringify(forwarded)).not.toContain("artifactCandidates");
+    expect(JSON.stringify(historyMessage)).not.toContain("artifactCandidates");
+  });
+
+  it("skips Markdown scanning and strips candidates when artifact manager is absent", () => {
+    const forwarded: ServerMessage[] = [];
+    const manager = new SessionManager((_sessionId, msg) => {
+      forwarded.push(msg);
+    });
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+
+    proc.emit("message", {
+      type: "assistant",
+      message: {
+        id: "assistant-disabled",
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "Open [report](/tmp/project-codex/report.md)",
+          },
+        ],
+        model: "codex",
+      },
+    } satisfies ServerMessage);
+    proc.emit("message", {
+      type: "tool_result",
+      toolUseId: "image-generation-disabled",
+      toolName: "ImageGeneration",
+      content: "status: completed",
+      artifactCandidates: [
+        {
+          source: "image_generation",
+          linkKind: "generated",
+          localPath: "/tmp/project-codex/generated image.png",
+        },
+      ],
+    } satisfies ServerMessage);
+
+    expect(extractArtifactCandidatesMock).not.toHaveBeenCalled();
+    expect(forwarded.map((message) => message.type)).toEqual([
+      "assistant",
+      "tool_result",
+    ]);
+    expect(manager.get(sessionId)?.history).toHaveLength(2);
+    expect(JSON.stringify(forwarded)).not.toContain("artifactCandidates");
+    expect(JSON.stringify(manager.get(sessionId)?.history)).not.toContain(
+      "artifactCandidates",
+    );
+    expect(JSON.stringify(forwarded)).not.toContain('"artifacts"');
+  });
+
   it("steers queued codex input and broadcasts the promoted user message", async () => {
     const forwarded: Array<{ sessionId: string; msg: ServerMessage }> = [];
     const manager = new SessionManager((sessionId, msg) => {
@@ -784,8 +1070,7 @@ describe("SessionManager codex path", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const forwardedMsg = forwarded.at(-1)?.msg as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(forwardedMsg).toBeDefined();
     expect(forwardedMsg?.type).toBe("tool_result");
     expect(forwardedMsg?.images).toEqual([
@@ -798,8 +1083,7 @@ describe("SessionManager codex path", () => {
     expect(forwardedMsg).not.toHaveProperty("rawContentBlocks");
 
     const historyMsg = manager.get(sessionId)?.history.at(-1) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(historyMsg).toBeDefined();
     expect(historyMsg?.images).toEqual([
       {
@@ -809,6 +1093,196 @@ describe("SessionManager codex path", () => {
       },
     ]);
     expect(historyMsg).not.toHaveProperty("rawContentBlocks");
+  });
+
+  it("uses structured ImageGeneration paths with spaces and Unicode for images and gallery", async () => {
+    const generatedPath =
+      "/tmp/codex/generated_images/生成 的 image result.png";
+    const stagedPath =
+      "/tmp/managed-artifacts/hash/生成 的 image result.png";
+    const imageRef = {
+      id: "img-generated-1",
+      url: "/images/img-generated-1",
+      mimeType: "image/png",
+    };
+    const imageStore = {
+      // Even if legacy text extraction returns the raw provider path, the
+      // structured path must be replaced by its validated staged copy.
+      extractImagePaths: vi.fn(() => ["/b.png", generatedPath]),
+      registerImages: vi.fn(async () => [imageRef]),
+      registerFromBase64: vi.fn(),
+    };
+    const galleryStore = {
+      addImage: vi.fn(async () => null),
+      addImageFromBase64: vi.fn(async () => null),
+    };
+    const artifactManager = {
+      materializeGeneratedCandidates: vi.fn(async () => [stagedPath]),
+      registerCandidates: vi.fn(async () => []),
+    };
+    let resolveForwarded!: (message: ServerMessage) => void;
+    const forwarded = new Promise<ServerMessage>((resolve) => {
+      resolveForwarded = resolve;
+    });
+    const manager = new SessionManager(
+      (_sessionId, msg) => {
+        if (msg.type === "tool_result") resolveForwarded(msg);
+      },
+      imageStore as any,
+      galleryStore as any,
+      undefined,
+      undefined,
+      undefined,
+      artifactManager as any,
+    );
+    const sessionId = manager.create(
+      "/tmp/project-codex-images",
+      undefined,
+      undefined,
+      { existingWorktreePath: "/tmp/project-codex-images-worktree" },
+      "codex",
+    );
+
+    codexInstances[0].emit("message", {
+      type: "system",
+      subtype: "init",
+      sessionId: "thread-image-generation",
+    } satisfies ServerMessage);
+
+    codexInstances[0].emit("message", {
+      type: "tool_result",
+      toolUseId: "image-generation-unicode",
+      toolName: "ImageGeneration",
+      content: "status: completed",
+      artifactCandidates: [
+        {
+          source: "image_generation",
+          linkKind: "generated",
+          localPath: generatedPath,
+        },
+      ],
+    } satisfies ServerMessage);
+
+    await expect(forwarded).resolves.toMatchObject({
+      type: "tool_result",
+      images: [imageRef],
+    });
+    expect(imageStore.registerImages).toHaveBeenCalledWith(
+      [stagedPath],
+      "/tmp/project-codex-images-worktree",
+    );
+    expect(galleryStore.addImage).toHaveBeenCalledWith(
+      stagedPath,
+      "/tmp/project-codex-images-worktree",
+      sessionId,
+      "thread-image-generation",
+    );
+    expect(artifactManager.materializeGeneratedCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerId: "thread-image-generation",
+        messageId: "image-generation-unicode",
+        candidates: [expect.objectContaining({ localPath: generatedPath })],
+      }),
+    );
+    expect(JSON.stringify(manager.get(sessionId)?.history)).not.toContain(
+      "artifactCandidates",
+    );
+  });
+
+  it("keeps legacy raw image extraction when automatic artifacts are disabled", async () => {
+    const generatedPath =
+      "/tmp/codex/generated_images/legacy-generated.png";
+    const imageRef = {
+      id: "img-legacy-1",
+      url: "/images/img-legacy-1",
+      mimeType: "image/png",
+    };
+    const imageStore = {
+      extractImagePaths: vi.fn(() => [generatedPath]),
+      registerImages: vi.fn(async () => [imageRef]),
+      registerFromBase64: vi.fn(),
+    };
+    let resolveForwarded!: (message: ServerMessage) => void;
+    const forwarded = new Promise<ServerMessage>((resolve) => {
+      resolveForwarded = resolve;
+    });
+    const manager = new SessionManager(
+      (_sessionId, msg) => {
+        if (msg.type === "tool_result") resolveForwarded(msg);
+      },
+      imageStore as any,
+    );
+    manager.create(
+      "/tmp/project-codex-images",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+
+    codexInstances[0].emit("message", {
+      type: "tool_result",
+      toolUseId: "image-generation-legacy",
+      toolName: "ImageGeneration",
+      content: `savedPath: ${generatedPath}`,
+      artifactCandidates: [
+        {
+          source: "image_generation",
+          linkKind: "generated",
+          localPath: generatedPath,
+        },
+      ],
+    } satisfies ServerMessage);
+
+    await expect(forwarded).resolves.toMatchObject({
+      type: "tool_result",
+      images: [imageRef],
+    });
+    expect(imageStore.registerImages).toHaveBeenCalledWith(
+      [generatedPath],
+      "/tmp/project-codex-images",
+    );
+  });
+
+  it("keeps canonical history messages when Markdown extraction throws", async () => {
+    const artifactManager = {
+      registerCandidates: vi.fn(async () => []),
+    };
+    const manager = new SessionManager(
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      artifactManager as any,
+    );
+    const sessionId = manager.create(
+      "/tmp/project-history-artifact-failure",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const session = manager.get(sessionId)!;
+    session.claudeSessionId = "thread-history-artifact-failure";
+    const message = {
+      type: "assistant",
+      message: {
+        id: "assistant-history-artifact-failure",
+        role: "assistant",
+        content: [{ type: "text", text: "[source](src/main.ts)" }],
+        model: "codex",
+      },
+    } satisfies ServerMessage;
+    extractArtifactCandidatesMock.mockImplementationOnce(() => {
+      throw new Error("lexer failed");
+    });
+
+    await expect(
+      Promise.resolve(manager.enrichArtifactsForSession(session, message)),
+    ).resolves.toEqual(message);
+    expect(artifactManager.registerCandidates).not.toHaveBeenCalled();
   });
 });
 
@@ -949,7 +1423,9 @@ describe("SessionManager claude UUID backfill", () => {
       userMessageUuid: "uuid-text",
     } as ServerMessage);
 
-    const userInputs = session.history.filter((msg) => msg.type === "user_input");
+    const userInputs = session.history.filter(
+      (msg) => msg.type === "user_input",
+    );
     expect(userInputs).toHaveLength(1);
     const merged = userInputs[0] as Record<string, unknown> | undefined;
     expect(merged).toBeDefined();
@@ -987,9 +1463,7 @@ describe("SessionManager claude UUID backfill", () => {
       userMessageUuid: "item-real-1",
     } as ServerMessage);
 
-    let userInputs = session.history.filter(
-      (msg) => msg.type === "user_input",
-    );
+    let userInputs = session.history.filter((msg) => msg.type === "user_input");
     expect(userInputs).toHaveLength(1);
     expect(userInputs[0]).toMatchObject({
       type: "user_input",
@@ -1068,9 +1542,7 @@ describe("SessionManager claude UUID backfill", () => {
         text: "repeat",
       },
     });
-    expect(
-      "userMessageUuid" in (broadcasts.at(-1)?.msg ?? {}),
-    ).toBe(false);
+    expect("userMessageUuid" in (broadcasts.at(-1)?.msg ?? {})).toBe(false);
   });
 
   it("counts resumed Codex past messages when assigning remote user turn UUIDs", () => {
@@ -1116,9 +1588,7 @@ describe("SessionManager claude UUID backfill", () => {
         text: "remote after resume",
       },
     });
-    expect(
-      "userMessageUuid" in (broadcasts.at(-1)?.msg ?? {}),
-    ).toBe(false);
+    expect("userMessageUuid" in (broadcasts.at(-1)?.msg ?? {})).toBe(false);
   });
 
   it("suppresses Codex raw user echo already restored from canonical history", () => {

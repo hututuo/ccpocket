@@ -20,6 +20,14 @@ function runCli(args: string[], bridgePort?: string) {
 }
 
 describe("ccpocket-bridge CLI", { timeout: 15_000 }, () => {
+  it("documents automatic artifact service settings", () => {
+    const result = runCli(["--help"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("BRIDGE_AUTO_ARTIFACTS");
+    expect(result.stdout).toContain("BRIDGE_ARTIFACT_REGISTRY_FILE");
+  });
+
   it("reports a missing share path without starting the server", () => {
     const result = runCli(["share"]);
 

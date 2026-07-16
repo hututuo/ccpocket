@@ -33,6 +33,8 @@ const originalBridgeEnv = {
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
   artifactBaseUrl: process.env.BRIDGE_ARTIFACT_BASE_URL,
+  autoArtifacts: process.env.BRIDGE_AUTO_ARTIFACTS,
+  artifactRegistryFile: process.env.BRIDGE_ARTIFACT_REGISTRY_FILE,
   disableMdns: process.env.BRIDGE_DISABLE_MDNS,
   codexAppServerMode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
   codexSharedAppServerUrl: process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL,
@@ -84,6 +86,8 @@ describe("setup-systemd", () => {
       expect(content).not.toContain("BRIDGE_API_KEY");
       expect(content).not.toContain("BRIDGE_ALLOWED_DIRS");
       expect(content).not.toContain("BRIDGE_ARTIFACT_BASE_URL");
+      expect(content).not.toContain("BRIDGE_AUTO_ARTIFACTS");
+      expect(content).not.toContain("BRIDGE_ARTIFACT_REGISTRY_FILE");
       expect(content).not.toContain("BRIDGE_DISABLE_MDNS");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
@@ -158,6 +162,20 @@ describe("setup-systemd", () => {
         setupSystemd({ artifactBaseUrl: "http://127.0.0.1:8765" }),
       ).toThrow("BRIDGE_ARTIFACT_BASE_URL");
       expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it("persists automatic artifact rollback and registry settings", () => {
+      process.env.BRIDGE_AUTO_ARTIFACTS = "off";
+      process.env.BRIDGE_ARTIFACT_REGISTRY_FILE =
+        '/home/testuser/CC Pocket/registry"v1.json';
+
+      setupSystemd({});
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain('Environment="BRIDGE_AUTO_ARTIFACTS=off"');
+      expect(content).toContain(
+        'Environment="BRIDGE_ARTIFACT_REGISTRY_FILE=/home/testuser/CC Pocket/registry\\"v1.json"',
+      );
     });
 
     it("prefers explicit publicWsUrl over environment", () => {
@@ -364,6 +382,8 @@ function clearBridgeEnv(): void {
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
   delete process.env.BRIDGE_ARTIFACT_BASE_URL;
+  delete process.env.BRIDGE_AUTO_ARTIFACTS;
+  delete process.env.BRIDGE_ARTIFACT_REGISTRY_FILE;
   delete process.env.BRIDGE_DISABLE_MDNS;
   delete process.env.BRIDGE_CODEX_APP_SERVER_MODE;
   delete process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL;
@@ -378,6 +398,11 @@ function restoreBridgeEnv(): void {
   restoreEnvVar(
     "BRIDGE_ARTIFACT_BASE_URL",
     originalBridgeEnv.artifactBaseUrl,
+  );
+  restoreEnvVar("BRIDGE_AUTO_ARTIFACTS", originalBridgeEnv.autoArtifacts);
+  restoreEnvVar(
+    "BRIDGE_ARTIFACT_REGISTRY_FILE",
+    originalBridgeEnv.artifactRegistryFile,
   );
   restoreEnvVar("BRIDGE_DISABLE_MDNS", originalBridgeEnv.disableMdns);
   restoreEnvVar(

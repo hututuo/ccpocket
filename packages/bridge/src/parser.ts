@@ -1,5 +1,6 @@
 import type { GalleryImageInfo } from "./gallery-store.js";
 import type { ImageRef } from "./image-store.js";
+import type { ArtifactCandidate, ArtifactRef } from "./artifact-types.js";
 import type {
   PromptHistoryEntry,
   PromptHistoryImportEntry,
@@ -30,9 +31,7 @@ export interface AssistantThinkingContent {
 }
 
 export type AssistantContent =
-  | AssistantTextContent
-  | AssistantToolUseContent
-  | AssistantThinkingContent;
+  AssistantTextContent | AssistantToolUseContent | AssistantThinkingContent;
 
 /** Shape of the assistant message object within ServerMessage. */
 export interface AssistantMessage {
@@ -45,27 +44,15 @@ export interface AssistantMessage {
 // ---- Client <-> Server message types ----
 
 export type PermissionMode =
-  | "default"
-  | "auto"
-  | "acceptEdits"
-  | "bypassPermissions"
-  | "plan";
+  "default" | "auto" | "acceptEdits" | "bypassPermissions" | "plan";
 
 export type ExecutionMode = "default" | "acceptEdits" | "fullAccess";
 export type CodexApprovalPolicy =
-  | "untrusted"
-  | "on-request"
-  | "on-failure"
-  | "never";
+  "untrusted" | "on-request" | "on-failure" | "never";
 export type CodexApprovalsReviewer =
-  | "user"
-  | "auto_review"
-  | "guardian_subagent";
+  "user" | "auto_review" | "guardian_subagent";
 export type CodexPermissionsMode =
-  | "default"
-  | "autoReview"
-  | "fullAccess"
-  | "custom";
+  "default" | "autoReview" | "fullAccess" | "custom";
 
 export type Provider = "claude" | "codex";
 
@@ -220,6 +207,13 @@ export type ClientMessage =
   | { type: "get_history"; sessionId: string }
   | { type: "get_history_delta"; sessionId: string; sinceSeq: number }
   | {
+      type: "resolve_artifact";
+      requestId: string;
+      sessionId: string;
+      messageId: string;
+      artifactId: string;
+    }
+  | {
       type: "list_recent_sessions";
       limit?: number;
       offset?: number;
@@ -258,7 +252,18 @@ export type ClientMessage =
   | { type: "list_gallery"; project?: string; sessionId?: string }
   | {
       type: "read_file";
+      requestId?: string;
       projectPath: string;
+      filePath: string;
+      maxLines?: number;
+    }
+  | {
+      type: "read_artifact_source";
+      requestId: string;
+      sessionId: string;
+      messageId: string;
+      artifactId: string;
+      /** Safe project-relative path from ArtifactRef, never an absolute path. */
       filePath: string;
       maxLines?: number;
     }
@@ -493,7 +498,12 @@ export type ServerMessage =
       tipCode?: string;
       codexCliJoin?: CodexCliJoinTarget;
     }
-  | { type: "assistant"; message: AssistantMessage; messageUuid?: string }
+  | {
+      type: "assistant";
+      message: AssistantMessage;
+      messageUuid?: string;
+      artifacts?: ArtifactRef[];
+    }
   | {
       type: "tool_result";
       toolUseId: string;
@@ -502,6 +512,18 @@ export type ServerMessage =
       images?: ImageRef[];
       userMessageUuid?: string;
       rawContentBlocks?: unknown[];
+      /** Bridge-internal only; SessionManager strips it before history/broadcast. */
+      artifactCandidates?: ArtifactCandidate[];
+      artifacts?: ArtifactRef[];
+    }
+  | {
+      type: "artifact_resolved";
+      requestId: string;
+      artifactId: string;
+      relativeUrl?: string;
+      expiresAt?: string;
+      error?: string;
+      errorCode?: string;
     }
   | {
       type: "result";
@@ -560,11 +582,13 @@ export type ServerMessage =
   | { type: "thinking_delta"; text: string }
   | {
       type: "file_content";
+      requestId?: string;
       filePath: string;
       kind?: "text" | "image";
       content: string;
       language?: string;
       error?: string;
+      errorCode?: string;
       totalLines?: number;
       truncated?: boolean;
       base64?: string;
@@ -795,11 +819,7 @@ export interface UsageInfoPayload {
 }
 
 export type ProcessStatus =
-  | "starting"
-  | "idle"
-  | "running"
-  | "waiting_approval"
-  | "compacting";
+  "starting" | "idle" | "running" | "waiting_approval" | "compacting";
 
 // ---- Helpers ----
 
@@ -835,11 +855,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         typeof entry.projectPath !== "string"
       )
         return false;
-      if (
-        entry.id !== undefined &&
-        typeof entry.id !== "string"
-      )
-        return false;
+      if (entry.id !== undefined && typeof entry.id !== "string") return false;
       if (
         entry.useCount !== undefined &&
         (!Number.isInteger(entry.useCount) || Number(entry.useCount) < 0)
@@ -872,9 +888,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (msg.supportedServerMessages !== undefined) {
           if (!Array.isArray(msg.supportedServerMessages)) return null;
           if (
-            msg.supportedServerMessages.some(
-              (type) => typeof type !== "string",
-            )
+            msg.supportedServerMessages.some((type) => typeof type !== "string")
           )
             return null;
         }
@@ -938,9 +952,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         if (
           msg.permissionMode !== undefined &&
-          !["default", "auto", "acceptEdits", "bypassPermissions", "plan"].includes(
-            String(msg.permissionMode),
-          )
+          ![
+            "default",
+            "auto",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+          ].includes(String(msg.permissionMode))
         )
           return null;
         if (
@@ -973,10 +991,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         if (msg.planMode !== undefined && typeof msg.planMode !== "boolean")
           return null;
-        if (
-          msg.autoRename !== undefined &&
-          typeof msg.autoRename !== "boolean"
-        )
+        if (msg.autoRename !== undefined && typeof msg.autoRename !== "boolean")
           return null;
         if (
           msg.webSearchMode !== undefined &&
@@ -986,9 +1001,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (msg.additionalWritableRoots !== undefined) {
           if (!Array.isArray(msg.additionalWritableRoots)) return null;
           if (
-            msg.additionalWritableRoots.some(
-              (root) => typeof root !== "string",
-            )
+            msg.additionalWritableRoots.some((root) => typeof root !== "string")
           )
             return null;
         }
@@ -1070,17 +1083,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
         }
         break;
       case "steer_queued_input":
-        if (
-          typeof msg.sessionId !== "string" ||
-          typeof msg.itemId !== "string"
-        )
+        if (typeof msg.sessionId !== "string" || typeof msg.itemId !== "string")
           return null;
         break;
       case "cancel_queued_input":
-        if (
-          typeof msg.sessionId !== "string" ||
-          typeof msg.itemId !== "string"
-        )
+        if (typeof msg.sessionId !== "string" || typeof msg.itemId !== "string")
           return null;
         break;
       case "push_register":
@@ -1098,9 +1105,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
       case "set_permission_mode":
         if (
           typeof msg.mode !== "string" ||
-          !["default", "auto", "acceptEdits", "bypassPermissions", "plan"].includes(
-            msg.mode,
-          )
+          ![
+            "default",
+            "auto",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+          ].includes(msg.mode)
         )
           return null;
         if (
@@ -1223,6 +1234,33 @@ export function parseClientMessage(data: string): ClientMessage | null {
         )
           return null;
         break;
+      case "resolve_artifact":
+        if (
+          !hasOnlyKeys([
+            "type",
+            "requestId",
+            "sessionId",
+            "messageId",
+            "artifactId",
+          ])
+        )
+          return null;
+        if (
+          typeof msg.requestId !== "string" ||
+          msg.requestId.length === 0 ||
+          msg.requestId.length > 128 ||
+          typeof msg.sessionId !== "string" ||
+          msg.sessionId.length === 0 ||
+          msg.sessionId.length > 256 ||
+          typeof msg.messageId !== "string" ||
+          msg.messageId.length === 0 ||
+          msg.messageId.length > 512 ||
+          typeof msg.artifactId !== "string" ||
+          msg.artifactId.length === 0 ||
+          msg.artifactId.length > 128
+        )
+          return null;
+        break;
       case "list_recent_sessions":
         break;
       case "resume_session":
@@ -1294,9 +1332,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         if (
           msg.permissionMode !== undefined &&
-          !["default", "auto", "acceptEdits", "bypassPermissions", "plan"].includes(
-            String(msg.permissionMode),
-          )
+          ![
+            "default",
+            "auto",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+          ].includes(String(msg.permissionMode))
         )
           return null;
         if (
@@ -1337,19 +1379,74 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (msg.additionalWritableRoots !== undefined) {
           if (!Array.isArray(msg.additionalWritableRoots)) return null;
           if (
-            msg.additionalWritableRoots.some(
-              (root) => typeof root !== "string",
-            )
+            msg.additionalWritableRoots.some((root) => typeof root !== "string")
           )
             return null;
         }
         break;
       case "list_gallery":
         break;
-      case "read_file":
-        if (typeof msg.projectPath !== "string") return null;
-        if (typeof msg.filePath !== "string") return null;
+      case "read_file": {
+        if (
+          !hasOnlyKeys([
+            "type",
+            "requestId",
+            "projectPath",
+            "filePath",
+            "maxLines",
+          ]) ||
+          typeof msg.projectPath !== "string" ||
+          msg.projectPath.trim().length === 0 ||
+          msg.projectPath.length > 8192 ||
+          typeof msg.filePath !== "string" ||
+          msg.filePath.trim().length === 0 ||
+          msg.filePath.length > 8192 ||
+          (msg.requestId !== undefined &&
+            (typeof msg.requestId !== "string" ||
+              msg.requestId.length === 0 ||
+              msg.requestId.length > 128)) ||
+          (msg.maxLines !== undefined &&
+            (!Number.isInteger(msg.maxLines) ||
+              Number(msg.maxLines) < 1 ||
+              Number(msg.maxLines) > 100_000))
+        )
+          return null;
         break;
+      }
+      case "read_artifact_source": {
+        if (
+          !hasOnlyKeys([
+            "type",
+            "requestId",
+            "sessionId",
+            "messageId",
+            "artifactId",
+            "filePath",
+            "maxLines",
+          ]) ||
+          typeof msg.requestId !== "string" ||
+          msg.requestId.length === 0 ||
+          msg.requestId.length > 128 ||
+          typeof msg.sessionId !== "string" ||
+          msg.sessionId.length === 0 ||
+          msg.sessionId.length > 256 ||
+          typeof msg.messageId !== "string" ||
+          msg.messageId.length === 0 ||
+          msg.messageId.length > 512 ||
+          typeof msg.artifactId !== "string" ||
+          msg.artifactId.length === 0 ||
+          msg.artifactId.length > 128 ||
+          typeof msg.filePath !== "string" ||
+          msg.filePath.trim().length === 0 ||
+          msg.filePath.length > 8192 ||
+          (msg.maxLines !== undefined &&
+            (!Number.isInteger(msg.maxLines) ||
+              Number(msg.maxLines) < 1 ||
+              Number(msg.maxLines) > 100_000))
+        )
+          return null;
+        break;
+      }
       case "list_files":
         if (typeof msg.projectPath !== "string") return null;
         break;
@@ -1476,7 +1573,8 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         if (
           msg.sinceRevision !== undefined &&
-          (!Number.isInteger(msg.sinceRevision) || Number(msg.sinceRevision) < 0)
+          (!Number.isInteger(msg.sinceRevision) ||
+            Number(msg.sinceRevision) < 0)
         )
           return null;
         if (
@@ -1501,10 +1599,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
           typeof msg.projectPath !== "string"
         )
           return null;
-        if (
-          msg.isFavorite !== undefined &&
-          typeof msg.isFavorite !== "boolean"
-        )
+        if (msg.isFavorite !== undefined && typeof msg.isFavorite !== "boolean")
           return null;
         if (msg.updatedAt !== undefined && typeof msg.updatedAt !== "string")
           return null;

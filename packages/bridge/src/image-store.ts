@@ -113,7 +113,7 @@ export class ImageStore {
       try {
         const resolvedPath = await this.resolveReadablePath(filePath, projectPath);
         if (!resolvedPath) {
-          console.warn(`[image-store] Skipping ${filePath} (not file or >10MB)`);
+          console.warn("[image-store] Skipping image (not file or >10MB)");
           continue;
         }
         const ext = extname(resolvedPath).toLowerCase();
@@ -127,7 +127,8 @@ export class ImageStore {
         refs.push(ref);
         this.evictLRU();
       } catch (err) {
-        console.warn(`[image-store] Failed to read ${filePath}:`, err);
+        const detail = err instanceof Error ? err.name : "unknown_error";
+        console.warn(`[image-store] Failed to read image: ${detail}`);
       }
     }
     return refs;

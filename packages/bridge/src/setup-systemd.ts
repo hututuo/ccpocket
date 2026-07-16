@@ -109,6 +109,9 @@ export function setupSystemd(opts: SetupOptions): void {
   const rawArtifactBaseUrl =
     opts.artifactBaseUrl ?? process.env.BRIDGE_ARTIFACT_BASE_URL ?? "";
   const artifactBaseUrl = validateArtifactBaseUrl(rawArtifactBaseUrl);
+  const autoArtifacts = process.env.BRIDGE_AUTO_ARTIFACTS?.trim() ?? "";
+  const artifactRegistryFile =
+    process.env.BRIDGE_ARTIFACT_REGISTRY_FILE?.trim() ?? "";
   if (rawArtifactBaseUrl && !artifactBaseUrl) {
     throw new Error(
       "BRIDGE_ARTIFACT_BASE_URL must be a mobile-reachable HTTP(S) origin",
@@ -160,6 +163,12 @@ Environment="BRIDGE_CLI_ENTRY=${escapeSystemdEnvironment(bridgeCliEntry)}"`;
   }
   if (artifactBaseUrl) {
     envLines += `\nEnvironment=BRIDGE_ARTIFACT_BASE_URL=${artifactBaseUrl}`;
+  }
+  if (autoArtifacts) {
+    envLines += `\nEnvironment="BRIDGE_AUTO_ARTIFACTS=${escapeSystemdEnvironment(autoArtifacts)}"`;
+  }
+  if (artifactRegistryFile) {
+    envLines += `\nEnvironment="BRIDGE_ARTIFACT_REGISTRY_FILE=${escapeSystemdEnvironment(artifactRegistryFile)}"`;
   }
   if (disableMdns) {
     envLines += "\nEnvironment=BRIDGE_DISABLE_MDNS=1";

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ImageStore } from "./image-store.js";
 
 describe("ImageStore.extractImagePaths", () => {
@@ -136,6 +136,21 @@ describe("ImageStore.registerImages", () => {
       expect(refs[0]).toMatchObject({ mimeType: "image/png" });
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose a rejected disk path in warnings", async () => {
+    const privatePath = "/tmp/private-project/secret-image-name.png";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = new ImageStore();
+      await expect(store.registerImages([privatePath])).resolves.toEqual([]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(privatePath);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(
+        "secret-image-name.png",
+      );
+    } finally {
+      warn.mockRestore();
     }
   });
 });

@@ -1,8 +1,16 @@
-import { readdir, readFile, writeFile, appendFile, stat, open } from "node:fs/promises";
+import {
+  readdir,
+  readFile,
+  writeFile,
+  appendFile,
+  stat,
+  open,
+} from "node:fs/promises";
 import { createReadStream, type Dirent } from "node:fs";
 import { createInterface } from "node:readline";
 import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
 import { isAutoRenamePromptText } from "./auto-rename.js";
 import { CODEX_ASSIST_MODEL } from "./codex-assist.js";
@@ -271,10 +279,16 @@ const RE_SYSTEM_INJECTED =
   /^<(?:local-command-caveat|local-command-std(?:err|out)|task-notification|teammate-message|bash-(?:input|stdout))>/;
 
 function isSystemInjectedText(text: string): boolean {
-  return RE_SYSTEM_INJECTED.test(text) || text.startsWith("Base directory for this skill:");
+  return (
+    RE_SYSTEM_INJECTED.test(text) ||
+    text.startsWith("Base directory for this skill:")
+  );
 }
 
-function isCodexAutoRenameSession(firstPrompt: string, model?: string): boolean {
+function isCodexAutoRenameSession(
+  firstPrompt: string,
+  model?: string,
+): boolean {
   return model === CODEX_ASSIST_MODEL && isAutoRenamePromptText(firstPrompt);
 }
 
@@ -429,7 +443,9 @@ function parseFromChunks(
           firstPrompt = text;
           headFoundFirstPrompt = true;
         }
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
   }
 
@@ -498,7 +514,9 @@ function parseFromChunks(
         const entry = JSON.parse(lastUserLine) as Record<string, unknown>;
         const text = extractUserPromptText(entry);
         if (text && !isSystemInjectedText(text)) lastPrompt = text;
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
 
     // Fill in metadata from tail if head didn't have it
@@ -614,12 +632,10 @@ async function parseClaudeJsonlFileFast(
   // from the start whenever head parsing missed these fields so resume uses
   // the original session cwd rather than a later in-session directory.
   if (
-    result
-    && (
-      !result.firstPrompt
-      || !parsedChunks.headFoundProjectPath
-      || !parsedChunks.headFoundGitBranch
-    )
+    result &&
+    (!result.firstPrompt ||
+      !parsedChunks.headFoundProjectPath ||
+      !parsedChunks.headFoundGitBranch)
   ) {
     const missing = await extractMissingFieldsStreaming(
       filePath,
@@ -667,7 +683,9 @@ async function hydrateClaudeIndexedEntry(
     modified: entry.modified ?? "",
     gitBranch: entry.gitBranch ?? "",
     projectPath: normalizedPath,
-    ...(rawProjectPath && rawProjectPath !== normalizedPath ? { resumeCwd: rawProjectPath } : {}),
+    ...(rawProjectPath && rawProjectPath !== normalizedPath
+      ? { resumeCwd: rawProjectPath }
+      : {}),
     isSidechain: entry.isSidechain ?? false,
   };
 
@@ -681,7 +699,8 @@ async function hydrateClaudeIndexedEntry(
 
   if (!needsJsonlRepair) return base;
 
-  const fallbackPath = entry.fullPath || join(dirPath, `${entry.sessionId}.jsonl`);
+  const fallbackPath =
+    entry.fullPath || join(dirPath, `${entry.sessionId}.jsonl`);
   const parsed = await parseClaudeJsonlFileFast(entry.sessionId, fallbackPath);
   if (!parsed) return base;
   if (isAutoRenamePromptText(parsed.firstPrompt)) return null;
@@ -689,14 +708,22 @@ async function hydrateClaudeIndexedEntry(
   return {
     ...base,
     firstPrompt: base.firstPrompt || parsed.firstPrompt,
-    ...(parsed.name ? { name: parsed.name } : base.name ? { name: base.name } : {}),
+    ...(parsed.name
+      ? { name: parsed.name }
+      : base.name
+        ? { name: base.name }
+        : {}),
     created: base.created || parsed.created,
     modified: base.modified || parsed.modified,
     gitBranch: base.gitBranch || parsed.gitBranch,
     projectPath: base.projectPath || parsed.projectPath,
     isSidechain: base.isSidechain || parsed.isSidechain,
-    ...(base.lastPrompt || !parsed.lastPrompt ? {} : { lastPrompt: parsed.lastPrompt }),
-    ...(base.permissionMode || !parsed.permissionMode ? {} : { permissionMode: parsed.permissionMode }),
+    ...(base.lastPrompt || !parsed.lastPrompt
+      ? {}
+      : { lastPrompt: parsed.lastPrompt }),
+    ...(base.permissionMode || !parsed.permissionMode
+      ? {}
+      : { permissionMode: parsed.permissionMode }),
   };
 }
 
@@ -712,7 +739,12 @@ async function extractMissingFieldsStreaming(
   needFirstPrompt: boolean,
   needProjectPath: boolean,
   needGitBranch: boolean,
-): Promise<{ firstPrompt: string; projectPath: string; rawCwd: string; gitBranch: string }> {
+): Promise<{
+  firstPrompt: string;
+  projectPath: string;
+  rawCwd: string;
+  gitBranch: string;
+}> {
   return new Promise((resolve) => {
     const stream = createReadStream(filePath, { encoding: "utf-8" });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
@@ -793,9 +825,7 @@ const LAST_PROMPT_MAX_TAIL = 131072; // 128KB
  * user text prompt is found.  No full-file scan is ever performed.
  * Used to supplement sessions-index.json entries that lack lastPrompt.
  */
-async function extractLastPromptFromTail(
-  filePath: string,
-): Promise<string> {
+async function extractLastPromptFromTail(filePath: string): Promise<string> {
   let fh;
   try {
     fh = await open(filePath, "r");
@@ -927,9 +957,7 @@ export async function getAllRecentSessions(
   markDuration(durations, "loadClaudeProjectDirs", loadProjectDirsStartedAt);
 
   // Compute worktree slug prefix for projectPath filtering
-  const projectSlug = filterProjectPath
-    ? pathToSlug(filterProjectPath)
-    : null;
+  const projectSlug = filterProjectPath ? pathToSlug(filterProjectPath) : null;
 
   // --- Load Claude and Codex sessions in parallel ---
 
@@ -975,7 +1003,12 @@ export async function getAllRecentSessions(
           indexDirs: 0,
           indexEntries: 0,
           jsonlOnlyDirs: 0,
-          jsonlStats: { filesTotal: 0, filesExcluded: 0, filesRead: 0, entriesReturned: 0 },
+          jsonlStats: {
+            filesTotal: 0,
+            filesExcluded: 0,
+            filesRead: 0,
+            entriesReturned: 0,
+          },
         };
 
         if (raw !== null) {
@@ -1022,7 +1055,9 @@ export async function getAllRecentSessions(
           }
 
           result.jsonlOnlyDirs = 1;
-          const scanned = await scanJsonlDir(dirPath, { stats: result.jsonlStats });
+          const scanned = await scanJsonlDir(dirPath, {
+            stats: result.jsonlStats,
+          });
           result.entries.push(...scanned);
         }
 
@@ -1155,14 +1190,18 @@ export async function getAllRecentSessions(
   );
   if (needLastPrompt.length > 0) {
     const projectsDir = join(homedir(), ".claude", "projects");
-    await parallelMap(needLastPrompt, PARALLEL_FILE_READ_LIMIT, async (entry) => {
+    await parallelMap(
+      needLastPrompt,
+      PARALLEL_FILE_READ_LIMIT,
+      async (entry) => {
       const slug = pathToSlug(entry.projectPath);
       const jsonlPath = join(projectsDir, slug, `${entry.sessionId}.jsonl`);
       const lp = await extractLastPromptFromTail(jsonlPath);
       if (lp && lp !== entry.firstPrompt) {
         entry.lastPrompt = lp;
       }
-    });
+      },
+    );
   }
   markDuration(durations, "supplementLastPrompt", supplementStartedAt);
 
@@ -1227,7 +1266,10 @@ async function listCodexSessionFiles(): Promise<string[]> {
   return files;
 }
 
-function parseCodexSessionJsonl(raw: string, fallbackSessionId: string): CodexSessionParseResult | null {
+function parseCodexSessionJsonl(
+  raw: string,
+  fallbackSessionId: string,
+): CodexSessionParseResult | null {
   const lines = raw.split("\n");
   let threadId = fallbackSessionId;
   let projectPath = "";
@@ -1298,10 +1340,16 @@ function parseCodexSessionJsonl(raw: string, fallbackSessionId: string): CodexSe
         if (git && typeof git.branch === "string") {
           gitBranch = git.branch;
         }
-        if (typeof payload.agent_nickname === "string" && payload.agent_nickname.length > 0) {
+        if (
+          typeof payload.agent_nickname === "string" &&
+          payload.agent_nickname.length > 0
+        ) {
           agentNickname = payload.agent_nickname;
         }
-        if (typeof payload.agent_role === "string" && payload.agent_role.length > 0) {
+        if (
+          typeof payload.agent_role === "string" &&
+          payload.agent_role.length > 0
+        ) {
           agentRole = payload.agent_role;
         }
       }
@@ -1320,15 +1368,18 @@ function parseCodexSessionJsonl(raw: string, fallbackSessionId: string): CodexSe
         if (typeof payload.approvals_reviewer === "string") {
           approvalsReviewer = payload.approvals_reviewer;
         }
-        const sp = payload.sandbox_policy as Record<string, unknown> | undefined;
+        const sp = payload.sandbox_policy as
+          Record<string, unknown> | undefined;
         if (sp && typeof sp.type === "string") {
           sandboxMode = sp.type;
         }
         if (typeof payload.model === "string") {
           model = payload.model;
         }
-        const collaborationMode = payload.collaboration_mode as Record<string, unknown> | undefined;
-        const collaborationSettings = collaborationMode?.settings as Record<string, unknown> | undefined;
+        const collaborationMode = payload.collaboration_mode as
+          Record<string, unknown> | undefined;
+        const collaborationSettings = collaborationMode?.settings as
+          Record<string, unknown> | undefined;
         if (typeof collaborationSettings?.reasoning_effort === "string") {
           modelReasoningEffort = collaborationSettings.reasoning_effort;
         }
@@ -1353,14 +1404,17 @@ function parseCodexSessionJsonl(raw: string, fallbackSessionId: string): CodexSe
 
     if (entry.type === "event_msg") {
       const payload = entry.payload as Record<string, unknown> | undefined;
-      if (payload?.type === "user_message" && typeof payload.message === "string") {
+      if (
+        payload?.type === "user_message" &&
+        typeof payload.message === "string"
+      ) {
         hasMessages = true;
         if (!firstPrompt) firstPrompt = payload.message;
         lastPrompt = payload.message;
       } else if (
-        payload?.type === "agent_message"
-        && typeof payload.message === "string"
-        && payload.message.trim().length > 0
+        payload?.type === "agent_message" &&
+        typeof payload.message === "string" &&
+        payload.message.trim().length > 0
       ) {
         hasMessages = true;
         lastAssistantText = payload.message;
@@ -1370,13 +1424,20 @@ function parseCodexSessionJsonl(raw: string, fallbackSessionId: string): CodexSe
 
     if (entry.type === "response_item") {
       const payload = entry.payload as Record<string, unknown> | undefined;
-      if (!payload || payload.type !== "message" || payload.role !== "assistant") {
+      if (
+        !payload ||
+        payload.type !== "message" ||
+        payload.role !== "assistant"
+      ) {
         continue;
       }
       const content = payload.content;
       if (!Array.isArray(content)) continue;
       const text = (content as Array<Record<string, unknown>>)
-        .filter((item) => item.type === "output_text" && typeof item.text === "string")
+        .filter(
+          (item) =>
+            item.type === "output_text" && typeof item.text === "string",
+        )
         .map((item) => item.text as string)
         .join("\n")
         .trim();
@@ -1392,16 +1453,15 @@ function parseCodexSessionJsonl(raw: string, fallbackSessionId: string): CodexSe
   if (!projectPath || !hasMessages) return null;
   summary = lastAssistantText || summary;
 
-  const codexSettings = (
-    approvalPolicy
-    || approvalsReviewer
-    || sandboxMode
-    || model
-    || modelReasoningEffort
-    || serviceTier
-    || networkAccessEnabled !== undefined
-    || webSearchMode
-  )
+  const codexSettings =
+    approvalPolicy ||
+    approvalsReviewer ||
+    sandboxMode ||
+    model ||
+    modelReasoningEffort ||
+    serviceTier ||
+    networkAccessEnabled !== undefined ||
+    webSearchMode
     ? {
         approvalPolicy,
         approvalsReviewer,
@@ -1493,7 +1553,9 @@ function extractClaudeCustomTitleFromText(text: string): string | undefined {
   return customTitle || undefined;
 }
 
-async function getClaudeJsonlCustomTitle(filePath: string): Promise<string | undefined> {
+async function getClaudeJsonlCustomTitle(
+  filePath: string,
+): Promise<string | undefined> {
   let fh;
   try {
     fh = await open(filePath, "r");
@@ -1513,7 +1575,9 @@ async function getClaudeJsonlCustomTitle(filePath: string): Promise<string | und
 
     const headBuf = Buffer.alloc(HEAD_BYTES);
     await fh.read(headBuf, 0, HEAD_BYTES, 0);
-    const headTitle = extractClaudeCustomTitleFromText(headBuf.toString("utf-8"));
+    const headTitle = extractClaudeCustomTitleFromText(
+      headBuf.toString("utf-8"),
+    );
 
     const tailBuf = Buffer.alloc(TAIL_BYTES);
     await fh.read(tailBuf, 0, TAIL_BYTES, fileSize - TAIL_BYTES);
@@ -1558,8 +1622,12 @@ export async function getClaudeSessionName(
 
   const entry = index.entries.find((e) => e.sessionId === claudeSessionId);
   return (
-    await getClaudeJsonlCustomTitle(entry?.fullPath || join(dirPath, `${claudeSessionId}.jsonl`))
-  ) ?? entry?.customTitle ?? undefined;
+    (await getClaudeJsonlCustomTitle(
+      entry?.fullPath || join(dirPath, `${claudeSessionId}.jsonl`),
+    )) ??
+    entry?.customTitle ??
+    undefined
+  );
 }
 
 /**
@@ -1604,7 +1672,13 @@ export async function renameClaudeSession(
   }
 
   const slug = pathToSlug(projectPath);
-  const indexPath = join(homedir(), ".claude", "projects", slug, "sessions-index.json");
+  const indexPath = join(
+    homedir(),
+    ".claude",
+    "projects",
+    slug,
+    "sessions-index.json",
+  );
 
   let index: RawSessionIndexFile | null = null;
   try {
@@ -1794,7 +1868,9 @@ export async function renameCodexSession(
   }
 }
 
-async function getAllRecentCodexSessions(options: CodexRecentOptions = {}): Promise<SessionIndexEntry[]> {
+async function getAllRecentCodexSessions(
+  options: CodexRecentOptions = {},
+): Promise<SessionIndexEntry[]> {
   const files = await listCodexSessionFiles();
   const entries: SessionIndexEntry[] = [];
   options.perfStats && (options.perfStats.filesTotal = files.length);
@@ -1820,7 +1896,10 @@ async function getAllRecentCodexSessions(options: CodexRecentOptions = {}): Prom
   for (const parsed of parsedResults) {
     options.perfStats && (options.perfStats.filesRead += 1);
     if (!parsed) continue;
-    if (normalizedProjectPath && parsed.entry.projectPath !== normalizedProjectPath) {
+    if (
+      normalizedProjectPath &&
+      parsed.entry.projectPath !== normalizedProjectPath
+    ) {
       continue;
     }
     // Attach thread name if available
@@ -1874,7 +1953,10 @@ export async function getCodexSessionIndexMetadata(
   const targets: string[] = [];
   const matchedThreadIds = new Set<string>();
   for (const filePath of files) {
-    const threadId = matchingCodexThreadIdFromFilePath(filePath, wantedThreadIds);
+    const threadId = matchingCodexThreadIdFromFilePath(
+      filePath,
+      wantedThreadIds,
+    );
     if (!threadId || matchedThreadIds.has(threadId)) continue;
     targets.push(filePath);
     matchedThreadIds.add(threadId);
@@ -1897,8 +1979,12 @@ export async function getCodexSessionIndexMetadata(
         ? { codexSettings: parsed.entry.codexSettings }
         : {}),
       ...(parsed.entry.resumeCwd ? { resumeCwd: parsed.entry.resumeCwd } : {}),
-      ...(parsed.entry.firstPrompt ? { firstPrompt: parsed.entry.firstPrompt } : {}),
-      ...(parsed.entry.lastPrompt ? { lastPrompt: parsed.entry.lastPrompt } : {}),
+      ...(parsed.entry.firstPrompt
+        ? { firstPrompt: parsed.entry.firstPrompt }
+        : {}),
+      ...(parsed.entry.lastPrompt
+        ? { lastPrompt: parsed.entry.lastPrompt }
+        : {}),
       ...(parsed.entry.summary ? { summary: parsed.entry.summary } : {}),
     });
   }
@@ -2123,15 +2209,18 @@ export function codexThreadToSessionHistory(
             "assistant",
             stringValue(item.text) ?? "",
             itemTimestamp,
+            itemId,
           );
           break;
         }
 
         case "reasoning": {
-          const summary = arrayValue(item.summary)
-            .filter((value): value is string => typeof value === "string");
-          const content = arrayValue(item.content)
-            .filter((value): value is string => typeof value === "string");
+          const summary = arrayValue(item.summary).filter(
+            (value): value is string => typeof value === "string",
+          );
+          const content = arrayValue(item.content).filter(
+            (value): value is string => typeof value === "string",
+          );
           appendCodexThinkingMessage(
             messages,
             [...summary, ...content].join("\n"),
@@ -2182,7 +2271,9 @@ export function codexThreadToSessionHistory(
             ...(typeof item.status === "string" ? { status: item.status } : {}),
           });
           if (item.result != null || item.error != null) {
-            const normalized = normalizeCodexMcpResult(item.result ?? item.error);
+            const normalized = normalizeCodexMcpResult(
+              item.result ?? item.error,
+            );
             appendToolResultMessage(
               messages,
               itemId,
@@ -2271,6 +2362,7 @@ export function codexThreadToSessionHistory(
             "assistant",
             stringValue(item.review) ?? "",
             itemTimestamp,
+            itemId,
           );
           break;
         }
@@ -2315,14 +2407,14 @@ function appendTextMessage(
 
   const last = messages.at(-1);
   if (
-    last
-    && last.role === role
-    && Array.isArray(last.content)
-    && last.content.length === 1
-    && last.content[0].type === "text"
-    && typeof last.content[0].text === "string"
-    && last.content[0].text.trim() === normalized
-    && (!uuid || last.uuid === uuid)
+    last &&
+    last.role === role &&
+    Array.isArray(last.content) &&
+    last.content.length === 1 &&
+    last.content[0].type === "text" &&
+    typeof last.content[0].text === "string" &&
+    last.content[0].text.trim() === normalized &&
+    (!uuid || last.uuid === uuid)
   ) {
     return false;
   }
@@ -2336,9 +2428,38 @@ function appendTextMessage(
   return true;
 }
 
+function assignStableCodexAssistantUuids(
+  messages: SessionHistoryMessage[],
+  threadId: string,
+): void {
+  let assistantOrdinal = 0;
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    assistantOrdinal += 1;
+    if (message.uuid || !Array.isArray(message.content)) continue;
+    const hasText = message.content.some(
+      (item) => item.type === "text" && typeof item.text === "string",
+    );
+    if (!hasText) continue;
+    const digest = createHash("sha256")
+      .update(
+        JSON.stringify([
+          threadId,
+          assistantOrdinal,
+          message.timestamp ?? null,
+          message.content,
+        ]),
+      )
+      .digest("base64url")
+      .slice(0, 32);
+    message.uuid = `codex:assistant:${digest}`;
+  }
+}
+
 function countCodexUserTurns(messages: SessionHistoryMessage[]): number {
-  return messages.filter((message) => message.role === "user" && !message.isMeta)
-    .length;
+  return messages.filter(
+    (message) => message.role === "user" && !message.isMeta,
+  ).length;
 }
 
 function applyCodexThreadRollback(
@@ -2379,7 +2500,8 @@ function appendImageGenerationResult(
     return;
   }
 
-  const status = typeof payload.status === "string" ? payload.status : undefined;
+  const status =
+    typeof payload.status === "string" ? payload.status : undefined;
   const revisedPrompt =
     typeof payload.revised_prompt === "string"
       ? payload.revised_prompt
@@ -2392,7 +2514,8 @@ function appendImageGenerationResult(
       : typeof payload.savedPath === "string"
         ? payload.savedPath
         : undefined;
-  const result = typeof payload.result === "string" ? payload.result : undefined;
+  const result =
+    typeof payload.result === "string" ? payload.result : undefined;
   const base64Image =
     !savedPath && result
       ? { data: stripImageDataUrlPrefix(result), mimeType: "image/png" }
@@ -2457,13 +2580,13 @@ function appendToolUseMessage(
 
   const last = messages.at(-1);
   if (
-    last
-    && last.role === "assistant"
-    && Array.isArray(last.content)
-    && last.content.length === 1
-    && last.content[0].type === "tool_use"
-    && last.content[0].id === id
-    && last.content[0].name === normalizedName
+    last &&
+    last.role === "assistant" &&
+    Array.isArray(last.content) &&
+    last.content.length === 1 &&
+    last.content[0].type === "tool_use" &&
+    last.content[0].id === id &&
+    last.content[0].name === normalizedName
   ) {
     return;
   }
@@ -2588,18 +2711,20 @@ function normalizeCodexMcpResult(result: unknown): {
 function isCodexInjectedUserContext(text: string): boolean {
   const normalized = text.trimStart();
   return (
-    normalized.startsWith("# AGENTS.md instructions for ")
-    || normalized.startsWith("<environment_context>")
-    || normalized.startsWith("<permissions instructions>")
-    || normalized.startsWith("<collaboration_mode>")
-    || normalized.startsWith("<personality_spec>")
-    || normalized.startsWith("<skills_instructions>")
-    || normalized.startsWith("<plugins_instructions>")
-    || normalized.startsWith("<skill>")
+    normalized.startsWith("# AGENTS.md instructions for ") ||
+    normalized.startsWith("<environment_context>") ||
+    normalized.startsWith("<permissions instructions>") ||
+    normalized.startsWith("<collaboration_mode>") ||
+    normalized.startsWith("<personality_spec>") ||
+    normalized.startsWith("<skills_instructions>") ||
+    normalized.startsWith("<plugins_instructions>") ||
+    normalized.startsWith("<skill>")
   );
 }
 
-function getCodexSearchInput(payload: Record<string, unknown>): Record<string, unknown> {
+function getCodexSearchInput(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
   const action = asObject(payload.action);
   const input: Record<string, unknown> = {};
   if (typeof action?.query === "string") {
@@ -2675,7 +2800,9 @@ async function findSessionJsonlPath(sessionId: string): Promise<string | null> {
   return null;
 }
 
-async function findCodexSessionJsonlPath(threadId: string): Promise<string | null> {
+async function findCodexSessionJsonlPath(
+  threadId: string,
+): Promise<string | null> {
   const files = await listCodexSessionFiles();
   for (const filePath of files) {
     const fallbackSessionId = basename(filePath, ".jsonl");
@@ -2734,14 +2861,16 @@ export async function getSessionHistory(
 
     // Skip context compaction and transcript-only messages (not real user input)
     if (type === "user") {
-      if (entry.isCompactSummary === true || entry.isVisibleInTranscriptOnly === true) {
+      if (
+        entry.isCompactSummary === true ||
+        entry.isVisibleInTranscriptOnly === true
+      ) {
         continue;
       }
     }
 
     const message = entry.message as
-      | { role: string; content: unknown[] | string }
-      | undefined;
+      { role: string; content: unknown[] | string } | undefined;
     if (!message?.content) continue;
 
     const role = message.role as "user" | "assistant";
@@ -2971,7 +3100,8 @@ async function buildClaudeMessageImageIndex(
     if (entry.type !== "user") continue;
     if (typeof entry.uuid !== "string") continue;
 
-    const message = entry.message as { content: unknown[] | string } | undefined;
+    const message = entry.message as
+      { content: unknown[] | string } | undefined;
     if (!message?.content || !Array.isArray(message.content)) continue;
 
     const images: ExtractedImage[] = [];
@@ -3336,14 +3466,18 @@ export async function getCodexSessionHistory(
       }
 
       if (payload.type === "user_message") {
-        const rawMessage = typeof payload.message === "string" ? payload.message : "";
-        const images = Array.isArray(payload.images) ? payload.images.length : 0;
+        const rawMessage =
+          typeof payload.message === "string" ? payload.message : "";
+        const images = Array.isArray(payload.images)
+          ? payload.images.length
+          : 0;
         const localImages = Array.isArray(payload.local_images)
           ? payload.local_images.length
           : 0;
         const imageCount = images + localImages;
 
-        const text = rawMessage.trim().length > 0
+        const text =
+          rawMessage.trim().length > 0
           ? rawMessage
           : imageCount > 0
             ? `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`
@@ -3361,21 +3495,31 @@ export async function getCodexSessionHistory(
             });
           }
         } else {
-          if (appendTextMessage(
+          if (
+            appendTextMessage(
             messages,
             "user",
             text,
             entryTimestamp,
             codexUserTurnUuid(userTurnOrdinal + 1),
-          )) {
+            )
+          ) {
             userTurnOrdinal += 1;
           }
         }
         continue;
       }
 
-      if (payload.type === "agent_message" && typeof payload.message === "string") {
-        appendTextMessage(messages, "assistant", payload.message, entryTimestamp);
+      if (
+        payload.type === "agent_message" &&
+        typeof payload.message === "string"
+      ) {
+        appendTextMessage(
+          messages,
+          "assistant",
+          payload.message,
+          entryTimestamp,
+        );
       }
 
       if (payload.type === "image_generation_end") {
@@ -3423,7 +3567,10 @@ export async function getCodexSessionHistory(
 
         if (payload.role === "assistant") {
           const text = content
-            .filter((item) => item.type === "output_text" && typeof item.text === "string")
+            .filter(
+              (item) =>
+                item.type === "output_text" && typeof item.text === "string",
+            )
             .map((item) => item.text as string)
             .join("\n");
           appendTextMessage(messages, "assistant", text, entryTimestamp);
@@ -3435,17 +3582,22 @@ export async function getCodexSessionHistory(
             continue;
           }
           const text = content
-            .filter((item) => item.type === "input_text" && typeof item.text === "string")
+            .filter(
+              (item) =>
+                item.type === "input_text" && typeof item.text === "string",
+            )
             .map((item) => item.text as string)
             .join("\n");
           if (!isCodexInjectedUserContext(text)) {
-            if (appendTextMessage(
+            if (
+              appendTextMessage(
               messages,
               "user",
               text,
               entryTimestamp,
               codexUserTurnUuid(userTurnOrdinal + 1),
-            )) {
+              )
+            ) {
               userTurnOrdinal += 1;
             }
           }
@@ -3454,8 +3606,12 @@ export async function getCodexSessionHistory(
       }
 
       if (payload.type === "function_call") {
-        const id = typeof payload.call_id === "string" ? payload.call_id : `tool-${index}`;
-        const rawName = typeof payload.name === "string" ? payload.name : "tool";
+        const id =
+          typeof payload.call_id === "string"
+            ? payload.call_id
+            : `tool-${index}`;
+        const rawName =
+          typeof payload.name === "string" ? payload.name : "tool";
         appendToolUseMessage(
           messages,
           id,
@@ -3466,8 +3622,12 @@ export async function getCodexSessionHistory(
       }
 
       if (payload.type === "custom_tool_call") {
-        const id = typeof payload.call_id === "string" ? payload.call_id : `tool-${index}`;
-        const rawName = typeof payload.name === "string" ? payload.name : "custom_tool";
+        const id =
+          typeof payload.call_id === "string"
+            ? payload.call_id
+            : `tool-${index}`;
+        const rawName =
+          typeof payload.name === "string" ? payload.name : "custom_tool";
         appendToolUseMessage(
           messages,
           id,
@@ -3480,7 +3640,9 @@ export async function getCodexSessionHistory(
       if (payload.type === "web_search_call") {
         appendToolUseMessage(
           messages,
-          typeof payload.call_id === "string" ? payload.call_id : `web-search-${index}`,
+          typeof payload.call_id === "string"
+            ? payload.call_id
+            : `web-search-${index}`,
           "WebSearch",
           getCodexSearchInput(payload),
         );
@@ -3499,12 +3661,14 @@ export async function getCodexSessionHistory(
 
       // Backward/forward compatibility with older/newer Codex JSONL schemas.
       if (payload.type === "command_execution") {
-        const id = typeof payload.id === "string"
+        const id =
+          typeof payload.id === "string"
           ? payload.id
           : typeof payload.call_id === "string"
             ? payload.call_id
             : `cmd-${index}`;
-        const input = typeof payload.command === "string"
+        const input =
+          typeof payload.command === "string"
           ? { command: payload.command }
           : parseObjectLike(payload);
         appendToolUseMessage(messages, id, "Bash", input);
@@ -3512,12 +3676,14 @@ export async function getCodexSessionHistory(
       }
 
       if (payload.type === "mcp_tool_call") {
-        const id = typeof payload.id === "string"
+        const id =
+          typeof payload.id === "string"
           ? payload.id
           : typeof payload.call_id === "string"
             ? payload.call_id
             : `mcp-${index}`;
-        const server = typeof payload.server === "string" ? payload.server : "unknown";
+        const server =
+          typeof payload.server === "string" ? payload.server : "unknown";
         const tool = typeof payload.tool === "string" ? payload.tool : "tool";
         appendToolUseMessage(
           messages,
@@ -3529,7 +3695,8 @@ export async function getCodexSessionHistory(
       }
 
       if (payload.type === "file_change") {
-        const id = typeof payload.id === "string"
+        const id =
+          typeof payload.id === "string"
           ? payload.id
           : typeof payload.call_id === "string"
             ? payload.call_id
@@ -3542,12 +3709,14 @@ export async function getCodexSessionHistory(
       }
 
       if (payload.type === "web_search") {
-        const id = typeof payload.id === "string"
+        const id =
+          typeof payload.id === "string"
           ? payload.id
           : typeof payload.call_id === "string"
             ? payload.call_id
             : `web-search-${index}`;
-        const input = typeof payload.query === "string"
+        const input =
+          typeof payload.query === "string"
           ? { query: payload.query }
           : getCodexSearchInput(payload);
         appendToolUseMessage(messages, id, "WebSearch", input);
@@ -3555,6 +3724,7 @@ export async function getCodexSessionHistory(
     }
   }
 
+  assignStableCodexAssistantUuids(messages, threadId);
   return messages;
 }
 
@@ -3565,10 +3735,24 @@ export async function getCodexSessionHistory(
  */
 export async function findSessionsByClaudeIds(
   ids: Set<string>,
-): Promise<Map<string, Pick<SessionIndexEntry, "summary" | "firstPrompt" | "lastPrompt" | "projectPath">>> {
+): Promise<
+  Map<
+    string,
+    Pick<
+      SessionIndexEntry,
+      "summary" | "firstPrompt" | "lastPrompt" | "projectPath"
+    >
+  >
+> {
   if (ids.size === 0) return new Map();
 
-  const result = new Map<string, Pick<SessionIndexEntry, "summary" | "firstPrompt" | "lastPrompt" | "projectPath">>();
+  const result = new Map<
+    string,
+    Pick<
+      SessionIndexEntry,
+      "summary" | "firstPrompt" | "lastPrompt" | "projectPath"
+    >
+  >();
   const remaining = new Set(ids);
 
   const projectsDir = join(homedir(), ".claude", "projects");

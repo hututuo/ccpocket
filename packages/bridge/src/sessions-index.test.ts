@@ -215,10 +215,7 @@ describe("isWorktreeSlug", () => {
   it("does not match partial prefix collisions", () => {
     // "-vibetunnel-extra" is not the same as "-vibetunnel-worktrees-"
     expect(
-      isWorktreeSlug(
-        "-Users-x-Workspace-vibetunnel-extra",
-        projectSlug,
-      ),
+      isWorktreeSlug("-Users-x-Workspace-vibetunnel-extra", projectSlug),
     ).toBe(false);
   });
 });
@@ -232,14 +229,16 @@ describe("normalizeWorktreePath", () => {
 
   it("handles branch names with hyphens", () => {
     expect(
-      normalizeWorktreePath("/Users/x/Workspace/gtri-worktrees/test-session-verify"),
+      normalizeWorktreePath(
+        "/Users/x/Workspace/gtri-worktrees/test-session-verify",
+      ),
     ).toBe("/Users/x/Workspace/gtri");
   });
 
   it("returns the original path when not a worktree path", () => {
-    expect(
-      normalizeWorktreePath("/Users/x/Workspace/ccpocket"),
-    ).toBe("/Users/x/Workspace/ccpocket");
+    expect(normalizeWorktreePath("/Users/x/Workspace/ccpocket")).toBe(
+      "/Users/x/Workspace/ccpocket",
+    );
   });
 
   it("returns the original path for empty string", () => {
@@ -247,9 +246,9 @@ describe("normalizeWorktreePath", () => {
   });
 
   it("does not match paths ending with -worktrees (no branch segment)", () => {
-    expect(
-      normalizeWorktreePath("/Users/x/Workspace/ccpocket-worktrees"),
-    ).toBe("/Users/x/Workspace/ccpocket-worktrees");
+    expect(normalizeWorktreePath("/Users/x/Workspace/ccpocket-worktrees")).toBe(
+      "/Users/x/Workspace/ccpocket-worktrees",
+    );
   });
 
   it("does not match nested worktree-like paths", () => {
@@ -305,10 +304,7 @@ describe("scanJsonlDir", () => {
         timestamp: "2026-01-01T00:00:01.000Z",
       }),
     ];
-    writeFileSync(
-      join(testDir, "test-session-1.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "test-session-1.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toHaveLength(1);
@@ -348,10 +344,7 @@ describe("scanJsonlDir", () => {
         sessionId: "test-session-title",
       }),
     ];
-    writeFileSync(
-      join(testDir, "test-session-title.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "test-session-title.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toHaveLength(1);
@@ -387,10 +380,7 @@ describe("scanJsonlDir", () => {
         timestamp: "2026-01-01T00:00:01.000Z",
       }),
     ];
-    writeFileSync(
-      join(testDir, "auto-rename-helper.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "auto-rename-helper.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toEqual([]);
@@ -427,10 +417,7 @@ describe("scanJsonlDir", () => {
     const lines = [
       JSON.stringify({ type: "queue-operation", operation: "dequeue" }),
     ];
-    writeFileSync(
-      join(testDir, "empty-session.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "empty-session.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toEqual([]);
@@ -471,10 +458,7 @@ describe("scanJsonlDir", () => {
         timestamp: "2026-01-01T00:00:00.000Z",
       }),
     ];
-    writeFileSync(
-      join(testDir, "mixed.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "mixed.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toHaveLength(1);
@@ -493,10 +477,7 @@ describe("scanJsonlDir", () => {
         timestamp: "2026-01-01T00:00:00.000Z",
       }),
     ];
-    writeFileSync(
-      join(testDir, "string-content.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "string-content.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toHaveLength(1);
@@ -516,10 +497,7 @@ describe("scanJsonlDir", () => {
         timestamp: "2026-01-01T00:00:00.000Z",
       }),
     ];
-    writeFileSync(
-      join(testDir, "wt-session.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "wt-session.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toHaveLength(1);
@@ -539,10 +517,7 @@ describe("scanJsonlDir", () => {
         timestamp: "2026-01-01T00:00:00.000Z",
       }),
     ];
-    writeFileSync(
-      join(testDir, "sidechain.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "sidechain.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toHaveLength(1);
@@ -581,10 +556,7 @@ describe("scanJsonlDir", () => {
         timestamp: "2026-03-01T00:00:01.000Z",
       }),
     ];
-    writeFileSync(
-      join(testDir, "large-msg-session.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "large-msg-session.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toHaveLength(1);
@@ -627,10 +599,7 @@ describe("scanJsonlDir", () => {
         timestamp: "2026-03-01T00:00:01.000Z",
       }),
     ];
-    writeFileSync(
-      join(testDir, "cwd-drift-session.jsonl"),
-      lines.join("\n"),
-    );
+    writeFileSync(join(testDir, "cwd-drift-session.jsonl"), lines.join("\n"));
 
     const result = await scanJsonlDir(testDir);
     expect(result).toHaveLength(1);
@@ -693,7 +662,11 @@ describe("codex sessions integration", () => {
       JSON.stringify({
         timestamp: "2026-02-13T11:26:43.995Z",
         type: "session_meta",
-        payload: { id: threadId, cwd: "/tmp/project-a", git: { branch: "main" } },
+        payload: {
+          id: threadId,
+          cwd: "/tmp/project-a",
+          git: { branch: "main" },
+        },
       }),
       JSON.stringify({
         timestamp: "2026-02-13T11:26:44.100Z",
@@ -894,12 +867,19 @@ describe("codex sessions integration", () => {
       JSON.stringify({
         timestamp: "2026-02-13T12:00:00.000Z",
         type: "session_meta",
-        payload: { id: threadId, cwd: worktreePath, git: { branch: "feature/x" } },
+        payload: {
+          id: threadId,
+          cwd: worktreePath,
+          git: { branch: "feature/x" },
+        },
       }),
       JSON.stringify({
         timestamp: "2026-02-13T12:00:01.000Z",
         type: "event_msg",
-        payload: { type: "user_message", message: "resume this worktree session" },
+        payload: {
+          type: "user_message",
+          message: "resume this worktree session",
+        },
       }),
       JSON.stringify({
         timestamp: "2026-02-13T12:00:02.000Z",
@@ -927,13 +907,17 @@ describe("codex sessions integration", () => {
       projectPath: mainProjectPath,
       limit: 200,
     });
-    expect(mainFilter.sessions.some((s) => s.sessionId === threadId)).toBe(true);
+    expect(mainFilter.sessions.some((s) => s.sessionId === threadId)).toBe(
+      true,
+    );
 
     const worktreeFilter = await getAllRecentSessions({
       projectPath: worktreePath,
       limit: 200,
     });
-    expect(worktreeFilter.sessions.some((s) => s.sessionId === threadId)).toBe(true);
+    expect(worktreeFilter.sessions.some((s) => s.sessionId === threadId)).toBe(
+      true,
+    );
   });
 
   it("returns only codex sessions when provider=codex", async () => {
@@ -1356,7 +1340,7 @@ describe("codex sessions integration", () => {
           type: "function_call",
           name: "mcp__dart-mcp__list_running_apps",
           call_id: "call-1",
-          arguments: "{\"root\":\"/tmp/project-a\"}",
+          arguments: '{"root":"/tmp/project-a"}',
         },
       }),
       JSON.stringify({
@@ -1428,10 +1412,13 @@ describe("codex sessions integration", () => {
         },
       ],
     });
-    expect(history[4]).toEqual({
+    expect(history[4]).toMatchObject({
       role: "assistant",
       content: [{ type: "text", text: "Checked all logs." }],
     });
+    expect(history[4].uuid).toMatch(/^codex:assistant:[A-Za-z0-9_-]{32}$/);
+    const replayed = await getCodexSessionHistory(threadId);
+    expect(replayed[4].uuid).toBe(history[4].uuid);
   });
 
   it("restores codex MCP tool result images from event_msg entries", async () => {
@@ -1455,7 +1442,7 @@ describe("codex sessions integration", () => {
           type: "function_call",
           name: "mcp__computer-use__get_app_state",
           call_id: "call-1",
-          arguments: "{\"app\":\"Google Chrome\"}",
+          arguments: '{"app":"Google Chrome"}',
         },
       }),
       JSON.stringify({
@@ -2080,9 +2067,9 @@ describe("codex sessions integration", () => {
       ].join("\n"),
     );
 
-    await expect(extractMessageImages(sessionId, "uuid-image")).resolves.toEqual([
-      { base64: "aW1hZ2U=", mimeType: "image/png" },
-    ]);
+    await expect(
+      extractMessageImages(sessionId, "uuid-image"),
+    ).resolves.toEqual([{ base64: "aW1hZ2U=", mimeType: "image/png" }]);
     await expect(extractMessageImages(sessionId, "uuid-text")).resolves.toEqual(
       [],
     );
@@ -2114,22 +2101,22 @@ describe("codex sessions integration", () => {
     writeFileSync(jsonlPath, entry("AAAA"));
     utimesSync(jsonlPath, fixedTime, fixedTime);
 
-    await expect(extractMessageImages(sessionId, "uuid-image")).resolves.toEqual([
-      { base64: "AAAA", mimeType: "image/png" },
-    ]);
+    await expect(
+      extractMessageImages(sessionId, "uuid-image"),
+    ).resolves.toEqual([{ base64: "AAAA", mimeType: "image/png" }]);
 
     const originalStat = statSync(jsonlPath);
     writeFileSync(jsonlPath, entry("BBBB"));
     utimesSync(jsonlPath, fixedTime, fixedTime);
     expect(statSync(jsonlPath).mtimeMs).toBe(originalStat.mtimeMs);
-    await expect(extractMessageImages(sessionId, "uuid-image")).resolves.toEqual([
-      { base64: "AAAA", mimeType: "image/png" },
-    ]);
+    await expect(
+      extractMessageImages(sessionId, "uuid-image"),
+    ).resolves.toEqual([{ base64: "AAAA", mimeType: "image/png" }]);
 
     writeFileSync(jsonlPath, entry("CCCCCC"));
-    await expect(extractMessageImages(sessionId, "uuid-image")).resolves.toEqual([
-      { base64: "CCCCCC", mimeType: "image/png" },
-    ]);
+    await expect(
+      extractMessageImages(sessionId, "uuid-image"),
+    ).resolves.toEqual([{ base64: "CCCCCC", mimeType: "image/png" }]);
   });
 });
 
@@ -2324,9 +2311,13 @@ describe("claude namedOnly optimization", () => {
 
     expect(result.sessions).toHaveLength(1);
     expect(result.sessions[0].sessionId).toBe(sessionId);
-    expect(result.sessions[0].projectPath).toBe("/Users/test/big-image-project");
+    expect(result.sessions[0].projectPath).toBe(
+      "/Users/test/big-image-project",
+    );
     expect(result.sessions[0].gitBranch).toBe("main");
-    expect(result.sessions[0].firstPrompt).toBe("Please inspect this screenshot.");
+    expect(result.sessions[0].firstPrompt).toBe(
+      "Please inspect this screenshot.",
+    );
   });
 
   it("hydrates indexed Claude session names from JSONL custom-title entries", async () => {

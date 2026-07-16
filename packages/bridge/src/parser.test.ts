@@ -66,6 +66,86 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("accepts only opaque identifiers in artifact resolution requests", () => {
+    const request = {
+      type: "resolve_artifact",
+      requestId: "request-1",
+      sessionId: "runtime-session",
+      messageId: "message-1",
+      artifactId: "artifact-1",
+    };
+    expect(parseClientMessage(JSON.stringify(request))).toEqual(request);
+
+    for (const forbidden of [
+      { filePath: "/tmp/secret" },
+      { path: "/tmp/secret" },
+      { url: "https://example.com" },
+      { ttlSeconds: 86_400 },
+      { unexpected: true },
+    ]) {
+      expect(
+        parseClientMessage(JSON.stringify({ ...request, ...forbidden })),
+      ).toBeNull();
+    }
+  });
+
+  it("validates correlated file-read requests", () => {
+    const request = {
+      type: "read_file",
+      requestId: "file-request-1",
+      projectPath: "/project",
+      filePath: "src/main.ts",
+      maxLines: 5000,
+    };
+    expect(parseClientMessage(JSON.stringify(request))).toEqual(request);
+
+    for (const invalid of [
+      { ...request, requestId: "" },
+      { ...request, projectPath: "" },
+      { ...request, filePath: "" },
+      { ...request, maxLines: 0 },
+      { ...request, maxLines: 100_001 },
+      { ...request, unexpected: true },
+      { ...request, sessionId: "runtime-session" },
+      {
+        ...request,
+        sessionId: "runtime-session",
+        messageId: "assistant-message",
+        artifactId: "artifact-id",
+      },
+    ]) {
+      expect(parseClientMessage(JSON.stringify(invalid))).toBeNull();
+    }
+  });
+
+  it("requires the independent identity-safe artifact source protocol", () => {
+    const request = {
+      type: "read_artifact_source",
+      requestId: "file-request-1",
+      sessionId: "runtime-session",
+      messageId: "assistant-message",
+      artifactId: "artifact-id",
+      filePath: "src/main.ts",
+      maxLines: 5000,
+    };
+    expect(parseClientMessage(JSON.stringify(request))).toEqual(request);
+
+    for (const invalid of [
+      { ...request, requestId: "" },
+      { ...request, requestId: undefined },
+      { ...request, sessionId: "" },
+      { ...request, messageId: "" },
+      { ...request, artifactId: "" },
+      { ...request, filePath: "" },
+      { ...request, maxLines: 0 },
+      { ...request, maxLines: 100_001 },
+      { ...request, projectPath: "/project" },
+      { ...request, unexpected: true },
+    ]) {
+      expect(parseClientMessage(JSON.stringify(invalid))).toBeNull();
+    }
+  });
+
   it("parses prompt history sync messages", () => {
     const msg = parseClientMessage(
       JSON.stringify({
@@ -198,9 +278,7 @@ describe("parseClientMessage", () => {
 
   it("rejects input with invalid strict ack metadata", () => {
     expect(
-      parseClientMessage(
-        '{"type":"input","text":"hello","clientMessageId":1}',
-      ),
+      parseClientMessage('{"type":"input","text":"hello","clientMessageId":1}'),
     ).toBeNull();
     expect(
       parseClientMessage('{"type":"input","text":"hello","baseSeq":-1}'),
@@ -317,9 +395,10 @@ describe("parseClientMessage", () => {
   });
 
   it("parses Codex goal messages", () => {
-    expect(
-      parseClientMessage('{"type":"get_goal","sessionId":"s1"}'),
-    ).toEqual({ type: "get_goal", sessionId: "s1" });
+    expect(parseClientMessage('{"type":"get_goal","sessionId":"s1"}')).toEqual({
+      type: "get_goal",
+      sessionId: "s1",
+    });
     expect(
       parseClientMessage(
         '{"type":"set_goal","sessionId":"s1","objective":"Ship Goal UI","status":"active"}',
@@ -479,6 +558,43 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage(
         '{"type":"get_history_delta","sessionId":"s2","sinceSeq":-1}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses resolve_artifact without accepting a client path", () => {
+    const msg = parseClientMessage(
+      '{"type":"resolve_artifact","requestId":"req-1","sessionId":"s2","messageId":"m1","artifactId":"a1"}',
+    );
+    expect(msg).toEqual({
+      type: "resolve_artifact",
+      requestId: "req-1",
+      sessionId: "s2",
+      messageId: "m1",
+      artifactId: "a1",
+    });
+  });
+
+  it("rejects incomplete or oversized resolve_artifact messages", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"resolve_artifact","requestId":"req-1","sessionId":"s2","messageId":"m1"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "resolve_artifact",
+          requestId: "r".repeat(129),
+          sessionId: "s2",
+          messageId: "m1",
+          artifactId: "a1",
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"resolve_artifact","requestId":"req-1","sessionId":"s2","messageId":"m1","artifactId":"a1","path":"/tmp/never-trusted"}',
       ),
     ).toBeNull();
   });

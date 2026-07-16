@@ -130,9 +130,7 @@ describe("CodexProcess (app-server)", () => {
   });
 
   it("validates goal payloads received from app-server", () => {
-    expect(() => parseCodexGoal({ status: "active" })).toThrow(
-      "invalid shape",
-    );
+    expect(() => parseCodexGoal({ status: "active" })).toThrow("invalid shape");
     expect(() =>
       parseCodexGoal({
         threadId: "thread-1",
@@ -572,11 +570,7 @@ describe("CodexProcess (app-server)", () => {
       cwd: "/tmp/project-roots",
       config: {
         sandbox_workspace_write: {
-          writable_roots: [
-            "/tmp/project-roots",
-            "/tmp/extra",
-            "/tmp/other",
-          ],
+          writable_roots: ["/tmp/project-roots", "/tmp/extra", "/tmp/other"],
         },
       },
     });
@@ -603,17 +597,17 @@ describe("CodexProcess (app-server)", () => {
   });
 
   it("builds a normalized Windows spawn spec", () => {
-    expect(buildCodexSpawnSpec("\\\\?\\D:\\Users\\alice\\repo", "win32")).toEqual(
-      {
-        command: "cmd.exe",
-        args: ["/d", "/s", "/c", "codex app-server --listen stdio://"],
-        options: expect.objectContaining({
-          cwd: "D:\\Users\\alice\\repo",
-          stdio: "pipe",
-          windowsVerbatimArguments: true,
-        }),
-      },
-    );
+    expect(
+      buildCodexSpawnSpec("\\\\?\\D:\\Users\\alice\\repo", "win32"),
+    ).toEqual({
+      command: "cmd.exe",
+      args: ["/d", "/s", "/c", "codex app-server --listen stdio://"],
+      options: expect.objectContaining({
+        cwd: "D:\\Users\\alice\\repo",
+        stdio: "pipe",
+        windowsVerbatimArguments: true,
+      }),
+    });
   });
 
   it("sends thread/rollback for the active thread", async () => {
@@ -1624,7 +1618,8 @@ describe("CodexProcess (app-server)", () => {
             codex_approval_kind: "mcp_tool_call",
             persist: ["session", "always"],
           },
-          message: 'Allow the revenuecat MCP server to run tool "delete-package-from-offering"?',
+          message:
+            'Allow the revenuecat MCP server to run tool "delete-package-from-offering"?',
           requestedSchema: {
             type: "object",
             properties: {},
@@ -1710,7 +1705,8 @@ describe("CodexProcess (app-server)", () => {
           _meta: {
             codex_approval_kind: "mcp_tool_call",
           },
-          message: 'Allow the revenuecat MCP server to run tool "delete-package-from-offering"?',
+          message:
+            'Allow the revenuecat MCP server to run tool "delete-package-from-offering"?',
           requestedSchema: {
             type: "object",
             properties: {},
@@ -2137,6 +2133,13 @@ describe("CodexProcess (app-server)", () => {
         content: expect.stringContaining(
           "savedPath: /tmp/codex/generated_images/ig_saved_1.png",
         ),
+        artifactCandidates: [
+          {
+            source: "image_generation",
+            linkKind: "generated",
+            localPath: "/tmp/codex/generated_images/ig_saved_1.png",
+          },
+        ],
       }),
     );
     expect(messages).toContainEqual(
@@ -2438,10 +2441,7 @@ describe("CodexProcess (app-server)", () => {
     emitRpc({ method: "app/list/updated", params: {} });
     await tick();
 
-    const refetchSkillsReq = await waitForOutgoingRequest(
-      child,
-      "skills/list",
-    );
+    const refetchSkillsReq = await waitForOutgoingRequest(child, "skills/list");
     expect(refetchSkillsReq.method).toBe("skills/list");
     emitRpc({ id: refetchSkillsReq.id, result: { data: [] } });
     const refetchAppsReq = await waitForOutgoingRequest(child, "app/list");

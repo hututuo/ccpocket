@@ -3,6 +3,8 @@ import { request } from "node:http";
 import {
   mkdtemp,
   mkdir,
+  realpath,
+  rename,
   rm,
   symlink,
   unlink,
@@ -32,15 +34,17 @@ const tempRoots: string[] = [];
 afterEach(async () => {
   for (const store of stores.splice(0)) store.close();
   await Promise.all(
-    servers.splice(0).map(
-      (server) =>
-        new Promise<void>((resolve) => server.close(() => resolve())),
-    ),
+    servers
+      .splice(0)
+      .map(
+        (server) =>
+          new Promise<void>((resolve) => server.close(() => resolve())),
+      ),
   );
   await Promise.all(
-    tempRoots.splice(0).map((root) =>
-      rm(root, { recursive: true, force: true }),
-    ),
+    tempRoots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true })),
   );
 });
 
@@ -80,7 +84,8 @@ function httpRequest(
     body?: string | Buffer;
   } = {},
 ): Promise<HttpResult> {
-  const body = options.body === undefined ? undefined : Buffer.from(options.body);
+  const body =
+    options.body === undefined ? undefined : Buffer.from(options.body);
   return new Promise((resolve, reject) => {
     const req = request(
       {
@@ -230,6 +235,98 @@ describe("ArtifactStore.publish", () => {
   });
 });
 
+describe("ArtifactStore.inspect and issue", () => {
+  it("returns canonical metadata without minting a capability", async () => {
+    const root = await tempRoot();
+    const filePath = join(root, "报告 final.pdf");
+    await writeFile(filePath, "pdf-content");
+    const store = trackedStore({ allowedDirs: [root] });
+
+    const inspected = await store.inspect(filePath);
+
+    expect(inspected).toMatchObject({
+      canonicalPath: await realpath(filePath),
+      filename: "报告 final.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 11,
+    });
+    expect(inspected.identity).toMatchObject({ size: 11 });
+    expect(JSON.stringify(inspected)).not.toContain("token");
+  });
+
+  it("returns a verified handle that stays bound after the path is replaced", async () => {
+    const root = await tempRoot();
+    const filePath = join(root, "source.txt");
+    const movedPath = join(root, "source-moved.txt");
+    await writeFile(filePath, "original inode");
+    const store = trackedStore({ allowedDirs: [root] });
+
+    const opened = await store.openVerified(filePath);
+    try {
+      await rename(filePath, movedPath);
+      await writeFile(filePath, "replacement path");
+      await expect(opened.handle.readFile("utf8")).resolves.toBe(
+        "original inode",
+      );
+    } finally {
+      await opened.handle.close();
+    }
+  });
+
+  it("issues a relative URL without requiring a mobile base URL", async () => {
+    const root = await tempRoot();
+    const filePath = join(root, "file.txt");
+    await writeFile(filePath, "hello");
+    const store = trackedStore({
+      allowedDirs: [root],
+      tokenFactory: () => "R".repeat(43),
+    });
+
+    const issued = await store.issue(filePath);
+
+    expect(issued.relativeUrl).toBe(`/artifacts/${"R".repeat(43)}`);
+    expect(issued.relativeDownloadUrl).toBe(
+      `/artifacts/${"R".repeat(43)}/download`,
+    );
+    expect(JSON.stringify(issued)).not.toContain(root);
+  });
+
+  it("requires the original identity when reissuing a persistent ref", async () => {
+    const root = await tempRoot();
+    const filePath = join(root, "file.txt");
+    await writeFile(filePath, "before");
+    const store = trackedStore({ allowedDirs: [root] });
+    const inspected = await store.inspect(filePath);
+    await writeFile(filePath, "after with another size");
+
+    await expect(
+      store.issue(filePath, { expectedIdentity: inspected.identity }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "file_changed" });
+  });
+
+  it("applies allowed-root and regular-file checks through inspect", async () => {
+    const allowed = await tempRoot();
+    const outside = await tempRoot();
+    const outsideFile = join(outside, "secret.txt");
+    await writeFile(outsideFile, "secret");
+    const store = trackedStore({ allowedDirs: [allowed] });
+
+    await expect(store.inspect(allowed)).rejects.toMatchObject({
+      code: "not_regular_file",
+    });
+    await expect(store.inspect(outsideFile)).rejects.toMatchObject({
+      statusCode: 403,
+      code: "path_not_allowed",
+    });
+    await expect(
+      store.inspect(join(allowed, "missing.txt")),
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      code: "file_not_found",
+    });
+  });
+});
+
 describe("ArtifactStore HTTP", () => {
   it("publishes only through the protected loopback control route", async () => {
     const root = await tempRoot();
@@ -247,7 +344,9 @@ describe("ArtifactStore HTTP", () => {
       body: JSON.stringify({ filePath }),
     });
     expect(missingHeader.statusCode).toBe(403);
-    expect(missingHeader.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(
+      missingHeader.headers["access-control-allow-origin"],
+    ).toBeUndefined();
 
     const withOrigin = await httpRequest(port, "/api/artifacts", {
       method: "POST",
@@ -332,7 +431,9 @@ describe("ArtifactStore HTTP", () => {
     expect(result.statusCode).toBe(200);
     expect(result.headers["content-type"]).toContain("text/html");
     expect(result.headers["access-control-allow-origin"]).toBeUndefined();
-    expect(result.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(result.headers["content-security-policy"]).toContain(
+      "default-src 'none'",
+    );
     expect(result.body.toString()).toContain("&lt;script&gt;");
     expect(result.body.toString()).not.toContain('<script>alert("x")</script>');
   });
@@ -452,7 +553,10 @@ describe("ArtifactStore HTTP", () => {
     const artifact = await publishOverHttp(port, filePath, { ttlSeconds: 60 });
     now += 61_000;
 
-    const result = await httpRequest(port, new URL(artifact.previewUrl).pathname);
+    const result = await httpRequest(
+      port,
+      new URL(artifact.previewUrl).pathname,
+    );
     expect(result.statusCode).toBe(404);
   });
 
@@ -498,10 +602,7 @@ describe("artifact HTTP helpers", () => {
   });
 
   it("sanitizes content disposition filenames", () => {
-    const header = contentDisposition(
-      "attachment",
-      '报告"\r\n\\final.docx',
-    );
+    const header = contentDisposition("attachment", '报告"\r\n\\final.docx');
     expect(header).not.toContain("\r");
     expect(header).not.toContain("\n");
     expect(header).toContain("filename*=UTF-8''");

@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile, mkdir, copyFile, stat, unlink } from "node:fs/promises";
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  readFile,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { join, extname, basename, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -10,6 +18,7 @@ export interface GalleryImageMeta {
   mimeType: string;
   projectPath: string;
   sessionId?: string;
+  providerSessionId?: string;
   sourcePath: string;
   addedAt: string;
   sizeBytes: number;
@@ -26,9 +35,7 @@ export interface GalleryImageInfo {
   sizeBytes: number;
 }
 
-const GALLERY_DIR = join(homedir(), ".ccpocket", "gallery");
-const IMAGES_DIR = join(GALLERY_DIR, "images");
-const INDEX_FILE = join(GALLERY_DIR, "index.json");
+const DEFAULT_GALLERY_DIR = join(homedir(), ".ccpocket", "gallery");
 
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -45,6 +52,14 @@ function projectNameFromPath(projectPath: string): string {
 
 export class GalleryStore {
   private index: GalleryImageMeta[] = [];
+  private readonly imagesDirectory: string;
+  private readonly indexFile: string;
+
+  constructor(options: { directory?: string } = {}) {
+    const directory = options.directory ?? DEFAULT_GALLERY_DIR;
+    this.imagesDirectory = join(directory, "images");
+    this.indexFile = join(directory, "index.json");
+  }
 
   private async resolveReadablePath(filePath: string, projectPath: string): Promise<string | null> {
     const candidates: string[] = [];
@@ -68,10 +83,13 @@ export class GalleryStore {
   }
 
   async init(): Promise<void> {
-    await mkdir(IMAGES_DIR, { recursive: true });
+    await mkdir(this.imagesDirectory, { recursive: true });
     try {
-      const data = await readFile(INDEX_FILE, "utf-8");
-      this.index = JSON.parse(data) as GalleryImageMeta[];
+      const data = await readFile(this.indexFile, "utf-8");
+      const parsed: unknown = JSON.parse(data);
+      this.index = Array.isArray(parsed)
+        ? (parsed as GalleryImageMeta[])
+        : [];
     } catch {
       // File doesn't exist or is corrupt — start fresh
       this.index = [];
@@ -79,13 +97,18 @@ export class GalleryStore {
   }
 
   private async saveIndex(): Promise<void> {
-    await writeFile(INDEX_FILE, JSON.stringify(this.index, null, 2), "utf-8");
+    await writeFile(
+      this.indexFile,
+      JSON.stringify(this.index, null, 2),
+      "utf-8",
+    );
   }
 
   async addImage(
     filePath: string,
     projectPath: string,
     sessionId?: string,
+    providerSessionId?: string,
   ): Promise<GalleryImageMeta | null> {
     try {
       const resolvedPath = await this.resolveReadablePath(filePath, projectPath);
@@ -98,7 +121,7 @@ export class GalleryStore {
 
       const id = randomUUID();
       const filename = `${id}${ext}`;
-      const destPath = join(IMAGES_DIR, filename);
+      const destPath = join(this.imagesDirectory, filename);
 
       await copyFile(resolvedPath, destPath);
 
@@ -108,6 +131,7 @@ export class GalleryStore {
         mimeType,
         projectPath,
         sessionId,
+        ...(providerSessionId ? { providerSessionId } : {}),
         sourcePath: resolvedPath,
         addedAt: new Date().toISOString(),
         sizeBytes: st.size,
@@ -119,7 +143,8 @@ export class GalleryStore {
       console.log(`[gallery] Added image ${id} from ${basename(resolvedPath)}`);
       return meta;
     } catch (err) {
-      console.warn(`[gallery] Failed to add image ${filePath}:`, err);
+      const detail = err instanceof Error ? err.name : "unknown_error";
+      console.warn(`[gallery] Failed to add image: ${detail}`);
       return null;
     }
   }
@@ -133,6 +158,7 @@ export class GalleryStore {
     mimeType: string,
     projectPath: string,
     sessionId?: string,
+    providerSessionId?: string,
   ): Promise<GalleryImageMeta | null> {
     try {
       // Validate mime type and get extension
@@ -144,7 +170,7 @@ export class GalleryStore {
 
       const id = randomUUID();
       const filename = `${id}${ext}`;
-      const destPath = join(IMAGES_DIR, filename);
+      const destPath = join(this.imagesDirectory, filename);
 
       // Decode base64 and write to file
       const buffer = Buffer.from(base64Data, "base64");
@@ -156,6 +182,7 @@ export class GalleryStore {
         mimeType,
         projectPath,
         sessionId,
+        ...(providerSessionId ? { providerSessionId } : {}),
         sourcePath: "base64_upload",
         addedAt: new Date().toISOString(),
         sizeBytes: buffer.length,
@@ -172,13 +199,23 @@ export class GalleryStore {
     }
   }
 
-  list(options?: { projectPath?: string; sessionId?: string }): GalleryImageInfo[] {
+  list(options?: {
+    projectPath?: string;
+    sessionId?: string;
+    providerSessionId?: string;
+  }): GalleryImageInfo[] {
     let items = this.index;
     if (options?.projectPath) {
       items = items.filter((m) => m.projectPath === options.projectPath);
     }
-    if (options?.sessionId) {
-      items = items.filter((m) => m.sessionId === options.sessionId);
+    if (options?.sessionId || options?.providerSessionId) {
+      items = items.filter(
+        (meta) =>
+          (options.sessionId !== undefined &&
+            meta.sessionId === options.sessionId) ||
+          (options.providerSessionId !== undefined &&
+            meta.providerSessionId === options.providerSessionId),
+      );
     }
     // Return newest first
     return [...items]
@@ -195,10 +232,53 @@ export class GalleryStore {
       }));
   }
 
+  /** Bind a legacy source-path entry to its stable provider session. */
+  async bindProviderSessionIdBySourcePath(
+    filePath: string,
+    providerSessionId: string,
+  ): Promise<GalleryImageMeta | null> {
+    let indexChanged = false;
+    for (let index = 0; index < this.index.length; ) {
+      const meta = this.index[index];
+      if (meta.sourcePath !== filePath) {
+        index += 1;
+        continue;
+      }
+
+      let hasStoredFile = false;
+      if (
+        typeof meta.filename === "string" &&
+        basename(meta.filename) === meta.filename
+      ) {
+        try {
+          hasStoredFile = (
+            await lstat(join(this.imagesDirectory, meta.filename))
+          ).isFile();
+        } catch {
+          // A stale index row must not suppress history repair.
+        }
+      }
+      if (!hasStoredFile) {
+        this.index.splice(index, 1);
+        indexChanged = true;
+        continue;
+      }
+
+      if (meta.providerSessionId !== providerSessionId) {
+        meta.providerSessionId = providerSessionId;
+        indexChanged = true;
+      }
+      if (indexChanged) await this.saveIndex();
+      return meta;
+    }
+    if (indexChanged) await this.saveIndex();
+    return null;
+  }
+
   getImagePath(id: string): string | null {
     const meta = this.index.find((m) => m.id === id);
     if (!meta) return null;
-    return join(IMAGES_DIR, meta.filename);
+    return join(this.imagesDirectory, meta.filename);
   }
 
   /**
@@ -209,7 +289,7 @@ export class GalleryStore {
     const meta = this.index.find((m) => m.id === id);
     if (!meta) return null;
 
-    const filePath = join(IMAGES_DIR, meta.filename);
+    const filePath = join(this.imagesDirectory, meta.filename);
     try {
       const buffer = await readFile(filePath);
       return {
@@ -234,7 +314,7 @@ export class GalleryStore {
     if (idx === -1) return false;
 
     const meta = this.index[idx];
-    const filePath = join(IMAGES_DIR, meta.filename);
+    const filePath = join(this.imagesDirectory, meta.filename);
 
     try {
       await unlink(filePath);
@@ -303,7 +383,7 @@ export class GalleryStore {
       return true;
     }
 
-    const filePath = join(IMAGES_DIR, meta.filename);
+    const filePath = join(this.imagesDirectory, meta.filename);
     readFile(filePath)
       .then((buffer) => {
         res.writeHead(200, {

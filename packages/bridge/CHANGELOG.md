@@ -2,6 +2,22 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.66.1-compat.2] - 2026-07-16
+
+### Added
+- Detect high-confidence local links in completed Codex Markdown and attach stable artifact references without rewriting the original response.
+- Preserve structured generated-image paths, stage trusted generated images in private managed storage, and restore the same references in session history.
+- Resolve preview links on demand and authorize source-file reads through a dedicated request that is bound to the session, message, artifact identity, and current project roots.
+
+### Changed
+- Persist the artifact registry and automatic-artifact service settings so references survive Bridge restarts while short-lived preview capabilities are minted only when clicked.
+- Keep live and replayed Codex messages on the same enrichment path, with bounded candidate and message sizes.
+- Bind new Gallery entries to stable provider sessions and repair generated-image history without copying the same drawing again after each Bridge runtime restart.
+
+### Security
+- Revalidate canonical roots and file identity at click time, read source files through the same verified file handle, and reject changed, missing, symlink-escaped, oversized, or mismatched artifacts.
+- Keep command output, diffs, code blocks, bare paths, directories, and arbitrary MCP fields outside automatic publication.
+
 ## [1.66.1-compat.1] - 2026-07-16
 
 ### Added

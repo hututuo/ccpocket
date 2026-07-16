@@ -2,11 +2,22 @@ import type { Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
-import { lstat, readFile, readlink, stat, unlink } from "node:fs/promises";
+import {
+  lstat,
+  open,
+  readFile,
+  readlink,
+  realpath,
+  stat,
+  unlink,
+} from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { resolve, extname, basename, relative } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  artifactCandidateRootsForSession,
   SessionManager,
   type HistoryEntry,
   type SessionInfo,
@@ -104,15 +115,218 @@ import {
   normalizeCodexPermissionsMode,
   withDerivedCodexPermissionsMode,
 } from "./codex-permissions.js";
+import { ArtifactManager, ArtifactResolveError } from "./artifact-manager.js";
+import { createPathArtifactCandidate } from "./artifact-candidates.js";
 
 type SystemServerMessage = Extract<ServerMessage, { type: "system" }>;
 type InputClientMessage = Extract<ClientMessage, { type: "input" }>;
+type FileContentServerMessage = Extract<
+  ServerMessage,
+  { type: "file_content" }
+>;
 type ClaudePermissionMode =
-  | "default"
-  | "auto"
-  | "acceptEdits"
-  | "bypassPermissions"
-  | "plan";
+  "default" | "auto" | "acceptEdits" | "bypassPermissions" | "plan";
+
+const FILE_PEEK_TEXT_MAX_BYTES = 8 * 1024 * 1024;
+const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
+
+class FilePeekReadError extends Error {
+  constructor(
+    readonly code: "file_too_large" | "file_changed" | "not_regular_file",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function sameOpenFileStats(
+  before: { dev: number; ino: number; size: number; mtimeMs: number },
+  after: { dev: number; ino: number; size: number; mtimeMs: number },
+): boolean {
+  return (
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    before.size === after.size &&
+    before.mtimeMs === after.mtimeMs
+  );
+}
+
+async function stableFileStats(
+  handle: FileHandle,
+  maxBytes: number,
+  tooLargeMessage: string,
+  expectedIdentity?: { dev: number; ino: number; size: number; mtimeMs: number },
+) {
+  const stats = await handle.stat();
+  if (!stats.isFile()) {
+    throw new FilePeekReadError(
+      "not_regular_file",
+      "This path is not a regular file.",
+    );
+  }
+  if (stats.size > maxBytes) {
+    throw new FilePeekReadError("file_too_large", tooLargeMessage);
+  }
+  if (expectedIdentity && !sameOpenFileStats(expectedIdentity, stats)) {
+    throw new FilePeekReadError(
+      "file_changed",
+      "File changed before it could be read.",
+    );
+  }
+  return stats;
+}
+
+async function readStableTextFromHandle(
+  handle: FileHandle,
+  maxLines: number,
+  expectedIdentity?: { dev: number; ino: number; size: number; mtimeMs: number },
+): Promise<{ content: string; totalLines: number; truncated: boolean }> {
+  const before = await stableFileStats(
+    handle,
+    FILE_PEEK_TEXT_MAX_BYTES,
+    "File is too large to preview. Maximum size is 8 MiB.",
+    expectedIdentity,
+  );
+  const decoder = new StringDecoder("utf8");
+  const buffer = Buffer.allocUnsafe(FILE_PEEK_READ_CHUNK_BYTES);
+  const selectedLines: string[] = [];
+  let carry = "";
+  let totalLines = 0;
+  let position = 0;
+
+  const consume = (text: string): void => {
+    carry += text;
+    let newline = carry.indexOf("\n");
+    while (newline >= 0) {
+      if (selectedLines.length < maxLines) {
+        selectedLines.push(carry.slice(0, newline));
+      }
+      totalLines += 1;
+      carry = carry.slice(newline + 1);
+      newline = carry.indexOf("\n");
+    }
+  };
+
+  while (true) {
+    const { bytesRead } = await handle.read(
+      buffer,
+      0,
+      buffer.length,
+      position,
+    );
+    if (bytesRead === 0) break;
+    position += bytesRead;
+    if (position > FILE_PEEK_TEXT_MAX_BYTES) {
+      throw new FilePeekReadError(
+        "file_too_large",
+        "File is too large to preview. Maximum size is 8 MiB.",
+      );
+    }
+    consume(decoder.write(buffer.subarray(0, bytesRead)));
+  }
+  consume(decoder.end());
+  totalLines += 1;
+  if (selectedLines.length < maxLines) selectedLines.push(carry);
+
+  const after = await handle.stat();
+  if (
+    !sameOpenFileStats(before, after) ||
+    (expectedIdentity && !sameOpenFileStats(expectedIdentity, after))
+  ) {
+    throw new FilePeekReadError(
+      "file_changed",
+      "File changed while it was being read.",
+    );
+  }
+  return {
+    content: selectedLines.join("\n"),
+    totalLines,
+    truncated: totalLines > maxLines,
+  };
+}
+
+async function readStableBufferFromHandle(
+  handle: FileHandle,
+  maxBytes: number,
+  tooLargeMessage: string,
+  expectedIdentity?: { dev: number; ino: number; size: number; mtimeMs: number },
+): Promise<Buffer> {
+  const before = await stableFileStats(
+    handle,
+    maxBytes,
+    tooLargeMessage,
+    expectedIdentity,
+  );
+  const chunks: Buffer[] = [];
+  let position = 0;
+  while (true) {
+    const buffer = Buffer.allocUnsafe(
+      Math.min(FILE_PEEK_READ_CHUNK_BYTES, maxBytes + 1 - position),
+    );
+    const { bytesRead } = await handle.read(
+      buffer,
+      0,
+      buffer.length,
+      position,
+    );
+    if (bytesRead === 0) break;
+    position += bytesRead;
+    if (position > maxBytes) {
+      throw new FilePeekReadError("file_too_large", tooLargeMessage);
+    }
+    chunks.push(buffer.subarray(0, bytesRead));
+  }
+  const after = await handle.stat();
+  if (
+    !sameOpenFileStats(before, after) ||
+    (expectedIdentity && !sameOpenFileStats(expectedIdentity, after))
+  ) {
+    throw new FilePeekReadError(
+      "file_changed",
+      "File changed while it was being read.",
+    );
+  }
+  return Buffer.concat(chunks, position);
+}
+
+function filePeekLanguage(filename: string): string | undefined {
+  const ext = extname(filename).replace(/^\./, "").toLowerCase();
+  const languageMap: Record<string, string> = {
+    ts: "typescript",
+    tsx: "typescript",
+    js: "javascript",
+    jsx: "javascript",
+    py: "python",
+    rb: "ruby",
+    rs: "rust",
+    go: "go",
+    java: "java",
+    kt: "kotlin",
+    swift: "swift",
+    dart: "dart",
+    c: "c",
+    cpp: "cpp",
+    h: "c",
+    hpp: "cpp",
+    cs: "csharp",
+    sh: "bash",
+    zsh: "bash",
+    yml: "yaml",
+    yaml: "yaml",
+    json: "json",
+    toml: "toml",
+    md: "markdown",
+    html: "html",
+    css: "css",
+    scss: "css",
+    sql: "sql",
+    xml: "xml",
+    dockerfile: "dockerfile",
+    makefile: "makefile",
+    gradle: "groovy",
+  };
+  return languageMap[ext] ?? (ext || undefined);
+}
 
 // ---- Available model lists (delivered to clients via session_list) ----
 
@@ -189,6 +403,7 @@ const OPT_IN_SERVER_MESSAGES = new Set<string>([
   "conversation_queue",
   "goal_state",
   "prompt_history_status",
+  "artifact_resolved",
 ]);
 
 function parseCodexUserTurnOrdinal(uuid: string | undefined): number | null {
@@ -214,7 +429,11 @@ function countCodexUserTurnsInSession(session: SessionInfo): number {
   if (Array.isArray(session.pastMessages)) {
     for (const message of session.pastMessages) {
       if (!message || typeof message !== "object") continue;
-      const item = message as { role?: unknown; uuid?: unknown; isMeta?: unknown };
+      const item = message as {
+        role?: unknown;
+        uuid?: unknown;
+        isMeta?: unknown;
+      };
       if (item.role === "user" && item.isMeta !== true) {
         observe(typeof item.uuid === "string" ? item.uuid : undefined);
       }
@@ -263,7 +482,9 @@ function normalizeHistoryContent(
         id: typeof value.id === "string" ? value.id : undefined,
         name: typeof value.name === "string" ? value.name : undefined,
         input:
-          value.input && typeof value.input === "object" && !Array.isArray(value.input)
+          value.input &&
+          typeof value.input === "object" &&
+          !Array.isArray(value.input)
             ? (value.input as Record<string, unknown>)
             : undefined,
       });
@@ -293,7 +514,11 @@ function buildCodexHistoryPrefix(
       messages.push({ ...item });
       return;
     }
-    if (item.role === "assistant" && userOrdinal > 0 && userOrdinal <= targetOrdinal) {
+    if (
+      item.role === "assistant" &&
+      userOrdinal > 0 &&
+      userOrdinal <= targetOrdinal
+    ) {
       messages.push({ ...item });
     }
   };
@@ -333,8 +558,9 @@ function buildCodexHistoryPrefix(
 }
 
 function countCodexHistoryUserTurns(messages: SessionHistoryMessage[]): number {
-  return messages.filter((message) => message.role === "user" && !message.isMeta)
-    .length;
+  return messages.filter(
+    (message) => message.role === "user" && !message.isMeta,
+  ).length;
 }
 
 // ---- Codex mode mapping helpers ----
@@ -588,9 +814,13 @@ function recentSessionModifiedTime(session: unknown): number {
   return typeof modified === "string" ? new Date(modified).getTime() || 0 : 0;
 }
 
-function recentSessionDedupeKey(session: unknown, fallbackIndex: number): string {
+function recentSessionDedupeKey(
+  session: unknown,
+  fallbackIndex: number,
+): string {
   const value = session as { provider?: unknown; sessionId?: unknown };
-  return typeof value.provider === "string" && typeof value.sessionId === "string"
+  return typeof value.provider === "string" &&
+    typeof value.sessionId === "string"
     ? `${value.provider}:${value.sessionId}`
     : `unknown:${fallbackIndex}`;
 }
@@ -626,6 +856,7 @@ export interface BridgeServerOptions {
   fileListMaxBytes?: number;
   deltaBatchMs?: number;
   deltaBatchMaxChars?: number;
+  artifactManager?: ArtifactManager;
 }
 
 type DeltaServerMessage = Extract<
@@ -666,6 +897,7 @@ export class BridgeWebSocketServer {
   private pushRelay: PushRelayClient;
   private promptHistoryBackup: PromptHistoryBackupStore | null;
   private promptHistoryStore: PromptHistoryStore | null;
+  private artifactManager: ArtifactManager | null;
 
   private recentSessionsRequestId = 0;
   private debugEvents = new Map<string, DebugTraceEvent[]>();
@@ -712,6 +944,7 @@ export class BridgeWebSocketServer {
     WebSocket,
     Map<string, InputClientMessage[]>
   >();
+  private restoringManagedGalleryPaths = new Set<string>();
 
   constructor(options: BridgeServerOptions) {
     const {
@@ -731,6 +964,7 @@ export class BridgeWebSocketServer {
       fileListMaxBytes,
       deltaBatchMs,
       deltaBatchMaxChars,
+      artifactManager,
     } = options;
     this.apiKey = apiKey ?? null;
     this.allowedDirs = allowedDirs ?? [];
@@ -743,6 +977,7 @@ export class BridgeWebSocketServer {
     this.pushRelay = new PushRelayClient({ firebaseAuth });
     this.promptHistoryBackup = promptHistoryBackup ?? null;
     this.promptHistoryStore = promptHistoryStore ?? null;
+    this.artifactManager = artifactManager ?? null;
     this.platform = platform ?? process.platform;
     this.fileListMaxEntries = normalizePositiveLimit(
       fileListMaxEntries,
@@ -808,6 +1043,7 @@ export class BridgeWebSocketServer {
       },
       this.worktreeStore,
       () => this.broadcastSessionList(),
+      artifactManager,
     );
 
     this.wss.on("connection", (ws, req) => {
@@ -839,9 +1075,31 @@ export class BridgeWebSocketServer {
    */
   private isPathAllowed(path: string): boolean {
     if (this.allowedDirs.length === 0) return true;
-    return this.allowedDirs.some(
-      (dir) => isPathWithinAllowedDirectory(path, dir, this.platform),
+    return this.allowedDirs.some((dir) =>
+      isPathWithinAllowedDirectory(path, dir, this.platform),
     );
+  }
+
+  /** Resolve configured roots before authorizing a file reached by symlink. */
+  private async isCanonicalPathAllowed(canonicalPath: string): Promise<boolean> {
+    if (this.allowedDirs.length === 0) return true;
+    for (const directory of this.allowedDirs) {
+      try {
+        const canonicalDirectory = await realpath(directory);
+        if (
+          isPathWithinAllowedDirectory(
+            canonicalPath,
+            canonicalDirectory,
+            this.platform,
+          )
+        ) {
+          return true;
+        }
+      } catch {
+        // A missing configured root grants no file-read authority.
+      }
+    }
+    return false;
   }
 
   /** Build a user-friendly error for disallowed project paths. */
@@ -918,7 +1176,8 @@ export class BridgeWebSocketServer {
       pluginMetadata,
       sourceSessionId,
     } = params;
-    const derivedCodexSettings = provider === "codex"
+    const derivedCodexSettings =
+      provider === "codex"
       ? withDerivedCodexPermissionsMode(session?.codexSettings)
       : session?.codexSettings;
 
@@ -931,11 +1190,7 @@ export class BridgeWebSocketServer {
       ...(permissionMode
         ? {
             permissionMode: permissionMode as
-              | "default"
-              | "auto"
-              | "acceptEdits"
-              | "bypassPermissions"
-              | "plan",
+              "default" | "auto" | "acceptEdits" | "bypassPermissions" | "plan",
           }
         : {}),
       ...((approvalsReviewer ?? derivedCodexSettings?.approvalsReviewer)
@@ -948,10 +1203,7 @@ export class BridgeWebSocketServer {
         ? {
             codexPermissionsMode: (codexPermissionsMode ??
               derivedCodexSettings?.codexPermissionsMode) as
-              | "default"
-              | "autoReview"
-              | "fullAccess"
-              | "custom",
+              "default" | "autoReview" | "fullAccess" | "custom",
           }
         : {}),
       ...((executionMode ??
@@ -1009,8 +1261,7 @@ export class BridgeWebSocketServer {
       ...(apps ? { apps } : {}),
       ...(appMetadata
         ? {
-            appMetadata:
-              appMetadata as SystemServerMessage["appMetadata"],
+            appMetadata: appMetadata as SystemServerMessage["appMetadata"],
           }
         : {}),
       ...(plugins ? { plugins } : {}),
@@ -1038,10 +1289,7 @@ export class BridgeWebSocketServer {
       }
       if (derivedCodexSettings.codexPermissionsMode !== undefined) {
         msg.codexPermissionsMode = derivedCodexSettings.codexPermissionsMode as
-          | "default"
-          | "autoReview"
-          | "fullAccess"
-          | "custom";
+          "default" | "autoReview" | "fullAccess" | "custom";
       }
       if (derivedCodexSettings.modelReasoningEffort !== undefined) {
         msg.modelReasoningEffort = derivedCodexSettings.modelReasoningEffort;
@@ -1103,7 +1351,10 @@ export class BridgeWebSocketServer {
       });
       return;
     }
-    if (session.status !== "idle" || (codexProcess.status ?? session.status) !== "idle") {
+    if (
+      session.status !== "idle" ||
+      (codexProcess.status ?? session.status) !== "idle"
+    ) {
       this.send(ws, {
         type: "rewind_result",
         success: false,
@@ -1232,7 +1483,10 @@ export class BridgeWebSocketServer {
       });
       return;
     }
-    if (session.status !== "idle" || (codexProcess.status ?? session.status) !== "idle") {
+    if (
+      session.status !== "idle" ||
+      (codexProcess.status ?? session.status) !== "idle"
+    ) {
       this.send(ws, {
         type: "error",
         message: "Cannot fork while Codex is running",
@@ -1380,13 +1634,16 @@ export class BridgeWebSocketServer {
     return { pastMessages, historyMessages };
   }
 
-  private codexThreadIdForSession(session: SessionInfo): string | undefined {
-    if (session.provider !== "codex") return undefined;
-    if (session.claudeSessionId) return session.claudeSessionId;
-    if (session.process instanceof CodexProcess) {
-      return session.process.sessionId ?? undefined;
+  private providerSessionIdForSession(
+    session: SessionInfo,
+  ): string | undefined {
+    return session.claudeSessionId ?? session.process.sessionId ?? undefined;
     }
-    return undefined;
+
+  private codexThreadIdForSession(session: SessionInfo): string | undefined {
+    return session.provider === "codex"
+      ? this.providerSessionIdForSession(session)
+      : undefined;
   }
 
   private async codexCanonicalHistoryEntries(
@@ -1406,11 +1663,7 @@ export class BridgeWebSocketServer {
       seq: index + 1,
       message,
     }));
-    this.applyCodexCanonicalHistoryBaseline(
-      session,
-      history,
-      entries,
-    );
+    this.applyCodexCanonicalHistoryBaseline(session, history, entries);
     return [...entries, ...session.historyEntries];
   }
 
@@ -1478,11 +1731,7 @@ export class BridgeWebSocketServer {
   ): void {
     if (session.provider !== "codex") return;
     for (const message of history) {
-      if (
-        message.role !== "user" ||
-        !message.rawItemId ||
-        !message.uuid
-      ) {
+      if (message.role !== "user" || !message.rawItemId || !message.uuid) {
         continue;
       }
       session.codexUserTurnUuidByRawId ??= new Map<string, string>();
@@ -1532,19 +1781,18 @@ export class BridgeWebSocketServer {
     sessionId: string,
     session: SessionInfo,
   ): void {
-    const process = session.process instanceof CodexProcess
-      ? session.process
-      : undefined;
+    const process =
+      session.process instanceof CodexProcess ? session.process : undefined;
     const settings = session.codexSettings;
     this.send(ws, {
       type: "system",
       subtype: "codex_settings",
       sessionId,
       provider: "codex",
-      ...(settings?.model ?? process?.model
+      ...((settings?.model ?? process?.model)
         ? { model: settings?.model ?? process?.model }
         : {}),
-      ...(settings?.modelReasoningEffort ?? process?.modelReasoningEffort
+      ...((settings?.modelReasoningEffort ?? process?.modelReasoningEffort)
         ? {
             modelReasoningEffort:
               settings?.modelReasoningEffort ?? process?.modelReasoningEffort,
@@ -1638,10 +1886,11 @@ export class BridgeWebSocketServer {
     history: SessionHistoryMessage[],
   ): Promise<ServerMessage[]> {
     const messages: ServerMessage[] = [];
-    for (const item of history) {
+    for (const [historyIndex, item] of history.entries()) {
       const converted = await this.codexHistoryMessageToServerMessage(
         session,
         item,
+        historyIndex,
       );
       if (converted) messages.push(converted);
     }
@@ -1651,6 +1900,7 @@ export class BridgeWebSocketServer {
   private async codexHistoryMessageToServerMessage(
     session: SessionInfo,
     item: SessionHistoryMessage,
+    historyIndex: number,
   ): Promise<ServerMessage | null> {
     if (item.role === "user") {
       const images = await this.registerPastUserMessageImages(
@@ -1678,8 +1928,8 @@ export class BridgeWebSocketServer {
       const messageId =
         item.uuid ??
         this.sessionHistorySingleToolUseId(item.content) ??
-        randomUUID();
-      return {
+        `codex-history-assistant-${historyIndex}`;
+      const message: ServerMessage = {
         type: "assistant",
         message: {
           id: messageId,
@@ -1689,25 +1939,72 @@ export class BridgeWebSocketServer {
         },
         ...(item.uuid ? { messageUuid: item.uuid } : {}),
       };
+      return await this.sessionManager.enrichArtifactsForSession(
+        session,
+        message,
+      );
     }
 
+    const content = this.sessionHistoryText(item.content);
+    const toolUseId =
+      item.toolUseId ?? item.uuid ?? `codex-history-tool-${historyIndex}`;
+    const artifactCandidates =
+      item.toolName === "ImageGeneration" && Array.isArray(item.imagePaths)
+        ? item.imagePaths.map((path) =>
+            createPathArtifactCandidate(path, {
+              source: "image_generation",
+              linkKind: "generated",
+            }),
+          )
+        : [];
+    const providerSessionId = this.codexThreadIdForSession(session);
+    let managedImagePaths: string[] | undefined;
+    if (
+      item.toolName === "ImageGeneration" &&
+      this.imageStore &&
+      this.artifactManager
+    ) {
+      managedImagePaths = providerSessionId && artifactCandidates.length > 0
+        ? await this.artifactManager.materializeGeneratedCandidates({
+            ownerId: providerSessionId,
+            messageId: toolUseId,
+            cwd: session.worktreePath ?? session.projectPath,
+            candidates: artifactCandidates,
+          })
+        : [];
+    }
     const images = await this.registerPastToolResultImages(
       session,
       item as unknown as Record<string, unknown>,
+      managedImagePaths !== undefined
+        ? {
+            paths: managedImagePaths,
+            suppressLegacyPaths: true,
+            persistManagedGallery: true,
+            providerSessionId,
+          }
+        : undefined,
     );
-    const content = this.sessionHistoryText(item.content);
-    if (!content && images.length === 0) return null;
-    return {
+    if (!content && images.length === 0 && artifactCandidates.length === 0) {
+      return null;
+    }
+    const message: ServerMessage = {
       type: "tool_result",
-      toolUseId:
-        item.toolUseId ?? item.uuid ?? `codex-history-tool-${randomUUID()}`,
+      toolUseId,
       content,
       ...(item.toolName ? { toolName: item.toolName } : {}),
       ...(images.length > 0 ? { images } : {}),
+      ...(artifactCandidates.length > 0 ? { artifactCandidates } : {}),
     };
+    return await this.sessionManager.enrichArtifactsForSession(
+      session,
+      message,
+    );
   }
 
-  private sessionHistoryText(content: SessionHistoryMessage["content"]): string {
+  private sessionHistoryText(
+    content: SessionHistoryMessage["content"],
+  ): string {
     if (typeof content === "string") return content;
     if (!Array.isArray(content)) return "";
     return content
@@ -1728,9 +2025,7 @@ export class BridgeWebSocketServer {
     content: SessionHistoryMessage["content"],
   ): AssistantContent[] {
     if (typeof content === "string") {
-      return content.trim().length > 0
-        ? [{ type: "text", text: content }]
-        : [];
+      return content.trim().length > 0 ? [{ type: "text", text: content }] : [];
     }
     if (!Array.isArray(content)) return [];
     const items: AssistantContent[] = [];
@@ -1841,21 +2136,27 @@ export class BridgeWebSocketServer {
   private async registerPastToolResultImages(
     session: SessionInfo,
     msg: Record<string, unknown>,
+    options: {
+      paths?: string[];
+      suppressLegacyPaths?: boolean;
+      persistManagedGallery?: boolean;
+      providerSessionId?: string;
+    } = {},
   ): Promise<ImageRef[]> {
     const existingImages = Array.isArray(msg.images)
       ? (msg.images as ImageRef[])
       : [];
     if (!this.imageStore) return [...existingImages];
 
-    const paths = new Set<string>();
-    if (Array.isArray(msg.imagePaths)) {
+    const paths = new Set<string>(options.paths ?? []);
+    if (!options.suppressLegacyPaths && Array.isArray(msg.imagePaths)) {
       for (const path of msg.imagePaths) {
         if (typeof path === "string" && path.length > 0) paths.add(path);
       }
     }
 
     const content = typeof msg.content === "string" ? msg.content : "";
-    if (content) {
+    if (!options.suppressLegacyPaths && content) {
       for (const path of this.imageStore.extractImagePaths(content)) {
         paths.add(path);
       }
@@ -1863,9 +2164,53 @@ export class BridgeWebSocketServer {
 
     const refs: ImageRef[] = [...existingImages];
     if (paths.size > 0) {
+      const sessionRoot = session.worktreePath ?? session.projectPath;
       refs.push(
-        ...(await this.imageStore.registerImages([...paths], session.projectPath)),
+        ...(await this.imageStore.registerImages(
+          [...paths],
+          sessionRoot,
+        )),
       );
+      if (options.persistManagedGallery && this.galleryStore) {
+        for (const path of paths) {
+          if (options.providerSessionId) {
+            try {
+              const existing =
+                await this.galleryStore.bindProviderSessionIdBySourcePath(
+                  path,
+                  options.providerSessionId,
+                );
+              if (existing) continue;
+            } catch (error) {
+              const detail =
+                error instanceof Error ? error.name : "unknown_error";
+              console.warn(
+                `[gallery] Failed to repair managed history binding: ${detail}`,
+      );
+              continue;
+            }
+          }
+
+          const galleryKey = `${options.providerSessionId ?? session.id}\0${path}`;
+          if (this.restoringManagedGalleryPaths.has(galleryKey)) continue;
+          this.restoringManagedGalleryPaths.add(galleryKey);
+          try {
+            const meta = await this.galleryStore.addImage(
+              path,
+              sessionRoot,
+              session.id,
+              options.providerSessionId,
+            );
+            if (!meta) continue;
+            this.broadcast({
+              type: "gallery_new_image",
+              image: this.galleryStore.metaToInfo(meta),
+            });
+          } finally {
+            this.restoringManagedGalleryPaths.delete(galleryKey);
+          }
+        }
+      }
     }
 
     if (Array.isArray(msg.imageBase64)) {
@@ -1970,10 +2315,7 @@ export class BridgeWebSocketServer {
         usedFallback: false,
       };
     } catch (err) {
-      if (
-        initialMode !== "auto" ||
-        !isClaudeAutoModeUnavailableError(err)
-      ) {
+      if (initialMode !== "auto" || !isClaudeAutoModeUnavailableError(err)) {
         throw err;
       }
       const fallbackOptions = {
@@ -2003,6 +2345,7 @@ export class BridgeWebSocketServer {
     this.flushAllDeltaBatches();
     stopManagedCodexAppServers();
     this.debugEvents.clear();
+    this.restoringManagedGalleryPaths.clear();
     this.wss.close();
   }
 
@@ -2199,8 +2542,7 @@ export class BridgeWebSocketServer {
             executionMode: effectiveExecutionMode,
             planMode: effectivePlanMode,
             usedFallback: autoFallbackUsed,
-          } =
-            provider === "claude"
+          } = provider === "claude"
               ? this.createClaudeSessionWithFallback({
                   projectPath,
                   options: {
@@ -2301,7 +2643,9 @@ export class BridgeWebSocketServer {
                     : executionMode,
                 planMode: provider === "claude" ? effectivePlanMode : planMode,
                 sandboxMode: createdSession?.codexSettings?.sandboxMode
-                  ? sandboxModeToExternal(createdSession.codexSettings.sandboxMode)
+                  ? sandboxModeToExternal(
+                      createdSession.codexSettings.sandboxMode,
+                    )
                   : msg.sandboxMode,
                 codexPermissionsMode:
                   createdSession?.codexSettings?.codexPermissionsMode,
@@ -2416,8 +2760,7 @@ export class BridgeWebSocketServer {
         // Register images in the image store so they can be served via HTTP
         // when the client re-enters the session and loads history.
         let imageRefs:
-          | Array<{ id: string; url: string; mimeType: string }>
-          | undefined;
+          Array<{ id: string; url: string; mimeType: string }> | undefined;
         if (images.length > 0 && this.imageStore) {
           imageRefs = [];
           for (const img of images) {
@@ -2485,6 +2828,7 @@ export class BridgeWebSocketServer {
                   img.mimeType,
                   session.projectPath,
                   msg.sessionId,
+                  this.providerSessionIdForSession(session),
                 )
                 .catch((err) => {
                   console.warn(
@@ -2544,6 +2888,7 @@ export class BridgeWebSocketServer {
                 img.mimeType,
                 session.projectPath,
                 msg.sessionId,
+                this.providerSessionIdForSession(session),
               )
               .catch((err) => {
                 console.warn(`[ws] Failed to persist image to gallery: ${err}`);
@@ -2647,9 +2992,7 @@ export class BridgeWebSocketServer {
                     imageData,
                   ]);
                   queuedAfterResolve =
-                    typeof result === "boolean"
-                      ? result
-                      : isAgentBusySnapshot;
+                    typeof result === "boolean" ? result : isAgentBusySnapshot;
                   if (queuedAfterResolve) claudeProc.interrupt();
                 }
               } else {
@@ -2661,9 +3004,7 @@ export class BridgeWebSocketServer {
                 } else {
                   const result = session.process.sendInput(text);
                   queuedAfterResolve =
-                    typeof result === "boolean"
-                      ? result
-                      : isAgentBusySnapshot;
+                    typeof result === "boolean" ? result : isAgentBusySnapshot;
                   if (queuedAfterResolve) claudeProc.interrupt();
                 }
               }
@@ -3035,9 +3376,7 @@ export class BridgeWebSocketServer {
               {
                 approvalPolicy: newApproval,
                 approvalsReviewer: newReviewer as
-                  | "user"
-                  | "auto_review"
-                  | "guardian_subagent",
+                  "user" | "auto_review" | "guardian_subagent",
                 codexPermissionsMode: newPermissionsMode,
                 sandboxMode: newSandboxMode as
                   | "read-only"
@@ -3049,13 +3388,9 @@ export class BridgeWebSocketServer {
                   oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
                 serviceTier: oldSettings.serviceTier,
                 networkAccessEnabled: oldSettings.networkAccessEnabled as
-                  | boolean
-                  | undefined,
+                  boolean | undefined,
                 webSearchMode: oldSettings.webSearchMode as
-                  | "disabled"
-                  | "cached"
-                  | "live"
-                  | undefined,
+                  "disabled" | "cached" | "live" | undefined,
                 collaborationMode: newCollaboration,
               },
             );
@@ -3126,9 +3461,7 @@ export class BridgeWebSocketServer {
                   threadId,
                   approvalPolicy: newApproval,
                   approvalsReviewer: newReviewer as
-                    | "user"
-                    | "auto_review"
-                    | "guardian_subagent",
+                    "user" | "auto_review" | "guardian_subagent",
                   codexPermissionsMode: newPermissionsMode,
                   sandboxMode: newSandboxMode as
                     | "read-only"
@@ -3140,13 +3473,9 @@ export class BridgeWebSocketServer {
                     oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
                   serviceTier: oldSettings.serviceTier,
                   networkAccessEnabled: oldSettings.networkAccessEnabled as
-                    | boolean
-                    | undefined,
+                    boolean | undefined,
                   webSearchMode: oldSettings.webSearchMode as
-                    | "disabled"
-                    | "cached"
-                    | "live"
-                    | undefined,
+                    "disabled" | "cached" | "live" | undefined,
                   collaborationMode: newCollaboration,
                 },
               );
@@ -3204,10 +3533,7 @@ export class BridgeWebSocketServer {
         (session.process as SdkProcess)
           .setPermissionMode(msg.mode)
           .catch((err) => {
-            if (
-              msg.mode === "auto" &&
-              isClaudeAutoModeUnavailableError(err)
-            ) {
+            if (msg.mode === "auto" && isClaudeAutoModeUnavailableError(err)) {
               this.send(ws, {
                 type: "error",
                 message:
@@ -3319,9 +3645,7 @@ export class BridgeWebSocketServer {
           serviceTier,
         });
         this.broadcastSessionList();
-        console.log(
-          `[ws] set_codex_speed(codex): serviceTier=${serviceTier}`,
-        );
+        console.log(`[ws] set_codex_speed(codex): serviceTier=${serviceTier}`);
         break;
       }
 
@@ -3354,7 +3678,8 @@ export class BridgeWebSocketServer {
         if (!session || session.provider !== "codex") {
           this.send(ws, {
             type: "error",
-            message: "Goal updates are only supported for active Codex sessions.",
+            message:
+              "Goal updates are only supported for active Codex sessions.",
             errorCode: "goal_set_unsupported",
           });
           break;
@@ -3386,7 +3711,8 @@ export class BridgeWebSocketServer {
         if (!session || session.provider !== "codex") {
           this.send(ws, {
             type: "error",
-            message: "Goal clearing is only supported for active Codex sessions.",
+            message:
+              "Goal clearing is only supported for active Codex sessions.",
             errorCode: "goal_clear_unsupported",
           });
           break;
@@ -3562,22 +3888,16 @@ export class BridgeWebSocketServer {
             "codex",
             {
               approvalPolicy: oldSettings.approvalPolicy as
-                | "never"
-                | "on-request"
-                | undefined,
+                "never" | "on-request" | undefined,
               sandboxMode: newSandboxMode,
               model: oldSettings.model,
               modelReasoningEffort:
                 oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
               serviceTier: oldSettings.serviceTier,
               networkAccessEnabled: oldSettings.networkAccessEnabled as
-                | boolean
-                | undefined,
+                boolean | undefined,
               webSearchMode: oldSettings.webSearchMode as
-                | "disabled"
-                | "cached"
-                | "live"
-                | undefined,
+                "disabled" | "cached" | "live" | undefined,
               collaborationMode,
             },
           );
@@ -3640,22 +3960,16 @@ export class BridgeWebSocketServer {
               {
                 threadId,
                 approvalPolicy: oldSettings.approvalPolicy as
-                  | "never"
-                  | "on-request"
-                  | undefined,
+                  "never" | "on-request" | undefined,
                 sandboxMode: newSandboxMode,
                 model: oldSettings.model,
                 modelReasoningEffort:
                   oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
                 serviceTier: oldSettings.serviceTier,
                 networkAccessEnabled: oldSettings.networkAccessEnabled as
-                  | boolean
-                  | undefined,
+                  boolean | undefined,
                 webSearchMode: oldSettings.webSearchMode as
-                  | "disabled"
-                  | "cached"
-                  | "live"
-                  | undefined,
+                  "disabled" | "cached" | "live" | undefined,
                 collaborationMode,
               },
             );
@@ -3854,6 +4168,62 @@ export class BridgeWebSocketServer {
         break;
       }
 
+      case "resolve_artifact": {
+        if (
+          !this.clientSupportedServerMessages.get(ws)?.has("artifact_resolved")
+        ) {
+          this.send(ws, {
+            type: "error",
+            message: "Artifact resolution capability was not negotiated",
+            errorCode: "unsupported_capability",
+          });
+          break;
+        }
+
+        const fail = (errorCode: string, error: string): void => {
+          this.send(ws, {
+            type: "artifact_resolved",
+            requestId: msg.requestId,
+            artifactId: msg.artifactId,
+            error,
+            errorCode,
+          });
+        };
+        const session = this.sessionManager.get(msg.sessionId);
+        if (!session) {
+          fail("session_not_found", "Session not found");
+          break;
+        }
+        const ownerId = this.codexThreadIdForSession(session);
+        if (!ownerId || !this.artifactManager) {
+          fail("artifact_unavailable", "Artifact links are unavailable");
+          break;
+        }
+
+        try {
+          const resolvedArtifact = await this.artifactManager.resolve({
+            artifactId: msg.artifactId,
+            ownerId,
+            messageId: msg.messageId,
+            candidateRoots: artifactCandidateRootsForSession(session),
+          });
+          this.send(ws, {
+            type: "artifact_resolved",
+            requestId: msg.requestId,
+            artifactId: msg.artifactId,
+            relativeUrl: resolvedArtifact.relativeUrl,
+            expiresAt: resolvedArtifact.expiresAt,
+          });
+        } catch (error) {
+          if (error instanceof ArtifactResolveError) {
+            fail(error.code, error.message);
+          } else {
+            fail("artifact_resolve_failed", "Artifact could not be resolved");
+          }
+        }
+        break;
+      }
+
       case "get_history": {
         const session = this.sessionManager.get(msg.sessionId);
         if (session) {
@@ -3979,9 +4349,7 @@ export class BridgeWebSocketServer {
           }
           this.send(ws, {
             type:
-              result.kind === "snapshot"
-                ? "history_snapshot"
-                : "history_delta",
+              result.kind === "snapshot" ? "history_snapshot" : "history_delta",
             sessionId: msg.sessionId,
             fromSeq: result.fromSeq,
             toSeq: result.toSeq,
@@ -4251,8 +4619,7 @@ export class BridgeWebSocketServer {
         // via get_history(sessionId) to avoid duplicate/missed replay races.
         if (provider === "codex") {
           const wtMapping = this.worktreeStore.get(sessionRefId);
-          const effectiveProjectPath =
-            resolvePlatformPath(
+          const effectiveProjectPath = resolvePlatformPath(
               wtMapping?.projectPath ?? resumeProjectPath,
               this.platform,
             );
@@ -4263,8 +4630,7 @@ export class BridgeWebSocketServer {
                 effectiveProjectPath,
               )
             : undefined;
-          const additionalWritableRoots =
-            this.normalizeAdditionalWritableRoots(
+          const additionalWritableRoots = this.normalizeAdditionalWritableRoots(
               msg.additionalWritableRoots,
               effectiveProjectPath,
             );
@@ -4354,7 +4720,9 @@ export class BridgeWebSocketServer {
                 projectPath: effectiveProjectPath,
                 session: createdSession,
                 sandboxMode: createdSession?.codexSettings?.sandboxMode
-                  ? sandboxModeToExternal(createdSession.codexSettings.sandboxMode)
+                  ? sandboxModeToExternal(
+                      createdSession.codexSettings.sandboxMode,
+                    )
                   : undefined,
                 approvalsReviewer:
                   createdSession?.codexSettings?.approvalsReviewer,
@@ -4539,9 +4907,15 @@ export class BridgeWebSocketServer {
 
       case "list_gallery": {
         if (this.galleryStore) {
+          const runtimeSession = msg.sessionId
+            ? this.sessionManager.get(msg.sessionId)
+            : undefined;
           const images = this.galleryStore.list({
             projectPath: msg.project,
             sessionId: msg.sessionId,
+            providerSessionId: runtimeSession
+              ? this.providerSessionIdForSession(runtimeSession)
+              : undefined,
           });
           this.send(ws, { type: "gallery_list", images } as Record<
             string,
@@ -4610,94 +4984,283 @@ export class BridgeWebSocketServer {
         break;
       }
 
-      case "read_file": {
-        const absPath = resolve(msg.projectPath, msg.filePath);
-        if (!this.isPathAllowed(absPath)) {
+      case "read_artifact_source": {
+        const sendFileContent = (
+          response: Omit<
+            FileContentServerMessage,
+            "type" | "requestId" | "filePath"
+          >,
+        ): void => {
           this.send(ws, {
             type: "file_content",
+            requestId: msg.requestId,
             filePath: msg.filePath,
+            ...response,
+          });
+        };
+        const session = this.sessionManager.get(msg.sessionId);
+        if (!session) {
+          sendFileContent({
             content: "",
-            error: "Path not allowed",
+            error: "Session not found",
+            errorCode: "session_not_found",
           });
           break;
         }
+        const ownerId = this.codexThreadIdForSession(session);
+        if (!ownerId || !this.artifactManager) {
+          sendFileContent({
+            content: "",
+            error: "Artifact source reading is unavailable",
+            errorCode: "artifact_unavailable",
+          });
+          break;
+        }
+
         void (async () => {
+          let opened: Awaited<
+            ReturnType<ArtifactManager["openAuthorizedSource"]>
+          > | null = null;
           try {
-            if (!existsSync(absPath)) {
-              this.send(ws, {
-                type: "file_content",
-                filePath: msg.filePath,
+            opened = await this.artifactManager!.openAuthorizedSource({
+              artifactId: msg.artifactId,
+              ownerId,
+              messageId: msg.messageId,
+              candidateRoots: artifactCandidateRootsForSession(session),
+              cwd: session.worktreePath ?? session.projectPath,
+              projectRelativePath: msg.filePath,
+            });
+
+            const ext = extname(opened.filename).toLowerCase();
+            if (BridgeWebSocketServer.FILE_PEEK_IMAGE_EXTENSIONS.has(ext)) {
+              const mimeType = BridgeWebSocketServer.mimeTypeForExt(ext);
+              if (opened.sizeBytes > BridgeWebSocketServer.MAX_IMAGE_SIZE) {
+                sendFileContent({
+                  kind: "image",
+                  content: "",
+                  mimeType,
+                  sizeBytes: opened.sizeBytes,
+                  error: "Image too large to preview. Maximum size is 5 MB.",
+                  errorCode: "file_too_large",
+                });
+                return;
+              }
+              const buffer = await readStableBufferFromHandle(
+                opened.handle,
+                BridgeWebSocketServer.MAX_IMAGE_SIZE,
+                "Image too large to preview. Maximum size is 5 MB.",
+                opened.identity,
+              );
+              sendFileContent({
+                kind: "image",
                 content: "",
-                error: "File not found",
+                base64: buffer.toString("base64"),
+                mimeType,
+                sizeBytes: buffer.length,
               });
               return;
             }
-            const fileStat = await lstat(absPath);
-            if (fileStat.isSymbolicLink()) {
+
+            const language = filePeekLanguage(opened.filename);
+            if (opened.sizeBytes > FILE_PEEK_TEXT_MAX_BYTES) {
+              sendFileContent({
+                kind: "text",
+                content: "",
+                language,
+                sizeBytes: opened.sizeBytes,
+                error: "File is too large to preview. Maximum size is 8 MiB.",
+                errorCode: "file_too_large",
+              });
+              return;
+            }
+            const maxLines = msg.maxLines ?? 5000;
+            const text = await readStableTextFromHandle(
+              opened.handle,
+              maxLines,
+              opened.identity,
+            );
+            sendFileContent({
+              kind: "text",
+              content: text.content,
+              language,
+              totalLines: text.totalLines,
+              truncated: text.truncated,
+              sizeBytes: opened.sizeBytes,
+            });
+          } catch (error) {
+            if (error instanceof ArtifactResolveError) {
+              sendFileContent({
+                content: "",
+                error: error.message,
+                errorCode: error.code,
+              });
+            } else if (error instanceof FilePeekReadError) {
+              sendFileContent({
+                content: "",
+                error: error.message,
+                errorCode: error.code,
+              });
+            } else {
+              sendFileContent({
+                content: "",
+                error: "Failed to read artifact source.",
+                errorCode: "artifact_source_read_failed",
+              });
+            }
+          } finally {
+            await opened?.handle.close().catch(() => undefined);
+          }
+        })();
+        break;
+      }
+
+      case "read_file": {
+        const projectPath = resolvePlatformPath(
+          msg.projectPath,
+          this.platform,
+        );
+        const absPath = resolvePlatformPathFrom(
+          projectPath,
+          msg.filePath,
+          this.platform,
+        );
+        const sendFileContent = (
+          response: Omit<
+            FileContentServerMessage,
+            "type" | "requestId" | "filePath"
+          >,
+        ): void => {
+              this.send(ws, {
+                type: "file_content",
+            ...(msg.requestId ? { requestId: msg.requestId } : {}),
+                filePath: msg.filePath,
+            ...response,
+              });
+        };
+        if (
+          !this.isPathAllowed(projectPath) ||
+          !this.isPathAllowed(absPath) ||
+          !isPathWithinAllowedDirectory(absPath, projectPath, this.platform)
+        ) {
+          sendFileContent({ content: "", error: "Path not allowed" });
+          break;
+        }
+        void (async () => {
+          let handle: FileHandle | null = null;
+          try {
+            let fileStat;
+            try {
+              fileStat = await lstat(absPath);
+            } catch {
+              sendFileContent({ content: "", error: "File not found" });
+              return;
+            }
               let targetPath = "";
+            if (fileStat.isSymbolicLink()) {
               try {
                 targetPath = await readlink(absPath);
               } catch {
                 // Best effort only; the user-facing error still works without it.
               }
-              let resolvedTargetStat;
-              try {
-                resolvedTargetStat = await stat(absPath);
-              } catch {
-                this.send(ws, {
-                  type: "file_content",
-                  filePath: msg.filePath,
-                  content: "",
-                  error:
-                    targetPath.length > 0
-                      ? `This symbolic link points to a missing target: ${targetPath}`
-                      : "This symbolic link points to a missing target.",
-                });
-                return;
-              }
-              if (resolvedTargetStat.isDirectory()) {
-                this.send(ws, {
-                  type: "file_content",
-                  filePath: msg.filePath,
-                  content: "",
-                  error:
-                    targetPath.length > 0
-                      ? `This symbolic link points to a directory (${targetPath}). Open the target directory instead.`
-                      : "This symbolic link points to a directory. Open the target directory instead.",
-                });
-                return;
-              }
-            } else if (fileStat.isDirectory()) {
-              this.send(ws, {
-                type: "file_content",
-                filePath: msg.filePath,
+            }
+            if (fileStat.isDirectory()) {
+              sendFileContent({
                 content: "",
                 error: "This path is a directory. Open a file instead.",
               });
               return;
             }
-            const resolvedFileStat = fileStat.isSymbolicLink()
-              ? await stat(absPath)
-              : fileStat;
+
+            let canonicalProjectPath: string;
+              try {
+              canonicalProjectPath = await realpath(projectPath);
+              } catch {
+              sendFileContent({ content: "", error: "Path not allowed" });
+              return;
+            }
+            try {
+              handle = await open(absPath, "r");
+            } catch {
+              sendFileContent({
+                  content: "",
+                  error:
+                  fileStat.isSymbolicLink() && targetPath.length > 0
+                      ? `This symbolic link points to a missing target: ${targetPath}`
+                    : fileStat.isSymbolicLink()
+                      ? "This symbolic link points to a missing target."
+                      : "File not found",
+                });
+                return;
+              }
+            const openedStats = await handle.stat();
+            if (openedStats.isDirectory()) {
+              sendFileContent({
+                  content: "",
+                  error:
+                  fileStat.isSymbolicLink() && targetPath.length > 0
+                      ? `This symbolic link points to a directory (${targetPath}). Open the target directory instead.`
+                    : fileStat.isSymbolicLink()
+                      ? "This symbolic link points to a directory. Open the target directory instead."
+                      : "This path is a directory. Open a file instead.",
+                });
+                return;
+              }
+            if (!openedStats.isFile()) {
+              throw new FilePeekReadError(
+                "not_regular_file",
+                "This path is not a regular file.",
+              );
+            }
+
+            let canonicalFilePath: string;
+            let canonicalFileStats;
+            try {
+              canonicalFilePath = await realpath(absPath);
+              canonicalFileStats = await stat(canonicalFilePath);
+            } catch {
+              throw new FilePeekReadError(
+                "file_changed",
+                "File changed while it was being opened.",
+              );
+            }
+            if (!sameOpenFileStats(openedStats, canonicalFileStats)) {
+              throw new FilePeekReadError(
+                "file_changed",
+                "File changed while it was being opened.",
+              );
+            }
+            if (
+              !isPathWithinAllowedDirectory(
+                canonicalFilePath,
+                canonicalProjectPath,
+                this.platform,
+              ) ||
+              !(await this.isCanonicalPathAllowed(canonicalProjectPath)) ||
+              !(await this.isCanonicalPathAllowed(canonicalFilePath))
+            ) {
+              sendFileContent({ content: "", error: "Path not allowed" });
+              return;
+            }
             const ext = extname(absPath).toLowerCase();
             if (BridgeWebSocketServer.FILE_PEEK_IMAGE_EXTENSIONS.has(ext)) {
               const mimeType = BridgeWebSocketServer.mimeTypeForExt(ext);
-              if (resolvedFileStat.size > BridgeWebSocketServer.MAX_IMAGE_SIZE) {
-                this.send(ws, {
-                  type: "file_content",
-                  filePath: msg.filePath,
+              if (openedStats.size > BridgeWebSocketServer.MAX_IMAGE_SIZE) {
+                sendFileContent({
                   kind: "image",
                   content: "",
                   mimeType,
-                  sizeBytes: resolvedFileStat.size,
+                  sizeBytes: openedStats.size,
                   error: "Image too large to preview. Maximum size is 5 MB.",
                 });
                 return;
               }
-              const buf = await readFile(absPath);
-              this.send(ws, {
-                type: "file_content",
-                filePath: msg.filePath,
+              const buf = await readStableBufferFromHandle(
+                handle,
+                BridgeWebSocketServer.MAX_IMAGE_SIZE,
+                "Image too large to preview. Maximum size is 5 MB.",
+                openedStats,
+              );
+              sendFileContent({
                 kind: "image",
                 content: "",
                 base64: buf.toString("base64"),
@@ -4710,64 +5273,43 @@ export class BridgeWebSocketServer {
               typeof msg.maxLines === "number" && msg.maxLines > 0
                 ? msg.maxLines
                 : 5000;
-            const raw = await readFile(absPath, "utf-8");
-            const textExt = ext.replace(/^\./, "").toLowerCase();
-            const languageMap: Record<string, string> = {
-              ts: "typescript",
-              tsx: "typescript",
-              js: "javascript",
-              jsx: "javascript",
-              py: "python",
-              rb: "ruby",
-              rs: "rust",
-              go: "go",
-              java: "java",
-              kt: "kotlin",
-              swift: "swift",
-              dart: "dart",
-              c: "c",
-              cpp: "cpp",
-              h: "c",
-              hpp: "cpp",
-              cs: "csharp",
-              sh: "bash",
-              zsh: "bash",
-              yml: "yaml",
-              yaml: "yaml",
-              json: "json",
-              toml: "toml",
-              md: "markdown",
-              html: "html",
-              css: "css",
-              scss: "css",
-              sql: "sql",
-              xml: "xml",
-              dockerfile: "dockerfile",
-              makefile: "makefile",
-              gradle: "groovy",
-            };
-            const language = languageMap[textExt] ?? (textExt || undefined);
-            const lines = raw.split("\n");
-            const truncated = lines.length > maxLines;
-            const content = truncated
-              ? lines.slice(0, maxLines).join("\n")
-              : raw;
-            this.send(ws, {
-              type: "file_content",
-              filePath: msg.filePath,
+            if (openedStats.size > FILE_PEEK_TEXT_MAX_BYTES) {
+              sendFileContent({
               kind: "text",
-              content,
-              language,
-              totalLines: lines.length,
-              truncated,
+                content: "",
+                language: filePeekLanguage(absPath),
+                error: "File is too large to preview. Maximum size is 8 MiB.",
+                errorCode: "file_too_large",
             });
-          } catch (err) {
-            this.send(ws, {
-              type: "file_content",
-              filePath: msg.filePath,
+              return;
+            }
+            const text = await readStableTextFromHandle(
+              handle,
+              maxLines,
+              openedStats,
+            );
+            sendFileContent({
+              kind: "text",
+              content: text.content,
+              language: filePeekLanguage(absPath),
+              totalLines: text.totalLines,
+              truncated: text.truncated,
+            });
+          } catch (error) {
+            if (error instanceof FilePeekReadError) {
+              sendFileContent({
               content: "",
-              error: `Failed to read file: ${err}`,
+                error: error.message,
+                errorCode: error.code,
+              });
+            } else {
+              sendFileContent({
+                content: "",
+                error: "Failed to read file.",
             });
+          }
+          } finally {
+            await handle?.close().catch(() => undefined);
           }
         })();
         break;
@@ -5129,7 +5671,7 @@ export class BridgeWebSocketServer {
                         : session.codexSettings?.model,
                   });
                 })()
-              : msg.message ?? "";
+              : (msg.message ?? "");
           const result = gitCommit(msg.projectPath, message);
           this.send(ws, {
             type: "git_commit_result",
@@ -5462,8 +6004,12 @@ export class BridgeWebSocketServer {
         };
 
         if (session.provider === "codex") {
-          this.rewindCodexConversation(ws, msg.sessionId, msg.targetUuid, msg.mode)
-            .catch(handleError);
+          this.rewindCodexConversation(
+            ws,
+            msg.sessionId,
+            msg.targetUuid,
+            msg.mode,
+          ).catch(handleError);
           break;
         }
 
@@ -5578,14 +6124,16 @@ export class BridgeWebSocketServer {
       }
 
       case "fork": {
-        this.forkCodexSession(ws, msg.sessionId, msg.targetUuid).catch((err) => {
+        this.forkCodexSession(ws, msg.sessionId, msg.targetUuid).catch(
+          (err) => {
           const errMsg = err instanceof Error ? err.message : String(err);
           this.send(ws, {
             type: "error",
             message: errMsg,
             errorCode: "fork_failed",
           });
-        });
+          },
+        );
         break;
       }
 
@@ -5629,10 +6177,16 @@ export class BridgeWebSocketServer {
           .then(async (result) => {
             try {
               if (this.galleryStore) {
+                const runtimeSession = msg.sessionId
+                  ? this.sessionManager.get(msg.sessionId)
+                  : undefined;
                 const meta = await this.galleryStore.addImage(
                   result.filePath,
                   msg.projectPath,
                   msg.sessionId,
+                  runtimeSession
+                    ? this.providerSessionIdForSession(runtimeSession)
+                    : undefined,
                 );
                 if (meta) {
                   const info = this.galleryStore.metaToInfo(meta);
@@ -6379,9 +6933,7 @@ export class BridgeWebSocketServer {
     return this.codexMetadataRequest;
   }
 
-  private async loadAndApplyCodexMetadata(
-    projectPath?: string,
-  ): Promise<void> {
+  private async loadAndApplyCodexMetadata(projectPath?: string): Promise<void> {
     const activeProcess = this.getActiveCodexProcess();
     const codexProcess =
       activeProcess ?? (await this.createStandaloneCodexProcess(projectPath));
@@ -6406,7 +6958,9 @@ export class BridgeWebSocketServer {
         this.applyCodexModels(modelResult.value);
       } else {
         if (modelResult.status === "rejected") {
-          console.warn(`[ws] Failed to load Codex models: ${modelResult.reason}`);
+          console.warn(
+            `[ws] Failed to load Codex models: ${modelResult.reason}`,
+          );
         }
         this.applyFallbackCodexModels();
       }
@@ -6472,7 +7026,8 @@ export class BridgeWebSocketServer {
     if (typeof modelSource.listAvailableModelMetadata === "function") {
       return modelSource.listAvailableModelMetadata();
     }
-    const models = typeof modelSource.listAvailableModels === "function"
+    const models =
+      typeof modelSource.listAvailableModels === "function"
       ? await modelSource.listAvailableModels()
       : [];
     return models.map((model) => ({
@@ -6870,12 +7425,13 @@ export class BridgeWebSocketServer {
   ): boolean {
     const type = typeof msg.type === "string" ? msg.type : "";
     if (!OPT_IN_SERVER_MESSAGES.has(type)) return true;
-    return (
-      this.clientSupportedServerMessages.get(ws)?.has(type) ?? false
-    );
+    return this.clientSupportedServerMessages.get(ws)?.has(type) ?? false;
   }
 
-  private hasInputConflictSince(session: SessionInfo, baseSeq: number): boolean {
+  private hasInputConflictSince(
+    session: SessionInfo,
+    baseSeq: number,
+  ): boolean {
     if (
       session.provider === "codex" &&
       typeof session.codexCanonicalHistoryRevision === "number" &&
@@ -6958,7 +7514,9 @@ export class BridgeWebSocketServer {
       apps: cached.apps,
       ...(cached.appMetadata ? { appMetadata: cached.appMetadata } : {}),
       plugins: cached.plugins,
-      ...(cached.pluginMetadata ? { pluginMetadata: cached.pluginMetadata } : {}),
+      ...(cached.pluginMetadata
+        ? { pluginMetadata: cached.pluginMetadata }
+        : {}),
     });
   }
 

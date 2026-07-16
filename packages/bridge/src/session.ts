@@ -35,6 +35,12 @@ import {
   buildAutoRenameTranscript,
   generateAutoRenameName,
 } from "./auto-rename.js";
+import type { ArtifactManager } from "./artifact-manager.js";
+import { extractArtifactCandidates } from "./artifact-candidates.js";
+import {
+  MAX_ARTIFACTS_PER_MESSAGE,
+  type ArtifactCandidate,
+} from "./artifact-types.js";
 
 export interface WorktreeOptions {
   useWorktree?: boolean;
@@ -95,6 +101,23 @@ export interface SessionInfo {
   autoRename?: boolean;
   /** Prevents automatic rename from running more than once. */
   autoRenameAttempted?: boolean;
+}
+
+/** Roots explicitly in scope for automatic non-image artifact references. */
+export function artifactCandidateRootsForSession(
+  session: SessionInfo,
+): string[] {
+  return [
+    ...new Set(
+      [
+        session.worktreePath ?? session.projectPath,
+        session.projectPath,
+        ...(session.codexSettings?.additionalWritableRoots ?? []),
+      ]
+        .map((root) => root.trim())
+        .filter((root) => root.length > 0),
+    ),
+  ];
 }
 
 export interface HistoryEntry {
@@ -203,9 +226,7 @@ function mergeCodexSettings(
     ...(msg.modelReasoningEffort !== undefined
       ? { modelReasoningEffort: msg.modelReasoningEffort }
       : {}),
-    ...(msg.serviceTier !== undefined
-      ? { serviceTier: msg.serviceTier }
-      : {}),
+    ...(msg.serviceTier !== undefined ? { serviceTier: msg.serviceTier } : {}),
     ...(msg.networkAccessEnabled !== undefined
       ? { networkAccessEnabled: msg.networkAccessEnabled }
       : {}),
@@ -229,7 +250,9 @@ function sanitizeCodexModel(model: unknown): string | undefined {
   return normalized;
 }
 
-function publicQueuedInput(item?: QueuedCodexInput): QueuedInputItem | undefined {
+function publicQueuedInput(
+  item?: QueuedCodexInput,
+): QueuedInputItem | undefined {
   if (!item) return undefined;
   return {
     itemId: item.itemId,
@@ -242,6 +265,18 @@ function publicQueuedInput(item?: QueuedCodexInput): QueuedInputItem | undefined
   };
 }
 
+function structuredImagePaths(
+  candidates: ArtifactCandidate[],
+): string[] {
+  return [
+    ...new Set(
+      candidates
+        .filter((candidate) => candidate.source === "image_generation")
+        .map((candidate) => candidate.localPath),
+    ),
+  ].slice(0, MAX_ARTIFACTS_PER_MESSAGE);
+}
+
 export class SessionManager {
   private sessions = new Map<string, SessionInfo>();
   private onMessage: (sessionId: string, msg: ServerMessage) => void;
@@ -250,6 +285,7 @@ export class SessionManager {
   private onGalleryImage: GalleryImageCallback | null;
   private worktreeStore: WorktreeStore | null;
   private onSessionUpdated: SessionUpdatedCallback | null;
+  private artifactManager: ArtifactManager | null;
 
   /** Cache slash commands per project path for early loading on subsequent sessions. */
   private commandCache = new Map<
@@ -272,6 +308,7 @@ export class SessionManager {
     onGalleryImage?: GalleryImageCallback,
     worktreeStore?: WorktreeStore,
     onSessionUpdated?: SessionUpdatedCallback,
+    artifactManager?: ArtifactManager,
   ) {
     this.onMessage = onMessage;
     this.imageStore = imageStore ?? null;
@@ -279,6 +316,84 @@ export class SessionManager {
     this.onGalleryImage = onGalleryImage ?? null;
     this.worktreeStore = worktreeStore ?? null;
     this.onSessionUpdated = onSessionUpdated ?? null;
+    this.artifactManager = artifactManager ?? null;
+  }
+
+  /**
+   * Attach safe, opaque artifact refs while preserving provider text exactly.
+   * This method is shared by live messages and canonical history replay.
+   */
+  enrichArtifactsForSession(
+    session: SessionInfo,
+    message: ServerMessage,
+    detachedCandidates?: ArtifactCandidate[],
+  ): ServerMessage | Promise<ServerMessage> {
+    const embeddedCandidates =
+      message.type === "tool_result" ? (message.artifactCandidates ?? []) : [];
+    let cleanMessage = message;
+    if (message.type === "tool_result" && "artifactCandidates" in message) {
+      const { artifactCandidates: _, ...clean } = message;
+      cleanMessage = clean as ServerMessage;
+    }
+
+    if (session.provider !== "codex" || !this.artifactManager) {
+      return cleanMessage;
+    }
+
+    const ownerId =
+      session.claudeSessionId ??
+      (session.process instanceof CodexProcess
+        ? (session.process.sessionId ?? undefined)
+        : undefined);
+    if (!ownerId) return cleanMessage;
+
+    const candidates = [...(detachedCandidates ?? []), ...embeddedCandidates];
+    let messageId: string | undefined;
+    if (cleanMessage.type === "assistant") {
+      messageId = cleanMessage.message.id;
+      if (detachedCandidates === undefined) {
+        try {
+          for (const [index, content] of cleanMessage.message.content.entries()) {
+            if (content.type !== "text") continue;
+            candidates.push(
+              ...extractArtifactCandidates(content.text, {
+                source: "assistant_markdown",
+                textContentIndex: index,
+                platform: process.platform,
+              }),
+            );
+          }
+        } catch {
+          return cleanMessage;
+        }
+      }
+    } else if (cleanMessage.type === "tool_result") {
+      messageId = cleanMessage.toolUseId;
+    } else {
+      return cleanMessage;
+    }
+
+    if (!messageId || candidates.length === 0) return cleanMessage;
+    return this.artifactManager
+      .registerCandidates({
+        ownerId,
+        messageId,
+        cwd: session.worktreePath ?? session.projectPath,
+        candidateRoots: artifactCandidateRootsForSession(session),
+        candidates,
+      })
+      .then((artifacts) =>
+        artifacts.length > 0
+          ? ({ ...cleanMessage, artifacts } as ServerMessage)
+          : cleanMessage,
+      )
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.name : "unknown_error";
+        console.warn(
+          `[artifact] Enrichment failed for ${cleanMessage.type} in session ${session.id}: ${detail}`,
+        );
+        return cleanMessage;
+      });
   }
 
   create(
@@ -363,7 +478,84 @@ export class SessionManager {
     // Cache tool_use id → name for enriching tool_result messages
     const toolUseNames = new Map<string, string>();
 
-    proc.on("message", async (msg) => {
+    // Provider EventEmitters do not await async listeners. Keep all message
+    // enrichment/history mutations on one chain so an awaited file inspection
+    // cannot let a later result/status overtake the assistant message.
+    let messageProcessing: Promise<void> | null = null;
+    const trackMessageWork = (work: Promise<void>): void => {
+      const tracked = work.finally(() => {
+        if (messageProcessing === tracked) messageProcessing = null;
+      });
+      messageProcessing = tracked;
+    };
+    proc.on("message", (msg) => {
+      // Detach provider-local paths before any asynchronous operation. For
+      // assistant text, AST extraction is synchronous and lets us retain the
+      // legacy synchronous fast path when no artifact exists.
+      let artifactCandidates: ArtifactCandidate[] = [];
+      if (msg.type === "tool_result" && msg.artifactCandidates) {
+        artifactCandidates = [...msg.artifactCandidates];
+        const { artifactCandidates: _, ...clean } = msg;
+        msg = clean as ServerMessage;
+      } else if (
+        effectiveProvider === "codex" &&
+        this.artifactManager !== null &&
+        msg.type === "assistant"
+      ) {
+        try {
+          for (const [index, content] of msg.message.content.entries()) {
+            if (content.type !== "text") continue;
+            artifactCandidates.push(
+              ...extractArtifactCandidates(content.text, {
+                source: "assistant_markdown",
+                textContentIndex: index,
+                platform: process.platform,
+              }),
+            );
+          }
+        } catch {
+          artifactCandidates = [];
+        }
+      }
+
+      const artifactWorkMayAwait =
+        effectiveProvider === "codex" &&
+        this.artifactManager !== null &&
+        artifactCandidates.length > 0 &&
+        Boolean(
+          session.claudeSessionId ||
+          (proc instanceof CodexProcess && proc.sessionId),
+        );
+      let imageWorkMayAwait = false;
+      if (msg.type === "tool_result" && this.imageStore) {
+        try {
+          const generatedPaths = structuredImagePaths(artifactCandidates);
+          imageWorkMayAwait =
+            (this.artifactManager !== null && generatedPaths.length > 0) ||
+            this.imageStore.extractImagePaths(msg.content).length > 0 ||
+            Boolean(
+              this.galleryStore &&
+              Array.isArray(msg.rawContentBlocks) &&
+              msg.rawContentBlocks.some((block) => {
+                if (!block || typeof block !== "object") return false;
+                const record = block as Record<string, unknown>;
+                const source = record.source as
+                  Record<string, unknown> | undefined;
+                return (
+                  record.type === "image" &&
+                  source?.type === "base64" &&
+                  typeof source.data === "string" &&
+                  typeof source.media_type === "string"
+                );
+              }),
+            );
+        } catch {
+          // The normal handler below owns error reporting and fail-open logic.
+          imageWorkMayAwait = false;
+        }
+      }
+
+      const processMessage = async (): Promise<void> => {
       try {
         session.lastActivityAt = new Date();
 
@@ -393,21 +585,20 @@ export class SessionManager {
               msg.skills ?? this.commandCache.get(projectPath)?.skills ?? [],
             skillMetadata:
               (msg.skillMetadata as
-                | Array<Record<string, unknown>>
-                | undefined) ??
+                  Array<Record<string, unknown>> | undefined) ??
               this.commandCache.get(projectPath)?.skillMetadata,
             apps: msg.apps ?? this.commandCache.get(projectPath)?.apps ?? [],
             appMetadata:
               (msg.appMetadata as
-                | Array<Record<string, unknown>>
-                | undefined) ??
+                  Array<Record<string, unknown>> | undefined) ??
               this.commandCache.get(projectPath)?.appMetadata,
             plugins:
-              msg.plugins ?? this.commandCache.get(projectPath)?.plugins ?? [],
+                msg.plugins ??
+                this.commandCache.get(projectPath)?.plugins ??
+                [],
             pluginMetadata:
               (msg.pluginMetadata as
-                | Array<Record<string, unknown>>
-                | undefined) ??
+                  Array<Record<string, unknown>> | undefined) ??
               this.commandCache.get(projectPath)?.pluginMetadata,
           });
         }
@@ -424,7 +615,10 @@ export class SessionManager {
           }
 
           // Cache tool_use names from assistant messages
-          if (msg.type === "assistant" && Array.isArray(msg.message.content)) {
+            if (
+              msg.type === "assistant" &&
+              Array.isArray(msg.message.content)
+            ) {
             for (const content of msg.message.content) {
               if (content.type === "tool_use") {
                 const toolUse = content as AssistantToolUseContent;
@@ -475,13 +669,54 @@ export class SessionManager {
           }
         }
 
+          const providerSessionId =
+            session.claudeSessionId ?? proc.sessionId ?? undefined;
+          let materializedGeneratedPaths: string[] = [];
+          if (
+            msg.type === "tool_result" &&
+            effectiveProvider === "codex" &&
+            this.imageStore &&
+            this.artifactManager &&
+            artifactCandidates.some(
+              (candidate) => candidate.source === "image_generation",
+            )
+          ) {
+            const ownerId =
+              session.claudeSessionId ??
+              (proc instanceof CodexProcess
+                ? (proc.sessionId ?? undefined)
+                : undefined);
+            if (ownerId) {
+              materializedGeneratedPaths =
+                await this.artifactManager.materializeGeneratedCandidates({
+                  ownerId,
+                  messageId: msg.toolUseId,
+                  cwd: session.worktreePath ?? session.projectPath,
+                  candidates: artifactCandidates,
+                });
+            }
+          }
+
         // Extract images from tool_result content for both Claude and Codex.
         if (msg.type === "tool_result" && this.imageStore) {
-          const paths = this.imageStore.extractImagePaths(msg.content);
+            const rawGeneratedPaths = new Set(
+              structuredImagePaths(artifactCandidates),
+            );
+            const extractedPaths = this.imageStore.extractImagePaths(
+              msg.content,
+            );
+            const paths = [
+              ...new Set([
+                ...(this.artifactManager && rawGeneratedPaths.size > 0
+                  ? []
+                  : extractedPaths),
+                ...materializedGeneratedPaths,
+              ]),
+            ];
           if (paths.length > 0) {
             const images = await this.imageStore.registerImages(
               paths,
-              session.projectPath,
+                session.worktreePath ?? session.projectPath,
             );
             if (images.length > 0) {
               msg = { ...msg, images };
@@ -492,8 +727,9 @@ export class SessionManager {
               for (const p of paths) {
                 const meta = await this.galleryStore.addImage(
                   p,
-                  session.projectPath,
+                    session.worktreePath ?? session.projectPath,
                   session.id,
+                    providerSessionId,
                 );
                 if (meta && this.onGalleryImage) {
                   this.onGalleryImage(meta);
@@ -539,6 +775,7 @@ export class SessionManager {
                       mimeType,
                       session.projectPath,
                       session.id,
+                        providerSessionId,
                     );
                     if (meta && this.onGalleryImage) {
                       this.onGalleryImage(meta);
@@ -557,6 +794,16 @@ export class SessionManager {
             msg = cleanMsg as typeof msg;
           }
         }
+
+          const enrichedMessage = this.enrichArtifactsForSession(
+            session,
+            msg,
+            artifactCandidates,
+          );
+          msg =
+            enrichedMessage instanceof Promise
+              ? await enrichedMessage
+              : enrichedMessage;
 
         // Don't add streaming deltas to history
         let mergedUserInput = false;
@@ -594,6 +841,18 @@ export class SessionManager {
           err,
         );
       }
+      };
+
+      // Preserve the existing synchronous fast path until an operation really
+      // awaits; only messages arriving behind pending work enter the chain.
+      if (messageProcessing) {
+        trackMessageWork(messageProcessing.then(processMessage));
+      } else {
+        const current = processMessage();
+        if (artifactWorkMayAwait || imageWorkMayAwait) {
+          trackMessageWork(current);
+        }
+      }
     });
 
     proc.on("status", (status) => {
@@ -602,20 +861,32 @@ export class SessionManager {
 
     if (proc instanceof CodexProcess) {
       proc.on("input_ready", () => {
-        this.drainCodexQueue(session);
+        const drain = (): void => this.drainCodexQueue(session);
+        if (messageProcessing) {
+          trackMessageWork(messageProcessing.then(drain));
+        } else {
+          drain();
+        }
       });
     }
 
     proc.on("exit", () => {
+      const finish = (): void => {
       session.status = "idle";
       session.codexQueuedInput = undefined;
-      // Add status message to history so it stays in sync with session.status
+        // Add status after every already-emitted provider message.
       this.appendHistoryToSession(session, {
         type: "status",
         status: "idle",
       } as ServerMessage);
       if (session.provider === "codex") {
         this.broadcastCodexQueue(session);
+      }
+      };
+      if (messageProcessing) {
+        trackMessageWork(messageProcessing.then(finish));
+      } else {
+        finish();
       }
     });
 
@@ -668,7 +939,10 @@ export class SessionManager {
         session.claudeSessionId = codexOptions.threadId;
         this.saveWorktreeMapping(session);
         if (codexOptions.profile) {
-          void saveCodexSessionProfile(codexOptions.threadId, codexOptions.profile);
+          void saveCodexSessionProfile(
+            codexOptions.threadId,
+            codexOptions.profile,
+          );
         }
         if (codexOptions.additionalWritableRoots) {
           void saveCodexSessionAdditionalWritableRoots(
@@ -699,7 +973,10 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
-  appendHistory(sessionId: string, msg: ServerMessage): HistoryEntry | undefined {
+  appendHistory(
+    sessionId: string,
+    msg: ServerMessage,
+  ): HistoryEntry | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
     const entry = this.appendHistoryToSession(session, msg);
@@ -747,7 +1024,8 @@ export class SessionManager {
 
   list(): SessionSummary[] {
     return Array.from(this.sessions.values()).map((s) => {
-      const codexSettings = s.process instanceof CodexProcess
+      const codexSettings =
+        s.process instanceof CodexProcess
         ? withDerivedCodexPermissionsMode(
             s.codexSettings ??
               (s.process.codexPermissionsMode
@@ -939,10 +1217,7 @@ export class SessionManager {
     }
   }
 
-  private hasPastCodexUserMessage(
-    session: SessionInfo,
-    uuid: string,
-  ): boolean {
+  private hasPastCodexUserMessage(session: SessionInfo, uuid: string): boolean {
     return (session.pastMessages ?? []).some((message) => {
       if (!message || typeof message !== "object") return false;
       const item = message as {
@@ -1004,7 +1279,10 @@ export class SessionManager {
       const incomingImages = incoming.imageCount ?? 0;
       if (existingImages !== incomingImages) return false;
     }
-    if (isCodexUserTurnUuid(existingUuid) || isCodexUserTurnUuid(incomingUuid)) {
+    if (
+      isCodexUserTurnUuid(existingUuid) ||
+      isCodexUserTurnUuid(incomingUuid)
+    ) {
       return (
         this.isPendingCodexUserEcho(session, existingUuid) ||
         this.isPendingCodexUserEcho(session, incomingUuid)
@@ -1233,8 +1511,7 @@ export class SessionManager {
             return msg.content.replace(/\s+/g, " ").trim().slice(0, 100);
           }
           const content = msg.content as
-            | Array<Record<string, unknown>>
-            | undefined;
+            Array<Record<string, unknown>> | undefined;
           const textBlock = content?.find((c) => c.type === "text");
           if (textBlock?.text)
             return (textBlock.text as string)
@@ -1285,7 +1562,10 @@ export class SessionManager {
   cancelCodexQueuedInput(id: string, itemId: string): boolean {
     const session = this.sessions.get(id);
     if (!session || session.provider !== "codex") return false;
-    if (!session.codexQueuedInput || session.codexQueuedInput.itemId !== itemId) {
+    if (
+      !session.codexQueuedInput ||
+      session.codexQueuedInput.itemId !== itemId
+    ) {
       return false;
     }
     session.codexQueuedInput = undefined;
@@ -1369,16 +1649,16 @@ export class SessionManager {
     return {
       type: "user_input",
       text: queued.text,
-      ...(queued.userMessageUuid ? { userMessageUuid: queued.userMessageUuid } : {}),
+      ...(queued.userMessageUuid
+        ? { userMessageUuid: queued.userMessageUuid }
+        : {}),
       timestamp: new Date().toISOString(),
       ...(queued.imageCount ? { imageCount: queued.imageCount } : {}),
       ...(queued.imageRefs ? { images: queued.imageRefs } : {}),
     } as ServerMessage;
   }
 
-  getCachedCommands(
-    projectPath: string,
-  ):
+  getCachedCommands(projectPath: string):
     | {
         slashCommands: string[];
         skills: string[];
