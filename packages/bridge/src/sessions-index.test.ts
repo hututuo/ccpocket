@@ -1255,6 +1255,46 @@ describe("codex sessions integration", () => {
     expect(history[1].content[0].text).toBe("Here is the diff summary.");
   });
 
+  it("streams codex history with large irrelevant entries", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68011";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    const filler = JSON.stringify({
+      type: "turn_context",
+      payload: { ignored: "x".repeat(1024) },
+    });
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: threadId, cwd: "/tmp/project-a" },
+      }),
+      ...Array.from({ length: 20_000 }, () => filler),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "user_message", message: "after large context" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "still responsive" }],
+        },
+      }),
+    ];
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
+      lines.join("\n"),
+    );
+
+    const history = await getCodexSessionHistory(threadId);
+    expect(history.map((message) => message.content[0].text)).toEqual([
+      "after large context",
+      "still responsive",
+    ]);
+  });
+
   it("trims codex history after thread_rolled_back events", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68013";
     const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");

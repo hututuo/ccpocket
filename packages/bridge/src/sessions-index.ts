@@ -2812,18 +2812,34 @@ async function findCodexSessionJsonlPath(
     ) {
       return filePath;
     }
-    let raw: string;
     try {
-      raw = await readFile(filePath, "utf-8");
+      if (await codexJsonlHasThreadId(filePath, threadId)) {
+        return filePath;
+      }
     } catch {
       continue;
     }
-    const parsed = parseCodexSessionJsonl(raw, fallbackSessionId);
-    if (parsed?.threadId === threadId) {
-      return filePath;
-    }
   }
   return null;
+}
+
+async function codexJsonlHasThreadId(
+  filePath: string,
+  threadId: string,
+): Promise<boolean> {
+  for await (const { line } of streamJsonlLines(filePath)) {
+    if (!line.trim()) continue;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (entry.type !== "session_meta") continue;
+    const payload = asObject(entry.payload);
+    return payload?.id === threadId;
+  }
+  return false;
 }
 
 /**
@@ -2836,17 +2852,9 @@ export async function getSessionHistory(
   const jsonlPath = await findSessionJsonlPath(sessionId);
   if (!jsonlPath) return [];
 
-  let raw: string;
-  try {
-    raw = await readFile(jsonlPath, "utf-8");
-  } catch {
-    return [];
-  }
-
   const messages: SessionHistoryMessage[] = [];
-  const lines = raw.split("\n");
-
-  for (const line of lines) {
+  try {
+    for await (const { line } of streamJsonlLines(jsonlPath)) {
     if (!line.trim()) continue;
 
     let entry: Record<string, unknown>;
@@ -2935,6 +2943,9 @@ export async function getSessionHistory(
         ...(imageCount > 0 ? { imageCount } : {}),
       });
     }
+    }
+  } catch {
+    return [];
   }
 
   return messages;
@@ -2952,6 +2963,23 @@ interface CodexMessageImageIndex {
   size: number;
   mtimeMs: number;
   imagesByUuid: Map<string, ExtractedImage[]>;
+}
+
+async function* streamJsonlLines(
+  filePath: string,
+): AsyncGenerator<{ line: string; index: number }> {
+  const stream = createReadStream(filePath, { encoding: "utf-8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  let index = 0;
+  try {
+    for await (const line of lines) {
+      yield { line, index };
+      index += 1;
+    }
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
 }
 
 const CODEX_IMAGE_INDEX_CACHE_LIMIT = 8;
@@ -3076,58 +3104,59 @@ async function buildClaudeMessageImageIndex(
   if (!jsonlPath) return null;
 
   let fileStat;
-  let raw: string;
   try {
     fileStat = await stat(jsonlPath);
-    raw = await readFile(jsonlPath, "utf-8");
   } catch {
     return null;
   }
 
   const imagesByUuid = new Map<string, ExtractedImage[]>();
   let imageBytes = 0;
-  const lines = raw.split("\n");
-  for (const line of lines) {
-    if (!line.trim()) continue;
+  try {
+    for await (const { line } of streamJsonlLines(jsonlPath)) {
+      if (!line.trim()) continue;
 
-    let entry: Record<string, unknown>;
-    try {
-      entry = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
 
-    if (entry.type !== "user") continue;
-    if (typeof entry.uuid !== "string") continue;
+      if (entry.type !== "user") continue;
+      if (typeof entry.uuid !== "string") continue;
 
-    const message = entry.message as
-      { content: unknown[] | string } | undefined;
-    if (!message?.content || !Array.isArray(message.content)) continue;
+      const message = entry.message as
+        { content: unknown[] | string } | undefined;
+      if (!message?.content || !Array.isArray(message.content)) continue;
 
-    const images: ExtractedImage[] = [];
-    for (const c of message.content) {
-      if (typeof c !== "object" || c === null) continue;
-      const item = c as Record<string, unknown>;
-      if (item.type !== "image") continue;
+      const images: ExtractedImage[] = [];
+      for (const c of message.content) {
+        if (typeof c !== "object" || c === null) continue;
+        const item = c as Record<string, unknown>;
+        if (item.type !== "image") continue;
 
-      const source = item.source as Record<string, unknown> | undefined;
-      if (!source || source.type !== "base64") continue;
+        const source = item.source as Record<string, unknown> | undefined;
+        if (!source || source.type !== "base64") continue;
 
-      const data = source.data;
-      const mediaType = source.media_type;
-      if (
-        typeof data === "string" &&
-        data.length > 0 &&
-        typeof mediaType === "string" &&
-        mediaType.length > 0
-      ) {
-        images.push({ base64: data, mimeType: mediaType });
-        imageBytes += Buffer.byteLength(data, "utf8");
+        const data = source.data;
+        const mediaType = source.media_type;
+        if (
+          typeof data === "string" &&
+          data.length > 0 &&
+          typeof mediaType === "string" &&
+          mediaType.length > 0
+        ) {
+          images.push({ base64: data, mimeType: mediaType });
+          imageBytes += Buffer.byteLength(data, "utf8");
+        }
+      }
+      if (images.length > 0) {
+        imagesByUuid.set(entry.uuid, images);
       }
     }
-    if (images.length > 0) {
-      imagesByUuid.set(entry.uuid, images);
-    }
+  } catch {
+    return null;
   }
 
   return {
@@ -3198,15 +3227,18 @@ async function buildCodexMessageImageIndex(
   if (!jsonlPath) return null;
 
   let fileStat;
-  let raw: string;
   try {
     fileStat = await stat(jsonlPath);
-    raw = await readFile(jsonlPath, "utf-8");
   } catch {
     return null;
   }
 
-  const imagesByUuid = await collectCodexMessageImages(raw.split("\n"));
+  let imagesByUuid: Map<string, ExtractedImage[]>;
+  try {
+    imagesByUuid = await collectCodexMessageImages(jsonlPath);
+  } catch {
+    return null;
+  }
   return {
     jsonlPath,
     size: fileStat.size,
@@ -3216,14 +3248,14 @@ async function buildCodexMessageImageIndex(
 }
 
 async function collectCodexMessageImages(
-  lines: string[],
+  jsonlPath: string,
 ): Promise<Map<string, ExtractedImage[]>> {
   const imagesByUuid = new Map<string, ExtractedImage[]>();
   const responseItemImagesByOrdinal =
-    collectCodexUserResponseItemImagesByOrdinal(lines);
+    await collectCodexUserResponseItemImagesByOrdinal(jsonlPath);
   let ordinal = 0;
 
-  for (const [lineIndex, line] of lines.entries()) {
+  for await (const { line, index: lineIndex } of streamJsonlLines(jsonlPath)) {
     if (!line.trim()) continue;
 
     let entry: Record<string, unknown>;
@@ -3297,13 +3329,13 @@ async function extractCodexUserMessagePayloadImages(
   return images;
 }
 
-function collectCodexUserResponseItemImagesByOrdinal(
-  lines: string[],
-): Map<number, ExtractedImage[]> {
+async function collectCodexUserResponseItemImagesByOrdinal(
+  jsonlPath: string,
+): Promise<Map<number, ExtractedImage[]>> {
   const imagesByOrdinal = new Map<number, ExtractedImage[]>();
   let ordinal = 0;
 
-  for (const line of lines) {
+  for await (const { line } of streamJsonlLines(jsonlPath)) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
     try {
@@ -3430,18 +3462,11 @@ export async function getCodexSessionHistory(
   const jsonlPath = await findCodexSessionJsonlPath(threadId);
   if (!jsonlPath) return [];
 
-  let raw: string;
-  try {
-    raw = await readFile(jsonlPath, "utf-8");
-  } catch {
-    return [];
-  }
-
   const messages: SessionHistoryMessage[] = [];
-  const lines = raw.split("\n");
   let userTurnOrdinal = 0;
 
-  for (const [index, line] of lines.entries()) {
+  try {
+    for await (const { line, index } of streamJsonlLines(jsonlPath)) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
     try {
@@ -3722,6 +3747,9 @@ export async function getCodexSessionHistory(
         appendToolUseMessage(messages, id, "WebSearch", input);
       }
     }
+    }
+  } catch {
+    return [];
   }
 
   assignStableCodexAssistantUuids(messages, threadId);
