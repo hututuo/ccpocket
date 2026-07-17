@@ -1,9 +1,43 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:ccpocket/features/artifact_preview/artifact_quick_look_service.dart';
 import 'package:ccpocket/features/artifact_preview/artifact_preview_screen.dart';
 import 'package:ccpocket/features/artifact_preview/artifact_preview_screen_stub.dart'
     as web_stub;
 import 'package:ccpocket/features/artifact_preview/artifact_transfer_service.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
+class _BlockingQuickLookPreviewer implements ArtifactQuickLookPreviewer {
+  final dismissed = Completer<void>();
+  var calls = 0;
+  bool Function()? cancellationCheck;
+
+  @override
+  Future<void> previewTemporaryArtifact({
+    required Future<File> Function() prepareFile,
+    required String title,
+    required bool Function() isCancelled,
+  }) {
+    calls += 1;
+    cancellationCheck = isCancelled;
+    return dismissed.future;
+  }
+}
+
+class _FailingQuickLookPreviewer implements ArtifactQuickLookPreviewer {
+  @override
+  Future<void> previewTemporaryArtifact({
+    required Future<File> Function() prepareFile,
+    required String title,
+    required bool Function() isCancelled,
+  }) async {
+    throw StateError('preview failed');
+  }
+}
 
 void main() {
   final tokenA = List<String>.filled(43, 'A').join();
@@ -92,5 +126,115 @@ void main() {
       artifactPreviewRequiresJavaScript('report.pdf', 'application/pdf'),
       isFalse,
     );
+  });
+
+  testWidgets('Office preview uses injected Quick Look and gates actions', (
+    tester,
+  ) async {
+    final quickLook = _BlockingQuickLookPreviewer();
+    addTearDown(() {
+      if (!quickLook.dismissed.isCompleted) quickLook.dismissed.complete();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: ArtifactPreviewScreen(
+          previewUrl: preview,
+          filename: 'report.xlsx',
+          mimeType:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          sizeBytes: 120557,
+          quickLookPreviewer: quickLook,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(quickLook.calls, 1);
+    expect(quickLook.cancellationCheck!(), isFalse);
+    expect(find.byType(WebViewWidget), findsNothing);
+    final shareButton = tester.widget<OutlinedButton>(
+      find.ancestor(
+        of: find.byIcon(Icons.ios_share),
+        matching: find.byType(OutlinedButton),
+      ),
+    );
+    final downloadButton = tester.widget<FilledButton>(
+      find.ancestor(
+        of: find.byIcon(Icons.download_outlined),
+        matching: find.byType(FilledButton),
+      ),
+    );
+    expect(shareButton.onPressed, isNull);
+    expect(downloadButton.onPressed, isNull);
+
+    quickLook.dismissed.complete();
+    await tester.pump();
+
+    expect(
+      find.ancestor(
+        of: find.byIcon(Icons.visibility_outlined),
+        matching: find.byType(FilledButton),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Preview'), findsOneWidget);
+  });
+
+  testWidgets('disposing an Office preview cancels the native handoff', (
+    tester,
+  ) async {
+    final quickLook = _BlockingQuickLookPreviewer();
+    addTearDown(() {
+      if (!quickLook.dismissed.isCompleted) quickLook.dismissed.complete();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: ArtifactPreviewScreen(
+          previewUrl: preview,
+          filename: 'report.xlsx',
+          mimeType:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          sizeBytes: 120557,
+          quickLookPreviewer: quickLook,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(quickLook.cancellationCheck!(), isFalse);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(quickLook.cancellationCheck!(), isTrue);
+    quickLook.dismissed.complete();
+    await tester.pump();
+  });
+
+  testWidgets('failed Office preview shows Retry instead of Preview', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: ArtifactPreviewScreen(
+          previewUrl: preview,
+          filename: 'report.xlsx',
+          mimeType:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          sizeBytes: 120557,
+          quickLookPreviewer: _FailingQuickLookPreviewer(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Retry'), findsOneWidget);
+    expect(find.text('Preview'), findsNothing);
   });
 }

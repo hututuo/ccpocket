@@ -9,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../l10n/app_localizations.dart';
+import 'artifact_quick_look_service.dart';
 import 'artifact_transfer_service.dart';
 
 @visibleForTesting
@@ -72,6 +73,7 @@ class ArtifactPreviewScreen extends StatefulWidget {
   final String mimeType;
   final int sizeBytes;
   final String? expiresAt;
+  final ArtifactQuickLookPreviewer quickLookPreviewer;
 
   const ArtifactPreviewScreen({
     super.key,
@@ -80,6 +82,7 @@ class ArtifactPreviewScreen extends StatefulWidget {
     required this.mimeType,
     required this.sizeBytes,
     this.expiresAt,
+    this.quickLookPreviewer = const ArtifactQuickLookService(),
   });
 
   @override
@@ -97,11 +100,14 @@ class _ArtifactTransferSession {
 }
 
 class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
-  late final WebViewController _controller;
+  WebViewController? _controller;
   late final Uri _embeddedUrl;
   late final Uri _downloadUrl;
+  late final bool _usesQuickLook;
   var _pageProgress = 0;
   var _chromeVisible = true;
+  var _quickLookBusy = false;
+  var _quickLookError = false;
   _ArtifactTransferAction? _transferAction;
   double? _transferProgress;
   String? _mainFrameError;
@@ -113,6 +119,16 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     super.initState();
     _embeddedUrl = embeddedArtifactPreviewUri(widget.previewUrl);
     _downloadUrl = artifactDownloadUri(widget.previewUrl);
+    _usesQuickLook = isOfficeArtifactForQuickLook(
+      widget.filename,
+      widget.mimeType,
+    );
+    if (_usesQuickLook) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_previewOfficeArtifact());
+      });
+      return;
+    }
     _controller = WebViewController()
       ..setJavaScriptMode(
         artifactPreviewRequiresJavaScript(widget.filename, widget.mimeType)
@@ -190,8 +206,9 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     if (_handlingBack) return;
     _handlingBack = true;
     try {
-      if (await _controller.canGoBack()) {
-        await _controller.goBack();
+      final controller = _controller;
+      if (controller != null && await controller.canGoBack()) {
+        await controller.goBack();
         return;
       }
       if (mounted) Navigator.of(context).pop();
@@ -250,7 +267,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   }
 
   Future<void> _shareArtifact() async {
-    if (_transferAction != null) return;
+    if (_transferAction != null || _quickLookBusy) return;
     final transfer = _ArtifactTransferSession();
     _activeTransfer = transfer;
     setState(() {
@@ -295,7 +312,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   }
 
   Future<void> _downloadArtifact() async {
-    if (_transferAction != null) return;
+    if (_transferAction != null || _quickLookBusy) return;
     final transfer = _ArtifactTransferSession();
     _activeTransfer = transfer;
     setState(() {
@@ -339,6 +356,46 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     );
   }
 
+  Future<void> _previewOfficeArtifact() async {
+    if (!_usesQuickLook || _quickLookBusy || _transferAction != null) return;
+    final transfer = _ArtifactTransferSession();
+    _activeTransfer = transfer;
+    setState(() {
+      _quickLookBusy = true;
+      _quickLookError = false;
+      _transferProgress = null;
+    });
+    try {
+      await widget.quickLookPreviewer.previewTemporaryArtifact(
+        prepareFile: () async {
+          final temporaryDirectory = Directory(
+            '${(await getTemporaryDirectory()).path}/artifact-previews',
+          );
+          if (transfer.cancellation.isCancelled) {
+            throw const ArtifactTransferException('cancelled');
+          }
+          return _fetchArtifactTo(temporaryDirectory, transfer);
+        },
+        title: widget.filename,
+        isCancelled: () => transfer.cancellation.isCancelled || !mounted,
+      );
+    } catch (_) {
+      if (mounted && !transfer.cancellation.isCancelled) {
+        setState(() => _quickLookError = true);
+        _showError(AppLocalizations.of(context).artifactOpenFailed);
+      }
+    } finally {
+      if (identical(_activeTransfer, transfer)) _activeTransfer = null;
+      transfer.close();
+      if (mounted) {
+        setState(() {
+          _quickLookBusy = false;
+          _transferProgress = null;
+        });
+      }
+    }
+  }
+
   String get _sizeLabel {
     if (widget.sizeBytes < 1024) return '${widget.sizeBytes} B';
     if (widget.sizeBytes < 1024 * 1024) {
@@ -370,13 +427,138 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     );
     return filled
         ? FilledButton(
-            onPressed: _transferAction == null ? onPressed : null,
+            onPressed: _transferAction == null && !_quickLookBusy
+                ? onPressed
+                : null,
             child: buttonChild,
           )
         : OutlinedButton(
-            onPressed: _transferAction == null ? onPressed : null,
+            onPressed: _transferAction == null && !_quickLookBusy
+                ? onPressed
+                : null,
             child: buttonChild,
           );
+  }
+
+  Widget _buildQuickLookBody(BuildContext context) {
+    final localizations = AppLocalizations.of(context);
+    return Stack(
+      children: <Widget>[
+        Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Icon(Icons.insert_drive_file_outlined, size: 52),
+                const SizedBox(height: 14),
+                Text(
+                  _quickLookError
+                      ? localizations.artifactOpenFailed
+                      : widget.filename,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 18),
+                if (_quickLookBusy)
+                  SizedBox(
+                    width: 180,
+                    child: LinearProgressIndicator(value: _transferProgress),
+                  )
+                else
+                  FilledButton.icon(
+                    onPressed: _previewOfficeArtifact,
+                    icon: const Icon(Icons.visibility_outlined),
+                    label: Text(
+                      _quickLookError
+                          ? localizations.retry
+                          : localizations.codeFontPreview,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        if (!_chromeVisible) _buildChromeRevealButton(context),
+      ],
+    );
+  }
+
+  Widget _buildChromeRevealButton(BuildContext context) {
+    return Positioned(
+      top: 8,
+      right: 8,
+      child: SafeArea(
+        child: Material(
+          color: Theme.of(context).colorScheme.surfaceContainerHigh,
+          elevation: 3,
+          borderRadius: BorderRadius.circular(12),
+          child: IconButton(
+            onPressed: () => _setChromeVisible(true),
+            tooltip: AppLocalizations.of(context).showMore,
+            icon: const Icon(Icons.expand_more),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWebPreviewBody(BuildContext context) {
+    final localizations = AppLocalizations.of(context);
+    final controller = _controller!;
+    return Stack(
+      children: <Widget>[
+        WebViewWidget(controller: controller),
+        if (_pageProgress < 100)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: LinearProgressIndicator(
+              value: _pageProgress / 100,
+              minHeight: 2,
+            ),
+          ),
+        if (!_chromeVisible) _buildChromeRevealButton(context),
+        if (_mainFrameError != null)
+          ColoredBox(
+            color: Theme.of(context).colorScheme.surface,
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    const Icon(Icons.insert_drive_file_outlined, size: 48),
+                    const SizedBox(height: 12),
+                    Text(
+                      localizations.artifactOpenFailed,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    Wrap(
+                      spacing: 8,
+                      children: <Widget>[
+                        OutlinedButton.icon(
+                          onPressed: _handleBack,
+                          icon: const Icon(Icons.arrow_back),
+                          label: Text(localizations.back),
+                        ),
+                        FilledButton.icon(
+                          onPressed: () => controller.loadRequest(_embeddedUrl),
+                          icon: const Icon(Icons.refresh),
+                          label: Text(localizations.retry),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 
   PreferredSizeWidget _buildAppBar(BuildContext context) {
@@ -442,7 +624,6 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final localizations = AppLocalizations.of(context);
     return PopScope<void>(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -451,75 +632,9 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
       child: Scaffold(
         backgroundColor: Theme.of(context).colorScheme.surface,
         appBar: _chromeVisible ? _buildAppBar(context) : null,
-        body: Stack(
-          children: <Widget>[
-            WebViewWidget(controller: _controller),
-            if (_pageProgress < 100)
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: LinearProgressIndicator(
-                  value: _pageProgress / 100,
-                  minHeight: 2,
-                ),
-              ),
-            if (!_chromeVisible)
-              Positioned(
-                top: 8,
-                right: 8,
-                child: SafeArea(
-                  child: Material(
-                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                    elevation: 3,
-                    borderRadius: BorderRadius.circular(12),
-                    child: IconButton(
-                      onPressed: () => _setChromeVisible(true),
-                      tooltip: localizations.showMore,
-                      icon: const Icon(Icons.expand_more),
-                    ),
-                  ),
-                ),
-              ),
-            if (_mainFrameError != null)
-              ColoredBox(
-                color: Theme.of(context).colorScheme.surface,
-                child: Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: <Widget>[
-                        const Icon(Icons.insert_drive_file_outlined, size: 48),
-                        const SizedBox(height: 12),
-                        Text(
-                          localizations.artifactOpenFailed,
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 16),
-                        Wrap(
-                          spacing: 8,
-                          children: <Widget>[
-                            OutlinedButton.icon(
-                              onPressed: _handleBack,
-                              icon: const Icon(Icons.arrow_back),
-                              label: Text(localizations.back),
-                            ),
-                            FilledButton.icon(
-                              onPressed: () =>
-                                  _controller.loadRequest(_embeddedUrl),
-                              icon: const Icon(Icons.refresh),
-                              label: Text(localizations.retry),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
+        body: _usesQuickLook
+            ? _buildQuickLookBody(context)
+            : _buildWebPreviewBody(context),
       ),
     );
   }

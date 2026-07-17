@@ -29,6 +29,9 @@ import UIKit
       )
       channel.setMethodCallHandler(handlePlatformEnvironmentMethodCall)
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ArtifactQuickLookPlugin") {
+      ArtifactQuickLookPlugin.register(with: registrar)
+    }
   }
 
   private func handleAppIconMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
