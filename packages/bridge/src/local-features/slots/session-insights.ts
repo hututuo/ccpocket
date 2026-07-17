@@ -1,11 +1,15 @@
 import type { LocalFeatureHandler, LocalFeatureRuntime } from "../runtime.js";
 import type { ContextUsageMessage } from "../protocol.js";
+import {
+  ContextFeatureHandler,
+  parseCodexContextUsageNotification,
+} from "../context.js";
+import { UsageFeatureHandler } from "../usage-service.js";
 
-/** Disabled foundation slot; the session-insights commit activates it. */
 export function createSessionInsightsHandlers(
-  _runtime: LocalFeatureRuntime,
+  runtime: LocalFeatureRuntime,
 ): readonly LocalFeatureHandler[] {
-  return [];
+  return [new ContextFeatureHandler(), new UsageFeatureHandler(runtime)];
 }
 
 /**
@@ -13,7 +17,7 @@ export function createSessionInsightsHandlers(
  * without editing the upstream-owned notification switch.
  */
 export function parseSessionInsightsNotification(
-  _params: Record<string, unknown>,
+  params: Record<string, unknown>,
 ): ContextUsageMessage | null {
-  return null;
+  return parseCodexContextUsageNotification(params);
 }
