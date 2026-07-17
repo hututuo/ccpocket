@@ -1824,6 +1824,7 @@ export class BridgeWebSocketServer {
       } satisfies Extract<ServerMessage, { type: "history_snapshot" }>);
       this.sendCodexCurrentSettings(ws, sessionId, session);
       this.sendCodexQueueState(ws, sessionId, session);
+      this.sendCodexGoalState(ws, sessionId, session);
       if (options.includeCachedCommands) {
         this.sendCachedCommands(ws, sessionId, session);
       }
@@ -1859,6 +1860,7 @@ export class BridgeWebSocketServer {
         sessionId,
       } as Record<string, unknown>);
       this.sendCodexQueueState(ws, sessionId, session);
+      this.sendCodexGoalState(ws, sessionId, session);
       this.sendCachedCommands(ws, sessionId, session);
       return true;
     } catch (err) {
@@ -4295,6 +4297,7 @@ export class BridgeWebSocketServer {
           } as Record<string, unknown>);
           if (session.provider === "codex") {
             this.sendCodexQueueState(ws, msg.sessionId, session);
+            this.sendCodexGoalState(ws, msg.sessionId, session);
           }
 
           this.sendCachedCommands(ws, msg.sessionId, session);
@@ -4349,6 +4352,7 @@ export class BridgeWebSocketServer {
           } as ServerMessage);
           this.sendCodexCurrentSettings(ws, msg.sessionId, session);
           this.sendCodexQueueState(ws, msg.sessionId, session);
+          this.sendCodexGoalState(ws, msg.sessionId, session);
           break;
         }
 
@@ -7523,6 +7527,19 @@ export class BridgeWebSocketServer {
           ]
         : [],
     } as Record<string, unknown>);
+  }
+
+  private sendCodexGoalState(
+    ws: WebSocket,
+    sessionId: string,
+    session: SessionInfo,
+  ): void {
+    if (session.codexGoal === undefined) return;
+    this.send(ws, {
+      type: "goal_state",
+      sessionId,
+      goal: session.codexGoal,
+    });
   }
 
   private sendCachedCommands(

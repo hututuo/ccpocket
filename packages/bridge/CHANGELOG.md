@@ -2,6 +2,14 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.67.3-compat.2] - 2026-07-18
+
+### Changed
+- Rebase the compatibility build on official Bridge 1.67.3 while preserving automatic artifact links, generated-image recovery, and bounded streaming history reads.
+
+### Fixed
+- Replay cached Codex goal state with history responses so active goals remain visible after turn completion and app relaunch.
+
 ## [1.67.2-compat.2] - 2026-07-17
 
 ### Changed
@@ -31,6 +39,11 @@ All notable changes to `@ccpocket/bridge` will be documented in this file.
 ### Security
 - Restrict path publication to a loopback-only control route and canonical paths inside `BRIDGE_ALLOWED_DIRS`.
 - Keep artifact capabilities in memory, omit source paths from URLs and responses, and isolate artifact routes from permissive CORS headers.
+
+## [1.67.3] - 2026-07-18
+
+### Fixed
+- Replay cached Codex goal state with history responses so active goals remain visible after turn completion and app relaunch.
 
 ## [1.67.2] - 2026-07-17
 

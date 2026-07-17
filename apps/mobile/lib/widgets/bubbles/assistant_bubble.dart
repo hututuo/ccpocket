@@ -19,6 +19,7 @@ import '../../utils/tool_categories.dart';
 import '../../utils/codex_plan_update.dart';
 import '../../utils/artifact_link_matcher.dart';
 import '../../features/file_peek/file_path_syntax.dart';
+import '../../features/file_peek/markdown_link_handler.dart';
 import 'artifact_attachment_chip.dart';
 import 'error_bubble.dart';
 import '../plan_detail_sheet.dart';
@@ -109,8 +110,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
         artifacts: widget.message.artifacts,
         onArtifactOpen: widget.onArtifactOpen,
         onFileTap: widget.onFileTap,
-        artifactContentIndexOffset:
-            widget.message.artifactContentIndexOffset,
+        artifactContentIndexOffset: widget.message.artifactContentIndexOffset,
         onTogglePlainText: () {
           setState(() => _plainTextMode = !_plainTextMode);
         },
@@ -125,8 +125,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
       onFileTap: widget.onFileTap,
       artifacts: widget.message.artifacts,
       onArtifactOpen: widget.onArtifactOpen,
-      artifactContentIndexOffset:
-          widget.message.artifactContentIndexOffset,
+      artifactContentIndexOffset: widget.message.artifactContentIndexOffset,
       onFork: widget.onFork,
       onTogglePlainText: () {
         setState(() => _plainTextMode = !_plainTextMode);
@@ -175,6 +174,9 @@ class _PlanLayout extends StatelessWidget {
     if (originalPlanText.split('\n').length < 10 && resolvedPlanText != null) {
       originalPlanText = resolvedPlanText!;
     }
+    final fileSuffixes = onFileTap != null
+        ? FilePathSyntax.buildSuffixSet(context.watch<FileListCubit>().state)
+        : const <String>{};
     final textContentIndexes = <int>[
       for (var i = 0; i < contents.length; i++)
         if (contents[i] is TextContent) i - artifactContentIndexOffset,
@@ -182,25 +184,17 @@ class _PlanLayout extends StatelessWidget {
     final artifactTextContentIndex = textContentIndexes.length == 1
         ? textContentIndexes.single
         : -1;
-    Future<void> handlePlanLink(
-      String label,
-      String? href,
-      String title,
-    ) => _handlePlanLink(
-      context,
-      label,
-      href,
-      title,
-      artifactTextContentIndex,
-    );
-    Widget buildPlanImage(Uri uri, String? title, String? alt) =>
-        _buildPlanImage(
+    Future<void> handlePlanLink(String label, String? href, String title) =>
+        _handlePlanLink(
           context,
-          uri,
+          label,
+          href,
           title,
-          alt,
           artifactTextContentIndex,
+          fileSuffixes,
         );
+    Widget buildPlanImage(Uri uri, String? title, String? alt) =>
+        _buildPlanImage(context, uri, title, alt, artifactTextContentIndex);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -221,18 +215,19 @@ class _PlanLayout extends StatelessWidget {
           planText: originalPlanText,
           onTapLink: handlePlanLink,
           imageBuilder: buildPlanImage,
+          onFileTap: onFileTap,
           onViewFullPlan: () => showPlanDetailSheet(
             context,
             originalPlanText,
             onTapLink: handlePlanLink,
             imageBuilder: buildPlanImage,
+            onFileTap: onFileTap,
           ),
         ),
         ArtifactAttachmentGroup(
           artifacts: artifacts
               .where(
-                (artifact) =>
-                    plainTextMode || artifact.originalHref == null,
+                (artifact) => plainTextMode || artifact.originalHref == null,
               )
               .toList(growable: false),
           onOpen: (artifact) => _openArtifact(
@@ -263,12 +258,9 @@ class _PlanLayout extends StatelessWidget {
     String? href,
     String title,
     int textContentIndex,
+    Set<String> fileSuffixes,
   ) async {
     if (href == null || href.isEmpty) return;
-    if (isExternalWebHref(href)) {
-      await handleMarkdownLink(label, href, title);
-      return;
-    }
     final artifact = matchArtifactHref(
       artifacts: artifacts,
       textContentIndex: textContentIndex,
@@ -290,11 +282,11 @@ class _PlanLayout extends StatelessWidget {
       }
       return;
     }
-    if (isLocalFileLikeHref(href)) {
-      _showArtifactUnavailable(context);
-    } else {
-      await handleMarkdownLink(label, href, title);
-    }
+    buildChatMarkdownLinkHandler(
+      context,
+      onFileTap: onFileTap,
+      knownPathSuffixes: fileSuffixes,
+    )(label, href, title);
   }
 
   Widget _buildPlanImage(
@@ -314,11 +306,12 @@ class _PlanLayout extends StatelessWidget {
       return ArtifactAttachmentChip(
         artifact: artifact,
         compact: true,
-        onOpen: _canOpenArtifact(
-          artifact,
-          onFileTap: onFileTap,
-          onArtifactOpen: onArtifactOpen,
-        )
+        onOpen:
+            _canOpenArtifact(
+              artifact,
+              onFileTap: onFileTap,
+              onArtifactOpen: onArtifactOpen,
+            )
             ? (value) => _openArtifact(
                 value,
                 onFileTap: onFileTap,
@@ -386,9 +379,11 @@ class _DefaultLayout extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (var contentIndex = 0;
-            contentIndex < contents.length;
-            contentIndex++)
+        for (
+          var contentIndex = 0;
+          contentIndex < contents.length;
+          contentIndex++
+        )
           switch (contents[contentIndex]) {
             TextContent(:final text) => _buildTextContent(
               context,
@@ -407,8 +402,7 @@ class _DefaultLayout extends StatelessWidget {
         ArtifactAttachmentGroup(
           artifacts: artifacts
               .where(
-                (artifact) =>
-                    plainTextMode || artifact.originalHref == null,
+                (artifact) => plainTextMode || artifact.originalHref == null,
               )
               .toList(growable: false),
           onOpen: (artifact) => _openArtifact(
@@ -466,14 +460,10 @@ class _DefaultLayout extends StatelessWidget {
                   href,
                   title,
                   textContentIndex,
+                  fileSuffixes,
                 ),
-                imageBuilder: (uri, title, alt) => _buildImage(
-                  context,
-                  uri,
-                  title,
-                  alt,
-                  textContentIndex,
-                ),
+                imageBuilder: (uri, title, alt) =>
+                    _buildImage(context, uri, title, alt, textContentIndex),
                 inlineSyntaxes: [
                   if (onFileTap != null) ...[
                     FilePathSyntax(knownPathSuffixes: fileSuffixes),
@@ -497,12 +487,9 @@ class _DefaultLayout extends StatelessWidget {
     String? href,
     String title,
     int textContentIndex,
+    Set<String> fileSuffixes,
   ) async {
     if (href == null || href.isEmpty) return;
-    if (isExternalWebHref(href)) {
-      await handleMarkdownLink(label, href, title);
-      return;
-    }
     final artifact = matchArtifactHref(
       artifacts: artifacts,
       textContentIndex: textContentIndex,
@@ -524,11 +511,11 @@ class _DefaultLayout extends StatelessWidget {
       }
       return;
     }
-    if (isLocalFileLikeHref(href)) {
-      _showArtifactUnavailable(context);
-    } else {
-      await handleMarkdownLink(label, href, title);
-    }
+    buildChatMarkdownLinkHandler(
+      context,
+      onFileTap: onFileTap,
+      knownPathSuffixes: fileSuffixes,
+    )(label, href, title);
   }
 
   Widget _buildImage(
@@ -548,11 +535,12 @@ class _DefaultLayout extends StatelessWidget {
       return ArtifactAttachmentChip(
         artifact: artifact,
         compact: true,
-        onOpen: _canOpenArtifact(
-          artifact,
-          onFileTap: onFileTap,
-          onArtifactOpen: onArtifactOpen,
-        )
+        onOpen:
+            _canOpenArtifact(
+              artifact,
+              onFileTap: onFileTap,
+              onArtifactOpen: onArtifactOpen,
+            )
             ? (value) => _openArtifact(
                 value,
                 onFileTap: onFileTap,
@@ -566,10 +554,7 @@ class _DefaultLayout extends StatelessWidget {
     }
     if (uri.scheme == 'data' && uri.data != null) {
       try {
-        return Image.memory(
-          uri.data!.contentAsBytes(),
-          semanticLabel: alt,
-        );
+        return Image.memory(uri.data!.contentAsBytes(), semanticLabel: alt);
       } on FormatException {
         // Fall through to the non-broken placeholder below.
       }

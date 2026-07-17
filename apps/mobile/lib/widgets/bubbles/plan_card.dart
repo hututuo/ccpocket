@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import '../../features/file_peek/file_path_syntax.dart';
+import '../../features/file_peek/markdown_link_handler.dart';
+import '../../providers/bridge_cubits.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/markdown_style.dart';
-import '../../utils/artifact_link_matcher.dart';
 
 /// A visually distinct card for rendering implementation plans inline in chat.
 ///
@@ -14,6 +17,7 @@ class PlanCard extends StatelessWidget {
   final VoidCallback onViewFullPlan;
   final Future<void> Function(String, String?, String)? onTapLink;
   final Widget Function(Uri, String?, String?)? imageBuilder;
+  final FilePathTapCallback? onFileTap;
 
   /// Lines threshold below which the full plan is shown without a button.
   static const int _shortPlanLineThreshold = 10;
@@ -27,6 +31,7 @@ class PlanCard extends StatelessWidget {
     required this.onViewFullPlan,
     this.onTapLink,
     this.imageBuilder,
+    this.onFileTap,
   });
 
   bool get _isLongPlan => planText.split('\n').length > _shortPlanLineThreshold;
@@ -62,6 +67,7 @@ class PlanCard extends StatelessWidget {
               isLongPlan: _isLongPlan,
               onTapLink: onTapLink,
               imageBuilder: imageBuilder,
+              onFileTap: onFileTap,
             ),
             if (_isLongPlan) _PlanFooter(onViewFullPlan: onViewFullPlan),
           ],
@@ -122,26 +128,46 @@ class _PlanBody extends StatelessWidget {
   final bool isLongPlan;
   final Future<void> Function(String, String?, String)? onTapLink;
   final Widget Function(Uri, String?, String?)? imageBuilder;
+  final FilePathTapCallback? onFileTap;
 
   const _PlanBody({
     required this.planText,
     required this.isLongPlan,
     this.onTapLink,
     this.imageBuilder,
+    this.onFileTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final fileSuffixes = onFileTap != null
+        ? FilePathSyntax.buildSuffixSet(context.watch<FileListCubit>().state)
+        : const <String>{};
     final markdownWidget = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: MarkdownBody(
         data: planText,
         selectable: true,
         styleSheet: buildMarkdownStyle(context),
-        onTapLink: onTapLink ?? _handleSafePlanLink,
+        onTapLink:
+            onTapLink ??
+            buildChatMarkdownLinkHandler(
+              context,
+              onFileTap: onFileTap,
+              knownPathSuffixes: fileSuffixes,
+            ),
         imageBuilder: imageBuilder,
-        inlineSyntaxes: colorCodeInlineSyntaxes,
-        builders: markdownBuilders,
+        inlineSyntaxes: [
+          if (onFileTap != null) ...[
+            FilePathSyntax(knownPathSuffixes: fileSuffixes),
+            BareFilePathSyntax(knownPathSuffixes: fileSuffixes),
+          ],
+          ...colorCodeInlineSyntaxes,
+        ],
+        builders: {
+          if (onFileTap != null) 'filePath': FilePathBuilder(onTap: onFileTap),
+          ...markdownBuilders,
+        },
       ),
     );
 
@@ -172,15 +198,6 @@ class _PlanBody extends StatelessWidget {
       ),
     );
   }
-}
-
-Future<void> _handleSafePlanLink(
-  String label,
-  String? href,
-  String title,
-) async {
-  if (href != null && isLocalFileLikeHref(href)) return;
-  await handleMarkdownLink(label, href, title);
 }
 
 class _PlanFooter extends StatelessWidget {
