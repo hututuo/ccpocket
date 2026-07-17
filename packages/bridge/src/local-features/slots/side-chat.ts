@@ -1,8 +1,8 @@
 import type { LocalFeatureHandler, LocalFeatureRuntime } from "../runtime.js";
+import { SideChatFeatureHandler } from "../side-chat.js";
 
-/** Disabled foundation slot; the side-chat commit activates it. */
 export function createSideChatHandlers(
   _runtime: LocalFeatureRuntime,
 ): readonly LocalFeatureHandler[] {
-  return [];
+  return [new SideChatFeatureHandler()];
 }
