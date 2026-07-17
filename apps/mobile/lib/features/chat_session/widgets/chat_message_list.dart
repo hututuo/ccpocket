@@ -9,6 +9,7 @@ import '../../../models/messages.dart';
 import '../../../providers/bridge_cubits.dart';
 import '../../../services/bridge_service.dart';
 import '../../../utils/artifact_link_matcher.dart';
+import '../../../widgets/chat_selection_actions.dart';
 import '../../../widgets/message_bubble.dart';
 import '../../artifact_preview/artifact_preview_entry.dart';
 import '../../file_peek/file_peek_sheet.dart';
@@ -62,6 +63,7 @@ class ChatMessageList extends StatefulWidget {
   final double bottomPadding;
   final bool isCodex;
   final ValueChanged<String>? onFilePeekOpened;
+  final List<ChatSelectionAction> selectionActions;
 
   /// Project path for file peek (reading files from Bridge).
   final String? projectPath;
@@ -84,6 +86,7 @@ class ChatMessageList extends StatefulWidget {
     this.projectPath,
     this.isCodex = false,
     this.onFilePeekOpened,
+    this.selectionActions = const [],
   });
 
   @override
@@ -334,7 +337,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final totalCount = allEntries.length + (hasStreaming ? 1 : 0);
     final streamingCubit = context.read<StreamingStateCubit>();
 
-    return NotificationListener<ScrollNotification>(
+    final content = NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         // Only unfocus when user drags the list (not programmatic scroll).
         // This prevents the keyboard from being dismissed during automatic
@@ -451,6 +454,11 @@ class _ChatMessageListState extends State<ChatMessageList> {
           return child;
         },
       ),
+    );
+    if (widget.selectionActions.isEmpty) return content;
+    return ChatSelectionActionsScope(
+      actions: widget.selectionActions,
+      child: content,
     );
   }
 

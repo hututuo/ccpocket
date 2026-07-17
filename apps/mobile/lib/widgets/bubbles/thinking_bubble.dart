@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../google_search_text_selection.dart';
+import '../chat_selection_actions.dart';
 
 /// Displays Claude's thinking content with a collapsible UI.
 ///
@@ -169,7 +169,7 @@ class _ThinkingBubbleState extends State<ThinkingBubble>
                           height: 1.5,
                         ),
                         contextMenuBuilder:
-                            googleSearchSelectableTextContextMenuBuilder,
+                            chatSelectableTextContextMenuBuilder,
                       ),
                     ),
                   ),

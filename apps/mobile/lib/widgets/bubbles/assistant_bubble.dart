@@ -23,7 +23,7 @@ import '../../features/file_peek/markdown_link_handler.dart';
 import 'artifact_attachment_chip.dart';
 import 'error_bubble.dart';
 import '../plan_detail_sheet.dart';
-import '../google_search_text_selection.dart';
+import '../chat_selection_actions.dart';
 import 'inline_edit_diff.dart';
 import 'message_action_bar.dart';
 import 'plan_card.dart';
@@ -447,12 +447,12 @@ class _DefaultLayout extends StatelessWidget {
           ? SelectableText(
               text,
               style: Theme.of(context).textTheme.bodyMedium,
-              contextMenuBuilder: googleSearchSelectableTextContextMenuBuilder,
+              contextMenuBuilder: chatSelectableTextContextMenuBuilder,
             )
-          : GoogleSearchSelectionArea(
+          : ChatSelectionArea(
               child: MarkdownBody(
                 data: text,
-                selectable: !googleSearchSelectionMenuEnabled,
+                selectable: !chatSelectionAreaMenuEnabled(context),
                 styleSheet: buildMarkdownStyle(context),
                 onTapLink: (label, href, title) => _handleLink(
                   context,
@@ -1004,7 +1004,7 @@ class _ToolUseCard extends StatelessWidget {
           color: appColors.toolResultTextExpanded,
           height: 1.4,
         ),
-        contextMenuBuilder: googleSearchSelectableTextContextMenuBuilder,
+        contextMenuBuilder: chatSelectableTextContextMenuBuilder,
       );
     }
 

@@ -10,7 +10,7 @@ import 'package:flutter/services.dart';
 
 import '../core/logger.dart';
 import '../l10n/app_localizations.dart';
-import '../widgets/google_search_text_selection.dart';
+import '../widgets/chat_selection_actions.dart';
 import 'app_theme.dart';
 import 'code_text_style.dart';
 
@@ -269,8 +269,7 @@ class FencedCodeBlockBuilder extends MarkdownElementBuilder {
               ),
               child: SelectableText.rich(
                 TextSpan(style: baseStyle, children: highlightedSpans),
-                contextMenuBuilder:
-                    googleSearchSelectableTextContextMenuBuilder,
+                contextMenuBuilder: chatSelectableTextContextMenuBuilder,
               ),
             ),
             if (hasExplicitLanguage)

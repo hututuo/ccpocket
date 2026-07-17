@@ -25,7 +25,7 @@ Widget googleSearchSelectableTextContextMenuBuilder(
   final selectedText = editableTextState.textEditingValue.selection
       .textInside(editableTextState.textEditingValue.text)
       .trim();
-  final items = _withGoogleSearchItem(
+  final items = withGoogleSearchSelectionItem(
     context: context,
     items: editableTextState.contextMenuButtonItems,
     selectedText: selectedText,
@@ -60,7 +60,7 @@ class _GoogleSearchSelectionAreaState extends State<GoogleSearchSelectionArea> {
         _selectedText = content?.plainText;
       },
       contextMenuBuilder: (context, selectableRegionState) {
-        final items = _withGoogleSearchItem(
+        final items = withGoogleSearchSelectionItem(
           context: context,
           items: selectableRegionState.contextMenuButtonItems,
           selectedText: _selectedText?.trim() ?? '',
@@ -76,23 +76,28 @@ class _GoogleSearchSelectionAreaState extends State<GoogleSearchSelectionArea> {
   }
 }
 
-List<ContextMenuButtonItem> _withGoogleSearchItem({
+/// Add the existing macOS Google action to a copied menu item list.
+///
+/// This public helper lets optional selection-menu modules compose with the
+/// original Google behavior without changing its text handling or lifecycle.
+List<ContextMenuButtonItem> withGoogleSearchSelectionItem({
   required BuildContext context,
   required List<ContextMenuButtonItem> items,
   required String selectedText,
   required VoidCallback hideToolbar,
 }) {
   final result = List<ContextMenuButtonItem>.of(items);
-  if (selectedText.isEmpty) return result;
+  final query = selectedText.trim();
+  if (!_isMacOSNative || query.isEmpty) return result;
 
   final insertIndex = result.indexWhere(
     (item) => item.type == ContextMenuButtonType.selectAll,
   );
   final searchItem = ContextMenuButtonItem(
-    label: _searchWithGoogleLabel(context),
+    label: AppLocalizations.of(context).googleSearchSelectionAction,
     onPressed: () {
       hideToolbar();
-      unawaited(_openGoogleSearch(selectedText));
+      unawaited(_openGoogleSearch(query));
     },
   );
 
@@ -102,10 +107,6 @@ List<ContextMenuButtonItem> _withGoogleSearchItem({
     result.insert(insertIndex, searchItem);
   }
   return result;
-}
-
-String _searchWithGoogleLabel(BuildContext context) {
-  return AppLocalizations.of(context).googleSearchSelectionAction;
 }
 
 Future<void> _openGoogleSearch(String selectedText) async {

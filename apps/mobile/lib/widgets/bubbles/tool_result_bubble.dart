@@ -11,7 +11,7 @@ import '../../theme/app_theme.dart';
 import '../../utils/tool_categories.dart';
 import '../../utils/artifact_link_matcher.dart';
 import '../../features/file_peek/file_path_syntax.dart';
-import '../google_search_text_selection.dart';
+import '../chat_selection_actions.dart';
 import 'artifact_attachment_chip.dart';
 import 'image_preview.dart';
 
@@ -432,8 +432,7 @@ class _ImageGenerationResultCardState
                     color: appColors.toolResultTextExpanded,
                     height: 1.4,
                   ),
-                  contextMenuBuilder:
-                      googleSearchSelectableTextContextMenuBuilder,
+                  contextMenuBuilder: chatSelectableTextContextMenuBuilder,
                 ),
               ],
             ],
@@ -690,8 +689,7 @@ class _ExpandedToolResult extends StatelessWidget {
                     color: appColors.toolResultTextExpanded,
                     height: 1.4,
                   ),
-                  contextMenuBuilder:
-                      googleSearchSelectableTextContextMenuBuilder,
+                  contextMenuBuilder: chatSelectableTextContextMenuBuilder,
                 ),
               ],
             ],
