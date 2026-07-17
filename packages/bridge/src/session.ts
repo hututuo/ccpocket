@@ -26,6 +26,7 @@ import type {
   QueuedInputItem,
   CodexGoal,
 } from "./parser.js";
+import { isLocalFeatureServerMessage } from "./local-features/protocol.js";
 import type { ImageRef, ImageStore } from "./image-store.js";
 import type { GalleryStore, GalleryImageMeta } from "./gallery-store.js";
 import { withDerivedCodexPermissionsMode } from "./codex-permissions.js";
@@ -563,6 +564,11 @@ export class SessionManager {
 
         if (msg.type === "goal_state") {
           session.codexGoal = msg.goal;
+          this.onMessage(id, msg);
+          return;
+        }
+
+        if (isLocalFeatureServerMessage(msg)) {
           this.onMessage(id, msg);
           return;
         }

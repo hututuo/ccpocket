@@ -579,6 +579,12 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("keeps official usage parsing unchanged", () => {
+    expect(parseClientMessage('{"type":"get_usage"}')).toEqual({
+      type: "get_usage",
+    });
+  });
+
   it("parses resolve_artifact without accepting a client path", () => {
     const msg = parseClientMessage(
       '{"type":"resolve_artifact","requestId":"req-1","sessionId":"s2","messageId":"m1","artifactId":"a1"}',

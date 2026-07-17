@@ -117,6 +117,9 @@ import {
 } from "./codex-permissions.js";
 import { ArtifactManager, ArtifactResolveError } from "./artifact-manager.js";
 import { createPathArtifactCandidate } from "./artifact-candidates.js";
+import { createLocalFeaturesController } from "./local-features/registry.js";
+import type { LocalFeaturesController } from "./local-features/controller.js";
+import { isLocalFeatureServerMessageType } from "./local-features/protocol.js";
 
 type SystemServerMessage = Extract<ServerMessage, { type: "system" }>;
 type InputClientMessage = Extract<ClientMessage, { type: "input" }>;
@@ -946,6 +949,7 @@ export class BridgeWebSocketServer {
     Map<string, InputClientMessage[]>
   >();
   private restoringManagedGalleryPaths = new Set<string>();
+  private readonly localFeatures: LocalFeaturesController;
 
   constructor(options: BridgeServerOptions) {
     const {
@@ -1046,6 +1050,21 @@ export class BridgeWebSocketServer {
       () => this.broadcastSessionList(),
       artifactManager,
     );
+    this.localFeatures = createLocalFeaturesController({
+      getSession: (sessionId) => this.sessionManager.get(sessionId),
+      getCodexThreadId: (session) =>
+        this.codexThreadIdForSession(session as SessionInfo),
+      getActiveCodexProcess: () => this.getActiveCodexProcess(),
+      createStandaloneCodexProcess: (requestTimeoutMs) =>
+        this.createStandaloneCodexProcess(undefined, requestTimeoutMs),
+      createDedicatedCodexProcess: () => new CodexProcess(this.platform),
+      send: (client, message) =>
+        this.send(client as WebSocket, message as ServerMessage),
+      supports: (client, messageType) =>
+        this.clientSupportedServerMessages
+          .get(client as WebSocket)
+          ?.has(messageType) ?? false,
+    });
 
     this.wss.on("connection", (ws, req) => {
       // API key authentication
@@ -2345,6 +2364,7 @@ export class BridgeWebSocketServer {
 
   close(): void {
     console.log("[ws] Shutting down...");
+    this.localFeatures.close();
     this.flushAllDeltaBatches();
     this.sessionManager.destroyAll();
     this.flushAllDeltaBatches();
@@ -2403,6 +2423,7 @@ export class BridgeWebSocketServer {
 
     ws.on("close", () => {
       console.log("[ws] Client disconnected");
+      this.localFeatures.disconnect(ws);
       this.discardClientDeltaBatches(ws);
       this.clearPendingClaudeResumeInputs(ws);
     });
@@ -2436,6 +2457,7 @@ export class BridgeWebSocketServer {
         ws,
         new Set(msg.supportedServerMessages ?? []),
       );
+      this.localFeatures.capabilitiesChanged(ws);
       this.sendPromptHistoryStatus(ws);
       return;
     }
@@ -2452,6 +2474,12 @@ export class BridgeWebSocketServer {
         detail: this.summarizeClientMessage(msg),
       });
       this.recordingStore?.record(incomingSessionId, "incoming", msg);
+    }
+
+    const localFeatureRequest = this.localFeatures.handle(ws, msg);
+    if (localFeatureRequest) {
+      await localFeatureRequest;
+      return;
     }
 
     switch (msg.type) {
@@ -3365,7 +3393,7 @@ export class BridgeWebSocketServer {
 
           const hasUserMessages =
             session.history?.some(
-              (m: Record<string, unknown>) =>
+              (m) =>
                 m.type === "user_input" || m.type === "assistant",
             ) ||
             (session.pastMessages && session.pastMessages.length > 0);
@@ -3874,7 +3902,7 @@ export class BridgeWebSocketServer {
         // messages specifically.
         const hasUserMessages =
           session.history?.some(
-            (m: Record<string, unknown>) =>
+            (m) =>
               m.type === "user_input" || m.type === "assistant",
           ) ||
           (session.pastMessages && session.pastMessages.length > 0);
@@ -7250,10 +7278,16 @@ export class BridgeWebSocketServer {
 
   private async createStandaloneCodexProcess(
     projectPath?: string,
+    requestTimeoutMs?: number,
   ): Promise<CodexProcess> {
     const proc = new CodexProcess();
     try {
-      await proc.initializeOnly(projectPath ?? process.cwd());
+      const cwd = projectPath ?? process.cwd();
+      if (requestTimeoutMs === undefined) {
+        await proc.initializeOnly(cwd);
+      } else {
+        await proc.initializeOnly(cwd, requestTimeoutMs);
+      }
       return proc;
     } catch (err) {
       proc.stop();
@@ -7467,7 +7501,12 @@ export class BridgeWebSocketServer {
     msg: ServerMessage | Record<string, unknown>,
   ): boolean {
     const type = typeof msg.type === "string" ? msg.type : "";
-    if (!OPT_IN_SERVER_MESSAGES.has(type)) return true;
+    if (
+      !OPT_IN_SERVER_MESSAGES.has(type) &&
+      !isLocalFeatureServerMessageType(type)
+    ) {
+      return true;
+    }
     return this.clientSupportedServerMessages.get(ws)?.has(type) ?? false;
   }
 

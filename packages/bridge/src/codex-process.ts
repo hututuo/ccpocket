@@ -17,6 +17,7 @@ import {
 } from "./codex-transport.js";
 import { codexCliJoinTarget } from "./codex-app-server-config.js";
 import { resolvePlatformPath } from "./path-utils.js";
+import { parseSessionInsightsNotification } from "./local-features/slots/session-insights.js";
 
 export { buildCodexSpawnSpec };
 
@@ -27,6 +28,8 @@ const CODEX_CLI_NOT_FOUND_MESSAGE =
 
 export interface CodexStartOptions {
   threadId?: string;
+  /** Start this process by forking a persisted thread into memory only. */
+  ephemeralForkFromThreadId?: string;
   profile?: string;
   additionalWritableRoots?: string[];
   approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted";
@@ -62,6 +65,32 @@ interface PendingInput {
     name: string;
     path: string;
   }>;
+}
+
+export interface CodexRpcRequestOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export class CodexRpcError extends Error {
+  constructor(
+    public readonly method: string,
+    message: string,
+    public readonly code?: number,
+    public readonly data?: unknown,
+  ) {
+    super(message);
+    this.name = "CodexRpcError";
+  }
+}
+
+interface PendingRpc {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  method: string;
+  timeout?: ReturnType<typeof setTimeout>;
+  signal?: AbortSignal;
+  abortListener?: () => void;
 }
 
 /** Skill metadata returned by the Codex `skills/list` RPC. */
@@ -293,14 +322,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   private rpcSeq = 1;
-  private pendingRpc = new Map<
-    number,
-    {
-      resolve: (value: unknown) => void;
-      reject: (error: Error) => void;
-      method: string;
-    }
-  >();
+  private pendingRpc = new Map<number, PendingRpc>();
 
   private stdoutBuffer = "";
 
@@ -523,6 +545,24 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     await this.request("thread/archive", { threadId });
   }
 
+  /**
+   * Narrow extension seam for optional local read-only modules. Method names
+   * must follow the app-server `.../read` or `.../list` convention so feature
+   * code cannot accidentally route a mutating RPC through this API.
+   */
+  requestReadOnlyRpc<T = unknown>(
+    method: string,
+    params: Record<string, unknown>,
+    options: CodexRpcRequestOptions = {},
+  ): Promise<T> {
+    if (!method.endsWith("/read") && !method.endsWith("/list")) {
+      return Promise.reject(
+        new CodexRpcError(method, `Refusing non-read-only RPC method: ${method}`),
+      );
+    }
+    return this.request(method, params, options) as Promise<T>;
+  }
+
   async readThread(
     threadId: string,
     includeTurns = true,
@@ -692,14 +732,22 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     void this.bootstrap(projectPath, options);
   }
 
-  async initializeOnly(projectPath: string): Promise<void> {
+  async initializeOnly(
+    projectPath: string,
+    requestTimeoutMs?: number,
+  ): Promise<void> {
     if (this.transport) {
       this.stop();
     }
     this.prepareLaunch(projectPath);
     this.launchAppServer(projectPath);
-    await this.initializeRpcConnection();
-    this.setStatus("idle");
+    try {
+      await this.initializeRpcConnection(requestTimeoutMs);
+      this.setStatus("idle");
+    } catch (error) {
+      this.stop();
+      throw error;
+    }
   }
 
   stop(): void {
@@ -1402,8 +1450,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         threadParams.webSearchMode = options.webSearchMode;
       }
 
-      const method = options?.threadId ? "thread/resume" : "thread/start";
-      if (options?.threadId) {
+      if (options?.threadId && options.ephemeralForkFromThreadId) {
+        throw new Error(
+          "Codex start cannot resume and create an ephemeral fork together",
+        );
+      }
+      const method = options?.ephemeralForkFromThreadId
+        ? "thread/fork"
+        : options?.threadId
+          ? "thread/resume"
+          : "thread/start";
+      if (options?.ephemeralForkFromThreadId) {
+        threadParams.threadId = options.ephemeralForkFromThreadId;
+        threadParams.ephemeral = true;
+      } else if (options?.threadId) {
         threadParams.threadId = options.threadId;
       } else {
         threadParams.experimentalRawEvents = false;
@@ -1437,6 +1497,23 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         typeof thread?.id === "string" ? thread.id : options?.threadId;
       if (!threadId) {
         throw new Error(`${method} returned no thread id`);
+      }
+      if (
+        options?.ephemeralForkFromThreadId &&
+        (threadId === options.ephemeralForkFromThreadId ||
+          thread?.ephemeral !== true ||
+          thread.path !== null)
+      ) {
+        // The returned id is untrusted once the response violates the
+        // ephemeral contract. Never run an irreversible thread/delete against
+        // it: an incompatible server could have echoed any existing thread.
+        console.warn(
+          `[codex-process] Rejected incompatible ephemeral fork ${threadId}; automatic cleanup skipped for safety`,
+        );
+        throw new Error(
+          "thread/fork did not return an in-memory ephemeral thread; " +
+            "automatic cleanup skipped for safety",
+        );
       }
 
       // Capture the resolved model name from thread response
@@ -1560,8 +1637,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
   }
 
-  private async initializeRpcConnection(): Promise<void> {
-    await this.request("initialize", {
+  private async initializeRpcConnection(
+    requestTimeoutMs?: number,
+  ): Promise<void> {
+    const params = {
       clientInfo: {
         name: "ccpocket_bridge",
         version: "1.0.0",
@@ -1570,7 +1649,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       capabilities: {
         experimentalApi: true,
       },
-    });
+    };
+    if (requestTimeoutMs === undefined) {
+      await this.request("initialize", params);
+    } else {
+      await this.request("initialize", params, {
+        timeoutMs: requestTimeoutMs,
+      });
+    }
     this.notify("initialized", {});
   }
 
@@ -1989,11 +2075,19 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     const pending = this.pendingRpc.get(envelope.id);
     if (!pending) return;
     this.pendingRpc.delete(envelope.id);
+    this.clearPendingRpcLifecycle(pending);
 
     if ("error" in envelope && envelope.error) {
       const message =
         envelope.error.message ?? `RPC error ${envelope.error.code ?? ""}`;
-      pending.reject(new Error(message));
+      pending.reject(
+        new CodexRpcError(
+          pending.method,
+          message,
+          envelope.error.code,
+          envelope.error.data,
+        ),
+      );
       return;
     }
 
@@ -2268,6 +2362,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             ),
           };
         }
+        const localMessage = parseSessionInsightsNotification(params);
+        if (localMessage) this.emitMessage(localMessage);
         break;
       }
 
@@ -2941,16 +3037,65 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private request(
     method: string,
     params: Record<string, unknown>,
+    options: CodexRpcRequestOptions = {},
   ): Promise<unknown> {
     const id = this.rpcSeq++;
     const envelope = { id, method, params };
+    const timeoutMs =
+      typeof options.timeoutMs === "number" &&
+      Number.isFinite(options.timeoutMs) &&
+      options.timeoutMs > 0
+        ? Math.floor(options.timeoutMs)
+        : undefined;
 
     return new Promise<unknown>((resolve, reject) => {
-      this.pendingRpc.set(id, { resolve, reject, method });
+      if (options.signal?.aborted) {
+        reject(
+          new CodexRpcError(
+            method,
+            abortMessage(method, options.signal.reason),
+          ),
+        );
+        return;
+      }
+
+      const pending: PendingRpc = { resolve, reject, method };
+      this.pendingRpc.set(id, pending);
+      if (timeoutMs !== undefined) {
+        pending.timeout = setTimeout(() => {
+          if (this.pendingRpc.get(id) !== pending) return;
+          this.pendingRpc.delete(id);
+          this.clearPendingRpcLifecycle(pending);
+          reject(
+            new CodexRpcError(
+              method,
+              `${method} timed out after ${timeoutMs}ms`,
+            ),
+          );
+        }, timeoutMs);
+      }
+      if (options.signal) {
+        pending.signal = options.signal;
+        pending.abortListener = () => {
+          if (this.pendingRpc.get(id) !== pending) return;
+          this.pendingRpc.delete(id);
+          this.clearPendingRpcLifecycle(pending);
+          reject(
+            new CodexRpcError(
+              method,
+              abortMessage(method, options.signal?.reason),
+            ),
+          );
+        };
+        options.signal.addEventListener("abort", pending.abortListener, {
+          once: true,
+        });
+      }
       try {
         this.writeEnvelope(envelope);
       } catch (err) {
         this.pendingRpc.delete(id);
+        this.clearPendingRpcLifecycle(pending);
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -3000,6 +3145,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private rejectAllPending(error: Error): void {
     for (const pending of this.pendingRpc.values()) {
+      this.clearPendingRpcLifecycle(pending);
       pending.reject(error);
     }
     this.pendingRpc.clear();
@@ -3007,6 +3153,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (this.pendingTurnCompletion) {
       this.pendingTurnCompletion.reject(error);
       this.pendingTurnCompletion = null;
+    }
+  }
+
+  private clearPendingRpcLifecycle(pending: PendingRpc): void {
+    if (pending.timeout) clearTimeout(pending.timeout);
+    if (pending.signal && pending.abortListener) {
+      pending.signal.removeEventListener("abort", pending.abortListener);
     }
   }
 
@@ -3493,6 +3646,16 @@ function toImageGenerationToolInput(
   if (status) input.status = status;
   if (revisedPrompt) input.revisedPrompt = revisedPrompt;
   return input;
+}
+
+function abortMessage(method: string, reason: unknown): string {
+  const detail =
+    reason instanceof Error
+      ? reason.message
+      : typeof reason === "string"
+        ? reason
+        : "request aborted";
+  return `${method} aborted: ${detail}`;
 }
 
 function formatDynamicToolResult(item: Record<string, unknown>): string {

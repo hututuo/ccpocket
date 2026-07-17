@@ -7,6 +7,21 @@ import type {
 } from "./prompt-history-store.js";
 import type { WindowInfo } from "./screenshot.js";
 import type { WorktreeInfo } from "./worktree.js";
+import {
+  parseLocalFeatureClientMessage,
+  type LocalFeatureClientMessage,
+  type LocalFeatureServerMessage,
+} from "./local-features/protocol.js";
+
+export type {
+  CodexSubagentInfo,
+  CodexTokenUsageBreakdown,
+  ContextUsageMessage,
+  SessionUsageInfoPayload,
+  SessionUsageLimitCardPayload,
+  SessionUsageResetCreditPayload,
+  SessionUsageWindowPayload,
+} from "./local-features/protocol.js";
 
 // Re-export for convenience
 export type { ImageRef } from "./image-store.js";
@@ -397,7 +412,8 @@ export type ClientMessage =
       sessionId?: string;
       includeRemote?: boolean;
     }
-  | { type: "git_remote_status"; projectPath: string };
+  | { type: "git_remote_status"; projectPath: string }
+  | LocalFeatureClientMessage;
 
 /** Image change detected in a git diff (binary image file). */
 export interface ImageChange {
@@ -805,7 +821,8 @@ export type ServerMessage =
       behind: number;
       branch: string;
       hasUpstream: boolean;
-    };
+    }
+  | LocalFeatureServerMessage;
 
 export interface UsageWindowPayload {
   utilization: number;
@@ -843,6 +860,8 @@ export function parseClientMessage(data: string): ClientMessage | null {
   try {
     const msg = JSON.parse(data) as Record<string, unknown>;
     if (!msg.type || typeof msg.type !== "string") return null;
+    const localFeatureMessage = parseLocalFeatureClientMessage(msg);
+    if (localFeatureMessage !== undefined) return localFeatureMessage;
     const hasOnlyKeys = (allowedKeys: readonly string[]): boolean => {
       const allowed = new Set(allowedKeys);
       return Object.keys(msg).every((key) => allowed.has(key));

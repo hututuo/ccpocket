@@ -1,0 +1,100 @@
+import { describe, expect, it, vi } from "vitest";
+import type { CodexProcess } from "../codex-process.js";
+import { LocalFeaturesController } from "./controller.js";
+import type {
+  LocalFeatureHandler,
+  LocalFeatureRuntime,
+} from "./runtime.js";
+
+describe("LocalFeaturesController", () => {
+  it("stays generic and dispatches only explicitly registered handlers", async () => {
+    const handle = vi.fn(async () => {});
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage"],
+      handle,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+    const client = {};
+
+    expect(controller.handle(client, { type: "start" })).toBeNull();
+    const request = controller.handle(client, {
+      type: "get_context_usage",
+      sessionId: "session-1",
+    });
+    expect(request).toBeInstanceOf(Promise);
+    await request;
+
+    expect(handle).toHaveBeenCalledOnce();
+    expect(handle.mock.calls[0]?.[1]).toMatchObject({
+      client,
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("aborts all active operations when the bridge controller closes", async () => {
+    let signal: AbortSignal | undefined;
+    const close = vi.fn();
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage"],
+      handle: async (_message, context) => {
+        signal = context.signal;
+        await new Promise<void>((resolve) => {
+          context.signal.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+      },
+      close,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+    const request = controller.handle({}, {
+      type: "get_context_usage",
+      sessionId: "session-1",
+    });
+    await vi.waitFor(() => expect(signal).toBeDefined());
+
+    controller.close();
+    await request;
+
+    expect(signal?.aborted).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("notifies each registered handler once when capabilities change", () => {
+    const capabilitiesChanged = vi.fn();
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage", "get_session_usage"],
+      handle: async () => {},
+      capabilitiesChanged,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+    const client = {};
+
+    controller.capabilitiesChanged(client);
+
+    expect(capabilitiesChanged).toHaveBeenCalledOnce();
+    expect(capabilitiesChanged).toHaveBeenCalledWith(client);
+  });
+});
+
+function runtime(
+  options: {
+    process?: CodexProcess;
+    sent?: unknown[];
+  } = {},
+): LocalFeatureRuntime {
+  const process = options.process ?? ({} as CodexProcess);
+  return {
+    getSession: (sessionId) =>
+      sessionId === "session-1"
+        ? { id: sessionId, provider: "codex", process }
+        : undefined,
+    getCodexThreadId: () => "thread-1",
+    getActiveCodexProcess: () => null,
+    createStandaloneCodexProcess: async () => {
+      throw new Error("not used");
+    },
+    send: (_client, message) => options.sent?.push(message),
+    supports: () => true,
+  };
+}

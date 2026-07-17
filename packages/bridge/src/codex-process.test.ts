@@ -39,6 +39,7 @@ vi.mock("node:child_process", () => ({
 import {
   buildCodexSpawnSpec,
   CodexProcess,
+  CodexRpcError,
   parseCodexGoal,
 } from "./codex-process.js";
 import { stopManagedCodexAppServers } from "./codex-transport.js";
@@ -297,6 +298,237 @@ describe("CodexProcess (app-server)", () => {
     );
 
     proc.stop();
+  });
+
+  it("creates a dedicated runtime with an in-memory fork instead of resuming or archiving", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    proc.start("/tmp/project-dedicated", {
+      ephemeralForkFromThreadId: "parent-thread",
+      sandboxMode: "read-only",
+      approvalPolicy: "on-request",
+      collaborationMode: "default",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+
+    const forkReq = nextOutgoingRequest(child);
+    expect(forkReq.method).toBe("thread/fork");
+    expect(forkReq.params).toMatchObject({
+      threadId: "parent-thread",
+      ephemeral: true,
+      cwd: "/tmp/project-dedicated",
+      sandbox: "read-only",
+      approvalPolicy: "on-request",
+    });
+    expect(forkReq.method).not.toBe("thread/resume");
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: forkReq.id,
+        result: {
+          thread: {
+            id: "ephemeral-dedicated-thread",
+            ephemeral: true,
+            path: null,
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        sessionId: "ephemeral-dedicated-thread",
+        provider: "codex",
+      }),
+    );
+    expect(
+      child.stdin.writes.some((line) => line.includes("thread/archive")),
+    ).toBe(false);
+    expect(
+      child.stdin.writes.some((line) => line.includes("thread/resume")),
+    ).toBe(false);
+
+    proc.stop();
+  });
+
+  it("rejects a persisted fork without deleting the untrusted returned id", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    proc.start("/tmp/project-dedicated", {
+      ephemeralForkFromThreadId: "parent-thread",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const forkReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: forkReq.id,
+        result: {
+          thread: {
+            id: "persisted-by-old-server",
+            ephemeral: false,
+            path: "/tmp/persisted-rollout.jsonl",
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+    warning.mockRestore();
+
+    expect(
+      child.stdin.writes.some((line) => line.includes("thread/delete")),
+    ).toBe(false);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        message: expect.stringContaining(
+          "thread/fork did not return an in-memory ephemeral thread",
+        ),
+      }),
+    );
+    proc.stop();
+  });
+
+  it("does not delete a different id when an incompatible response has a path", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const proc = new CodexProcess("linux");
+      const messages: unknown[] = [];
+      proc.on("message", (message) => messages.push(message));
+      proc.start("/tmp/project-dedicated", {
+        ephemeralForkFromThreadId: "parent-thread",
+      });
+
+      const child = fakeChildren[0];
+      await tick();
+      const initReq = nextOutgoingRequest(child);
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+      );
+      await tick();
+      nextOutgoingNotification(child);
+      const forkReq = nextOutgoingRequest(child);
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({
+          id: forkReq.id,
+          result: {
+            thread: {
+              id: "persisted-without-delete",
+              ephemeral: true,
+              path: "/tmp/persisted-rollout.jsonl",
+            },
+          },
+        })}\n`,
+      );
+
+      await tick();
+
+      expect(
+        child.stdin.writes.some((line) => line.includes("thread/delete")),
+      ).toBe(false);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Rejected incompatible ephemeral fork persisted-without-delete",
+        ),
+      );
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          message: expect.stringContaining(
+            "automatic cleanup skipped for safety",
+          ),
+        }),
+      );
+      proc.stop();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("never deletes the parent when an incompatible server echoes its id", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const proc = new CodexProcess("linux");
+      const messages: unknown[] = [];
+      proc.on("message", (message) => messages.push(message));
+      proc.start("/tmp/project-dedicated", {
+        ephemeralForkFromThreadId: "parent-thread",
+      });
+
+      const child = fakeChildren[0];
+      await tick();
+      const initReq = nextOutgoingRequest(child);
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+      );
+      await tick();
+      nextOutgoingNotification(child);
+      const forkReq = nextOutgoingRequest(child);
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({
+          id: forkReq.id,
+          result: {
+            thread: {
+              id: "parent-thread",
+              ephemeral: true,
+              path: null,
+            },
+          },
+        })}\n`,
+      );
+      await tick();
+
+      expect(
+        child.stdin.writes.some((line) => line.includes("thread/delete")),
+      ).toBe(false);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Rejected incompatible ephemeral fork parent-thread",
+        ),
+      );
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          message: expect.stringContaining(
+            "automatic cleanup skipped for safety",
+          ),
+        }),
+      );
+      proc.stop();
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it("leaves approval, reviewer, and sandbox unset for custom permissions", async () => {
@@ -690,6 +922,23 @@ describe("CodexProcess (app-server)", () => {
     });
   });
 
+  it("exposes one generic, read-only RPC seam for optional modules", async () => {
+    const proc = new CodexProcess("linux");
+    const response = { rateLimits: { limitId: "codex" } };
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue(response);
+    await expect(
+      proc.requestReadOnlyRpc("account/rateLimits/read", {}, {
+        timeoutMs: 10_000,
+      }),
+    ).resolves.toBe(response);
+    expect(request).toHaveBeenCalledWith("account/rateLimits/read", {}, {
+      timeoutMs: 10_000,
+    });
+    await expect(
+      proc.requestReadOnlyRpc("thread/archive", { threadId: "unsafe" }),
+    ).rejects.toThrow("Refusing non-read-only RPC method");
+  });
+
   it("ignores placeholder codex model names from resume state", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
@@ -790,6 +1039,111 @@ describe("CodexProcess (app-server)", () => {
     expect(() => nextOutgoingRequest(child)).toThrow();
 
     proc.stop();
+  });
+
+  it("removes timed-out RPCs so late replies cannot poison later requests", async () => {
+    vi.useFakeTimers();
+    const proc = new CodexProcess("linux");
+    try {
+      const child = new FakeChildProcess();
+      fakeChildren.push(child);
+      const internal = proc as any;
+      attachFakeTransport(internal, child);
+
+      const firstPromise = internal.request(
+        "account/rateLimits/read",
+        {},
+        { timeoutMs: 25 },
+      ) as Promise<unknown>;
+      const firstRequest = nextOutgoingRequest(child);
+      const firstRejection = expect(firstPromise).rejects.toThrow(
+        "account/rateLimits/read timed out after 25ms",
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      await firstRejection;
+      expect(internal.pendingRpc.size).toBe(0);
+
+      internal.handleRpcResponse({
+        id: firstRequest.id,
+        result: { late: true },
+      });
+      expect(internal.pendingRpc.size).toBe(0);
+
+      const secondPromise = internal.request(
+        "model/list",
+        {},
+        { timeoutMs: 25 },
+      ) as Promise<unknown>;
+      const secondRequest = nextOutgoingRequest(child);
+      internal.handleRpcResponse({
+        id: secondRequest.id,
+        result: { data: [] },
+      });
+      await expect(secondPromise).resolves.toEqual({ data: [] });
+      expect(internal.pendingRpc.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      proc.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves RPC method/code and removes an aborted pending read", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+
+    const failed = proc.requestReadOnlyRpc("thread/list", {});
+    const failedRequest = nextOutgoingRequest(child);
+    internal.handleRpcResponse({
+      id: failedRequest.id,
+      error: { code: -32601, message: "Method not found" },
+    });
+    const rpcError = await failed.catch((error) => error);
+    expect(rpcError).toBeInstanceOf(CodexRpcError);
+    expect(rpcError).toMatchObject({
+      method: "thread/list",
+      code: -32601,
+    });
+
+    const abort = new AbortController();
+    const pending = proc.requestReadOnlyRpc("thread/read", {}, {
+      signal: abort.signal,
+    });
+    nextOutgoingRequest(child);
+    abort.abort(new Error("client closed"));
+    await expect(pending).rejects.toThrow("client closed");
+    expect(internal.pendingRpc.size).toBe(0);
+    proc.stop();
+  });
+
+  it("stops initialize-only runtimes and clears pending RPCs on timeout", async () => {
+    vi.useFakeTimers();
+    const proc = new CodexProcess("linux");
+    try {
+      const initializePromise = proc.initializeOnly(
+        "/tmp/project-init-timeout",
+        25,
+      );
+      const child = fakeChildren[0];
+      await tick();
+      expect(nextOutgoingRequest(child).method).toBe("initialize");
+
+      const rejection = expect(initializePromise).rejects.toThrow(
+        "initialize timed out after 25ms",
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      await rejection;
+
+      expect(child.killed).toBe(true);
+      expect((proc as any).pendingRpc.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      proc.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("emits user_input for app-server user items from another client", async () => {
