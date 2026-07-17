@@ -1131,6 +1131,60 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     }
   });
 
+  it("limits artifact source reads to one active request per client", async () => {
+    let rejectOpen!: (error: Error) => void;
+    const pendingOpen = new Promise<never>((_resolve, reject) => {
+      rejectOpen = reject;
+    });
+    const artifactManager = {
+      registerCandidates: vi.fn(async () => []),
+      openAuthorizedSource: vi.fn(() => pendingOpen),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      artifactManager: artifactManager as any,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-artifact-source-limit",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-source-limit" },
+    );
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.claudeSessionId = "thread-source-limit";
+
+    const message = (requestId: string) => ({
+      type: "read_artifact_source",
+      requestId,
+      sessionId,
+      messageId: "assistant-message",
+      artifactId: "artifact-source",
+      filePath: "README.md",
+    });
+
+    try {
+      await (bridge as any).handleClientMessage(message("source-read-1"), ws);
+      await (bridge as any).handleClientMessage(message("source-read-2"), ws);
+
+      expect(artifactManager.openAuthorizedSource).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(ws.send.mock.calls[0][0])).toEqual({
+        type: "file_content",
+        requestId: "source-read-2",
+        filePath: "README.md",
+        content: "",
+        error: "Another artifact source read is already in progress.",
+        errorCode: "artifact_source_busy",
+      });
+    } finally {
+      rejectOpen(new Error("test cleanup"));
+      await expect.poll(() => ws.send.mock.calls.length).toBeGreaterThan(1);
+      bridge.close();
+    }
+  });
+
   it("returns correlated artifact source authorization errors", async () => {
     const artifactManager = {
       registerCandidates: vi.fn(async () => []),
@@ -1186,8 +1240,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         },
         ws,
       );
+      await expect.poll(() => ws.send.mock.calls.length).toBe(index + 1);
     }
-    await expect.poll(() => ws.send.mock.calls.length).toBe(3);
     expect(
       ws.send.mock.calls.map((call: unknown[]) => JSON.parse(call[0] as string)),
     ).toEqual([
@@ -1272,8 +1326,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           },
           ws,
         );
+        await expect.poll(() => ws.send.mock.calls.length).toBe(index + 1);
       }
-      await expect.poll(() => ws.send.mock.calls.length).toBe(2);
       const responses = ws.send.mock.calls.map((call: unknown[]) =>
         JSON.parse(call[0] as string),
       );

@@ -2963,12 +2963,18 @@ interface CodexMessageImageIndex {
   size: number;
   mtimeMs: number;
   imagesByUuid: Map<string, ExtractedImage[]>;
+  imageBytes: number;
 }
 
 async function* streamJsonlLines(
   filePath: string,
+  endExclusive?: number,
 ): AsyncGenerator<{ line: string; index: number }> {
-  const stream = createReadStream(filePath, { encoding: "utf-8" });
+  if (endExclusive !== undefined && endExclusive <= 0) return;
+  const stream = createReadStream(filePath, {
+    encoding: "utf-8",
+    ...(endExclusive !== undefined ? { end: endExclusive - 1 } : {}),
+  });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   let index = 0;
   try {
@@ -2983,10 +2989,12 @@ async function* streamJsonlLines(
 }
 
 const CODEX_IMAGE_INDEX_CACHE_LIMIT = 8;
+const CODEX_IMAGE_INDEX_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const codexMessageImageIndexCache = new Map<
   string,
   Promise<CodexMessageImageIndex | null>
 >();
+const codexMessageImageIndexCacheBytes = new Map<string, number>();
 
 interface ClaudeMessageImageIndex {
   jsonlPath: string;
@@ -3113,7 +3121,7 @@ async function buildClaudeMessageImageIndex(
   const imagesByUuid = new Map<string, ExtractedImage[]>();
   let imageBytes = 0;
   try {
-    for await (const { line } of streamJsonlLines(jsonlPath)) {
+    for await (const { line } of streamJsonlLines(jsonlPath, fileStat.size)) {
       if (!line.trim()) continue;
 
       let entry: Record<string, unknown>;
@@ -3190,14 +3198,34 @@ async function getCodexMessageImageIndex(
   if (cached) {
     const index = await cached;
     if (index && (await isFreshCodexMessageImageIndex(index))) {
+      codexMessageImageIndexCache.delete(threadId);
+      codexMessageImageIndexCache.set(threadId, cached);
       return index;
     }
-    codexMessageImageIndexCache.delete(threadId);
+    deleteCodexMessageImageIndexCacheEntry(threadId);
   }
 
   const promise = buildCodexMessageImageIndex(threadId);
   codexMessageImageIndexCache.set(threadId, promise);
   trimCodexMessageImageIndexCache();
+  void promise.then(
+    (index) => {
+      if (codexMessageImageIndexCache.get(threadId) !== promise || !index) {
+        return;
+      }
+      if (index.imageBytes > CODEX_IMAGE_INDEX_CACHE_MAX_BYTES) {
+        deleteCodexMessageImageIndexCacheEntry(threadId);
+        return;
+      }
+      codexMessageImageIndexCacheBytes.set(threadId, index.imageBytes);
+      trimCodexMessageImageIndexCache();
+    },
+    () => {
+      if (codexMessageImageIndexCache.get(threadId) === promise) {
+        deleteCodexMessageImageIndexCacheEntry(threadId);
+      }
+    },
+  );
   return promise;
 }
 
@@ -3212,11 +3240,26 @@ async function isFreshCodexMessageImageIndex(
   }
 }
 
-function trimCodexMessageImageIndexCache() {
+function deleteCodexMessageImageIndexCacheEntry(threadId: string): void {
+  codexMessageImageIndexCache.delete(threadId);
+  codexMessageImageIndexCacheBytes.delete(threadId);
+}
+
+function trimCodexMessageImageIndexCache(): void {
   while (codexMessageImageIndexCache.size > CODEX_IMAGE_INDEX_CACHE_LIMIT) {
     const oldest = codexMessageImageIndexCache.keys().next().value;
     if (!oldest) return;
-    codexMessageImageIndexCache.delete(oldest);
+    deleteCodexMessageImageIndexCacheEntry(oldest);
+  }
+  let totalBytes = 0;
+  for (const bytes of codexMessageImageIndexCacheBytes.values()) {
+    totalBytes += bytes;
+  }
+  while (totalBytes > CODEX_IMAGE_INDEX_CACHE_MAX_BYTES) {
+    const oldest = codexMessageImageIndexCache.keys().next().value;
+    if (!oldest) return;
+    totalBytes -= codexMessageImageIndexCacheBytes.get(oldest) ?? 0;
+    deleteCodexMessageImageIndexCacheEntry(oldest);
   }
 }
 
@@ -3233,9 +3276,12 @@ async function buildCodexMessageImageIndex(
     return null;
   }
 
-  let imagesByUuid: Map<string, ExtractedImage[]>;
+  let imageIndex: {
+    imagesByUuid: Map<string, ExtractedImage[]>;
+    imageBytes: number;
+  };
   try {
-    imagesByUuid = await collectCodexMessageImages(jsonlPath);
+    imageIndex = await collectCodexMessageImages(jsonlPath, fileStat.size);
   } catch {
     return null;
   }
@@ -3243,19 +3289,28 @@ async function buildCodexMessageImageIndex(
     jsonlPath,
     size: fileStat.size,
     mtimeMs: fileStat.mtimeMs,
-    imagesByUuid,
+    imagesByUuid: imageIndex.imagesByUuid,
+    imageBytes: imageIndex.imageBytes,
   };
 }
 
 async function collectCodexMessageImages(
   jsonlPath: string,
-): Promise<Map<string, ExtractedImage[]>> {
+  snapshotSize: number,
+): Promise<{
+  imagesByUuid: Map<string, ExtractedImage[]>;
+  imageBytes: number;
+}> {
   const imagesByUuid = new Map<string, ExtractedImage[]>();
-  const responseItemImagesByOrdinal =
-    await collectCodexUserResponseItemImagesByOrdinal(jsonlPath);
-  let ordinal = 0;
+  const responseItemImagesByOrdinal = new Map<number, ExtractedImage[]>();
+  const eventMessageImagesByOrdinal = new Map<number, ExtractedImage[]>();
+  let responseOrdinal = 0;
+  let eventOrdinal = 0;
 
-  for await (const { line, index: lineIndex } of streamJsonlLines(jsonlPath)) {
+  for await (const { line, index: lineIndex } of streamJsonlLines(
+    jsonlPath,
+    snapshotSize,
+  )) {
     if (!line.trim()) continue;
 
     let entry: Record<string, unknown>;
@@ -3265,15 +3320,36 @@ async function collectCodexMessageImages(
       continue;
     }
 
-    if (entry.type !== "event_msg") continue;
     const payload = asObject(entry.payload);
-    if (!payload || payload.type !== "user_message") continue;
+    if (!payload) continue;
+
+    if (
+      entry.type === "response_item" &&
+      payload.type === "message" &&
+      payload.role === "user" &&
+      codexUserResponseItemHasDisplayContent(payload)
+    ) {
+      responseOrdinal += 1;
+      const images = extractCodexUserResponseItemImages(payload);
+      if (images.length > 0) {
+        responseItemImagesByOrdinal.set(responseOrdinal, images);
+      }
+      continue;
+    }
+
+    if (entry.type !== "event_msg" || payload.type !== "user_message") {
+      continue;
+    }
 
     const lineImages = await extractCodexUserMessagePayloadImages(payload);
     imagesByUuid.set(`codex-line-${lineIndex}`, lineImages);
 
     if (!codexUserMessagePayloadHasDisplayContent(payload)) continue;
-    ordinal += 1;
+    eventOrdinal += 1;
+    eventMessageImagesByOrdinal.set(eventOrdinal, lineImages);
+  }
+
+  for (const [ordinal, lineImages] of eventMessageImagesByOrdinal) {
     imagesByUuid.set(
       `codex:user-turn:${ordinal}`,
       lineImages.length > 0
@@ -3282,7 +3358,16 @@ async function collectCodexMessageImages(
     );
   }
 
-  return imagesByUuid;
+  let imageBytes = 0;
+  const counted = new Set<ExtractedImage[]>();
+  for (const images of imagesByUuid.values()) {
+    if (counted.has(images)) continue;
+    counted.add(images);
+    for (const image of images) {
+      imageBytes += Buffer.byteLength(image.base64, "utf8");
+    }
+  }
+  return { imagesByUuid, imageBytes };
 }
 
 async function extractCodexUserMessagePayloadImages(
@@ -3327,40 +3412,6 @@ async function extractCodexUserMessagePayloadImages(
     }
   }
   return images;
-}
-
-async function collectCodexUserResponseItemImagesByOrdinal(
-  jsonlPath: string,
-): Promise<Map<number, ExtractedImage[]>> {
-  const imagesByOrdinal = new Map<number, ExtractedImage[]>();
-  let ordinal = 0;
-
-  for await (const { line } of streamJsonlLines(jsonlPath)) {
-    if (!line.trim()) continue;
-    let entry: Record<string, unknown>;
-    try {
-      entry = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (entry.type !== "response_item") continue;
-    const payload = asObject(entry.payload);
-    if (
-      !payload ||
-      payload.type !== "message" ||
-      payload.role !== "user" ||
-      !codexUserResponseItemHasDisplayContent(payload)
-    ) {
-      continue;
-    }
-    ordinal += 1;
-    const images = extractCodexUserResponseItemImages(payload);
-    if (images.length > 0) {
-      imagesByOrdinal.set(ordinal, images);
-    }
-  }
-
-  return imagesByOrdinal;
 }
 
 function codexUserResponseItemHasDisplayContent(

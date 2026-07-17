@@ -940,6 +940,7 @@ export class BridgeWebSocketServer {
   private deltaBatches = new Map<WebSocket, Map<string, DeltaBatch>>();
   private platform: NodeJS.Platform;
   private clientSupportedServerMessages = new WeakMap<WebSocket, Set<string>>();
+  private activeArtifactSourceReads = new WeakSet<WebSocket>();
   private pendingClaudeResumeInputs = new WeakMap<
     WebSocket,
     Map<string, InputClientMessage[]>
@@ -5016,6 +5017,15 @@ export class BridgeWebSocketServer {
           });
           break;
         }
+        if (this.activeArtifactSourceReads.has(ws)) {
+          sendFileContent({
+            content: "",
+            error: "Another artifact source read is already in progress.",
+            errorCode: "artifact_source_busy",
+          });
+          break;
+        }
+        this.activeArtifactSourceReads.add(ws);
 
         void (async () => {
           let opened: Awaited<
@@ -5109,6 +5119,7 @@ export class BridgeWebSocketServer {
             }
           } finally {
             await opened?.handle.close().catch(() => undefined);
+            this.activeArtifactSourceReads.delete(ws);
           }
         })();
         break;

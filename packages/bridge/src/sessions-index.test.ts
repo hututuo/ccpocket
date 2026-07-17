@@ -1866,6 +1866,46 @@ describe("codex sessions integration", () => {
     ]);
   });
 
+  it("pairs codex response images when the event entry appears first", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68018";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "event first",
+            images: [],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "event first" },
+              {
+                type: "input_image",
+                image_url: "data:image/png;base64,ZXZlbnQtZmlyc3Q=",
+              },
+            ],
+          },
+        }),
+      ].join("\n"),
+    );
+
+    await expect(
+      extractMessageImages(threadId, "codex:user-turn:1"),
+    ).resolves.toEqual([
+      { base64: "ZXZlbnQtZmlyc3Q=", mimeType: "image/png" },
+    ]);
+  });
+
   it("supports legacy codex response_item tool schemas", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68014";
     const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
