@@ -25,6 +25,8 @@ class BridgeService implements BridgeServiceBase {
   final _messageController = StreamController<ServerMessage>.broadcast();
   final _taggedMessageController =
       StreamController<(ServerMessage, String?)>.broadcast();
+  final _localFeatureMessageController =
+      StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
   final _connectionController =
       StreamController<BridgeConnectionState>.broadcast();
   final _sessionListController =
@@ -127,6 +129,9 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, Completer<ArtifactResolvedMessage>>
       _pendingArtifactResolutions = {};
   final Random _artifactRequestRandom = Random.secure();
+  final List<_PendingLocalFeatureRequest> _pendingLocalFeatureRequests = [];
+  List<LocalFeatureProtocolSlot>? _localFeatureProtocolSlotsForTest;
+  DateTime Function() _localFeatureRequestClock = DateTime.now;
   Future<void> _fileReadSerial = Future<void>.value();
   _PendingFileRead? _pendingFileRead;
   List<OfflinePendingAction> _offlinePendingActions = const [];
@@ -606,6 +611,123 @@ class BridgeService implements BridgeServiceBase {
     return consumed;
   }
 
+  bool _consumeLocalFeatureInfrastructureMessage(
+    ServerMessage message, {
+    String? sessionId,
+  }) {
+    if (message is ErrorMessage) {
+      final pending = _takePendingLocalFeatureRequestForError(message);
+      if (pending == null) return false;
+      final request = pending.descriptor;
+      final localError = LocalFeatureRequestErrorMessage(
+        featureId: request.featureId,
+        ownerSessionId: request.ownerSessionId,
+        requestType: request.requestType,
+        requestId: request.requestId,
+        message: message.message,
+        errorCode: message.errorCode,
+      );
+      _localFeatureMessageController.add((localError, request.ownerSessionId));
+      return true;
+    }
+    if (message is! LocalFeatureServerMessage) return false;
+    _clearPendingLocalFeatureRequestForTerminal(message);
+    final localSessionId = message.sessionId ?? sessionId;
+    _localFeatureMessageController.add((message, localSessionId));
+    _messageController.add(message);
+    return true;
+  }
+
+  _PendingLocalFeatureRequest? _registerPendingLocalFeatureRequest(
+    ClientMessage message,
+  ) {
+    final descriptor = LocalFeatureProtocolHost.describeRequest(
+      message,
+      protocolSlots: _localFeatureProtocolSlotsForTest,
+    );
+    if (descriptor == null) return null;
+
+    final now = _localFeatureRequestClock();
+    _prunePendingLocalFeatureRequests(now);
+    while (_pendingLocalFeatureRequests.length >=
+        _maxPendingLocalFeatureRequests) {
+      _pendingLocalFeatureRequests.removeAt(0);
+    }
+    final pending = _PendingLocalFeatureRequest(
+      descriptor: descriptor,
+      epoch: _connectionEpoch,
+      expiresAt: now.add(_localFeatureRequestTtl),
+    );
+    _pendingLocalFeatureRequests.add(pending);
+    return pending;
+  }
+
+  void _rollbackPendingLocalFeatureRequest(
+    _PendingLocalFeatureRequest? pending,
+  ) {
+    if (pending != null) _pendingLocalFeatureRequests.remove(pending);
+  }
+
+  _PendingLocalFeatureRequest? _takePendingLocalFeatureRequestForError(
+    ErrorMessage error,
+  ) {
+    _prunePendingLocalFeatureRequests(_localFeatureRequestClock());
+    if (error.errorCode == null && error.message == 'Invalid message format') {
+      return null;
+    }
+
+    if (error.errorCode == 'unsupported_message') {
+      final index = _pendingLocalFeatureRequests.indexWhere(
+        (pending) => pending.descriptor.requestType == error.message,
+      );
+      if (index < 0) return null;
+      return _pendingLocalFeatureRequests.removeAt(index);
+    }
+
+    for (var index = 0; index < _pendingLocalFeatureRequests.length; index++) {
+      final pending = _pendingLocalFeatureRequests[index];
+      final request = pending.descriptor;
+      final matchesFeatureError = LocalFeatureProtocolHost.matchesRequestError(
+        request,
+        error,
+        protocolSlots: _localFeatureProtocolSlotsForTest,
+      );
+      if (!matchesFeatureError) continue;
+      _pendingLocalFeatureRequests.removeAt(index);
+      return pending;
+    }
+    return null;
+  }
+
+  void _clearPendingLocalFeatureRequestForTerminal(
+    LocalFeatureServerMessage message,
+  ) {
+    _prunePendingLocalFeatureRequests(_localFeatureRequestClock());
+    for (var index = 0; index < _pendingLocalFeatureRequests.length; index++) {
+      final pending = _pendingLocalFeatureRequests[index];
+      if (!LocalFeatureProtocolHost.matchesTerminalResponse(
+        pending.descriptor,
+        message,
+        protocolSlots: _localFeatureProtocolSlotsForTest,
+      )) {
+        continue;
+      }
+      _pendingLocalFeatureRequests.removeAt(index);
+      return;
+    }
+  }
+
+  void _prunePendingLocalFeatureRequests(DateTime now) {
+    _pendingLocalFeatureRequests.removeWhere(
+      (pending) =>
+          pending.epoch != _connectionEpoch || !pending.expiresAt.isAfter(now),
+    );
+  }
+
+  void _clearPendingLocalFeatureRequests() {
+    _pendingLocalFeatureRequests.clear();
+  }
+
   @visibleForTesting
   void completeArtifactResolutionForTest(ArtifactResolvedMessage message) {
     _completeArtifactResolution(message);
@@ -614,6 +736,43 @@ class BridgeService implements BridgeServiceBase {
   @visibleForTesting
   bool consumeArtifactInfrastructureMessageForTest(ServerMessage message) {
     return _consumeArtifactInfrastructureMessage(message);
+  }
+
+  @visibleForTesting
+  bool consumeLocalFeatureInfrastructureMessageForTest(
+    ServerMessage message, {
+    String? sessionId,
+  }) {
+    return _consumeLocalFeatureInfrastructureMessage(
+      message,
+      sessionId: sessionId,
+    );
+  }
+
+  @visibleForTesting
+  void setLocalFeatureProtocolSlotsForTest(
+    Iterable<LocalFeatureProtocolSlot> slots,
+  ) {
+    _clearPendingLocalFeatureRequests();
+    _localFeatureProtocolSlotsForTest = List.unmodifiable(slots);
+  }
+
+  @visibleForTesting
+  void setLocalFeatureRequestClockForTest(DateTime Function() clock) {
+    _localFeatureRequestClock = clock;
+  }
+
+  @visibleForTesting
+  List<LocalFeatureRequestDescriptor> get pendingLocalFeatureRequestsForTest {
+    _prunePendingLocalFeatureRequests(_localFeatureRequestClock());
+    return List.unmodifiable(
+      _pendingLocalFeatureRequests.map((pending) => pending.descriptor),
+    );
+  }
+
+  @visibleForTesting
+  void clearPendingLocalFeatureRequestsForTest() {
+    _clearPendingLocalFeatureRequests();
   }
 
   @visibleForTesting
@@ -739,6 +898,8 @@ class BridgeService implements BridgeServiceBase {
   static const _prefKeyOfflinePendingMessages =
       'bridge_offline_pending_messages_v1';
   static const _inFlightPendingVisibilityDelay = Duration(milliseconds: 600);
+  static const _localFeatureRequestTtl = Duration(seconds: 20);
+  static const _maxPendingLocalFeatureRequests = 256;
 
   Future<void>? _offlineQueueRestore;
   int _offlineQueueGeneration = 0;
@@ -759,6 +920,7 @@ class BridgeService implements BridgeServiceBase {
     final isBridgeSwitch =
         previousUrl != null && !_sameBridgeTarget(previousUrl, url);
     _connectionEpoch++;
+    _clearPendingLocalFeatureRequests();
     final epoch = _connectionEpoch;
     _intentionalDisconnect = false;
     _reconnectTimer?.cancel();
@@ -790,6 +952,12 @@ class BridgeService implements BridgeServiceBase {
             final sessionId = json['sessionId'] as String?;
             final msg = ServerMessage.fromJson(json);
             if (_consumeArtifactInfrastructureMessage(msg)) return;
+            if (_consumeLocalFeatureInfrastructureMessage(
+              msg,
+              sessionId: sessionId,
+            )) {
+              return;
+            }
             if (sessionId != null && msg is HistoryDeltaMessage) {
               _handleHistoryDelta(sessionId, msg);
               return;
@@ -1036,6 +1204,7 @@ class BridgeService implements BridgeServiceBase {
         onError: (error, stackTrace) {
           if (epoch != _connectionEpoch) return;
           logger.error('WS stream error', error, stackTrace);
+          _clearPendingLocalFeatureRequests();
           _setBridgeConnectionState(BridgeConnectionState.disconnected);
           _failPendingArtifactResolutions(
             const ArtifactResolveException(
@@ -1053,6 +1222,7 @@ class BridgeService implements BridgeServiceBase {
         onDone: () {
           if (epoch != _connectionEpoch) return;
           _channel = null;
+          _clearPendingLocalFeatureRequests();
           if (!_intentionalDisconnect) {
             _setBridgeConnectionState(BridgeConnectionState.disconnected);
             _failPendingArtifactResolutions(
@@ -1071,6 +1241,7 @@ class BridgeService implements BridgeServiceBase {
       );
     } catch (e, st) {
       logger.error('WS connect failed', e, st);
+      _clearPendingLocalFeatureRequests();
       _setBridgeConnectionState(BridgeConnectionState.disconnected);
       _messageController.add(ErrorMessage(message: 'Connection failed: $e'));
       _scheduleReconnect();
@@ -1093,6 +1264,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _clearBridgeScopedState({required bool clearOfflineQueue}) {
+    _clearPendingLocalFeatureRequests();
     _failPendingArtifactResolutions(
       const ArtifactResolveException(
         code: 'bridge_changed',
@@ -1259,7 +1431,16 @@ class BridgeService implements BridgeServiceBase {
     onOutgoingMessage?.call(message);
     if (_isEphemeralRpc(message)) {
       if (message.type != 'resolve_artifact') {
-        sendEphemeralRpc(message);
+        final pendingLocalRequest = _registerPendingLocalFeatureRequest(
+          message,
+        );
+        try {
+          sendEphemeralRpc(message);
+        } catch (error, stackTrace) {
+          _rollbackPendingLocalFeatureRequest(pendingLocalRequest);
+          logger.warning('WS ephemeral RPC send failed', error, stackTrace);
+          rethrow;
+        }
         return;
       }
       try {
@@ -1338,6 +1519,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   bool _isEphemeralRpc(ClientMessage message) =>
+      message.delivery == ClientMessageDelivery.ephemeral ||
       message.type == 'resolve_artifact' ||
       message.type == 'read_file' ||
       message.type == 'read_artifact_source';
@@ -2640,6 +2822,15 @@ class BridgeService implements BridgeServiceBase {
         .map((pair) => pair.$1);
   }
 
+  @override
+  Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
+    String sessionId,
+  ) {
+    return _localFeatureMessageController.stream
+        .where((pair) => pair.$2 == sessionId)
+        .map((pair) => pair.$1);
+  }
+
   /// Try to auto-connect using saved preferences.
   ///
   /// [apiKey] should be provided from [FlutterSecureStorage] via
@@ -2826,6 +3017,7 @@ class BridgeService implements BridgeServiceBase {
   void dispose() {
     _intentionalDisconnect = true;
     _reconnectTimer?.cancel();
+    _clearPendingLocalFeatureRequests();
     for (final timer in _inFlightPendingVisibilityTimers.values) {
       timer.cancel();
     }
@@ -2848,6 +3040,7 @@ class BridgeService implements BridgeServiceBase {
     _channel = null;
     _messageController.close();
     _taggedMessageController.close();
+    _localFeatureMessageController.close();
     _connectionController.close();
     _sessionListController.close();
     _sessionStoppedController.close();
@@ -2897,6 +3090,18 @@ class _PendingFileRead {
 
   final String requestType;
   final Completer<FileContentMessage> completer;
+}
+
+class _PendingLocalFeatureRequest {
+  const _PendingLocalFeatureRequest({
+    required this.descriptor,
+    required this.epoch,
+    required this.expiresAt,
+  });
+
+  final LocalFeatureRequestDescriptor descriptor;
+  final int epoch;
+  final DateTime expiresAt;
 }
 
 class _DeliveryPendingInputState {

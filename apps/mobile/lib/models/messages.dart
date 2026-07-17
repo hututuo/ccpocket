@@ -3,6 +3,15 @@ import 'dart:typed_data';
 
 import '../utils/request_user_input.dart';
 
+part 'local_features/protocol_host.dart';
+part 'local_features/slots/session_insights_models_slot.dart';
+part 'local_features/slots/session_insights_protocol_slot.dart';
+part 'local_features/slots/subagents_models_slot.dart';
+part 'local_features/slots/subagents_protocol_slot.dart';
+part 'local_features/slots/add_to_conversation_protocol_slot.dart';
+part 'local_features/slots/side_chat_models_slot.dart';
+part 'local_features/slots/side_chat_protocol_slot.dart';
+
 bool isCodexAutoReviewApprovalsReviewer(String? value) {
   return value == 'auto_review' || value == 'guardian_subagent';
 }
@@ -840,6 +849,8 @@ class ArtifactRef {
 
 sealed class ServerMessage {
   factory ServerMessage.fromJson(Map<String, dynamic> json) {
+    final localFeatureMessage = LocalFeatureProtocolHost.tryDecode(json);
+    if (localFeatureMessage != null) return localFeatureMessage;
     return switch (json['type'] as String) {
       'system' => SystemMessage(
         subtype: json['subtype'] as String? ?? '',
@@ -3937,9 +3948,13 @@ class SessionInfo {
 
 // ---- Client messages ----
 
+enum ClientMessageDelivery { queued, ephemeral }
+
 class ClientMessage {
   final Map<String, dynamic> _json;
-  ClientMessage._(this._json);
+  final ClientMessageDelivery delivery;
+
+  ClientMessage._(this._json, {this.delivery = ClientMessageDelivery.queued});
   factory ClientMessage.raw(Map<String, dynamic> json) =>
       ClientMessage._(Map<String, dynamic>.from(json));
 
@@ -3948,22 +3963,26 @@ class ClientMessage {
   factory ClientMessage.clientCapabilities({
     String? appVersion,
     int protocolVersion = 1,
-    List<String> supportedServerMessages = const [
-      'conversation_queue',
-      'goal_state',
-      'history_delta',
-      'history_snapshot',
-      'git_status_result',
-      'prompt_history_status',
-      'artifact_resolved',
-    ],
+    List<String>? supportedServerMessages,
   }) {
+    final advertisedMessages =
+        supportedServerMessages ??
+        <String>[
+          'conversation_queue',
+          'goal_state',
+          'history_delta',
+          'history_snapshot',
+          'git_status_result',
+          'prompt_history_status',
+          'artifact_resolved',
+          ...LocalFeatureProtocolHost.supportedServerMessageTypes,
+        ];
     return ClientMessage._(<String, dynamic>{
       'type': 'client_capabilities',
       'protocolVersion': protocolVersion,
       'appVersion': ?appVersion,
-      if (supportedServerMessages.isNotEmpty)
-        'supportedServerMessages': supportedServerMessages,
+      if (advertisedMessages.isNotEmpty)
+        'supportedServerMessages': advertisedMessages,
     });
   }
 

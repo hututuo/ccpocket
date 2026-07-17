@@ -25,4 +25,9 @@ abstract class BridgeServiceBase {
   /// Returns a stream of messages filtered to only include messages
   /// belonging to the given [sessionId] (or messages with no sessionId).
   Stream<ServerMessage> messagesForSession(String sessionId);
+
+  /// Local extension traffic is isolated from the canonical chat timeline.
+  Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
+    String sessionId,
+  );
 }

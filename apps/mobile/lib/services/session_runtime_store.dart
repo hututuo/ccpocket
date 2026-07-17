@@ -208,7 +208,8 @@ class SessionRuntimeStore {
   }
 
   bool _shouldIgnore(ServerMessage message) {
-    return message is PastHistoryMessage ||
+    return message is LocalFeatureTransientMessage ||
+        message is PastHistoryMessage ||
         message is StreamDeltaMessage ||
         message is ThinkingDeltaMessage ||
         message is InputAckMessage ||

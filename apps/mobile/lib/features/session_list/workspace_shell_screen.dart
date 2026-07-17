@@ -10,6 +10,8 @@ import '../../features/explore/explore_screen.dart';
 import '../../features/explore/state/explore_state.dart';
 import '../../features/gallery/gallery_screen.dart';
 import '../../features/git/git_screen.dart';
+import '../../features/local_session_features/host/local_session_feature.dart';
+import '../../features/local_session_features/host/local_session_feature_host.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/setup_guide/setup_guide_screen.dart';
 import '../../l10n/app_localizations.dart';
@@ -150,6 +152,27 @@ class _GalleryToolPaneData extends _WorkspaceToolPaneData {
   String get title => 'Gallery';
 }
 
+class _LocalFeatureToolPaneData extends _WorkspaceToolPaneData {
+  final String featureId;
+  @override
+  final String sessionId;
+  @override
+  final String title;
+  final Map<String, Object?> arguments;
+  final bool rememberPerSession;
+
+  const _LocalFeatureToolPaneData({
+    required this.featureId,
+    required this.sessionId,
+    required this.title,
+    this.arguments = const {},
+    required this.rememberPerSession,
+  });
+
+  @override
+  String get id => 'local-feature:$featureId:$sessionId';
+}
+
 sealed class _WorkspaceToolPaneSnapshot {
   const _WorkspaceToolPaneSnapshot();
 
@@ -206,6 +229,26 @@ class _GalleryToolPaneSnapshot extends _WorkspaceToolPaneSnapshot {
   @override
   _WorkspaceToolPaneData restore() =>
       _GalleryToolPaneData(sessionId: sessionId);
+}
+
+class _LocalFeatureToolPaneSnapshot extends _WorkspaceToolPaneSnapshot {
+  final String featureId;
+  final String sessionId;
+  final String title;
+
+  const _LocalFeatureToolPaneSnapshot({
+    required this.featureId,
+    required this.sessionId,
+    required this.title,
+  });
+
+  @override
+  _WorkspaceToolPaneData restore() => _LocalFeatureToolPaneData(
+    featureId: featureId,
+    sessionId: sessionId,
+    title: title,
+    rememberPerSession: true,
+  );
 }
 
 class _WorkspaceToolPaneBindings {
@@ -378,6 +421,30 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     _openToolPane(_GalleryToolPaneData(sessionId: sessionId));
   }
 
+  bool openLocalFeaturePane({
+    required String featureId,
+    required String sessionId,
+    Map<String, Object?> arguments = const {},
+  }) {
+    if (!canOpenToolPane) return false;
+    final descriptor = LocalSessionFeatureHost.paneDescriptor(featureId);
+    if (descriptor == null) return false;
+    final pane = _LocalFeatureToolPaneData(
+      featureId: featureId,
+      sessionId: sessionId,
+      title: descriptor.title(context),
+      arguments: Map.unmodifiable(arguments),
+      rememberPerSession: descriptor.rememberPerSession,
+    );
+    if (_toolPane?.id == pane.id) {
+      setState(() => _toolPane = pane);
+      _notifyPresentationChanged();
+      return true;
+    }
+    _openToolPane(pane);
+    return true;
+  }
+
   void openSettingsCenter({
     bool focusSupport = false,
     bool focusConnection = false,
@@ -459,6 +526,19 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
       _GalleryToolPaneData(:final sessionId) => _GalleryToolPaneSnapshot(
         sessionId: sessionId,
       ),
+      _LocalFeatureToolPaneData(
+        :final featureId,
+        :final sessionId,
+        :final title,
+        :final rememberPerSession,
+      ) =>
+        rememberPerSession
+            ? _LocalFeatureToolPaneSnapshot(
+                featureId: featureId,
+                sessionId: sessionId,
+                title: title,
+              )
+            : null,
     };
   }
 
@@ -482,7 +562,14 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
   }
 
   _WorkspaceToolPaneData? _restoreToolPaneForSession(String sessionId) {
-    return _toolPaneSnapshots[sessionId]?.restore();
+    final restored = _toolPaneSnapshots[sessionId]?.restore();
+    if (restored case _LocalFeatureToolPaneData(:final featureId)) {
+      if (LocalSessionFeatureHost.paneDescriptor(featureId) == null) {
+        _toolPaneSnapshots.remove(sessionId);
+        return null;
+      }
+    }
+    return restored;
   }
 
   void _openToolPane(_WorkspaceToolPaneData pane) {
@@ -976,6 +1063,21 @@ class _WorkspaceToolPaneHost extends StatelessWidget {
         embedded: true,
         onClose: onClose,
       ),
+      _LocalFeatureToolPaneData(
+        :final featureId,
+        :final sessionId,
+        :final arguments,
+      ) =>
+        LocalSessionFeatureHost.paneDescriptor(featureId)?.builder(
+              WorkspaceFeaturePaneContext(
+                context: context,
+                sessionId: sessionId,
+                bridge: context.read<BridgeService>(),
+                arguments: arguments,
+                onClose: onClose,
+              ),
+            ) ??
+            const SizedBox.shrink(),
     };
 
     return Material(color: Theme.of(context).colorScheme.surface, child: child);

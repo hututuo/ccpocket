@@ -345,6 +345,7 @@ void main() {
         'git_status_result',
         'prompt_history_status',
         'artifact_resolved',
+        ...LocalFeatureProtocolHost.supportedServerMessageTypes,
       ]);
     });
 

@@ -31,6 +31,8 @@ import '../settings/state/settings_cubit.dart';
 import '../../widgets/new_session_sheet.dart'
     show permissionModeFromRaw, sandboxModeFromRaw;
 import '../session_list/workspace_shell_screen.dart';
+import '../local_session_features/host/local_session_feature.dart';
+import '../local_session_features/host/local_session_feature_host.dart';
 import '../../widgets/approval_bar.dart';
 import '../../widgets/bubbles/ask_user_question_widget.dart';
 import '../../widgets/screenshot_sheet.dart';
@@ -570,6 +572,20 @@ class _CodexChatBody extends HookWidget {
     useEffect(() => chatInputController.dispose, [chatInputController]);
     final planFeedbackController = useTextEditingController();
     final draftService = context.read<DraftService>();
+    final localFeatureContext = CodexSessionFeatureContext(
+      context: context,
+      sessionId: sessionId,
+      bridge: bridge,
+      inputController: chatInputController,
+      draftService: draftService,
+      openPane: (featureId, {arguments = const {}}) =>
+          _openLocalFeaturePaneOrSheet(
+            context,
+            featureId: featureId,
+            sessionId: sessionId,
+            arguments: arguments,
+          ),
+    );
 
     // --- Draft persistence: restore on mount, auto-save on change ---
     useEffect(() {
@@ -1134,6 +1150,19 @@ class _CodexChatBody extends HookWidget {
                           minHeight: 32,
                         ),
                         onSelected: (value) {
+                          final localFeatureId =
+                              LocalSessionFeatureHost.featureIdFromMenuValue(
+                                value,
+                              );
+                          if (localFeatureId != null) {
+                            unawaited(
+                              localFeatureContext.openPane(
+                                localFeatureId,
+                                arguments: const {},
+                              ),
+                            );
+                            return;
+                          }
                           switch (value) {
                             case 'history':
                               _showUserMessageHistory(
@@ -1214,6 +1243,9 @@ class _CodexChatBody extends HookWidget {
                                 contentPadding: EdgeInsets.zero,
                               ),
                             ),
+                            ...LocalSessionFeatureHost.overflowMenuItems(
+                              localFeatureContext,
+                            ),
                             if (FeatureFlags.current.isEnabled(
                                   AppFeature.terminalAppIntegration,
                                 ) &&
@@ -1243,6 +1275,8 @@ class _CodexChatBody extends HookWidget {
                 if (bridgeState == BridgeConnectionState.reconnecting ||
                     bridgeState == BridgeConnectionState.disconnected)
                   ReconnectBanner(bridgeState: bridgeState),
+                if (!isBackground)
+                  ...LocalSessionFeatureHost.statusWidgets(localFeatureContext),
                 Expanded(
                   child: BottomOverlayLayout(
                     overlay:
@@ -1375,6 +1409,10 @@ class _CodexChatBody extends HookWidget {
                       onForkMessage: (message) {
                         unawaited(_forkCodexFromAssistant(context, message));
                       },
+                      selectionActions:
+                          LocalSessionFeatureHost.selectionActions(
+                            localFeatureContext,
+                          ),
                       scrollToUserEntry: scrollToUserEntry,
                       collapseToolResults: collapseToolResults,
                       bottomPadding: 8,
@@ -1590,6 +1628,45 @@ Future<void> _openGitScreen(
   if (selection != null) {
     diffSelectionNotifier.value = selection.isEmpty ? null : selection;
   }
+}
+
+Future<void> _openLocalFeaturePaneOrSheet(
+  BuildContext context, {
+  required String featureId,
+  required String sessionId,
+  Map<String, Object?> arguments = const {},
+}) async {
+  final descriptor = LocalSessionFeatureHost.paneDescriptor(featureId);
+  if (descriptor == null) return;
+
+  final shell = WorkspaceShellScreen.maybeOf(context);
+  if (shell?.openLocalFeaturePane(
+        featureId: featureId,
+        sessionId: sessionId,
+        arguments: arguments,
+      ) ??
+      false) {
+    return;
+  }
+
+  final bridge = context.read<BridgeService>();
+  await showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    isScrollControlled: true,
+    builder: (sheetContext) => FractionallySizedBox(
+      heightFactor: descriptor.sheetHeightFactor,
+      child: descriptor.builder(
+        WorkspaceFeaturePaneContext(
+          context: sheetContext,
+          sessionId: sessionId,
+          bridge: bridge,
+          arguments: arguments,
+          onClose: () => Navigator.of(sheetContext).pop(),
+        ),
+      ),
+    ),
+  );
 }
 
 void _openGalleryScreen(BuildContext context, {required String sessionId}) {
