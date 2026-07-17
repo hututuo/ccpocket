@@ -1653,9 +1653,10 @@ export class BridgeWebSocketServer {
     const threadId = this.codexThreadIdForSession(session);
     if (!threadId) return null;
 
-    const history = await this.getCodexThreadHistory(
+    const history = await this.getCodexThreadHistoryFromRpc(
       threadId,
       session.projectPath,
+      session.process as CodexProcess,
     );
     session.claudeSessionId = threadId;
 
@@ -2237,8 +2238,9 @@ export class BridgeWebSocketServer {
   private async getCodexThreadHistoryFromRpc(
     threadId: string,
     projectPath?: string,
+    preferredProcess?: CodexProcess,
   ): Promise<SessionHistoryMessage[]> {
-    const activeProcess = this.getActiveCodexProcess();
+    const activeProcess = preferredProcess ?? this.getActiveCodexProcess();
     const process =
       activeProcess ?? (await this.createStandaloneCodexProcess(projectPath));
     const isStandalone = process !== activeProcess;
@@ -4134,6 +4136,32 @@ export class BridgeWebSocketServer {
           break;
         }
         (session.process as SdkProcess).answer(msg.toolUseId, msg.result);
+        break;
+      }
+
+      case "install_tool_suggestion": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.send(ws, { type: "error", message: "No active session." });
+          return;
+        }
+        if (session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            message: "Tool suggestions are only supported for Codex sessions.",
+          });
+          return;
+        }
+        try {
+          await (session.process as CodexProcess).installToolSuggestion(
+            msg.toolUseId,
+          );
+        } catch (err) {
+          this.send(ws, {
+            type: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
         break;
       }
 
@@ -8002,6 +8030,8 @@ export class BridgeWebSocketServer {
       case "reject":
         return `id=${msg.id}`;
       case "answer":
+        return `toolUseId=${msg.toolUseId}`;
+      case "install_tool_suggestion":
         return `toolUseId=${msg.toolUseId}`;
       case "start":
         return `projectPath=${msg.projectPath} provider=${msg.provider ?? "claude"}`;

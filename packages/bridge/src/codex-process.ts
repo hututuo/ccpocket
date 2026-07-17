@@ -153,7 +153,16 @@ interface PendingUserInputRequest {
     | "questions"
     | "elicitation_form"
     | "elicitation_url"
-    | "elicitation_approval";
+    | "elicitation_approval"
+    | "tool_suggestion";
+}
+
+interface ToolSuggestionApp {
+  id: string;
+  name: string;
+  description?: string;
+  installUrl?: string;
+  category?: string;
 }
 
 interface PendingTurnCompletion {
@@ -1020,6 +1029,104 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
   }
 
+  /**
+   * Install a plugin or begin connector authentication proposed by Codex.
+   * The elicitation remains pending while external app authentication is
+   * required, and is accepted only after installation is complete.
+   */
+  async installToolSuggestion(toolUseId: string): Promise<void> {
+    const pending = this.resolvePendingUserInput(toolUseId);
+    if (!pending || pending.kind !== "tool_suggestion") {
+      throw new Error("No pending tool suggestion found");
+    }
+
+    const currentState = pending.input.installState;
+    if (currentState === "installing") return;
+    if (currentState === "needs_auth") return;
+
+    const meta = asRecord(pending.input._meta) ?? {};
+    const toolType = stringValue(meta.tool_type) ?? "";
+    const suggestType = stringValue(meta.suggest_type) ?? "";
+    if (suggestType !== "install") {
+      this.updateToolSuggestion(pending, {
+        installState: "failed",
+        installError: `Unsupported suggestion action: ${suggestType || "unknown"}`,
+      });
+      return;
+    }
+
+    if (toolType === "connector") {
+      const installUrl = stringValue(meta.install_url);
+      if (!installUrl) {
+        this.updateToolSuggestion(pending, {
+          installState: "failed",
+          installError: "This connector did not provide an installation URL.",
+        });
+        return;
+      }
+      this.updateToolSuggestion(pending, { installState: "needs_auth" });
+      return;
+    }
+
+    if (toolType !== "plugin") {
+      this.updateToolSuggestion(pending, {
+        installState: "failed",
+        installError: `Unsupported tool type: ${toolType || "unknown"}`,
+      });
+      return;
+    }
+
+    const toolId = stringValue(meta.tool_id) ?? "";
+    const remotePluginId = stringValue(meta.remote_plugin_id);
+    const separator = toolId.lastIndexOf("@");
+    const fallbackPluginName =
+      separator > 0 ? toolId.slice(0, separator) : toolId;
+    const remoteMarketplaceName =
+      separator > 0 ? toolId.slice(separator + 1) : "openai-curated-remote";
+    const pluginName = remotePluginId ?? fallbackPluginName;
+    if (!pluginName) {
+      this.updateToolSuggestion(pending, {
+        installState: "failed",
+        installError: "This plugin did not provide an installation identifier.",
+      });
+      return;
+    }
+
+    this.updateToolSuggestion(pending, {
+      installState: "installing",
+      installError: null,
+    });
+
+    try {
+      const result = (await this.request("plugin/install", {
+        remoteMarketplaceName,
+        pluginName,
+      })) as Record<string, unknown>;
+
+      // The user may reject the suggestion while installation is in flight.
+      if (this.pendingUserInputs.get(toolUseId) !== pending) return;
+
+      const appsNeedingAuth = normalizeToolSuggestionApps(
+        result.appsNeedingAuth,
+      );
+      if (appsNeedingAuth.length > 0) {
+        this.updateToolSuggestion(pending, {
+          installState: "needs_auth",
+          appsNeedingAuth,
+        });
+        return;
+      }
+
+      this.resolveToolSuggestion(pending, "Installed");
+    } catch (err) {
+      if (this.pendingUserInputs.get(toolUseId) !== pending) return;
+      this.updateToolSuggestion(pending, {
+        installState: "failed",
+        installError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   getPendingPermission(
     toolUseId?: string,
   ):
@@ -1092,6 +1199,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     const pending = this.resolvePendingUserInput(toolUseId);
     if (!pending) return false;
 
+    if (pending.kind === "tool_suggestion") {
+      if (pending.input.installState === "needs_auth") {
+        this.resolveToolSuggestion(pending, "Installed");
+      } else {
+        void this.installToolSuggestion(pending.toolUseId);
+      }
+      return true;
+    }
+
     this.pendingUserInputs.delete(pending.toolUseId);
     this.respondToServerRequest(
       pending.requestId,
@@ -1103,6 +1219,39 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.setStatus("running");
     }
     return true;
+  }
+
+  private updateToolSuggestion(
+    pending: PendingUserInputRequest,
+    changes: Record<string, unknown>,
+  ): void {
+    pending.input = { ...pending.input, ...changes };
+    this.emitMessage({
+      type: "permission_request",
+      toolUseId: pending.toolUseId,
+      toolName: "ToolSuggestion",
+      input: { ...pending.input },
+    });
+  }
+
+  private resolveToolSuggestion(
+    pending: PendingUserInputRequest,
+    toolResult: string,
+  ): void {
+    this.pendingUserInputs.delete(pending.toolUseId);
+    this.respondToServerRequest(pending.requestId, {
+      action: "accept",
+      content: null,
+      _meta: null,
+    });
+    this.emitMessage({
+      type: "permission_resolved",
+      toolUseId: pending.toolUseId,
+    });
+    this.emitToolResult(pending.toolUseId, toolResult);
+    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
+      this.setStatus("running");
+    }
   }
 
   /**
@@ -2008,10 +2157,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "mcpServer/elicitation/request": {
         const toolUseId = this.extractToolUseId(params, id);
         const elicitation = createElicitationInput(params);
+        const toolName =
+          elicitation.kind === "tool_suggestion"
+            ? "ToolSuggestion"
+            : "McpElicitation";
         this.pendingUserInputs.set(toolUseId, {
           requestId: id,
           toolUseId,
-          toolName: "McpElicitation",
+          toolName,
           questions: elicitation.questions,
           input: elicitation.input,
           kind: elicitation.kind,
@@ -2019,16 +2172,29 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         this.emitMessage({
           type: "permission_request",
           toolUseId,
-          toolName: "McpElicitation",
+          toolName,
           input: elicitation.input,
         });
         this.setStatus("waiting_approval");
         break;
       }
 
-      default:
-        this.respondToServerRequest(id, {});
+      case "currentTime/read": {
+        this.respondToServerRequest(id, {
+          currentTimeAt: Math.floor(Date.now() / 1000),
+        });
         break;
+      }
+
+      default: {
+        console.warn(`[codex-process] unsupported server request: ${method}`);
+        this.respondToServerRequestError(
+          id,
+          -32601,
+          `Unsupported server request: ${method}`,
+        );
+        break;
+      }
     }
   }
 
@@ -2191,6 +2357,60 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "serverRequest/resolved": {
         this.handleServerRequestResolved(params);
+        break;
+      }
+
+      case "warning": {
+        const message = stringValue(params.message);
+        if (message) {
+          this.emitMessage({
+            type: "error",
+            errorCode: "codex_warning",
+            message,
+          });
+        }
+        break;
+      }
+
+      case "guardianWarning": {
+        const message = stringValue(params.message);
+        if (!message) break;
+        if (isInformationalGuardianApproval(message)) {
+          console.debug(
+            "[codex-process] suppressed informational guardian approval notification",
+          );
+          break;
+        }
+        this.emitMessage({
+          type: "error",
+          errorCode: "codex_warning",
+          message,
+        });
+        break;
+      }
+
+      case "configWarning":
+      case "deprecationNotice": {
+        const summary = stringValue(params.summary);
+        const details = stringValue(params.details);
+        if (summary || details) {
+          this.emitMessage({
+            type: "error",
+            errorCode: "codex_warning",
+            message: [summary, details].filter(Boolean).join("\n"),
+          });
+        }
+        break;
+      }
+
+      case "error": {
+        const error = asRecord(params.error);
+        const message = stringValue(error?.message) ?? "Codex runtime error";
+        this.emitMessage({
+          type: "error",
+          errorCode: params.willRetry ? "codex_warning" : "codex_runtime_error",
+          message: params.willRetry ? `${message}\nCodex will retry.` : message,
+        });
         break;
       }
 
@@ -2629,6 +2849,22 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         break;
       }
 
+      case "exitedreviewmode": {
+        const text = typeof item.review === "string" ? item.review : "";
+        if (!text) break;
+        this.lastResultText = text;
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [{ type: "text", text }],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
       case "error": {
         const message =
           typeof item.message === "string" ? item.message : "Codex item error";
@@ -2734,6 +2970,22 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       if (!this.stopped) {
         console.warn(
           `[codex-process] failed to respond to server request: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  private respondToServerRequestError(
+    id: number | string,
+    code: number,
+    message: string,
+  ): void {
+    try {
+      this.writeEnvelope({ id, error: { code, message } });
+    } catch (err) {
+      if (!this.stopped) {
+        console.warn(
+          `[codex-process] failed to reject server request: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -3623,12 +3875,15 @@ function parseResultObject(rawResult: string): {
   }
 }
 
+function isInformationalGuardianApproval(message: string): boolean {
+  const normalized = message.trim().replace(/\s+/g, " ").toLowerCase();
+  return /^automatic approval review approved\b/.test(normalized);
+}
+
 function normalizeAnswerValues(value: unknown): string[] {
   if (typeof value === "string") {
-    return value
-      .split(",")
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0);
+    const normalized = value.trim();
+    return normalized ? [normalized] : [];
   }
 
   if (Array.isArray(value)) {
@@ -3655,6 +3910,14 @@ function buildElicitationResponse(
   pending: PendingUserInputRequest,
   rawResult: string,
 ): Record<string, unknown> {
+  if (pending.kind === "tool_suggestion") {
+    return {
+      action: parseElicitationAction(rawResult),
+      content: null,
+      _meta: null,
+    };
+  }
+
   if (pending.kind === "elicitation_url") {
     const action = parseElicitationAction(rawResult);
     return {
@@ -3670,24 +3933,26 @@ function buildElicitationResponse(
 
   const parsed = parseResultObject(rawResult);
   const content: Record<string, unknown> = {};
+  const schema = asRecord(pending.input.requestedSchema);
+  const properties = asRecord(schema?.properties) ?? {};
 
   for (const question of pending.questions) {
     const candidate =
       parsed.byId[question.id] ?? parsed.byQuestion[question.question];
-    const answers = normalizeAnswerValues(candidate);
-    if (answers.length === 1) {
-      content[question.id] = answers[0];
-    } else if (answers.length > 1) {
-      content[question.id] = answers;
+    const value = coerceElicitationValue(candidate, asRecord(properties[question.id]));
+    if (value !== undefined) {
+      content[question.id] = value;
     }
   }
 
   if (Object.keys(content).length === 0 && pending.questions.length === 1) {
-    const answers = normalizeAnswerValues(rawResult);
-    if (answers.length === 1) {
-      content[pending.questions[0].id] = answers[0];
-    } else if (answers.length > 1) {
-      content[pending.questions[0].id] = answers;
+    const questionId = pending.questions[0].id;
+    const value = coerceElicitationValue(
+      rawResult,
+      asRecord(properties[questionId]),
+    );
+    if (value !== undefined) {
+      content[questionId] = value;
     }
   }
 
@@ -3696,6 +3961,47 @@ function buildElicitationResponse(
     content: Object.keys(content).length > 0 ? content : null,
     _meta: null,
   };
+}
+
+function coerceElicitationValue(
+  value: unknown,
+  field: Record<string, unknown> | undefined,
+): unknown {
+  if (value == null) return undefined;
+  const type = stringValue(field?.type) ?? "string";
+
+  if (type === "array") {
+    if (Array.isArray(value)) {
+      const entries = value.map((entry) => String(entry));
+      return entries.length > 0 ? entries : undefined;
+    }
+    if (typeof value === "string") {
+      return value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+    }
+    return [String(value)];
+  }
+
+  const scalar = Array.isArray(value) ? value[0] : value;
+  if (scalar == null) return undefined;
+  if (typeof scalar === "string" && scalar.trim().length === 0) {
+    return undefined;
+  }
+  if (type === "boolean") {
+    if (typeof scalar === "boolean") return scalar;
+    if (String(scalar).toLowerCase() === "true") return true;
+    if (String(scalar).toLowerCase() === "false") return false;
+    return undefined;
+  }
+  if (type === "number" || type === "integer") {
+    const number = typeof scalar === "number" ? scalar : Number(scalar);
+    if (!Number.isFinite(number)) return undefined;
+    if (type === "integer" && !Number.isInteger(number)) return undefined;
+    return number;
+  }
+  return String(scalar);
 }
 
 function buildApprovalElicitationResponse(
@@ -3813,7 +4119,34 @@ function createElicitationInput(params: Record<string, unknown>): {
 
   const schema = asRecord(params.requestedSchema);
   const elicitationMeta = asRecord(params._meta);
-  if (isApprovalActionElicitation(schema, elicitationMeta)) {
+  if (isToolSuggestionElicitation(serverName, elicitationMeta)) {
+    const toolName = stringValue(elicitationMeta?.tool_name) ?? "Tool";
+    return {
+      kind: "tool_suggestion",
+      questions: [],
+      input: {
+        mode: "form",
+        serverName,
+        message,
+        _meta: elicitationMeta ?? null,
+        toolType: stringValue(elicitationMeta?.tool_type),
+        suggestType: stringValue(elicitationMeta?.suggest_type),
+        suggestReason: stringValue(elicitationMeta?.suggest_reason) ?? message,
+        toolId: stringValue(elicitationMeta?.tool_id),
+        toolName,
+        installUrl: stringValue(elicitationMeta?.install_url),
+        remotePluginId: stringValue(elicitationMeta?.remote_plugin_id),
+        appConnectorIds: Array.isArray(elicitationMeta?.app_connector_ids)
+          ? elicitationMeta.app_connector_ids.filter(
+              (entry): entry is string => typeof entry === "string",
+            )
+          : [],
+        installState: "idle",
+        appsNeedingAuth: [],
+      },
+    };
+  }
+  if (isApprovalActionElicitation(schema, serverName, elicitationMeta)) {
     const questionId = "approval";
     const isToolApproval = isToolApprovalElicitation(elicitationMeta);
     return {
@@ -3859,28 +4192,16 @@ function createElicitationInput(params: Record<string, unknown>): {
       const title = typeof field.title === "string" ? field.title : key;
       const description =
         typeof field.description === "string" ? field.description : message;
-      const enumValues = Array.isArray(field.enum)
-        ? field.enum.map((entry) => String(entry))
-        : [];
       const type = typeof field.type === "string" ? field.type : "";
-      const options =
-        enumValues.length > 0
-          ? enumValues.map((entry, index) => ({
-              label: entry,
-              description: index === 0 ? description : "",
-            }))
-          : type === "boolean"
-            ? [
-                { label: "true", description: description },
-                { label: "false", description: "" },
-              ]
-            : [];
+      const options = buildElicitationFieldOptions(field, description);
 
       return {
         id: key,
         question: requiredFields.has(key) ? `${title} (required)` : title,
         header: serverName,
         options,
+        required: requiredFields.has(key),
+        multiSelect: type === "array",
         isOther: options.length === 0,
         isSecret: false,
       };
@@ -3894,7 +4215,13 @@ function createElicitationInput(params: Record<string, unknown>): {
             id: "value",
             question: message,
             header: serverName,
-            options: [] as Array<{ label: string; description: string }>,
+            options: [] as Array<{
+              label: string;
+              value: string;
+              description: string;
+            }>,
+            required: true,
+            multiSelect: false,
             isOther: true,
             isSecret: false,
           },
@@ -3905,6 +4232,7 @@ function createElicitationInput(params: Record<string, unknown>): {
     questions: normalizedQuestions.map((question) => ({
       id: question.id,
       question: question.question,
+      required: question.required,
     })),
     input: {
       mode: "form",
@@ -3917,7 +4245,8 @@ function createElicitationInput(params: Record<string, unknown>): {
         header: question.header,
         question: question.question,
         options: question.options,
-        multiSelect: false,
+        required: question.required,
+        multiSelect: question.multiSelect,
         isOther: question.isOther,
         isSecret: question.isSecret,
       })),
@@ -3925,11 +4254,61 @@ function createElicitationInput(params: Record<string, unknown>): {
   };
 }
 
+function buildElicitationFieldOptions(
+  field: Record<string, unknown>,
+  description: string,
+): Array<{ label: string; value: string; description: string }> {
+  const type = stringValue(field.type);
+  const source = type === "array" ? asRecord(field.items) ?? {} : field;
+  const rawOptions = Array.isArray(source.oneOf)
+    ? source.oneOf
+    : Array.isArray(source.anyOf)
+      ? source.anyOf
+      : null;
+  if (rawOptions) {
+    return rawOptions.flatMap((entry, index) => {
+      const option = asRecord(entry);
+      const value = stringValue(option?.const);
+      if (!value) return [];
+      return [
+        {
+          label: stringValue(option?.title) ?? value,
+          value,
+          description: index === 0 ? description : "",
+        },
+      ];
+    });
+  }
+
+  if (Array.isArray(source.enum)) {
+    return source.enum.map((entry, index) => {
+      const value = String(entry);
+      return {
+        label: value,
+        value,
+        description: index === 0 ? description : "",
+      };
+    });
+  }
+
+  if (type === "boolean") {
+    return [
+      { label: "true", value: "true", description },
+      { label: "false", value: "false", description: "" },
+    ];
+  }
+  return [];
+}
+
 function isApprovalActionElicitation(
   schema: Record<string, unknown> | undefined,
+  serverName: string,
   meta: Record<string, unknown> | undefined,
 ): boolean {
-  return isEmptyObjectSchema(schema) && !isToolSuggestionElicitation(meta);
+  return (
+    isEmptyObjectSchema(schema) &&
+    !isToolSuggestionElicitation(serverName, meta)
+  );
 }
 
 function isEmptyObjectSchema(
@@ -3948,9 +4327,13 @@ function isToolApprovalElicitation(
 }
 
 function isToolSuggestionElicitation(
+  serverName: string,
   meta: Record<string, unknown> | undefined,
 ): boolean {
-  return meta?.codex_approval_kind === "tool_suggestion";
+  return (
+    serverName === "codex_apps" &&
+    meta?.codex_approval_kind === "tool_suggestion"
+  );
 }
 
 function buildApprovalActionElicitationOptions(
@@ -4061,6 +4444,32 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function normalizeToolSuggestionApps(value: unknown): ToolSuggestionApp[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const app = asRecord(entry);
+    const id = stringValue(app?.id);
+    const name = stringValue(app?.name);
+    if (!id || !name) return [];
+    const description = stringValue(app?.description);
+    const installUrl = stringValue(app?.installUrl);
+    const category = stringValue(app?.category);
+    return [
+      {
+        id,
+        name,
+        ...(description ? { description } : {}),
+        ...(installUrl ? { installUrl } : {}),
+        ...(category ? { category } : {}),
+      },
+    ];
+  });
 }
 
 function buildPlanUpdateToolUseInput(

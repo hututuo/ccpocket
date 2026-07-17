@@ -2,7 +2,10 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
-## [1.66.1-compat.2] - 2026-07-16
+## [1.67.2-compat.2] - 2026-07-17
+
+### Changed
+- Rebase the compatibility build on official Bridge 1.67.2 while preserving automatic artifact links, generated-image recovery, and bounded streaming history reads.
 
 ### Added
 - Detect high-confidence local links in completed Codex Markdown and attach stable artifact references without rewriting the original response.
@@ -28,6 +31,31 @@ All notable changes to `@ccpocket/bridge` will be documented in this file.
 ### Security
 - Restrict path publication to a loopback-only control route and canonical paths inside `BRIDGE_ALLOWED_DIRS`.
 - Keep artifact capabilities in memory, omit source paths from URLs and responses, and isolate artifact routes from permissive CORS headers.
+
+## [1.67.2] - 2026-07-17
+
+### Fixed
+- Run Codex commit-message and session-name assistance with no reasoning effort instead of inheriting a higher global setting.
+
+## [1.67.1] - 2026-07-16
+
+### Fixed
+- Suppress all approved Codex auto-review notifications regardless of reported risk while continuing to surface actionable warnings.
+
+## [1.67.0] - 2026-07-16
+
+### Changed
+- Limit retained idle sessions to the 30 most recently active sessions so stale processes release background resources.
+
+### Fixed
+- Read Codex history through the process that owns the session instead of an unrelated active process.
+- Suppress informational Codex auto-review approval notifications while continuing to surface actionable warnings.
+
+## [1.66.2] - 2026-07-16
+
+### Fixed
+- Handle Codex tool suggestion dialogs and preserve their pending state until installation or authentication completes.
+- Cover additional Codex app-server requests, warnings, review results, and typed MCP elicitation responses, including required and optional form fields.
 
 ## [1.66.1] - 2026-07-16
 

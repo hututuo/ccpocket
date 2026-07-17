@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../constants/feature_flags.dart';
 import '../../hooks/use_app_resume_callback.dart';
@@ -54,6 +55,7 @@ import '../claude_session/widgets/rewind_message_list_sheet.dart'
 import 'state/codex_session_cubit.dart';
 import 'widgets/codex_goal_card.dart';
 import 'widgets/codex_rewind_dialog.dart';
+import 'widgets/tool_suggestion_card.dart';
 
 const _fileListRefreshToolNames = {
   'Edit',
@@ -488,15 +490,15 @@ class _CodexProviders extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bridge = context.read<BridgeService>();
-    final streamingCubit = StreamingStateCubit();
     return MultiBlocProvider(
       providers: [
+        BlocProvider(create: (_) => StreamingStateCubit()),
         // Register as ChatSessionCubit so shared widgets can find it.
         BlocProvider<ChatSessionCubit>(
-          create: (_) => CodexSessionCubit(
+          create: (context) => CodexSessionCubit(
             sessionId: sessionId,
             bridge: bridge,
-            streamingCubit: streamingCubit,
+            streamingCubit: context.read<StreamingStateCubit>(),
             initialExplorerCurrentPath: explorerCurrentPath,
             initialRecentPeekedFiles: recentPeekedFiles,
             initialSandboxMode: sandboxMode,
@@ -507,7 +509,6 @@ class _CodexProviders extends StatelessWidget {
             initialProjectPath: projectPath,
           ),
         ),
-        BlocProvider.value(value: streamingCubit),
       ],
       child: _CodexChatBody(
         sessionId: sessionId,
@@ -559,6 +560,8 @@ class _CodexChatBody extends HookWidget {
     final lifecycleState = useAppLifecycleState();
     final isBackground =
         lifecycleState != null && lifecycleState != AppLifecycleState.resumed;
+    final isBackgroundRef = useRef(isBackground);
+    isBackgroundRef.value = isBackground;
     final scroll = useScrollTracking(sessionId);
     useKeyboardScrollAdjustment(scroll.controller);
 
@@ -694,7 +697,7 @@ class _CodexChatBody extends HookWidget {
         (effects) => _executeSideEffects(
           effects,
           sessionId: sessionId,
-          isBackground: isBackground,
+          isBackground: isBackgroundRef.value,
           approval: chatSessionCubit.state.approval,
           l: l,
           collapseToolResults: collapseToolResults,
@@ -710,10 +713,10 @@ class _CodexChatBody extends HookWidget {
       () {
         final bridge = context.read<BridgeService>();
         final path = gitProjectPath;
-        if (chatFileRoot != null) {
+        if (!isBackground && chatFileRoot != null) {
           bridge.requestFileList(chatFileRoot);
         }
-        if (path != null && path.isNotEmpty) {
+        if (!isBackground && path != null && path.isNotEmpty) {
           try {
             context.read<GitStatusCubit>().refresh(
               sessionId: sessionId,
@@ -722,13 +725,16 @@ class _CodexChatBody extends HookWidget {
             );
           } catch (_) {}
         }
-        bridge.requestSessionList();
-        bridge.refreshBranch(sessionId);
+        if (!isBackground) {
+          bridge.requestSessionList();
+          bridge.refreshBranch(sessionId);
+        }
         return null;
       },
       [
         sessionId,
         chatFileRoot,
+        gitProjectPath,
         showRemoteGitStatusBadge,
       ],
     );
@@ -745,6 +751,7 @@ class _CodexChatBody extends HookWidget {
           gitViewCache = context.read<GitViewCacheService>();
         } catch (_) {}
         final sub = bridge.messagesForSession(sessionId).listen((msg) {
+          if (isBackgroundRef.value) return;
           if (msg case ToolResultMessage(
             :final toolName,
           ) when _fileListRefreshToolNames.contains(toolName)) {
@@ -766,6 +773,7 @@ class _CodexChatBody extends HookWidget {
       [
         sessionId,
         chatFileRoot,
+        gitProjectPath,
         showRemoteGitStatusBadge,
       ],
     );
@@ -781,7 +789,7 @@ class _CodexChatBody extends HookWidget {
     }, [sessionId]);
 
     // --- App resume: verify WebSocket health + refresh history ---
-    // Only triggers on genuine resume from paused/detached, not from
+    // Only triggers on genuine resume from paused/hidden/detached, not from
     // inactive (e.g. Android notification shade).
     useAppResumeCallback(lifecycleState, () {
       final bridge = context.read<BridgeService>();
@@ -790,6 +798,20 @@ class _CodexChatBody extends HookWidget {
         final cubit = context.read<ChatSessionCubit>();
         cubit.refreshHistory();
         cubit.requestGoal();
+        if (chatFileRoot != null) {
+          bridge.requestFileList(chatFileRoot);
+        }
+        if (gitProjectPath != null && gitProjectPath.isNotEmpty) {
+          try {
+            context.read<GitStatusCubit>().refresh(
+              sessionId: sessionId,
+              projectPath: gitProjectPath,
+              includeRemote: showRemoteGitStatusBadge,
+            );
+          } catch (_) {}
+        }
+        bridge.requestSessionList();
+        bridge.refreshBranch(sessionId);
       }
     });
 
@@ -825,6 +847,32 @@ class _CodexChatBody extends HookWidget {
     }
 
     final isPlanApproval = pendingPermission?.toolName == 'ExitPlanMode';
+    final isToolSuggestion = pendingPermission?.isToolSuggestion ?? false;
+
+    Future<void> openToolSuggestionUrl(String rawUrl) async {
+      final uri = Uri.tryParse(rawUrl);
+      final launched =
+          uri != null &&
+          uri.hasAuthority &&
+          (uri.scheme == 'https' || uri.scheme == 'http') &&
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched && context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l.toolSuggestionOpenFailed)));
+      }
+    }
+
+    void installSuggestedTool() {
+      if (pendingToolUseId == null || pendingPermission == null) return;
+      context.read<ChatSessionCubit>().installToolSuggestion(pendingToolUseId);
+      final installUrl = pendingPermission.toolSuggestionInstallUrl;
+      if (pendingPermission.toolSuggestionType == 'connector' &&
+          installUrl != null &&
+          installUrl.isNotEmpty) {
+        unawaited(openToolSuggestionUrl(installUrl));
+      }
+    }
 
     void approveToolUse() {
       if (pendingToolUseId == null) return;
@@ -1223,7 +1271,23 @@ class _CodexChatBody extends HookWidget {
                                       onAnswer: answerQuestion,
                                       scrollable: false,
                                     ),
-                                  if (pendingToolUseId != null)
+                                  if (pendingToolUseId != null &&
+                                      isToolSuggestion &&
+                                      pendingPermission != null)
+                                    ToolSuggestionCard(
+                                      key: ValueKey(
+                                        'tool_suggestion_$pendingToolUseId',
+                                      ),
+                                      appColors: appColors,
+                                      permission: pendingPermission,
+                                      onInstall: installSuggestedTool,
+                                      onComplete: approveToolUse,
+                                      onReject: rejectToolUse,
+                                      onOpenUrl: (url) =>
+                                          unawaited(openToolSuggestionUrl(url)),
+                                    ),
+                                  if (pendingToolUseId != null &&
+                                      !isToolSuggestion)
                                     ApprovalBar(
                                       key: ValueKey(
                                         'approval_$pendingToolUseId',

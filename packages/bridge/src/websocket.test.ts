@@ -263,6 +263,7 @@ vi.mock("./session.js", async () => {
         approveAlways: vi.fn(),
         reject: vi.fn(),
         answer: vi.fn(),
+        installToolSuggestion: vi.fn(async () => {}),
         interrupt: vi.fn(),
         getPendingPermission: vi.fn(() => undefined),
       };
@@ -493,6 +494,7 @@ vi.mock("./session.js", async () => {
         approveAlways: vi.fn(),
         reject: vi.fn(),
         answer: vi.fn(),
+        installToolSuggestion: vi.fn(async () => {}),
         interrupt: vi.fn(),
         getPendingPermission: vi.fn(() => undefined),
       };
@@ -2567,6 +2569,87 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       type: "status",
       status: "idle",
       sessionId,
+    });
+
+    bridge.close();
+  });
+
+  it("reads codex history from the process that owns the target session", async () => {
+    codexThreadToSessionHistoryMock.mockReturnValue([]);
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const firstCreated = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "system" && m.subtype === "session_created");
+    const firstSession = (bridge as any).sessionManager.get(
+      firstCreated.sessionId,
+    );
+    firstSession.claudeSessionId = "thr_codex_first";
+    firstSession.process.readThread.mockRejectedValue(
+      new Error("thread not loaded: thr_codex_second"),
+    );
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const secondCreated = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "system" && m.subtype === "session_created");
+    const secondSessionId = secondCreated.sessionId as string;
+    const secondSession = (bridge as any).sessionManager.get(secondSessionId);
+    secondSession.claudeSessionId = "thr_codex_second";
+    secondSession.process.readThread.mockResolvedValue({
+      id: "thr_codex_second",
+      turns: [],
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history",
+        sessionId: secondSessionId,
+      },
+      ws,
+    );
+
+    expect(firstSession.process.readThread).not.toHaveBeenCalled();
+    expect(secondSession.process.readThread).toHaveBeenCalledWith(
+      "thr_codex_second",
+      true,
+    );
+    const sends = ws.send.mock.calls.map((c: unknown[]) =>
+      JSON.parse(c[0] as string),
+    );
+    expect(sends.some((m: any) => m.type === "error")).toBe(false);
+    expect(sends[0]).toMatchObject({
+      type: "history",
+      sessionId: secondSessionId,
+      messages: [],
     });
 
     bridge.close();
@@ -5919,6 +6002,46 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       sourceSessionId: sessionId,
     });
 
+    bridge.close();
+  });
+
+  it("routes tool suggestion installation to the Codex process", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-tool-suggestion",
+        provider: "codex",
+      },
+      ws,
+    );
+
+    const sends = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    const created = sends.find(
+      (message: any) =>
+        message.type === "system" && message.subtype === "session_created",
+    );
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "install_tool_suggestion",
+        toolUseId: "approval-0",
+        sessionId: created.sessionId,
+      },
+      ws,
+    );
+
+    expect(session.process.installToolSuggestion).toHaveBeenCalledWith(
+      "approval-0",
+    );
     bridge.close();
   });
 

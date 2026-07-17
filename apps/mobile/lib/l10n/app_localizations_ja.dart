@@ -38,6 +38,18 @@ class AppLocalizationsJa extends AppLocalizations {
   String get renameSession => 'セッション名を変更';
 
   @override
+  String get pin => 'セッションをピン留め';
+
+  @override
+  String get unpin => 'セッションのピン留めを解除';
+
+  @override
+  String get pinProject => 'プロジェクトをピン留め';
+
+  @override
+  String get unpinProject => 'プロジェクトのピン留めを解除';
+
+  @override
   String get sessionNameHint => 'セッション名';
 
   @override
@@ -45,6 +57,39 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get connect => '接続';
+
+  @override
+  String toolSuggestionTitle(Object toolName) {
+    return 'Codex に $toolName を追加しますか？';
+  }
+
+  @override
+  String toolSuggestionInstall(Object toolName) {
+    return '$toolName をインストール';
+  }
+
+  @override
+  String get toolSuggestionInstalling => 'インストール中…';
+
+  @override
+  String get toolSuggestionNotNow => '今回はしない';
+
+  @override
+  String get toolSuggestionAuthDescription => '必要なアプリを接続し、完了したら確認してください。';
+
+  @override
+  String toolSuggestionConnect(Object appName) {
+    return '$appName を接続';
+  }
+
+  @override
+  String get toolSuggestionComplete => '接続が完了しました';
+
+  @override
+  String get toolSuggestionFailed => 'インストールに失敗しました';
+
+  @override
+  String get toolSuggestionOpenFailed => '接続ページを開けませんでした。';
 
   @override
   String get copy => 'コピー';

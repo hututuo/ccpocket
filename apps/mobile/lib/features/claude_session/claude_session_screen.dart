@@ -447,15 +447,15 @@ class _ChatScreenProviders extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bridge = context.read<BridgeService>();
-    final streamingCubit = StreamingStateCubit();
     return MultiBlocProvider(
       providers: [
+        BlocProvider(create: (_) => StreamingStateCubit()),
         BlocProvider(
-          create: (_) => ChatSessionCubit(
+          create: (context) => ChatSessionCubit(
             sessionId: sessionId,
             provider: Provider.claude,
             bridge: bridge,
-            streamingCubit: streamingCubit,
+            streamingCubit: context.read<StreamingStateCubit>(),
             initialExplorerCurrentPath: explorerCurrentPath,
             initialRecentPeekedFiles: recentPeekedFiles,
             initialPermissionMode: permissionMode,
@@ -463,7 +463,6 @@ class _ChatScreenProviders extends StatelessWidget {
             initialProjectPath: projectPath,
           ),
         ),
-        BlocProvider.value(value: streamingCubit),
       ],
       child: _ChatScreenBody(
         sessionId: sessionId,
@@ -511,6 +510,8 @@ class _ChatScreenBody extends HookWidget {
     final lifecycleState = useAppLifecycleState();
     final isBackground =
         lifecycleState != null && lifecycleState != AppLifecycleState.resumed;
+    final isBackgroundRef = useRef(isBackground);
+    isBackgroundRef.value = isBackground;
     final scroll = useScrollTracking(sessionId);
     useKeyboardScrollAdjustment(scroll.controller);
 
@@ -629,7 +630,7 @@ class _ChatScreenBody extends HookWidget {
         (effects) => _executeSideEffects(
           effects,
           sessionId: sessionId,
-          isBackground: isBackground,
+          isBackground: isBackgroundRef.value,
           approval: chatSessionCubit.state.approval,
           l: l,
           collapseToolResults: collapseToolResults,
@@ -645,10 +646,10 @@ class _ChatScreenBody extends HookWidget {
       () {
         final bridge = context.read<BridgeService>();
         final path = gitProjectPath;
-        if (chatFileRoot != null) {
+        if (!isBackground && chatFileRoot != null) {
           bridge.requestFileList(chatFileRoot);
         }
-        if (path != null && path.isNotEmpty) {
+        if (!isBackground && path != null && path.isNotEmpty) {
           try {
             context.read<GitStatusCubit>().refresh(
               sessionId: sessionId,
@@ -657,13 +658,16 @@ class _ChatScreenBody extends HookWidget {
             );
           } catch (_) {}
         }
-        bridge.requestSessionList();
-        bridge.refreshBranch(sessionId);
+        if (!isBackground) {
+          bridge.requestSessionList();
+          bridge.refreshBranch(sessionId);
+        }
         return null;
       },
       [
         sessionId,
         chatFileRoot,
+        gitProjectPath,
         showRemoteGitStatusBadge,
       ],
     );
@@ -680,6 +684,7 @@ class _ChatScreenBody extends HookWidget {
           gitViewCache = context.read<GitViewCacheService>();
         } catch (_) {}
         final sub = bridge.messagesForSession(sessionId).listen((msg) {
+          if (isBackgroundRef.value) return;
           if (msg case ToolResultMessage(
             :final toolName,
           ) when _fileListRefreshToolNames.contains(toolName)) {
@@ -701,6 +706,7 @@ class _ChatScreenBody extends HookWidget {
       [
         sessionId,
         chatFileRoot,
+        gitProjectPath,
         showRemoteGitStatusBadge,
       ],
     );
@@ -716,7 +722,7 @@ class _ChatScreenBody extends HookWidget {
     }, [sessionId]);
 
     // --- App resume: verify WebSocket health + refresh history ---
-    // Only triggers on genuine resume from paused/detached, not from
+    // Only triggers on genuine resume from paused/hidden/detached, not from
     // inactive (e.g. Android notification shade).
     // If still connected, refresh history directly (BlocListener won't fire).
     // If disconnected, ensureConnected triggers reconnect → BlocListener
@@ -726,6 +732,20 @@ class _ChatScreenBody extends HookWidget {
       bridge.ensureConnected();
       if (bridge.isConnected) {
         context.read<ChatSessionCubit>().refreshHistory();
+        if (chatFileRoot != null) {
+          bridge.requestFileList(chatFileRoot);
+        }
+        if (gitProjectPath != null && gitProjectPath.isNotEmpty) {
+          try {
+            context.read<GitStatusCubit>().refresh(
+              sessionId: sessionId,
+              projectPath: gitProjectPath,
+              includeRemote: showRemoteGitStatusBadge,
+            );
+          } catch (_) {}
+        }
+        bridge.requestSessionList();
+        bridge.refreshBranch(sessionId);
       }
     });
 

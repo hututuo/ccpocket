@@ -1543,8 +1543,30 @@ describe("CodexProcess (app-server)", () => {
                 title: "Confirmed",
                 description: "Whether to continue",
               },
+              count: { type: "number", title: "Count" },
+              location: { type: "string", title: "Location" },
+              retries: { type: "integer", title: "Retries" },
+              note: { type: "string", title: "Note" },
+              scope: {
+                type: "string",
+                title: "Scope",
+                oneOf: [
+                  { const: "repo", title: "Repository" },
+                  { const: "org", title: "Organization" },
+                ],
+              },
+              channels: {
+                type: "array",
+                title: "Channels",
+                items: {
+                  anyOf: [
+                    { const: "issues", title: "Issues" },
+                    { const: "pulls", title: "Pull requests" },
+                  ],
+                },
+              },
             },
-            required: ["confirmed"],
+            required: ["confirmed", "count", "location"],
           },
         },
       })}\n`,
@@ -1562,9 +1584,37 @@ describe("CodexProcess (app-server)", () => {
     expect(proc.getPendingPermission("req-elicit-1")).toMatchObject({
       toolUseId: "req-elicit-1",
       toolName: "McpElicitation",
+      input: {
+        questions: expect.arrayContaining([
+          expect.objectContaining({
+            id: "scope",
+            required: false,
+            options: expect.arrayContaining([
+              expect.objectContaining({ label: "Repository", value: "repo" }),
+            ]),
+          }),
+          expect.objectContaining({
+            id: "channels",
+            multiSelect: true,
+          }),
+        ]),
+      },
     });
 
-    proc.answer("req-elicit-1", "true");
+    proc.answer(
+      "req-elicit-1",
+      JSON.stringify({
+        answers: {
+          confirmed: "true",
+          count: "3.5",
+          location: "Tokyo, Japan",
+          retries: "2.5",
+          note: "",
+          scope: "repo",
+          channels: ["issues", "pulls"],
+        },
+      }),
+    );
     await tick();
 
     const response = nextOutgoingResponse(child);
@@ -1573,9 +1623,311 @@ describe("CodexProcess (app-server)", () => {
       result: {
         action: "accept",
         content: {
-          confirmed: "true",
+          confirmed: true,
+          count: 3.5,
+          location: "Tokyo, Japan",
+          scope: "repo",
+          channels: ["issues", "pulls"],
         },
       },
+    });
+    expect((response.result as any).content).not.toHaveProperty("retries");
+    expect((response.result as any).content).not.toHaveProperty("note");
+
+    proc.stop();
+  });
+
+  it("responds to current time requests with Unix seconds", () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    (proc as any).handleServerRequest("time-1", "currentTime/read", {
+      threadId: "thr_time",
+    });
+
+    expect(nextOutgoingResponse(child)).toEqual({
+      id: "time-1",
+      result: { currentTimeAt: expect.any(Number) },
+    });
+    proc.stop();
+  });
+
+  it("rejects unsupported server requests instead of returning empty success", () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    (proc as any).handleServerRequest("unknown-1", "future/request", {});
+
+    expect(nextOutgoingError(child)).toEqual({
+      id: "unknown-1",
+      error: {
+        code: -32601,
+        message: "Unsupported server request: future/request",
+      },
+    });
+    proc.stop();
+  });
+
+  it("surfaces Codex warnings and completed review output", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).handleNotification("configWarning", {
+      summary: "Invalid rule",
+      details: "Check .codex/rules/default.rules",
+    });
+    (proc as any).processItemCompleted({
+      type: "exitedReviewMode",
+      id: "review-1",
+      review: "Review complete: no findings.",
+    });
+
+    expect(messages).toContainEqual({
+      type: "error",
+      errorCode: "codex_warning",
+      message: "Invalid rule\nCheck .codex/rules/default.rules",
+    });
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "assistant",
+        message: expect.objectContaining({
+          id: "review-1",
+          content: [{ type: "text", text: "Review complete: no findings." }],
+        }),
+      }),
+    );
+    proc.stop();
+  });
+
+  it("suppresses approved guardian notifications regardless of risk", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).handleNotification("guardianWarning", {
+      message:
+        "Automatic approval review approved (risk: low, authorization: unknown):\nAuto-review returned a low-risk allow decision.",
+    });
+    (proc as any).handleNotification("guardianWarning", {
+      message:
+        "Automatic approval review approved (risk: medium, authorization: medium):\nLaunching the Flutter app on the local iOS simulator is a bounded, reversible verification step for the user-requested UI fix, even though it writes build/cache files outside the workspace and starts a long-running local process.",
+    });
+
+    expect(messages).toEqual([]);
+    proc.stop();
+  });
+
+  it("continues to surface actionable guardian and standard warnings", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).handleNotification("guardianWarning", {
+      message: "Automatic approval review could not verify this command.",
+    });
+    (proc as any).handleNotification("warning", {
+      message: "Model fallback is active.",
+    });
+
+    expect(messages).toContainEqual({
+      type: "error",
+      errorCode: "codex_warning",
+      message: "Automatic approval review could not verify this command.",
+    });
+    expect(messages).toContainEqual({
+      type: "error",
+      errorCode: "codex_warning",
+      message: "Model fallback is active.",
+    });
+    proc.stop();
+  });
+
+  it("installs a suggested remote plugin before accepting the elicitation", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    (proc as any).handleServerRequest(
+      "req-tool-suggestion-1",
+      "mcpServer/elicitation/request",
+      {
+        serverName: "codex_apps",
+        mode: "form",
+        message: "GitHub makes it easier to inspect forks.",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          codex_approval_kind: "tool_suggestion",
+          persist: "always",
+          tool_type: "plugin",
+          suggest_type: "install",
+          suggest_reason: "GitHub makes it easier to inspect forks.",
+          tool_id: "github@openai-curated-remote",
+          tool_name: "GitHub",
+          remote_plugin_id: "plugins~github-remote-id",
+          app_connector_ids: ["connector-github"],
+        },
+      },
+    );
+
+    expect(messages).toContainEqual({
+      type: "permission_request",
+      toolUseId: "req-tool-suggestion-1",
+      toolName: "ToolSuggestion",
+      input: expect.objectContaining({
+        toolName: "GitHub",
+        toolType: "plugin",
+        suggestType: "install",
+        installState: "idle",
+      }),
+    });
+
+    const installation = proc.installToolSuggestion("req-tool-suggestion-1");
+    const installRequest = nextOutgoingRequest(child);
+    expect(installRequest).toMatchObject({
+      method: "plugin/install",
+      params: {
+        remoteMarketplaceName: "openai-curated-remote",
+        pluginName: "plugins~github-remote-id",
+      },
+    });
+    (proc as any).handleRpcEnvelope({
+      id: installRequest.id,
+      result: { authPolicy: "ON_USE", appsNeedingAuth: [] },
+    });
+    await installation;
+
+    expect(nextOutgoingResponse(child)).toEqual({
+      id: "req-tool-suggestion-1",
+      result: { action: "accept", content: null, _meta: null },
+    });
+    expect(messages).toContainEqual({
+      type: "permission_resolved",
+      toolUseId: "req-tool-suggestion-1",
+    });
+    expect(proc.getPendingPermission("req-tool-suggestion-1")).toBeUndefined();
+
+    proc.stop();
+  });
+
+  it("does not install tool suggestions claimed by an external MCP server", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    (proc as any).handleServerRequest(
+      "req-untrusted-tool-suggestion",
+      "mcpServer/elicitation/request",
+      {
+        serverName: "untrusted_mcp",
+        mode: "form",
+        message: "Install this plugin.",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          codex_approval_kind: "tool_suggestion",
+          tool_type: "plugin",
+          suggest_type: "install",
+          tool_id: "github@openai-curated-remote",
+          tool_name: "GitHub",
+          remote_plugin_id: "plugins~untrusted-id",
+        },
+      },
+    );
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "req-untrusted-tool-suggestion",
+        toolName: "McpElicitation",
+      }),
+    );
+    await expect(
+      proc.installToolSuggestion("req-untrusted-tool-suggestion"),
+    ).rejects.toThrow("No pending tool suggestion found");
+
+    proc.stop();
+  });
+
+  it("keeps a tool suggestion pending until required app authentication completes", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    (proc as any).handleServerRequest(
+      "req-tool-suggestion-auth",
+      "mcpServer/elicitation/request",
+      {
+        serverName: "codex_apps",
+        mode: "form",
+        message: "Install GitHub",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          codex_approval_kind: "tool_suggestion",
+          tool_type: "plugin",
+          suggest_type: "install",
+          tool_id: "github@openai-curated-remote",
+          tool_name: "GitHub",
+          remote_plugin_id: "plugins~github-remote-id",
+        },
+      },
+    );
+
+    const installation = proc.installToolSuggestion(
+      "req-tool-suggestion-auth",
+    );
+    const installRequest = nextOutgoingRequest(child);
+    (proc as any).handleRpcEnvelope({
+      id: installRequest.id,
+      result: {
+        authPolicy: "ON_INSTALL",
+        appsNeedingAuth: [
+          {
+            id: "connector-github",
+            name: "GitHub",
+            description: "Connect GitHub",
+            installUrl: "https://chatgpt.com/connect/github",
+            category: "Developer",
+          },
+        ],
+      },
+    });
+    await installation;
+
+    expect(proc.getPendingPermission("req-tool-suggestion-auth")).toMatchObject(
+      {
+        toolName: "ToolSuggestion",
+        input: {
+          installState: "needs_auth",
+          appsNeedingAuth: [
+            {
+              id: "connector-github",
+              name: "GitHub",
+              installUrl: "https://chatgpt.com/connect/github",
+            },
+          ],
+        },
+      },
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "req-tool-suggestion-auth",
+        input: expect.objectContaining({ installState: "needs_auth" }),
+      }),
+    );
+
+    proc.approve("req-tool-suggestion-auth");
+    expect(nextOutgoingResponse(child)).toEqual({
+      id: "req-tool-suggestion-auth",
+      result: { action: "accept", content: null, _meta: null },
     });
 
     proc.stop();
@@ -2708,6 +3060,16 @@ function nextOutgoingResponse(
     (value) =>
       value.id !== undefined &&
       value.result !== undefined &&
+      value.method === undefined,
+  );
+}
+
+function nextOutgoingError(child: FakeChildProcess): Record<string, unknown> {
+  return consumeOutgoing(
+    child,
+    (value) =>
+      value.id !== undefined &&
+      value.error !== undefined &&
       value.method === undefined,
   );
 }

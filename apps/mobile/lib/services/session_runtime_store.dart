@@ -214,7 +214,8 @@ class SessionRuntimeStore {
         message is InputAckMessage ||
         message is InputRejectedMessage ||
         message is ArtifactResolvedMessage ||
-        message is GoalStateMessage;
+        message is GoalStateMessage ||
+        (message is SystemMessage && message.subtype == 'codex_settings');
   }
 
   bool _representsHistoryEntry(ServerMessage message) =>

@@ -30,6 +30,10 @@ class _TestBridgeService extends BridgeService {
     _fileListMessageController.add(message);
   }
 
+  void emitFileContent(FileContentMessage message) {
+    _fileContentController.add(message);
+  }
+
   @override
   bool get isConnected => true;
 
@@ -240,8 +244,6 @@ void main() {
       await tester.tap(find.text('main.dart'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-
-      expect(find.byIcon(Icons.content_copy), findsOneWidget);
       final payload = bridge.sentMessages
           .map(
             (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
@@ -251,6 +253,18 @@ void main() {
       expect(payload['projectPath'], '/tmp/project');
       expect(payload['filePath'], 'lib/main.dart');
       expect(payload['requestId'], isNotEmpty);
+
+      bridge.emitFileContent(
+        FileContentMessage(
+          requestId: payload['requestId'] as String,
+          filePath: 'lib/main.dart',
+          content: 'void main() {}',
+          language: 'dart',
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byIcon(Icons.content_copy), findsOneWidget);
     });
   });
 }

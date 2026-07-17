@@ -193,6 +193,7 @@ export interface SessionSummary {
 }
 
 const MAX_HISTORY_PER_SESSION = 100;
+const MAX_IDLE_SESSIONS = 30;
 
 export type GalleryImageCallback = (meta: GalleryImageMeta) => void;
 export type SessionUpdatedCallback = (sessionId: string) => void;
@@ -558,6 +559,7 @@ export class SessionManager {
       const processMessage = async (): Promise<void> => {
       try {
         session.lastActivityAt = new Date();
+        const previousProviderSessionId = session.claudeSessionId;
 
         if (msg.type === "goal_state") {
           session.codexGoal = msg.goal;
@@ -667,6 +669,13 @@ export class SessionManager {
               model: messageModel,
             };
           }
+        }
+
+        if (
+          session.claudeSessionId &&
+          session.claudeSessionId !== previousProviderSessionId
+        ) {
+          this.onSessionUpdated?.(session.id);
         }
 
           const providerSessionId =
@@ -857,6 +866,9 @@ export class SessionManager {
 
     proc.on("status", (status) => {
       session.status = status;
+      if (status === "idle") {
+        this.evictStaleIdleSessions();
+      }
     });
 
     if (proc instanceof CodexProcess) {
@@ -882,6 +894,7 @@ export class SessionManager {
       if (session.provider === "codex") {
         this.broadcastCodexQueue(session);
       }
+        this.evictStaleIdleSessions();
       };
       if (messageProcessing) {
         trackMessageWork(messageProcessing.then(finish));
@@ -962,6 +975,7 @@ export class SessionManager {
     // Add session to Map only after proc.start() succeeds.
     // If start() throws, no zombie session is left behind.
     this.sessions.set(id, session);
+    this.evictStaleIdleSessions();
 
     console.log(
       `[session] Created ${effectiveProvider} session ${id} for ${effectiveCwd}${wtPath ? ` (worktree of ${projectPath})` : ""}`,
@@ -1942,11 +1956,41 @@ export class SessionManager {
   destroy(id: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
+    // Remove first so synchronous status/exit events from stop() cannot try to
+    // evict the same session recursively.
+    this.sessions.delete(id);
     session.process.stop();
     session.process.removeAllListeners();
-    this.sessions.delete(id);
     console.log(`[session] Destroyed session ${id}`);
     return true;
+  }
+
+  private evictStaleIdleSessions(): void {
+    const staleIdleSessions = Array.from(this.sessions.values())
+      .filter((session) => session.status === "idle")
+      .sort(
+        (left, right) =>
+          left.lastActivityAt.getTime() - right.lastActivityAt.getTime(),
+      )
+      .slice(0, Math.max(0, this.idleSessionCount() - MAX_IDLE_SESSIONS));
+
+    for (const session of staleIdleSessions) {
+      console.log(
+        `[session] Evicting idle session ${session.id} (last active ${session.lastActivityAt.toISOString()})`,
+      );
+      this.destroy(session.id);
+    }
+    if (staleIdleSessions.length > 0) {
+      this.onSessionUpdated?.(staleIdleSessions.at(-1)!.id);
+    }
+  }
+
+  private idleSessionCount(): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.status === "idle") count += 1;
+    }
+    return count;
   }
 
   destroyAll(): void {

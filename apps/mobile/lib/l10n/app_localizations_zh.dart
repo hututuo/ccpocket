@@ -38,6 +38,18 @@ class AppLocalizationsZh extends AppLocalizations {
   String get renameSession => '重命名会话';
 
   @override
+  String get pin => '置顶会话';
+
+  @override
+  String get unpin => '取消置顶会话';
+
+  @override
+  String get pinProject => '置顶项目';
+
+  @override
+  String get unpinProject => '取消置顶项目';
+
+  @override
   String get sessionNameHint => '会话名称';
 
   @override
@@ -45,6 +57,39 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get connect => '连接';
+
+  @override
+  String toolSuggestionTitle(Object toolName) {
+    return '将 $toolName 添加到 Codex？';
+  }
+
+  @override
+  String toolSuggestionInstall(Object toolName) {
+    return '安装 $toolName';
+  }
+
+  @override
+  String get toolSuggestionInstalling => '正在安装…';
+
+  @override
+  String get toolSuggestionNotNow => '暂不安装';
+
+  @override
+  String get toolSuggestionAuthDescription => '连接所需的应用，完成后请确认。';
+
+  @override
+  String toolSuggestionConnect(Object appName) {
+    return '连接 $appName';
+  }
+
+  @override
+  String get toolSuggestionComplete => '连接已完成';
+
+  @override
+  String get toolSuggestionFailed => '安装失败';
+
+  @override
+  String get toolSuggestionOpenFailed => '无法打开连接页面。';
 
   @override
   String get copy => '复制';

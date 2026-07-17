@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.106.1] - 2026-07-16
+
+### Changed
+- Refresh app store screenshots.
+- Require Bridge 1.67.1 to suppress all approved Codex auto-review notifications consistently.
+
+### Fixed
+- Keep running-session pin actions aligned to the right edge when status details are shown.
+
+## [1.106.0] - 2026-07-16
+
+### Added
+- Add persistent pinning for sessions and projects, with pinned items prioritized in session lists.
+
+### Changed
+- Preserve the current reading position while new message content streams into an active session.
+- Reduce unnecessary background refresh work and handle hidden app lifecycle transitions consistently.
+- Require Bridge 1.67.0 for the latest session resource lifecycle and Codex history fixes.
+
+### Fixed
+- Restore the compact pin control layout on session cards and project headers.
+
+## [1.105.2] - 2026-07-16
+
+### Fixed
+- Prevent repeated Codex settings metadata chips from appearing when reopening a session.
+
+## [1.105.1] - 2026-07-16
+
+### Changed
+- Require Bridge 1.66.2 for the latest Codex app-server dialog, warning, review, and typed form handling.
+
+### Fixed
+- Handle Codex tool suggestion dialogs consistently in active chats and session cards, including installation and authentication flows.
+- Preserve typed Codex and MCP question responses, optional fields, multi-select values, and label/value mappings across chat and session-card answers.
+- Classify Codex usage windows by duration so weekly-only limits are displayed correctly.
+
 ## [1.105.0] - 2026-07-16
 
 ### Added

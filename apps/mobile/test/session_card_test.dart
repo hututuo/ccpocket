@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -111,6 +113,101 @@ void main() {
   });
 
   group('RunningSessionCard', () {
+    testWidgets('always shows an empty pin button and calls toggle', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'pinned-running',
+        projectPath: '/home/user/my-app',
+        status: 'idle',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+      );
+      var toggles = 0;
+      var opens = 0;
+
+      await tester.pumpWidget(
+        _wrap(
+          RunningSessionCard(
+            session: session,
+            onTap: () => opens++,
+            onTogglePinned: () => toggles++,
+          ),
+        ),
+      );
+
+      final pinButton = find.byKey(
+        const ValueKey('running_session_pin_pinned-running_button'),
+      );
+      expect(pinButton, findsOneWidget);
+      expect(tester.getSize(pinButton), const Size(28, 18));
+      expect(
+        find.descendant(
+          of: pinButton,
+          matching: find.byIcon(Icons.push_pin_outlined),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(pinButton);
+      expect(toggles, 1);
+      expect(opens, 0);
+    });
+
+    testWidgets('shows a filled pin button when pinned', (tester) async {
+      final session = SessionInfo(
+        id: 'filled-running',
+        projectPath: '/home/user/my-app',
+        status: 'idle',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RunningSessionCard(session: session, isPinned: true, onTap: () {}),
+        ),
+      );
+
+      final pinButton = find.byKey(
+        const ValueKey('running_session_pin_filled-running_button'),
+      );
+      expect(
+        find.descendant(of: pinButton, matching: find.byIcon(Icons.push_pin)),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('keeps the pin at the right edge while waiting approval', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'approval-pin-alignment',
+        provider: 'codex',
+        projectPath: '/home/user/my-app',
+        status: 'waiting_approval',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+        pendingPermission: const PermissionRequestMessage(
+          toolUseId: 'approval-pin-tool',
+          toolName: 'Bash',
+          input: {'command': 'flutter test'},
+        ),
+      );
+
+      await tester.pumpWidget(
+        _wrap(RunningSessionCard(session: session, onTap: () {})),
+      );
+
+      final cardRect = tester.getRect(find.byType(Card));
+      final pinRect = tester.getRect(
+        find.byKey(
+          const ValueKey('running_session_pin_approval-pin-alignment_button'),
+        ),
+      );
+
+      expect(cardRect.right - pinRect.right, 12);
+    });
+
     test('maps visual status for running plan session', () {
       final visual = sessionVisualStatusFor(
         rawStatus: 'running',
@@ -539,6 +636,47 @@ void main() {
       expect(find.byKey(const ValueKey('reject_button')), findsOneWidget);
     });
 
+    testWidgets('shows a compact open action for codex tool suggestions', (
+      tester,
+    ) async {
+      var opened = false;
+      final session = SessionInfo(
+        id: 'codex-tool-suggestion',
+        provider: 'codex',
+        projectPath: '/home/user/my-app',
+        status: 'waiting_approval',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+        pendingPermission: const PermissionRequestMessage(
+          toolUseId: 'approval-0',
+          toolName: 'ToolSuggestion',
+          input: {
+            'toolName': 'GitHub',
+            'suggestReason': 'Inspect forks and their changes on GitHub.',
+            'installState': 'idle',
+          },
+        ),
+      );
+
+      await tester.pumpWidget(
+        _wrap(RunningSessionCard(session: session, onTap: () => opened = true)),
+      );
+
+      expect(
+        find.byKey(const ValueKey('session_tool_suggestion_area')),
+        findsOneWidget,
+      );
+      expect(find.text('GitHub'), findsOneWidget);
+      expect(
+        find.text('Inspect forks and their changes on GitHub.'),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('approve_button')), findsNothing);
+
+      await tester.tap(find.text('Open'));
+      expect(opened, isTrue);
+    });
+
     testWidgets('shows structured codex command approval summary', (
       tester,
     ) async {
@@ -825,6 +963,7 @@ void main() {
               {
                 'question': 'Foreground?',
                 'header': 'Foreground',
+                'required': true,
                 'options': [
                   {'label': 'A', 'description': ''},
                   {'label': 'B', 'description': ''},
@@ -834,6 +973,7 @@ void main() {
               {
                 'question': 'Background?',
                 'header': 'Background',
+                'required': true,
                 'options': [
                   {'label': 'C', 'description': ''},
                   {'label': 'D', 'description': ''},
@@ -874,6 +1014,81 @@ void main() {
       nextButton().onPressed!.call();
       await tester.pump();
       expect(answered, isNull);
+    });
+
+    testWidgets('submits multi-question answers as structured JSON', (
+      tester,
+    ) async {
+      String? answered;
+      final session = SessionInfo(
+        id: 'ask-multi-structured',
+        projectPath: '/home/user/my-app',
+        status: 'waiting_approval',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+        pendingPermission: const PermissionRequestMessage(
+          toolUseId: 'ask-multi-structured-tool',
+          toolName: 'AskUserQuestion',
+          input: {
+            'questions': [
+              {
+                'id': 'foreground',
+                'question': 'Foreground?',
+                'header': 'Foreground',
+                'options': [
+                  {'label': 'Choice A', 'value': 'A', 'description': ''},
+                ],
+                'multiSelect': false,
+              },
+              {
+                'id': 'background',
+                'question': 'Background?',
+                'header': 'Background',
+                'options': [
+                  {'label': 'Choice B', 'value': 'B', 'description': ''},
+                ],
+                'multiSelect': false,
+              },
+            ],
+          },
+        ),
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RunningSessionCard(
+            session: session,
+            onTap: () {},
+            onAnswer: (_, result) => answered = result,
+          ),
+        ),
+      );
+
+      tester
+          .widget<OutlinedButton>(
+            find.widgetWithText(OutlinedButton, 'Choice A'),
+          )
+          .onPressed!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      tester
+          .widget<OutlinedButton>(
+            find.widgetWithText(OutlinedButton, 'Choice B'),
+          )
+          .onPressed!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      tester
+          .widget<FilledButton>(
+            find.byKey(const ValueKey('ask_submit_summary_button')),
+          )
+          .onPressed!();
+      await tester.pump();
+
+      expect(jsonDecode(answered!)['answers'], {
+        'foreground': 'A',
+        'background': 'B',
+      });
     });
 
     testWidgets('MCP tool approval prompt uses approval controls', (
@@ -1037,6 +1252,74 @@ void main() {
   });
 
   group('RecentSessionCard', () {
+    testWidgets('always shows an empty pin button and calls toggle', (
+      tester,
+    ) async {
+      final session = RecentSession(
+        sessionId: 'pinned-recent',
+        firstPrompt: 'prompt',
+        created: DateTime.now().toIso8601String(),
+        modified: DateTime.now().toIso8601String(),
+        gitBranch: 'main',
+        projectPath: '/home/user/my-app',
+        isSidechain: false,
+      );
+      var toggles = 0;
+      var opens = 0;
+
+      await tester.pumpWidget(
+        _wrap(
+          RecentSessionCard(
+            session: session,
+            onTap: () => opens++,
+            onTogglePinned: () => toggles++,
+          ),
+        ),
+      );
+
+      final pinButton = find.byKey(
+        const ValueKey('recent_session_pin_pinned-recent_button'),
+      );
+      expect(pinButton, findsOneWidget);
+      expect(tester.getSize(pinButton), const Size(28, 18));
+      expect(
+        find.descendant(
+          of: pinButton,
+          matching: find.byIcon(Icons.push_pin_outlined),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(pinButton);
+      expect(toggles, 1);
+      expect(opens, 0);
+    });
+
+    testWidgets('shows a filled pin button when pinned', (tester) async {
+      final session = RecentSession(
+        sessionId: 'filled-recent',
+        firstPrompt: 'prompt',
+        created: DateTime.now().toIso8601String(),
+        modified: DateTime.now().toIso8601String(),
+        gitBranch: 'main',
+        projectPath: '/home/user/my-app',
+        isSidechain: false,
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RecentSessionCard(session: session, isPinned: true, onTap: () {}),
+        ),
+      );
+
+      final pinButton = find.byKey(
+        const ValueKey('recent_session_pin_filled-recent_button'),
+      );
+      expect(
+        find.descendant(of: pinButton, matching: find.byIcon(Icons.push_pin)),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('uses first, last, and summary fields by display mode', (
       tester,
     ) async {
@@ -1147,7 +1430,11 @@ void main() {
         ),
       );
 
-      await tester.longPress(find.byType(InkWell));
+      await tester.longPress(
+        find.byWidgetPredicate(
+          (widget) => widget is InkWell && widget.onLongPress != null,
+        ),
+      );
       await tester.pumpAndSettle();
       expect(longPressed, isTrue);
     });

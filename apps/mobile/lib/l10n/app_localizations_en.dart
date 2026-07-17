@@ -38,6 +38,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get renameSession => 'Rename Session';
 
   @override
+  String get pin => 'Pin session';
+
+  @override
+  String get unpin => 'Unpin session';
+
+  @override
+  String get pinProject => 'Pin project';
+
+  @override
+  String get unpinProject => 'Unpin project';
+
+  @override
   String get sessionNameHint => 'Session name';
 
   @override
@@ -45,6 +57,40 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get connect => 'Connect';
+
+  @override
+  String toolSuggestionTitle(Object toolName) {
+    return 'Add $toolName to Codex?';
+  }
+
+  @override
+  String toolSuggestionInstall(Object toolName) {
+    return 'Install $toolName';
+  }
+
+  @override
+  String get toolSuggestionInstalling => 'Installing…';
+
+  @override
+  String get toolSuggestionNotNow => 'Not now';
+
+  @override
+  String get toolSuggestionAuthDescription =>
+      'Connect the required app, then confirm when you\'re done.';
+
+  @override
+  String toolSuggestionConnect(Object appName) {
+    return 'Connect $appName';
+  }
+
+  @override
+  String get toolSuggestionComplete => 'I\'ve finished connecting';
+
+  @override
+  String get toolSuggestionFailed => 'Installation failed';
+
+  @override
+  String get toolSuggestionOpenFailed => 'Could not open the connection page.';
 
   @override
   String get copy => 'Copy';

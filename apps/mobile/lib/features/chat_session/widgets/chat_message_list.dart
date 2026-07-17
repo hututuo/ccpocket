@@ -15,6 +15,7 @@ import '../../message_images/message_images_screen.dart';
 import '../state/chat_session_cubit.dart';
 import '../state/streaming_state.dart';
 import '../state/streaming_state_cubit.dart';
+import 'maintain_reading_position_physics.dart';
 
 String? resolveChatFileRoot({String? worktreePath, String? projectPath}) {
   final worktree = worktreePath?.trim();
@@ -316,6 +317,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
       (cubit) => cubit.state.isStreaming,
     );
     final totalCount = allEntries.length + (hasStreaming ? 1 : 0);
+    final streamingCubit = context.read<StreamingStateCubit>();
 
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
@@ -331,6 +333,9 @@ class _ChatMessageListState extends State<ChatMessageList> {
       child: ListView.builder(
         controller: widget.scrollController,
         reverse: true,
+        physics: MaintainReadingPositionPhysics(
+          shouldMaintain: () => streamingCubit.state.isStreaming,
+        ),
         padding: EdgeInsets.only(top: 36, bottom: widget.bottomPadding),
         itemCount: totalCount,
         itemBuilder: (context, index) {
