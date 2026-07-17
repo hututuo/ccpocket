@@ -340,7 +340,7 @@ class BridgeService implements BridgeServiceBase {
     );
     _fileReadSerial = result.then<void>(
       (_) {},
-      onError: (Object _, StackTrace __) {},
+      onError: (Object _, StackTrace _) {},
     );
     return result;
   }
@@ -581,7 +581,7 @@ class BridgeService implements BridgeServiceBase {
         pendingRead.requestType == 'read_artifact_source' &&
         isLegacyInvalidFormat;
     if (isExplicitUnsupportedRead || isLegacyUnsupportedArtifactRead) {
-      pendingRead!.completer.completeError(
+      pendingRead.completer.completeError(
         StateError('Bridge does not support ${pendingRead.requestType}.'),
       );
       consumed = true;

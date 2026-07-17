@@ -1316,7 +1316,7 @@ void main() {
         sessionId: 's1',
       );
       await Future.microtask(() {});
-      await Future<void>.delayed(Duration.zero);
+      await Future.microtask(() {});
 
       expect(cubit.state.planMode, isTrue);
       expect(cubit.state.approval, isA<ApprovalPermission>());
@@ -1556,7 +1556,7 @@ void main() {
         ),
         sessionId: 's1',
       );
-      await Future.microtask(() {});
+      await Future<void>.delayed(Duration.zero);
 
       mockBridge.emitMessage(
         const HistoryMessage(
@@ -1628,7 +1628,7 @@ void main() {
         ),
         sessionId: 's1',
       );
-      await Future.microtask(() {});
+      await Future<void>.delayed(Duration.zero);
 
       final assistants = cubit.state.entries
           .whereType<ServerChatEntry>()
@@ -1687,7 +1687,7 @@ void main() {
           ),
           sessionId: 's1',
         );
-        await Future.microtask(() {});
+        await Future<void>.delayed(Duration.zero);
 
         final assistant = cubit.state.entries
             .whereType<ServerChatEntry>()
@@ -1750,7 +1750,7 @@ void main() {
           ),
           sessionId: 's1',
         );
-        await Future.microtask(() {});
+        await Future<void>.delayed(Duration.zero);
 
         final assistants = cubit.state.entries
             .whereType<ServerChatEntry>()

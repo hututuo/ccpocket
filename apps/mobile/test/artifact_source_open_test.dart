@@ -108,7 +108,6 @@ void main() {
     final scrollController = AutoScrollController();
     addTearDown(bridge.dispose);
     addTearDown(streaming.close);
-    addTearDown(cubit.close);
     addTearDown(scrollController.dispose);
 
     await tester.pumpWidget(
@@ -168,7 +167,9 @@ void main() {
     expect(bridge.resolveCalls, 0);
     expect(bridge.readArtifactSourceCalls, 1);
     expect(find.text('This file is no longer available.'), findsOneWidget);
-    await tester.pump(const Duration(seconds: 3));
+    ScaffoldMessenger.of(
+      tester.element(find.byType(ChatMessageList)),
+    ).clearSnackBars();
     await tester.pumpAndSettle();
 
     bridge.readError = const ArtifactSourceReadException(
@@ -185,7 +186,9 @@ void main() {
       find.text('Update the Bridge on your computer, then reconnect.'),
       findsOneWidget,
     );
-    await tester.pump(const Duration(seconds: 3));
+    ScaffoldMessenger.of(
+      tester.element(find.byType(ChatMessageList)),
+    ).clearSnackBars();
     await tester.pumpAndSettle();
 
     bridge.readError = null;
@@ -212,5 +215,6 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Line 42'), findsOneWidget);
+    await cubit.close();
   });
 }

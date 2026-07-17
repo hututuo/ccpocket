@@ -718,7 +718,6 @@ int? normalizedFilePeekInitialLine(int? line) {
   return line.clamp(1, 100000).toInt();
 }
 
-@visibleForTesting
 int? filePeekMaxLinesForInitialLine(int? line) {
   final normalized = normalizedFilePeekInitialLine(line);
   if (normalized == null) return null;
