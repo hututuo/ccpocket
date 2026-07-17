@@ -36,12 +36,33 @@ describe("renderArtifactPreviewHtml", () => {
     expiresAt: "2026-07-16T02:00:00.000Z",
   };
 
-  it("renders preview and download actions", () => {
+  it("renders share, download, and collapsible preview controls", () => {
     const html = renderArtifactPreviewHtml(baseModel);
 
     expect(html).toContain(`/artifacts/${baseModel.token}/content`);
     expect(html).toContain(`/artifacts/${baseModel.token}/download`);
+    expect(html).toContain('id="share-artifact"');
+    expect(html).toContain('id="hide-toolbar"');
+    expect(html).toContain('id="show-toolbar"');
+    expect(html).toContain('/artifacts/assets/preview-controls.v1.js');
+    expect(html).not.toContain('>打开原文件<');
     expect(html).toContain("viewport-fit=cover");
+  });
+
+  it("omits browser controls from embedded previews", () => {
+    const standalone = renderArtifactPreviewHtml(baseModel);
+    const embedded = renderArtifactPreviewHtml({
+      ...baseModel,
+      embedded: true,
+    });
+
+    expect(standalone).toContain('class="shell"');
+    expect(embedded).toContain('class="shell embedded"');
+    expect(standalone).toContain('id="artifact-toolbar"');
+    expect(standalone).toContain('preview-controls.v1.js');
+    expect(embedded).not.toContain('id="artifact-toolbar"');
+    expect(embedded).not.toContain('preview-controls.v1.js');
+    expect(embedded).not.toContain('id="artifact-toast"');
   });
 
   it("escapes text preview content", () => {

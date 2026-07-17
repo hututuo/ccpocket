@@ -75,7 +75,10 @@ export class ArtifactHttpHandler {
   constructor(private readonly store: ArtifactStore) {}
 
   handleRequest(req: IncomingMessage, res: ServerResponse): boolean {
-    const url = req.url ?? "";
+    const rawUrl = req.url ?? "";
+    const queryStart = rawUrl.indexOf("?");
+    const url = queryStart === -1 ? rawUrl : rawUrl.slice(0, queryStart);
+    const query = queryStart === -1 ? "" : rawUrl.slice(queryStart + 1);
 
     if (url === "/api/artifacts") {
       if (req.method !== "POST") {
@@ -113,7 +116,8 @@ export class ArtifactHttpHandler {
     }
 
     if (action === "preview") {
-      void this.servePreview(token, req.method === "HEAD", res);
+      const embedded = new URLSearchParams(query).get("embedded") === "1";
+      void this.servePreview(token, req.method === "HEAD", embedded, res);
     } else {
       void serveArtifactFile(
         this.store,
@@ -244,6 +248,7 @@ export class ArtifactHttpHandler {
   private async servePreview(
     token: string,
     headOnly: boolean,
+    embedded: boolean,
     res: ServerResponse,
   ): Promise<void> {
     const entry = this.store.getEntry(token);
@@ -282,6 +287,7 @@ export class ArtifactHttpHandler {
         mimeType: entry.mimeType,
         sizeBytes: entry.size,
         expiresAt: new Date(entry.expiresAt).toISOString(),
+        embedded,
         textPreview,
         textPreviewTruncated,
         previewKind,

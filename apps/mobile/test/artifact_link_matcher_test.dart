@@ -70,6 +70,35 @@ void main() {
     expect(isSafeProjectRelativePath(r'C:\secret.txt'), isFalse);
   });
 
+  test('malformed percent escapes cannot break another artifact link', () {
+    const malformed = ArtifactRef(
+      id: 'malformed',
+      filename: '100% complete.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 10,
+      kind: 'preview',
+      source: 'assistant_markdown',
+      textContentIndex: 0,
+      originalHref: '/Users/me/100% complete.txt',
+    );
+
+    expect(
+      () => artifactHrefsEquivalent(
+        malformed.originalHref!,
+        '/Users/me/another.txt',
+      ),
+      returnsNormally,
+    );
+    expect(
+      matchArtifactHref(
+        artifacts: const [malformed, _first],
+        textContentIndex: 0,
+        href: '/Users/me/report final.pdf',
+      ),
+      _first,
+    );
+  });
+
   test('distinguishes local paths from non-file URI schemes', () {
     expect(isLocalFileLikeHref('/Users/me/report.pdf'), isTrue);
     expect(isLocalFileLikeHref('docs/report.pdf'), isTrue);

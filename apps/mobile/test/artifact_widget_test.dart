@@ -78,6 +78,46 @@ void main() {
     expect(opened, _preview);
   });
 
+  testWidgets('a malformed sibling href cannot block a valid preview link', (
+    tester,
+  ) async {
+    const malformed = ArtifactRef(
+      id: 'artifact-malformed',
+      filename: '100% complete.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 32,
+      kind: 'preview',
+      source: 'assistant_markdown',
+      textContentIndex: 0,
+      originalHref: '/Users/me/100% complete.txt',
+    );
+    ArtifactRef? opened;
+    await tester.pumpWidget(
+      _wrap(
+        AssistantBubble(
+          message: const AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'message-malformed-sibling',
+              role: 'assistant',
+              content: [
+                TextContent(
+                  text: '[Open report](/Users/me/report%20final.pdf)',
+                ),
+              ],
+              model: 'codex',
+            ),
+            artifacts: [malformed, _preview],
+          ),
+          onArtifactOpen: (artifact) async => opened = artifact,
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open report'));
+    await tester.pump();
+    expect(opened, _preview);
+  });
+
   testWidgets(
     'local Markdown image renders as an attachment, not a broken image',
     (tester) async {

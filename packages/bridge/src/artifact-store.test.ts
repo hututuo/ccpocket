@@ -427,6 +427,7 @@ describe("ArtifactStore HTTP", () => {
     const previewPath = new URL(artifact.previewUrl).pathname;
 
     const result = await httpRequest(port, previewPath);
+    const embedded = await httpRequest(port, `${previewPath}?embedded=1`);
 
     expect(result.statusCode).toBe(200);
     expect(result.headers["content-type"]).toContain("text/html");
@@ -436,6 +437,12 @@ describe("ArtifactStore HTTP", () => {
     );
     expect(result.body.toString()).toContain("&lt;script&gt;");
     expect(result.body.toString()).not.toContain('<script>alert("x")</script>');
+    expect(embedded.statusCode).toBe(200);
+    expect(embedded.body.toString()).toContain('class="shell embedded"');
+    expect(embedded.body.toString()).not.toContain('id="artifact-toolbar"');
+    expect(embedded.body.toString()).not.toContain(
+      "preview-controls.v1.js",
+    );
   });
 
   it("streams full, HEAD, and byte-range content with safe headers", async () => {
@@ -568,6 +575,10 @@ describe("ArtifactStore HTTP", () => {
     const port = await startStore(store);
 
     const loader = await httpRequest(port, "/artifacts/assets/docx-viewer.js");
+    const controls = await httpRequest(
+      port,
+      "/artifacts/assets/preview-controls.v1.js",
+    );
     const renderer = await httpRequest(
       port,
       "/artifacts/assets/docx-preview.min.js",
@@ -576,6 +587,8 @@ describe("ArtifactStore HTTP", () => {
 
     expect(loader.statusCode).toBe(200);
     expect(loader.body.toString()).toContain("renderAsync");
+    expect(controls.statusCode).toBe(200);
+    expect(controls.body.toString()).toContain("navigator.share");
     expect(renderer.statusCode).toBe(200);
     expect(renderer.body.length).toBeGreaterThan(10_000);
     expect(jszip.statusCode).toBe(200);

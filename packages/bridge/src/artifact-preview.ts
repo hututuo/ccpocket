@@ -16,6 +16,7 @@ export interface ArtifactPreviewModel {
   mimeType: string;
   sizeBytes: number;
   expiresAt: string;
+  embedded?: boolean;
   textPreview?: string;
   textPreviewTruncated?: boolean;
   previewKind?: ArtifactPreviewKind;
@@ -208,12 +209,33 @@ function docxScripts(model: ArtifactPreviewModel): string {
   <script defer src="/artifacts/assets/docx-viewer.js"></script>`;
 }
 
+function previewControlsScript(model: ArtifactPreviewModel): string {
+  if (model.embedded) return "";
+  return `
+  <script defer src="/artifacts/assets/preview-controls.v1.js"></script>`;
+}
+
+function previewToolbar(
+  model: ArtifactPreviewModel,
+  filename: string,
+  mimeType: string,
+  expires: string,
+  downloadUrl: string,
+): string {
+  if (model.embedded) return "";
+  return `<header class="toolbar" id="artifact-toolbar">
+      <div class="identity"><h1>${filename}</h1><div class="meta">${escapeHtml(formatBytes(model.sizeBytes))} · ${mimeType} · ${expires} 过期</div></div>
+      <button class="toolbar-icon" id="hide-toolbar" type="button" aria-label="隐藏工具栏" aria-controls="artifact-toolbar">⌃</button>
+      <div class="actions"><button class="button secondary" id="share-artifact" type="button" data-filename="${filename}" data-expires="${expires}">分享</button><a class="button" id="download-artifact" href="${downloadUrl}">下载</a></div>
+    </header>
+    <button class="toolbar-reveal" id="show-toolbar" type="button" aria-label="显示工具栏" aria-controls="artifact-toolbar">⌄</button>`;
+}
+
 export function renderArtifactPreviewHtml(
   model: ArtifactPreviewModel,
 ): string {
   const filename = escapeHtml(model.filename);
   const downloadUrl = `/artifacts/${model.token}/download`;
-  const contentUrl = `/artifacts/${model.token}/content`;
   const expires = escapeHtml(new Date(model.expiresAt).toLocaleString("zh-CN"));
   const mimeType = escapeHtml(model.mimeType.split(";", 1)[0]);
 
@@ -236,8 +258,23 @@ export function renderArtifactPreviewHtml(
     h1 { margin:0; font-size:16px; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .meta { margin-top:4px; color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .actions { display:flex; gap:8px; }
-    .button { display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:0 14px; border-radius:10px; text-decoration:none; font-size:14px; font-weight:650; background:var(--accent); color:white; border:1px solid transparent; }
+    .button { display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:0 14px; border-radius:10px; text-decoration:none; font:650 14px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; background:var(--accent); color:white; border:1px solid transparent; cursor:pointer; }
     .button.secondary { color:var(--text); background:transparent; border-color:var(--line); }
+    .button:disabled { opacity:.55; cursor:default; }
+    .toolbar-icon { flex:0 0 40px; width:40px; min-height:40px; padding:0; border:1px solid var(--line); border-radius:10px; color:var(--text); background:transparent; font:700 20px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif; cursor:pointer; }
+    .toolbar-reveal { position:fixed; z-index:30; top:max(8px,env(safe-area-inset-top)); right:max(8px,env(safe-area-inset-right)); display:none; width:42px; height:42px; place-items:center; border:1px solid var(--line); border-radius:12px; color:var(--text); background:var(--panel); box-shadow:0 5px 22px rgba(0,0,0,.18); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); font-size:20px; cursor:pointer; }
+    .toolbar-hidden .toolbar { display:none; }
+    .toolbar-hidden .toolbar-reveal { display:grid; }
+    .toolbar-hidden main { padding:0; }
+    .toolbar-hidden .stage { min-height:calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); border-width:0; border-radius:0; }
+    .toolbar-hidden .frame-stage iframe { height:calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); border-radius:0; }
+    .toolbar-hidden .docx-stage { padding:0; }
+    .embedded main { padding:0; }
+    .embedded .stage { min-height:100vh; border-width:0; border-radius:0; }
+    .embedded .frame-stage iframe { height:100vh; border-radius:0; }
+    .embedded .docx-stage { padding:0; }
+    .toast { position:fixed; z-index:40; left:50%; bottom:max(18px,calc(env(safe-area-inset-bottom) + 10px)); transform:translateX(-50%); max-width:min(88vw,520px); padding:10px 14px; border-radius:11px; color:var(--text); background:var(--panel); border:1px solid var(--line); box-shadow:0 7px 24px rgba(0,0,0,.2); font-size:13px; text-align:center; }
+    .toast[hidden] { display:none; }
     main { flex:1; min-height:0; display:flex; flex-direction:column; padding:14px; }
     .stage { flex:1; min-height:calc(100vh - 104px); overflow:auto; border:1px solid var(--line); border-radius:14px; background:var(--stage); }
     .image-stage { display:flex; align-items:center; justify-content:center; padding:18px; }
@@ -258,16 +295,14 @@ export function renderArtifactPreviewHtml(
     #docx-preview { min-height:200px; }
     #docx-preview .docx-wrapper { padding:14px 0 !important; background:transparent !important; }
     #docx-preview .docx { box-shadow:0 5px 24px rgba(0,0,0,.18) !important; }
-    @media (max-width:640px) { .toolbar { align-items:flex-start; flex-wrap:wrap; } .identity { flex-basis:100%; } .actions { width:100%; } .actions .button { flex:1; } main { padding:8px; } .stage { min-height:calc(100vh - 156px); border-radius:10px; } .frame-stage iframe { height:calc(100vh - 156px); } .docx-stage { padding:6px; } }
-  </style>${docxScripts(model)}
+    @media (max-width:640px) { .toolbar { align-items:center; flex-wrap:wrap; gap:8px; } .identity { flex:1 1 calc(100% - 96px); } .actions { order:3; width:100%; } .actions .button { flex:1; } main { padding:8px; } .stage { min-height:calc(100vh - 156px); border-radius:10px; } .frame-stage iframe { height:calc(100vh - 156px); } .docx-stage { padding:6px; } }
+  </style>${docxScripts(model)}${previewControlsScript(model)}
 </head>
 <body>
-  <div class="shell">
-    <header class="toolbar">
-      <div class="identity"><h1>${filename}</h1><div class="meta">${escapeHtml(formatBytes(model.sizeBytes))} · ${mimeType} · ${expires} 过期</div></div>
-      <div class="actions"><a class="button secondary" href="${contentUrl}">打开原文件</a><a class="button" href="${downloadUrl}">下载</a></div>
-    </header>
+  <div class="shell${model.embedded ? " embedded" : ""}" id="artifact-shell">
+    ${previewToolbar(model, filename, mimeType, expires, downloadUrl)}
     <main>${previewBody(model)}</main>
+    ${model.embedded ? "" : '<div class="toast" id="artifact-toast" role="status" aria-live="polite" hidden></div>'}
   </div>
 </body>
 </html>`;
@@ -289,6 +324,74 @@ export const DOCX_VIEWER_SCRIPT = `(() => {
     }))
     .then(() => { if (loading) loading.remove(); })
     .catch(() => {
-      if (loading) loading.textContent = "Word 预览失败，请使用顶部的打开或下载按钮。";
+      if (loading) loading.textContent = "Word 预览失败，请使用顶部的下载按钮。";
     });
+})();`;
+
+export const ARTIFACT_PREVIEW_CONTROLS_SCRIPT = `(() => {
+  const shell = document.getElementById("artifact-shell");
+  const hideButton = document.getElementById("hide-toolbar");
+  const showButton = document.getElementById("show-toolbar");
+  const shareButton = document.getElementById("share-artifact");
+  const toast = document.getElementById("artifact-toast");
+  let toastTimer;
+
+  const setToolbarHidden = (hidden) => {
+    if (!shell) return;
+    shell.classList.toggle("toolbar-hidden", hidden);
+    hideButton?.setAttribute("aria-expanded", String(!hidden));
+  };
+
+  const showToast = (message) => {
+    if (!toast) return;
+    toast.textContent = message;
+    toast.hidden = false;
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => { toast.hidden = true; }, 2400);
+  };
+
+  const copyLink = async (url) => {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(url);
+        return true;
+      } catch (_) {}
+    }
+    const input = document.createElement("textarea");
+    input.value = url;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    input.setSelectionRange(0, input.value.length);
+    let copied = false;
+    try { copied = document.execCommand("copy"); } catch (_) {}
+    input.remove();
+    return copied;
+  };
+
+  hideButton?.addEventListener("click", () => setToolbarHidden(true));
+  showButton?.addEventListener("click", () => setToolbarHidden(false));
+
+  shareButton?.addEventListener("click", async () => {
+    const url = location.origin + location.pathname;
+    const filename = shareButton.dataset.filename || document.title;
+    const expires = shareButton.dataset.expires || "";
+    if (typeof navigator.share === "function") {
+      try {
+        await navigator.share({
+          title: filename,
+          text: expires
+            ? "CC Pocket 临时文件链接（" + expires + " 过期）"
+            : "CC Pocket 临时文件链接",
+          url,
+        });
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+      }
+    }
+    showToast(await copyLink(url) ? "链接已复制，可粘贴分享" : "请从浏览器菜单分享此链接");
+  });
 })();`;

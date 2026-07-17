@@ -44,6 +44,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ccpocket._tcp</string>
@@ -52,6 +54,11 @@
 	<string>QR code scanning requires camera access to connect to bridge server</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Searching for CC Pocket bridge servers on your local network</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voice input requires microphone access to transcribe speech to text</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -77,6 +84,8 @@
 			</array>
 		</dict>
 	</dict>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>FirebaseAppDelegateProxyEnabled</key>
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>

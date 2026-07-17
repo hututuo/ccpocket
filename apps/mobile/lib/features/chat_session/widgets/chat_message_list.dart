@@ -10,6 +10,7 @@ import '../../../providers/bridge_cubits.dart';
 import '../../../services/bridge_service.dart';
 import '../../../utils/artifact_link_matcher.dart';
 import '../../../widgets/message_bubble.dart';
+import '../../artifact_preview/artifact_preview_entry.dart';
 import '../../file_peek/file_peek_sheet.dart';
 import '../../message_images/message_images_screen.dart';
 import '../state/chat_session_cubit.dart';
@@ -189,6 +190,20 @@ class _ChatMessageListState extends State<ChatMessageList> {
         artifactId: artifact.id,
       );
       if (!mounted || widget.sessionId != requestSessionId) return;
+      if (supportsEmbeddedArtifactPreview()) {
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute<void>(
+            builder: (_) => ArtifactPreviewScreen(
+              previewUrl: resolved.url,
+              filename: artifact.filename,
+              mimeType: artifact.mimeType,
+              sizeBytes: artifact.sizeBytes,
+              expiresAt: resolved.expiresAt,
+            ),
+          ),
+        );
+        return;
+      }
       final launched = await launchUrl(
         resolved.url,
         mode: LaunchMode.externalApplication,

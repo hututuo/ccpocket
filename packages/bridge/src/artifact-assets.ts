@@ -3,11 +3,14 @@ import { open } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { DOCX_VIEWER_SCRIPT } from "./artifact-preview.js";
+import {
+  ARTIFACT_PREVIEW_CONTROLS_SCRIPT,
+  DOCX_VIEWER_SCRIPT,
+} from "./artifact-preview.js";
 import { sendArtifactText } from "./artifact-content.js";
 
 export const ARTIFACT_ASSET_PATTERN =
-  /^\/artifacts\/assets\/(jszip\.min\.js|docx-preview\.min\.js|docx-viewer\.js)$/;
+  /^\/artifacts\/assets\/(jszip\.min\.js|docx-preview\.min\.js|docx-viewer\.js|preview-controls\.v1\.js)$/;
 
 function assetPath(name: string): string {
   const require = createRequire(import.meta.url);
@@ -22,8 +25,14 @@ export async function serveArtifactAsset(
   headOnly: boolean,
   res: ServerResponse,
 ): Promise<void> {
-  if (name === "docx-viewer.js") {
-    const buffer = Buffer.from(DOCX_VIEWER_SCRIPT);
+  const generatedScript =
+    name === "docx-viewer.js"
+      ? DOCX_VIEWER_SCRIPT
+      : name === "preview-controls.v1.js"
+        ? ARTIFACT_PREVIEW_CONTROLS_SCRIPT
+        : undefined;
+  if (generatedScript !== undefined) {
+    const buffer = Buffer.from(generatedScript);
     res.writeHead(200, {
       "Content-Type": "text/javascript; charset=utf-8",
       "Content-Length": buffer.length,

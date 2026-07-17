@@ -44,6 +44,9 @@ String? _decodedSafeHref(String value) {
   try {
     decoded = Uri.decodeFull(decoded);
   } on FormatException {
+    // Uri.decodeFull currently reports malformed percent escapes as an
+    // ArgumentError, but keep this branch for SDK/runtime compatibility.
+  } on ArgumentError {
     // Preserve malformed input for exact-only matching.
   }
   if (RegExp(r'%(?:2f|5c|00)', caseSensitive: false).hasMatch(decoded)) {
