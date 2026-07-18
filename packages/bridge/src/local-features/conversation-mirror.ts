@@ -668,6 +668,7 @@ interface WatchedThread {
   snapshot?: ConversationMirrorSnapshot;
   previousSnapshot?: ConversationMirrorSnapshot;
   reconcilePromise?: Promise<ConversationMirrorSnapshot>;
+  reconcileReadStarted: boolean;
   timer?: ReturnType<typeof setTimeout>;
   pollInFlight: boolean;
   pollFailureCount: number;
@@ -803,8 +804,17 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
 
     try {
       if (message.type === "conversation_mirror_probe") {
+        const reconcileStartedBeforeAcceptance = this.startedReconcile(
+          this.watches.get(
+            this.key(message.provider, message.providerSessionId),
+          ),
+        );
         this.sendAccepted(context.client, message);
-        const snapshot = await this.getSnapshot(message, context.signal);
+        const snapshot = await this.getSnapshot(
+          message,
+          context.signal,
+          reconcileStartedBeforeAcceptance,
+        );
         this.runtime.send(context.client, {
           ...this.base(message),
           event: "probe",
@@ -818,8 +828,17 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
       }
 
       if (message.type === "conversation_mirror_sync") {
+        const reconcileStartedBeforeAcceptance = this.startedReconcile(
+          this.watches.get(
+            this.key(message.provider, message.providerSessionId),
+          ),
+        );
         this.sendAccepted(context.client, message);
-        const snapshot = await this.getSnapshot(message, context.signal);
+        const snapshot = await this.getSnapshot(
+          message,
+          context.signal,
+          reconcileStartedBeforeAcceptance,
+        );
         if (message.knownRevision === snapshot.revision) {
           this.sendNotModified(context.client, message, snapshot);
         } else {
@@ -900,6 +919,7 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
         projectPath: message.projectPath,
         clients: new Map(),
         abortController: new AbortController(),
+        reconcileReadStarted: false,
         pollInFlight: false,
         pollFailureCount: 0,
         pollSequence: 0,
@@ -908,10 +928,20 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
       this.watches.set(key, state);
     }
 
+    const reconcileStartedBeforeAcceptance = this.startedReconcile(state);
     const registration: ClientWatch = { requestId: message.requestId };
     state.clients.set(client, registration);
     try {
       this.sendAccepted(client, message);
+      // A shared reconciliation that was already in flight cannot belong to
+      // this accepted boundary: its provider read may have started earlier.
+      // Wait it out, then start or join a generation that began only after
+      // this request was accepted. Initial registrations have no lastSnapshot,
+      // so the older generation cannot publish to this client while we wait.
+      if (reconcileStartedBeforeAcceptance) {
+        await reconcileStartedBeforeAcceptance;
+        if (state.clients.get(client) !== registration) return;
+      }
       const snapshot = await this.reconcile(state);
       if (state.clients.get(client) !== registration) return;
       this.runtime.send(client, {
@@ -973,8 +1003,15 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
       }
     >,
     signal: AbortSignal,
+    reconcileStartedBeforeAcceptance?: Promise<ConversationMirrorSnapshot>,
   ): Promise<ConversationMirrorSnapshot> {
     const key = this.key(message.provider, message.providerSessionId);
+    // Never attach a new request to a provider read that began before its
+    // accepted event. Once that generation settles, any current reconciliation
+    // was necessarily started after acceptance and is safe to share.
+    if (reconcileStartedBeforeAcceptance) {
+      await reconcileStartedBeforeAcceptance;
+    }
     const watched = this.watches.get(key);
     if (watched) {
       return this.reconcile(watched);
@@ -985,6 +1022,12 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
       message.providerSessionId,
       signal,
     );
+  }
+
+  private startedReconcile(
+    state: WatchedThread | undefined,
+  ): Promise<ConversationMirrorSnapshot> | undefined {
+    return state?.reconcileReadStarted ? state.reconcilePromise : undefined;
   }
 
   private async readOneShot(
@@ -1011,6 +1054,7 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
     state: WatchedThread,
   ): Promise<ConversationMirrorSnapshot> {
     if (state.reconcilePromise) return state.reconcilePromise;
+    state.reconcileReadStarted = false;
     const promise = (async () => {
       // A watch request is long-lived. Mark every later full reconciliation as
       // a new transfer boundary so mobile can snapshot its canonical content
@@ -1033,13 +1077,15 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
       const snapshot = await this.withReaderProcess(
         state.projectPath,
         state.abortController.signal,
-        (process) =>
-          this.reader.readSnapshot(
+        (process) => {
+          state.reconcileReadStarted = true;
+          return this.reader.readSnapshot(
             process,
             state.providerSessionId,
             state.abortController.signal,
             (marker) => this.assertThreadPathAllowed(marker),
-          ),
+          );
+        },
       );
       this.assertThreadPathAllowed(snapshot);
 
@@ -1085,7 +1131,10 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
       if (state.clients.size === 0) this.destroyWatch(state);
       return snapshot;
     })().finally(() => {
-      if (state.reconcilePromise === promise) state.reconcilePromise = undefined;
+      if (state.reconcilePromise === promise) {
+        state.reconcilePromise = undefined;
+        state.reconcileReadStarted = false;
+      }
     });
     state.reconcilePromise = promise;
     return promise;

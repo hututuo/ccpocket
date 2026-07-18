@@ -55,7 +55,11 @@ interface ConversationMirrorEventBase {
 
 export type ConversationMirrorEventMessage =
   | (ConversationMirrorEventBase & {
-      /** Additive v1 acknowledgement before any potentially long history read. */
+      /**
+       * Additive v1 acknowledgement before the provider read that can produce
+       * this request's next snapshot, patch, or not-modified event. A Bridge
+       * may repeat it when a long-lived watch starts a later reconciliation.
+       */
       event: "accepted";
     })
   | (ConversationMirrorEventBase & {

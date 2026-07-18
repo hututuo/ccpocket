@@ -1040,6 +1040,182 @@ describe("ConversationMirrorFeatureHandler", () => {
     handler.close();
   });
 
+  it("does not publish an older in-flight reconcile to later sync and watch requests", async () => {
+    let historyReads = 0;
+    let signalOlderReadStarted!: () => void;
+    let releaseOlderRead!: () => void;
+    const olderReadStarted = new Promise<void>((resolve) => {
+      signalOlderReadStarted = resolve;
+    });
+    const olderReadGate = new Promise<void>((resolve) => {
+      releaseOlderRead = resolve;
+    });
+    const timeline: string[] = [];
+    const process = fakeProcess(
+      async (method: string, params: Record<string, unknown>) => {
+        if (method === "thread/read" && params.includeTurns === false) {
+          return { thread: markerThread(historyReads + 1) };
+        }
+        if (method === "thread/items/list") {
+          historyReads += 1;
+          const readNumber = historyReads;
+          timeline.push(`read:${readNumber}`);
+          if (readNumber === 2) {
+            signalOlderReadStarted();
+            await olderReadGate;
+          }
+          const text =
+            readNumber === 1
+              ? "initial"
+              : readNumber === 2
+                ? "older in-flight"
+                : "fresh after acceptance";
+          return {
+            data: [
+              {
+                turnId: "turn",
+                item: {
+                  type: "agentMessage",
+                  id: "answer",
+                  text,
+                },
+              },
+            ],
+            nextCursor: null,
+          };
+        }
+        throw new Error(`${method} ${JSON.stringify(params)}`);
+      },
+    );
+    const establishedClient = {};
+    const syncClient = {};
+    const joiningWatchClient = {};
+    const { runtime, sent } = runtimeFor(process);
+    const originalSend = runtime.send.bind(runtime);
+    (runtime as any).send = (
+      client: object,
+      message: ConversationMirrorEventMessage,
+    ) => {
+      if (message.event === "accepted") {
+        timeline.push(`accepted:${message.requestId}`);
+      }
+      originalSend(client, message);
+    };
+    const handler = new ConversationMirrorFeatureHandler(runtime, {
+      markerPollMs: 60_000,
+      fullReconcileMs: 60_000,
+    });
+    const watch = (requestId: string) => ({
+      type: "conversation_mirror_watch" as const,
+      requestId,
+      provider: "codex" as const,
+      providerSessionId: "thread-1",
+      projectPath: "/tmp/project",
+    });
+
+    await handler.handle(watch("watch-established"), {
+      client: establishedClient,
+      signal: signal(),
+      runtime,
+    });
+    expect(historyReads).toBe(1);
+
+    const state = [...((handler as any).watches.values() as Iterable<any>)][0];
+    const olderReconcile = (handler as any).reconcile(
+      state,
+    ) as Promise<ConversationMirrorSnapshot>;
+    await olderReadStarted;
+
+    const sync = handler.handle(
+      {
+        type: "conversation_mirror_sync",
+        requestId: "sync-late",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        projectPath: "/tmp/project",
+      },
+      { client: syncClient, signal: signal(), runtime },
+    );
+    const joiningWatch = handler.handle(watch("watch-late"), {
+      client: joiningWatchClient,
+      signal: signal(),
+      runtime,
+    });
+
+    expect(sent.get(syncClient)?.map((message) => message.event)).toEqual([
+      "accepted",
+    ]);
+    expect(
+      sent.get(joiningWatchClient)?.map((message) => message.event),
+    ).toEqual(["accepted"]);
+    expect(timeline.indexOf("read:2")).toBeLessThan(
+      timeline.indexOf("accepted:sync-late"),
+    );
+    expect(timeline.indexOf("read:2")).toBeLessThan(
+      timeline.indexOf("accepted:watch-late"),
+    );
+
+    releaseOlderRead();
+    await Promise.all([olderReconcile, sync, joiningWatch]);
+
+    expect(historyReads).toBe(3);
+    expect(timeline.indexOf("accepted:sync-late")).toBeLessThan(
+      timeline.indexOf("read:3"),
+    );
+    expect(timeline.indexOf("accepted:watch-late")).toBeLessThan(
+      timeline.indexOf("read:3"),
+    );
+    expect(
+      sent
+        .get(syncClient)
+        ?.find((message) => message.event === "snapshot_page"),
+    ).toMatchObject({
+      entries: [
+        expect.objectContaining({
+          message: expect.objectContaining({
+            type: "assistant",
+            message: expect.objectContaining({
+              content: [
+                expect.objectContaining({
+                  type: "text",
+                  text: "fresh after acceptance",
+                }),
+              ],
+            }),
+          }),
+        }),
+      ],
+    });
+    expect(
+      sent
+        .get(joiningWatchClient)
+        ?.find((message) => message.event === "snapshot_page"),
+    ).toMatchObject({
+      entries: [
+        expect.objectContaining({
+          message: expect.objectContaining({
+            type: "assistant",
+            message: expect.objectContaining({
+              content: [
+                expect.objectContaining({
+                  type: "text",
+                  text: "fresh after acceptance",
+                }),
+              ],
+            }),
+          }),
+        }),
+      ],
+    });
+    expect(JSON.stringify(sent.get(syncClient))).not.toContain(
+      "older in-flight",
+    );
+    expect(JSON.stringify(sent.get(joiningWatchClient))).not.toContain(
+      "older in-flight",
+    );
+    handler.close();
+  });
+
   it("aborts a disconnected watch read so a reconnect can use the permit immediately", async () => {
     let historyReads = 0;
     let signalFirstHistoryStarted!: () => void;
