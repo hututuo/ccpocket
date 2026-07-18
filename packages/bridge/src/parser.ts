@@ -71,13 +71,16 @@ export type CodexPermissionsMode =
 
 export type Provider = "claude" | "codex";
 
-export type CodexGoalStatus =
+export type CodexGoalWritableStatus =
   | "active"
   | "paused"
   | "blocked"
   | "usageLimited"
   | "budgetLimited"
   | "complete";
+
+/** App-server may add read-only Goal states before this Bridge is updated. */
+export type CodexGoalStatus = string;
 
 export interface CodexGoal {
   threadId: string;
@@ -198,9 +201,17 @@ export type ClientMessage =
       type: "set_goal";
       sessionId: string;
       objective?: string;
-      status?: CodexGoalStatus;
+      status?: CodexGoalWritableStatus;
+      tokenBudget?: number | null;
+      goalChangeId?: string;
+      expectedGoalOperationSequence?: number;
     }
-  | { type: "clear_goal"; sessionId: string }
+  | {
+      type: "clear_goal";
+      sessionId: string;
+      goalChangeId?: string;
+      expectedGoalOperationSequence?: number;
+    }
   | { type: "set_sandbox_mode"; sandboxMode: string; sessionId?: string }
   | {
       type: "approve";
@@ -566,6 +577,7 @@ export type ServerMessage =
       errorCode?: string;
       sessionId?: string;
       permissionChangeId?: string;
+      goalChangeId?: string;
     }
   | { type: "status"; status: ProcessStatus }
   | { type: "history"; messages: ServerMessage[] }
@@ -596,6 +608,9 @@ export type ServerMessage =
       type: "goal_state";
       sessionId?: string;
       goal: CodexGoal | null;
+      goalChangeId?: string;
+      /** Bridge-local ordering token; clients may ignore this field. */
+      goalOperationSequence?: number;
     }
   | {
       type: "permission_request";
@@ -1208,14 +1223,30 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "get_goal":
+        if (typeof msg.sessionId !== "string") return null;
+        break;
       case "clear_goal":
         if (typeof msg.sessionId !== "string") return null;
+        if (
+          msg.goalChangeId !== undefined &&
+          (typeof msg.goalChangeId !== "string" ||
+            msg.goalChangeId.trim().length === 0)
+        )
+          return null;
+        if (
+          msg.expectedGoalOperationSequence !== undefined &&
+          (typeof msg.expectedGoalOperationSequence !== "number" ||
+            !Number.isSafeInteger(msg.expectedGoalOperationSequence) ||
+            msg.expectedGoalOperationSequence < 0)
+        )
+          return null;
         break;
       case "set_goal": {
         if (typeof msg.sessionId !== "string") return null;
         const hasObjective = msg.objective !== undefined;
         const hasStatus = msg.status !== undefined;
-        if (!hasObjective && !hasStatus) return null;
+        const hasTokenBudget = msg.tokenBudget !== undefined;
+        if (!hasObjective && !hasStatus && !hasTokenBudget) return null;
         if (
           hasObjective &&
           (typeof msg.objective !== "string" ||
@@ -1234,6 +1265,30 @@ export function parseClientMessage(data: string): ClientMessage | null {
             "budgetLimited",
             "complete",
           ].includes(String(msg.status))
+        ) {
+          return null;
+        }
+        if (
+          hasTokenBudget &&
+          msg.tokenBudget !== null &&
+          (typeof msg.tokenBudget !== "number" ||
+            !Number.isInteger(msg.tokenBudget) ||
+            msg.tokenBudget <= 0)
+        ) {
+          return null;
+        }
+        if (
+          msg.goalChangeId !== undefined &&
+          (typeof msg.goalChangeId !== "string" ||
+            msg.goalChangeId.trim().length === 0)
+        ) {
+          return null;
+        }
+        if (
+          msg.expectedGoalOperationSequence !== undefined &&
+          (typeof msg.expectedGoalOperationSequence !== "number" ||
+            !Number.isSafeInteger(msg.expectedGoalOperationSequence) ||
+            msg.expectedGoalOperationSequence < 0)
         ) {
           return null;
         }

@@ -478,6 +478,125 @@ describe("SessionManager codex path", () => {
     ).toBe(true);
   });
 
+  it("keeps Goal notifications monotonic and out of chat history", async () => {
+    const forwarded: ServerMessage[] = [];
+    const manager = new SessionManager((_sessionId, msg) => {
+      forwarded.push(msg);
+    });
+    const sessionId = manager.create(
+      "/tmp/project-codex-goal-notification",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+    const baseGoal = {
+      threadId: "thread-goal",
+      objective: "Newest objective",
+      status: "active" as const,
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 10,
+    };
+
+    proc.emit("message", { type: "goal_state", goal: baseGoal });
+    proc.emit("message", {
+      type: "goal_state",
+      goal: { ...baseGoal, objective: "Stale objective", updatedAt: 9 },
+    });
+    await Promise.resolve();
+
+    expect(manager.get(sessionId)?.codexGoal).toEqual(baseGoal);
+    expect(forwarded.filter((msg) => msg.type === "goal_state")).toEqual([
+      { type: "goal_state", goal: baseGoal },
+    ]);
+    expect(manager.get(sessionId)?.history).toEqual([]);
+  });
+
+  it("orders same-second Goal clear and recreate events by Bridge sequence", async () => {
+    const forwarded: ServerMessage[] = [];
+    const manager = new SessionManager((_sessionId, msg) => {
+      forwarded.push(msg);
+    });
+    const sessionId = manager.create(
+      "/tmp/project-codex-goal-sequence",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+    const first = {
+      threadId: "thread-goal",
+      objective: "First Goal",
+      status: "active" as const,
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 10,
+    };
+    const recreated = { ...first, objective: "Recreated in same second" };
+
+    proc.emit("message", {
+      type: "goal_state",
+      goal: first,
+      goalOperationSequence: 1,
+    });
+    proc.emit("message", {
+      type: "goal_state",
+      goal: null,
+      goalOperationSequence: 2,
+    });
+    proc.emit("message", {
+      type: "goal_state",
+      goal: recreated,
+      goalOperationSequence: 3,
+    });
+    proc.emit("message", {
+      type: "goal_state",
+      goal: null,
+      goalOperationSequence: 2,
+    });
+    proc.emit("message", {
+      type: "goal_state",
+      goal: first,
+      goalOperationSequence: 1,
+    });
+    await Promise.resolve();
+
+    expect(manager.get(sessionId)?.codexGoal).toEqual(recreated);
+    expect(manager.get(sessionId)?.codexGoalOperationSequence).toBe(3);
+    expect(forwarded.filter((msg) => msg.type === "goal_state")).toEqual([
+      { type: "goal_state", goal: first, goalOperationSequence: 1 },
+      { type: "goal_state", goal: null, goalOperationSequence: 2 },
+      { type: "goal_state", goal: recreated, goalOperationSequence: 3 },
+    ]);
+  });
+
+  it("omits unknown Goal capability and exposes a probed value", () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex-goal-capability",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const unknown = manager.list().find((entry) => entry.id === sessionId);
+    expect(unknown).not.toHaveProperty("codexGoalControlSupported");
+
+    const session = manager.get(sessionId)!;
+    session.codexGoalControlSupported = false;
+    expect(
+      manager.list().find((entry) => entry.id === sessionId)
+        ?.codexGoalControlSupported,
+    ).toBe(false);
+  });
+
   it("ignores placeholder codex model names from runtime messages", () => {
     const manager = new SessionManager(() => {});
     const sessionId = manager.create(

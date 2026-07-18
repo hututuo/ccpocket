@@ -419,22 +419,37 @@ describe("parseClientMessage", () => {
     });
     expect(
       parseClientMessage(
-        '{"type":"set_goal","sessionId":"s1","objective":"Ship Goal UI","status":"active"}',
+        '{"type":"set_goal","sessionId":"s1","objective":"Ship Goal UI","status":"active","tokenBudget":12000,"goalChangeId":"goal-1","expectedGoalOperationSequence":7}',
       ),
     ).toEqual({
       type: "set_goal",
       sessionId: "s1",
       objective: "Ship Goal UI",
       status: "active",
+      tokenBudget: 12000,
+      goalChangeId: "goal-1",
+      expectedGoalOperationSequence: 7,
     });
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"s1","tokenBudget":null}',
+      ),
+    ).toEqual({ type: "set_goal", sessionId: "s1", tokenBudget: null });
     expect(
       parseClientMessage(
         '{"type":"set_goal","sessionId":"s1","status":"paused"}',
       ),
     ).toEqual({ type: "set_goal", sessionId: "s1", status: "paused" });
     expect(
-      parseClientMessage('{"type":"clear_goal","sessionId":"s1"}'),
-    ).toEqual({ type: "clear_goal", sessionId: "s1" });
+      parseClientMessage(
+        '{"type":"clear_goal","sessionId":"s1","goalChangeId":"goal-2","expectedGoalOperationSequence":8}',
+      ),
+    ).toEqual({
+      type: "clear_goal",
+      sessionId: "s1",
+      goalChangeId: "goal-2",
+      expectedGoalOperationSequence: 8,
+    });
   });
 
   it("rejects invalid Codex goal messages", () => {
@@ -452,7 +467,45 @@ describe("parseClientMessage", () => {
         '{"type":"set_goal","sessionId":"s1","status":"unknown"}',
       ),
     ).toBeNull();
+    for (const tokenBudget of [0, -1, 1.5, "100"]) {
+      expect(
+        parseClientMessage(
+          JSON.stringify({ type: "set_goal", sessionId: "s1", tokenBudget }),
+        ),
+      ).toBeNull();
+    }
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"s1","status":"paused","goalChangeId":"   "}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"clear_goal","sessionId":"s1","goalChangeId":""}',
+      ),
+    ).toBeNull();
     expect(parseClientMessage('{"type":"clear_goal"}')).toBeNull();
+    for (const expectedGoalOperationSequence of [-1, 1.5, "1"]) {
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type: "set_goal",
+            sessionId: "s1",
+            status: "paused",
+            expectedGoalOperationSequence,
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type: "clear_goal",
+            sessionId: "s1",
+            expectedGoalOperationSequence,
+          }),
+        ),
+      ).toBeNull();
+    }
   });
 
   it("rejects invalid approvalsReviewer", () => {

@@ -33,6 +33,9 @@ import type { StartOptions } from "./sdk-process.js";
 import {
   CodexProcess,
   CodexRpcError,
+  createCodexGoalResumeLease,
+  matchesCodexGoalResumeLease,
+  type CodexGoalResumeLease,
   type CodexModelMetadata,
   type CodexNextTurnPermissionSettings,
   type CodexStartOptions,
@@ -45,6 +48,7 @@ import {
   type AssistantContent,
   type ClientMessage,
   type DebugTraceEvent,
+  type CodexGoal,
   type ImageChange,
   type Provider,
   type ServerMessage,
@@ -122,6 +126,11 @@ import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import { isLocalFeatureServerMessageType } from "./local-features/protocol.js";
+import {
+  CodexGoalConflictError,
+  CodexGoalController,
+  isUnsupportedCodexGoalRpc,
+} from "./codex-goal-controller.js";
 
 type SystemServerMessage = Extract<ServerMessage, { type: "system" }>;
 type InputClientMessage = Extract<ClientMessage, { type: "input" }>;
@@ -136,6 +145,15 @@ const FILE_PEEK_TEXT_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
 const CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY =
   "codex_permission_apply_strategy_v1";
+const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
+const KNOWN_CODEX_GOAL_STATUSES = new Set([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
 const PERMISSION_RESTART_BLOCKED_MESSAGE_TYPES = new Set([
   "update_queued_input",
   "cancel_queued_input",
@@ -436,6 +454,18 @@ function parseCodexUserTurnOrdinal(uuid: string | undefined): number | null {
   if (!match) return null;
   const ordinal = Number(match[1]);
   return Number.isInteger(ordinal) && ordinal > 0 ? ordinal : null;
+}
+
+function hasUnknownCodexGoalStatus(
+  msg: ServerMessage | Record<string, unknown>,
+): boolean {
+  if (msg.type !== "goal_state") return false;
+  const goal = msg.goal;
+  if (goal == null || typeof goal !== "object") return false;
+  const status = (goal as unknown as { status?: unknown }).status;
+  return (
+    typeof status !== "string" || !KNOWN_CODEX_GOAL_STATUSES.has(status)
+  );
 }
 
 function countCodexUserTurnsInSession(session: SessionInfo): number {
@@ -978,6 +1008,7 @@ export class BridgeWebSocketServer {
   >();
   private restoringManagedGalleryPaths = new Set<string>();
   private readonly localFeatures: LocalFeaturesController;
+  private readonly codexGoals: CodexGoalController;
 
   constructor(options: BridgeServerOptions) {
     const {
@@ -1078,6 +1109,10 @@ export class BridgeWebSocketServer {
       () => this.broadcastSessionList(),
       artifactManager,
     );
+    this.codexGoals = new CodexGoalController({
+      getSession: (sessionId) => this.sessionManager.get(sessionId),
+      onCapabilityChanged: () => this.broadcastSessionList(),
+    });
     this.localFeatures = createLocalFeaturesController({
       getSession: (sessionId) => this.sessionManager.get(sessionId),
       getCodexThreadId: (session) =>
@@ -1690,7 +1725,7 @@ export class BridgeWebSocketServer {
 
   private codexThreadIdForSession(session: SessionInfo): string | undefined {
     return session.provider === "codex"
-      ? this.providerSessionIdForSession(session)
+      ? (session.process.sessionId ?? session.claudeSessionId ?? undefined)
       : undefined;
   }
 
@@ -2516,6 +2551,10 @@ export class BridgeWebSocketServer {
         message: `Cannot process ${msg.type} while the permission restart is in progress.`,
         errorCode: "permission_restart_in_progress",
         sessionId: incomingSession.id,
+        ...((msg.type === "set_goal" || msg.type === "clear_goal") &&
+        msg.goalChangeId
+          ? { goalChangeId: msg.goalChangeId }
+          : {}),
       });
       return;
     }
@@ -3551,13 +3590,14 @@ export class BridgeWebSocketServer {
           );
 
           const oldSessionId = session.id;
-          const threadId = session.claudeSessionId;
+          let threadId = this.codexThreadIdForSession(session);
           const projectPath = session.projectPath;
           const oldSettings = session.codexSettings ?? {};
           const worktreePath = session.worktreePath;
           const worktreeBranch = session.worktreeBranch;
           const sessionName = session.name;
-          let goalPausedForRestart = false;
+          let goalResumeLease: CodexGoalResumeLease | undefined;
+          let restartGoal: CodexGoal | null | undefined = session.codexGoal;
 
           {
             // Every path that actually recreates a session uses the same gate,
@@ -3566,18 +3606,28 @@ export class BridgeWebSocketServer {
             // the restart.
             session.permissionRestartInProgress = true;
             try {
-              let currentGoal = session.codexGoal;
               if (threadId) {
                 try {
-                  currentGoal = await process.getGoal();
+                  restartGoal = await this.codexGoals.refresh(session.id);
                 } catch (goalErr) {
-                  if (!isUnsupportedCodexRpc(goalErr)) throw goalErr;
-                  currentGoal = null;
+                  if (!isUnsupportedCodexGoalRpc(goalErr)) throw goalErr;
+                  restartGoal = null;
                 }
               }
-              if (threadId && currentGoal?.status === "active") {
-                await process.setGoal({ status: "paused" });
-                goalPausedForRestart = true;
+              if (restartGoal) threadId = restartGoal.threadId;
+              if (threadId && restartGoal?.status === "active") {
+                const pausedGoal = await this.codexGoals.set(
+                  session.id,
+                  { status: "paused" },
+                  session.codexGoalOperationSequence,
+                );
+                if (!pausedGoal || pausedGoal.status !== "paused") {
+                  throw new Error(
+                    "Codex did not return the paused Goal required for a safe permission restart",
+                  );
+                }
+                restartGoal = pausedGoal;
+                goalResumeLease = createCodexGoalResumeLease(pausedGoal);
               }
               if (
                 session.status !== "idle" &&
@@ -3586,14 +3636,12 @@ export class BridgeWebSocketServer {
                 await process.interruptCurrentTurnAndWait();
               }
             } catch (err) {
-              if (goalPausedForRestart) {
-                try {
-                  await process.setGoal({ status: "active" });
-                } catch (resumeErr) {
-                  console.warn(
-                    `[ws] Failed to resume goal after restart abort: ${errorMessageOf(resumeErr)}`,
-                  );
-                }
+              if (goalResumeLease) {
+                await this.tryResumePermissionRestartGoal(
+                  session.id,
+                  goalResumeLease,
+                  "restart abort",
+                );
               }
               session.permissionRestartInProgress = false;
               this.send(ws, {
@@ -3615,6 +3663,7 @@ export class BridgeWebSocketServer {
                 m.type === "user_input" || m.type === "assistant",
             ) ||
             (session.pastMessages && session.pastMessages.length > 0);
+          const hasGoalLineage = Boolean(threadId && restartGoal);
           const restartWorktreeMapping = threadId
             ? this.worktreeStore.get(threadId)
             : undefined;
@@ -3631,14 +3680,12 @@ export class BridgeWebSocketServer {
                 restartEffectiveProjectPath,
               );
             } catch (err) {
-              if (goalPausedForRestart) {
-                try {
-                  await process.setGoal({ status: "active" });
-                } catch (resumeErr) {
-                  console.warn(
-                    `[ws] Failed to resume goal after history preflight abort: ${errorMessageOf(resumeErr)}`,
-                  );
-                }
+              if (goalResumeLease) {
+                await this.tryResumePermissionRestartGoal(
+                  session.id,
+                  goalResumeLease,
+                  "history preflight abort",
+                );
               }
               session.permissionRestartInProgress = false;
               this.send(ws, {
@@ -3654,14 +3701,17 @@ export class BridgeWebSocketServer {
             }
           }
 
-          if (goalPausedForRestart) {
+          if (goalResumeLease) {
+            const leaseBeingVerified = goalResumeLease;
             try {
-              const latestGoal = await process.getGoal();
+              const latestGoal = await this.codexGoals.refresh(session.id);
               if (latestGoal == null) {
                 // Another Codex client cleared the goal while the restart was
                 // settling. Respect that change and do not reactivate it.
-                goalPausedForRestart = false;
-              } else if (latestGoal.status !== "paused") {
+                goalResumeLease = undefined;
+              } else if (
+                !matchesCodexGoalResumeLease(latestGoal, leaseBeingVerified)
+              ) {
                 session.permissionRestartInProgress = false;
                 this.send(ws, {
                   type: "error",
@@ -3676,13 +3726,11 @@ export class BridgeWebSocketServer {
                 break;
               }
             } catch (err) {
-              try {
-                await process.setGoal({ status: "active" });
-              } catch (resumeErr) {
-                console.warn(
-                  `[ws] Failed to resume goal after final restart check: ${errorMessageOf(resumeErr)}`,
-                );
-              }
+              await this.tryResumePermissionRestartGoal(
+                session.id,
+                leaseBeingVerified,
+                "final restart check abort",
+              );
               session.permissionRestartInProgress = false;
               this.send(ws, {
                 type: "error",
@@ -3700,6 +3748,17 @@ export class BridgeWebSocketServer {
             this.sessionManager.get(oldSessionId) !== session ||
             !session.permissionRestartInProgress
           ) {
+            if (
+              this.sessionManager.get(oldSessionId) === session &&
+              goalResumeLease
+            ) {
+              await this.tryResumePermissionRestartGoal(
+                session.id,
+                goalResumeLease,
+                "session identity abort",
+              );
+              session.permissionRestartInProgress = false;
+            }
             this.send(ws, {
               type: "error",
               message:
@@ -3718,7 +3777,7 @@ export class BridgeWebSocketServer {
             `[ws] Permission mode change: destroyed session ${oldSessionId}`,
           );
 
-          if (!threadId || !hasUserMessages) {
+          if (!threadId || (!hasUserMessages && !hasGoalLineage)) {
             const newId = this.sessionManager.create(
               projectPath,
               undefined,
@@ -3746,8 +3805,11 @@ export class BridgeWebSocketServer {
                 webSearchMode: oldSettings.webSearchMode as
                   "disabled" | "cached" | "live" | undefined,
                 collaborationMode: newCollaboration,
-                ...(goalPausedForRestart
-                  ? { resumeGoalAfterStart: true }
+                ...(goalResumeLease
+                  ? {
+                      resumeGoalAfterStart: true,
+                      resumeGoalLease: goalResumeLease,
+                    }
                   : {}),
               },
             );
@@ -3853,8 +3915,11 @@ export class BridgeWebSocketServer {
                 | "live"
                 | undefined,
               collaborationMode: newCollaboration,
-              ...(goalPausedForRestart
-                ? { resumeGoalAfterStart: true }
+              ...(goalResumeLease
+                ? {
+                    resumeGoalAfterStart: true,
+                    resumeGoalLease: goalResumeLease,
+                  }
                 : {}),
             },
           );
@@ -4043,18 +4108,35 @@ export class BridgeWebSocketServer {
             type: "error",
             message: "Goal lookup is only supported for active Codex sessions.",
             errorCode: "goal_get_unsupported",
+            sessionId: msg.sessionId,
           });
           break;
         }
         try {
-          const goal = await (session.process as CodexProcess).getGoal();
-          session.codexGoal = goal;
-          this.send(ws, { type: "goal_state", sessionId: session.id, goal });
+          const goal = await this.codexGoals.refresh(session.id);
+          if (!this.clientSupportsRawCodexGoalStatus(ws, goal)) {
+            this.sendGoalStatusUnsupported(ws, session.id);
+            break;
+          }
+          this.send(ws, {
+            type: "goal_state",
+            sessionId: session.id,
+            goal,
+            ...(session.codexGoalOperationSequence !== undefined
+              ? {
+                  goalOperationSequence:
+                    session.codexGoalOperationSequence,
+                }
+              : {}),
+          });
         } catch (err) {
           this.send(ws, {
             type: "error",
             message: `Failed to get goal: ${errorMessageOf(err)}`,
-            errorCode: "goal_get_failed",
+            errorCode: isUnsupportedCodexGoalRpc(err)
+              ? "goal_get_unsupported"
+              : "goal_get_failed",
+            sessionId: session.id,
           });
         }
         break;
@@ -4068,26 +4150,66 @@ export class BridgeWebSocketServer {
             message:
               "Goal updates are only supported for active Codex sessions.",
             errorCode: "goal_set_unsupported",
+            sessionId: msg.sessionId,
+            ...(msg.goalChangeId ? { goalChangeId: msg.goalChangeId } : {}),
           });
           break;
         }
         try {
-          const goal = await (session.process as CodexProcess).setGoal({
-            ...(msg.objective !== undefined
-              ? { objective: msg.objective }
-              : {}),
-            ...(msg.status !== undefined ? { status: msg.status } : {}),
-          });
-          session.codexGoal = goal;
-          this.broadcastSessionMessage(session.id, {
+          const goal = await this.codexGoals.set(
+            session.id,
+            {
+              ...(msg.objective !== undefined
+                ? { objective: msg.objective }
+                : {}),
+              ...(msg.status !== undefined ? { status: msg.status } : {}),
+              ...(msg.tokenBudget !== undefined
+                ? { tokenBudget: msg.tokenBudget }
+                : {}),
+            },
+            msg.expectedGoalOperationSequence,
+          );
+          const response: ServerMessage = {
             type: "goal_state",
             goal,
-          });
+            ...(session.codexGoalOperationSequence !== undefined
+              ? {
+                  goalOperationSequence:
+                    session.codexGoalOperationSequence,
+                }
+              : {}),
+            ...(msg.goalChangeId ? { goalChangeId: msg.goalChangeId } : {}),
+          };
+          this.broadcastSessionMessage(session.id, response);
+          if (!this.clientSupportsRawCodexGoalStatus(ws, goal)) {
+            this.sendGoalStatusUnsupported(
+              ws,
+              session.id,
+              msg.goalChangeId,
+            );
+          }
         } catch (err) {
+          if (err instanceof CodexGoalConflictError) {
+            this.send(ws, {
+              type: "error",
+              message:
+                "The Goal changed before this update could be applied. Refresh and try again.",
+              errorCode: "goal_conflict",
+              sessionId: session.id,
+              ...(msg.goalChangeId
+                ? { goalChangeId: msg.goalChangeId }
+                : {}),
+            });
+            break;
+          }
           this.send(ws, {
             type: "error",
             message: `Failed to set goal: ${errorMessageOf(err)}`,
-            errorCode: "goal_set_failed",
+            errorCode: isUnsupportedCodexGoalRpc(err)
+              ? "goal_set_unsupported"
+              : "goal_set_failed",
+            sessionId: session.id,
+            ...(msg.goalChangeId ? { goalChangeId: msg.goalChangeId } : {}),
           });
         }
         break;
@@ -4101,21 +4223,49 @@ export class BridgeWebSocketServer {
             message:
               "Goal clearing is only supported for active Codex sessions.",
             errorCode: "goal_clear_unsupported",
+            sessionId: msg.sessionId,
+            ...(msg.goalChangeId ? { goalChangeId: msg.goalChangeId } : {}),
           });
           break;
         }
         try {
-          await (session.process as CodexProcess).clearGoal();
-          session.codexGoal = null;
+          const goal = await this.codexGoals.clear(
+            session.id,
+            msg.expectedGoalOperationSequence,
+          );
           this.broadcastSessionMessage(session.id, {
             type: "goal_state",
-            goal: null,
+            goal,
+            ...(session.codexGoalOperationSequence !== undefined
+              ? {
+                  goalOperationSequence:
+                    session.codexGoalOperationSequence,
+                }
+              : {}),
+            ...(msg.goalChangeId ? { goalChangeId: msg.goalChangeId } : {}),
           });
         } catch (err) {
+          if (err instanceof CodexGoalConflictError) {
+            this.send(ws, {
+              type: "error",
+              message:
+                "The Goal changed before it could be cleared. Refresh and try again.",
+              errorCode: "goal_conflict",
+              sessionId: session.id,
+              ...(msg.goalChangeId
+                ? { goalChangeId: msg.goalChangeId }
+                : {}),
+            });
+            break;
+          }
           this.send(ws, {
             type: "error",
             message: `Failed to clear goal: ${errorMessageOf(err)}`,
-            errorCode: "goal_clear_failed",
+            errorCode: isUnsupportedCodexGoalRpc(err)
+              ? "goal_clear_unsupported"
+              : "goal_clear_failed",
+            sessionId: session.id,
+            ...(msg.goalChangeId ? { goalChangeId: msg.goalChangeId } : {}),
           });
         }
         break;
@@ -4228,7 +4378,7 @@ export class BridgeWebSocketServer {
         // mode we destroy the current session and resume the same Codex thread
         // with the updated sandbox parameter (same pattern as clearContext).
         const oldSessionId = session.id;
-        const threadId = session.claudeSessionId;
+        let threadId = this.codexThreadIdForSession(session);
         const projectPath = session.projectPath;
         const oldSettings = session.codexSettings ?? {};
         const worktreePath = session.worktreePath;
@@ -4245,10 +4395,53 @@ export class BridgeWebSocketServer {
           planMode,
         );
 
-        this.destroySession(oldSessionId);
-        console.log(
-          `[ws] Sandbox mode change: destroyed session ${oldSessionId}`,
-        );
+        let goalResumeLease: CodexGoalResumeLease | undefined;
+        let restartGoal: CodexGoal | null | undefined = session.codexGoal;
+        session.permissionRestartInProgress = true;
+        try {
+          if (threadId) {
+            try {
+              restartGoal = await this.codexGoals.refresh(session.id);
+            } catch (goalError) {
+              if (!isUnsupportedCodexGoalRpc(goalError)) throw goalError;
+              restartGoal = null;
+            }
+          }
+          if (restartGoal) threadId = restartGoal.threadId;
+          if (threadId && restartGoal?.status === "active") {
+            const pausedGoal = await this.codexGoals.set(
+              session.id,
+              { status: "paused" },
+              session.codexGoalOperationSequence,
+            );
+            if (!pausedGoal || pausedGoal.status !== "paused") {
+              throw new Error(
+                "Codex did not return the paused Goal required for a safe sandbox restart",
+              );
+            }
+            restartGoal = pausedGoal;
+            goalResumeLease = createCodexGoalResumeLease(pausedGoal);
+          }
+          if (session.status !== "idle" && session.status !== "starting") {
+            await (session.process as CodexProcess).interruptCurrentTurnAndWait();
+          }
+        } catch (error) {
+          if (goalResumeLease) {
+            await this.tryResumePermissionRestartGoal(
+              session.id,
+              goalResumeLease,
+              "sandbox restart abort",
+            );
+          }
+          session.permissionRestartInProgress = false;
+          this.send(ws, {
+            type: "error",
+            message: `Failed to settle the current session before sandbox restart: ${errorMessageOf(error)}`,
+            errorCode: "set_sandbox_mode_rejected",
+            sessionId: oldSessionId,
+          });
+          break;
+        }
 
         // Check if the user actually exchanged messages in this session.
         // session.history always contains system events (init, status, etc.)
@@ -4258,9 +4451,107 @@ export class BridgeWebSocketServer {
           session.history?.some(
             (m) =>
               m.type === "user_input" || m.type === "assistant",
-          ) ||
-          (session.pastMessages && session.pastMessages.length > 0);
-        if (!threadId || !hasUserMessages) {
+            ) ||
+            (session.pastMessages && session.pastMessages.length > 0);
+        const hasGoalLineage = Boolean(threadId && restartGoal);
+
+        const wtMapping = threadId
+          ? this.worktreeStore.get(threadId)
+          : undefined;
+        const effectiveProjectPath = wtMapping?.projectPath ?? projectPath;
+        let restartPastMessages: SessionHistoryMessage[] | undefined;
+        if (threadId && hasUserMessages) {
+          try {
+            restartPastMessages = await this.getCodexThreadHistory(
+              threadId,
+              effectiveProjectPath,
+            );
+          } catch (error) {
+            if (goalResumeLease) {
+              await this.tryResumePermissionRestartGoal(
+                session.id,
+                goalResumeLease,
+                "sandbox history preflight abort",
+              );
+            }
+            session.permissionRestartInProgress = false;
+            this.send(ws, {
+              type: "error",
+              message: `Failed to prepare session history for sandbox restart: ${errorMessageOf(error)}`,
+              errorCode: "set_sandbox_mode_rejected",
+              sessionId: oldSessionId,
+            });
+            break;
+          }
+        }
+
+        if (goalResumeLease) {
+          const leaseBeingVerified = goalResumeLease;
+          try {
+            const latestGoal = await this.codexGoals.refresh(session.id);
+            if (latestGoal == null) {
+              goalResumeLease = undefined;
+            } else if (
+              !matchesCodexGoalResumeLease(latestGoal, leaseBeingVerified)
+            ) {
+              session.permissionRestartInProgress = false;
+              this.send(ws, {
+                type: "error",
+                message:
+                  "The Goal changed while the sandbox restart was settling. Try again from the current Goal state.",
+                errorCode: "set_sandbox_mode_rejected",
+                sessionId: oldSessionId,
+              });
+              break;
+            }
+          } catch (error) {
+            await this.tryResumePermissionRestartGoal(
+              session.id,
+              leaseBeingVerified,
+              "sandbox final check abort",
+            );
+            session.permissionRestartInProgress = false;
+            this.send(ws, {
+              type: "error",
+              message: `Failed to verify the paused Goal before sandbox restart: ${errorMessageOf(error)}`,
+              errorCode: "set_sandbox_mode_rejected",
+              sessionId: oldSessionId,
+            });
+            break;
+          }
+        }
+
+        if (
+          this.sessionManager.get(oldSessionId) !== session ||
+          !session.permissionRestartInProgress
+        ) {
+          if (
+            this.sessionManager.get(oldSessionId) === session &&
+            goalResumeLease
+          ) {
+            await this.tryResumePermissionRestartGoal(
+              session.id,
+              goalResumeLease,
+              "sandbox session identity abort",
+            );
+            session.permissionRestartInProgress = false;
+          }
+          this.send(ws, {
+            type: "error",
+            message:
+              "The session changed while the sandbox restart was settling. Try again on the current session.",
+            errorCode: "set_sandbox_mode_rejected",
+            sessionId: oldSessionId,
+          });
+          break;
+        }
+
+        this.destroySession(oldSessionId);
+        console.log(
+          `[ws] Sandbox mode change: destroyed session ${oldSessionId}`,
+        );
+
+        if (!threadId || (!hasUserMessages && !hasGoalLineage)) {
           // Session has no thread yet, or has a thread but no messages exchanged.
           // Create a fresh session with the new sandbox — no resume needed.
           // (A thread with no messages cannot be resumed — Codex returns
@@ -4311,8 +4602,6 @@ export class BridgeWebSocketServer {
         }
 
         // Worktree resolution (same as resume_session)
-        const wtMapping = this.worktreeStore.get(threadId);
-        const effectiveProjectPath = wtMapping?.projectPath ?? projectPath;
         let worktreeOpts:
           | {
               useWorktree?: boolean;
@@ -4336,76 +4625,68 @@ export class BridgeWebSocketServer {
           worktreeOpts = { existingWorktreePath: worktreePath, worktreeBranch };
         }
 
-        this.getCodexThreadHistory(threadId, effectiveProjectPath)
-          .then((pastMessages) => {
-            const newId = this.sessionManager.create(
-              effectiveProjectPath,
-              undefined,
-              pastMessages,
-              worktreeOpts,
-              "codex",
-              {
-                threadId,
-                approvalPolicy: oldSettings.approvalPolicy as
-                  "never" | "on-request" | undefined,
-                sandboxMode: newSandboxMode,
-                model: oldSettings.model,
-                modelReasoningEffort:
-                  oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
-                serviceTier: oldSettings.serviceTier,
-                networkAccessEnabled: oldSettings.networkAccessEnabled as
-                  boolean | undefined,
-                webSearchMode: oldSettings.webSearchMode as
-                  "disabled" | "cached" | "live" | undefined,
-                collaborationMode,
-              },
-            );
+        const newId = this.sessionManager.create(
+          effectiveProjectPath,
+          undefined,
+          restartPastMessages ?? [],
+          worktreeOpts,
+          "codex",
+          {
+            threadId,
+            approvalPolicy: oldSettings.approvalPolicy as
+              "never" | "on-request" | undefined,
+            sandboxMode: newSandboxMode,
+            model: oldSettings.model,
+            modelReasoningEffort:
+              oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
+            serviceTier: oldSettings.serviceTier,
+            networkAccessEnabled: oldSettings.networkAccessEnabled as
+              boolean | undefined,
+            webSearchMode: oldSettings.webSearchMode as
+              "disabled" | "cached" | "live" | undefined,
+            collaborationMode,
+            ...(goalResumeLease
+              ? {
+                  resumeGoalAfterStart: true,
+                  resumeGoalLease: goalResumeLease,
+                }
+              : {}),
+          },
+        );
 
-            // Restore session name
-            const newSession = this.sessionManager.get(newId);
-            if (newSession && sessionName) {
-              newSession.name = sessionName;
-            }
+        const newSession = this.sessionManager.get(newId);
+        if (newSession && sessionName) newSession.name = sessionName;
+        await this.loadAndSetSessionName(
+          newSession,
+          "codex",
+          effectiveProjectPath,
+          threadId,
+        );
+        this.broadcast(
+          this.buildSessionCreatedMessage({
+            sessionId: newId,
+            provider: "codex",
+            projectPath: effectiveProjectPath,
+            session: newSession,
+            permissionMode: legacyPermissionMode,
+            executionMode,
+            planMode,
+            sandboxMode: sandboxModeToExternal(newSandboxMode),
+            sourceSessionId: oldSessionId,
+          }),
+        );
+        this.broadcastSessionList();
 
-            void this.loadAndSetSessionName(
-              newSession,
-              "codex",
-              effectiveProjectPath,
-              threadId,
-            ).then(() => {
-              this.broadcast(
-                this.buildSessionCreatedMessage({
-                  sessionId: newId,
-                  provider: "codex",
-                  projectPath: effectiveProjectPath,
-                  session: newSession,
-                  permissionMode: legacyPermissionMode,
-                  executionMode,
-                  planMode,
-                  sandboxMode: sandboxModeToExternal(newSandboxMode),
-                  sourceSessionId: oldSessionId,
-                }),
-              );
-              this.broadcastSessionList();
-            });
-
-            this.debugEvents.set(newId, []);
-            this.recordDebugEvent(newId, {
-              direction: "internal" as const,
-              channel: "bridge" as const,
-              type: "sandbox_mode_changed",
-              detail: `sandbox=${newSandboxMode} thread=${threadId} oldSession=${oldSessionId}`,
-            });
-            console.log(
-              `[ws] Sandbox mode change: created new session ${newId} (thread=${threadId}, sandbox=${newSandboxMode})`,
-            );
-          })
-          .catch((err) => {
-            this.send(ws, {
-              type: "error",
-              message: `Failed to restart session for sandbox mode change: ${err}`,
-            });
-          });
+        this.debugEvents.set(newId, []);
+        this.recordDebugEvent(newId, {
+          direction: "internal" as const,
+          channel: "bridge" as const,
+          type: "sandbox_mode_changed",
+          detail: `sandbox=${newSandboxMode} thread=${threadId} oldSession=${oldSessionId}`,
+        });
+        console.log(
+          `[ws] Sandbox mode change: created new session ${newId} (thread=${threadId}, sandbox=${newSandboxMode})`,
+        );
         break;
       }
 
@@ -7862,12 +8143,50 @@ export class BridgeWebSocketServer {
   ): boolean {
     const type = typeof msg.type === "string" ? msg.type : "";
     if (
+      type === "goal_state" &&
+      hasUnknownCodexGoalStatus(msg) &&
+      !this.clientSupportedServerMessages
+        .get(ws)
+        ?.has(CODEX_GOAL_RAW_STATUS_CAPABILITY)
+    ) {
+      return false;
+    }
+    if (
       !OPT_IN_SERVER_MESSAGES.has(type) &&
       !isLocalFeatureServerMessageType(type)
     ) {
       return true;
     }
     return this.clientSupportedServerMessages.get(ws)?.has(type) ?? false;
+  }
+
+  private clientSupportsRawCodexGoalStatus(
+    ws: WebSocket,
+    goal: CodexGoal | null,
+  ): boolean {
+    return (
+      goal == null ||
+      KNOWN_CODEX_GOAL_STATUSES.has(goal.status) ||
+      (this.clientSupportedServerMessages
+        .get(ws)
+        ?.has(CODEX_GOAL_RAW_STATUS_CAPABILITY) ??
+        false)
+    );
+  }
+
+  private sendGoalStatusUnsupported(
+    ws: WebSocket,
+    sessionId: string,
+    goalChangeId?: string,
+  ): void {
+    this.send(ws, {
+      type: "error",
+      message:
+        "This Codex backend returned a newer Goal status. Update the mobile client before managing this Goal.",
+      errorCode: "goal_status_unsupported",
+      sessionId,
+      ...(goalChangeId ? { goalChangeId } : {}),
+    });
   }
 
   private hasInputConflictSince(
@@ -7938,6 +8257,11 @@ export class BridgeWebSocketServer {
       type: "goal_state",
       sessionId,
       goal: session.codexGoal,
+      ...(session.codexGoalOperationSequence !== undefined
+        ? {
+            goalOperationSequence: session.codexGoalOperationSequence,
+          }
+        : {}),
     });
   }
 
@@ -8407,6 +8731,29 @@ export class BridgeWebSocketServer {
     }
     this.debugEvents.set(sessionId, events);
     this.debugTraceStore.record(fullEvent);
+  }
+
+  private async tryResumePermissionRestartGoal(
+    sessionId: string,
+    lease: CodexGoalResumeLease,
+    reason: string,
+  ): Promise<boolean> {
+    try {
+      const latestGoal = await this.codexGoals.refresh(sessionId);
+      if (!matchesCodexGoalResumeLease(latestGoal, lease)) {
+        console.warn(
+          `[ws] Skipping Goal resume after ${reason}: the paused Goal was cleared, replaced, or changed`,
+        );
+        return false;
+      }
+      await this.codexGoals.resumeWithLease(sessionId, lease);
+      return true;
+    } catch (error) {
+      console.warn(
+        `[ws] Failed to verify and resume Goal after ${reason}: ${errorMessageOf(error)}`,
+      );
+      return false;
+    }
   }
 
   private rejectDuringPermissionRestart(

@@ -40,6 +40,7 @@ import {
   buildCodexSpawnSpec,
   CodexProcess,
   CodexRpcError,
+  createCodexGoalResumeLease,
   parseCodexGoal,
 } from "./codex-process.js";
 import { stopManagedCodexAppServers } from "./codex-transport.js";
@@ -113,7 +114,11 @@ describe("CodexProcess (app-server)", () => {
 
     await expect(proc.getGoal()).resolves.toEqual(goal);
     await expect(
-      proc.setGoal({ objective: "  Ship Goal support  ", status: "paused" }),
+      proc.setGoal({
+        objective: "  Ship Goal support  ",
+        status: "paused",
+        tokenBudget: 12_000,
+      }),
     ).resolves.toMatchObject({ status: "paused" });
     await expect(proc.clearGoal()).resolves.toBe(true);
 
@@ -124,6 +129,7 @@ describe("CodexProcess (app-server)", () => {
       threadId: "thread-1",
       objective: "Ship Goal support",
       status: "paused",
+      tokenBudget: 12_000,
     });
     expect(request).toHaveBeenNthCalledWith(3, "thread/goal/clear", {
       threadId: "thread-1",
@@ -543,18 +549,26 @@ describe("CodexProcess (app-server)", () => {
 
   it("validates goal payloads received from app-server", () => {
     expect(() => parseCodexGoal({ status: "active" })).toThrow("invalid shape");
-    expect(() =>
+    expect(
       parseCodexGoal({
         threadId: "thread-1",
         objective: "Goal",
-        status: "unknown",
-        tokenBudget: null,
+        status: "waitingForFutureResource",
         tokensUsed: 0,
         timeUsedSeconds: 0,
         createdAt: 1,
         updatedAt: 1,
       }),
-    ).toThrow("invalid shape");
+    ).toEqual({
+      threadId: "thread-1",
+      objective: "Goal",
+      status: "waitingForFutureResource",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    });
   });
 
   it("emits goal state for app-server goal notifications", () => {
@@ -565,8 +579,7 @@ describe("CodexProcess (app-server)", () => {
     const goal = {
       threadId: "thread-1",
       objective: "Ship Goal support",
-      status: "active",
-      tokenBudget: null,
+      status: "waitingForFutureResource",
       tokensUsed: 0,
       timeUsedSeconds: 0,
       createdAt: 1,
@@ -583,8 +596,350 @@ describe("CodexProcess (app-server)", () => {
     });
 
     expect(messages).toEqual([
-      { type: "goal_state", goal },
-      { type: "goal_state", goal: null },
+      {
+        type: "goal_state",
+        goal: { ...goal, tokenBudget: null },
+        goalOperationSequence: 1,
+      },
+      { type: "goal_state", goal: null, goalOperationSequence: 2 },
+    ]);
+  });
+
+  it("does not let a delayed clear echo erase a Goal recreated after the response", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const firstGoal = {
+      threadId: "thread-1",
+      objective: "First goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 10,
+    };
+    const secondGoal = {
+      ...firstGoal,
+      objective: "Newer external goal",
+      updatedAt: 11,
+    };
+    const resolve = vi.fn();
+    const reject = vi.fn();
+
+    (proc as any).pendingRpc.set(1, {
+      resolve,
+      reject,
+      method: "thread/goal/set",
+    });
+    (proc as any).handleRpcResponse({ id: 1, result: { goal: firstGoal } });
+    (proc as any).handleNotification("thread/goal/updated", {
+      threadId: "thread-1",
+      goal: firstGoal,
+    });
+
+    (proc as any).pendingRpc.set(2, {
+      resolve,
+      reject,
+      method: "thread/goal/clear",
+    });
+    (proc as any).handleRpcResponse({ id: 2, result: { cleared: true } });
+    (proc as any).handleNotification("thread/goal/updated", {
+      threadId: "thread-1",
+      goal: secondGoal,
+    });
+    vi.spyOn(proc as any, "request").mockResolvedValueOnce({
+      goal: secondGoal,
+    });
+    (proc as any).handleNotification("thread/goal/cleared", {
+      threadId: "thread-1",
+    });
+    await tick();
+
+    expect(reject).not.toHaveBeenCalled();
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(messages).toEqual([
+      {
+        type: "goal_state",
+        goal: firstGoal,
+        goalOperationSequence: 1,
+      },
+      { type: "goal_state", goal: null, goalOperationSequence: 2 },
+      {
+        type: "goal_state",
+        goal: secondGoal,
+        goalOperationSequence: 3,
+      },
+      {
+        type: "goal_state",
+        goal: secondGoal,
+        goalOperationSequence: 4,
+      },
+    ]);
+  });
+
+  it("suppresses only the immediate ordered echo of a clear response", () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).pendingRpc.set(1, {
+      resolve: vi.fn(),
+      reject: vi.fn(),
+      method: "thread/goal/clear",
+    });
+    (proc as any).handleRpcResponse({ id: 1, result: { cleared: true } });
+    (proc as any).handleNotification("thread/goal/cleared", {
+      threadId: "thread-1",
+    });
+
+    expect(messages).toEqual([
+      { type: "goal_state", goal: null, goalOperationSequence: 1 },
+    ]);
+  });
+
+  it("does not create a clear echo fence when its notification arrived first", () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).pendingRpc.set(1, {
+      resolve: vi.fn(),
+      reject: vi.fn(),
+      method: "thread/goal/clear",
+      goalOrderingGeneration: 0,
+    });
+    (proc as any).handleNotification("thread/goal/cleared", {
+      threadId: "thread-1",
+    });
+    (proc as any).handleRpcResponse({ id: 1, result: { cleared: true } });
+    (proc as any).handleNotification("thread/goal/cleared", {
+      threadId: "thread-1",
+    });
+
+    expect(messages).toEqual([
+      { type: "goal_state", goal: null, goalOperationSequence: 1 },
+      { type: "goal_state", goal: null, goalOperationSequence: 2 },
+      { type: "goal_state", goal: null, goalOperationSequence: 3 },
+    ]);
+  });
+
+  it("authoritatively verifies a delayed clear after a later Goal RPC", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).pendingRpc.set(1, {
+      resolve: vi.fn(),
+      reject: vi.fn(),
+      method: "thread/goal/clear",
+    });
+    (proc as any).handleRpcResponse({ id: 1, result: { cleared: true } });
+    const recreatedGoal = {
+      threadId: "thread-1",
+      objective: "Recreated Goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 2,
+      updatedAt: 2,
+    };
+    vi.spyOn(proc as any, "request")
+      .mockRejectedValueOnce(new Error("later Goal lookup failed"))
+      .mockResolvedValueOnce({ goal: recreatedGoal });
+
+    await expect(proc.getGoal()).rejects.toThrow("later Goal lookup failed");
+    (proc as any).handleNotification("thread/goal/cleared", {
+      threadId: "thread-1",
+    });
+    await tick();
+
+    expect(messages).toEqual([
+      { type: "goal_state", goal: null, goalOperationSequence: 1 },
+      {
+        type: "goal_state",
+        goal: recreatedGoal,
+        goalOperationSequence: 2,
+      },
+    ]);
+  });
+
+  it("does not resume a replacement Goal from a strict restart lease", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-lease";
+    const pausedGoal = {
+      threadId: "thread-lease",
+      objective: "Original Goal",
+      status: "paused" as const,
+      tokenBudget: 12_000,
+      tokensUsed: 10,
+      timeUsedSeconds: 2,
+      createdAt: 1,
+      updatedAt: 5,
+    };
+    const replacementGoal = {
+      ...pausedGoal,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      updatedAt: 6,
+    };
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({ goal: replacementGoal });
+
+    await (proc as any).resumeGoalAfterBootstrap({
+      resumeGoalAfterStart: true,
+      resumeGoalLease: createCodexGoalResumeLease(pausedGoal),
+    });
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith("thread/goal/get", {
+      threadId: "thread-lease",
+    });
+    expect(messages).toEqual([
+      { type: "goal_state", goal: replacementGoal },
+    ]);
+  });
+
+  it("resumes the same paused Goal from a strict restart lease", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-matching-lease";
+    const pausedGoal = {
+      threadId: "thread-matching-lease",
+      objective: "Original Goal",
+      status: "paused" as const,
+      tokenBudget: null,
+      tokensUsed: 12,
+      timeUsedSeconds: 4,
+      createdAt: 1,
+      updatedAt: 6,
+    };
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({ goal: pausedGoal })
+      .mockResolvedValueOnce({
+        goal: { ...pausedGoal, status: "active", updatedAt: 7 },
+      });
+
+    await (proc as any).resumeGoalAfterBootstrap({
+      resumeGoalAfterStart: true,
+      resumeGoalLease: createCodexGoalResumeLease({
+        ...pausedGoal,
+        updatedAt: 5,
+      }),
+    });
+
+    expect(request).toHaveBeenNthCalledWith(1, "thread/goal/get", {
+      threadId: "thread-matching-lease",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "thread/goal/set", {
+      threadId: "thread-matching-lease",
+      status: "active",
+    });
+  });
+
+  it("keeps legacy restart Goal resume behavior when no lease is supplied", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-legacy-resume";
+    const resumedGoal = {
+      threadId: "thread-legacy-resume",
+      objective: "Legacy Goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({ goal: resumedGoal });
+
+    await (proc as any).resumeGoalAfterBootstrap({
+      resumeGoalAfterStart: true,
+    });
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith("thread/goal/set", {
+      threadId: "thread-legacy-resume",
+      status: "active",
+    });
+  });
+
+  it("orders an observed Goal RPC response after an earlier external update", () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const externalGoal = {
+      threadId: "thread-1",
+      objective: "Desktop update",
+      status: "paused",
+      tokenBudget: null,
+      tokensUsed: 1,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 20,
+    };
+    const responseGoal = {
+      ...externalGoal,
+      objective: "Mobile response",
+      status: "active",
+      updatedAt: 21,
+    };
+
+    (proc as any).handleNotification("thread/goal/updated", {
+      threadId: "thread-1",
+      goal: externalGoal,
+    });
+    (proc as any).pendingRpc.set(1, {
+      resolve: vi.fn(),
+      reject: vi.fn(),
+      method: "thread/goal/set",
+    });
+    (proc as any).handleRpcResponse({ id: 1, result: { goal: responseGoal } });
+
+    expect(messages).toEqual([
+      {
+        type: "goal_state",
+        goal: externalGoal,
+        goalOperationSequence: 1,
+      },
+      {
+        type: "goal_state",
+        goal: responseGoal,
+        goalOperationSequence: 2,
+      },
+    ]);
+  });
+
+  it("does not suppress a clear notification after its echo fence expires", () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    (proc as any).goalOperationSequence = 1;
+    (proc as any).expectedGoalNotifications = [
+      {
+        sequence: 1,
+        kind: "cleared",
+        expiresAt: Date.now() - 1,
+      },
+    ];
+
+    (proc as any).handleNotification("thread/goal/cleared", {
+      threadId: "thread-1",
+    });
+
+    expect(messages).toEqual([
+      { type: "goal_state", goal: null, goalOperationSequence: 2 },
     ]);
   });
 

@@ -260,6 +260,14 @@ vi.mock("./session.js", async () => {
           thread: { id: "thread-forked", turns: [] },
         })),
         getGoal: vi.fn(async () => null),
+        getGoalSnapshot: vi.fn(async function (this: any) {
+          return { goal: await this.getGoal(), stable: true };
+        }),
+        lastGoalRpcSequence: undefined,
+        recordAuthoritativeGoalStateChange: vi.fn(function (this: any) {
+          this.lastGoalRpcSequence = (this.lastGoalRpcSequence ?? 0) + 1;
+          return this.lastGoalRpcSequence;
+        }),
         setGoal: vi.fn(async (update: Record<string, unknown>) => ({
           threadId: "thread-goal",
           objective: update.objective ?? "Existing goal",
@@ -457,6 +465,9 @@ vi.mock("./session.js", async () => {
         codexSettings: s.codexSettings,
         codexPermissionApplyStrategySupported:
           s.process.supportsNextTurnPermissionUpdates ?? false,
+        ...(s.codexGoalControlSupported !== undefined
+          ? { codexGoalControlSupported: s.codexGoalControlSupported }
+          : {}),
         queuedInput: s.codexQueuedInput,
       }));
     }
@@ -5516,19 +5527,25 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         sessionId,
         objective: "Ship Goal support",
         status: "active",
+        tokenBudget: 12_000,
+        goalChangeId: "goal-edit-1",
       },
       ws,
     );
     await (bridge as any).handleClientMessage(
-      { type: "clear_goal", sessionId },
+      { type: "clear_goal", sessionId, goalChangeId: "goal-clear-1" },
       ws,
     );
 
     expect(session.process.getGoal).toHaveBeenCalledOnce();
-    expect(session.process.setGoal).toHaveBeenCalledWith({
-      objective: "Ship Goal support",
-      status: "active",
-    });
+    expect(session.process.setGoal).toHaveBeenCalledWith(
+      {
+        objective: "Ship Goal support",
+        status: "active",
+        tokenBudget: 12_000,
+      },
+      expect.objectContaining({ validateCurrentGoal: expect.any(Function) }),
+    );
     expect(session.process.clearGoal).toHaveBeenCalledOnce();
     const goals = ws.send.mock.calls
       .map((c: unknown[]) => JSON.parse(c[0] as string))
@@ -5538,10 +5555,403 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       expect.objectContaining({
         type: "goal_state",
         sessionId,
+        goalChangeId: "goal-edit-1",
         goal: expect.objectContaining({ objective: "Ship Goal support" }),
       }),
-      { type: "goal_state", sessionId, goal: null },
+      {
+        type: "goal_state",
+        sessionId,
+        goal: null,
+        goalChangeId: "goal-clear-1",
+      },
     ]);
+    expect(
+      (bridge as any).sessionManager.list().find((item: any) => item.id === sessionId)
+        .codexGoalControlSupported,
+    ).toBe(true);
+    expect(
+      session.history.some((message: any) => message.type === "goal_state"),
+    ).toBe(false);
+
+    bridge.close();
+  });
+
+  it("correlates every Goal failure to its session and mutation", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["goal_state"],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-errors",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.process.getGoal.mockRejectedValueOnce(new Error("get failed"));
+    session.process.setGoal.mockRejectedValueOnce(new Error("set failed"));
+    session.process.clearGoal.mockRejectedValueOnce(new Error("clear failed"));
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      { type: "get_goal", sessionId },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_goal",
+        sessionId,
+        status: "paused",
+        goalChangeId: "goal-set-failure",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "clear_goal",
+        sessionId,
+        goalChangeId: "goal-clear-failure",
+      },
+      ws,
+    );
+
+    const errors = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter((message: any) => message.type === "error");
+    expect(errors).toEqual([
+      expect.objectContaining({
+        errorCode: "goal_get_failed",
+        sessionId,
+      }),
+      expect.objectContaining({
+        errorCode: "goal_set_failed",
+        sessionId,
+        goalChangeId: "goal-set-failure",
+      }),
+      expect.objectContaining({
+        errorCode: "goal_clear_failed",
+        sessionId,
+        goalChangeId: "goal-clear-failure",
+      }),
+    ]);
+
+    bridge.close();
+  });
+
+  it("fails closed for future Goal statuses unless the client advertises raw status support", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const legacy = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const raw = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(legacy);
+    (bridge as any).wss.clients.add(raw);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["goal_state"],
+      },
+      legacy,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "goal_state",
+          "goal_state_raw_status",
+        ],
+      },
+      raw,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-future-goal-status",
+        provider: "codex",
+      },
+      legacy,
+    );
+    const sessionId = legacy.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    const futureGoal = {
+      threadId: "thread-future-goal-status",
+      objective: "Future Goal",
+      status: "awaitingExternalSystem",
+      tokenBudget: null,
+      tokensUsed: 1,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    session.process.getGoal.mockResolvedValue(futureGoal);
+    session.process.setGoal.mockResolvedValue(futureGoal);
+
+    legacy.send.mockClear();
+    raw.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "get_goal", sessionId },
+      legacy,
+    );
+    expect(
+      legacy.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        errorCode: "goal_status_unsupported",
+        sessionId,
+      }),
+    );
+    expect(
+      legacy.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some((message: any) => message.type === "goal_state"),
+    ).toBe(false);
+
+    await (bridge as any).handleClientMessage(
+      { type: "get_goal", sessionId },
+      raw,
+    );
+    expect(
+      raw.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "goal_state",
+        sessionId,
+        goal: expect.objectContaining({ status: "awaitingExternalSystem" }),
+      }),
+    );
+
+    legacy.send.mockClear();
+    raw.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_goal",
+        sessionId,
+        status: "paused",
+        goalChangeId: "future-status-set",
+      },
+      legacy,
+    );
+    expect(
+      legacy.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        errorCode: "goal_status_unsupported",
+        goalChangeId: "future-status-set",
+      }),
+    );
+    expect(
+      raw.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "goal_state",
+        goalChangeId: "future-status-set",
+        goal: expect.objectContaining({ status: "awaitingExternalSystem" }),
+      }),
+    );
+
+    bridge.close();
+  });
+
+  it("atomically rejects stale Goal mutations before invoking Codex", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["goal_state"],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-cas",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.codexGoalOperationSequence = 7;
+
+    let operationSequence = 7;
+    Object.defineProperty(session.process, "lastGoalRpcSequence", {
+      configurable: true,
+      get: () => operationSequence,
+    });
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    session.process.setGoal.mockImplementationOnce(
+      async (update: Record<string, unknown>) => {
+        markFirstStarted();
+        await firstGate;
+        operationSequence = 8;
+        return {
+          threadId: "thread-goal-cas",
+          objective: String(update.objective),
+          status: "active",
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: 1,
+          updatedAt: 2,
+        };
+      },
+    );
+    ws.send.mockClear();
+
+    const first = (bridge as any).handleClientMessage(
+      {
+        type: "set_goal",
+        sessionId,
+        objective: "First writer",
+        expectedGoalOperationSequence: 7,
+        goalChangeId: "goal-cas-first",
+      },
+      ws,
+    );
+    await firstStarted;
+    const staleSet = (bridge as any).handleClientMessage(
+      {
+        type: "set_goal",
+        sessionId,
+        objective: "Stale writer",
+        expectedGoalOperationSequence: 7,
+        goalChangeId: "goal-cas-stale-set",
+      },
+      ws,
+    );
+
+    expect(session.process.setGoal).toHaveBeenCalledOnce();
+    releaseFirst();
+    await Promise.all([first, staleSet]);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "clear_goal",
+        sessionId,
+        expectedGoalOperationSequence: 7,
+        goalChangeId: "goal-cas-stale-clear",
+      },
+      ws,
+    );
+
+    expect(session.process.setGoal).toHaveBeenCalledOnce();
+    expect(session.process.clearGoal).not.toHaveBeenCalled();
+    const conflicts = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter((message: any) => message.errorCode === "goal_conflict");
+    expect(conflicts).toEqual([
+      expect.objectContaining({
+        sessionId,
+        goalChangeId: "goal-cas-stale-set",
+      }),
+      expect.objectContaining({
+        sessionId,
+        goalChangeId: "goal-cas-stale-clear",
+      }),
+    ]);
+
+    bridge.close();
+  });
+
+  it("publishes unsupported Goal capability after an explicit RPC response", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-unsupported",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.process.getGoal.mockRejectedValueOnce(
+      Object.assign(new Error("Method not found"), { code: -32601 }),
+    );
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      { type: "get_goal", sessionId },
+      ws,
+    );
+
+    const messages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        errorCode: "goal_get_unsupported",
+        sessionId,
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "session_list",
+        sessions: expect.arrayContaining([
+          expect.objectContaining({
+            id: sessionId,
+            codexGoalControlSupported: false,
+          }),
+        ]),
+      }),
+    );
 
     bridge.close();
   });
@@ -5892,27 +6302,26 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     oldSession.status = "running";
     oldSession.claudeSessionId = "thread-goal-restart";
     oldSession.history.push({ type: "user_input", text: "continue goal" });
+    const activeGoal = {
+      threadId: "thread-goal-restart",
+      objective: "Complete the goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 1,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const pausedGoal = {
+      ...activeGoal,
+      status: "paused",
+      timeUsedSeconds: 2,
+      updatedAt: 3,
+    };
     oldSession.process.getGoal
-      .mockResolvedValueOnce({
-        threadId: "thread-goal-restart",
-        objective: "Complete the goal",
-        status: "active",
-        tokenBudget: null,
-        tokensUsed: 1,
-        timeUsedSeconds: 1,
-        createdAt: 1,
-        updatedAt: 2,
-      })
-      .mockResolvedValueOnce({
-        threadId: "thread-goal-restart",
-        objective: "Complete the goal",
-        status: "paused",
-        tokenBudget: null,
-        tokensUsed: 1,
-        timeUsedSeconds: 2,
-        createdAt: 1,
-        updatedAt: 3,
-      });
+      .mockResolvedValueOnce(activeGoal)
+      .mockResolvedValueOnce(pausedGoal);
+    oldSession.process.setGoal.mockResolvedValueOnce(pausedGoal);
 
     await (bridge as any).handleClientMessage(
       {
@@ -5926,7 +6335,12 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect(oldSession.process.setGoal).toHaveBeenCalledWith({ status: "paused" });
+    expect(oldSession.process.setGoal).toHaveBeenCalledWith(
+      { status: "paused" },
+      expect.objectContaining({
+        validateCurrentGoal: expect.any(Function),
+      }),
+    );
     expect(
       oldSession.process.setGoal.mock.invocationCallOrder[0],
     ).toBeLessThan(
@@ -5939,7 +6353,89 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(replacement.codexOptions).toMatchObject({
       threadId: "thread-goal-restart",
       resumeGoalAfterStart: true,
+      resumeGoalLease: {
+        threadId: "thread-goal-restart",
+        objective: "Complete the goal",
+        tokenBudget: null,
+        tokensUsed: 1,
+        timeUsedSeconds: 2,
+        createdAt: 1,
+        pausedUpdatedAt: 3,
+      },
     });
+    bridge.close();
+  });
+
+  it("resumes the same Codex thread for a Goal-only permission restart", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-only-restart",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "idle";
+    oldSession.claudeSessionId = "stale-thread-id";
+    oldSession.process.sessionId = "thread-goal-only";
+    const activeGoal = {
+      threadId: "thread-goal-only",
+      objective: "Goal without chat history",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const pausedGoal = {
+      ...activeGoal,
+      status: "paused",
+      updatedAt: 3,
+    };
+    oldSession.process.getGoal
+      .mockResolvedValueOnce(activeGoal)
+      .mockResolvedValueOnce(pausedGoal);
+    oldSession.process.setGoal.mockResolvedValueOnce(pausedGoal);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+      },
+      ws,
+    );
+
+    const replacementSummary = (bridge as any).sessionManager.list()[0];
+    const replacement = (bridge as any).sessionManager.get(
+      replacementSummary.id,
+    );
+    expect(replacement.codexOptions).toMatchObject({
+      threadId: "thread-goal-only",
+      resumeGoalAfterStart: true,
+      resumeGoalLease: {
+        threadId: "thread-goal-only",
+        objective: "Goal without chat history",
+        pausedUpdatedAt: 3,
+      },
+    });
+    expect(oldSession.process.readThread).not.toHaveBeenCalled();
+    expect(replacement.codexOptions.threadId).not.toBe("stale-thread-id");
     bridge.close();
   });
 
@@ -5967,7 +6463,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     oldSession.status = "running";
     oldSession.claudeSessionId = "thread-goal-preflight";
     oldSession.history.push({ type: "user_input", text: "continue goal" });
-    oldSession.process.getGoal.mockResolvedValue({
+    const activeGoal = {
       threadId: "thread-goal-preflight",
       objective: "Complete the goal",
       status: "active",
@@ -5976,7 +6472,22 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       timeUsedSeconds: 1,
       createdAt: 1,
       updatedAt: 2,
-    });
+    };
+    const pausedGoal = {
+      ...activeGoal,
+      status: "paused",
+      updatedAt: 3,
+    };
+    oldSession.process.getGoal
+      .mockResolvedValueOnce(activeGoal)
+      .mockResolvedValueOnce(pausedGoal);
+    oldSession.process.setGoal
+      .mockResolvedValueOnce(pausedGoal)
+      .mockResolvedValueOnce({
+        ...pausedGoal,
+        status: "active",
+        updatedAt: 4,
+      });
     oldSession.process.readThread.mockRejectedValueOnce(
       new Error("history unavailable"),
     );
@@ -5995,12 +6506,20 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
     expect((bridge as any).sessionManager.get(oldSessionId)).toBe(oldSession);
     expect(oldSession.permissionRestartInProgress).toBe(false);
-    expect(oldSession.process.setGoal).toHaveBeenNthCalledWith(1, {
-      status: "paused",
-    });
-    expect(oldSession.process.setGoal).toHaveBeenNthCalledWith(2, {
-      status: "active",
-    });
+    expect(oldSession.process.setGoal).toHaveBeenNthCalledWith(
+      1,
+      { status: "paused" },
+      expect.objectContaining({
+        validateCurrentGoal: expect.any(Function),
+      }),
+    );
+    expect(oldSession.process.setGoal).toHaveBeenNthCalledWith(
+      2,
+      { status: "active" },
+      expect.objectContaining({
+        validateCurrentGoal: expect.any(Function),
+      }),
+    );
     const failure = ws.send.mock.calls
       .map((call: unknown[]) => JSON.parse(call[0] as string))
       .find((message: any) =>
@@ -6011,6 +6530,239 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       errorCode: "set_permission_mode_rejected",
       sessionId: oldSessionId,
       permissionChangeId: "permission-change-preflight",
+    });
+    bridge.close();
+  });
+
+  it("does not resume a replacement Goal after a turn-settle restart abort", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-settle-race",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "running";
+    oldSession.claudeSessionId = "thread-goal-settle-race";
+    const activeGoal = {
+      threadId: "thread-goal-settle-race",
+      objective: "Original Goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 1,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const pausedGoal = {
+      ...activeGoal,
+      status: "paused",
+      updatedAt: 3,
+    };
+    const replacementGoal = {
+      ...activeGoal,
+      objective: "Desktop replacement",
+      createdAt: 4,
+      updatedAt: 4,
+    };
+    oldSession.process.getGoal
+      .mockResolvedValueOnce(activeGoal)
+      .mockResolvedValueOnce(replacementGoal);
+    oldSession.process.setGoal.mockResolvedValueOnce(pausedGoal);
+    oldSession.process.interruptCurrentTurnAndWait.mockRejectedValueOnce(
+      new Error("turn did not settle"),
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+        permissionChangeId: "permission-change-settle-race",
+      },
+      ws,
+    );
+
+    expect((bridge as any).sessionManager.get(oldSessionId)).toBe(oldSession);
+    expect(oldSession.permissionRestartInProgress).toBe(false);
+    expect(oldSession.process.setGoal).toHaveBeenCalledTimes(1);
+    expect(oldSession.process.setGoal).toHaveBeenCalledWith(
+      { status: "paused" },
+      expect.objectContaining({
+        validateCurrentGoal: expect.any(Function),
+      }),
+    );
+    expect(oldSession.codexGoal).toMatchObject({
+      objective: "Desktop replacement",
+    });
+    bridge.close();
+  });
+
+  it("does not resume a replacement Goal after history preflight abort", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-history-race",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "running";
+    oldSession.claudeSessionId = "thread-goal-history-race";
+    oldSession.history.push({ type: "user_input", text: "continue goal" });
+    const activeGoal = {
+      threadId: "thread-goal-history-race",
+      objective: "Original Goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 1,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const pausedGoal = {
+      ...activeGoal,
+      status: "paused",
+      updatedAt: 3,
+    };
+    const replacementGoal = {
+      ...activeGoal,
+      objective: "Desktop replacement",
+      createdAt: 4,
+      updatedAt: 4,
+    };
+    oldSession.process.getGoal
+      .mockResolvedValueOnce(activeGoal)
+      .mockResolvedValueOnce(replacementGoal);
+    oldSession.process.setGoal.mockResolvedValueOnce(pausedGoal);
+    oldSession.process.readThread.mockRejectedValueOnce(
+      new Error("history unavailable"),
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+        permissionChangeId: "permission-change-history-race",
+      },
+      ws,
+    );
+
+    expect((bridge as any).sessionManager.get(oldSessionId)).toBe(oldSession);
+    expect(oldSession.permissionRestartInProgress).toBe(false);
+    expect(oldSession.process.setGoal).toHaveBeenCalledTimes(1);
+    expect(oldSession.codexGoal).toMatchObject({
+      objective: "Desktop replacement",
+    });
+    bridge.close();
+  });
+
+  it("aborts the final permission restart check without activating a replacement Goal", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-final-race",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "idle";
+    oldSession.claudeSessionId = "thread-goal-final-race";
+    oldSession.history.push({ type: "user_input", text: "continue goal" });
+    const activeGoal = {
+      threadId: "thread-goal-final-race",
+      objective: "Original Goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 1,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const pausedGoal = {
+      ...activeGoal,
+      status: "paused",
+      updatedAt: 3,
+    };
+    const replacementGoal = {
+      ...activeGoal,
+      objective: "Desktop replacement",
+      createdAt: 4,
+      updatedAt: 4,
+    };
+    oldSession.process.getGoal
+      .mockResolvedValueOnce(activeGoal)
+      .mockResolvedValueOnce(replacementGoal);
+    oldSession.process.setGoal.mockResolvedValueOnce(pausedGoal);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+        permissionChangeId: "permission-change-final-race",
+      },
+      ws,
+    );
+
+    expect((bridge as any).sessionManager.get(oldSessionId)).toBe(oldSession);
+    expect(oldSession.permissionRestartInProgress).toBe(false);
+    expect(oldSession.process.setGoal).toHaveBeenCalledTimes(1);
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) =>
+          String(message.message).includes(
+            "goal changed while the permission restart was settling",
+          ),
+        ),
+    ).toMatchObject({
+      errorCode: "set_permission_mode_rejected",
+      permissionChangeId: "permission-change-final-race",
     });
     bridge.close();
   });
@@ -6233,6 +6985,74 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(params.permissionMode).toBe("plan");
     expect(params.sandboxMode).toBe("off");
 
+    bridge.close();
+  });
+
+  it("preserves Goal-only lineage and restart lease for legacy sandbox changes", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-only-sandbox",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "idle";
+    oldSession.process.sessionId = "thread-goal-only-sandbox";
+    const activeGoal = {
+      threadId: "thread-goal-only-sandbox",
+      objective: "Keep Goal across legacy sandbox restart",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const pausedGoal = {
+      ...activeGoal,
+      status: "paused",
+      updatedAt: 3,
+    };
+    oldSession.process.getGoal
+      .mockResolvedValueOnce(activeGoal)
+      .mockResolvedValueOnce(pausedGoal);
+    oldSession.process.setGoal.mockResolvedValueOnce(pausedGoal);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_sandbox_mode",
+        sessionId: oldSessionId,
+        sandboxMode: "off",
+      },
+      ws,
+    );
+
+    const replacementSummary = (bridge as any).sessionManager.list()[0];
+    const replacement = (bridge as any).sessionManager.get(
+      replacementSummary.id,
+    );
+    expect(replacement.codexOptions).toMatchObject({
+      threadId: "thread-goal-only-sandbox",
+      resumeGoalAfterStart: true,
+      resumeGoalLease: {
+        threadId: "thread-goal-only-sandbox",
+        pausedUpdatedAt: 3,
+      },
+    });
+    expect(oldSession.process.readThread).not.toHaveBeenCalled();
     bridge.close();
   });
 

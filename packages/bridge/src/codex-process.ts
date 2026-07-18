@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { rm, writeFile } from "node:fs/promises";
 import type {
   CodexGoal,
-  CodexGoalStatus,
+  CodexGoalWritableStatus,
   ServerMessage,
   ProcessStatus,
 } from "./parser.js";
@@ -48,6 +48,79 @@ export interface CodexStartOptions {
   collaborationMode?: "plan" | "default";
   /** Resume a goal that Bridge paused only to perform an immediate restart. */
   resumeGoalAfterStart?: boolean;
+  /**
+   * Identifies the exact paused Goal that may be resumed after a restart.
+   * Legacy callers may continue to use resumeGoalAfterStart without a lease.
+   */
+  resumeGoalLease?: CodexGoalResumeLease;
+}
+
+/** Stable identity and pause watermark for a restart-owned Goal pause. */
+export interface CodexGoalResumeLease {
+  threadId: string;
+  objective: string;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  pausedUpdatedAt: number;
+}
+
+export interface CodexGoalSnapshot {
+  goal: CodexGoal | null;
+  /** False when a Goal notification overtook this read on the same runtime. */
+  stable: boolean;
+}
+
+export interface CodexGoalMutationOptions {
+  /** Runs synchronously after the settings barrier and a stable authoritative read. */
+  validateCurrentGoal?: (goal: CodexGoal | null) => void;
+}
+
+export class CodexGoalSnapshotConflictError extends Error {
+  constructor() {
+    super("Goal state changed while its mutation preflight was in progress");
+    this.name = "CodexGoalSnapshotConflictError";
+  }
+}
+
+class CodexGoalResumeLeaseMismatchError extends Error {
+  constructor(readonly goal: CodexGoal | null) {
+    super("The paused Goal no longer matches the restart lease");
+    this.name = "CodexGoalResumeLeaseMismatchError";
+  }
+}
+
+export function createCodexGoalResumeLease(
+  goal: CodexGoal,
+): CodexGoalResumeLease {
+  return {
+    threadId: goal.threadId,
+    objective: goal.objective,
+    tokenBudget: goal.tokenBudget,
+    tokensUsed: goal.tokensUsed,
+    timeUsedSeconds: goal.timeUsedSeconds,
+    createdAt: goal.createdAt,
+    pausedUpdatedAt: goal.updatedAt,
+  };
+}
+
+/** A lease can only resume the same still-paused Goal, never a replacement. */
+export function matchesCodexGoalResumeLease(
+  goal: CodexGoal | null,
+  lease: CodexGoalResumeLease,
+): goal is CodexGoal {
+  return (
+    goal !== null &&
+    goal.status === "paused" &&
+    goal.threadId === lease.threadId &&
+    goal.objective === lease.objective &&
+    goal.tokenBudget === lease.tokenBudget &&
+    goal.tokensUsed >= lease.tokensUsed &&
+    goal.timeUsedSeconds >= lease.timeUsedSeconds &&
+    goal.createdAt === lease.createdAt &&
+    goal.updatedAt >= lease.pausedUpdatedAt
+  );
 }
 
 export interface CodexNextTurnPermissionSettings {
@@ -112,6 +185,7 @@ interface PendingRpc {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   method: string;
+  goalOrderingGeneration?: number;
   timeout?: ReturnType<typeof setTimeout>;
   signal?: AbortSignal;
   abortListener?: () => void;
@@ -319,6 +393,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private pendingTurnCompletion: PendingTurnCompletion | null = null;
   private pendingApprovals = new Map<string, PendingApproval>();
   private pendingUserInputs = new Map<string, PendingUserInputRequest>();
+  private goalOperationSequence = 0;
+  private goalOrderingGeneration = 0;
+  private _lastGoalRpcSequence: number | undefined;
+  private expectedGoalNotifications: Array<{
+    sequence: number;
+    kind: "updated" | "cleared";
+    goal?: CodexGoal;
+    /** A later Goal event/RPC makes a bare clear notification ambiguous. */
+    interveningGoalEvent?: boolean;
+    expiresAt: number;
+  }> = [];
   private lastTokenUsage: {
     input?: number;
     cachedInput?: number;
@@ -405,6 +490,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   get sessionId(): string | null {
     return this._threadId;
+  }
+
+  /** Sequence of the latest completed Goal RPC on this process. */
+  get lastGoalRpcSequence(): number | undefined {
+    return this._lastGoalRpcSequence;
+  }
+
+  /** Allocate a Bridge-local ordering token for an authoritative changed read. */
+  recordAuthoritativeGoalStateChange(): number {
+    const sequence = this.nextGoalOperationSequence();
+    this._lastGoalRpcSequence = sequence;
+    return sequence;
   }
 
   get agentNickname(): string | null {
@@ -841,39 +938,71 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   /** Read the persisted goal attached to this Codex thread. */
   async getGoal(): Promise<CodexGoal | null> {
+    return (await this.getGoalSnapshot()).goal;
+  }
+
+  /** Read Goal state together with same-runtime notification ordering. */
+  async getGoalSnapshot(): Promise<CodexGoalSnapshot> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal lookup");
     }
+    this.beginGoalRpc();
+    const orderingGeneration = this.goalOrderingGeneration;
     const response = (await this.request("thread/goal/get", {
       threadId: this._threadId,
     })) as Record<string, unknown>;
-    return response.goal == null ? null : parseCodexGoal(response.goal);
+    return {
+      goal: response.goal == null ? null : parseCodexGoal(response.goal),
+      stable: this.goalOrderingGeneration === orderingGeneration,
+    };
   }
 
   /** Create or update the persisted goal attached to this Codex thread. */
-  async setGoal(update: {
-    objective?: string;
-    status?: CodexGoalStatus;
-  }): Promise<CodexGoal> {
+  async setGoal(
+    update: {
+      objective?: string;
+      status?: CodexGoalWritableStatus;
+      tokenBudget?: number | null;
+    },
+    options: CodexGoalMutationOptions = {},
+  ): Promise<CodexGoal> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal update");
     }
     await this.waitForPendingThreadSettingsUpdates();
+    if (options.validateCurrentGoal) {
+      const snapshot = await this.getGoalSnapshot();
+      if (!snapshot.stable) throw new CodexGoalSnapshotConflictError();
+      // Intentionally synchronous: no notification can interleave between the
+      // validated app-server snapshot and registering the mutation RPC.
+      options.validateCurrentGoal(snapshot.goal);
+    }
+    this.beginGoalRpc();
     const response = (await this.request("thread/goal/set", {
       threadId: this._threadId,
       ...(update.objective !== undefined
         ? { objective: update.objective.trim() }
         : {}),
       ...(update.status !== undefined ? { status: update.status } : {}),
+      ...(update.tokenBudget !== undefined
+        ? { tokenBudget: update.tokenBudget }
+        : {}),
     })) as Record<string, unknown>;
     return parseCodexGoal(response.goal);
   }
 
   /** Remove the persisted goal attached to this Codex thread. */
-  async clearGoal(): Promise<boolean> {
+  async clearGoal(options: CodexGoalMutationOptions = {}): Promise<boolean> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal clear");
     }
+    await this.waitForPendingThreadSettingsUpdates();
+    if (options.validateCurrentGoal) {
+      const snapshot = await this.getGoalSnapshot();
+      if (!snapshot.stable) throw new CodexGoalSnapshotConflictError();
+      options.validateCurrentGoal(snapshot.goal);
+    }
+    this.beginGoalRpc();
     const response = (await this.request("thread/goal/clear", {
       threadId: this._threadId,
     })) as Record<string, unknown>;
@@ -881,6 +1010,89 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       throw new Error("thread/goal/clear returned an invalid response");
     }
     return response.cleared;
+  }
+
+  private nextGoalOperationSequence(): number {
+    this.goalOperationSequence += 1;
+    return this.goalOperationSequence;
+  }
+
+  private consumeExpectedGoalNotification(
+    kind: "updated" | "cleared",
+    goal?: CodexGoal,
+  ):
+    | {
+        sequence: number;
+        interveningGoalEvent: boolean;
+      }
+    | undefined {
+    this.removeExpiredGoalNotifications();
+    const index = this.expectedGoalNotifications.findIndex(
+      (expected) =>
+        expected.kind === kind &&
+        (kind === "cleared" ||
+          (expected.goal !== undefined &&
+            goal !== undefined &&
+            sameCodexGoal(expected.goal, goal))),
+    );
+    const matched =
+      index >= 0 ? this.expectedGoalNotifications[index] : undefined;
+    this.expectedGoalNotifications = this.expectedGoalNotifications
+      .filter((_, expectedIndex) => expectedIndex !== index)
+      .map((expected) =>
+        expected.kind === "cleared"
+          ? { ...expected, interveningGoalEvent: true }
+          : expected,
+      );
+    return matched
+      ? {
+          sequence: matched.sequence,
+          interveningGoalEvent: matched.interveningGoalEvent === true,
+        }
+      : undefined;
+  }
+
+  private markExpectedClearNotificationsIntervened(): void {
+    this.removeExpiredGoalNotifications();
+    this.expectedGoalNotifications = this.expectedGoalNotifications.map(
+      (expected) =>
+        expected.kind === "cleared"
+          ? { ...expected, interveningGoalEvent: true }
+          : expected,
+    );
+  }
+
+  private beginGoalRpc(): void {
+    this.goalOrderingGeneration += 1;
+    this.markExpectedClearNotificationsIntervened();
+  }
+
+  private async verifyAmbiguousClearNotification(): Promise<void> {
+    const generationBeforeRead = this.goalOrderingGeneration;
+    try {
+      const snapshot = await this.getGoalSnapshot();
+      if (
+        !snapshot.stable ||
+        this.goalOrderingGeneration !== generationBeforeRead + 1
+      ) {
+        return;
+      }
+      this.emitMessage({
+        type: "goal_state",
+        goal: snapshot.goal,
+        goalOperationSequence: this.recordAuthoritativeGoalStateChange(),
+      });
+    } catch (error) {
+      console.warn(
+        `[codex-process] Failed to verify an ambiguous Goal clear notification: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private removeExpiredGoalNotifications(now = Date.now()): void {
+    this.expectedGoalNotifications = this.expectedGoalNotifications.filter(
+      (expected) => expected.expiresAt > now,
+    );
   }
 
   /**
@@ -2010,12 +2222,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       });
       this.setStatus("idle");
 
-      if (options?.resumeGoalAfterStart) {
-        await this.request("thread/goal/set", {
-          threadId,
-          status: "active",
-        });
-      }
+      await this.resumeGoalAfterBootstrap(options);
 
       // Fetch skills/apps in background (non-blocking)
       this._projectPath = projectPath;
@@ -2041,6 +2248,54 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
       this.setStatus("idle");
       this.emit("exit", 1);
+    }
+  }
+
+  private async resumeGoalAfterBootstrap(
+    options?: CodexStartOptions,
+  ): Promise<void> {
+    if (!options?.resumeGoalAfterStart) return;
+
+    // Keep the pre-lease option compatible for internal/older callers.
+    if (!options.resumeGoalLease) {
+      await this.setGoal({ status: "active" });
+      return;
+    }
+
+    try {
+      await this.setGoal(
+        { status: "active" },
+        {
+          validateCurrentGoal: (currentGoal) => {
+            if (
+              !matchesCodexGoalResumeLease(
+                currentGoal,
+                options.resumeGoalLease!,
+              )
+            ) {
+              throw new CodexGoalResumeLeaseMismatchError(currentGoal);
+            }
+          },
+        },
+      );
+    } catch (error) {
+      if (error instanceof CodexGoalResumeLeaseMismatchError) {
+        console.warn(
+          "[codex-process] Skipping Goal resume because the paused Goal was replaced or changed during restart",
+        );
+        this.emitMessage({
+          type: "goal_state",
+          goal: error.goal,
+          ...(this._lastGoalRpcSequence !== undefined
+            ? { goalOperationSequence: this._lastGoalRpcSequence }
+            : {}),
+        });
+        return;
+      }
+      console.warn(
+        `[codex-process] Skipping Goal resume because the restart lease could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
     }
   }
 
@@ -2558,7 +2813,87 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       return;
     }
 
-    pending.resolve((envelope as RpcSuccess).result);
+    const result = (envelope as RpcSuccess).result;
+    try {
+      this.handleGoalRpcSuccess(pending, result);
+    } catch (error) {
+      pending.reject(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      return;
+    }
+    pending.resolve(result);
+  }
+
+  private handleGoalRpcSuccess(pending: PendingRpc, result: unknown): void {
+    if (
+      pending.method !== "thread/goal/get" &&
+      pending.method !== "thread/goal/set" &&
+      pending.method !== "thread/goal/clear"
+    ) {
+      return;
+    }
+    // Reads are not writable revisions. In particular, mobile polling must not
+    // invalidate a CAS token when the authoritative Goal did not change.
+    if (pending.method === "thread/goal/get") return;
+
+    // Alternate/direct request paths still make an older clear echo ambiguous.
+    this.markExpectedClearNotificationsIntervened();
+    const sequence = this.recordAuthoritativeGoalStateChange();
+
+    if (!result || typeof result !== "object") {
+      throw new Error(`${pending.method} returned an invalid response`);
+    }
+    const response = result as Record<string, unknown>;
+    if (pending.method === "thread/goal/set") {
+      const goal = parseCodexGoal(response.goal);
+      this.expectedGoalNotifications.push({
+        sequence,
+        kind: "updated",
+        goal,
+        expiresAt: Date.now() + 10_000,
+      });
+      this.trimExpectedGoalNotifications();
+      this.emitMessage({
+        type: "goal_state",
+        goal,
+        goalOperationSequence: sequence,
+      });
+      return;
+    }
+    if (pending.method === "thread/goal/clear") {
+      if (typeof response.cleared !== "boolean") {
+        throw new Error("thread/goal/clear returned an invalid response");
+      }
+      if (
+        response.cleared &&
+        (pending.goalOrderingGeneration === undefined ||
+          pending.goalOrderingGeneration === this.goalOrderingGeneration)
+      ) {
+        this.expectedGoalNotifications.push({
+          sequence,
+          kind: "cleared",
+          interveningGoalEvent: false,
+          expiresAt: Date.now() + 10_000,
+        });
+        this.trimExpectedGoalNotifications();
+      }
+      this.emitMessage({
+        type: "goal_state",
+        goal: null,
+        goalOperationSequence: sequence,
+      });
+    }
+  }
+
+  private trimExpectedGoalNotifications(): void {
+    this.removeExpiredGoalNotifications();
+    if (this.expectedGoalNotifications.length > 64) {
+      this.expectedGoalNotifications.splice(
+        0,
+        this.expectedGoalNotifications.length - 64,
+      );
+    }
   }
 
   private handleServerRequest(
@@ -2799,11 +3134,23 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "thread/goal/updated": {
         try {
+          const goal = parseCodexGoal(params.goal);
+          const expected = this.consumeExpectedGoalNotification(
+            "updated",
+            goal,
+          );
+          this.goalOrderingGeneration += 1;
+          if (expected !== undefined) {
+            break;
+          }
           this.emitMessage({
             type: "goal_state",
-            goal: parseCodexGoal(params.goal),
+            goal,
+            goalOperationSequence: this.nextGoalOperationSequence(),
           });
         } catch (err) {
+          this.goalOrderingGeneration += 1;
+          this.markExpectedClearNotificationsIntervened();
           console.warn(
             `[codex-process] Ignoring invalid goal notification: ${err instanceof Error ? err.message : String(err)}`,
           );
@@ -2812,7 +3159,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
 
       case "thread/goal/cleared": {
-        this.emitMessage({ type: "goal_state", goal: null });
+        const expected =
+          this.consumeExpectedGoalNotification("cleared");
+        this.goalOrderingGeneration += 1;
+        if (expected !== undefined) {
+          if (expected.interveningGoalEvent) {
+            void this.verifyAmbiguousClearNotification();
+          }
+          break;
+        }
+        this.emitMessage({
+          type: "goal_state",
+          goal: null,
+          goalOperationSequence: this.nextGoalOperationSequence(),
+        });
         break;
       }
 
@@ -3526,7 +3886,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         return;
       }
 
-      const pending: PendingRpc = { resolve, reject, method };
+      const pending: PendingRpc = {
+        resolve,
+        reject,
+        method,
+        ...((method === "thread/goal/get" ||
+          method === "thread/goal/set" ||
+          method === "thread/goal/clear")
+          ? { goalOrderingGeneration: this.goalOrderingGeneration }
+          : {}),
+      };
       this.pendingRpc.set(id, pending);
       if (timeoutMs !== undefined) {
         pending.timeout = setTimeout(() => {
@@ -4046,22 +4415,12 @@ function notificationThreadId(params: Record<string, unknown>): string | null {
   return null;
 }
 
-const CODEX_GOAL_STATUSES = new Set<CodexGoalStatus>([
-  "active",
-  "paused",
-  "blocked",
-  "usageLimited",
-  "budgetLimited",
-  "complete",
-]);
-
 /** Validate the app-server ThreadGoal payload at the process boundary. */
 export function parseCodexGoal(value: unknown): CodexGoal {
   if (!value || typeof value !== "object") {
     throw new Error("Goal payload is missing");
   }
   const goal = value as Record<string, unknown>;
-  const status = goal.status as CodexGoalStatus;
   const requiredNumbers = [
     "tokensUsed",
     "timeUsedSeconds",
@@ -4071,13 +4430,15 @@ export function parseCodexGoal(value: unknown): CodexGoal {
   if (
     typeof goal.threadId !== "string" ||
     typeof goal.objective !== "string" ||
-    !CODEX_GOAL_STATUSES.has(status) ||
+    typeof goal.status !== "string" ||
+    goal.status.trim().length === 0 ||
     requiredNumbers.some(
       (field) =>
         typeof goal[field] !== "number" ||
         !Number.isFinite(goal[field] as number),
     ) ||
-    (goal.tokenBudget !== null &&
+    (goal.tokenBudget !== undefined &&
+      goal.tokenBudget !== null &&
       (typeof goal.tokenBudget !== "number" ||
         !Number.isFinite(goal.tokenBudget)))
   ) {
@@ -4086,13 +4447,27 @@ export function parseCodexGoal(value: unknown): CodexGoal {
   return {
     threadId: goal.threadId,
     objective: goal.objective,
-    status,
-    tokenBudget: goal.tokenBudget as number | null,
+    status: goal.status,
+    tokenBudget:
+      typeof goal.tokenBudget === "number" ? goal.tokenBudget : null,
     tokensUsed: goal.tokensUsed as number,
     timeUsedSeconds: goal.timeUsedSeconds as number,
     createdAt: goal.createdAt as number,
     updatedAt: goal.updatedAt as number,
   };
+}
+
+function sameCodexGoal(left: CodexGoal, right: CodexGoal): boolean {
+  return (
+    left.threadId === right.threadId &&
+    left.objective === right.objective &&
+    left.status === right.status &&
+    left.tokenBudget === right.tokenBudget &&
+    left.tokensUsed === right.tokensUsed &&
+    left.timeUsedSeconds === right.timeUsedSeconds &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt
+  );
 }
 
 function numberOrUndefined(value: unknown): number | undefined {

@@ -18,6 +18,7 @@ import {
   type RewindFilesResult,
 } from "./sdk-process.js";
 import { CodexProcess, type CodexStartOptions } from "./codex-process.js";
+import { mergeCodexGoalState } from "./codex-goal-controller.js";
 import type {
   ServerMessage,
   ProcessStatus,
@@ -92,6 +93,12 @@ export interface SessionInfo {
   codexQueuedInput?: QueuedCodexInput;
   /** Latest Codex goal state. Kept out of chat history. */
   codexGoal?: CodexGoal | null;
+  /** Highest non-empty Goal updatedAt observed, retained across a clear. */
+  codexGoalUpdatedAt?: number;
+  /** Latest Bridge-local Goal RPC/notification ordering token. */
+  codexGoalOperationSequence?: number;
+  /** Runtime-probed support for the app-server Goal RPC family. */
+  codexGoalControlSupported?: boolean;
   /** Blocks input and approval actions during an explicit permission restart. */
   permissionRestartInProgress?: boolean;
   /** Synthetic Codex user UUIDs waiting for their app-server echo. */
@@ -195,6 +202,8 @@ export interface SessionSummary {
   queuedInput?: QueuedInputItem;
   /** Runtime-probed support for app-server next-turn permission settings. */
   codexPermissionApplyStrategySupported?: boolean;
+  /** Runtime-probed support for app-server Goal management. */
+  codexGoalControlSupported?: boolean | null;
 }
 
 const MAX_HISTORY_PER_SESSION = 100;
@@ -567,8 +576,30 @@ export class SessionManager {
         const previousProviderSessionId = session.claudeSessionId;
 
         if (msg.type === "goal_state") {
-          session.codexGoal = msg.goal;
-          this.onMessage(id, msg);
+          const advancesGoalSequence =
+            msg.goalOperationSequence !== undefined &&
+            (session.codexGoalOperationSequence === undefined ||
+              msg.goalOperationSequence > session.codexGoalOperationSequence);
+          if (
+            msg.goalOperationSequence !== undefined &&
+            session.codexGoalOperationSequence !== undefined &&
+            msg.goalOperationSequence < session.codexGoalOperationSequence
+          ) {
+            return;
+          }
+          if (msg.goalOperationSequence !== undefined) {
+            session.codexGoalOperationSequence = msg.goalOperationSequence;
+          }
+          const merged = mergeCodexGoalState(
+            session.codexGoal,
+            msg.goal,
+            session.codexGoalUpdatedAt,
+            advancesGoalSequence,
+          );
+          session.codexGoalUpdatedAt = merged.updatedAt;
+          if (!merged.accepted) return;
+          session.codexGoal = merged.goal;
+          this.onMessage(id, { ...msg, goal: merged.goal });
           return;
         }
 
@@ -1138,6 +1169,10 @@ export class SessionManager {
           s.process instanceof CodexProcess
             ? s.process.supportsNextTurnPermissionUpdates
             : undefined,
+        ...(s.process instanceof CodexProcess &&
+        s.codexGoalControlSupported !== undefined
+          ? { codexGoalControlSupported: s.codexGoalControlSupported }
+          : {}),
         sandboxEnabled: s.sandboxEnabled,
         pendingPermission,
         queuedInput:
