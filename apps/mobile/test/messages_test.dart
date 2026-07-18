@@ -472,6 +472,9 @@ void main() {
         'git_status_result',
         'prompt_history_status',
         'artifact_resolved',
+        'archived_sessions_result',
+        'unarchive_result',
+        'delete_session_result',
         ...LocalFeatureProtocolHost.supportedServerMessageTypes,
       ]);
     });
@@ -1387,6 +1390,83 @@ void main() {
       expect(status.commitsBehind, 5);
       expect(status.hasUpstream, isTrue);
       expect(status.branch, 'main');
+    });
+
+    test('parses correlated archived session lifecycle results', () {
+      final list = ServerMessage.fromJson({
+        'type': 'archived_sessions_result',
+        'requestId': 'list-1',
+        'success': true,
+        'truncated': true,
+        'sessions': [
+          {
+            'sessionId': 'thread-1',
+            'provider': 'codex',
+            'projectPath': '/project',
+            'archivedAt': '2026-07-18T00:00:00Z',
+            'name': 'Named thread',
+          },
+        ],
+      }) as ArchivedSessionsResultMessage;
+      expect(list.requestId, 'list-1');
+      expect(list.truncated, isTrue);
+      expect(list.sessions.single.displayTitle, 'Named thread');
+
+      final result = ServerMessage.fromJson({
+        'type': 'delete_session_result',
+        'requestId': 'delete-1',
+        'sessionId': 'thread-1',
+        'success': false,
+        'errorCode': 'session_active',
+      }) as SessionLifecycleResultMessage;
+      expect(result.type, 'delete_session_result');
+      expect(result.requestId, 'delete-1');
+      expect(result.sessionId, 'thread-1');
+      expect(result.errorCode, 'session_active');
+
+      final archiveResult = ServerMessage.fromJson({
+        'type': 'archive_result',
+        'requestId': 'archive-1',
+        'sessionId': 'shared-id',
+        'provider': 'codex',
+        'success': true,
+      }) as ArchiveResultMessage;
+      expect(archiveResult.requestId, 'archive-1');
+      expect(archiveResult.provider, 'codex');
+      expect(
+        providerSessionIdentityKey('codex', 'shared-id'),
+        isNot(providerSessionIdentityKey('claude', 'shared-id')),
+      );
+    });
+
+    test('archive lifecycle client messages are ephemeral and correlated', () {
+      final archive = ClientMessage.archiveSession(
+        requestId: 'archive-1',
+        sessionId: 'thread-1',
+        provider: 'codex',
+        projectPath: '/project',
+        name: 'Named thread',
+      );
+      expect(archive.delivery, ClientMessageDelivery.ephemeral);
+      expect(jsonDecode(archive.toJson()), containsPair('requestId', 'archive-1'));
+
+      final unarchive = ClientMessage.unarchiveSession(
+        requestId: 'restore-1',
+        sessionId: 'thread-1',
+        provider: 'codex',
+        projectPath: '/project',
+      );
+      expect(unarchive.delivery, ClientMessageDelivery.ephemeral);
+
+      final delete = ClientMessage.deleteSession(
+        requestId: 'delete-1',
+        sessionId: 'thread-1',
+        projectPath: '/project',
+      );
+      final deleteJson = jsonDecode(delete.toJson()) as Map<String, dynamic>;
+      expect(delete.delivery, ClientMessageDelivery.ephemeral);
+      expect(deleteJson['provider'], 'codex');
+      expect(deleteJson['confirmDescendantDeletion'], isTrue);
     });
   });
 }

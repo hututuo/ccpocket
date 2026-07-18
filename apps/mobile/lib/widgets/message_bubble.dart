@@ -276,6 +276,8 @@ class ServerMessageWidget extends StatelessWidget {
       PromptHistoryStatusMessage() => const SizedBox.shrink(),
       RenameResultMessage() => const SizedBox.shrink(),
       ArchiveResultMessage() => const SizedBox.shrink(),
+      ArchivedSessionsResultMessage() => const SizedBox.shrink(),
+      SessionLifecycleResultMessage() => const SizedBox.shrink(),
       BranchUpdateMessage() => const SizedBox.shrink(),
       // Git Operations (Phase 1-3) — routed via BridgeService streams
       GitStageResultMessage() => const SizedBox.shrink(),

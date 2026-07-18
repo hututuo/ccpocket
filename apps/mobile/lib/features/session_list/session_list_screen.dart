@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../utils/network_endpoint.dart';
@@ -29,6 +30,8 @@ import '../../widgets/workspace_pane_chrome.dart';
 import '../../widgets/adaptive_context_menu.dart';
 import '../../widgets/new_session_sheet.dart';
 import '../../widgets/rename_session_dialog.dart';
+import '../session_archive/session_archive_cubit.dart';
+import '../session_archive/session_archive_screen.dart';
 import '../settings/state/settings_cubit.dart';
 import '../settings/state/settings_state.dart';
 import 'state/session_list_cubit.dart';
@@ -38,6 +41,8 @@ import 'widgets/home_content.dart';
 import 'widgets/machine_edit_sheet.dart';
 import 'widgets/session_list_app_bar.dart';
 import 'workspace_shell_screen.dart';
+
+const _sessionArchiveRequestUuid = Uuid();
 
 // ---- Testable helpers (top-level) ----
 
@@ -281,6 +286,18 @@ class SessionListScreen extends StatefulWidget {
   State<SessionListScreen> createState() => _SessionListScreenState();
 }
 
+class _PendingArchiveRequest {
+  const _PendingArchiveRequest({
+    required this.sessionId,
+    required this.provider,
+    required this.identityKey,
+  });
+
+  final String sessionId;
+  final String provider;
+  final String identityKey;
+}
+
 class _SessionListScreenState extends State<SessionListScreen>
     with WidgetsBindingObserver {
   bool _isAutoConnecting = false;
@@ -307,7 +324,8 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   // Only subscription that remains: session_created navigation
   StreamSubscription<ServerMessage>? _messageSub;
-  final Set<String> _archivingSessionIds = <String>{};
+  final Set<String> _archivingSessionKeys = <String>{};
+  final Map<String, _PendingArchiveRequest> _pendingArchiveRequests = {};
 
   // macOS app update
   AppUpdateInfo? _appUpdateInfo;
@@ -388,19 +406,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       }
 
       if (msg is ArchiveResultMessage) {
-        if (_archivingSessionIds.contains(msg.sessionId) && mounted) {
-          setState(() => _archivingSessionIds.remove(msg.sessionId));
-        }
-        if (!mounted) return;
-        final l = AppLocalizations.of(context);
-        final text = msg.success
-            ? l.sessionArchived
-            : (msg.error?.isNotEmpty == true
-                  ? l.archiveFailedWithError(msg.error!)
-                  : l.archiveFailed);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(text)));
+        _handleArchiveResult(msg);
       }
     });
     widget.deepLinkNotifier?.addListener(_onDeepLink);
@@ -727,6 +733,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     }
     await context.router.push(GalleryRoute());
   }
+
+  Future<void> _openArchivedSessions() => openSessionArchive(context);
 
   void _refresh() {
     context.read<SessionListCubit>().refresh();
@@ -1349,14 +1357,87 @@ class _SessionListScreenState extends State<SessionListScreen>
     }
   }
 
+  void _handleArchiveResult(ArchiveResultMessage message) {
+    MapEntry<String, _PendingArchiveRequest>? matched;
+    if (message.requestId case final requestId?) {
+      final pending = _pendingArchiveRequests[requestId];
+      if (pending == null) return;
+      matched = MapEntry(requestId, pending);
+    } else {
+      for (final entry in _pendingArchiveRequests.entries) {
+        if (entry.value.sessionId != message.sessionId) continue;
+        if (message.provider != null &&
+            entry.value.provider != message.provider) {
+          continue;
+        }
+        if (matched != null) return;
+        matched = entry;
+      }
+    }
+    final resolved = matched;
+    if (resolved == null ||
+        resolved.value.sessionId != message.sessionId ||
+        (message.provider != null &&
+            resolved.value.provider != message.provider)) {
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _pendingArchiveRequests.remove(resolved.key);
+        _archivingSessionKeys.remove(resolved.value.identityKey);
+      });
+    }
+    if (!mounted) return;
+    final l = AppLocalizations.of(context);
+    final text = message.success
+        ? l.sessionArchived
+        : (message.error?.isNotEmpty == true
+              ? l.archiveFailedWithError(message.error!)
+              : l.archiveFailed);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
   void _archiveSession(RecentSession session) {
-    if (_archivingSessionIds.contains(session.sessionId)) return;
-    setState(() => _archivingSessionIds.add(session.sessionId));
-    context.read<BridgeService>().archiveSession(
-      sessionId: session.sessionId,
-      provider: session.provider ?? 'claude',
-      projectPath: session.projectPath,
-    );
+    final provider = session.provider ?? Provider.claude.value;
+    final identityKey = providerSessionIdentityKey(provider, session.sessionId);
+    if (_archivingSessionKeys.contains(identityKey)) return;
+    final bridge = context.read<BridgeService>();
+    if (!bridge.bridgeCapabilities.contains(codexSessionLifecycleCapability) &&
+        _pendingArchiveRequests.values.any(
+          (pending) => pending.sessionId == session.sessionId,
+        )) {
+      return;
+    }
+    final requestId = _sessionArchiveRequestUuid.v4();
+    setState(() {
+      _archivingSessionKeys.add(identityKey);
+      _pendingArchiveRequests[requestId] = _PendingArchiveRequest(
+        sessionId: session.sessionId,
+        provider: provider,
+        identityKey: identityKey,
+      );
+    });
+    try {
+      bridge.archiveSession(
+        sessionId: session.sessionId,
+        provider: provider,
+        projectPath: session.projectPath,
+        requestId: requestId,
+        name: session.name,
+        summary: session.summary,
+        firstPrompt: session.firstPrompt,
+        modified: session.modified,
+      );
+    } catch (error) {
+      setState(() {
+        _pendingArchiveRequests.remove(requestId);
+        _archivingSessionKeys.remove(identityKey);
+      });
+      final l = AppLocalizations.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l.archiveFailedWithError('$error'))),
+      );
+    }
   }
 
   void _navigateToChat(
@@ -1885,6 +1966,12 @@ class _SessionListScreenState extends State<SessionListScreen>
                     onTitleTap: _onTitleTap,
                     onOpenSettings: _openSettings,
                     onOpenGallery: showConnectedUI ? _openGallery : null,
+                    onOpenArchivedSessions:
+                        context.read<BridgeService>().bridgeCapabilities.contains(
+                          codexSessionLifecycleCapability,
+                        )
+                        ? _openArchivedSessions
+                        : null,
                     onDisconnect: showConnectedUI ? _disconnect : null,
                     onTogglePaneVisibility: widget.onTogglePaneVisibility,
                     bridgeLabel: connectedBridgeLabel,
@@ -2013,7 +2100,7 @@ class _SessionListScreenState extends State<SessionListScreen>
               isLoadingMore: slState.isLoadingMore,
               isInitialLoading: slState.isInitialLoading,
               hasMoreSessions: slState.hasMore,
-              archivingSessionIds: _archivingSessionIds,
+              archivingSessionIds: _archivingSessionKeys,
               unseenSessionIds: unseenSessionIds,
               currentProjectFilter: bridge.currentProjectFilter,
               onNewSession: _showNewSessionDialog,
@@ -2139,6 +2226,11 @@ class _SessionListScreenState extends State<SessionListScreen>
           SessionListSliverAppBar(
             onTitleTap: _onTitleTap,
             onDisconnect: _disconnect,
+            onOpenArchivedSessions: bridge.bridgeCapabilities.contains(
+              codexSessionLifecycleCapability,
+            )
+                ? _openArchivedSessions
+                : null,
             forceElevated: innerBoxIsScrolled,
             toolbarHeight: chrome.toolbarHeight,
             bridgeLabel: connectedBridgeLabel,

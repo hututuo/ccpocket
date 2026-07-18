@@ -220,6 +220,9 @@ enum Provider {
   const Provider(this.value, this.label);
 }
 
+String providerSessionIdentityKey(String provider, String sessionId) =>
+    '$provider\u0000$sessionId';
+
 String? sanitizeCodexModelName(String? model) {
   final normalized = model?.trim();
   if (normalized == null || normalized.isEmpty || normalized == 'codex') {
@@ -1342,9 +1345,45 @@ sealed class ServerMessage {
         error: json['error'] as String?,
       ),
       'archive_result' => ArchiveResultMessage(
+        requestId: json['requestId'] as String?,
+        sessionId: json['sessionId'] as String? ?? '',
+        provider: json['provider'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
+      ),
+      'archived_sessions_result' => ArchivedSessionsResultMessage(
+        requestId: json['requestId'] as String? ?? '',
+        success: json['success'] as bool? ?? false,
+        sessions:
+            (json['sessions'] as List?)
+                ?.whereType<Map>()
+                .map(
+                  (session) => ArchivedSessionRecord.fromJson(
+                    Map<String, dynamic>.from(session),
+                  ),
+                )
+                .toList() ??
+            const [],
+        truncated: json['truncated'] as bool? ?? false,
+        error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
+      ),
+      'unarchive_result' => SessionLifecycleResultMessage(
+        type: 'unarchive_result',
+        requestId: json['requestId'] as String? ?? '',
         sessionId: json['sessionId'] as String? ?? '',
         success: json['success'] as bool? ?? false,
         error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
+      ),
+      'delete_session_result' => SessionLifecycleResultMessage(
+        type: 'delete_session_result',
+        requestId: json['requestId'] as String? ?? '',
+        sessionId: json['sessionId'] as String? ?? '',
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
       ),
       'branch_update' => BranchUpdateMessage(
         sessionId: json['sessionId'] as String? ?? '',
@@ -3021,13 +3060,99 @@ class RenameResultMessage implements ServerMessage {
 }
 
 class ArchiveResultMessage implements ServerMessage {
+  final String? requestId;
+  final String sessionId;
+  final String? provider;
+  final bool success;
+  final String? error;
+  final String? errorCode;
+  const ArchiveResultMessage({
+    this.requestId,
+    required this.sessionId,
+    this.provider,
+    required this.success,
+    this.error,
+    this.errorCode,
+  });
+}
+
+class ArchivedSessionRecord {
+  final String sessionId;
+  final String provider;
+  final String projectPath;
+  final String archivedAt;
+  final String? name;
+  final String? summary;
+  final String? firstPrompt;
+  final String? modified;
+
+  const ArchivedSessionRecord({
+    required this.sessionId,
+    required this.provider,
+    required this.projectPath,
+    required this.archivedAt,
+    this.name,
+    this.summary,
+    this.firstPrompt,
+    this.modified,
+  });
+
+  factory ArchivedSessionRecord.fromJson(Map<String, dynamic> json) =>
+      ArchivedSessionRecord(
+        sessionId: json['sessionId'] as String? ?? '',
+        provider: json['provider'] as String? ?? '',
+        projectPath: json['projectPath'] as String? ?? '',
+        archivedAt: json['archivedAt'] as String? ?? '',
+        name: json['name'] as String?,
+        summary: json['summary'] as String?,
+        firstPrompt: json['firstPrompt'] as String?,
+        modified: json['modified'] as String?,
+      );
+
+  String get displayTitle {
+    final named = name?.trim();
+    if (named != null && named.isNotEmpty) return named;
+    final prompt = firstPrompt?.trim();
+    if (prompt != null && prompt.isNotEmpty) return prompt;
+    final summarized = summary?.trim();
+    if (summarized != null && summarized.isNotEmpty) return summarized;
+    return sessionId;
+  }
+}
+
+class ArchivedSessionsResultMessage implements ServerMessage {
+  final String requestId;
+  final bool success;
+  final List<ArchivedSessionRecord> sessions;
+  final bool truncated;
+  final String? error;
+  final String? errorCode;
+
+  const ArchivedSessionsResultMessage({
+    required this.requestId,
+    required this.success,
+    required this.sessions,
+    this.truncated = false,
+    this.error,
+    this.errorCode,
+  });
+}
+
+class SessionLifecycleResultMessage implements ServerMessage {
+  final String type;
+  final String requestId;
   final String sessionId;
   final bool success;
   final String? error;
-  const ArchiveResultMessage({
+  final String? errorCode;
+
+  const SessionLifecycleResultMessage({
+    required this.type,
+    required this.requestId,
     required this.sessionId,
     required this.success,
     this.error,
+    this.errorCode,
   });
 }
 
@@ -4060,6 +4185,9 @@ class ClientMessage {
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',
+          'archived_sessions_result',
+          'unarchive_result',
+          'delete_session_result',
           ...LocalFeatureProtocolHost.supportedServerMessageTypes,
         ];
     return ClientMessage._(<String, dynamic>{
@@ -4758,14 +4886,56 @@ class ClientMessage {
     required String sessionId,
     required String provider,
     required String projectPath,
+    String? requestId,
+    String? name,
+    String? summary,
+    String? firstPrompt,
+    String? modified,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'archive_session',
+      'requestId': ?requestId,
       'sessionId': sessionId,
       'provider': provider,
       'projectPath': projectPath,
-    });
+      'name': ?name,
+      'summary': ?summary,
+      'firstPrompt': ?firstPrompt,
+      'modified': ?modified,
+    }, delivery: ClientMessageDelivery.ephemeral);
   }
+
+  factory ClientMessage.listArchivedSessions({required String requestId}) =>
+      ClientMessage._({
+        'type': 'list_archived_sessions',
+        'requestId': requestId,
+      }, delivery: ClientMessageDelivery.ephemeral);
+
+  factory ClientMessage.unarchiveSession({
+    required String requestId,
+    required String sessionId,
+    required String provider,
+    required String projectPath,
+  }) => ClientMessage._({
+    'type': 'unarchive_session',
+    'requestId': requestId,
+    'sessionId': sessionId,
+    'provider': provider,
+    'projectPath': projectPath,
+  }, delivery: ClientMessageDelivery.ephemeral);
+
+  factory ClientMessage.deleteSession({
+    required String requestId,
+    required String sessionId,
+    required String projectPath,
+  }) => ClientMessage._({
+    'type': 'delete_session',
+    'requestId': requestId,
+    'sessionId': sessionId,
+    'provider': 'codex',
+    'projectPath': projectPath,
+    'confirmDescendantDeletion': true,
+  }, delivery: ClientMessageDelivery.ephemeral);
 
   // ---- Git Operations (Phase 1-3) ----
 

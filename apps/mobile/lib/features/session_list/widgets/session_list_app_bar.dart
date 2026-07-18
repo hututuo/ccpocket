@@ -5,6 +5,7 @@ import '../../../l10n/app_localizations.dart';
 import '../../../router/app_router.dart';
 import '../../../services/app_update_service.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
+import '../../session_archive/session_archive_strings.dart';
 
 /// Floating SliverAppBar for the session list screen.
 ///
@@ -13,6 +14,7 @@ import '../../../widgets/workspace_pane_chrome.dart';
 class SessionListSliverAppBar extends StatelessWidget {
   final VoidCallback onTitleTap;
   final VoidCallback onDisconnect;
+  final VoidCallback? onOpenArchivedSessions;
   final bool forceElevated;
   final double? toolbarHeight;
   final String? bridgeLabel;
@@ -21,6 +23,7 @@ class SessionListSliverAppBar extends StatelessWidget {
     super.key,
     required this.onTitleTap,
     required this.onDisconnect,
+    this.onOpenArchivedSessions,
     this.forceElevated = false,
     this.toolbarHeight,
     this.bridgeLabel,
@@ -40,6 +43,13 @@ class SessionListSliverAppBar extends StatelessWidget {
         child: _SessionListTitle(title: l.appTitle, subtitle: bridgeLabel),
       ),
       actions: [
+        if (onOpenArchivedSessions != null)
+          IconButton(
+            key: const ValueKey('archived_sessions_button'),
+            icon: const Icon(Icons.archive_outlined),
+            onPressed: onOpenArchivedSessions,
+            tooltip: SessionArchiveStrings.of(context).title,
+          ),
         IconButton(
           key: const ValueKey('settings_button'),
           icon: Badge(
@@ -71,6 +81,7 @@ class SessionListPaneHeader extends StatelessWidget {
   final VoidCallback onTitleTap;
   final VoidCallback onOpenSettings;
   final VoidCallback? onOpenGallery;
+  final VoidCallback? onOpenArchivedSessions;
   final VoidCallback? onDisconnect;
   final VoidCallback? onTogglePaneVisibility;
   final String? bridgeLabel;
@@ -80,6 +91,7 @@ class SessionListPaneHeader extends StatelessWidget {
     required this.onTitleTap,
     required this.onOpenSettings,
     this.onOpenGallery,
+    this.onOpenArchivedSessions,
     this.onDisconnect,
     this.onTogglePaneVisibility,
     this.bridgeLabel,
@@ -135,6 +147,14 @@ class SessionListPaneHeader extends StatelessWidget {
               ),
               compact: chrome.useMacOSAdaptiveChrome,
             ),
+            if (onOpenArchivedSessions != null)
+              _PaneHeaderActionButton(
+                key: const ValueKey('archived_sessions_button'),
+                tooltip: SessionArchiveStrings.of(context).title,
+                onPressed: onOpenArchivedSessions!,
+                icon: const Icon(Icons.archive_outlined),
+                compact: chrome.useMacOSAdaptiveChrome,
+              ),
             if (openGallery != null ||
                 disconnect != null ||
                 togglePaneVisibility != null)

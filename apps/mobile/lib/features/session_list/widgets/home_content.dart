@@ -961,7 +961,12 @@ class _RecentSessionSlidable extends StatelessWidget {
         displayMode: displayMode,
         isSelected: false,
         draftText: context.read<DraftService>().getDraft(session.sessionId),
-        isProcessing: archivingSessionIds.contains(session.sessionId),
+        isProcessing: archivingSessionIds.contains(
+          providerSessionIdentityKey(
+            session.provider ?? Provider.claude.value,
+            session.sessionId,
+          ),
+        ),
         onTogglePinned: onTogglePinned,
         onTap: () => onResumeSession(session),
         onLongPress: () => onLongPressRecentSession(session, null),

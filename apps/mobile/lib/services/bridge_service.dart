@@ -1314,6 +1314,12 @@ class BridgeService implements BridgeServiceBase {
                   // Refresh the recent sessions list to reflect the archived session
                   requestRecentSessions();
                 }
+                _messageController.add(msg);
+              case ArchivedSessionsResultMessage():
+                _messageController.add(msg);
+              case SessionLifecycleResultMessage(:final success):
+                if (success) requestRecentSessions();
+                _messageController.add(msg);
               case WorktreeRemovedMessage():
                 _messageController.add(msg);
               case ConversationQueueMessage(:final items):
@@ -2652,12 +2658,22 @@ class BridgeService implements BridgeServiceBase {
     required String sessionId,
     required String provider,
     required String projectPath,
+    String? requestId,
+    String? name,
+    String? summary,
+    String? firstPrompt,
+    String? modified,
   }) {
     send(
       ClientMessage.archiveSession(
         sessionId: sessionId,
         provider: provider,
         projectPath: projectPath,
+        requestId: requestId,
+        name: name,
+        summary: summary,
+        firstPrompt: firstPrompt,
+        modified: modified,
       ),
     );
   }
