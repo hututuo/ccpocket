@@ -372,6 +372,7 @@
   "disablePlanModeTitle": "Plan Mode 비활성화",
   "enablePlanModeBody": "Plan Mode를 활성화하면 세션이 재시작됩니다. 대화는 유지됩니다.",
   "disablePlanModeBody": "Plan Mode를 비활성화하면 세션이 재시작됩니다. 대화는 유지됩니다.",
+  "codexNativePlanModeUnavailable": "이 Codex 런타임은 네이티브 Plan 모드를 지원하지 않습니다. Codex를 업데이트하거나 호환되는 Bridge에 다시 연결하세요.",
   "changeSandboxModeTitle": "샌드박스 모드 변경",
   "changeSandboxModeBody": "{mode}(으)로 전환하면 세션이 재시작됩니다. 대화는 유지됩니다.",
   "@changeSandboxModeBody": {

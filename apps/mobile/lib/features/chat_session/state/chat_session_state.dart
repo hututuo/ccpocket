@@ -7,6 +7,8 @@ part 'chat_session_state.freezed.dart';
 
 enum CodexGoalSupport { unknown, supported, unsupported }
 
+enum CodexNativePlanModeSupport { unknown, supported, unsupported }
+
 enum CodexGoalMutationKind { create, edit, pause, resume, updateBudget, clear }
 
 enum CodexGoalErrorKind {
@@ -85,6 +87,8 @@ abstract class ChatSessionState with _$ChatSessionState {
     ReasoningEffort? codexModelReasoningEffort,
     @Default(CodexSpeed.standard) CodexSpeed codexSpeed,
     @Default(false) bool planMode,
+    @Default(CodexNativePlanModeSupport.unknown)
+    CodexNativePlanModeSupport codexNativePlanModeSupport,
 
     // Sandbox mode - Freezed default is .on but Cubit constructor overrides
     // based on provider (Claude=off, Codex=on).

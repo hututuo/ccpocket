@@ -1001,6 +1001,10 @@ class AppLocalizationsKo extends AppLocalizations {
   String get disablePlanModeBody => 'Plan Mode를 비활성화하면 세션이 재시작됩니다. 대화는 유지됩니다.';
 
   @override
+  String get codexNativePlanModeUnavailable =>
+      '이 Codex 런타임은 네이티브 Plan 모드를 지원하지 않습니다. Codex를 업데이트하거나 호환되는 Bridge에 다시 연결하세요.';
+
+  @override
   String get changeSandboxModeTitle => '샌드박스 모드 변경';
 
   @override

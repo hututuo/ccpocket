@@ -17,6 +17,8 @@ class _MockBridgeService extends BridgeService {
   final _messageController = StreamController<ServerMessage>.broadcast();
   final _taggedController =
       StreamController<(ServerMessage, String?)>.broadcast();
+  final _sessionListController =
+      StreamController<List<SessionInfo>>.broadcast();
   final sentMessages = <ClientMessage>[];
   List<String> availableCodexModels = const [];
   Map<String, List<String>> availableCodexReasoningEfforts = const {};
@@ -25,6 +27,7 @@ class _MockBridgeService extends BridgeService {
     ChatSessionCubit.codexPermissionApplyStrategyCapability,
   };
   bool runtimePermissionApplyStrategySupported = true;
+  bool? runtimeNativePlanModeSupported;
 
   @override
   List<String> get codexModels => availableCodexModels;
@@ -41,6 +44,9 @@ class _MockBridgeService extends BridgeService {
   Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
 
   @override
+  Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
+
+  @override
   List<SessionInfo> get sessions => [
     SessionInfo(
       id: 'codex-session',
@@ -51,8 +57,14 @@ class _MockBridgeService extends BridgeService {
       lastActivityAt: '',
       codexPermissionApplyStrategySupported:
           runtimePermissionApplyStrategySupported,
+      codexNativePlanModeSupported: runtimeNativePlanModeSupported,
     ),
   ];
+
+  void emitNativePlanModeSupport(bool? supported) {
+    runtimeNativePlanModeSupported = supported;
+    _sessionListController.add(sessions);
+  }
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
     _taggedController.add((msg, sessionId));
@@ -93,6 +105,7 @@ class _MockBridgeService extends BridgeService {
   void dispose() {
     _messageController.close();
     _taggedController.close();
+    _sessionListController.close();
     super.dispose();
   }
 }
@@ -561,6 +574,32 @@ void main() {
     expect(message['planMode'], true);
     expect(message['executionMode'], 'default');
   });
+
+  testWidgets(
+    'explicitly unsupported native Plan shows localized guidance without switching',
+    (tester) async {
+      bridge.emitNativePlanModeSupport(false);
+      bridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.idle),
+        sessionId: 'codex-session',
+      );
+      await tester.pumpWidget(_wrap(cubit));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.text('Plan Off'));
+      await tester.pump();
+
+      expect(
+        find.text(
+          'This Codex runtime does not provide native Plan mode. '
+          'Update Codex or reconnect to a compatible Bridge.',
+        ),
+        findsOneWidget,
+      );
+      expect(cubit.state.planMode, isFalse);
+      expect(bridge.sentMessages, isEmpty);
+    },
+  );
 
   testWidgets(
     'codex permissions can apply from the next turn without restart',

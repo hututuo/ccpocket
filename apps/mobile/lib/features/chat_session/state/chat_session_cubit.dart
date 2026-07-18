@@ -203,9 +203,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _onGoalConnectionState,
       );
       _goalSessionListSubscription = _bridge.sessionList.listen(
-        _updateGoalSupportFromSessions,
+        _updateCodexRuntimeSupportFromSessions,
       );
-      _updateGoalSupportFromSessions(_bridge.sessions);
+      _updateCodexRuntimeSupportFromSessions(_bridge.sessions);
     }
 
     _restoreCachedRuntimeMessages();
@@ -241,7 +241,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void _onGoalConnectionState(BridgeConnectionState connectionState) {
     if (!isCodex || isClosed) return;
     if (connectionState == BridgeConnectionState.connected) {
-      _updateGoalSupportFromSessions(_bridge.sessions);
+      _updateCodexRuntimeSupportFromSessions(_bridge.sessions);
       requestGoal();
       return;
     }
@@ -253,11 +253,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _goalReadTimer = null;
     _goalReadPending = false;
     _goalUserRefreshPending = false;
-    if (state.goalSupport != CodexGoalSupport.unknown ||
+    if (state.codexNativePlanModeSupport !=
+            CodexNativePlanModeSupport.unknown ||
+        state.goalSupport != CodexGoalSupport.unknown ||
         state.goalStateLoaded ||
         state.goalLoadErrorKind != CodexGoalErrorKind.disconnected) {
       emit(
         state.copyWith(
+          codexNativePlanModeSupport: CodexNativePlanModeSupport.unknown,
           goalSupport: CodexGoalSupport.unknown,
           goalStateLoaded: false,
           advancedGoalControlSupported: false,
@@ -265,6 +268,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           goalLoadErrorKind: CodexGoalErrorKind.disconnected,
         ),
       );
+    }
+  }
+
+  void _updateCodexRuntimeSupportFromSessions(List<SessionInfo> sessions) {
+    _updateNativePlanModeSupportFromSessions(sessions);
+    _updateGoalSupportFromSessions(sessions);
+  }
+
+  void _updateNativePlanModeSupportFromSessions(List<SessionInfo> sessions) {
+    if (!isCodex || isClosed) return;
+    bool? supported;
+    for (final session in sessions) {
+      if (session.id == sessionId) {
+        supported = session.codexNativePlanModeSupported;
+        break;
+      }
+    }
+    final next = switch (supported) {
+      true => CodexNativePlanModeSupport.supported,
+      false => CodexNativePlanModeSupport.unsupported,
+      null => CodexNativePlanModeSupport.unknown,
+    };
+    if (state.codexNativePlanModeSupport != next) {
+      emit(state.copyWith(codexNativePlanModeSupport: next));
     }
   }
 
@@ -2352,6 +2379,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
       return;
     }
+    if (isCodex &&
+        planMode == true &&
+        state.codexNativePlanModeSupport ==
+            CodexNativePlanModeSupport.unsupported) {
+      logger.warning(
+        '[session:$sessionId] Native Plan mode is unsupported; ignoring mode update',
+      );
+      return;
+    }
     final nextExecution = executionMode ?? state.executionMode;
     final nextPlanMode = planMode ?? state.planMode;
     final legacyMode = legacyPermissionModeFromModes(
@@ -2633,10 +2669,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _rollbackFailedModeChange(ErrorMessage msg) {
+    final nativePlanModeUnsupported =
+        msg.errorCode == 'codex_native_plan_mode_unsupported';
     if (_isPermissionModeFailure(msg)) {
       final pendingChangeId = _pendingPermissionChangeId;
       if (pendingChangeId != null &&
           msg.permissionChangeId != pendingChangeId) {
+        if (nativePlanModeUnsupported) {
+          _applyNativePlanModeUnsupportedRollback();
+        }
         return;
       }
       final previous = _pendingPermissionRollback;
@@ -2706,6 +2747,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _pendingPermissionRestartApprovalRollback = null;
     }
 
+    if (nativePlanModeUnsupported) {
+      _applyNativePlanModeUnsupportedRollback();
+    }
+
     if (_isSandboxModeFailure(msg)) {
       final previous = _pendingSandboxRollback;
       _pendingSandboxRollback = null;
@@ -2721,6 +2766,51 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           });
         }
       }
+    }
+  }
+
+  void _applyNativePlanModeUnsupportedRollback() {
+    final needsModeReset =
+        state.planMode ||
+        state.inPlanMode ||
+        state.permissionMode == PermissionMode.plan;
+    final legacyMode = legacyPermissionModeFromModes(
+      provider ?? Provider.codex,
+      executionMode: state.executionMode,
+      planMode: false,
+    );
+    final rollbackPermissionMode = needsModeReset
+        ? legacyMode
+        : state.permissionMode;
+    if (needsModeReset ||
+        state.codexNativePlanModeSupport !=
+            CodexNativePlanModeSupport.unsupported) {
+      emit(
+        state.copyWith(
+          permissionMode: rollbackPermissionMode,
+          planMode: false,
+          inPlanMode: false,
+          codexNativePlanModeSupport: CodexNativePlanModeSupport.unsupported,
+        ),
+      );
+    }
+    if (!needsModeReset) return;
+    _bridge.patchSessionModes(
+      sessionId,
+      permissionMode: rollbackPermissionMode.value,
+      executionMode: state.executionMode.value,
+      planMode: false,
+      approvalPolicy: state.codexApprovalPolicy.value,
+      approvalsReviewer: state.codexApprovalsReviewer,
+      codexPermissionsMode: state.codexPermissionsMode.value,
+    );
+    final providerSessionId = state.claudeSessionId;
+    if (providerSessionId != null && providerSessionId.isNotEmpty) {
+      _SessionSettingsHelper.save(providerSessionId, {
+        'permissionMode': rollbackPermissionMode.value,
+        'executionMode': state.executionMode.value,
+        'planMode': false,
+      });
     }
   }
 
@@ -2794,6 +2884,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   bool _isPermissionModeFailure(ErrorMessage msg) {
     return msg.errorCode == 'set_permission_mode_rejected' ||
+        msg.errorCode == 'codex_native_plan_mode_unsupported' ||
+        msg.errorCode == 'codex_native_plan_mode_probe_retry' ||
         msg.errorCode == 'auto_mode_unavailable' ||
         msg.message.startsWith('Failed to set permission mode:') ||
         msg.message.startsWith(

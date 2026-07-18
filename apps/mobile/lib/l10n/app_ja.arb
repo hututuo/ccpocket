@@ -407,6 +407,7 @@
   "disablePlanModeTitle": "Plan Mode を無効化",
   "enablePlanModeBody": "Plan Mode を有効化するとセッションが再起動します。会話は保持されます。",
   "disablePlanModeBody": "Plan Mode を無効化するとセッションが再起動します。会話は保持されます。",
+  "codexNativePlanModeUnavailable": "この Codex ランタイムはネイティブ Plan モードに対応していません。Codex を更新するか、互換性のある Bridge に再接続してください。",
   "changeSandboxModeTitle": "Sandbox Mode を変更",
   "changeSandboxModeBody": "{mode} に切り替えるとセッションが再起動します。会話は保持されます。",
   "@changeSandboxModeBody": {

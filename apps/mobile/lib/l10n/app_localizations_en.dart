@@ -1035,6 +1035,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'Disabling Plan Mode will restart the session. Your conversation will be preserved.';
 
   @override
+  String get codexNativePlanModeUnavailable =>
+      'This Codex runtime does not provide native Plan mode. Update Codex or reconnect to a compatible Bridge.';
+
+  @override
   String get changeSandboxModeTitle => 'Change Sandbox Mode';
 
   @override

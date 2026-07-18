@@ -697,6 +697,7 @@ void main() {
             'createdAt': '',
             'lastActivityAt': '',
             'codexPermissionApplyStrategySupported': true,
+            'codexNativePlanModeSupported': true,
           },
         ],
         'allowedDirs': const [],
@@ -746,8 +747,41 @@ void main() {
         sessionList.sessions.single.codexPermissionApplyStrategySupported,
         isTrue,
       );
+      expect(sessionList.sessions.single.codexNativePlanModeSupported, isTrue);
       expect(sessionList.defaultCodexProfile, 'ccpocket');
     });
+
+    test(
+      'SessionInfo distinguishes explicit native Plan refusal from an old Bridge',
+      () {
+        final unsupported = SessionInfo.fromJson({
+          'id': 'unsupported',
+          'provider': 'codex',
+          'projectPath': '/tmp/project',
+          'status': 'idle',
+          'createdAt': '',
+          'lastActivityAt': '',
+          'codexNativePlanModeSupported': false,
+        });
+        final oldBridge = SessionInfo.fromJson({
+          'id': 'old-bridge',
+          'provider': 'codex',
+          'projectPath': '/tmp/project',
+          'status': 'idle',
+          'createdAt': '',
+          'lastActivityAt': '',
+        });
+
+        expect(unsupported.codexNativePlanModeSupported, isFalse);
+        expect(oldBridge.codexNativePlanModeSupported, isNull);
+        expect(
+          unsupported
+              .copyWith(clearCodexNativePlanModeSupported: true)
+              .codexNativePlanModeSupported,
+          isNull,
+        );
+      },
+    );
 
     test('RecentSessionsMessage parses request metadata', () {
       final msg = ServerMessage.fromJson({

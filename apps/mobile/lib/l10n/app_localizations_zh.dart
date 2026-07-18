@@ -992,6 +992,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get disablePlanModeBody => '关闭 Plan Mode 会重启当前会话。你的对话会被保留。';
 
   @override
+  String get codexNativePlanModeUnavailable =>
+      '当前 Codex 运行时不支持原生 Plan 模式。请更新 Codex，或重新连接兼容的 Bridge。';
+
+  @override
   String get changeSandboxModeTitle => '更改沙箱模式';
 
   @override

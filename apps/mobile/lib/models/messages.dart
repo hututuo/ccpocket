@@ -3818,6 +3818,7 @@ class SessionInfo {
   final String? codexWebSearchMode;
   final List<String> codexAdditionalWritableRoots;
   final bool codexPermissionApplyStrategySupported;
+  final bool? codexNativePlanModeSupported;
   final bool? codexGoalControlSupported;
   final PermissionRequestMessage? pendingPermission;
   final QueuedInputItem? queuedInput;
@@ -3853,6 +3854,7 @@ class SessionInfo {
     this.codexWebSearchMode,
     this.codexAdditionalWritableRoots = const [],
     this.codexPermissionApplyStrategySupported = false,
+    this.codexNativePlanModeSupported,
     this.codexGoalControlSupported,
     this.pendingPermission,
     this.queuedInput,
@@ -3897,6 +3899,8 @@ class SessionInfo {
     String? codexWebSearchMode,
     List<String>? codexAdditionalWritableRoots,
     bool? codexPermissionApplyStrategySupported,
+    bool? codexNativePlanModeSupported,
+    bool clearCodexNativePlanModeSupported = false,
     bool? codexGoalControlSupported,
     bool clearCodexGoalControlSupported = false,
     PermissionRequestMessage? pendingPermission,
@@ -3941,6 +3945,9 @@ class SessionInfo {
       codexPermissionApplyStrategySupported:
           codexPermissionApplyStrategySupported ??
           this.codexPermissionApplyStrategySupported,
+      codexNativePlanModeSupported: clearCodexNativePlanModeSupported
+          ? null
+          : (codexNativePlanModeSupported ?? this.codexNativePlanModeSupported),
       codexGoalControlSupported: clearCodexGoalControlSupported
           ? null
           : (codexGoalControlSupported ?? this.codexGoalControlSupported),
@@ -4003,6 +4010,8 @@ class SessionInfo {
       ),
       codexPermissionApplyStrategySupported:
           json['codexPermissionApplyStrategySupported'] as bool? ?? false,
+      codexNativePlanModeSupported:
+          json['codexNativePlanModeSupported'] as bool?,
       codexGoalControlSupported: json['codexGoalControlSupported'] as bool?,
       pendingPermission: permJson != null
           ? PermissionRequestMessage(

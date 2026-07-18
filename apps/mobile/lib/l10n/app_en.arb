@@ -400,6 +400,7 @@
   "disablePlanModeTitle": "Disable Plan Mode",
   "enablePlanModeBody": "Enabling Plan Mode will restart the session. Your conversation will be preserved.",
   "disablePlanModeBody": "Disabling Plan Mode will restart the session. Your conversation will be preserved.",
+  "codexNativePlanModeUnavailable": "This Codex runtime does not provide native Plan mode. Update Codex or reconnect to a compatible Bridge.",
   "changeSandboxModeTitle": "Change Sandbox Mode",
   "changeSandboxModeBody": "Switching to {mode} will restart the session. Your conversation will be preserved.",
   "@changeSandboxModeBody": {

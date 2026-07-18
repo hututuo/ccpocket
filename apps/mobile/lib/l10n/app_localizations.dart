@@ -1962,6 +1962,12 @@ abstract class AppLocalizations {
   /// **'Plan Mode を無効化するとセッションが再起動します。会話は保持されます。'**
   String get disablePlanModeBody;
 
+  /// No description provided for @codexNativePlanModeUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'この Codex ランタイムはネイティブ Plan モードに対応していません。Codex を更新するか、互換性のある Bridge に再接続してください。'**
+  String get codexNativePlanModeUnavailable;
+
   /// No description provided for @changeSandboxModeTitle.
   ///
   /// In ja, this message translates to:

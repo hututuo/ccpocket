@@ -630,6 +630,13 @@ Future<void> togglePlanMode(
 }) async {
   if (chatCubit.isPermissionChangePending) return;
   final nextPlanMode = !chatCubit.state.planMode;
+  if (chatCubit.isCodex &&
+      nextPlanMode &&
+      chatCubit.state.codexNativePlanModeSupport ==
+          CodexNativePlanModeSupport.unsupported) {
+    showCodexNativePlanModeUnavailable(context);
+    return;
+  }
   final hasPendingApproval = chatCubit.state.approval is! ApprovalNone;
   final l = AppLocalizations.of(context);
   final canToggleInPlace =
@@ -670,6 +677,19 @@ Future<void> togglePlanMode(
     await onBeforeRestart?.call();
     chatCubit.setSessionModes(planMode: nextPlanMode);
   }
+}
+
+void showCodexNativePlanModeUnavailable(BuildContext context) {
+  final messenger = ScaffoldMessenger.of(context);
+  messenger
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        content: Text(
+          AppLocalizations.of(context).codexNativePlanModeUnavailable,
+        ),
+      ),
+    );
 }
 
 void showSandboxModeMenu(

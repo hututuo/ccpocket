@@ -313,6 +313,7 @@
   "disablePlanModeTitle": "关闭 Plan Mode",
   "enablePlanModeBody": "启用 Plan Mode 会重启当前会话。你的对话会被保留。",
   "disablePlanModeBody": "关闭 Plan Mode 会重启当前会话。你的对话会被保留。",
+  "codexNativePlanModeUnavailable": "当前 Codex 运行时不支持原生 Plan 模式。请更新 Codex，或重新连接兼容的 Bridge。",
   "modelOptional": "模型（可选）",
   "effort": "Effort",
   "defaultLabel": "默认",

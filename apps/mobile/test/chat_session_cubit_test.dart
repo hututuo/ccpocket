@@ -13,16 +13,31 @@ class MockBridgeService extends BridgeService {
   final _messageController = StreamController<ServerMessage>.broadcast();
   final _taggedController =
       StreamController<(ServerMessage, String?)>.broadcast();
+  final _connectionController =
+      StreamController<BridgeConnectionState>.broadcast();
+  final _sessionListController =
+      StreamController<List<SessionInfo>>.broadcast();
   final sentMessages = <ClientMessage>[];
   final updatedOfflineInputs = <Map<String, dynamic>>[];
   final canceledOfflineInputs = <Map<String, dynamic>>[];
   final cachedMessagesBySession = <String, List<ServerMessage>>{};
   final historySeqBySession = <String, int>{};
   bool connected = true;
+  List<SessionInfo> sessionSnapshot = const [];
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
     _taggedController.add((msg, sessionId));
     _messageController.add(msg);
+  }
+
+  void emitConnection(BridgeConnectionState state) {
+    connected = state == BridgeConnectionState.connected;
+    _connectionController.add(state);
+  }
+
+  void emitSessions(List<SessionInfo> sessions) {
+    sessionSnapshot = sessions;
+    _sessionListController.add(sessions);
   }
 
   @override
@@ -30,6 +45,16 @@ class MockBridgeService extends BridgeService {
 
   @override
   bool get isConnected => connected;
+
+  @override
+  Stream<BridgeConnectionState> get connectionStatus =>
+      _connectionController.stream;
+
+  @override
+  Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
+
+  @override
+  List<SessionInfo> get sessions => sessionSnapshot;
 
   @override
   Stream<ServerMessage> messagesForSession(String sessionId) {
@@ -119,6 +144,8 @@ class MockBridgeService extends BridgeService {
   void dispose() {
     _messageController.close();
     _taggedController.close();
+    _connectionController.close();
+    _sessionListController.close();
     super.dispose();
   }
 }
@@ -160,6 +187,166 @@ void main() {
       expect(cubit.state.entries, isEmpty);
       expect(cubit.state.approval, isA<ApprovalNone>());
       expect(cubit.state.totalCost, 0.0);
+    });
+
+    test(
+      'Codex native Plan capability follows session_list and resets on disconnect',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        expect(
+          cubit.state.codexNativePlanModeSupport,
+          CodexNativePlanModeSupport.unknown,
+        );
+        mockBridge.emitSessions([
+          const SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            codexNativePlanModeSupported: true,
+          ),
+        ]);
+        await Future.microtask(() {});
+        expect(
+          cubit.state.codexNativePlanModeSupport,
+          CodexNativePlanModeSupport.supported,
+        );
+
+        mockBridge.emitSessions([
+          const SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            codexNativePlanModeSupported: false,
+          ),
+        ]);
+        await Future.microtask(() {});
+        expect(
+          cubit.state.codexNativePlanModeSupport,
+          CodexNativePlanModeSupport.unsupported,
+        );
+
+        mockBridge.emitSessions([
+          const SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await Future.microtask(() {});
+        expect(
+          cubit.state.codexNativePlanModeSupport,
+          CodexNativePlanModeSupport.unknown,
+        );
+
+        mockBridge.emitSessions([
+          const SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            codexNativePlanModeSupported: true,
+          ),
+        ]);
+        await Future.microtask(() {});
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        await Future.microtask(() {});
+        expect(
+          cubit.state.codexNativePlanModeSupport,
+          CodexNativePlanModeSupport.unknown,
+        );
+      },
+    );
+
+    test(
+      'unknown old Bridge can request Plan but an explicit refusal rolls it back',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        cubit.setSessionModes(planMode: true);
+        expect(cubit.state.planMode, isTrue);
+        expect(mockBridge.sentMessages.single.type, 'set_permission_mode');
+
+        mockBridge.emitMessage(
+          const ErrorMessage(
+            message: 'Native Codex Plan mode is unavailable.',
+            errorCode: 'codex_native_plan_mode_unsupported',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.planMode, isFalse);
+        expect(cubit.state.inPlanMode, isFalse);
+        expect(
+          cubit.state.codexNativePlanModeSupport,
+          CodexNativePlanModeSupport.unsupported,
+        );
+      },
+    );
+
+    test(
+      'inconclusive native Plan probe rolls back without caching unsupported',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        cubit.setSessionModes(planMode: true);
+        mockBridge.emitMessage(
+          const ErrorMessage(
+            message: 'Plan capability probe was inconclusive.',
+            errorCode: 'codex_native_plan_mode_probe_retry',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.planMode, isFalse);
+        expect(cubit.state.inPlanMode, isFalse);
+        expect(
+          cubit.state.codexNativePlanModeSupport,
+          CodexNativePlanModeSupport.unknown,
+        );
+
+        cubit.setSessionModes(planMode: true);
+        expect(cubit.state.planMode, isTrue);
+        expect(mockBridge.sentMessages, hasLength(2));
+      },
+    );
+
+    test('explicitly unsupported Codex runtime blocks Plan optimism', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      mockBridge.emitSessions([
+        const SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+          codexNativePlanModeSupported: false,
+        ),
+      ]);
+      await Future.microtask(() {});
+
+      cubit.setSessionModes(planMode: true);
+
+      expect(cubit.state.planMode, isFalse);
+      expect(mockBridge.sentMessages, isEmpty);
     });
 
     test('status message updates state.status', () async {
