@@ -5516,8 +5516,8 @@ export class BridgeWebSocketServer {
             pendingClients.add(ws);
             break;
           }
-          const waitingClients = new Set<WebSocket>();
-          this.pendingCodexResumeClients.set(sessionRefId, waitingClients);
+          const resumeClients = new Set<WebSocket>([ws]);
+          this.pendingCodexResumeClients.set(sessionRefId, resumeClients);
 
           try {
             const pastMessages = await this.getCodexThreadHistory(
@@ -5574,8 +5574,7 @@ export class BridgeWebSocketServer {
               effectiveProjectPath,
               sessionRefId,
             );
-            this.sendCodexResumeResult(ws, createdSession, sessionRefId);
-            for (const waitingClient of waitingClients) {
+            for (const waitingClient of resumeClients) {
               this.sendCodexResumeResult(
                 waitingClient,
                 createdSession,
@@ -5596,14 +5595,13 @@ export class BridgeWebSocketServer {
               type: "error",
               message: `Failed to load Codex session history: ${err}`,
             } as const;
-            this.send(ws, error);
-            for (const waitingClient of waitingClients) {
+            for (const waitingClient of resumeClients) {
               this.send(waitingClient, error);
             }
           } finally {
             if (
               this.pendingCodexResumeClients.get(sessionRefId) ===
-              waitingClients
+              resumeClients
             ) {
               this.pendingCodexResumeClients.delete(sessionRefId);
             }

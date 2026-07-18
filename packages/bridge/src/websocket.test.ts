@@ -639,6 +639,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       sessions: [{ sessionId: "s1", projectPath: "/tmp/project" }],
       hasMore: true,
     });
+    await (bridge as any).archiveStoreReady;
 
     (bridge as any).handleClientMessage(
       {
@@ -651,13 +652,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       },
       ws,
     );
-    await Promise.resolve();
-    await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const recent = ws.send.mock.calls
-      .map((c: unknown[]) => JSON.parse(c[0] as string))
-      .find((m: any) => m.type === "recent_sessions");
+    let recent: any;
+    await vi.waitFor(() => {
+      recent = ws.send.mock.calls
+        .map((c: unknown[]) => JSON.parse(c[0] as string))
+        .find((m: any) => m.type === "recent_sessions");
+      expect(recent).toBeDefined();
+    });
     expect(recent).toMatchObject({
       type: "recent_sessions",
       hasMore: true,
@@ -693,6 +694,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
             resolveList = resolve;
           }),
       );
+    await (bridge as any).archiveStoreReady;
 
     (bridge as any).handleClientMessage(
       {
@@ -714,6 +716,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       },
       ws,
     );
+
+    await vi.waitFor(() => {
+      expect(resolveProject).toBeTypeOf("function");
+      expect(resolveList).toBeTypeOf("function");
+    });
 
     resolveProject?.({
       sessions: [{ sessionId: "stale", projectPath: "/tmp/project" }],
@@ -2116,6 +2123,88 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         )?.sessionId,
     );
     expect(createdSessionIds).toEqual(["s-1", "s-1"]);
+
+    bridge.close();
+  });
+
+  it("sends one Codex resume result when the same client retries concurrently", async () => {
+    let resolveHistory:
+      ((messages: Array<Record<string, unknown>>) => void) | undefined;
+    getCodexSessionHistoryMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveHistory = resolve;
+        }),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const request = {
+      type: "resume_session",
+      sessionId: "thr_same_client_concurrent",
+      projectPath: "/tmp/project-a",
+      provider: "codex",
+    };
+
+    const firstResume = (bridge as any).handleClientMessage(request, ws);
+    await Promise.resolve();
+    const retryResume = (bridge as any).handleClientMessage(request, ws);
+    await Promise.resolve();
+    resolveHistory?.([]);
+    await Promise.all([firstResume, retryResume]);
+
+    const createdMessages = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    expect(createdMessages).toHaveLength(1);
+    expect(createdMessages[0]).toMatchObject({
+      sessionId: "s-1",
+      claudeSessionId: "thr_same_client_concurrent",
+    });
+
+    bridge.close();
+  });
+
+  it("sends one Codex resume error when the same client retries concurrently", async () => {
+    let rejectHistory: ((reason: Error) => void) | undefined;
+    getCodexSessionHistoryMock.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectHistory = reject;
+        }),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const request = {
+      type: "resume_session",
+      sessionId: "thr_same_client_failure",
+      projectPath: "/tmp/project-a",
+      provider: "codex",
+    };
+
+    const firstResume = (bridge as any).handleClientMessage(request, ws);
+    await Promise.resolve();
+    const retryResume = (bridge as any).handleClientMessage(request, ws);
+    await Promise.resolve();
+    rejectHistory?.(new Error("history unavailable"));
+    await Promise.all([firstResume, retryResume]);
+
+    const errors = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter(
+        (message: any) =>
+          message.type === "error" &&
+          String(message.message).includes("history unavailable"),
+      );
+    expect(errors).toHaveLength(1);
 
     bridge.close();
   });
