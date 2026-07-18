@@ -9162,7 +9162,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       limit: 20,
       cwd: "/tmp/project-codex",
       searchTerm: undefined,
-      sourceKinds: ["cli", "vscode", "appServer"],
+      sourceKinds: ["cli", "vscode", "exec", "appServer"],
     });
     expect(getCodexSessionIndexMetadataMock).toHaveBeenCalledWith([
       "thr_codex_1",
@@ -9334,7 +9334,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       limit: 20,
       cwd: undefined,
       searchTerm: undefined,
-      sourceKinds: ["cli", "vscode", "appServer"],
+      sourceKinds: ["cli", "vscode", "exec", "appServer"],
     });
     expect(payload.hasMore).toBe(false);
     expect(payload.sessions.map((s: any) => s.sessionId)).toEqual([

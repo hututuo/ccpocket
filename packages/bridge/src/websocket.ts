@@ -436,6 +436,7 @@ function fallbackCodexServiceTiers(model: string): string[] {
 const CODEX_RECENT_THREAD_SOURCE_KINDS: CodexThreadSourceKind[] = [
   "cli",
   "vscode",
+  "exec",
   "appServer",
 ];
 
