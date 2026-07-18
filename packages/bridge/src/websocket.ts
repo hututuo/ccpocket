@@ -440,6 +440,10 @@ const CODEX_RECENT_THREAD_SOURCE_KINDS: CodexThreadSourceKind[] = [
   "exec",
   "appServer",
 ];
+const CODEX_RECENT_THREAD_MIN_PAGE_SIZE = 20;
+const CODEX_RECENT_THREAD_MAX_PAGE_SIZE = 100;
+const CODEX_RECENT_THREAD_MAX_SCAN_PAGES = 25;
+const CODEX_RECENT_THREAD_MAX_SCANNED_THREADS = 1_000;
 
 const CODEX_USER_TURN_UUID_RE = /^codex:user-turn:(\d+)$/;
 
@@ -874,6 +878,16 @@ function codexThreadToRecentSession(
     isSidechain: false,
     ...(indexed?.codexSettings ? { codexSettings: indexed.codexSettings } : {}),
   };
+}
+
+function canonicalRecentProjectPath(
+  input: string,
+  platform: NodeJS.Platform,
+): string {
+  const normalized = normalizeWorktreePath(
+    resolvePlatformPath(input, platform),
+  );
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function recentSessionModifiedTime(session: unknown): number {
@@ -8024,25 +8038,54 @@ export class BridgeWebSocketServer {
       const visibleThreads: CodexThreadSummary[] = [];
       let cursor: string | null | undefined;
       let hasServerMore = false;
+      let scanBoundReached = false;
+      let scannedPages = 0;
+      let scannedThreads = 0;
       const targetCount = offset + limit;
+      const serverPageSize = Math.min(
+        Math.max(targetCount, CODEX_RECENT_THREAD_MIN_PAGE_SIZE),
+        CODEX_RECENT_THREAD_MAX_PAGE_SIZE,
+      );
+      const requestedProjectPath = msg.projectPath
+        ? canonicalRecentProjectPath(msg.projectPath, this.platform)
+        : null;
 
       do {
+        const remainingScanBudget =
+          CODEX_RECENT_THREAD_MAX_SCANNED_THREADS - scannedThreads;
         const request: Parameters<CodexProcess["listThreads"]>[0] = {
-          limit: Math.max(limit, 1),
-          cwd: msg.projectPath,
+          limit: Math.min(serverPageSize, remainingScanBudget),
           searchTerm: msg.searchQuery,
           sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
         };
         if (cursor != null) request.cursor = cursor;
 
         const result = await process.listThreads(request);
-        for (const thread of result.data) {
+        scannedPages += 1;
+        const scannedPage = result.data.slice(0, remainingScanBudget);
+        scannedThreads += scannedPage.length;
+        for (const thread of scannedPage) {
+          if (
+            requestedProjectPath &&
+            (!thread.cwd.trim() ||
+              canonicalRecentProjectPath(thread.cwd, this.platform) !==
+                requestedProjectPath)
+          ) {
+            continue;
+          }
           if (archivedIds.has(thread.id)) continue;
           if (msg.namedOnly && !thread.name) continue;
           visibleThreads.push(thread);
         }
         cursor = result.nextCursor;
         hasServerMore = cursor != null;
+        scanBoundReached =
+          result.data.length > scannedPage.length ||
+          (hasServerMore &&
+            (scannedPages >= CODEX_RECENT_THREAD_MAX_SCAN_PAGES ||
+              scannedThreads >=
+                CODEX_RECENT_THREAD_MAX_SCANNED_THREADS));
+        if (scanBoundReached) break;
       } while (visibleThreads.length < targetCount && cursor != null);
 
       const pageThreads = visibleThreads.slice(offset, offset + limit);
@@ -8054,7 +8097,10 @@ export class BridgeWebSocketServer {
       );
       return {
         sessions,
-        hasMore: hasServerMore || visibleThreads.length > offset + limit,
+        hasMore:
+          scanBoundReached ||
+          hasServerMore ||
+          visibleThreads.length > offset + limit,
       };
     } finally {
       if (isStandalone) {

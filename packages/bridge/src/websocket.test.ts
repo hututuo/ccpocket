@@ -9481,7 +9481,6 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
     expect(session.process.listThreads).toHaveBeenCalledWith({
       limit: 20,
-      cwd: "/tmp/project-codex",
       searchTerm: undefined,
       sourceKinds: ["cli", "vscode", "exec", "appServer"],
     });
@@ -9509,6 +9508,152 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         model: "gpt-5.3-codex",
       },
     });
+
+    bridge.close();
+  });
+
+  it("paginates unscoped codex thread/list and filters worktrees locally", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const stop = vi.fn();
+    const listThreads = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "thr_other_project",
+            preview: "Unrelated thread",
+            createdAt: 1771492643,
+            updatedAt: 1771496244,
+            cwd: "/tmp/other-project",
+            agentNickname: null,
+            agentRole: null,
+            gitBranch: null,
+            name: null,
+          },
+        ],
+        nextCursor: "next-page",
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "thr_project_worktree",
+            preview: "Worktree thread",
+            createdAt: 1771492643,
+            updatedAt: 1771496243,
+            cwd: "/tmp/project-codex-worktrees/fix-tests",
+            agentNickname: null,
+            agentRole: null,
+            gitBranch: "fix/tests",
+            name: "Worktree fixes",
+          },
+        ],
+        nextCursor: null,
+      });
+
+    (bridge as any).createStandaloneCodexProcess = vi.fn(async () => ({
+      listThreads,
+      stop,
+    }));
+
+    const payload = await (bridge as any).listRecentCodexThreads({
+      type: "list_recent_sessions",
+      provider: "codex",
+      projectPath: "/tmp/project-codex",
+      limit: 1,
+    });
+
+    expect(listThreads).toHaveBeenNthCalledWith(1, {
+      limit: 20,
+      searchTerm: undefined,
+      sourceKinds: ["cli", "vscode", "exec", "appServer"],
+    });
+    expect(listThreads).toHaveBeenNthCalledWith(2, {
+      limit: 20,
+      cursor: "next-page",
+      searchTerm: undefined,
+      sourceKinds: ["cli", "vscode", "exec", "appServer"],
+    });
+    expect(payload).toMatchObject({
+      hasMore: false,
+      sessions: [
+        {
+          sessionId: "thr_project_worktree",
+          projectPath: "/tmp/project-codex",
+          resumeCwd: "/tmp/project-codex-worktrees/fix-tests",
+        },
+      ],
+    });
+    expect(stop).toHaveBeenCalledTimes(1);
+
+    bridge.close();
+  });
+
+  it("bounds unscoped codex scanning by page count and reports more results", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const stop = vi.fn();
+    const listThreads = vi.fn(async () => ({
+      data: [],
+      nextCursor: "cursor-that-keeps-going",
+    }));
+    (bridge as any).createStandaloneCodexProcess = vi.fn(async () => ({
+      listThreads,
+      stop,
+    }));
+
+    const payload = await (bridge as any).listRecentCodexThreads({
+      type: "list_recent_sessions",
+      provider: "codex",
+      projectPath: "/tmp/sparse-project",
+      limit: 1,
+    });
+
+    expect(listThreads).toHaveBeenCalledTimes(25);
+    expect(payload).toEqual({ sessions: [], hasMore: true });
+    expect(stop).toHaveBeenCalledTimes(1);
+
+    bridge.close();
+  });
+
+  it("bounds unscoped codex scanning by thread count without losing search", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const stop = vi.fn();
+    const unrelatedThreads = Array.from({ length: 100 }, (_, index) => ({
+      id: `thr_unrelated_${index}`,
+      preview: "Search match in another project",
+      createdAt: 1771492643,
+      updatedAt: 1771496243 - index,
+      cwd: "/tmp/other-project",
+      agentNickname: null,
+      agentRole: null,
+      gitBranch: null,
+      name: null,
+    }));
+    const listThreads = vi.fn(async () => ({
+      data: unrelatedThreads,
+      nextCursor: "more-matching-search-results",
+    }));
+    (bridge as any).createStandaloneCodexProcess = vi.fn(async () => ({
+      listThreads,
+      stop,
+    }));
+
+    const payload = await (bridge as any).listRecentCodexThreads({
+      type: "list_recent_sessions",
+      provider: "codex",
+      projectPath: "/tmp/sparse-project",
+      searchQuery: "Search match",
+      limit: 100,
+    });
+
+    expect(listThreads).toHaveBeenCalledTimes(10);
+    expect(listThreads).toHaveBeenLastCalledWith({
+      limit: 100,
+      cursor: "more-matching-search-results",
+      searchTerm: "Search match",
+      sourceKinds: ["cli", "vscode", "exec", "appServer"],
+    });
+    expect(payload).toEqual({ sessions: [], hasMore: true });
+    expect(stop).toHaveBeenCalledTimes(1);
 
     bridge.close();
   });
