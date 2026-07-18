@@ -27,6 +27,8 @@ export { buildCodexSpawnSpec };
 
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const COMPLETION_FETCH_COOLDOWN_MS = 1000;
+const NATIVE_PLAN_MODE_PROBE_TIMEOUT_MS = 1500;
+const NATIVE_PLAN_MODE_EXPLICIT_PROBE_TIMEOUT_MS = 5000;
 const CODEX_CLI_NOT_FOUND_MESSAGE =
   "Codex CLI is not installed or not available on PATH on the Bridge machine. Install it with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`, then restart Bridge.";
 
@@ -183,6 +185,23 @@ export class CodexRpcError extends Error {
   }
 }
 
+export class CodexNativePlanModeUnsupportedError extends Error {
+  constructor() {
+    super(
+      "Native Codex Plan mode is unavailable on this app-server. The conversation was not started in Plan mode.",
+    );
+    this.name = "CodexNativePlanModeUnsupportedError";
+  }
+}
+
+export class CodexNativePlanModeProbeRetryError extends Error {
+  constructor() {
+    super(
+      "Native Codex Plan mode support could not be confirmed. Retry after the app-server becomes responsive.",
+    );
+    this.name = "CodexNativePlanModeProbeRetryError";
+  }
+}
 function isUnsupportedClientUserMessageIdError(error: unknown): boolean {
   if (!(error instanceof CodexRpcError)) return false;
   let detail = error.message;
@@ -475,6 +494,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     | "supported"
     | "unsupported" = "unknown";
   private _collaborationMode: "plan" | "default" = "default";
+  private _nativePlanModeSupport:
+    | "unknown"
+    | "supported"
+    | "unsupported" = "unknown";
+  private _nativePlanModeProbe: Promise<boolean> | null = null;
+  private _runtimeGeneration = 0;
   private _runtimeModel: string | undefined;
   private _runtimeModelReasoningEffort:
     CodexStartOptions["modelReasoningEffort"] | undefined;
@@ -554,6 +579,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   get supportsNextTurnPermissionUpdates(): boolean {
     return this._supportsNextTurnPermissionUpdates;
+  }
+
+  /** True only after this exact app-server process advertises a Plan preset. */
+  get supportsNativePlanMode(): boolean {
+    return this._nativePlanModeSupport === "supported";
+  }
+
+  /** False means the runtime probe is still pending or has not started. */
+  get nativePlanModeCapabilityKnown(): boolean {
+    return this._nativePlanModeSupport !== "unknown";
   }
 
   get model(): string {
@@ -769,6 +804,82 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
   }
 
+  /**
+   * Probe the experimental Plan preset on this exact app-server process.
+   *
+   * A successful RPC is not enough: the response must advertise a concrete
+   * `plan` mode. Until that happens, turn/start stays on the stable schema and
+   * omits collaborationMode entirely.
+   */
+  probeNativePlanModeSupport(
+    requestTimeoutMs = NATIVE_PLAN_MODE_PROBE_TIMEOUT_MS,
+  ): Promise<boolean> {
+    if (this._nativePlanModeSupport !== "unknown") {
+      return Promise.resolve(this.supportsNativePlanMode);
+    }
+    if (this._nativePlanModeProbe) return this._nativePlanModeProbe;
+
+    const generation = this._runtimeGeneration;
+    let probe!: Promise<boolean>;
+    probe = this.request(
+      "collaborationMode/list",
+      {},
+      { timeoutMs: requestTimeoutMs },
+    )
+      .then((response) => classifyNativePlanModeResponse(response))
+      .catch((error) => {
+        const result = isNativePlanModeMethodUnsupported(error)
+          ? "unsupported"
+          : "unknown";
+        console.log(
+          `[codex-process] native Plan mode probe ${result}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return result;
+      })
+      .then((support) => {
+        if (this.stopped || generation !== this._runtimeGeneration) {
+          return false;
+        }
+        if (support === "unknown") {
+          console.warn(
+            "[codex-process] native Plan mode probe was inconclusive; keeping capability unknown for retry",
+          );
+          return false;
+        }
+        this._nativePlanModeSupport = support;
+        const supported = support === "supported";
+        this.emitMessage({
+          type: "system",
+          subtype: "runtime_capabilities",
+          provider: "codex",
+          ...(this._threadId ? { sessionId: this._threadId } : {}),
+          codexNativePlanModeSupported: supported,
+        });
+        return supported;
+      })
+      .finally(() => {
+        if (this._nativePlanModeProbe === probe) {
+          this._nativePlanModeProbe = null;
+        }
+      });
+
+    this._nativePlanModeProbe = probe;
+    return probe;
+  }
+
+  async confirmNativePlanModeSupportForUserAction(): Promise<boolean> {
+    const inheritedProbe = this._nativePlanModeProbe;
+    const supported = await this.probeNativePlanModeSupport(
+      NATIVE_PLAN_MODE_EXPLICIT_PROBE_TIMEOUT_MS,
+    );
+    if (supported || this.nativePlanModeCapabilityKnown || !inheritedProbe) {
+      return supported;
+    }
+    return this.probeNativePlanModeSupport(
+      NATIVE_PLAN_MODE_EXPLICIT_PROBE_TIMEOUT_MS,
+    );
+  }
+
   private async waitForPendingThreadSettingsUpdate(): Promise<void> {
     while (true) {
       const pending = this._pendingThreadSettingsUpdate;
@@ -837,10 +948,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     return {
       model,
       ...(effort !== undefined ? { effort } : {}),
-      collaborationMode: {
-        mode: this._collaborationMode,
-        settings: modeSettings,
-      },
+      ...(this.supportsNativePlanMode
+        ? {
+            collaborationMode: {
+              mode: this._collaborationMode,
+              settings: modeSettings,
+            },
+          }
+        : {}),
     };
   }
 
@@ -935,6 +1050,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
    * Takes effect on the next `turn/start` RPC call.
    */
   setCollaborationMode(mode: "plan" | "default"): void {
+    if (mode === "plan") {
+      if (!this.nativePlanModeCapabilityKnown) {
+        throw new CodexNativePlanModeProbeRetryError();
+      }
+      if (!this.supportsNativePlanMode) {
+        throw new CodexNativePlanModeUnsupportedError();
+      }
+    }
     this._collaborationMode = mode;
     console.log(`[codex-process] Collaboration mode changed to: ${mode}`);
   }
@@ -1357,6 +1480,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     options?: CodexStartOptions,
   ): void {
     this.stopped = false;
+    this._runtimeGeneration += 1;
     this._threadId = null;
     this._agentNickname = null;
     this._agentRole = null;
@@ -1393,6 +1517,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._supportsNextTurnPermissionUpdates = false;
     this._threadSettingsUpdateMethodSupport = "unknown";
     this._collaborationMode = options?.collaborationMode ?? "default";
+    this._nativePlanModeSupport = "unknown";
+    this._nativePlanModeProbe = null;
     this.lastPlanItemText = null;
     this.lastResultText = null;
     this.pendingPlanCompletion = null;
@@ -2035,6 +2161,21 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     try {
       await this.initializeRpcConnection();
 
+      // A requested Plan session must never silently run as an ordinary turn.
+      // Block only that path on the experimental capability probe; default
+      // sessions continue immediately and probe in the background below.
+      if (
+        this._collaborationMode === "plan" &&
+        !(await this.probeNativePlanModeSupport(
+          NATIVE_PLAN_MODE_EXPLICIT_PROBE_TIMEOUT_MS,
+        ))
+      ) {
+        this._collaborationMode = "default";
+        throw this.nativePlanModeCapabilityKnown
+          ? new CodexNativePlanModeUnsupportedError()
+          : new CodexNativePlanModeProbeRetryError();
+      }
+
       const requestedApprovalPolicy = options?.approvalPolicy
         ? normalizeApprovalPolicy(options.approvalPolicy)
         : undefined;
@@ -2205,6 +2346,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         subtype: "init",
         sessionId: threadId,
         provider: "codex",
+        ...(this.nativePlanModeCapabilityKnown
+          ? { codexNativePlanModeSupported: this.supportsNativePlanMode }
+          : {}),
         ...(sanitizeCodexModel(this.startModel)
           ? { model: sanitizeCodexModel(this.startModel) }
           : {}),
@@ -2258,6 +2402,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this._projectPath = projectPath;
       setTimeout(() => {
         if (!this.stopped) {
+          void this.probeNativePlanModeSupport();
           void this.probeNextTurnPermissionUpdates();
           void this.fetchCompletionEntities(projectPath);
         }
@@ -2268,7 +2413,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       if (!this.stopped) {
         const message = err instanceof Error ? err.message : String(err);
         console.error("[codex-process] bootstrap error:", err);
-        this.emitMessage({ type: "error", message: `Codex error: ${message}` });
+        const nativePlanModeError =
+          err instanceof CodexNativePlanModeUnsupportedError ||
+          err instanceof CodexNativePlanModeProbeRetryError;
+        this.emitMessage({
+          type: "error",
+          message: nativePlanModeError ? message : `Codex error: ${message}`,
+          ...(err instanceof CodexNativePlanModeUnsupportedError
+            ? { errorCode: "codex_native_plan_mode_unsupported" }
+            : err instanceof CodexNativePlanModeProbeRetryError
+              ? { errorCode: "codex_native_plan_mode_probe_retry" }
+              : {}),
+        });
         this.emitMessage({
           type: "result",
           subtype: "error",
@@ -2714,24 +2870,27 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           params.serviceTier = this._runtimeServiceTier;
         }
 
-        // Always send collaborationMode so the server switches modes correctly.
-        // Omitting it causes the server to persist the previous turn's mode.
-        const modeSettings: Record<string, unknown> = {
-          model:
-            requestedModel ||
-            sanitizeCodexModel(this.startModel) ||
-            DEFAULT_CODEX_MODEL,
-        };
-        if (requestedReasoningEffort) {
-          modeSettings.reasoning_effort = requestedReasoningEffort;
+        // collaborationMode is experimental. Send it only after this exact
+        // app-server process advertises a native Plan preset; stable/older
+        // servers receive the ordinary stable turn/start shape.
+        if (this.supportsNativePlanMode) {
+          const modeSettings: Record<string, unknown> = {
+            model:
+              requestedModel ||
+              sanitizeCodexModel(this.startModel) ||
+              DEFAULT_CODEX_MODEL,
+          };
+          if (requestedReasoningEffort) {
+            modeSettings.reasoning_effort = requestedReasoningEffort;
+          }
+          params.collaborationMode = {
+            mode: this._collaborationMode,
+            settings: modeSettings,
+          };
         }
-        params.collaborationMode = {
-          mode: this._collaborationMode,
-          settings: modeSettings,
-        };
 
         console.log(
-          `[codex-process] turn/start: approval=${params.approvalPolicy}, sandbox=${this._runtimeSandboxMode ?? "config"}, collaboration=${this._collaborationMode}`,
+          `[codex-process] turn/start: approval=${params.approvalPolicy}, sandbox=${this._runtimeSandboxMode ?? "config"}, collaboration=${this.supportsNativePlanMode ? this._collaborationMode : "omitted"}`,
         );
         void this.requestWithClientUserMessageIdFallback(
           "turn/start",
@@ -4345,6 +4504,30 @@ function isUnsupportedThreadSettingsMethod(error: unknown): boolean {
     error.method === "thread/settings/update" &&
     error.code === -32601
   );
+}
+
+type NativePlanModeProbeResult = "supported" | "unsupported" | "unknown";
+
+function isNativePlanModeMethodUnsupported(error: unknown): boolean {
+  return (
+    error instanceof CodexRpcError &&
+    error.method === "collaborationMode/list" &&
+    error.code === -32601
+  );
+}
+
+function classifyNativePlanModeResponse(
+  response: unknown,
+): NativePlanModeProbeResult {
+  const data = asRecord(response)?.data;
+  if (!Array.isArray(data)) return "unknown";
+  const modes: string[] = [];
+  for (const entry of data) {
+    const mode = asRecord(entry)?.mode;
+    if (typeof mode !== "string" || !mode.trim()) return "unknown";
+    modes.push(mode);
+  }
+  return modes.includes("plan") ? "supported" : "unsupported";
 }
 
 function sanitizeCodexModel(value: unknown): string | undefined {

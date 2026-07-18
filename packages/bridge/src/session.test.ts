@@ -11,6 +11,8 @@ const { codexInstances, sdkInstances, fakeDirs, fakeFiles } = vi.hoisted(
     codexInstances: [] as Array<{
       isWaitingForInput: boolean;
       supportsNextTurnPermissionUpdates: boolean;
+      supportsNativePlanMode: boolean;
+      nativePlanModeCapabilityKnown: boolean;
       start: ReturnType<typeof vi.fn>;
       stop: ReturnType<typeof vi.fn>;
       sendInputStructured: ReturnType<typeof vi.fn>;
@@ -96,6 +98,8 @@ vi.mock("./codex-process.js", () => ({
   CodexProcess: class MockCodexProcess extends EventEmitter {
     public isWaitingForInput = false;
     public supportsNextTurnPermissionUpdates = false;
+    public supportsNativePlanMode = false;
+    public nativePlanModeCapabilityKnown = false;
     public start = vi.fn((_: string, __?: unknown) => {});
     public stop = vi.fn(() => {});
     public sendInputStructured = vi.fn();
@@ -475,6 +479,46 @@ describe("SessionManager codex path", () => {
     expect(
       manager.list().find((entry) => entry.id === sessionId)
         ?.codexPermissionApplyStrategySupported,
+    ).toBe(true);
+  });
+
+  it("rebroadcasts exact native Plan capability for the owning runtime", () => {
+    const onSessionUpdated = vi.fn();
+    const manager = new SessionManager(
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      onSessionUpdated,
+    );
+    const sessionId = manager.create(
+      "/tmp/project-codex-plan-capability",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+
+    expect(
+      manager.list().find((entry) => entry.id === sessionId)
+        ?.codexNativePlanModeSupported,
+    ).toBeUndefined();
+    proc.nativePlanModeCapabilityKnown = true;
+    proc.supportsNativePlanMode = true;
+    proc.emit("message", {
+      type: "system",
+      subtype: "runtime_capabilities",
+      provider: "codex",
+      codexNativePlanModeSupported: true,
+    });
+
+    expect(onSessionUpdated).toHaveBeenCalledOnce();
+    expect(onSessionUpdated).toHaveBeenCalledWith(sessionId);
+    expect(
+      manager.list().find((entry) => entry.id === sessionId)
+        ?.codexNativePlanModeSupported,
     ).toBe(true);
   });
 

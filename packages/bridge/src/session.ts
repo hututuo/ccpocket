@@ -203,6 +203,8 @@ export interface SessionSummary {
   queuedInput?: QueuedInputItem;
   /** Runtime-probed support for app-server next-turn permission settings. */
   codexPermissionApplyStrategySupported?: boolean;
+  /** Runtime-probed support for the experimental native Codex Plan preset. */
+  codexNativePlanModeSupported?: boolean;
   /** Runtime-probed support for app-server Goal management. */
   codexGoalControlSupported?: boolean | null;
 }
@@ -1170,6 +1172,10 @@ export class SessionManager {
           s.process instanceof CodexProcess
             ? s.process.supportsNextTurnPermissionUpdates
             : undefined,
+        ...(s.process instanceof CodexProcess &&
+        s.process.nativePlanModeCapabilityKnown
+          ? { codexNativePlanModeSupported: s.process.supportsNativePlanMode }
+          : {}),
         ...(s.process instanceof CodexProcess &&
         s.codexGoalControlSupported !== undefined
           ? { codexGoalControlSupported: s.codexGoalControlSupported }

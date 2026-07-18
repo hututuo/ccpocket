@@ -3524,6 +3524,29 @@ export class BridgeWebSocketServer {
               : (codexPermissionSettings?.approvalsReviewer ??
                 msg.approvalsReviewer ??
                 currentReviewer);
+          if (newCollaboration === "plan" && !process.supportsNativePlanMode) {
+            if (!process.nativePlanModeCapabilityKnown) {
+              await process.confirmNativePlanModeSupportForUserAction();
+            }
+            if (!process.supportsNativePlanMode) {
+              const capabilityStillUnknown =
+                !process.nativePlanModeCapabilityKnown;
+              this.send(ws, {
+                type: "error",
+                message: capabilityStillUnknown
+                  ? "Failed to set permission mode: native Codex Plan mode support could not be confirmed. Retry after Codex becomes responsive."
+                  : "Native Codex Plan mode is unavailable on this app-server. Update Codex before enabling Plan mode.",
+                errorCode: capabilityStillUnknown
+                  ? "codex_native_plan_mode_probe_retry"
+                  : "codex_native_plan_mode_unsupported",
+                sessionId: session.id,
+                ...(msg.permissionChangeId
+                  ? { permissionChangeId: msg.permissionChangeId }
+                  : {}),
+              });
+              break;
+            }
+          }
           const currentCollaboration = process.collaborationMode;
           if (
             msg.applyStrategy !== "restart_now" &&
@@ -3567,24 +3590,29 @@ export class BridgeWebSocketServer {
           };
 
           if (msg.applyStrategy === "next_turn") {
-            try {
-              await process.updatePermissionSettingsForNextTurn(
-                nextTurnSettings,
-              );
-            } catch (err) {
-              const unsupported = isUnsupportedCodexRpc(err);
-              this.send(ws, {
-                type: "error",
-                message: unsupported
-                  ? "This Codex backend does not support next-turn permission updates. Choose Restart now instead."
-                  : `Failed to save permissions for the next turn: ${errorMessageOf(err)}`,
-                errorCode: "set_permission_mode_rejected",
-                sessionId: session.id,
-                ...(msg.permissionChangeId
-                  ? { permissionChangeId: msg.permissionChangeId }
-                  : {}),
-              });
-              break;
+            // A collaboration-only toggle is already a next-turn local
+            // setting. Do not make native Plan depend on the separate
+            // experimental thread/settings/update permission capability.
+            if (!collaborationOnlyChange) {
+              try {
+                await process.updatePermissionSettingsForNextTurn(
+                  nextTurnSettings,
+                );
+              } catch (err) {
+                const unsupported = isUnsupportedCodexRpc(err);
+                this.send(ws, {
+                  type: "error",
+                  message: unsupported
+                    ? "This Codex backend does not support next-turn permission updates. Choose Restart now instead."
+                    : `Failed to save permissions for the next turn: ${errorMessageOf(err)}`,
+                  errorCode: "set_permission_mode_rejected",
+                  sessionId: session.id,
+                  ...(msg.permissionChangeId
+                    ? { permissionChangeId: msg.permissionChangeId }
+                    : {}),
+                });
+                break;
+              }
             }
 
             session.codexSettings = {
@@ -3594,6 +3622,9 @@ export class BridgeWebSocketServer {
               codexPermissionsMode: newPermissionsMode,
               sandboxMode: newSandboxMode,
             };
+            if (newCollaboration !== currentCollaboration) {
+              process.setCollaborationMode(newCollaboration);
+            }
             session.lastActivityAt = new Date();
             this.broadcast({
               type: "system",

@@ -494,13 +494,6 @@ describe("CodexProcess (app-server)", () => {
       threadId: "thread-runtime-goal",
       model: "gpt-5.6-sol",
       effort: "ultra",
-      collaborationMode: {
-        mode: "default",
-        settings: {
-          model: "gpt-5.6-sol",
-          reasoning_effort: "ultra",
-        },
-      },
     });
 
     resolveModel({});
@@ -585,6 +578,277 @@ describe("CodexProcess (app-server)", () => {
       subtype: "runtime_capabilities",
       provider: "codex",
     });
+  });
+
+  it("enables native Plan mode only after collaborationMode/list advertises plan", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-plan-probe";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue({
+      data: [
+        {
+          name: "Plan",
+          mode: "plan",
+          model: null,
+          reasoning_effort: null,
+        },
+      ],
+    });
+
+    await expect(
+      (proc as any).probeNativePlanModeSupport(),
+    ).resolves.toBe(true);
+
+    expect(request).toHaveBeenCalledWith(
+      "collaborationMode/list",
+      {},
+      { timeoutMs: 1500 },
+    );
+    expect(proc.supportsNativePlanMode).toBe(true);
+    expect(messages).toContainEqual({
+      type: "system",
+      subtype: "runtime_capabilities",
+      provider: "codex",
+      sessionId: "thread-plan-probe",
+      codexNativePlanModeSupported: true,
+    });
+    expect(() => proc.setCollaborationMode("plan")).not.toThrow();
+  });
+
+  it("fails closed when collaborationMode/list lacks a native Plan preset", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue({
+      data: [{ name: "Default", mode: "default" }],
+    });
+
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(proc.nativePlanModeCapabilityKnown).toBe(true);
+    expect(proc.supportsNativePlanMode).toBe(false);
+    expect(messages).toContainEqual({
+      type: "system",
+      subtype: "runtime_capabilities",
+      provider: "codex",
+      codexNativePlanModeSupported: false,
+    });
+    expect(() => proc.setCollaborationMode("plan")).toThrow(
+      "Native Codex Plan mode is unavailable",
+    );
+    expect(proc.collaborationMode).toBe("default");
+  });
+
+  it("shares one collaborationMode/list RPC across concurrent probes", async () => {
+    const proc = new CodexProcess("linux");
+    let resolveResponse!: (value: unknown) => void;
+    const response = new Promise<unknown>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementation(() => response);
+
+    const firstProbe = proc.probeNativePlanModeSupport();
+    const secondProbe = proc.probeNativePlanModeSupport();
+
+    expect(secondProbe).toBe(firstProbe);
+    expect(request).toHaveBeenCalledOnce();
+
+    resolveResponse({ data: [{ name: "Plan", mode: "plan" }] });
+    await expect(Promise.all([firstProbe, secondProbe])).resolves.toEqual([
+      true,
+      true,
+    ]);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a stale runtime probe without clearing the current probe", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    let resolveStaleResponse!: (value: unknown) => void;
+    let resolveCurrentResponse!: (value: unknown) => void;
+    const staleResponse = new Promise<unknown>((resolve) => {
+      resolveStaleResponse = resolve;
+    });
+    const currentResponse = new Promise<unknown>((resolve) => {
+      resolveCurrentResponse = resolve;
+    });
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementationOnce(() => staleResponse)
+      .mockImplementationOnce(() => currentResponse);
+
+    const staleProbe = proc.probeNativePlanModeSupport();
+    (proc as any).prepareLaunch("/tmp/current-plan-runtime");
+    const currentProbe = proc.probeNativePlanModeSupport();
+
+    resolveStaleResponse({ data: [{ name: "Plan", mode: "plan" }] });
+    await expect(staleProbe).resolves.toBe(false);
+
+    expect(proc.nativePlanModeCapabilityKnown).toBe(false);
+    expect((proc as any)._nativePlanModeProbe).toBe(currentProbe);
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({ codexNativePlanModeSupported: true }),
+    );
+
+    resolveCurrentResponse({ data: [{ name: "Plan", mode: "plan" }] });
+    await expect(currentProbe).resolves.toBe(true);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(proc.nativePlanModeCapabilityKnown).toBe(true);
+    expect(proc.supportsNativePlanMode).toBe(true);
+    expect((proc as any)._nativePlanModeProbe).toBeNull();
+    expect(messages).toContainEqual(
+      expect.objectContaining({ codexNativePlanModeSupported: true }),
+    );
+  });
+
+  it("keeps a timed-out native Plan probe retryable and accepts a later success", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-plan-retry";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockRejectedValueOnce(
+        new CodexRpcError(
+          "collaborationMode/list",
+          "collaborationMode/list timed out after 1500ms",
+        ),
+      )
+      .mockResolvedValueOnce({ data: [{ name: "Plan", mode: "plan" }] });
+
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
+
+    expect(proc.nativePlanModeCapabilityKnown).toBe(false);
+    expect(proc.supportsNativePlanMode).toBe(false);
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({ codexNativePlanModeSupported: false }),
+    );
+    expect(() => proc.setCollaborationMode("plan")).toThrow(
+      "could not be confirmed",
+    );
+
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(true);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(proc.nativePlanModeCapabilityKnown).toBe(true);
+    expect(proc.supportsNativePlanMode).toBe(true);
+    expect(messages).toContainEqual({
+      type: "system",
+      subtype: "runtime_capabilities",
+      provider: "codex",
+      sessionId: "thread-plan-retry",
+      codexNativePlanModeSupported: true,
+    });
+  });
+
+  it("uses the longer probe window for an explicit native Plan action", async () => {
+    const proc = new CodexProcess("linux");
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue({
+      data: [{ name: "Plan", mode: "plan" }],
+    });
+
+    await expect(
+      proc.confirmNativePlanModeSupportForUserAction(),
+    ).resolves.toBe(true);
+
+    expect(request).toHaveBeenCalledWith(
+      "collaborationMode/list",
+      {},
+      { timeoutMs: 5000 },
+    );
+  });
+
+  it("caches only method-not-found as permanently unsupported", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const request = vi.spyOn(proc as any, "request").mockRejectedValue(
+      new CodexRpcError(
+        "collaborationMode/list",
+        "Method not found",
+        -32601,
+      ),
+    );
+
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(proc.nativePlanModeCapabilityKnown).toBe(true);
+    expect(proc.supportsNativePlanMode).toBe(false);
+    expect(messages).toContainEqual({
+      type: "system",
+      subtype: "runtime_capabilities",
+      provider: "codex",
+      codexNativePlanModeSupported: false,
+    });
+    expect(() => proc.setCollaborationMode("plan")).toThrow(
+      "Native Codex Plan mode is unavailable",
+    );
+  });
+
+  it.each([
+    [
+      "RPC internal error",
+      () =>
+        new CodexRpcError(
+          "collaborationMode/list",
+          "Internal error",
+          -32603,
+        ),
+    ],
+    ["transport failure", () => new Error("transport closed")],
+    [
+      "abort",
+      () =>
+        new CodexRpcError(
+          "collaborationMode/list",
+          "collaborationMode/list aborted: client closed",
+        ),
+    ],
+  ])("keeps %s native Plan probes retryable", async (_label, makeError) => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementation(() => Promise.reject(makeError()));
+
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(proc.nativePlanModeCapabilityKnown).toBe(false);
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({ codexNativePlanModeSupported: false }),
+    );
+  });
+
+  it("keeps malformed collaboration mode responses unknown", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    vi.spyOn(proc as any, "request").mockResolvedValue({
+      data: [{ name: "Plan" }],
+    });
+
+    await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
+
+    expect(proc.nativePlanModeCapabilityKnown).toBe(false);
+    expect(proc.supportsNativePlanMode).toBe(false);
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({ codexNativePlanModeSupported: false }),
+    );
+    expect(() => proc.setCollaborationMode("plan")).toThrow(
+      "could not be confirmed",
+    );
   });
 
   it("waits for the interrupted turn terminal notification", async () => {
@@ -1829,6 +2093,7 @@ describe("CodexProcess (app-server)", () => {
       }),
     );
 
+    (proc as any)._nativePlanModeSupport = "unsupported";
     proc.sendInput("continue", "mobile-message-loop");
     await tick();
     const turnReq = nextOutgoingRequest(child);
@@ -1838,14 +2103,7 @@ describe("CodexProcess (app-server)", () => {
       "clientUserMessageId",
       "mobile-message-loop",
     );
-    expect(turnReq.params).toMatchObject({
-      collaborationMode: {
-        mode: "default",
-        settings: {
-          model: "gpt-5.5",
-        },
-      },
-    });
+    expect(turnReq.params).not.toHaveProperty("collaborationMode");
 
     proc.stop();
   });
@@ -2296,20 +2554,13 @@ describe("CodexProcess (app-server)", () => {
     await tick();
     drainSkillsList(child);
 
+    (proc as any)._nativePlanModeSupport = "unsupported";
     proc.sendInput("continue");
     await tick();
     const turnReq = nextOutgoingRequest(child);
     expect(turnReq.method).toBe("turn/start");
-    expect(turnReq.params).toMatchObject({
-      effort: "high",
-      collaborationMode: {
-        mode: "default",
-        settings: {
-          model: "gpt-5.5",
-          reasoning_effort: "high",
-        },
-      },
-    });
+    expect(turnReq.params).toMatchObject({ effort: "high" });
+    expect(turnReq.params).not.toHaveProperty("collaborationMode");
 
     proc.stop();
   });
@@ -2350,6 +2601,7 @@ describe("CodexProcess (app-server)", () => {
     await tick();
     drainSkillsList(child);
 
+    (proc as any)._nativePlanModeSupport = "supported";
     proc.setModel("gpt-5.6-sol", "ultra");
     proc.setServiceTier("fast");
     proc.sendInput("continue with ultra reasoning at fast speed");
@@ -2408,6 +2660,7 @@ describe("CodexProcess (app-server)", () => {
 
     await tick();
     drainSkillsList(child);
+    (proc as any)._nativePlanModeSupport = "unsupported";
     proc.setServiceTier("standard");
     proc.sendInput("continue at standard speed");
     await tick();
@@ -2418,14 +2671,8 @@ describe("CodexProcess (app-server)", () => {
       model: "gpt-5.6-sol",
       effort: "ultra",
       serviceTier: null,
-      collaborationMode: {
-        mode: "default",
-        settings: {
-          model: "gpt-5.6-sol",
-          reasoning_effort: "ultra",
-        },
-      },
     });
+    expect(turnReq.params).not.toHaveProperty("collaborationMode");
 
     proc.stop();
   });
@@ -2451,7 +2698,17 @@ describe("CodexProcess (app-server)", () => {
     await tick();
     nextOutgoingNotification(child); // initialized
 
-    const startReq = nextOutgoingRequest(child);
+    const planProbeReq = nextOutgoingRequest(child);
+    expect(planProbeReq.method).toBe("collaborationMode/list");
+    expect(planProbeReq.params).toEqual({});
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: planProbeReq.id,
+        result: { data: [{ name: "Plan", mode: "plan" }] },
+      })}\n`,
+    );
+    const startReq = await waitForOutgoingRequest(child, "thread/start");
     expect(startReq.params).toMatchObject({
       config: {
         model_reasoning_effort: "xhigh",
@@ -2487,6 +2744,67 @@ describe("CodexProcess (app-server)", () => {
     });
 
     proc.stop();
+  });
+
+  it("does not start a requested Plan conversation on an older app-server", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    proc.on("message", (message) => messages.push(message));
+
+    try {
+      proc.start("/tmp/project-plan-unsupported", {
+        collaborationMode: "plan",
+      });
+      const child = fakeChildren[0];
+      await tick();
+      const initReq = nextOutgoingRequest(child);
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+      );
+      await tick();
+      nextOutgoingNotification(child);
+      const probeReq = nextOutgoingRequest(child);
+      expect(probeReq.method).toBe("collaborationMode/list");
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({
+          id: probeReq.id,
+          error: { code: -32601, message: "Method not found" },
+        })}\n`,
+      );
+      for (
+        let attempt = 0;
+        attempt < 10 &&
+        !messages.some(
+          (message) =>
+            typeof message === "object" &&
+            message !== null &&
+            (message as { errorCode?: unknown }).errorCode ===
+              "codex_native_plan_mode_unsupported",
+        );
+        attempt++
+      ) {
+        await tick();
+      }
+
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          errorCode: "codex_native_plan_mode_unsupported",
+          message: expect.stringContaining(
+            "Native Codex Plan mode is unavailable",
+          ),
+        }),
+      );
+      expect(proc.supportsNativePlanMode).toBe(false);
+      expect(proc.collaborationMode).toBe("default");
+      expect(() => nextOutgoingRequest(child)).toThrow();
+    } finally {
+      errorSpy.mockRestore();
+      proc.stop();
+    }
   });
 
   it("emits permission_request and responds on approve", async () => {

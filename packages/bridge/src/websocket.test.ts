@@ -229,6 +229,8 @@ vi.mock("./session.js", async () => {
           }
         }),
         supportsNextTurnPermissionUpdates: true,
+        supportsNativePlanMode: true,
+        nativePlanModeCapabilityKnown: true,
         interruptCurrentTurn: vi.fn(async () => {}),
         interruptCurrentTurnAndWait: vi.fn(async () => {}),
         setCollaborationMode: vi.fn(function (this: any, value: string) {
@@ -476,6 +478,12 @@ vi.mock("./session.js", async () => {
         codexSettings: s.codexSettings,
         codexPermissionApplyStrategySupported:
           s.process.supportsNextTurnPermissionUpdates ?? false,
+        ...(s.process.nativePlanModeCapabilityKnown
+          ? {
+              codexNativePlanModeSupported:
+                s.process.supportsNativePlanMode ?? false,
+            }
+          : {}),
         ...(s.codexGoalControlSupported !== undefined
           ? { codexGoalControlSupported: s.codexGoalControlSupported }
           : {}),
@@ -535,6 +543,8 @@ vi.mock("./session.js", async () => {
           }
         }),
         supportsNextTurnPermissionUpdates: true,
+        supportsNativePlanMode: true,
+        nativePlanModeCapabilityKnown: true,
         interruptCurrentTurn: vi.fn(async () => {}),
         interruptCurrentTurnAndWait: vi.fn(async () => {}),
         setCollaborationMode: vi.fn(function (this: any, value: string) {
@@ -5497,6 +5507,124 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("fails closed when the exact Codex runtime lacks native Plan mode", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-no-plan",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.status = "idle";
+    session.process.supportsNativePlanMode = false;
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId,
+        mode: "plan",
+        planMode: true,
+        permissionChangeId: "plan-unsupported-1",
+      },
+      ws,
+    );
+
+    expect(session.process.setCollaborationMode).not.toHaveBeenCalled();
+    expect(session.process.collaborationMode).toBe("default");
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual({
+      type: "error",
+      message:
+        "Native Codex Plan mode is unavailable on this app-server. Update Codex before enabling Plan mode.",
+      errorCode: "codex_native_plan_mode_unsupported",
+      sessionId,
+      permissionChangeId: "plan-unsupported-1",
+    });
+
+    bridge.close();
+  });
+
+  it("returns a retryable error when a native Plan toggle stays unknown", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-plan-probe-retry",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.status = "idle";
+    session.process.supportsNativePlanMode = false;
+    session.process.nativePlanModeCapabilityKnown = false;
+    session.process.confirmNativePlanModeSupportForUserAction = vi
+      .fn()
+      .mockResolvedValue(false);
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId,
+        mode: "plan",
+        planMode: true,
+        permissionChangeId: "plan-probe-retry-1",
+      },
+      ws,
+    );
+
+    expect(
+      session.process.confirmNativePlanModeSupportForUserAction,
+    ).toHaveBeenCalledOnce();
+    expect(session.process.setCollaborationMode).not.toHaveBeenCalled();
+    expect(session.process.collaborationMode).toBe("default");
+    expect(session.process.nativePlanModeCapabilityKnown).toBe(false);
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual({
+      type: "error",
+      message:
+        "Failed to set permission mode: native Codex Plan mode support could not be confirmed. Retry after Codex becomes responsive.",
+      errorCode: "codex_native_plan_mode_probe_retry",
+      sessionId,
+      permissionChangeId: "plan-probe-retry-1",
+    });
+
+    bridge.close();
+  });
+
   it("preserves codex auto-review when enabling plan mode in-place", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -6286,6 +6414,66 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       messages.find((message: any) => message.type === "session_list")
         ?.bridgeCapabilities,
     ).toContain("codex_permission_apply_strategy_v1");
+
+    bridge.close();
+  });
+
+  it("arms confirmed native Plan mode for the next Bridge-started turn", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-plan-next-turn",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.status = "running";
+    session.process.supportsNativePlanMode = true;
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId,
+        mode: "plan",
+        planMode: true,
+        applyStrategy: "next_turn",
+        permissionChangeId: "plan-next-turn-1",
+      },
+      ws,
+    );
+
+    expect(
+      session.process.updatePermissionSettingsForNextTurn,
+    ).not.toHaveBeenCalled();
+    expect(session.process.setCollaborationMode).toHaveBeenCalledWith("plan");
+    expect(session.process.collaborationMode).toBe("plan");
+    expect(
+      session.process.interruptCurrentTurnAndWait,
+    ).not.toHaveBeenCalled();
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) => JSON.parse(call[0] as string)),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "set_permission_mode",
+        sessionId,
+        planMode: true,
+        permissionChangeId: "plan-next-turn-1",
+      }),
+    );
 
     bridge.close();
   });

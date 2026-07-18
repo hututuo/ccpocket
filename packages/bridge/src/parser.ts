@@ -523,6 +523,8 @@ export type ServerMessage =
       networkAccessEnabled?: boolean;
       webSearchMode?: string;
       additionalWritableRoots?: string[];
+      /** Exact per-runtime probe of the experimental Codex Plan preset. */
+      codexNativePlanModeSupported?: boolean;
       clearContext?: boolean;
       sourceSessionId?: string;
       tipCode?: string;
