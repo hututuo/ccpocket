@@ -270,7 +270,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(cubit.state.codexModelReasoningEffort, isNull);
-    expect(find.text('5.5 High'), findsOneWidget);
+    expect(find.text('5.5 high'), findsOneWidget);
   });
 
   testWidgets('codex model menu supports GPT-5.6 max and ultra efforts', (
@@ -284,8 +284,8 @@ void main() {
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('5.6 Sol High'), findsOneWidget);
-    await tester.tap(find.text('5.6 Sol High'));
+    expect(find.text('5.6 Sol high'), findsOneWidget);
+    await tester.tap(find.text('5.6 Sol high'));
     await tester.pumpAndSettle();
     expect(
       tester
@@ -301,10 +301,17 @@ void main() {
             find.byKey(const ValueKey('codex_settings_effort_label')),
           )
           .data,
-      'High',
+      'high',
     );
-    expect(find.text('Ultra'), findsNothing);
     expect(find.byKey(const ValueKey('codex_effort_slider')), findsOneWidget);
+    final slider = tester.widget<Slider>(
+      find.byKey(const ValueKey('codex_effort_slider')),
+    );
+    expect(slider.min, 0);
+    expect(slider.max, 5);
+    expect(slider.divisions, 5);
+    expect(slider.value, 2);
+    expect(slider.label, 'high');
     final modeButton = find.byKey(const ValueKey('codex_settings_advanced'));
     expect(
       find.descendant(
@@ -343,6 +350,22 @@ void main() {
       FontWeight.w400,
     );
 
+    slider.onChanged?.call(5);
+    await tester.pumpAndSettle();
+    expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+    expect(
+      _decode(bridge.sentMessages.last),
+      containsPair('modelReasoningEffort', 'ultra'),
+    );
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('codex_settings_effort_label')),
+          )
+          .data,
+      'ultra',
+    );
+
     await tester.tap(find.byKey(const ValueKey('codex_settings_advanced')));
     await tester.pumpAndSettle();
     expect(
@@ -378,16 +401,17 @@ void main() {
       findsOneWidget,
     );
     expect(ultraOption, findsOneWidget);
+    expect(
+      find.byKey(
+        const ValueKey('codex_effort_none_option'),
+        skipOffstage: false,
+      ),
+      findsNothing,
+    );
     await tester.ensureVisible(ultraOption);
     await tester.pumpAndSettle();
     await tester.tap(ultraOption);
     await tester.pumpAndSettle();
-
-    expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
-    expect(
-      _decode(bridge.sentMessages.last),
-      containsPair('modelReasoningEffort', 'ultra'),
-    );
 
     await tester.tap(find.byKey(const ValueKey('codex_settings_advanced')));
     await tester.pumpAndSettle();
@@ -401,7 +425,7 @@ void main() {
             find.byKey(const ValueKey('codex_settings_effort_label')),
           )
           .data,
-      'Ultra',
+      'ultra',
     );
     expect(
       find.byKey(const ValueKey('codex_settings_advanced_panel')),
@@ -420,7 +444,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.tap(find.text('5.6 Sol High'));
+    await tester.tap(find.text('5.6 Sol high'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('codex_speed_button')));
     await tester.pumpAndSettle();
@@ -444,7 +468,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.tap(find.text('5.6 Sol High'));
+    await tester.tap(find.text('5.6 Sol high'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('codex_settings_advanced')));
     await tester.pumpAndSettle();
@@ -457,7 +481,7 @@ void main() {
     );
   });
 
-  testWidgets('codex model change prefers the first non-None Effort', (
+  testWidgets('codex model change prefers the first advertised Effort', (
     tester,
   ) async {
     bridge.availableCodexModels = const ['gpt-5.6-sol', 'gpt-5.4-mini'];
@@ -468,7 +492,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.tap(find.text('5.6 Sol Extra High'));
+    await tester.tap(find.text('5.6 Sol x-high'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('codex_settings_advanced')));
     await tester.pumpAndSettle();
@@ -491,7 +515,7 @@ void main() {
             find.byKey(const ValueKey('codex_settings_effort_label')),
           )
           .data,
-      'Light',
+      'light',
     );
   });
 

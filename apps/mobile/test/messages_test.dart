@@ -97,6 +97,58 @@ void main() {
     expect(reasoningEffortByValue('  '), isNull);
   });
 
+  test('ReasoningEffort keeps display labels separate from wire values', () {
+    const efforts = [
+      ReasoningEffort.low,
+      ReasoningEffort.medium,
+      ReasoningEffort.high,
+      ReasoningEffort.xhigh,
+      ReasoningEffort.max,
+      ReasoningEffort.ultra,
+    ];
+
+    expect(efforts.map((effort) => effort.label), [
+      'light',
+      'medium',
+      'high',
+      'x-high',
+      'max',
+      'ultra',
+    ]);
+    expect(efforts.map((effort) => effort.value), [
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ]);
+  });
+
+  test('Codex speed accepts the app-server priority alias as Fast', () {
+    expect(codexSpeedFromRaw('fast'), CodexSpeed.fast);
+    expect(codexSpeedFromRaw('priority'), CodexSpeed.fast);
+    expect(codexSpeedFromRaw('standard'), CodexSpeed.standard);
+  });
+
+  test('Codex effort display choices serialize canonical wire values', () {
+    final cases = <ReasoningEffort, String>{
+      ReasoningEffort.low: 'low',
+      ReasoningEffort.xhigh: 'xhigh',
+      ReasoningEffort.ultra: 'ultra',
+    };
+
+    for (final entry in cases.entries) {
+      final message = ClientMessage.setCodexModel(
+        'gpt-5.6-sol',
+        modelReasoningEffort: entry.key.value,
+        sessionId: 's1',
+      );
+      final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+      expect(json['modelReasoningEffort'], entry.value);
+    }
+  });
+
   group('pathBasename', () {
     test('handles POSIX and Windows path separators', () {
       expect(pathBasename('/Users/me/project-a'), 'project-a');

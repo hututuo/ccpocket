@@ -33,7 +33,7 @@ class _BridgeWithCodexModels extends BridgeService {
 
   @override
   Map<String, List<String>> get codexModelReasoningEfforts => const {
-    'gpt-5.6-sol': ['xhigh', 'ultra'],
+    'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-5.4-mini': ['low', 'medium'],
   };
 
@@ -881,7 +881,7 @@ void main() {
               find.byKey(const ValueKey('dialog_codex_effort_label')),
             )
             .data,
-        'High',
+        'high',
       );
 
       await tester.tap(
@@ -1110,7 +1110,7 @@ void main() {
       expect(result!.codexSpeed, CodexSpeed.standard);
     });
 
-    testWidgets('Codex quick UI identifies an Advanced-only Effort', (
+    testWidgets('Codex quick UI preserves Ultra as the sixth advertised tier', (
       tester,
     ) async {
       _enlargeViewport(tester);
@@ -1147,7 +1147,13 @@ void main() {
       final effortLabel = find.byKey(
         const ValueKey('dialog_codex_effort_label'),
       );
-      expect(tester.widget<Text>(effortLabel).data, 'Ultra');
+      expect(tester.widget<Text>(effortLabel).data, 'ultra');
+      final slider = tester.widget<Slider>(
+        find.byKey(const ValueKey('dialog_codex_effort_slider')),
+      );
+      expect(slider.max, 5);
+      expect(slider.divisions, 5);
+      expect(slider.value, 5);
       expect(
         find.ancestor(of: effortLabel, matching: find.byType(ConstrainedBox)),
         findsWidgets,

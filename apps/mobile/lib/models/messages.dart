@@ -494,14 +494,14 @@ enum SandboxMode {
 }
 
 final class ReasoningEffort {
-  static const none = ReasoningEffort._('none', 'None');
-  static const minimal = ReasoningEffort._('minimal', 'Minimal');
-  static const low = ReasoningEffort._('low', 'Light');
-  static const medium = ReasoningEffort._('medium', 'Medium');
-  static const high = ReasoningEffort._('high', 'High');
-  static const xhigh = ReasoningEffort._('xhigh', 'Extra High');
-  static const max = ReasoningEffort._('max', 'Max');
-  static const ultra = ReasoningEffort._('ultra', 'Ultra');
+  static const none = ReasoningEffort._('none', 'none');
+  static const minimal = ReasoningEffort._('minimal', 'minimal');
+  static const low = ReasoningEffort._('low', 'light');
+  static const medium = ReasoningEffort._('medium', 'medium');
+  static const high = ReasoningEffort._('high', 'high');
+  static const xhigh = ReasoningEffort._('xhigh', 'x-high');
+  static const max = ReasoningEffort._('max', 'max');
+  static const ultra = ReasoningEffort._('ultra', 'ultra');
 
   static const values = [none, minimal, low, medium, high, xhigh, max, ultra];
 
@@ -546,7 +546,7 @@ enum CodexSpeed {
 }
 
 CodexSpeed codexSpeedFromRaw(String? raw) => switch (raw?.trim()) {
-  'fast' => CodexSpeed.fast,
+  'fast' || 'priority' => CodexSpeed.fast,
   _ => CodexSpeed.standard,
 };
 

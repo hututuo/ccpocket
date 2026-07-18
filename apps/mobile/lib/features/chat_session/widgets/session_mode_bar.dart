@@ -354,14 +354,14 @@ List<ReasoningEffort> _codexReasoningEffortsForModel(
   final raw = context
       .read<ChatSessionCubit>()
       .codexModelReasoningEfforts[model];
-  final efforts = <ReasoningEffort>[ReasoningEffort.none];
+  final efforts = <ReasoningEffort>[];
   if (raw != null) {
     for (final value in raw) {
       final effort = reasoningEffortByValue(value);
       if (effort != null && !efforts.contains(effort)) efforts.add(effort);
     }
   }
-  if (efforts.length == 1) {
+  if (efforts.isEmpty) {
     efforts.addAll(const [
       ReasoningEffort.low,
       ReasoningEffort.medium,

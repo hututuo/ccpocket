@@ -240,15 +240,11 @@ const _fallbackCodexReasoningEfforts = <ReasoningEffort>[
   ReasoningEffort.xhigh,
 ];
 
-const _ccPocketCodexReasoningOverrides = <ReasoningEffort>[
-  ReasoningEffort.none,
-];
-
 Map<String, List<ReasoningEffort>> _normalizeCodexModelReasoningEfforts(
   Map<String, List<String>> raw,
 ) {
   return raw.map((model, values) {
-    final efforts = <ReasoningEffort>[..._ccPocketCodexReasoningOverrides];
+    final efforts = <ReasoningEffort>[];
     for (final effort
         in values.map(reasoningEffortFromRaw).whereType<ReasoningEffort>()) {
       if (!efforts.contains(effort)) {
@@ -264,12 +260,10 @@ List<ReasoningEffort> _codexReasoningEffortsForModel(
   Map<String, List<ReasoningEffort>> modelEfforts,
 ) {
   if (model != null && modelEfforts.containsKey(model)) {
-    return modelEfforts[model] ?? const [];
+    final advertised = modelEfforts[model] ?? const [];
+    if (advertised.isNotEmpty) return advertised;
   }
-  return const [
-    ..._ccPocketCodexReasoningOverrides,
-    ..._fallbackCodexReasoningEfforts,
-  ];
+  return _fallbackCodexReasoningEfforts;
 }
 
 WebSearchMode? webSearchModeFromRaw(String? raw) =>

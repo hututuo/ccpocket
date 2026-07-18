@@ -17,19 +17,25 @@ String codexModelDisplayName(String model) {
 
 const _quickEffortOrder = <ReasoningEffort>[
   ReasoningEffort.none,
+  ReasoningEffort.minimal,
   ReasoningEffort.low,
   ReasoningEffort.medium,
   ReasoningEffort.high,
   ReasoningEffort.xhigh,
+  ReasoningEffort.max,
+  ReasoningEffort.ultra,
 ];
 
 List<ReasoningEffort> codexQuickEfforts(
   List<ReasoningEffort> availableEfforts,
 ) {
-  final efforts = _quickEffortOrder
-      .where(availableEfforts.contains)
-      .toList(growable: false);
-  return efforts.isNotEmpty ? efforts : const [ReasoningEffort.none];
+  final efforts = <ReasoningEffort>[
+    ..._quickEffortOrder.where(availableEfforts.contains),
+    ...availableEfforts.where(
+      (effort) => !_quickEffortOrder.contains(effort),
+    ),
+  ];
+  return efforts.isNotEmpty ? efforts : const [ReasoningEffort.medium];
 }
 
 ReasoningEffort preferredCodexEffort(
