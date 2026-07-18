@@ -1681,6 +1681,104 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("keeps waiting while another interactive request remains", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    (proc as any).handleServerRequest(
+      "req-command-concurrent",
+      "item/commandExecution/requestApproval",
+      {
+        itemId: "item-command-concurrent",
+        command: "pwd",
+      },
+    );
+    (proc as any).handleServerRequest(
+      "req-question-concurrent",
+      "item/tool/requestUserInput",
+      {
+        itemId: "item-question-concurrent",
+        questions: [
+          {
+            id: "q1",
+            header: "Choice",
+            question: "Pick one option",
+            options: [{ label: "A", description: "Option A" }],
+          },
+        ],
+      },
+    );
+
+    expect(proc.status).toBe("waiting_approval");
+    proc.approve("item-command-concurrent");
+
+    expect(nextOutgoingResponse(child)).toMatchObject({
+      id: "req-command-concurrent",
+      result: { decision: "accept" },
+    });
+    expect(proc.status).toBe("waiting_approval");
+    expect(proc.getPendingPermission()).toMatchObject({
+      toolUseId: "item-question-concurrent",
+      toolName: "AskUserQuestion",
+    });
+
+    proc.answer("item-question-concurrent", "A");
+
+    expect(nextOutgoingResponse(child)).toMatchObject({
+      id: "req-question-concurrent",
+      result: { answers: { q1: { answers: ["A"] } } },
+    });
+    expect(proc.status).toBe("running");
+  });
+
+  it("defers approved plan execution until every interaction is resolved", () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const resumedInputs: Array<{ text: string }> = [];
+    (proc as any).inputResolve = (input: { text: string }) => {
+      resumedInputs.push(input);
+    };
+    (proc as any).pendingPlanCompletion = {
+      toolUseId: "plan-concurrent",
+      planText: "Run the verified plan",
+    };
+    (proc as any).handleServerRequest(
+      "req-command-plan-concurrent",
+      "item/commandExecution/requestApproval",
+      { itemId: "command-plan-concurrent", command: "pwd" },
+    );
+    (proc as any).handleServerRequest(
+      "req-question-plan-concurrent",
+      "item/tool/requestUserInput",
+      {
+        itemId: "question-plan-concurrent",
+        questions: [
+          {
+            id: "q1",
+            header: "Choice",
+            question: "Pick one option",
+            options: [{ label: "A", description: "Option A" }],
+          },
+        ],
+      },
+    );
+
+    proc.approve("plan-concurrent");
+    expect(resumedInputs).toEqual([]);
+    expect(proc.status).toBe("waiting_approval");
+
+    proc.approve("command-plan-concurrent");
+    expect(resumedInputs).toEqual([]);
+    expect(proc.status).toBe("waiting_approval");
+
+    proc.answer("question-plan-concurrent", "A");
+    expect(resumedInputs).toEqual([
+      { text: "Execute the following plan:\n\nRun the verified plan" },
+    ]);
+  });
+
   it("emits AskUserQuestion and responds on answer", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];

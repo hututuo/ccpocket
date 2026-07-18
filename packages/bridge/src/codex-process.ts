@@ -345,6 +345,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   } | null = null;
   /** Queued plan execution text when inputResolve wasn't ready at approval time. */
   private _pendingPlanInput: string | null = null;
+  private _idleWhenInteractionsClear = false;
   private steerTempPaths: string[] = [];
   private readonly platform: NodeJS.Platform;
 
@@ -804,6 +805,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.lastResultText = null;
     this.pendingPlanCompletion = null;
     this._pendingPlanInput = null;
+    this._idleWhenInteractionsClear = false;
     this._projectPath = projectPath;
   }
 
@@ -995,9 +997,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
     this.emitToolResult(pending.toolUseId, "Approved");
 
-    if (this.pendingApprovals.size === 0) {
-      this.setStatus("running");
-    }
+    this.resumeRunningIfNoPendingInteractiveRequest();
   }
 
   approveAlways(toolUseId?: string): void {
@@ -1018,9 +1018,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
     this.emitToolResult(pending.toolUseId, "Approved (always)");
 
-    if (this.pendingApprovals.size === 0) {
-      this.setStatus("running");
-    }
+    this.resumeRunningIfNoPendingInteractiveRequest();
   }
 
   reject(toolUseId?: string, _message?: string): void {
@@ -1050,9 +1048,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
     this.emitToolResult(pending.toolUseId, "Rejected");
 
-    if (this.pendingApprovals.size === 0) {
-      this.setStatus("running");
-    }
+    this.resumeRunningIfNoPendingInteractiveRequest();
   }
 
   answer(toolUseId: string, result: string): void {
@@ -1072,9 +1068,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
     this.emitToolResult(pending.toolUseId, "Answered");
 
-    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
-      this.setStatus("running");
-    }
+    this.resumeRunningIfNoPendingInteractiveRequest();
   }
 
   /**
@@ -1234,6 +1228,36 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     return first.done ? undefined : first.value;
   }
 
+  private hasPendingInteractiveRequest(): boolean {
+    return (
+      this.pendingPlanCompletion !== null ||
+      this.pendingApprovals.size > 0 ||
+      this.pendingUserInputs.size > 0
+    );
+  }
+
+  private resumeRunningIfNoPendingInteractiveRequest(): void {
+    if (this.hasPendingInteractiveRequest()) return;
+    if (this._pendingPlanInput) {
+      const text = this._pendingPlanInput;
+      this._pendingPlanInput = null;
+      if (this.inputResolve) {
+        const resolve = this.inputResolve;
+        this.inputResolve = null;
+        resolve({ text });
+      } else {
+        this._pendingPlanInput = text;
+      }
+      return;
+    }
+    if (this._idleWhenInteractionsClear) {
+      this._idleWhenInteractionsClear = false;
+      this.setStatus("idle");
+    } else {
+      this.setStatus("running");
+    }
+  }
+
   /**
    * Approve a pending user-input request (McpElicitation fallback).
    * Called when approve()/approveAlways() cannot find a pendingApproval —
@@ -1263,9 +1287,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
     this.emitToolResult(pending.toolUseId, "Approved");
 
-    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
-      this.setStatus("running");
-    }
+    this.resumeRunningIfNoPendingInteractiveRequest();
     return true;
   }
 
@@ -1297,9 +1319,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       toolUseId: pending.toolUseId,
     });
     this.emitToolResult(pending.toolUseId, toolResult);
-    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
-      this.setStatus("running");
-    }
+    this.resumeRunningIfNoPendingInteractiveRequest();
   }
 
   /**
@@ -1322,9 +1342,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
     this.emitToolResult(pending.toolUseId, "Rejected");
 
-    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
-      this.setStatus("running");
-    }
+    this.resumeRunningIfNoPendingInteractiveRequest();
     return true;
   }
 
@@ -1347,19 +1365,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.emitToolResult(resolvedToolUseId, "Plan approved");
     }
 
-    // Resolve inputResolve to start the next turn (Default mode) automatically
-    if (this.inputResolve) {
-      const resolve = this.inputResolve;
-      this.inputResolve = null;
-      resolve({ text: `Execute the following plan:\n\n${planText}` });
-    } else {
-      // inputResolve may not be ready yet if approval comes before the next
-      // input loop iteration.  Queue the text so sendInput() can pick it up.
-      console.warn(
-        "[codex-process] Plan approved but inputResolve not ready, queuing as pending input",
-      );
-      this._pendingPlanInput = `Execute the following plan:\n\n${planText}`;
-    }
+    this._pendingPlanInput = `Execute the following plan:\n\n${planText}`;
+    this.resumeRunningIfNoPendingInteractiveRequest();
   }
 
   /**
@@ -1377,16 +1384,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
 
     if (feedback) {
-      if (this.inputResolve) {
-        const resolve = this.inputResolve;
-        this.inputResolve = null;
-        resolve({ text: feedback });
-      } else {
-        console.warn(
-          "[codex-process] Plan rejected but inputResolve not ready, queuing feedback",
-        );
-        this._pendingPlanInput = feedback;
-      }
+      this._pendingPlanInput = feedback;
+      this.resumeRunningIfNoPendingInteractiveRequest();
+    } else if (this.hasPendingInteractiveRequest()) {
+      this._idleWhenInteractionsClear = true;
+      this.setStatus("waiting_approval");
     } else {
       this.setStatus("idle");
     }
@@ -1903,7 +1905,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       const pendingInput = await new Promise<PendingInput>((resolve) => {
         this.inputResolve = resolve;
         // If plan approval arrived before inputResolve was ready, drain it now.
-        if (this._pendingPlanInput) {
+        if (
+          this._pendingPlanInput &&
+          !this.hasPendingInteractiveRequest()
+        ) {
           const text = this._pendingPlanInput;
           this._pendingPlanInput = null;
           this.inputResolve = null;
@@ -3217,7 +3222,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.pendingApprovals.size === 0 &&
       this.pendingUserInputs.size === 0
     ) {
-      this.setStatus(this.pendingTurnId ? "running" : "idle");
+      if (this._pendingPlanInput || this._idleWhenInteractionsClear) {
+        this.resumeRunningIfNoPendingInteractiveRequest();
+      } else {
+        this.setStatus(this.pendingTurnId ? "running" : "idle");
+      }
     }
   }
 }
