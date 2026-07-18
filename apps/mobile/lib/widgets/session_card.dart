@@ -4,6 +4,7 @@ import 'package:expandable_page_view/expandable_page_view.dart';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../features/conversation_mirror/conversation_mirror_badge.dart';
 import '../models/messages.dart';
 import '../theme/app_theme.dart';
 import '../theme/provider_style.dart';
@@ -2682,6 +2683,7 @@ class RecentSessionCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
+                      ConversationMirrorBadge(session: session),
                       PinToggleButton(
                         key: ValueKey(
                           'recent_session_pin_${session.sessionId}_button',

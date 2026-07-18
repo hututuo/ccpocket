@@ -30,6 +30,8 @@ import 'package:talker_bloc_logger/talker_bloc_logger.dart';
 import 'core/logger.dart';
 import 'l10n/app_localizations.dart';
 import 'features/auto_approval/auto_approval_service.dart';
+import 'features/conversation_mirror/conversation_mirror_service.dart';
+import 'features/conversation_mirror/storage/conversation_mirror_storage.dart';
 import 'features/session_list/state/session_list_cubit.dart';
 import 'features/git/state/git_status_cubit.dart';
 import 'features/git/state/git_view_cache_service.dart';
@@ -155,6 +157,13 @@ void main() async {
     bridge: bridge,
     preferences: prefs,
   )..initialize();
+  final conversationMirrorDatabase = ConversationMirrorDatabase();
+  final conversationMirrorService = ConversationMirrorService(
+    bridge: bridge,
+    store: ConversationMirrorStore(conversationMirrorDatabase),
+    database: conversationMirrorDatabase,
+  );
+  unawaited(conversationMirrorService.initialize());
   final fcmService = FcmService();
   final draftService = DraftService(prefs);
   final inAppReviewService = InAppReviewService(prefs: prefs);
@@ -210,6 +219,10 @@ void main() async {
         ),
         ChangeNotifierProvider<AutoApprovalService>(
           create: (_) => autoApprovalService,
+          lazy: false,
+        ),
+        ChangeNotifierProvider<ConversationMirrorService>(
+          create: (_) => conversationMirrorService,
           lazy: false,
         ),
         RepositoryProvider<GitViewCacheService>(

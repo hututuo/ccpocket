@@ -30,6 +30,7 @@ import '../../widgets/workspace_pane_chrome.dart';
 import '../../widgets/adaptive_context_menu.dart';
 import '../../widgets/new_session_sheet.dart';
 import '../../widgets/rename_session_dialog.dart';
+import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../session_archive/session_archive_cubit.dart';
 import '../session_archive/session_archive_screen.dart';
 import '../settings/state/settings_cubit.dart';
@@ -1263,6 +1264,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       context: context,
       position: position,
       items: [
+        ...conversationMirrorActionItems(context, session),
         AdaptiveActionMenuItem(
           value: 'rename',
           icon: Icons.label_outline,
@@ -1293,6 +1295,9 @@ class _SessionListScreenState extends State<SessionListScreen>
       ],
     );
     if (action == null || !mounted) return;
+
+    if (await handleConversationMirrorAction(context, session, action)) return;
+    if (!mounted) return;
 
     if (action == 'rename') {
       final newName = await showRenameSessionDialog(

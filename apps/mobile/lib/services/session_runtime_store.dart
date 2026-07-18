@@ -16,6 +16,7 @@ class SessionRuntimeSnapshot {
     this.messages = const [],
     this.historySeq = 0,
     this.cachedHistorySeq = 0,
+    this.contentEpoch = 0,
     this.explorerHistory = const ExplorerHistorySnapshot(),
   });
 
@@ -31,6 +32,11 @@ class SessionRuntimeSnapshot {
   /// (for example an input_ack advances acceptedSeq before the corresponding
   /// user_input is cached).
   final int cachedHistorySeq;
+
+  /// Process-local monotonic marker for canonical runtime-cache mutations.
+  /// Unlike [historySeq], this never moves backwards when a full history
+  /// snapshot resets provider sequence semantics.
+  final int contentEpoch;
   final ExplorerHistorySnapshot explorerHistory;
 }
 
@@ -42,6 +48,7 @@ class SessionRuntimeState {
   final List<int?> _messageSeqs = [];
   int historySeq = 0;
   int cachedHistorySeq = 0;
+  int contentEpoch = 0;
   ExplorerHistorySnapshot explorerHistory = const ExplorerHistorySnapshot();
 
   List<ServerMessage> get messages => List.unmodifiable(_messages);
@@ -52,6 +59,7 @@ class SessionRuntimeStore {
 
   final int maxMessagesPerSession;
   final Map<String, SessionRuntimeState> _sessions = {};
+  int _contentEpochCounter = 0;
 
   SessionRuntimeSnapshot snapshot(String sessionId) {
     final state = _sessions[sessionId];
@@ -63,6 +71,7 @@ class SessionRuntimeStore {
       messages: state.messages,
       historySeq: state.historySeq,
       cachedHistorySeq: state.cachedHistorySeq,
+      contentEpoch: state.contentEpoch,
       explorerHistory: state.explorerHistory,
     );
   }
@@ -85,6 +94,7 @@ class SessionRuntimeStore {
       _recordLatestSeq(state, historySeq);
       return;
     }
+    state.contentEpoch = ++_contentEpochCounter;
     if (message is HistoryMessage) {
       state._messages
         ..clear()
@@ -188,6 +198,7 @@ class SessionRuntimeStore {
     }
     target.historySeq = source.historySeq;
     target.cachedHistorySeq = source.cachedHistorySeq;
+    target.contentEpoch = source.contentEpoch;
     target.explorerHistory = source.explorerHistory;
     _trim(target);
   }

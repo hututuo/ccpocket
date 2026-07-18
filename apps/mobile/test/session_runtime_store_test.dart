@@ -86,6 +86,7 @@ void main() {
           ),
         ),
       );
+      final epochBeforeHistory = store.snapshot('s1').contentEpoch;
 
       store.applyServerMessage(
         's1',
@@ -114,6 +115,10 @@ void main() {
       );
       expect(store.latestHistorySeq('s1'), 0);
       expect(store.cachedHistorySeq('s1'), 0);
+      expect(
+        store.snapshot('s1').contentEpoch,
+        greaterThan(epochBeforeHistory),
+      );
     });
 
     test('history delta appends newer sequenced entries', () {

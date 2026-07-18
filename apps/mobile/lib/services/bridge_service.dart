@@ -32,6 +32,15 @@ class _PermissionRequestObserverRegistration {
   final SessionPermissionRequestObserver observer;
 }
 
+typedef SessionHistoryBootstrapHandler =
+    Future<bool> Function({
+      required String runtimeSessionId,
+      required String? provider,
+      required String? providerSessionId,
+      required String? projectPath,
+      required bool force,
+    });
+
 class BridgeService implements BridgeServiceBase {
   void Function(ClientMessage message)? onOutgoingMessage;
   FutureOr<void> Function()? onDisconnect;
@@ -139,6 +148,9 @@ class BridgeService implements BridgeServiceBase {
   String? _promptHistoryBridgeId;
   UsageResultMessage? _lastUsageResult;
   final SessionRuntimeStore _runtimeStore = SessionRuntimeStore();
+  final Map<String, ({String provider, String providerSessionId})>
+  _providerSessionBindingByRuntime = {};
+  SessionHistoryBootstrapHandler? _sessionHistoryBootstrapHandler;
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
   final Map<String, ClientMessage> _inFlightPendingMessages = {};
   final Map<String, ClientMessage> _inFlightInputMessages = {};
@@ -229,6 +241,8 @@ class BridgeService implements BridgeServiceBase {
       _promptHistoryMutationController.stream;
   Stream<PromptHistoryStatusMessage> get promptHistoryStatus =>
       _promptHistoryStatusController.stream;
+  Stream<LocalFeatureServerMessage> get localFeatureMessages =>
+      _localFeatureMessageController.stream.map((pair) => pair.$1);
   // Git Operations
   Stream<GitStageResultMessage> get gitStageResults =>
       _gitStageResultController.stream;
@@ -1150,6 +1164,21 @@ class BridgeService implements BridgeServiceBase {
               msg = _withEffectiveGoalSessionId(msg, routedGoalSessionId);
             }
             _completePendingPermissionChange(msg);
+            if (msg is SessionListMessage) {
+              for (final session in msg.sessions) {
+                _rememberProviderSessionBinding(
+                  session.id,
+                  session.provider,
+                  session.claudeSessionId,
+                );
+              }
+            } else if (sessionId != null && msg is SystemMessage) {
+              _rememberProviderSessionBinding(
+                sessionId,
+                msg.provider,
+                msg.claudeSessionId,
+              );
+            }
             if (_consumeArtifactInfrastructureMessage(msg)) return;
             if (_consumeLocalFeatureInfrastructureMessage(
               msg,
@@ -1532,6 +1561,7 @@ class BridgeService implements BridgeServiceBase {
     _promptHistoryBridgeId = null;
     _lastUsageResult = null;
     _pendingHistoryDeltaSinceSeq.clear();
+    _providerSessionBindingByRuntime.clear();
     _respondedToolUseIds.clear();
     _deliveryPendingInputs.clear();
     for (final timer in _deliveryPendingVisibilityTimers.values) {
@@ -2599,6 +2629,10 @@ class BridgeService implements BridgeServiceBase {
     return _runtimeStore.cachedHistorySeq(sessionId);
   }
 
+  int cachedSessionContentEpoch(String sessionId) {
+    return _runtimeStore.snapshot(sessionId).contentEpoch;
+  }
+
   void setExplorerHistory(
     String sessionId, {
     required String currentPath,
@@ -2627,11 +2661,112 @@ class BridgeService implements BridgeServiceBase {
 
   void migrateExplorerHistory(String fromSessionId, String toSessionId) {
     _runtimeStore.migrateSession(fromSessionId, toSessionId);
+    final providerBinding = _providerSessionBindingByRuntime.remove(
+      fromSessionId,
+    );
+    if (providerBinding != null) {
+      _providerSessionBindingByRuntime[toSessionId] = providerBinding;
+    }
   }
 
   void clearExplorerHistory(String sessionId) {
     _runtimeStore.clearSession(sessionId);
+    _providerSessionBindingByRuntime.remove(sessionId);
     _respondedToolUseIds.remove(sessionId);
+  }
+
+  void configureSessionHistoryBootstrap(
+    SessionHistoryBootstrapHandler? handler,
+  ) {
+    _sessionHistoryBootstrapHandler = handler;
+  }
+
+  bool get hasSessionHistoryBootstrap =>
+      _sessionHistoryBootstrapHandler != null;
+
+  String? providerSessionIdForRuntime(
+    String runtimeSessionId, {
+    String? provider,
+  }) {
+    final remembered = _providerSessionBindingByRuntime[runtimeSessionId];
+    if (remembered != null &&
+        (provider == null || remembered.provider == provider)) {
+      return remembered.providerSessionId;
+    }
+    final index = _sessions.indexWhere(
+      (session) =>
+          session.id == runtimeSessionId &&
+          (provider == null || session.provider == provider),
+    );
+    return index < 0 ? null : _sessions[index].claudeSessionId;
+  }
+
+  List<String> runtimeSessionIdsForProviderSession(
+    String provider,
+    String providerSessionId,
+  ) {
+    final ids = <String>{
+      for (final entry in _providerSessionBindingByRuntime.entries)
+        if (entry.value.provider == provider &&
+            entry.value.providerSessionId == providerSessionId)
+          entry.key,
+      for (final session in _sessions)
+        if (session.provider == provider &&
+            session.claudeSessionId == providerSessionId)
+          session.id,
+    };
+    return List.unmodifiable(ids);
+  }
+
+  Future<bool> tryBootstrapSessionHistory({
+    required String runtimeSessionId,
+    required String? provider,
+    required String? projectPath,
+    bool force = false,
+  }) async {
+    final handler = _sessionHistoryBootstrapHandler;
+    if (handler == null) return false;
+    return handler(
+      runtimeSessionId: runtimeSessionId,
+      provider: provider,
+      providerSessionId: providerSessionIdForRuntime(
+        runtimeSessionId,
+        provider: provider,
+      ),
+      projectPath: projectPath,
+      force: force,
+    );
+  }
+
+  /// Publishes a reconstructable external snapshot through the existing chat
+  /// pipeline without assigning Bridge runtime history sequence semantics.
+  void publishExternalSessionHistory(
+    String runtimeSessionId,
+    List<ServerMessage> messages,
+  ) {
+    final history = HistoryMessage(messages: List.unmodifiable(messages));
+    // A mirror revision is not a Bridge history sequence. Keep this snapshot
+    // transient so it cannot reset or falsely advance the canonical runtime
+    // cursor used by history_delta/history_snapshot reconciliation.
+    _taggedMessageController.add((history, runtimeSessionId));
+    _messageController.add(history);
+  }
+
+  void _rememberProviderSessionBinding(
+    String runtimeSessionId,
+    String? provider,
+    String? providerSessionId,
+  ) {
+    if (provider == null ||
+        provider.trim().isEmpty ||
+        providerSessionId == null ||
+        providerSessionId.trim().isEmpty) {
+      return;
+    }
+    _providerSessionBindingByRuntime[runtimeSessionId] = (
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
   }
 
   /// Rename a session. For running sessions, [sessionId] is the bridge id.

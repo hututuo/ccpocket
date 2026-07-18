@@ -38,6 +38,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
   bool _pastHistoryLoaded = false;
+  bool _historyBootstrapSucceeded = false;
+  bool _historyFallbackRequested = false;
   Timer? _statusRefreshTimer;
   Timer? _goalMutationTimer;
   Timer? _goalReadTimer;
@@ -220,19 +222,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       requestGoal();
     }
 
-    // Request in-memory history from the bridge server
-    _bridge.requestSessionHistory(sessionId);
+    // Optional local mirrors get the first chance to render a reconstructable
+    // snapshot. The unchanged path stays synchronous for official builds.
+    if (_bridge.hasSessionHistoryBootstrap) {
+      unawaited(_requestInitialHistory());
+    } else {
+      _bridge.requestSessionHistory(sessionId);
+    }
 
     // Re-query history while status is "starting" to handle lost broadcasts
     _startStatusRefreshTimer();
   }
 
   void _startStatusRefreshTimer() {
+    var mirrorStartingTicks = 0;
     _statusRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (state.status != ProcessStatus.starting) {
         _statusRefreshTimer?.cancel();
         _statusRefreshTimer = null;
         return;
+      }
+      if (_historyBootstrapSucceeded && !_historyFallbackRequested) {
+        mirrorStartingTicks += 1;
+        if (mirrorStartingTicks < 2) return;
+        _historyFallbackRequested = true;
       }
       _bridge.requestSessionHistory(sessionId);
     });
@@ -316,6 +329,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           advancedGoalControlSupported: supported,
         ),
       );
+    }
+  }
+
+  Future<void> _requestInitialHistory() async {
+    var handled = false;
+    try {
+      handled = await _bridge.tryBootstrapSessionHistory(
+        runtimeSessionId: sessionId,
+        provider: provider?.value,
+        projectPath: state.projectPath,
+      );
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[session:$sessionId] Local history bootstrap failed; using Bridge',
+        error,
+        stackTrace,
+      );
+    }
+    if (isClosed) return;
+    _historyBootstrapSucceeded = handled;
+    if (!handled) {
+      _historyFallbackRequested = true;
+      _bridge.requestSessionHistory(sessionId);
     }
   }
 
@@ -2942,7 +2978,32 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void refreshHistory() {
     _pastHistoryLoaded = false;
     _pastEntryCount = 0;
-    _bridge.requestSessionHistory(sessionId);
+    if (!_bridge.hasSessionHistoryBootstrap) {
+      _bridge.requestSessionHistory(sessionId);
+      return;
+    }
+    unawaited(_refreshMirroredHistory());
+  }
+
+  Future<void> _refreshMirroredHistory() async {
+    var handled = false;
+    try {
+      handled = await _bridge.tryBootstrapSessionHistory(
+        runtimeSessionId: sessionId,
+        provider: provider?.value,
+        projectPath: state.projectPath,
+        force: true,
+      );
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[session:$sessionId] Mirror refresh failed; using Bridge history',
+        error,
+        stackTrace,
+      );
+    }
+    if (!handled && !isClosed) {
+      _bridge.requestSessionHistory(sessionId);
+    }
   }
 
   /// Retry a failed user message.
