@@ -171,7 +171,21 @@ void main() {
   });
 
   group('fallbackCodexSlashCommands', () {
-    test('offers the goal command', () {
+    test('offers only native mobile command routes', () {
+      expect(
+        fallbackCodexSlashCommands.map((command) => command.command).toSet(),
+        {
+          '/goal',
+          '/plan',
+          '/skills',
+          '/permissions',
+          '/compact',
+          '/review',
+          '/mcp',
+          '/model',
+          '/context',
+        },
+      );
       final goal = fallbackCodexSlashCommands.firstWhere(
         (command) => command.command == '/goal',
       );

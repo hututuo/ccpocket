@@ -727,18 +727,64 @@ class _CodexChatBody extends HookWidget {
 
     useEffect(() {
       final codexCubit = chatSessionCubit as CodexSessionCubit;
-      final sub = codexCubit.goalUiIntents.listen((intent) {
+      final sub = codexCubit.uiIntents.listen((intent) {
         if (!context.mounted || isBackgroundRef.value) return;
         switch (intent) {
-          case CodexGoalUiIntent.manage:
+          case CodexSessionUiIntent.manage:
             unawaited(CodexGoalManagement.showManager(context));
-          case CodexGoalUiIntent.edit:
+          case CodexSessionUiIntent.edit:
             final goal = chatSessionCubit.state.goal;
             if (goal == null) {
               unawaited(CodexGoalManagement.showManager(context));
             } else {
               unawaited(CodexGoalManagement.showEditor(context, goal));
             }
+          case CodexSessionUiIntent.permissions:
+            showCodexPermissionsMenu(context, chatSessionCubit);
+          case CodexSessionUiIntent.plan:
+            unawaited(
+              togglePlanMode(
+                context,
+                chatSessionCubit,
+                onBeforeRestart: () async {
+                  draftService.saveDraft(
+                    sessionId,
+                    chatInputController.text,
+                  );
+                },
+              ),
+            );
+          case CodexSessionUiIntent.planUnavailable:
+            showCodexNativePlanModeUnavailable(context);
+          case CodexSessionUiIntent.skills:
+            chatInputController
+              ..text = r'$'
+              ..selection = const TextSelection.collapsed(offset: 1);
+          case CodexSessionUiIntent.compact:
+            unawaited(
+              localFeatureContext.openPane(
+                'codex_core_actions',
+                arguments: const {'section': 'compact'},
+              ),
+            );
+          case CodexSessionUiIntent.review:
+            unawaited(
+              localFeatureContext.openPane(
+                'codex_core_actions',
+                arguments: const {'section': 'review'},
+              ),
+            );
+          case CodexSessionUiIntent.mcp:
+            unawaited(
+              localFeatureContext.openPane(
+                'codex_core_actions',
+                arguments: const {'section': 'mcp'},
+              ),
+            );
+          case CodexSessionUiIntent.model:
+            showCodexModelMenu(context, chatSessionCubit);
+          case CodexSessionUiIntent.context:
+            unawaited(localFeatureContext.openPane('session_insights'));
         }
       });
       return sub.cancel;

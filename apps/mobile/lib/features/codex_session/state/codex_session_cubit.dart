@@ -3,8 +3,23 @@ import 'dart:typed_data';
 
 import '../../../models/messages.dart';
 import '../../chat_session/state/chat_session_cubit.dart';
+import '../../chat_session/state/chat_session_state.dart';
 
-enum CodexGoalUiIntent { manage, edit }
+enum CodexSessionUiIntent {
+  manage,
+  edit,
+  permissions,
+  plan,
+  planUnavailable,
+  skills,
+  compact,
+  review,
+  mcp,
+  model,
+  context,
+}
+
+typedef CodexGoalUiIntent = CodexSessionUiIntent;
 
 /// Codex-specific session cubit.
 ///
@@ -13,10 +28,11 @@ enum CodexGoalUiIntent { manage, edit }
 /// `context.read<ChatSessionCubit>()` continue to work.
 ///
 class CodexSessionCubit extends ChatSessionCubit {
-  final _goalUiIntentController =
-      StreamController<CodexGoalUiIntent>.broadcast();
+  final _uiIntentController =
+      StreamController<CodexSessionUiIntent>.broadcast();
 
-  Stream<CodexGoalUiIntent> get goalUiIntents => _goalUiIntentController.stream;
+  Stream<CodexSessionUiIntent> get uiIntents => _uiIntentController.stream;
+  Stream<CodexGoalUiIntent> get goalUiIntents => _uiIntentController.stream;
 
   CodexSessionCubit({
     required super.sessionId,
@@ -42,11 +58,41 @@ class CodexSessionCubit extends ChatSessionCubit {
       switch (text.trim()) {
         case '/goal':
           requestGoal(userInitiated: true);
-          _goalUiIntentController.add(CodexGoalUiIntent.manage);
+          _uiIntentController.add(CodexSessionUiIntent.manage);
           return;
         case '/goal edit':
           requestGoal(userInitiated: true);
-          _goalUiIntentController.add(CodexGoalUiIntent.edit);
+          _uiIntentController.add(CodexSessionUiIntent.edit);
+          return;
+        case '/permissions':
+          _uiIntentController.add(CodexSessionUiIntent.permissions);
+          return;
+        case '/plan':
+          _uiIntentController.add(
+            state.codexNativePlanModeSupport ==
+                        CodexNativePlanModeSupport.unsupported &&
+                    !state.planMode
+                ? CodexSessionUiIntent.planUnavailable
+                : CodexSessionUiIntent.plan,
+          );
+          return;
+        case '/skills':
+          _uiIntentController.add(CodexSessionUiIntent.skills);
+          return;
+        case '/compact':
+          _uiIntentController.add(CodexSessionUiIntent.compact);
+          return;
+        case '/review':
+          _uiIntentController.add(CodexSessionUiIntent.review);
+          return;
+        case '/mcp':
+          _uiIntentController.add(CodexSessionUiIntent.mcp);
+          return;
+        case '/model':
+          _uiIntentController.add(CodexSessionUiIntent.model);
+          return;
+        case '/context':
+          _uiIntentController.add(CodexSessionUiIntent.context);
           return;
       }
     }
@@ -55,7 +101,7 @@ class CodexSessionCubit extends ChatSessionCubit {
 
   @override
   Future<void> close() {
-    _goalUiIntentController.close();
+    _uiIntentController.close();
     return super.close();
   }
 }

@@ -159,6 +159,61 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
   }
 }
 
+/// Full-size details pane used by the local-feature host and `/context`.
+class SessionInsightsPanel extends StatefulWidget {
+  const SessionInsightsPanel({
+    super.key,
+    required this.sessionId,
+    required this.bridgeService,
+    this.controller,
+  });
+
+  final String sessionId;
+  final BridgeService bridgeService;
+  final SessionInsightsController? controller;
+
+  @override
+  State<SessionInsightsPanel> createState() => _SessionInsightsPanelState();
+}
+
+class _SessionInsightsPanelState extends State<SessionInsightsPanel> {
+  late SessionInsightsController _controller;
+  late bool _ownsController;
+
+  @override
+  void initState() {
+    super.initState();
+    _ownsController = widget.controller == null;
+    _controller =
+        widget.controller ??
+        SessionInsightsController(
+          sessionId: widget.sessionId,
+          bridge: widget.bridgeService,
+        );
+    _controller.addListener(_changed);
+    _controller.start();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_changed);
+    if (_ownsController) _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => _InsightsDetails(
+    contextUsage: _controller.contextUsage,
+    usageInfo: _controller.codexUsage,
+    loading: _controller.isLoading,
+    onRefresh: () => _controller.refresh(force: true),
+  );
+}
+
 class _InsightsDetails extends StatelessWidget {
   const _InsightsDetails({
     required this.contextUsage,

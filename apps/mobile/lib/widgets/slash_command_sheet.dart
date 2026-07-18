@@ -256,6 +256,31 @@ const fallbackCodexSlashCommands = [
     description: 'Show current runtime permissions',
     icon: Icons.lock_outline,
   ),
+  SlashCommand(
+    command: '/compact',
+    description: 'Compact the current context',
+    icon: Icons.compress,
+  ),
+  SlashCommand(
+    command: '/review',
+    description: 'Start an inline code review',
+    icon: Icons.rate_review_outlined,
+  ),
+  SlashCommand(
+    command: '/mcp',
+    description: 'Show MCP server status',
+    icon: Icons.dns_outlined,
+  ),
+  SlashCommand(
+    command: '/model',
+    description: 'Change model, reasoning, or speed',
+    icon: Icons.swap_horiz,
+  ),
+  SlashCommand(
+    command: '/context',
+    description: 'Show context and account usage',
+    icon: Icons.donut_large_outlined,
+  ),
 ];
 
 // ---- Sheet widget ----

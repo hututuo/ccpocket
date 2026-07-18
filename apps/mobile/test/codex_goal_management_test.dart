@@ -15,8 +15,10 @@ import 'package:flutter_test/flutter_test.dart';
 class _Bridge extends BridgeService {
   final _messages = StreamController<ServerMessage>.broadcast();
   final _connections = StreamController<BridgeConnectionState>.broadcast();
+  final _sessions = StreamController<List<SessionInfo>>.broadcast();
   final sentMessages = <ClientMessage>[];
   bool connected = true;
+  List<SessionInfo> sessionSnapshot = const [];
 
   @override
   bool get isConnected => connected;
@@ -32,10 +34,15 @@ class _Bridge extends BridgeService {
   Stream<BridgeConnectionState> get connectionStatus => _connections.stream;
 
   @override
-  Stream<List<SessionInfo>> get sessionList => const Stream.empty();
+  Stream<List<SessionInfo>> get sessionList => _sessions.stream;
 
   @override
-  List<SessionInfo> get sessions => const [];
+  List<SessionInfo> get sessions => sessionSnapshot;
+
+  void emitSessions(List<SessionInfo> sessions) {
+    sessionSnapshot = sessions;
+    _sessions.add(sessions);
+  }
 
   @override
   void requestSessionHistory(String sessionId) {}
@@ -70,6 +77,7 @@ class _Bridge extends BridgeService {
   void dispose() {
     _messages.close();
     _connections.close();
+    _sessions.close();
     super.dispose();
   }
 }
@@ -558,7 +566,7 @@ void main() {
     );
   });
 
-  test('/goal and /goal edit open management UI without chat turns', () async {
+  test('native Codex commands emit UI intents without chat turns', () async {
     final uiCubit = CodexSessionCubit(
       sessionId: 's-ui',
       bridge: bridge,
@@ -569,9 +577,28 @@ void main() {
     try {
       uiCubit.sendMessage('/goal');
       uiCubit.sendMessage('/goal edit');
+      uiCubit.sendMessage('/permissions');
+      uiCubit.sendMessage('/plan');
+      uiCubit.sendMessage('/skills');
+      uiCubit.sendMessage('/compact');
+      uiCubit.sendMessage('/review');
+      uiCubit.sendMessage('/mcp');
+      uiCubit.sendMessage('/model');
+      uiCubit.sendMessage('/context');
       await pumpEventQueue();
 
-      expect(intents, [CodexGoalUiIntent.manage, CodexGoalUiIntent.edit]);
+      expect(intents, const [
+        CodexSessionUiIntent.manage,
+        CodexSessionUiIntent.edit,
+        CodexSessionUiIntent.permissions,
+        CodexSessionUiIntent.plan,
+        CodexSessionUiIntent.skills,
+        CodexSessionUiIntent.compact,
+        CodexSessionUiIntent.review,
+        CodexSessionUiIntent.mcp,
+        CodexSessionUiIntent.model,
+        CodexSessionUiIntent.context,
+      ]);
       expect(uiCubit.state.entries, isEmpty);
       expect(bridge.sentMessages.map((message) => message.type), ['get_goal']);
     } finally {
@@ -579,4 +606,45 @@ void main() {
       await uiCubit.close();
     }
   });
+
+  test(
+    'unsupported native Codex /plan emits guidance intent without a chat turn',
+    () async {
+      bridge.emitSessions([
+        const SessionInfo(
+          id: 's-ui',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+          codexNativePlanModeSupported: false,
+        ),
+      ]);
+      final uiCubit = CodexSessionCubit(
+        sessionId: 's-ui',
+        bridge: bridge,
+        streamingCubit: streamingCubit,
+      );
+      final intents = <CodexSessionUiIntent>[];
+      final subscription = uiCubit.uiIntents.listen(intents.add);
+      try {
+        uiCubit.sendMessage('/plan');
+        await pumpEventQueue();
+
+        expect(intents, [CodexSessionUiIntent.planUnavailable]);
+        expect(uiCubit.state.planMode, isFalse);
+        expect(uiCubit.state.entries, isEmpty);
+        expect(
+          bridge.sentMessages.where(
+            (message) => message.type == 'set_permission_mode',
+          ),
+          isEmpty,
+        );
+      } finally {
+        await subscription.cancel();
+        await uiCubit.close();
+      }
+    },
+  );
 }
