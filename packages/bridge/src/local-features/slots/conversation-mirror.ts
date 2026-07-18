@@ -1,8 +1,9 @@
 import type { LocalFeatureHandler, LocalFeatureRuntime } from "../runtime.js";
+import { ConversationMirrorFeatureHandler } from "../conversation-mirror.js";
 
-/** Disabled registration slot; activated only by the Mirror Bridge commit. */
+/** One removable registration seam for the complete conversation mirror. */
 export function createConversationMirrorHandlers(
-  _runtime: LocalFeatureRuntime,
+  runtime: LocalFeatureRuntime,
 ): readonly LocalFeatureHandler[] {
-  return [];
+  return [new ConversationMirrorFeatureHandler(runtime)];
 }
