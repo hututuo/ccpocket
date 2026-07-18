@@ -144,7 +144,6 @@ class SessionListCubit extends Cubit<SessionListState> {
     }
 
     final hasMore = _bridge.recentSessionsHasMore;
-    final isFirstPage = (response?.offset ?? 0) == 0;
     emit(
       state.copyWith(
         sessions: sessions,
@@ -154,9 +153,6 @@ class SessionListCubit extends Cubit<SessionListState> {
         accumulatedProjectPaths: merged,
         loadingProjectPaths: const {},
         exhaustedProjectPaths: hasMore ? const {} : merged,
-        projectSessionDisplayLimits: isFirstPage
-            ? const {}
-            : state.projectSessionDisplayLimits,
       ),
     );
   }
@@ -345,7 +341,8 @@ class SessionListCubit extends Cubit<SessionListState> {
     _bridge.requestProjectHistory();
   }
 
-  /// Reset all filter state (used on disconnect).
+  /// Reset server-backed filter state (used on disconnect).
+  /// User-expanded project display limits survive reconnect and refresh.
   void resetFilters() {
     _searchDebounce?.cancel();
     emit(
@@ -355,7 +352,6 @@ class SessionListCubit extends Cubit<SessionListState> {
         accumulatedProjectPaths: const {},
         loadingProjectPaths: const {},
         exhaustedProjectPaths: const {},
-        projectSessionDisplayLimits: const {},
         isLoadingMore: false,
         isInitialLoading: true,
         providerFilter: ProviderFilter.all,

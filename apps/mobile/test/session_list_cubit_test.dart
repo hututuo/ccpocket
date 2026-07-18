@@ -481,6 +481,38 @@ void main() {
     );
 
     test(
+      'offset-zero refresh preserves expanded project display limit',
+      () async {
+        final sessions = [
+          for (var i = 0; i < 7; i++)
+            _session(id: 's$i', projectPath: '/a/proj1'),
+        ];
+        mockBridge.emitSessions(sessions);
+        await Future.microtask(() {});
+        cubit.loadMoreProject('/a/proj1');
+        expect(cubit.state.projectSessionDisplayLimits['/a/proj1'], 25);
+
+        mockBridge.emitSessions(sessions);
+        await Future.microtask(() {});
+
+        expect(cubit.state.projectSessionDisplayLimits['/a/proj1'], 25);
+      },
+    );
+
+    test('disconnect reset preserves expanded project display limit', () async {
+      mockBridge.emitSessions([
+        for (var i = 0; i < 7; i++)
+          _session(id: 's$i', projectPath: '/a/proj1'),
+      ]);
+      await Future.microtask(() {});
+      cubit.loadMoreProject('/a/proj1');
+
+      cubit.resetFilters();
+
+      expect(cubit.state.projectSessionDisplayLimits['/a/proj1'], 25);
+    });
+
+    test(
       'project-scoped response clears loading and marks exhausted',
       () async {
         cubit.loadMoreProject('/a/proj1');
