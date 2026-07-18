@@ -1,11 +1,34 @@
 # CC Pocket session-management defects v01
 
-Status: `deferred`
+Status: `implemented on fix/session-correctness; not merged or deployed`
 
 Recorded: 2026-07-16 11:43 CST
 
-This note preserves the read-only session audit for a later repair pass. No
-session-management code or user session data was changed as part of this note.
+This note began as the read-only session audit. The five fixes were later
+implemented as separate commits on `fix/session-correctness`, based directly
+on consolidated compatibility commit `3478b1b`. No live Bridge, installed app,
+or user session data was changed.
+
+## Implemented repair stack
+
+1. `816f084` scopes recent-session request generations to each WebSocket
+   client, preserving same-client stale-response cancellation without
+   cross-client response loss.
+2. `cd99934` includes official Codex `exec` threads in the Codex recent-session
+   source filter.
+3. `3d0e56e` applies the shared worktree-path normalization to app-server
+   `thread/list` results and retains the raw cwd as `resumeCwd`.
+4. `99ec94f` preserves user-expanded per-project display limits across
+   offset-zero refresh and reconnect reset.
+5. `6c73f43` reuses an already-running Codex provider thread and coalesces
+   concurrent cross-socket resumes; stopped runtimes are excluded and may be
+   recreated normally.
+
+Bridge TypeScript build and all 55 files / 1149 tests passed. Flutter passed
+the focused 34 session-list tests and the full 1644-test suite with four
+environment-dependent skips. Analyzer reported only the existing 38 info
+notices, with no warning or error. Every repair commit passed a direct reverse
+patch applicability check from final HEAD.
 
 ## Confirmed defects
 
@@ -58,7 +81,7 @@ session-management code or user session data was changed as part of this note.
   row or rollout, while its generated-image directory still exists. Preserve
   those images and investigate backups before any restoration attempt.
 
-## Deferred repair order
+## Repair order
 
 1. Make recent-session request generations per WebSocket client and add a
    two-client concurrency regression test.
@@ -69,4 +92,4 @@ session-management code or user session data was changed as part of this note.
 4. Preserve per-project display limits across ordinary refresh/reconnect.
 5. Add provider-session-level idempotency for resume/replay.
 
-Each fix should be a separate commit and must not be mixed with upstream sync.
+Each fix remains a separate commit and is not mixed with upstream sync.

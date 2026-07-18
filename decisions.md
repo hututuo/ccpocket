@@ -13,6 +13,21 @@
 - In embedded mode the Bridge renders preview content only; Flutter owns back navigation, share, download, hide/reveal, transfer cancellation, and file persistence. Do not add a broad JavaScript-to-native channel for artifact actions.
 - On iOS, Word, Excel, PowerPoint and RTF use a narrow system Quick Look adapter. Reuse the authenticated, bounded artifact download into app-temporary storage; validate that the native path remains inside the app home directory; keep the file until the native dismissal callback; then remove it. Do not upload Office files to an external preview service or move this behavior into the Bridge protocol.
 
+## Session correctness boundaries
+
+- Recent-session stale-response generations are per WebSocket client. A new
+  top-level/filter request may invalidate older work from the same client but
+  must never cancel another client's response.
+- Codex recent-session discovery includes official `cli`, `vscode`, `exec`,
+  and `appServer` sources. Worktree cwd normalization must use the same shared
+  boundary for app-server and rollout results while preserving raw
+  `resumeCwd`.
+- Per-project Show more limits are local presentation intent, not server-backed
+  filter state. Preserve them across offset-zero refresh and reconnect reset.
+- One live Bridge owns at most one running app-server for a durable Codex
+  thread. Replayed or cross-socket resumes attach to the existing runtime;
+  concurrent resumes are coalesced, and a stopped runtime is never reused.
+
 ## Git-removable local session features
 
 - “Independent” means Git-level removability, not merely placing code in separate directories. Each optional feature commit must be directly revertible from the completed branch without conflicts, and the remaining Bridge and mobile targets must still build and pass their relevant tests.
