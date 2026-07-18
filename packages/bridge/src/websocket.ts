@@ -2697,8 +2697,44 @@ export class BridgeWebSocketServer {
           this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
           break;
         }
+        const provider = msg.provider ?? "claude";
+        if (provider === "codex" && msg.sessionId) {
+          // Older clients resume Codex threads through start(sessionId). Keep
+          // that wire shape compatible, but admit it through the same
+          // provider-thread lock, archive guard, history load, and runtime
+          // deduplication as the authoritative resume_session path.
+          await this.handleClientMessage(
+            {
+              type: "resume_session",
+              sessionId: msg.sessionId,
+              projectPath: msg.projectPath,
+              permissionMode: msg.permissionMode,
+              executionMode: msg.executionMode,
+              approvalPolicy: msg.approvalPolicy,
+              approvalsReviewer: msg.approvalsReviewer,
+              codexPermissionsMode: msg.codexPermissionsMode,
+              planMode: msg.planMode,
+              provider,
+              sandboxMode: msg.sandboxMode,
+              model: msg.model,
+              effort: msg.effort,
+              maxTurns: msg.maxTurns,
+              maxBudgetUsd: msg.maxBudgetUsd,
+              fallbackModel: msg.fallbackModel,
+              forkSession: msg.forkSession,
+              persistSession: msg.persistSession,
+              profile: msg.profile,
+              modelReasoningEffort: msg.modelReasoningEffort,
+              serviceTier: msg.serviceTier,
+              networkAccessEnabled: msg.networkAccessEnabled,
+              webSearchMode: msg.webSearchMode,
+              additionalWritableRoots: msg.additionalWritableRoots,
+            },
+            ws,
+          );
+          break;
+        }
         try {
-          const provider = msg.provider ?? "claude";
           const requestedCodexPermissionsMode =
             provider === "codex"
               ? normalizeCodexPermissionsMode(msg.codexPermissionsMode)

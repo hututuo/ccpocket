@@ -1062,6 +1062,235 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("rejects an archived Codex thread resumed through legacy start", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const create = vi.spyOn((bridge as any).sessionManager, "create");
+    const acquire = vi.spyOn(bridge as any, "acquireCodexThreadOperation");
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      isArchived: vi.fn(() => true),
+    };
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        sessionId: "thread-archived-start",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      ws,
+    );
+
+    expect(acquire).toHaveBeenCalledWith("thread-archived-start");
+    expect(create).not.toHaveBeenCalled();
+    expect(getCodexSessionHistoryMock).not.toHaveBeenCalled();
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) => message.type === "error"),
+    ).toMatchObject({
+      message: expect.stringContaining(
+        "The Codex thread is archived. Restore it before resuming.",
+      ),
+    });
+
+    bridge.close();
+  });
+
+  it("deduplicates legacy Codex start-with-session across clients", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const wsA = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const wsB = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const create = vi.spyOn((bridge as any).sessionManager, "create");
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      isArchived: vi.fn(() => false),
+    };
+    const request = {
+      type: "start",
+      sessionId: "thread-legacy-start-once",
+      provider: "codex",
+      projectPath: "/project",
+    };
+
+    await (bridge as any).handleClientMessage(request, wsA);
+    await (bridge as any).handleClientMessage(request, wsB);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(getCodexSessionHistoryMock).toHaveBeenCalledTimes(1);
+    const createdFor = (ws: typeof wsA) =>
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find(
+          (message: any) =>
+            message.type === "system" &&
+            message.subtype === "session_created",
+        );
+    expect(createdFor(wsA)).toMatchObject({
+      sessionId: "s-1",
+      claudeSessionId: "thread-legacy-start-once",
+    });
+    expect(createdFor(wsB)).toMatchObject({
+      sessionId: "s-1",
+      claudeSessionId: "thread-legacy-start-once",
+    });
+
+    bridge.close();
+  });
+
+  it("serializes legacy Codex start with a cross-socket archive", async () => {
+    let resolveHistory:
+      ((messages: Array<Record<string, unknown>>) => void) | undefined;
+    getCodexSessionHistoryMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveHistory = resolve;
+        }),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const startWs = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const archiveWs = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const archive = vi.fn(async () => {});
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      archive,
+      isArchived: vi.fn(() => false),
+    };
+    const acquire = vi.spyOn(bridge as any, "acquireCodexThreadOperation");
+
+    const start = (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        sessionId: "thread-racing-start-archive",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      startWs,
+    );
+    await vi.waitFor(() => {
+      expect(resolveHistory).toBeTypeOf("function");
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-racing-start",
+        sessionId: "thread-racing-start-archive",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      archiveWs,
+    );
+    await vi.waitFor(() => {
+      expect(acquire).toHaveBeenCalledTimes(2);
+    });
+
+    resolveHistory?.([]);
+    await start;
+    await vi.waitFor(() => {
+      expect(archiveWs.send).toHaveBeenCalled();
+    });
+
+    const session = (bridge as any).sessionManager.get("s-1");
+    expect(session.process.archiveThread).not.toHaveBeenCalled();
+    expect(archive).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(archiveWs.send.mock.calls.at(-1)?.[0] as string),
+    ).toMatchObject({
+      type: "archive_result",
+      requestId: "archive-racing-start",
+      provider: "codex",
+      success: false,
+      errorCode: "session_active",
+    });
+
+    bridge.close();
+  });
+
+  it("serializes legacy Codex start with a cross-socket permanent delete", async () => {
+    let resolveHistory:
+      ((messages: Array<Record<string, unknown>>) => void) | undefined;
+    getCodexSessionHistoryMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveHistory = resolve;
+        }),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const startWs = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const deleteWs = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const remove = vi.fn(async () => {});
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      // Force admission past the independent archive guard so this test
+      // exercises the shared lock and the second live-session check directly.
+      isArchived: vi.fn(() => false),
+      list: vi.fn(() => [
+        {
+          sessionId: "thread-racing-start-delete",
+          provider: "codex",
+          projectPath: "/project",
+          archivedAt: "2026-07-18T00:00:00Z",
+        },
+      ]),
+      remove,
+    };
+    const acquire = vi.spyOn(bridge as any, "acquireCodexThreadOperation");
+
+    const start = (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        sessionId: "thread-racing-start-delete",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      startWs,
+    );
+    await vi.waitFor(() => {
+      expect(resolveHistory).toBeTypeOf("function");
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "delete_session",
+        requestId: "delete-racing-start",
+        sessionId: "thread-racing-start-delete",
+        provider: "codex",
+        projectPath: "/project",
+        confirmDescendantDeletion: true,
+      },
+      deleteWs,
+    );
+    await vi.waitFor(() => {
+      expect(acquire).toHaveBeenCalledTimes(2);
+    });
+
+    resolveHistory?.([]);
+    await start;
+    await vi.waitFor(() => {
+      expect(deleteWs.send).toHaveBeenCalled();
+    });
+
+    const session = (bridge as any).sessionManager.get("s-1");
+    expect(session.process.deleteThread).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(deleteWs.send.mock.calls.at(-1)?.[0] as string),
+    ).toMatchObject({
+      type: "delete_session_result",
+      requestId: "delete-racing-start",
+      success: false,
+      errorCode: "session_active",
+    });
+
+    bridge.close();
+  });
+
   it("echoes recent session request metadata for project scoped requests", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
