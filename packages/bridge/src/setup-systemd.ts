@@ -112,6 +112,12 @@ export function setupSystemd(opts: SetupOptions): void {
   const autoArtifacts = process.env.BRIDGE_AUTO_ARTIFACTS?.trim() ?? "";
   const artifactRegistryFile =
     process.env.BRIDGE_ARTIFACT_REGISTRY_FILE?.trim() ?? "";
+  const fileTransferDownloadDir =
+    process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim() ?? "";
+  const fileTransferPartialDir =
+    process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim() ?? "";
+  const fileTransferStateFile =
+    process.env.BRIDGE_FILE_TRANSFER_STATE_FILE?.trim() ?? "";
   if (rawArtifactBaseUrl && !artifactBaseUrl) {
     throw new Error(
       "BRIDGE_ARTIFACT_BASE_URL must be a mobile-reachable HTTP(S) origin",
@@ -169,6 +175,15 @@ Environment="BRIDGE_CLI_ENTRY=${escapeSystemdEnvironment(bridgeCliEntry)}"`;
   }
   if (artifactRegistryFile) {
     envLines += `\nEnvironment="BRIDGE_ARTIFACT_REGISTRY_FILE=${escapeSystemdEnvironment(artifactRegistryFile)}"`;
+  }
+  if (fileTransferDownloadDir) {
+    envLines += `\nEnvironment="BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR=${escapeSystemdEnvironment(fileTransferDownloadDir)}"`;
+  }
+  if (fileTransferPartialDir) {
+    envLines += `\nEnvironment="BRIDGE_FILE_TRANSFER_PARTIAL_DIR=${escapeSystemdEnvironment(fileTransferPartialDir)}"`;
+  }
+  if (fileTransferStateFile) {
+    envLines += `\nEnvironment="BRIDGE_FILE_TRANSFER_STATE_FILE=${escapeSystemdEnvironment(fileTransferStateFile)}"`;
   }
   if (disableMdns) {
     envLines += "\nEnvironment=BRIDGE_DISABLE_MDNS=1";

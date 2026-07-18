@@ -12,6 +12,11 @@ import {
   type LocalFeatureClientMessage,
   type LocalFeatureServerMessage,
 } from "./local-features/protocol.js";
+import {
+  parseFileTransferClientMessage,
+  type FileTransferClientMessage,
+  type FileTransferServerMessage,
+} from "./file-transfer-protocol.js";
 
 export type {
   CodexSubagentInfo,
@@ -447,7 +452,8 @@ export type ClientMessage =
       includeRemote?: boolean;
     }
   | { type: "git_remote_status"; projectPath: string }
-  | LocalFeatureClientMessage;
+  | LocalFeatureClientMessage
+  | FileTransferClientMessage;
 
 /** Image change detected in a git diff (binary image file). */
 export interface ImageChange {
@@ -895,7 +901,8 @@ export type ServerMessage =
       branch: string;
       hasUpstream: boolean;
     }
-  | LocalFeatureServerMessage;
+  | LocalFeatureServerMessage
+  | FileTransferServerMessage;
 
 export interface UsageWindowPayload {
   utilization: number;
@@ -944,6 +951,8 @@ export function parseClientMessage(data: string): ClientMessage | null {
   try {
     const msg = JSON.parse(data) as Record<string, unknown>;
     if (!msg.type || typeof msg.type !== "string") return null;
+    const fileTransferMessage = parseFileTransferClientMessage(msg);
+    if (fileTransferMessage !== undefined) return fileTransferMessage;
     const localFeatureMessage = parseLocalFeatureClientMessage(msg);
     if (localFeatureMessage !== undefined) return localFeatureMessage;
     const hasOnlyKeys = (allowedKeys: readonly string[]): boolean => {

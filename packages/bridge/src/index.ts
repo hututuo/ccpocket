@@ -28,6 +28,7 @@ import { resolveArtifactBaseUrl } from "./artifact-url.js";
 import { ArtifactRegistry } from "./artifact-registry.js";
 import { ArtifactManager } from "./artifact-manager.js";
 import { GeneratedArtifactStore } from "./generated-artifact-store.js";
+import { initializeFileTransferRuntime } from "./file-transfer-runtime.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -216,10 +217,28 @@ export async function startServer() {
     console.error("[bridge] Failed to initialize prompt history store:", err);
   });
 
+  const fileTransferRuntime = await initializeFileTransferRuntime({
+    port: PORT,
+    bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+    allowedDirs: ALLOWED_DIRS,
+    baseUrl: artifactBaseUrl,
+    stateFilePath: process.env.BRIDGE_FILE_TRANSFER_STATE_FILE?.trim(),
+    downloadDirectory: process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
+    partialDirectory: process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
+    warn: (message) => console.warn(`[bridge] ${message}`),
+  });
+  const fileTransfer = fileTransferRuntime?.manager;
+  const fileTransferHttp = fileTransferRuntime?.http;
+  if (fileTransferRuntime) {
+    console.log("[bridge] Resumable phone file transfer enabled");
+  }
+
   const startedAt = Date.now();
   let wsServer: BridgeWebSocketServer | null = null;
 
   const httpServer = createServer((req, res) => {
+    // Transfer control and byte routes use their own strict origin/token gates.
+    if (fileTransferHttp?.handleRequest(req, res)) return;
     // Artifact routes intentionally do not inherit the permissive CORS policy.
     if (artifactHttp.handleRequest(req, res)) return;
 
@@ -305,27 +324,40 @@ export async function startServer() {
     res.end("Not Found");
   });
 
-  wsServer = new BridgeWebSocketServer({
-    server: httpServer,
-    apiKey: API_KEY,
-    allowedDirs: ALLOWED_DIRS,
-    imageStore,
-    galleryStore,
-    projectHistory,
-    debugTraceStore,
-    recordingStore,
-    firebaseAuth,
-    promptHistoryBackup,
-    promptHistoryStore,
-    artifactManager,
-  });
+  try {
+    wsServer = new BridgeWebSocketServer({
+      server: httpServer,
+      apiKey: API_KEY,
+      allowedDirs: ALLOWED_DIRS,
+      imageStore,
+      galleryStore,
+      projectHistory,
+      debugTraceStore,
+      recordingStore,
+      firebaseAuth,
+      promptHistoryBackup,
+      promptHistoryStore,
+      artifactManager,
+      fileTransfer,
+    });
+  } catch (error) {
+    artifactStore.close();
+    await fileTransferHttp?.close();
+    await fileTransfer?.close();
+    httpServer.close();
+    throw error;
+  }
 
-  function shutdown() {
+  let shutdownStarted = false;
+  async function shutdown(): Promise<void> {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     console.log("\n[bridge] Shutting down gracefully...");
     mdns?.stop();
     artifactStore.close();
-    wsServer?.close();
-    httpServer.close();
+    await fileTransferHttp?.close();
+    await wsServer?.close();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     process.exit(0);
   }
 
@@ -333,7 +365,9 @@ export async function startServer() {
     await listenForStartup(httpServer, PORT, HOST);
   } catch (err) {
     artifactStore.close();
-    wsServer.close();
+    await fileTransferHttp?.close();
+    if (wsServer) await wsServer.close();
+    else await fileTransfer?.close();
     httpServer.close();
     throw err;
   }
@@ -344,8 +378,8 @@ export async function startServer() {
   mdns?.start(PORT, API_KEY);
   printStartupInfo(PORT, HOST, API_KEY);
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => { void shutdown(); });
+  process.on("SIGTERM", () => { void shutdown(); });
 }
 
 // Auto-start when executed directly (node dist/index.js, tsx src/index.ts)

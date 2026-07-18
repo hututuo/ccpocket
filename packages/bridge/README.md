@@ -43,6 +43,9 @@ ccpocket-bridge --version
 | `BRIDGE_ARTIFACT_BASE_URL` | auto-detected | Mobile-reachable `http://` / `https://` base URL used by temporary file preview links |
 | `BRIDGE_AUTO_ARTIFACTS` | enabled | Set to `0`, `false`, or `off` to disable automatic Codex file references without disabling explicit `share` links |
 | `BRIDGE_ARTIFACT_REGISTRY_FILE` | `$HOME/.ccpocket/artifact-registry-v1[-<port>].json` | Advanced override for the private automatic-artifact descriptor registry; the file is written with mode `0600` |
+| `BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR` | `$HOME/Downloads` | Destination for files uploaded by the phone; an existing stable Downloads symlink is pinned and revalidated |
+| `BRIDGE_FILE_TRANSFER_PARTIAL_DIR` | `$HOME/.ccpocket/file-transfer-parts` | Private `0700` same-volume directory for resumable upload partials; a cross-volume explicit override is rejected |
+| `BRIDGE_FILE_TRANSFER_STATE_FILE` | `$HOME/.ccpocket/file-transfers-v2-<bridge-id>.json` | Advanced override for private resumable transfer metadata and completion tombstones |
 | `BRIDGE_CODEX_APP_SERVER_MODE` | `private` | Experimental Codex app-server mode: `private`, `managed`, or `external` |
 | `BRIDGE_CODEX_SHARED_APP_SERVER_URL` | `ws://127.0.0.1:8767` in `managed` mode | Experimental shared Codex app-server URL for Codex CLI co-presence |
 | `BRIDGE_DEMO_MODE` | (none) | Demo mode: hide Tailscale IPs and API key from QR code / logs |
@@ -135,6 +138,67 @@ The publish control endpoint accepts loopback requests only. Public artifact
 routes do not expose source paths, support no directory listing, and do not
 inherit the Bridge's permissive Flutter Web CORS policy.
 
+## Resumable phone file transfer
+
+With one compatible phone connected, offer a file from the Mac/Linux CLI:
+
+```bash
+ccpocket-bridge send "/absolute/path/archive.zip"
+ccpocket-bridge send archive.zip --ttl 3600 --json
+```
+
+`--base-url` is accepted only when it normalizes to the HTTP origin derived
+from the authenticated phone's current WebSocket handshake. This prevents an
+offer from reporting success with a LAN address while the phone is connected
+through Tailscale (or vice versa); the peer's actual origin takes priority over
+the Bridge's global auto-detected preview address. When the phone connects
+through an SSH local forward, the authenticated handshake's exact
+`localhost`, `127.0.0.1`, or `[::1]` origin is preserved because that loopback
+endpoint belongs to the phone. Configured and CLI override URLs still reject
+loopback and wildcard hosts.
+
+A successful command reports `status: "offered"`: the Bridge delivered a
+download capability to the one live compatible phone, but the phone has not
+yet confirmed saving the file. Zero or multiple compatible phones fail closed;
+the command never broadcasts a file capability. Source files must remain
+inside the existing `BRIDGE_ALLOWED_DIRS` policy.
+
+Protocol `file_transfer_v2` supports resumable transfer in both directions,
+pause by stopping the current HTTP request, explicit authenticated cancel, and
+persistent recovery after a Bridge restart. Pure transfer files may be up to
+15 GiB; this does not raise the separate preview/rendering limit. HTTP chunks
+may be any exact length from 1 byte through the advertised maximum (currently
+16 MiB). The maximum is an upper bound, not a fixed chunk size: clients can
+send a 1–10 MiB file in one request and adapt larger transfers based on measured
+throughput. Upload publication never overwrites an existing file.
+
+Transfer tokens never appear in CLI output or persistent state. The local send
+control endpoint is loopback-only, rejects browser origins, and requires its
+private control header. Phone byte routes require per-transfer random tokens,
+exact offsets/ranges, and source/destination identity checks. The active HTTP
+lease defaults to 24 hours; retained resumable metadata is bounded to seven
+days and can renew the lease through the authenticated WebSocket protocol.
+
+The transfer state has an exclusive process lock. Lock or state corruption
+disables only `file_transfer_v2`; normal Bridge chat continues. Diagnose an
+unclean-exit lock without modifying it:
+
+```bash
+ccpocket-bridge file-transfer status
+```
+
+Only if that command reports complete owner metadata and confirms the recorded
+owner PID is dead, recover with:
+
+```bash
+ccpocket-bridge file-transfer unlock
+```
+
+`unlock` refuses a live owner and refuses missing/invalid owner metadata. The
+Bridge never automatically removes a stale lock, avoiding a two-owner race.
+`status` also reports an orphaned `.lock-recovery` claim explicitly instead of
+mislabeling that state as an ordinary unlocked store.
+
 ## Automatic Codex file references
 
 For Codex sessions, Bridge recognizes high-confidence local files without
@@ -218,6 +282,9 @@ that affect startup:
 - `BRIDGE_ARTIFACT_BASE_URL` / `--artifact-base-url`
 - `BRIDGE_AUTO_ARTIFACTS`
 - `BRIDGE_ARTIFACT_REGISTRY_FILE`
+- `BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR`
+- `BRIDGE_FILE_TRANSFER_PARTIAL_DIR`
+- `BRIDGE_FILE_TRANSFER_STATE_FILE`
 - `BRIDGE_DISABLE_MDNS` / `--no-mdns`
 - `BRIDGE_CODEX_APP_SERVER_MODE` / `--codex-app-server-mode`
 - `BRIDGE_CODEX_SHARED_APP_SERVER_URL` / `--codex-shared-app-server-url`

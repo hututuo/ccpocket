@@ -1,4 +1,4 @@
-import type { Server as HttpServer } from "node:http";
+import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
@@ -126,10 +126,17 @@ import {
   withDerivedCodexPermissionsMode,
 } from "./codex-permissions.js";
 import { ArtifactManager, ArtifactResolveError } from "./artifact-manager.js";
+import { validateFileTransferPeerBaseUrl } from "./file-transfer-utils.js";
 import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import { isLocalFeatureServerMessageType } from "./local-features/protocol.js";
+import type { FileTransferManager } from "./file-transfer-manager.js";
+import {
+  FILE_TRANSFER_CAPABILITY,
+  isFileTransferClientMessage,
+  isFileTransferServerMessageType,
+} from "./file-transfer-protocol.js";
 import {
   CodexGoalConflictError,
   CodexGoalController,
@@ -160,6 +167,37 @@ const KNOWN_CODEX_GOAL_STATUSES = new Set([
   "budgetLimited",
   "complete",
 ]);
+
+function httpBaseUrlForWebSocketRequest(
+  request?: IncomingMessage,
+): string | undefined {
+  if (!request) return undefined;
+  const forwardedHost = firstForwardedHeader(request.headers["x-forwarded-host"]);
+  const host = forwardedHost ?? request.headers.host;
+  if (!host) return undefined;
+  const forwardedProtocol = firstForwardedHeader(
+    request.headers["x-forwarded-proto"],
+  )?.toLowerCase();
+  const secureSocket = Boolean(
+    (request.socket as typeof request.socket & { encrypted?: boolean }).encrypted,
+  );
+  const protocol = forwardedProtocol === "https" || forwardedProtocol === "wss"
+    ? "https"
+    : forwardedProtocol === "http" || forwardedProtocol === "ws"
+      ? "http"
+      : secureSocket
+        ? "https"
+        : "http";
+  return validateFileTransferPeerBaseUrl(`${protocol}://${host}`);
+}
+
+function firstForwardedHeader(
+  value: string | string[] | undefined,
+): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const first = raw?.split(",", 1)[0]?.trim();
+  return first || undefined;
+}
 const PERMISSION_RESTART_BLOCKED_MESSAGE_TYPES = new Set([
   "update_queued_input",
   "cancel_queued_input",
@@ -965,6 +1003,7 @@ export interface BridgeServerOptions {
   deltaBatchMs?: number;
   deltaBatchMaxChars?: number;
   artifactManager?: ArtifactManager;
+  fileTransfer?: FileTransferManager;
 }
 
 type DeltaServerMessage = Extract<
@@ -1061,6 +1100,7 @@ export class BridgeWebSocketServer {
   private restoringManagedGalleryPaths = new Set<string>();
   private readonly localFeatures: LocalFeaturesController;
   private readonly codexGoals: CodexGoalController;
+  private readonly fileTransfer: FileTransferManager | null;
 
   constructor(options: BridgeServerOptions) {
     const {
@@ -1081,6 +1121,7 @@ export class BridgeWebSocketServer {
       deltaBatchMs,
       deltaBatchMaxChars,
       artifactManager,
+      fileTransfer,
     } = options;
     this.apiKey = apiKey ?? null;
     this.allowedDirs = allowedDirs ?? [];
@@ -1099,6 +1140,7 @@ export class BridgeWebSocketServer {
     // every restart.
     this.bridgeInstanceId = promptHistoryStore?.bridgeInstanceId;
     this.artifactManager = artifactManager ?? null;
+    this.fileTransfer = fileTransfer ?? null;
     this.platform = platform ?? process.platform;
     this.fileListMaxEntries = normalizePositiveLimit(
       fileListMaxEntries,
@@ -1209,7 +1251,7 @@ export class BridgeWebSocketServer {
       }
 
       console.log("[ws] Client connected");
-      this.handleConnection(ws);
+      this.handleConnection(ws, req);
     });
 
     this.wss.on("error", (err) => {
@@ -2553,7 +2595,7 @@ export class BridgeWebSocketServer {
     }
   }
 
-  close(): void {
+  async close(): Promise<void> {
     console.log("[ws] Shutting down...");
     this.localFeatures.close();
     this.flushAllDeltaBatches();
@@ -2563,6 +2605,7 @@ export class BridgeWebSocketServer {
     this.debugEvents.clear();
     this.restoringManagedGalleryPaths.clear();
     this.wss.close();
+    await this.fileTransfer?.close();
   }
 
   /** Return session count for /health endpoint. */
@@ -2575,7 +2618,21 @@ export class BridgeWebSocketServer {
     return this.wss.clients.size;
   }
 
-  private handleConnection(ws: WebSocket): void {
+  private handleConnection(ws: WebSocket, request?: IncomingMessage): void {
+    this.fileTransfer?.connect(ws, {
+      supports: (messageType) =>
+        this.clientSupportedServerMessages.get(ws)?.has(messageType) ?? false,
+      isOpen: () => ws.readyState === WebSocket.OPEN,
+      send: (message) => {
+        if (
+          ws.readyState !== WebSocket.OPEN ||
+          !(this.clientSupportedServerMessages.get(ws)?.has(message.type) ?? false)
+        ) return false;
+        this.send(ws, message);
+        return true;
+      },
+      httpBaseUrl: httpBaseUrlForWebSocketRequest(request),
+    });
     // Send session list and project history on connect
     this.refreshConnectionMetadata();
     this.sendSessionList(ws);
@@ -2609,12 +2666,18 @@ export class BridgeWebSocketServer {
       }
 
       console.log(`[ws] Received: ${msg.type}`);
-      this.handleClientMessage(msg, ws);
+      void this.handleClientMessage(msg, ws).catch((error) => {
+        console.error(
+          `[ws] Failed to handle ${msg.type}:`,
+          error instanceof Error ? error.message : String(error),
+        );
+      });
     });
 
     ws.on("close", () => {
       console.log("[ws] Client disconnected");
       this.localFeatures.disconnect(ws);
+      this.fileTransfer?.disconnect(ws);
       this.discardClientDeltaBatches(ws);
       this.clearPendingClaudeResumeInputs(ws);
     });
@@ -2650,6 +2713,11 @@ export class BridgeWebSocketServer {
       );
       this.localFeatures.capabilitiesChanged(ws);
       this.sendPromptHistoryStatus(ws);
+      return;
+    }
+
+    if (this.fileTransfer && isFileTransferClientMessage(msg)) {
+      await this.fileTransfer.handleClientMessage(ws, msg);
       return;
     }
 
@@ -7550,6 +7618,7 @@ export class BridgeWebSocketServer {
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
+        ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
     });
   }
@@ -7590,6 +7659,7 @@ export class BridgeWebSocketServer {
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
+        ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
     });
   }
@@ -8800,7 +8870,8 @@ export class BridgeWebSocketServer {
     }
     if (
       !OPT_IN_SERVER_MESSAGES.has(type) &&
-      !isLocalFeatureServerMessageType(type)
+      !isLocalFeatureServerMessageType(type) &&
+      !isFileTransferServerMessageType(type)
     ) {
       return true;
     }

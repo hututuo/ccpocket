@@ -26,6 +26,9 @@ describe("ccpocket-bridge CLI", { timeout: 15_000 }, () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("BRIDGE_AUTO_ARTIFACTS");
     expect(result.stdout).toContain("BRIDGE_ARTIFACT_REGISTRY_FILE");
+    expect(result.stdout).toContain("send <path>");
+    expect(result.stdout).toContain("file-transfer unlock");
+    expect(result.stdout).toContain("BRIDGE_FILE_TRANSFER_PARTIAL_DIR");
   });
 
   it("reports a missing share path without starting the server", () => {
@@ -34,6 +37,19 @@ describe("ccpocket-bridge CLI", { timeout: 15_000 }, () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Share failed: file path is required");
     expect(result.stdout).not.toContain("Starting ccpocket bridge server");
+  });
+
+  it("reports a missing send path without starting the server", () => {
+    const result = runCli(["send"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Send failed: file path is required");
+    expect(result.stdout).not.toContain("Starting ccpocket bridge server");
+  });
+
+  it("requires an explicit file-transfer status or unlock action", () => {
+    const result = runCli(["file-transfer"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("requires status or unlock");
   });
 
   it("rejects an invalid --port value before server startup", () => {

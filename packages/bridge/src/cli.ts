@@ -26,6 +26,9 @@ Commands:
   doctor [--json]       Check the local Bridge environment
   setup [options]       Register Bridge as a macOS launchd or Linux systemd service
   share <path>          Create a temporary mobile preview link for a local file
+  send <path>           Offer a local file to the one connected compatible phone
+  file-transfer status  Diagnose the persistent transfer process lock
+  file-transfer unlock  Remove only a lock whose recorded owner PID is dead
 
 Options:
   -h, --help            Show this help
@@ -48,17 +51,25 @@ Share options:
       --base-url <url>   Mobile-reachable HTTP(S) Bridge URL
       --json             Print structured artifact metadata
 
+Send options:
+      --ttl <seconds>    Download lease from 60 to 86400 seconds (default: 86400)
+      --base-url <url>   Mobile-reachable HTTP(S) Bridge URL
+      --json             Print structured metadata with status "offered"
+
 Setup options:
       --uninstall       Remove the registered service
       setup persists --port, --host, --api-key, --public-ws-url,
       --artifact-base-url, --no-mdns, Codex app-server options,
       BRIDGE_ALLOWED_DIRS, BRIDGE_AUTO_ARTIFACTS, and
-      BRIDGE_ARTIFACT_REGISTRY_FILE
+      BRIDGE_ARTIFACT_REGISTRY_FILE, plus BRIDGE_FILE_TRANSFER_* paths
 
 Configuration can also be provided with BRIDGE_PORT, BRIDGE_HOST,
 BRIDGE_API_KEY, BRIDGE_ALLOWED_DIRS, BRIDGE_PUBLIC_WS_URL, and
 BRIDGE_ARTIFACT_BASE_URL, BRIDGE_AUTO_ARTIFACTS,
 BRIDGE_ARTIFACT_REGISTRY_FILE, and BRIDGE_DISABLE_MDNS.
+Phone transfer storage can be configured with
+BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR, BRIDGE_FILE_TRANSFER_PARTIAL_DIR,
+and BRIDGE_FILE_TRANSFER_STATE_FILE.
 Codex app-server configuration can be provided with
 BRIDGE_CODEX_APP_SERVER_MODE and BRIDGE_CODEX_SHARED_APP_SERVER_URL.`);
 }
@@ -129,6 +140,67 @@ if (parsed.helpRequested) {
       `ERROR: 'setup' is not supported on ${platform()}. Supported: macOS (launchd), Linux (systemd).`,
     );
     process.exit(1);
+  }
+} else if (parsed.command === "file-transfer") {
+  const action = parsed.positionals[1];
+  if (action !== "status" && action !== "unlock") {
+    console.error("File transfer command requires status or unlock");
+    process.exitCode = 1;
+  } else {
+    import("./file-transfer-lock-command.js")
+      .then(async ({
+        formatFileTransferLockInspection,
+        inspectFileTransferForCli,
+        unlockFileTransferForCli,
+      }) => {
+        const inspection = action === "unlock"
+          ? await unlockFileTransferForCli(parseFlag(parsed, "port"))
+          : await inspectFileTransferForCli(parseFlag(parsed, "port"));
+        console.log(
+          hasFlag(parsed, "json")
+            ? JSON.stringify(inspection)
+            : formatFileTransferLockInspection(inspection),
+        );
+      })
+      .catch((err) => {
+        console.error(
+          `File transfer ${action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        process.exitCode = 1;
+      });
+  }
+} else if (parsed.command === "send") {
+  const filePath = parsed.positionals[1];
+  if (!filePath) {
+    console.error("Send failed: file path is required");
+    process.exitCode = 1;
+  } else {
+    import("./file-transfer-send-command.js")
+      .then(async ({ parseFileTransferTtl, sendFileViaBridge }) => {
+        const offered = await sendFileViaBridge({
+          filePath,
+          projectPath: process.cwd(),
+          port: parseBridgePort(parseFlag(parsed, "port")),
+          ttlSeconds: parseFileTransferTtl(parseFlag(parsed, "ttl")),
+          baseUrl: parseFlag(parsed, "base-url"),
+        });
+        if (hasFlag(parsed, "json")) {
+          console.log(JSON.stringify(offered));
+        } else {
+          console.log(
+            `Offered ${offered.filename} (${offered.sizeBytes} bytes) to ${offered.recipientCount} compatible phone.`,
+          );
+          console.log(
+            `Transfer ${offered.transferId} expires ${offered.expiresAt}; phone save is not yet confirmed.`,
+          );
+        }
+      })
+      .catch((err) => {
+        console.error(
+          `Send failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        process.exitCode = 1;
+      });
   }
 } else if (parsed.command === "share") {
   const filePath = parsed.positionals[1];

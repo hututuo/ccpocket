@@ -46,6 +46,20 @@ describe("normalizeToolResultContent", () => {
 // ---- parseClientMessage ----
 
 describe("parseClientMessage", () => {
+  it("routes only strict v2 file-transfer messages into the independent module", () => {
+    const valid = {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "request-1",
+      transferId: "upload_123456789",
+      resumeToken: "r".repeat(43),
+      filename: "phone.bin",
+      sizeBytes: 10,
+    };
+    expect(parseClientMessage(JSON.stringify(valid))).toEqual(valid);
+    expect(parseClientMessage(JSON.stringify({ ...valid, extra: true }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ ...valid, transferId: "short" }))).toBeNull();
+  });
+
   it("parses client capabilities", () => {
     const msg = parseClientMessage(
       '{"type":"client_capabilities","protocolVersion":1,"appVersion":"1.72.1","supportedServerMessages":["conversation_queue"]}',

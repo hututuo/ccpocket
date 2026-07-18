@@ -633,6 +633,145 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     httpServer.close();
   });
 
+  it("advertises, gates, routes, disconnects, and closes the optional v2 file-transfer module", async () => {
+    const fileTransfer = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      handleClientMessage: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("file transfer cleanup failed")),
+      close: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      fileTransfer: fileTransfer as any,
+    });
+    const listeners = new Map<string, (...args: any[]) => void>();
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn((event: string, listener: (...args: any[]) => void) => {
+        listeners.set(event, listener);
+      }),
+    } as any;
+
+    (bridge as any).handleConnection(ws, {
+      headers: {
+        host: "100.104.72.123:8765",
+        "x-forwarded-proto": "http",
+      },
+      socket: {},
+    });
+    expect(fileTransfer.connect).toHaveBeenCalledOnce();
+    const initialMessages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(initialMessages).toContainEqual(expect.objectContaining({
+      type: "session_list",
+      bridgeCapabilities: expect.arrayContaining(["file_transfer_v2"]),
+    }));
+
+    const binding = fileTransfer.connect.mock.calls[0][1];
+    expect(binding.httpBaseUrl).toBe("http://100.104.72.123:8765");
+    expect(binding.supports("file_transfer_offer_v2")).toBe(false);
+    expect(binding.send({
+      type: "file_transfer_offer_v2",
+      transferId: "download_1234567",
+      filename: "x.txt",
+      mimeType: "text/plain",
+      sizeBytes: 1,
+      downloadUrl: "http://100.64.0.1:8765/api/file-transfers/downloads/download_1234567",
+      downloadToken: "d".repeat(43),
+      etag: `"${"e".repeat(32)}"`,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    })).toBe(false);
+
+    listeners.get("message")?.(Buffer.from(JSON.stringify({
+      type: "client_capabilities",
+      supportedServerMessages: [
+        "file_transfer_offer_v2",
+        "file_transfer_upload_ready_v2",
+        "file_transfer_upload_result_v2",
+      ],
+    })));
+    await vi.waitFor(() => expect(binding.supports("file_transfer_offer_v2")).toBe(true));
+    expect(binding.send({
+      type: "file_transfer_offer_v2",
+      transferId: "download_1234567",
+      filename: "x.txt",
+      mimeType: "text/plain",
+      sizeBytes: 1,
+      downloadUrl: "http://100.64.0.1:8765/api/file-transfers/downloads/download_1234567",
+      downloadToken: "d".repeat(43),
+      etag: `"${"e".repeat(32)}"`,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    })).toBe(true);
+    expect(JSON.parse(ws.send.mock.calls.at(-1)[0])).toMatchObject({
+      type: "file_transfer_offer_v2",
+      transferId: "download_1234567",
+    });
+
+    const uploadPrepare = {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "request-1",
+      transferId: "upload_123456789",
+      resumeToken: "r".repeat(43),
+      filename: "phone.bin",
+      sizeBytes: 1,
+    };
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    listeners.get("message")?.(Buffer.from(JSON.stringify(uploadPrepare)));
+    await vi.waitFor(() => {
+      expect(fileTransfer.handleClientMessage).toHaveBeenCalledWith(ws, uploadPrepare);
+    });
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        "[ws] Failed to handle file_transfer_upload_prepare_v2:",
+        "file transfer cleanup failed",
+      );
+    });
+    const retryPrepare = { ...uploadPrepare, requestId: "request-2" };
+    listeners.get("message")?.(Buffer.from(JSON.stringify(retryPrepare)));
+    await vi.waitFor(() => {
+      expect(fileTransfer.handleClientMessage).toHaveBeenCalledWith(
+        ws,
+        retryPrepare,
+      );
+    });
+    consoleError.mockRestore();
+    listeners.get("close")?.();
+    expect(fileTransfer.disconnect).toHaveBeenCalledWith(ws);
+    await bridge.close();
+    expect(fileTransfer.close).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the phone-side loopback HTTP origin used by an SSH tunnel", async () => {
+    const fileTransfer = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      handleClientMessage: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      fileTransfer: fileTransfer as any,
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn(),
+    } as any;
+    (bridge as any).handleConnection(ws, {
+      headers: { host: "127.0.0.1:18765" },
+      socket: {},
+    });
+    expect(fileTransfer.connect.mock.calls[0][1].httpBaseUrl)
+      .toBe("http://127.0.0.1:18765");
+    await bridge.close();
+  });
+
   it("does not persist Codex archive bookkeeping when the official RPC fails", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;

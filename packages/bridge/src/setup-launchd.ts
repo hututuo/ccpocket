@@ -66,6 +66,12 @@ export function setupLaunchd(opts: SetupOptions): void {
   const autoArtifacts = process.env.BRIDGE_AUTO_ARTIFACTS?.trim() ?? "";
   const artifactRegistryFile =
     process.env.BRIDGE_ARTIFACT_REGISTRY_FILE?.trim() ?? "";
+  const fileTransferDownloadDir =
+    process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim() ?? "";
+  const fileTransferPartialDir =
+    process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim() ?? "";
+  const fileTransferStateFile =
+    process.env.BRIDGE_FILE_TRANSFER_STATE_FILE?.trim() ?? "";
   if (rawArtifactBaseUrl && !artifactBaseUrl) {
     throw new Error(
       "BRIDGE_ARTIFACT_BASE_URL must be a mobile-reachable HTTP(S) origin",
@@ -138,6 +144,24 @@ export function setupLaunchd(opts: SetupOptions): void {
     envBlock += `
         <key>BRIDGE_ARTIFACT_REGISTRY_FILE</key>
         <string>${escapeXml(artifactRegistryFile)}</string>`;
+  }
+
+  if (fileTransferDownloadDir) {
+    envBlock += `
+        <key>BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR</key>
+        <string>${escapeXml(fileTransferDownloadDir)}</string>`;
+  }
+
+  if (fileTransferPartialDir) {
+    envBlock += `
+        <key>BRIDGE_FILE_TRANSFER_PARTIAL_DIR</key>
+        <string>${escapeXml(fileTransferPartialDir)}</string>`;
+  }
+
+  if (fileTransferStateFile) {
+    envBlock += `
+        <key>BRIDGE_FILE_TRANSFER_STATE_FILE</key>
+        <string>${escapeXml(fileTransferStateFile)}</string>`;
   }
 
   if (disableMdns) {
