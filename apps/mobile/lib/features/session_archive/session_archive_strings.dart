@@ -97,6 +97,27 @@ class SessionArchiveStrings {
     return 'Session restored';
   }
 
+  String archiveResultUnknown({required bool disconnected}) {
+    if (_zh) {
+      return disconnected
+          ? '连接已中断，归档结果未知。请刷新会话列表确认后再操作；不会自动重试。'
+          : 'Bridge 未及时确认，归档结果未知。请刷新会话列表确认后再操作；不会自动重试。';
+    }
+    if (_ja) {
+      return disconnected
+          ? '接続が切れたため、アーカイブ結果は不明です。一覧を更新して確認してください。自動再試行はしません。'
+          : 'Bridge の確認が間に合わず、アーカイブ結果は不明です。一覧を更新して確認してください。自動再試行はしません。';
+    }
+    if (_ko) {
+      return disconnected
+          ? '연결이 끊겨 보관 결과를 알 수 없습니다. 목록을 새로고침해 확인하세요. 자동 재시도하지 않습니다.'
+          : 'Bridge 확인 시간이 초과되어 보관 결과를 알 수 없습니다. 목록을 새로고침해 확인하세요. 자동 재시도하지 않습니다.';
+    }
+    return disconnected
+        ? 'The connection closed before archive confirmation. Refresh the session list to verify the result; CC Pocket will not retry automatically.'
+        : 'The Bridge did not confirm the archive in time. Refresh the session list to verify the result; CC Pocket will not retry automatically.';
+  }
+
   String get deleted {
     if (_zh) return '会话及其派生子会话已永久删除';
     if (_ja) return '会話と派生した子会話を削除しました';

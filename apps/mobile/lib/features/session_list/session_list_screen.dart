@@ -32,7 +32,9 @@ import '../../widgets/new_session_sheet.dart';
 import '../../widgets/rename_session_dialog.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../session_archive/session_archive_cubit.dart';
+import '../session_archive/session_archive_pending_requests.dart';
 import '../session_archive/session_archive_screen.dart';
+import '../session_archive/session_archive_strings.dart';
 import '../settings/state/settings_cubit.dart';
 import '../settings/state/settings_state.dart';
 import 'state/session_list_cubit.dart';
@@ -287,18 +289,6 @@ class SessionListScreen extends StatefulWidget {
   State<SessionListScreen> createState() => _SessionListScreenState();
 }
 
-class _PendingArchiveRequest {
-  const _PendingArchiveRequest({
-    required this.sessionId,
-    required this.provider,
-    required this.identityKey,
-  });
-
-  final String sessionId;
-  final String provider;
-  final String identityKey;
-}
-
 class _SessionListScreenState extends State<SessionListScreen>
     with WidgetsBindingObserver {
   bool _isAutoConnecting = false;
@@ -325,8 +315,8 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   // Only subscription that remains: session_created navigation
   StreamSubscription<ServerMessage>? _messageSub;
-  final Set<String> _archivingSessionKeys = <String>{};
-  final Map<String, _PendingArchiveRequest> _pendingArchiveRequests = {};
+  StreamSubscription<BridgeConnectionState>? _archiveConnectionSub;
+  late final SessionArchivePendingRequests _archivePendingRequests;
 
   // macOS app update
   AppUpdateInfo? _appUpdateInfo;
@@ -355,6 +345,14 @@ class _SessionListScreenState extends State<SessionListScreen>
     WidgetsBinding.instance.addObserver(this);
     // session_created navigation (the only manual subscription)
     final bridge = context.read<BridgeService>();
+    _archivePendingRequests = SessionArchivePendingRequests(
+      onResultUnknown: _handleArchiveResultUnknown,
+    );
+    _archiveConnectionSub = bridge.connectionStatus.listen((status) {
+      if (status != BridgeConnectionState.connected) {
+        _archivePendingRequests.connectionLost();
+      }
+    });
     _messageSub = bridge.messages.listen((msg) {
       if (msg is SystemMessage && msg.subtype == 'session_created') {
         unawaited(_syncPendingClaudeDefaultsWithSessionCreated(msg));
@@ -670,6 +668,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     WidgetsBinding.instance.removeObserver(this);
     widget.deepLinkNotifier?.removeListener(_onDeepLink);
     _messageSub?.cancel();
+    _archiveConnectionSub?.cancel();
+    _archivePendingRequests.dispose();
     _activeSessionsSub?.cancel();
     _unseenCubit.close();
     super.dispose();
@@ -1363,34 +1363,10 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   void _handleArchiveResult(ArchiveResultMessage message) {
-    MapEntry<String, _PendingArchiveRequest>? matched;
-    if (message.requestId case final requestId?) {
-      final pending = _pendingArchiveRequests[requestId];
-      if (pending == null) return;
-      matched = MapEntry(requestId, pending);
-    } else {
-      for (final entry in _pendingArchiveRequests.entries) {
-        if (entry.value.sessionId != message.sessionId) continue;
-        if (message.provider != null &&
-            entry.value.provider != message.provider) {
-          continue;
-        }
-        if (matched != null) return;
-        matched = entry;
-      }
-    }
-    final resolved = matched;
-    if (resolved == null ||
-        resolved.value.sessionId != message.sessionId ||
-        (message.provider != null &&
-            resolved.value.provider != message.provider)) {
-      return;
-    }
+    final resolved = _archivePendingRequests.resolve(message);
+    if (resolved == null) return;
     if (mounted) {
-      setState(() {
-        _pendingArchiveRequests.remove(resolved.key);
-        _archivingSessionKeys.remove(resolved.value.identityKey);
-      });
+      setState(() {});
     }
     if (!mounted) return;
     final l = AppLocalizations.of(context);
@@ -1402,26 +1378,42 @@ class _SessionListScreenState extends State<SessionListScreen>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
+  void _handleArchiveResultUnknown(
+    List<PendingArchiveRequest> requests,
+    ArchiveResultUnknownReason reason,
+  ) {
+    if (!mounted || requests.isEmpty) return;
+    setState(() {});
+    final strings = SessionArchiveStrings.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          strings.archiveResultUnknown(
+            disconnected: reason == ArchiveResultUnknownReason.disconnected,
+          ),
+        ),
+      ),
+    );
+  }
+
   void _archiveSession(RecentSession session) {
     final provider = session.provider ?? Provider.claude.value;
     final identityKey = providerSessionIdentityKey(provider, session.sessionId);
-    if (_archivingSessionKeys.contains(identityKey)) return;
+    if (_archivePendingRequests.hasIdentity(identityKey)) return;
     final bridge = context.read<BridgeService>();
     if (!bridge.bridgeCapabilities.contains(codexSessionLifecycleCapability) &&
-        _pendingArchiveRequests.values.any(
-          (pending) => pending.sessionId == session.sessionId,
-        )) {
+        _archivePendingRequests.hasSessionId(session.sessionId)) {
       return;
     }
     final requestId = _sessionArchiveRequestUuid.v4();
-    setState(() {
-      _archivingSessionKeys.add(identityKey);
-      _pendingArchiveRequests[requestId] = _PendingArchiveRequest(
-        sessionId: session.sessionId,
-        provider: provider,
-        identityKey: identityKey,
-      );
-    });
+    final registered = _archivePendingRequests.register(
+      requestId: requestId,
+      sessionId: session.sessionId,
+      provider: provider,
+      identityKey: identityKey,
+    );
+    if (!registered) return;
+    setState(() {});
     try {
       bridge.archiveSession(
         sessionId: session.sessionId,
@@ -1434,10 +1426,8 @@ class _SessionListScreenState extends State<SessionListScreen>
         modified: session.modified,
       );
     } catch (error) {
-      setState(() {
-        _pendingArchiveRequests.remove(requestId);
-        _archivingSessionKeys.remove(identityKey);
-      });
+      _archivePendingRequests.cancel(requestId);
+      setState(() {});
       final l = AppLocalizations.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(l.archiveFailedWithError('$error'))),
@@ -2105,7 +2095,7 @@ class _SessionListScreenState extends State<SessionListScreen>
               isLoadingMore: slState.isLoadingMore,
               isInitialLoading: slState.isInitialLoading,
               hasMoreSessions: slState.hasMore,
-              archivingSessionIds: _archivingSessionKeys,
+              archivingSessionIds: _archivePendingRequests.identityKeys,
               unseenSessionIds: unseenSessionIds,
               currentProjectFilter: bridge.currentProjectFilter,
               onNewSession: _showNewSessionDialog,
