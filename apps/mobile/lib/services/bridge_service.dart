@@ -131,6 +131,9 @@ class BridgeService implements BridgeServiceBase {
   List<String> _codexProfiles = [];
   String? _defaultCodexProfile;
   String? _bridgeVersion;
+  Set<String> _bridgeCapabilities = const {};
+  final Map<String, _PendingPermissionChange> _pendingPermissionChanges = {};
+  final Duration permissionChangeTimeout;
   String? _promptHistoryBridgeId;
   UsageResultMessage? _lastUsageResult;
   final SessionRuntimeStore _runtimeStore = SessionRuntimeStore();
@@ -275,12 +278,15 @@ class BridgeService implements BridgeServiceBase {
   List<String> get codexProfiles => _codexProfiles;
   String? get defaultCodexProfile => _defaultCodexProfile;
   String? get bridgeVersion => _bridgeVersion;
+  Set<String> get bridgeCapabilities => _bridgeCapabilities;
   String? get promptHistoryBridgeId => _promptHistoryBridgeId;
   UsageResultMessage? get lastUsageResult => _lastUsageResult;
   List<OfflinePendingAction> get offlinePendingActions =>
       _offlinePendingActions;
 
-  BridgeService() {
+  BridgeService({
+    this.permissionChangeTimeout = const Duration(seconds: 30),
+  }) {
     unawaited(_ensureOfflineQueueRestored());
   }
 
@@ -979,7 +985,111 @@ class BridgeService implements BridgeServiceBase {
     _connectionController.add(state);
   }
 
+  void _invalidatePermissionApplyCapabilities({bool notifySessions = true}) {
+    _bridgeCapabilities = const {};
+    _sessions = _sessions
+        .map(
+          (session) => session.copyWith(
+            codexPermissionApplyStrategySupported: false,
+          ),
+        )
+        .toList(growable: false);
+    if (notifySessions) {
+      _sessionListController.add(_sessions);
+    }
+  }
+
+  _PendingPermissionChange? _registerPendingPermissionChange(
+    ClientMessage message,
+  ) {
+    if (message.type != 'set_permission_mode') return null;
+    final sessionId = message.sessionId;
+    final permissionChangeId = message.permissionChangeId;
+    if (sessionId == null || permissionChangeId == null) return null;
+
+    _pendingPermissionChanges.remove(permissionChangeId)?.timer.cancel();
+    late final _PendingPermissionChange pending;
+    final timer = Timer(permissionChangeTimeout, () {
+      if (!identical(_pendingPermissionChanges[permissionChangeId], pending)) {
+        return;
+      }
+      _pendingPermissionChanges.remove(permissionChangeId);
+      _emitPermissionChangeFailure(
+        pending,
+        'Permission change timed out before the Bridge confirmed it.',
+      );
+    });
+    pending = _PendingPermissionChange(
+      sessionId: sessionId,
+      permissionChangeId: permissionChangeId,
+      timer: timer,
+    );
+    _pendingPermissionChanges[permissionChangeId] = pending;
+    return pending;
+  }
+
+  void _completePendingPermissionChange(ServerMessage message) {
+    final permissionChangeId = switch (message) {
+      SystemMessage(:final permissionChangeId) => permissionChangeId,
+      ErrorMessage(:final permissionChangeId) => permissionChangeId,
+      _ => null,
+    };
+    if (permissionChangeId == null) return;
+    _pendingPermissionChanges.remove(permissionChangeId)?.timer.cancel();
+  }
+
+  void _rollbackPendingPermissionChange(_PendingPermissionChange? pending) {
+    if (pending == null) return;
+    if (identical(
+      _pendingPermissionChanges[pending.permissionChangeId],
+      pending,
+    )) {
+      _pendingPermissionChanges.remove(pending.permissionChangeId);
+    }
+    pending.timer.cancel();
+  }
+
+  void _failPendingPermissionChanges(String message) {
+    if (_pendingPermissionChanges.isEmpty) return;
+    final pending = _pendingPermissionChanges.values.toList(growable: false);
+    _pendingPermissionChanges.clear();
+    for (final operation in pending) {
+      operation.timer.cancel();
+      _emitPermissionChangeFailure(operation, message);
+    }
+  }
+
+  void _cancelPendingPermissionChanges() {
+    for (final operation in _pendingPermissionChanges.values) {
+      operation.timer.cancel();
+    }
+    _pendingPermissionChanges.clear();
+  }
+
+  void _emitPermissionChangeFailure(
+    _PendingPermissionChange pending,
+    String message,
+  ) {
+    final error = ErrorMessage(
+      message: message,
+      errorCode: 'set_permission_mode_rejected',
+      sessionId: pending.sessionId,
+      permissionChangeId: pending.permissionChangeId,
+    );
+    _taggedMessageController.add((error, pending.sessionId));
+    _messageController.add(error);
+  }
+
   void connect(String url, {String? logicalConnectionIdentity}) {
+    _failPendingPermissionChanges(
+      'Bridge connection changed before the permission change was confirmed.',
+    );
+    // A retained session list is not authoritative for the new socket. In
+    // particular, broadcasting a cached pending approval here can race the
+    // asynchronous connection-state listener and replay it under a different
+    // logical machine identity. Keep the capability cache conservative, but
+    // wait for the new Bridge's session_list before publishing sessions.
+    _invalidatePermissionApplyCapabilities(notifySessions: false);
     _failPendingArtifactResolutions(
       const ArtifactResolveException(
         code: 'bridge_changed',
@@ -1028,6 +1138,7 @@ class BridgeService implements BridgeServiceBase {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
             final sessionId = json['sessionId'] as String?;
             final msg = ServerMessage.fromJson(json);
+            _completePendingPermissionChange(msg);
             if (_consumeArtifactInfrastructureMessage(msg)) return;
             if (_consumeLocalFeatureInfrastructureMessage(
               msg,
@@ -1067,6 +1178,7 @@ class BridgeService implements BridgeServiceBase {
                 :final codexProfiles,
                 :final defaultCodexProfile,
                 :final bridgeVersion,
+                :final bridgeCapabilities,
               ):
                 _authoritativeSessionListGeneration++;
                 _sessions = _applyLocalDeliveryPendingInputs(sessions);
@@ -1081,6 +1193,7 @@ class BridgeService implements BridgeServiceBase {
                 _codexProfiles = codexProfiles;
                 _defaultCodexProfile = defaultCodexProfile;
                 _bridgeVersion = bridgeVersion;
+                _bridgeCapabilities = bridgeCapabilities.toSet();
               case RecentSessionsMessage(:final sessions, :final hasMore):
                 _lastRecentSessionsMessage = msg;
                 final isProjectMerge =
@@ -1284,6 +1397,10 @@ class BridgeService implements BridgeServiceBase {
           if (epoch != _connectionEpoch) return;
           logger.error('WS stream error', error, stackTrace);
           _clearPendingLocalFeatureRequests();
+          _failPendingPermissionChanges(
+            'Bridge disconnected before the permission change was confirmed.',
+          );
+          _invalidatePermissionApplyCapabilities();
           _setBridgeConnectionState(BridgeConnectionState.disconnected);
           _failPendingArtifactResolutions(
             const ArtifactResolveException(
@@ -1302,6 +1419,10 @@ class BridgeService implements BridgeServiceBase {
           if (epoch != _connectionEpoch) return;
           _channel = null;
           _clearPendingLocalFeatureRequests();
+          _failPendingPermissionChanges(
+            'Bridge disconnected before the permission change was confirmed.',
+          );
+          _invalidatePermissionApplyCapabilities();
           if (!_intentionalDisconnect) {
             _setBridgeConnectionState(BridgeConnectionState.disconnected);
             _failPendingArtifactResolutions(
@@ -1321,6 +1442,10 @@ class BridgeService implements BridgeServiceBase {
     } catch (e, st) {
       logger.error('WS connect failed', e, st);
       _clearPendingLocalFeatureRequests();
+      _failPendingPermissionChanges(
+        'Bridge connection failed before the permission change was confirmed.',
+      );
+      _invalidatePermissionApplyCapabilities();
       _setBridgeConnectionState(BridgeConnectionState.disconnected);
       _messageController.add(ErrorMessage(message: 'Connection failed: $e'));
       _scheduleReconnect();
@@ -1367,6 +1492,7 @@ class BridgeService implements BridgeServiceBase {
     _codexProfiles = const [];
     _defaultCodexProfile = null;
     _bridgeVersion = null;
+    _bridgeCapabilities = const {};
     _promptHistoryBridgeId = null;
     _lastUsageResult = null;
     _pendingHistoryDeltaSinceSeq.clear();
@@ -1513,12 +1639,16 @@ class BridgeService implements BridgeServiceBase {
     onOutgoingMessage?.call(message);
     if (_isEphemeralRpc(message)) {
       if (message.type != 'resolve_artifact') {
+        final pendingPermissionChange = _registerPendingPermissionChange(
+          message,
+        );
         final pendingLocalRequest = _registerPendingLocalFeatureRequest(
           message,
         );
         try {
           sendEphemeralRpc(message);
         } catch (error, stackTrace) {
+          _rollbackPendingPermissionChange(pendingPermissionChange);
           _rollbackPendingLocalFeatureRequest(pendingLocalRequest);
           logger.warning('WS ephemeral RPC send failed', error, stackTrace);
           rethrow;
@@ -3066,6 +3196,9 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void disconnect() {
+    _failPendingPermissionChanges(
+      'Bridge disconnected before the permission change was confirmed.',
+    );
     _connectionEpoch++;
     _intentionalDisconnect = true;
     _reconnectTimer?.cancel();
@@ -3108,6 +3241,7 @@ class BridgeService implements BridgeServiceBase {
   void dispose() {
     _intentionalDisconnect = true;
     _reconnectTimer?.cancel();
+    _cancelPendingPermissionChanges();
     _clearPendingLocalFeatureRequests();
     _permissionRequestObservers.clear();
     for (final timer in _inFlightPendingVisibilityTimers.values) {
@@ -3194,6 +3328,18 @@ class _PendingLocalFeatureRequest {
   final LocalFeatureRequestDescriptor descriptor;
   final int epoch;
   final DateTime expiresAt;
+}
+
+class _PendingPermissionChange {
+  const _PendingPermissionChange({
+    required this.sessionId,
+    required this.permissionChangeId,
+    required this.timer,
+  });
+
+  final String sessionId;
+  final String permissionChangeId;
+  final Timer timer;
 }
 
 class _DeliveryPendingInputState {

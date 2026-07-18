@@ -968,6 +968,32 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get applyPermissionsTitle => 'Apply permission change';
+
+  @override
+  String applyPermissionsBody(String mode) {
+    return 'Choose when $mode should take effect.';
+  }
+
+  @override
+  String get applyPermissionsNextTurnTitle => 'From next turn';
+
+  @override
+  String get applyPermissionsNextTurnDescription =>
+      'Do not interrupt. The current turn and any approval already shown keep their existing permissions. Applies to the next turn that has not started, including the next goal step.';
+
+  @override
+  String get applyPermissionsRestartNowTitle => 'Restart now';
+
+  @override
+  String get applyPermissionsRestartNowDescription =>
+      'Interrupt the current turn and dismiss its pending approval, then resume this conversation with the new permissions.';
+
+  @override
+  String get permissionModeNextTurnAppliedTip =>
+      'Permissions saved. They apply from the next turn that has not started; any current approval remains unchanged.';
+
+  @override
   String get codexApprovalUntrustedDescription =>
       'Auto-run only trusted commands; ask for everything else';
 

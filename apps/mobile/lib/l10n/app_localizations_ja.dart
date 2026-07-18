@@ -941,6 +941,32 @@ class AppLocalizationsJa extends AppLocalizations {
   }
 
   @override
+  String get applyPermissionsTitle => '権限変更を適用';
+
+  @override
+  String applyPermissionsBody(String mode) {
+    return '$mode をいつ有効にするか選択してください。';
+  }
+
+  @override
+  String get applyPermissionsNextTurnTitle => '次のターンから';
+
+  @override
+  String get applyPermissionsNextTurnDescription =>
+      '現在の実行を中断しません。現在のターンと表示済みの承認は従来の権限のままです。目標モードの次のステップを含む、まだ開始していない次のターンから適用します。';
+
+  @override
+  String get applyPermissionsRestartNowTitle => '今すぐ再起動';
+
+  @override
+  String get applyPermissionsRestartNowDescription =>
+      '現在のターンを中断して保留中の承認を閉じ、新しい権限で同じ会話を再開します。';
+
+  @override
+  String get permissionModeNextTurnAppliedTip =>
+      '権限を保存しました。まだ開始していない次のターンから適用され、現在の承認は従来の権限のままです。';
+
+  @override
   String get codexApprovalUntrustedDescription =>
       'trusted コマンドだけ自動実行し、それ以外は確認します';
 

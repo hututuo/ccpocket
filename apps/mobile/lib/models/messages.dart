@@ -302,6 +302,14 @@ enum CodexPermissionsMode {
   const CodexPermissionsMode(this.value, this.label);
 }
 
+enum CodexPermissionApplyStrategy {
+  nextTurn('next_turn'),
+  restartNow('restart_now');
+
+  final String value;
+  const CodexPermissionApplyStrategy(this.value);
+}
+
 CodexPermissionsMode? codexPermissionsModeFromRaw(String? raw) {
   if (raw == null || raw.isEmpty) return null;
   for (final value in CodexPermissionsMode.values) {
@@ -911,6 +919,7 @@ sealed class ServerMessage {
         clearContext: json['clearContext'] as bool? ?? false,
         sourceSessionId: json['sourceSessionId'] as String?,
         tipCode: json['tipCode'] as String?,
+        permissionChangeId: json['permissionChangeId'] as String?,
         codexCliJoin: json['codexCliJoin'] is Map<String, dynamic>
             ? CodexCliJoinTarget.fromJson(
                 json['codexCliJoin'] as Map<String, dynamic>,
@@ -961,6 +970,8 @@ sealed class ServerMessage {
       'error' => ErrorMessage(
         message: json['message'] as String,
         errorCode: json['errorCode'] as String?,
+        sessionId: json['sessionId'] as String?,
+        permissionChangeId: json['permissionChangeId'] as String?,
       ),
       'status' => StatusMessage(
         status: ProcessStatus.fromString(json['status'] as String),
@@ -1065,6 +1076,11 @@ sealed class ServerMessage {
             const [],
         defaultCodexProfile: json['defaultCodexProfile'] as String?,
         bridgeVersion: json['bridgeVersion'] as String?,
+        bridgeCapabilities:
+            (json['bridgeCapabilities'] as List?)
+                ?.whereType<String>()
+                .toList() ??
+            const [],
       ),
       'recent_sessions' => RecentSessionsMessage(
         sessions: (json['sessions'] as List)
@@ -1597,6 +1613,7 @@ class SystemMessage implements ServerMessage {
   final bool clearContext;
   final String? sourceSessionId;
   final String? tipCode;
+  final String? permissionChangeId;
   final CodexCliJoinTarget? codexCliJoin;
   const SystemMessage({
     required this.subtype,
@@ -1628,6 +1645,7 @@ class SystemMessage implements ServerMessage {
     this.clearContext = false,
     this.sourceSessionId,
     this.tipCode,
+    this.permissionChangeId,
     this.codexCliJoin,
   });
 }
@@ -1737,7 +1755,14 @@ class ResultMessage implements ServerMessage {
 class ErrorMessage implements ServerMessage {
   final String message;
   final String? errorCode;
-  const ErrorMessage({required this.message, this.errorCode});
+  final String? sessionId;
+  final String? permissionChangeId;
+  const ErrorMessage({
+    required this.message,
+    this.errorCode,
+    this.sessionId,
+    this.permissionChangeId,
+  });
 }
 
 class StatusMessage implements ServerMessage {
@@ -2454,6 +2479,7 @@ class SessionListMessage implements ServerMessage {
   final List<String> codexProfiles;
   final String? defaultCodexProfile;
   final String? bridgeVersion;
+  final List<String> bridgeCapabilities;
   const SessionListMessage({
     required this.sessions,
     this.allowedDirs = const [],
@@ -2465,6 +2491,7 @@ class SessionListMessage implements ServerMessage {
     this.codexProfiles = const [],
     this.defaultCodexProfile,
     this.bridgeVersion,
+    this.bridgeCapabilities = const [],
   });
 }
 
@@ -3761,6 +3788,7 @@ class SessionInfo {
   final bool? codexNetworkAccessEnabled;
   final String? codexWebSearchMode;
   final List<String> codexAdditionalWritableRoots;
+  final bool codexPermissionApplyStrategySupported;
   final PermissionRequestMessage? pendingPermission;
   final QueuedInputItem? queuedInput;
 
@@ -3794,6 +3822,7 @@ class SessionInfo {
     this.codexNetworkAccessEnabled,
     this.codexWebSearchMode,
     this.codexAdditionalWritableRoots = const [],
+    this.codexPermissionApplyStrategySupported = false,
     this.pendingPermission,
     this.queuedInput,
   });
@@ -3836,6 +3865,7 @@ class SessionInfo {
     bool? codexNetworkAccessEnabled,
     String? codexWebSearchMode,
     List<String>? codexAdditionalWritableRoots,
+    bool? codexPermissionApplyStrategySupported,
     PermissionRequestMessage? pendingPermission,
     bool clearPermission = false,
     QueuedInputItem? queuedInput,
@@ -3875,6 +3905,9 @@ class SessionInfo {
       codexWebSearchMode: codexWebSearchMode ?? this.codexWebSearchMode,
       codexAdditionalWritableRoots:
           codexAdditionalWritableRoots ?? this.codexAdditionalWritableRoots,
+      codexPermissionApplyStrategySupported:
+          codexPermissionApplyStrategySupported ??
+          this.codexPermissionApplyStrategySupported,
       pendingPermission: clearPermission
           ? null
           : (pendingPermission ?? this.pendingPermission),
@@ -3932,6 +3965,8 @@ class SessionInfo {
       codexAdditionalWritableRoots: _stringList(
         codexSettings?['additionalWritableRoots'],
       ),
+      codexPermissionApplyStrategySupported:
+          json['codexPermissionApplyStrategySupported'] as bool? ?? false,
       pendingPermission: permJson != null
           ? PermissionRequestMessage(
               toolUseId: permJson['toolUseId'] as String,
@@ -3959,6 +3994,8 @@ class ClientMessage {
       ClientMessage._(Map<String, dynamic>.from(json));
 
   String get type => _json['type'] as String;
+  String? get sessionId => _json['sessionId'] as String?;
+  String? get permissionChangeId => _json['permissionChangeId'] as String?;
 
   factory ClientMessage.clientCapabilities({
     String? appVersion,
@@ -4160,18 +4197,27 @@ class ClientMessage {
     String? approvalsReviewer,
     String? codexPermissionsMode,
     bool? planMode,
+    CodexPermissionApplyStrategy? applyStrategy,
+    String? permissionChangeId,
     String? sessionId,
   }) {
-    return ClientMessage._(<String, dynamic>{
-      'type': 'set_permission_mode',
-      'mode': legacyMode,
-      'executionMode': ?executionMode,
-      'approvalPolicy': ?approvalPolicy,
-      'approvalsReviewer': ?approvalsReviewer,
-      'codexPermissionsMode': ?codexPermissionsMode,
-      'planMode': ?planMode,
-      'sessionId': ?sessionId,
-    });
+    return ClientMessage._(
+      <String, dynamic>{
+        'type': 'set_permission_mode',
+        'mode': legacyMode,
+        'executionMode': ?executionMode,
+        'approvalPolicy': ?approvalPolicy,
+        'approvalsReviewer': ?approvalsReviewer,
+        'codexPermissionsMode': ?codexPermissionsMode,
+        'planMode': ?planMode,
+        'applyStrategy': ?applyStrategy?.value,
+        'permissionChangeId': ?permissionChangeId,
+        'sessionId': ?sessionId,
+      },
+      delivery: applyStrategy == null
+          ? ClientMessageDelivery.queued
+          : ClientMessageDelivery.ephemeral,
+    );
   }
 
   factory ClientMessage.setCodexModel(

@@ -40,6 +40,9 @@ class MockBridgeService extends BridgeService {
 
   @override
   void send(ClientMessage message) {
+    if (!connected && message.delivery == ClientMessageDelivery.ephemeral) {
+      throw StateError('Bridge is not connected.');
+    }
     sentMessages.add(message);
   }
 
@@ -1763,6 +1766,289 @@ void main() {
       expect(cubit.state.permissionMode, PermissionMode.defaultMode);
       expect(cubit.state.inPlanMode, isFalse);
     });
+
+    test('next-turn codex permissions roll back all optimistic fields', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      cubit.setCodexPermissionsMode(
+        CodexPermissionsMode.fullAccess,
+        applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+      );
+      final permissionChangeId =
+          (jsonDecode(mockBridge.sentMessages.last.toJson())
+                  as Map<String, dynamic>)['permissionChangeId']
+              as String;
+      expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.fullAccess);
+      expect(cubit.state.sandboxMode, SandboxMode.off);
+
+      mockBridge.emitMessage(
+        ErrorMessage(
+          message:
+              'This Codex backend does not support next-turn permission updates.',
+          errorCode: 'set_permission_mode_rejected',
+          permissionChangeId: permissionChangeId,
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(
+        cubit.state.codexPermissionsMode,
+        CodexPermissionsMode.defaultPermissions,
+      );
+      expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.onRequest);
+      expect(cubit.state.codexApprovalsReviewer, 'user');
+      expect(cubit.state.sandboxMode, SandboxMode.on);
+    });
+
+    test(
+      'permission update acknowledgement clears stale rollback state',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.setCodexPermissionsMode(
+          CodexPermissionsMode.autoReview,
+          applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+        );
+        final permissionChangeId =
+            (jsonDecode(mockBridge.sentMessages.last.toJson())
+                    as Map<String, dynamic>)['permissionChangeId']
+                as String;
+        mockBridge.emitMessage(
+          SystemMessage(
+            subtype: 'set_permission_mode',
+            provider: 'codex',
+            permissionMode: 'acceptEdits',
+            executionMode: 'default',
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'auto_review',
+            codexPermissionsMode: 'autoReview',
+            sandboxMode: 'workspace-write',
+            planMode: false,
+            permissionChangeId: permissionChangeId,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          ErrorMessage(
+            message: 'late duplicate failure',
+            errorCode: 'set_permission_mode_rejected',
+            permissionChangeId: permissionChangeId,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.autoReview,
+        );
+        expect(cubit.state.codexApprovalsReviewer, 'auto_review');
+      },
+    );
+
+    test(
+      'restart-now hides the old approval and fully rolls back when offline',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.running),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'old-approval',
+            toolName: 'Bash',
+            input: {'command': 'pwd'},
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+
+        mockBridge.connected = false;
+        cubit.setCodexPermissionsMode(
+          CodexPermissionsMode.fullAccess,
+          applyStrategy: CodexPermissionApplyStrategy.restartNow,
+        );
+        await Future.microtask(() {});
+
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.defaultPermissions,
+        );
+        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.onRequest);
+        expect(cubit.state.codexApprovalsReviewer, 'user');
+        expect(cubit.state.sandboxMode, SandboxMode.on);
+      },
+    );
+
+    test(
+      'mismatched permission operation errors cannot roll back a newer state',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.setCodexPermissionsMode(
+          CodexPermissionsMode.autoReview,
+          applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+        );
+        final permissionChangeId =
+            (jsonDecode(mockBridge.sentMessages.last.toJson())
+                    as Map<String, dynamic>)['permissionChangeId']
+                as String;
+        mockBridge.emitMessage(
+          const ErrorMessage(
+            message: 'failure from another permission operation',
+            errorCode: 'set_permission_mode_rejected',
+            permissionChangeId: 'different-operation',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.autoReview,
+        );
+
+        mockBridge.emitMessage(
+          ErrorMessage(
+            message: 'matching failure',
+            errorCode: 'set_permission_mode_rejected',
+            permissionChangeId: permissionChangeId,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.defaultPermissions,
+        );
+      },
+    );
+
+    test(
+      'late permission acknowledgement becomes the newer rollback base',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.setCodexPermissionsMode(
+          CodexPermissionsMode.autoReview,
+          applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+        );
+        final oldChangeId =
+            (jsonDecode(mockBridge.sentMessages.last.toJson())
+                    as Map<String, dynamic>)['permissionChangeId']
+                as String;
+        mockBridge.emitMessage(
+          ErrorMessage(
+            message: 'first operation timed out',
+            errorCode: 'set_permission_mode_rejected',
+            permissionChangeId: oldChangeId,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        cubit.setCodexPermissionsMode(
+          CodexPermissionsMode.fullAccess,
+          applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+        );
+        final newChangeId =
+            (jsonDecode(mockBridge.sentMessages.last.toJson())
+                    as Map<String, dynamic>)['permissionChangeId']
+                as String;
+        mockBridge.emitMessage(
+          SystemMessage(
+            subtype: 'set_permission_mode',
+            provider: 'codex',
+            permissionMode: 'acceptEdits',
+            executionMode: 'default',
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'auto_review',
+            codexPermissionsMode: 'autoReview',
+            sandboxMode: 'workspace-write',
+            planMode: false,
+            permissionChangeId: oldChangeId,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.isPermissionChangePending, isTrue);
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.fullAccess,
+        );
+        expect(cubit.state.sandboxMode, SandboxMode.off);
+
+        mockBridge.emitMessage(
+          ErrorMessage(
+            message: 'newer operation failed',
+            errorCode: 'set_permission_mode_rejected',
+            permissionChangeId: newChangeId,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.isPermissionChangePending, isFalse);
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.autoReview,
+        );
+        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.onRequest);
+        expect(cubit.state.codexApprovalsReviewer, 'auto_review');
+        expect(cubit.state.sandboxMode, SandboxMode.on);
+      },
+    );
+
+    test(
+      'cross-client permission broadcasts update the sandbox state',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'set_permission_mode',
+            provider: 'codex',
+            permissionMode: 'bypassPermissions',
+            executionMode: 'fullAccess',
+            approvalPolicy: 'never',
+            approvalsReviewer: 'user',
+            codexPermissionsMode: 'fullAccess',
+            sandboxMode: 'danger-full-access',
+            planMode: false,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.fullAccess,
+        );
+        expect(cubit.state.sandboxMode, SandboxMode.off);
+      },
+    );
 
     test(
       'auto mode unavailable rolls back to previous permission mode',

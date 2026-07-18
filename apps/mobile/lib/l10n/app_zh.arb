@@ -282,6 +282,20 @@
       }
     }
   },
+  "applyPermissionsTitle": "应用权限更改",
+  "applyPermissionsBody": "请选择 {mode} 何时生效。",
+  "@applyPermissionsBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "applyPermissionsNextTurnTitle": "下一轮生效",
+  "applyPermissionsNextTurnDescription": "不中断当前运行；当前小轮和已经显示的审批仍沿用原权限。从下一个尚未开始的轮次生效，包括目标模式的下一小轮。",
+  "applyPermissionsRestartNowTitle": "立即重启",
+  "applyPermissionsRestartNowDescription": "中断当前小轮并撤下当前审批，再以新权限恢复同一对话。",
+  "permissionModeNextTurnAppliedTip": "权限已保存，将从下一个尚未开始的轮次生效；当前审批仍按原权限处理。",
   "permissionChipAcceptEdits": "编辑",
   "permissionChipBypass": "绕过",
   "executionDefaultDescription": "标准权限提示",

@@ -940,6 +940,32 @@ class AppLocalizationsKo extends AppLocalizations {
   }
 
   @override
+  String get applyPermissionsTitle => '권한 변경 적용';
+
+  @override
+  String applyPermissionsBody(String mode) {
+    return '$mode 권한을 언제 적용할지 선택하세요.';
+  }
+
+  @override
+  String get applyPermissionsNextTurnTitle => '다음 턴부터';
+
+  @override
+  String get applyPermissionsNextTurnDescription =>
+      '현재 실행을 중단하지 않습니다. 현재 턴과 이미 표시된 승인은 기존 권한을 유지합니다. 목표 모드의 다음 단계를 포함해 아직 시작하지 않은 다음 턴부터 적용합니다.';
+
+  @override
+  String get applyPermissionsRestartNowTitle => '지금 재시작';
+
+  @override
+  String get applyPermissionsRestartNowDescription =>
+      '현재 턴을 중단하고 보류 중인 승인을 닫은 뒤 새 권한으로 같은 대화를 다시 시작합니다.';
+
+  @override
+  String get permissionModeNextTurnAppliedTip =>
+      '권한을 저장했습니다. 아직 시작하지 않은 다음 턴부터 적용되며 현재 승인은 기존 권한을 유지합니다.';
+
+  @override
   String get codexApprovalUntrustedDescription =>
       '신뢰할 수 있는 명령만 자동 실행하고 나머지는 확인';
 

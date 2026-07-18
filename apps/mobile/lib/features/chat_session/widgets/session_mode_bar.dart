@@ -31,6 +31,7 @@ class SessionModeBar extends StatelessWidget {
     final sandboxMode = chatCubit.state.sandboxMode;
     final permissionMode = chatCubit.state.permissionMode;
     final isCodex = chatCubit.provider == Provider.codex;
+    final permissionChangePending = chatCubit.isPermissionChangePending;
     final codexModel = isCodex ? _currentCodexModel(chatCubit) : null;
     final codexReasoningEffort = codexModel == null
         ? null
@@ -77,13 +78,19 @@ class SessionModeBar extends StatelessWidget {
                       color: cs.outlineVariant.withValues(alpha: 0.4),
                     ),
                   ),
-                  PlanModeChip(
-                    enabled: planMode,
-                    activeGlow: false,
-                    onTap: () => togglePlanMode(
-                      context,
-                      chatCubit,
-                      onBeforeRestart: onBeforeRestart,
+                  IgnorePointer(
+                    ignoring: permissionChangePending,
+                    child: Opacity(
+                      opacity: permissionChangePending ? 0.5 : 1,
+                      child: PlanModeChip(
+                        enabled: planMode,
+                        activeGlow: false,
+                        onTap: () => togglePlanMode(
+                          context,
+                          chatCubit,
+                          onBeforeRestart: onBeforeRestart,
+                        ),
+                      ),
                     ),
                   ),
                   Padding(
@@ -94,17 +101,25 @@ class SessionModeBar extends StatelessWidget {
                       color: cs.outlineVariant.withValues(alpha: 0.4),
                     ),
                   ),
-                  ExecutionModeChip(
-                    currentMode: executionMode,
-                    codexApprovalPolicy: chatCubit.state.codexApprovalPolicy,
-                    codexApprovalsReviewer:
-                        chatCubit.state.codexApprovalsReviewer,
-                    codexPermissionsMode: chatCubit.state.codexPermissionsMode,
-                    provider: chatCubit.provider,
-                    onTap: () => showCodexPermissionsMenu(
-                      context,
-                      chatCubit,
-                      onBeforeRestart: onBeforeRestart,
+                  IgnorePointer(
+                    ignoring: permissionChangePending,
+                    child: Opacity(
+                      opacity: permissionChangePending ? 0.5 : 1,
+                      child: ExecutionModeChip(
+                        currentMode: executionMode,
+                        codexApprovalPolicy:
+                            chatCubit.state.codexApprovalPolicy,
+                        codexApprovalsReviewer:
+                            chatCubit.state.codexApprovalsReviewer,
+                        codexPermissionsMode:
+                            chatCubit.state.codexPermissionsMode,
+                        provider: chatCubit.provider,
+                        onTap: () => showCodexPermissionsMenu(
+                          context,
+                          chatCubit,
+                          onBeforeRestart: onBeforeRestart,
+                        ),
+                      ),
                     ),
                   ),
                 ] else ...[
@@ -465,7 +480,7 @@ void showCodexPermissionsMenu(
                     Navigator.pop(sheetContext);
                     if (mode == currentMode) return;
                     HapticFeedback.lightImpact();
-                    _confirmCodexPermissionsModeChange(
+                    _chooseCodexPermissionsModeApplication(
                       context,
                       chatCubit,
                       mode,
@@ -482,9 +497,92 @@ void showCodexPermissionsMenu(
   );
 }
 
-/// Show confirmation dialog before changing permission mode for Codex sessions,
-/// because the change requires a session restart (like sandbox mode).
-Future<void> _confirmCodexPermissionsModeChange(
+Future<void> _chooseCodexPermissionsModeApplication(
+  BuildContext context,
+  ChatSessionCubit chatCubit,
+  CodexPermissionsMode mode, {
+  Future<void> Function()? onBeforeRestart,
+}) async {
+  if (!chatCubit.supportsCodexPermissionApplyStrategy) {
+    await _confirmCodexPermissionsRestart(
+      context,
+      chatCubit,
+      mode,
+      onBeforeRestart: onBeforeRestart,
+    );
+    return;
+  }
+
+  final l = AppLocalizations.of(context);
+  final strategy = await showDialog<CodexPermissionApplyStrategy>(
+    context: context,
+    builder: (dialogContext) {
+      final cs = Theme.of(dialogContext).colorScheme;
+      return AlertDialog(
+        scrollable: true,
+        title: Text(l.applyPermissionsTitle),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(l.applyPermissionsBody(mode.label)),
+            const SizedBox(height: 12),
+            ListTile(
+              key: const ValueKey('permission_apply_next_turn'),
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.update, color: cs.primary),
+              title: Text(l.applyPermissionsNextTurnTitle),
+              subtitle: Text(l.applyPermissionsNextTurnDescription),
+              onTap: () => Navigator.pop(
+                dialogContext,
+                CodexPermissionApplyStrategy.nextTurn,
+              ),
+            ),
+            ListTile(
+              key: const ValueKey('permission_apply_restart_now'),
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                Icons.restart_alt,
+                color: mode == CodexPermissionsMode.fullAccess
+                    ? cs.error
+                    : cs.onSurfaceVariant,
+              ),
+              title: Text(l.applyPermissionsRestartNowTitle),
+              subtitle: Text(l.applyPermissionsRestartNowDescription),
+              onTap: () => Navigator.pop(
+                dialogContext,
+                CodexPermissionApplyStrategy.restartNow,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(l.cancel),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (strategy == CodexPermissionApplyStrategy.nextTurn) {
+    chatCubit.setCodexPermissionsMode(
+      mode,
+      applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+    );
+  } else if (strategy == CodexPermissionApplyStrategy.restartNow) {
+    await onBeforeRestart?.call();
+    chatCubit.setCodexPermissionsMode(
+      mode,
+      applyStrategy: CodexPermissionApplyStrategy.restartNow,
+    );
+  }
+}
+
+/// Legacy Bridge fallback: old servers do not advertise the safe next-turn
+/// update contract, so keep their existing restart-only behavior.
+Future<void> _confirmCodexPermissionsRestart(
   BuildContext context,
   ChatSessionCubit chatCubit,
   CodexPermissionsMode mode, {
@@ -516,7 +614,12 @@ Future<void> _confirmCodexPermissionsModeChange(
   );
   if (confirmed == true) {
     await onBeforeRestart?.call();
-    chatCubit.setCodexPermissionsMode(mode);
+    chatCubit.setCodexPermissionsMode(
+      mode,
+      applyStrategy: chatCubit.bridgeSupportsCodexPermissionApplyStrategy
+          ? CodexPermissionApplyStrategy.restartNow
+          : null,
+    );
   }
 }
 
@@ -525,6 +628,7 @@ Future<void> togglePlanMode(
   ChatSessionCubit chatCubit, {
   Future<void> Function()? onBeforeRestart,
 }) async {
+  if (chatCubit.isPermissionChangePending) return;
   final nextPlanMode = !chatCubit.state.planMode;
   final hasPendingApproval = chatCubit.state.approval is! ApprovalNone;
   final l = AppLocalizations.of(context);

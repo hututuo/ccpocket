@@ -19,6 +19,8 @@ import 'streaming_state_cubit.dart';
 /// processing to [ChatMessageHandler]. The resulting [ChatStateUpdate] is
 /// applied to the immutable [ChatSessionState].
 class ChatSessionCubit extends Cubit<ChatSessionState> {
+  static const codexPermissionApplyStrategyCapability =
+      'codex_permission_apply_strategy_v1';
   static const _uuid = Uuid();
   static const offlineQueuedInputPrefix = 'offline:';
   static const deliveryPendingQueuedInputPrefix = 'pending:';
@@ -60,9 +62,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   CodexPermissionsMode? _pendingCodexPermissionsModeRollback;
   bool? _pendingPlanRollback;
   SandboxMode? _pendingSandboxRollback;
+  String? _pendingPermissionChangeId;
+  ProcessStatus? _pendingPermissionRestartStatusRollback;
+  ApprovalState? _pendingPermissionRestartApprovalRollback;
 
   /// Whether this session is a Codex session.
   bool get isCodex => provider == Provider.codex;
+
+  bool get isPermissionChangePending => _pendingPermissionChangeId != null;
+
+  bool get bridgeSupportsCodexPermissionApplyStrategy =>
+      _bridge.bridgeCapabilities.contains(
+        codexPermissionApplyStrategyCapability,
+      );
+
+  bool get supportsCodexPermissionApplyStrategy {
+    if (!bridgeSupportsCodexPermissionApplyStrategy) {
+      return false;
+    }
+    return _bridge.sessions.any(
+      (session) =>
+          session.id == sessionId &&
+          session.codexPermissionApplyStrategySupported,
+    );
+  }
 
   List<String> get codexModels => _bridge.codexModels;
 
@@ -235,10 +258,27 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _onMessage(ServerMessage msg) {
+    if (msg is SystemMessage &&
+        msg.subtype == 'set_permission_mode' &&
+        _captureSupersededPermissionAcknowledgement(msg)) {
+      return;
+    }
     // Log errors prominently
     if (msg is ErrorMessage) {
       logger.error('[session:$sessionId] Error from bridge: ${msg.message}');
       _rollbackFailedModeChange(msg);
+    }
+    if (msg is SystemMessage && msg.subtype == 'set_permission_mode') {
+      _clearPendingPermissionModeRollback(msg.permissionChangeId);
+      final incomingSandbox = switch (msg.sandboxMode) {
+        'danger-full-access' || 'off' => SandboxMode.off,
+        'workspace-write' || 'read-only' || 'on' => SandboxMode.on,
+        _ => null,
+      };
+      if (incomingSandbox != null && incomingSandbox != state.sandboxMode) {
+        emit(state.copyWith(sandboxMode: incomingSandbox));
+        _bridge.patchSessionSandboxMode(sessionId, incomingSandbox.value);
+      }
     }
     if (isCodex && msg is SystemMessage && msg.subtype == 'init') {
       requestGoal();
@@ -1731,6 +1771,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setSessionModes({ExecutionMode? executionMode, bool? planMode}) {
+    if (isCodex && isPermissionChangePending) {
+      logger.warning(
+        '[session:$sessionId] Permission change pending; ignoring mode update',
+      );
+      return;
+    }
     final nextExecution = executionMode ?? state.executionMode;
     final nextPlanMode = planMode ?? state.planMode;
     final legacyMode = legacyPermissionModeFromModes(
@@ -1801,6 +1847,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexApprovalPolicy policy, {
     String approvalsReviewer = 'user',
   }) {
+    if (isPermissionChangePending) {
+      logger.warning(
+        '[session:$sessionId] Permission change pending; ignoring approval update',
+      );
+      return;
+    }
     final normalizedReviewer =
         policy == CodexApprovalPolicy.onRequest &&
             isCodexAutoReviewApprovalsReviewer(approvalsReviewer)
@@ -1848,7 +1900,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
   }
 
-  void setCodexPermissionsMode(CodexPermissionsMode mode) {
+  void setCodexPermissionsMode(
+    CodexPermissionsMode mode, {
+    CodexPermissionApplyStrategy? applyStrategy,
+  }) {
+    if (applyStrategy != null && _pendingPermissionChangeId != null) {
+      logger.warning(
+        '[session:$sessionId] Permission change already pending; ignoring duplicate request',
+      );
+      return;
+    }
     final policy =
         approvalPolicyForCodexPermissionsMode(mode) ??
         state.codexApprovalPolicy;
@@ -1869,6 +1930,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _pendingCodexPermissionsModeRollback = state.codexPermissionsMode;
     _pendingSandboxRollback = state.sandboxMode;
     _pendingPlanRollback = state.planMode;
+    final permissionChangeId = applyStrategy == null ? null : _uuid.v4();
+    _pendingPermissionChangeId = permissionChangeId;
+    if (applyStrategy == CodexPermissionApplyStrategy.restartNow) {
+      _pendingPermissionRestartStatusRollback = state.status;
+      _pendingPermissionRestartApprovalRollback = state.approval;
+    }
 
     emit(
       state.copyWith(
@@ -1878,15 +1945,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         codexApprovalsReviewer: approvalsReviewer,
         codexPermissionsMode: mode,
         sandboxMode: sandboxMode ?? state.sandboxMode,
-        planMode: false,
-        inPlanMode: false,
+        planMode: state.planMode,
+        inPlanMode: state.inPlanMode,
+        status: applyStrategy == CodexPermissionApplyStrategy.restartNow
+            ? ProcessStatus.starting
+            : state.status,
+        approval: applyStrategy == CodexPermissionApplyStrategy.restartNow
+            ? const ApprovalState.none()
+            : state.approval,
       ),
     );
     _bridge.patchSessionModes(
       sessionId,
       permissionMode: legacyMode.value,
       executionMode: derivedExecution.value,
-      planMode: false,
+      planMode: state.planMode,
       approvalPolicy: mode == CodexPermissionsMode.custom ? null : policy.value,
       approvalsReviewer: mode == CodexPermissionsMode.custom
           ? null
@@ -1896,21 +1969,34 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (sandboxMode != null) {
       _bridge.patchSessionSandboxMode(sessionId, sandboxMode.value);
     }
-    _bridge.send(
-      ClientMessage.setSessionMode(
-        legacyMode: legacyMode.value,
-        executionMode: derivedExecution.value,
-        approvalPolicy: mode == CodexPermissionsMode.custom
-            ? null
-            : policy.value,
-        approvalsReviewer: mode == CodexPermissionsMode.custom
-            ? null
-            : approvalsReviewer,
-        codexPermissionsMode: mode.value,
-        planMode: false,
-        sessionId: sessionId,
-      ),
-    );
+    try {
+      _bridge.send(
+        ClientMessage.setSessionMode(
+          legacyMode: legacyMode.value,
+          executionMode: derivedExecution.value,
+          approvalPolicy: mode == CodexPermissionsMode.custom
+              ? null
+              : policy.value,
+          approvalsReviewer: mode == CodexPermissionsMode.custom
+              ? null
+              : approvalsReviewer,
+          codexPermissionsMode: mode.value,
+          planMode: state.planMode,
+          applyStrategy: applyStrategy,
+          permissionChangeId: permissionChangeId,
+          sessionId: sessionId,
+        ),
+      );
+    } catch (_) {
+      _onMessage(
+        ErrorMessage(
+          message: 'Bridge is not connected; permission change was not sent.',
+          errorCode: 'set_permission_mode_rejected',
+          sessionId: sessionId,
+          permissionChangeId: permissionChangeId,
+        ),
+      );
+    }
   }
 
   void setCodexModel(String model, {ReasoningEffort? reasoningEffort}) {
@@ -1973,6 +2059,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void _rollbackFailedModeChange(ErrorMessage msg) {
     if (_isPermissionModeFailure(msg)) {
+      final pendingChangeId = _pendingPermissionChangeId;
+      if (pendingChangeId != null &&
+          msg.permissionChangeId != pendingChangeId) {
+        return;
+      }
       final previous = _pendingPermissionRollback;
       _pendingPermissionRollback = null;
       if (previous != null) {
@@ -1992,6 +2083,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             planMode: _pendingPlanRollback ?? (previous == PermissionMode.plan),
             inPlanMode:
                 _pendingPlanRollback ?? (previous == PermissionMode.plan),
+            status: _pendingPermissionRestartStatusRollback ?? state.status,
+            approval:
+                _pendingPermissionRestartApprovalRollback ?? state.approval,
           ),
         );
         _bridge.patchSessionModes(
@@ -2011,6 +2105,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                       state.codexPermissionsMode)
                   .value,
         );
+        final previousSandbox = _pendingSandboxRollback;
+        if (isCodex && previousSandbox != null) {
+          _bridge.patchSessionSandboxMode(sessionId, previousSandbox.value);
+        }
         final claudeSid = state.claudeSessionId;
         if (claudeSid != null && claudeSid.isNotEmpty) {
           _SessionSettingsHelper.save(claudeSid, {
@@ -2025,7 +2123,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _pendingExecutionRollback = null;
       _pendingCodexApprovalRollback = null;
       _pendingCodexApprovalsReviewerRollback = null;
+      _pendingCodexPermissionsModeRollback = null;
       _pendingPlanRollback = null;
+      _pendingSandboxRollback = null;
+      _pendingPermissionChangeId = null;
+      _pendingPermissionRestartStatusRollback = null;
+      _pendingPermissionRestartApprovalRollback = null;
     }
 
     if (_isSandboxModeFailure(msg)) {
@@ -2044,6 +2147,74 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         }
       }
     }
+  }
+
+  void _clearPendingPermissionModeRollback(String? permissionChangeId) {
+    final pendingChangeId = _pendingPermissionChangeId;
+    if (pendingChangeId != null && permissionChangeId != pendingChangeId) {
+      return;
+    }
+    _pendingPermissionRollback = null;
+    _pendingExecutionRollback = null;
+    _pendingCodexApprovalRollback = null;
+    _pendingCodexApprovalsReviewerRollback = null;
+    _pendingCodexPermissionsModeRollback = null;
+    _pendingPlanRollback = null;
+    _pendingSandboxRollback = null;
+    _pendingPermissionChangeId = null;
+    _pendingPermissionRestartStatusRollback = null;
+    _pendingPermissionRestartApprovalRollback = null;
+  }
+
+  /// Keep a late acknowledgement from an older operation from replacing the
+  /// optimistic state of the permission change currently in flight.
+  ///
+  /// The old acknowledgement is still authoritative for the rollback base: if
+  /// the newer operation fails, the UI must return to the permission state the
+  /// Bridge actually confirmed, not the state captured before that late ACK.
+  bool _captureSupersededPermissionAcknowledgement(SystemMessage message) {
+    final pendingChangeId = _pendingPermissionChangeId;
+    final acknowledgedChangeId = message.permissionChangeId;
+    if (pendingChangeId == null ||
+        acknowledgedChangeId == null ||
+        acknowledgedChangeId == pendingChangeId) {
+      return false;
+    }
+
+    for (final mode in PermissionMode.values) {
+      if (mode.value == message.permissionMode) {
+        _pendingPermissionRollback = mode;
+        break;
+      }
+    }
+    _pendingExecutionRollback =
+        executionModeFromRaw(message.executionMode) ??
+        _pendingExecutionRollback;
+    _pendingCodexApprovalRollback =
+        codexApprovalPolicyFromRaw(message.approvalPolicy) ??
+        _pendingCodexApprovalRollback;
+    if (message.approvalsReviewer != null) {
+      _pendingCodexApprovalsReviewerRollback = message.approvalsReviewer;
+    }
+    _pendingCodexPermissionsModeRollback =
+        codexPermissionsModeFromRaw(message.codexPermissionsMode) ??
+        _pendingCodexPermissionsModeRollback;
+    if (message.planMode != null) {
+      _pendingPlanRollback = message.planMode;
+    }
+    final sandboxMode = switch (message.sandboxMode) {
+      'danger-full-access' || 'off' => SandboxMode.off,
+      'workspace-write' || 'read-only' || 'on' => SandboxMode.on,
+      _ => null,
+    };
+    if (sandboxMode != null) {
+      _pendingSandboxRollback = sandboxMode;
+    }
+    logger.info(
+      '[session:$sessionId] Deferred superseded permission acknowledgement '
+      '$acknowledgedChangeId while $pendingChangeId is pending',
+    );
+    return true;
   }
 
   bool _isPermissionModeFailure(ErrorMessage msg) {

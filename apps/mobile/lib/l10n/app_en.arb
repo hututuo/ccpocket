@@ -375,6 +375,20 @@
       }
     }
   },
+  "applyPermissionsTitle": "Apply permission change",
+  "applyPermissionsBody": "Choose when {mode} should take effect.",
+  "@applyPermissionsBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "applyPermissionsNextTurnTitle": "From next turn",
+  "applyPermissionsNextTurnDescription": "Do not interrupt. The current turn and any approval already shown keep their existing permissions. Applies to the next turn that has not started, including the next goal step.",
+  "applyPermissionsRestartNowTitle": "Restart now",
+  "applyPermissionsRestartNowDescription": "Interrupt the current turn and dismiss its pending approval, then resume this conversation with the new permissions.",
+  "permissionModeNextTurnAppliedTip": "Permissions saved. They apply from the next turn that has not started; any current approval remains unchanged.",
   "codexApprovalUntrustedDescription": "Auto-run only trusted commands; ask for everything else",
   "codexApprovalOnRequestDescription": "Ask only when the agent decides approval is needed",
   "codexApprovalOnFailureDescription": "Run without asking first; ask only when a command fails (Deprecated)",

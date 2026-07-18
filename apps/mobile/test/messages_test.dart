@@ -391,6 +391,49 @@ void main() {
       });
     });
 
+    test('permission apply strategies are correlated and live-only', () {
+      final message = ClientMessage.setSessionMode(
+        legacyMode: 'acceptEdits',
+        codexPermissionsMode: 'autoReview',
+        applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+        permissionChangeId: 'permission-change-1',
+        sessionId: 's1',
+      );
+      final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+
+      expect(message.delivery, ClientMessageDelivery.ephemeral);
+      expect(json['applyStrategy'], 'next_turn');
+      expect(json['permissionChangeId'], 'permission-change-1');
+      expect(json['sessionId'], 's1');
+    });
+
+    test(
+      'permission acknowledgements and errors preserve operation routing',
+      () {
+        final acknowledgement =
+            ServerMessage.fromJson({
+                  'type': 'system',
+                  'subtype': 'set_permission_mode',
+                  'sessionId': 's1',
+                  'permissionChangeId': 'permission-change-1',
+                })
+                as SystemMessage;
+        final error =
+            ServerMessage.fromJson({
+                  'type': 'error',
+                  'message': 'permission update failed',
+                  'errorCode': 'set_permission_mode_rejected',
+                  'sessionId': 's1',
+                  'permissionChangeId': 'permission-change-1',
+                })
+                as ErrorMessage;
+
+        expect(acknowledgement.permissionChangeId, 'permission-change-1');
+        expect(error.sessionId, 's1');
+        expect(error.permissionChangeId, 'permission-change-1');
+      },
+    );
+
     test('ServerMessage parses history_delta', () {
       final msg = ServerMessage.fromJson({
         'type': 'history_delta',
@@ -518,7 +561,17 @@ void main() {
     test('SessionListMessage parses model metadata', () {
       final msg = ServerMessage.fromJson({
         'type': 'session_list',
-        'sessions': const [],
+        'sessions': const [
+          {
+            'id': 's1',
+            'provider': 'codex',
+            'projectPath': '/tmp/project',
+            'status': 'idle',
+            'createdAt': '',
+            'lastActivityAt': '',
+            'codexPermissionApplyStrategySupported': true,
+          },
+        ],
         'allowedDirs': const [],
         'claudeModels': ['claude-opus-4-7', 'claude-haiku-4-6'],
         'claudeModelEfforts': {
@@ -534,6 +587,7 @@ void main() {
         },
         'codexProfiles': ['ccpocket', 'research'],
         'defaultCodexProfile': 'ccpocket',
+        'bridgeCapabilities': ['codex_permission_apply_strategy_v1'],
       });
 
       expect(msg, isA<SessionListMessage>());
@@ -558,6 +612,13 @@ void main() {
       ]);
       expect(sessionList.codexModelServiceTiers['gpt-5.5'], ['fast']);
       expect(sessionList.codexProfiles, ['ccpocket', 'research']);
+      expect(sessionList.bridgeCapabilities, [
+        'codex_permission_apply_strategy_v1',
+      ]);
+      expect(
+        sessionList.sessions.single.codexPermissionApplyStrategySupported,
+        isTrue,
+      );
       expect(sessionList.defaultCodexProfile, 'ccpocket');
     });
 

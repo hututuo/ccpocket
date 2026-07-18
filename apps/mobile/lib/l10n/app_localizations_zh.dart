@@ -933,6 +933,32 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String get applyPermissionsTitle => '应用权限更改';
+
+  @override
+  String applyPermissionsBody(String mode) {
+    return '请选择 $mode 何时生效。';
+  }
+
+  @override
+  String get applyPermissionsNextTurnTitle => '下一轮生效';
+
+  @override
+  String get applyPermissionsNextTurnDescription =>
+      '不中断当前运行；当前小轮和已经显示的审批仍沿用原权限。从下一个尚未开始的轮次生效，包括目标模式的下一小轮。';
+
+  @override
+  String get applyPermissionsRestartNowTitle => '立即重启';
+
+  @override
+  String get applyPermissionsRestartNowDescription =>
+      '中断当前小轮并撤下当前审批，再以新权限恢复同一对话。';
+
+  @override
+  String get permissionModeNextTurnAppliedTip =>
+      '权限已保存，将从下一个尚未开始的轮次生效；当前审批仍按原权限处理。';
+
+  @override
   String get codexApprovalUntrustedDescription => '仅自动运行受信任命令，其他操作都需要确认';
 
   @override

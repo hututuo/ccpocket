@@ -21,6 +21,10 @@ class _MockBridgeService extends BridgeService {
   List<String> availableCodexModels = const [];
   Map<String, List<String>> availableCodexReasoningEfforts = const {};
   Map<String, List<String>> availableCodexServiceTiers = const {};
+  Set<String> advertisedBridgeCapabilities = const {
+    ChatSessionCubit.codexPermissionApplyStrategyCapability,
+  };
+  bool runtimePermissionApplyStrategySupported = true;
 
   @override
   List<String> get codexModels => availableCodexModels;
@@ -32,6 +36,23 @@ class _MockBridgeService extends BridgeService {
   @override
   Map<String, List<String>> get codexModelServiceTiers =>
       availableCodexServiceTiers;
+
+  @override
+  Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
+
+  @override
+  List<SessionInfo> get sessions => [
+    SessionInfo(
+      id: 'codex-session',
+      provider: 'codex',
+      projectPath: '/project',
+      status: 'idle',
+      createdAt: '',
+      lastActivityAt: '',
+      codexPermissionApplyStrategySupported:
+          runtimePermissionApplyStrategySupported,
+    ),
+  ];
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
     _taggedController.add((msg, sessionId));
@@ -517,7 +538,40 @@ void main() {
     expect(message['executionMode'], 'default');
   });
 
-  testWidgets('codex permissions change shows restart confirmation', (
+  testWidgets(
+    'codex permissions can apply from the next turn without restart',
+    (tester) async {
+      await tester.pumpWidget(_wrap(cubit));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.text('Default'));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Full access'));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Apply permission change'), findsOneWidget);
+      expect(find.text('From next turn'), findsOneWidget);
+      expect(find.text('Restart now'), findsOneWidget);
+
+      await tester.tap(find.text('From next turn'));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final message = _decode(bridge.sentMessages.last);
+      expect(message['type'], 'set_permission_mode');
+      expect(message['codexPermissionsMode'], 'fullAccess');
+      expect(message['applyStrategy'], 'next_turn');
+
+      final sentCount = bridge.sentMessages.length;
+      await tester.tap(find.text('Plan Off'));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(bridge.sentMessages, hasLength(sentCount));
+    },
+  );
+
+  testWidgets('codex permissions retain explicit restart-now action', (
     tester,
   ) async {
     await tester.pumpWidget(_wrap(cubit));
@@ -525,13 +579,63 @@ void main() {
 
     await tester.tap(find.text('Default'));
     await tester.pump(const Duration(milliseconds: 300));
+    await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Auto-review'));
     await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('Restart now'));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final message = _decode(bridge.sentMessages.last);
+    expect(message['codexPermissionsMode'], 'autoReview');
+    expect(message['applyStrategy'], 'restart_now');
+  });
+
+  testWidgets('unsupported Codex runtime uses the safe restart strategy', (
+    tester,
+  ) async {
+    bridge.runtimePermissionApplyStrategySupported = false;
+    await tester.pumpWidget(_wrap(cubit));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('Default'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Full access'));
     await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Change Approval Policy'), findsOneWidget);
+    await tester.tap(find.text('Restart'));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final message = _decode(bridge.sentMessages.last);
+    expect(message['applyStrategy'], 'restart_now');
+    expect(message['permissionChangeId'], isA<String>());
+  });
+
+  testWidgets('old Bridge keeps the restart-only permission flow', (
+    tester,
+  ) async {
+    bridge.advertisedBridgeCapabilities = const {};
+    await tester.pumpWidget(_wrap(cubit));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('Default'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Full access'));
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('Change Approval Policy'), findsOneWidget);
     expect(find.textContaining('will restart the session'), findsOneWidget);
+    expect(find.text('From next turn'), findsNothing);
+
+    await tester.tap(find.text('Restart'));
+    await tester.pump(const Duration(milliseconds: 100));
+    final message = _decode(bridge.sentMessages.last);
+    expect(message.containsKey('applyStrategy'), isFalse);
   });
 
   testWidgets('codex mode bar does not render separate sandbox control', (

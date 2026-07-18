@@ -1854,6 +1854,48 @@ abstract class AppLocalizations {
   /// **'{mode} に切り替えるとセッションが再起動します。会話は保持されます。'**
   String changeApprovalPolicyBody(String mode);
 
+  /// No description provided for @applyPermissionsTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'権限変更を適用'**
+  String get applyPermissionsTitle;
+
+  /// No description provided for @applyPermissionsBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'{mode} をいつ有効にするか選択してください。'**
+  String applyPermissionsBody(String mode);
+
+  /// No description provided for @applyPermissionsNextTurnTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'次のターンから'**
+  String get applyPermissionsNextTurnTitle;
+
+  /// No description provided for @applyPermissionsNextTurnDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在の実行を中断しません。現在のターンと表示済みの承認は従来の権限のままです。目標モードの次のステップを含む、まだ開始していない次のターンから適用します。'**
+  String get applyPermissionsNextTurnDescription;
+
+  /// No description provided for @applyPermissionsRestartNowTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'今すぐ再起動'**
+  String get applyPermissionsRestartNowTitle;
+
+  /// No description provided for @applyPermissionsRestartNowDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在のターンを中断して保留中の承認を閉じ、新しい権限で同じ会話を再開します。'**
+  String get applyPermissionsRestartNowDescription;
+
+  /// No description provided for @permissionModeNextTurnAppliedTip.
+  ///
+  /// In ja, this message translates to:
+  /// **'権限を保存しました。まだ開始していない次のターンから適用され、現在の承認は従来の権限のままです。'**
+  String get permissionModeNextTurnAppliedTip;
+
   /// No description provided for @codexApprovalUntrustedDescription.
   ///
   /// In ja, this message translates to:

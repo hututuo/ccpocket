@@ -15,6 +15,7 @@ class TipChip extends StatelessWidget {
   String _text(AppLocalizations l) => switch (message.tipCode) {
     'git_not_available' => l.gitUnavailableTip,
     'auto_mode_fallback_default' => l.autoModeFallbackDefaultTip,
+    'permission_mode_next_turn_applied' => l.permissionModeNextTurnAppliedTip,
     _ => message.subtype,
   };
 
