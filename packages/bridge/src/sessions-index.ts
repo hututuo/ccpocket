@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
 import { isAutoRenamePromptText } from "./auto-rename.js";
 import { CODEX_ASSIST_MODEL } from "./codex-assist.js";
+import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 
 export interface SessionIndexEntry {
   sessionId: string;
@@ -1390,7 +1391,7 @@ function parseCodexSessionJsonl(
           typeof payload.service_tier === "string" &&
           payload.service_tier.trim().length > 0 &&
           payload.service_tier !== "default"
-            ? payload.service_tier
+            ? normalizeCodexServiceTierForClient(payload.service_tier)
             : "standard";
         if (typeof sp?.network_access === "boolean") {
           networkAccessEnabled = sp.network_access;
@@ -1404,7 +1405,40 @@ function parseCodexSessionJsonl(
 
     if (entry.type === "event_msg") {
       const payload = entry.payload as Record<string, unknown> | undefined;
-      if (
+      if (payload?.type === "thread_settings_applied") {
+        const settings = payload.thread_settings as
+          | Record<string, unknown>
+          | undefined;
+        if (settings) {
+          if (typeof settings.approval_policy === "string") {
+            approvalPolicy = settings.approval_policy;
+          }
+          if (typeof settings.approvals_reviewer === "string") {
+            approvalsReviewer = settings.approvals_reviewer;
+          }
+          if (typeof settings.model === "string") {
+            model = settings.model;
+          }
+          const collaborationMode = settings.collaboration_mode as
+            | Record<string, unknown>
+            | undefined;
+          const collaborationSettings = collaborationMode?.settings as
+            | Record<string, unknown>
+            | undefined;
+          const reasoningEffort =
+            typeof settings.reasoning_effort === "string"
+              ? settings.reasoning_effort
+              : collaborationSettings?.reasoning_effort;
+          if (typeof reasoningEffort === "string") {
+            modelReasoningEffort = reasoningEffort;
+          }
+          if ("service_tier" in settings) {
+            serviceTier = normalizeCodexServiceTierForClient(
+              settings.service_tier,
+            );
+          }
+        }
+      } else if (
         payload?.type === "user_message" &&
         typeof payload.message === "string"
       ) {

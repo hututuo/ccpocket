@@ -227,6 +227,65 @@ describe("CodexProcess (app-server)", () => {
     });
   });
 
+  it("waits for permission updates appended while ordinary input is waiting", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-serial-input-settings";
+    (proc as any)._projectPath = "/tmp/project-serial-input-settings";
+    let resolveRuntime!: (value: unknown) => void;
+    let resolvePermission!: (value: unknown) => void;
+    const runtime = new Promise((resolve) => {
+      resolveRuntime = resolve;
+    });
+    const permission = new Promise((resolve) => {
+      resolvePermission = resolve;
+    });
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementationOnce(() => runtime)
+      .mockImplementationOnce(() => permission)
+      .mockResolvedValueOnce({ turn: { id: "turn-serial-input" } });
+
+    void (proc as any).runInputLoop();
+    proc.setServiceTier("fast");
+    const runtimeUpdate = proc.persistRuntimeServiceTierForNextTurn();
+    proc.sendInput("continue after every setting is stable");
+    const permissionUpdate = proc.updatePermissionSettingsForNextTurn({
+      approvalPolicy: "never",
+    });
+    await tick();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenNthCalledWith(1, "thread/settings/update", {
+      threadId: "thread-serial-input-settings",
+      serviceTier: "fast",
+    });
+
+    resolveRuntime({});
+    await runtimeUpdate;
+    await tick();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenNthCalledWith(2, "thread/settings/update", {
+      threadId: "thread-serial-input-settings",
+      approvalPolicy: "never",
+    });
+
+    resolvePermission({});
+    await permissionUpdate;
+    await tick();
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(request).toHaveBeenNthCalledWith(
+      3,
+      "turn/start",
+      expect.objectContaining({
+        threadId: "thread-serial-input-settings",
+        approvalPolicy: "never",
+        serviceTier: "fast",
+      }),
+    );
+
+    proc.stop();
+  });
+
   it("does not resume a goal when its pending permission update fails", async () => {
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-failed-settings";
@@ -315,6 +374,121 @@ describe("CodexProcess (app-server)", () => {
         excludeSlashTmp: false,
       },
     });
+  });
+
+  it("persists ultra and Fast before activating a Goal continuation", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-runtime-goal";
+    let resolveModel!: (value: unknown) => void;
+    let resolveSpeed!: (value: unknown) => void;
+    let resolvePermission!: (value: unknown) => void;
+    const modelUpdate = new Promise((resolve) => {
+      resolveModel = resolve;
+    });
+    const speedUpdate = new Promise((resolve) => {
+      resolveSpeed = resolve;
+    });
+    const permissionUpdate = new Promise((resolve) => {
+      resolvePermission = resolve;
+    });
+    const goal = {
+      threadId: "thread-runtime-goal",
+      objective: "Continue with the selected runtime settings",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementationOnce(() => modelUpdate)
+      .mockImplementationOnce(() => speedUpdate)
+      .mockImplementationOnce(() => permissionUpdate)
+      .mockResolvedValueOnce({ goal });
+
+    proc.setModel("gpt-5.6-sol", "ultra");
+    const persistedModel = proc.persistRuntimeModelForNextTurn();
+    proc.setServiceTier("fast");
+    const persistedSpeed = proc.persistRuntimeServiceTierForNextTurn();
+    const resumedGoal = proc.setGoal({ status: "active" });
+    await tick();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenNthCalledWith(1, "thread/settings/update", {
+      threadId: "thread-runtime-goal",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.6-sol",
+          reasoning_effort: "ultra",
+        },
+      },
+    });
+
+    resolveModel({});
+    await expect(persistedModel).resolves.toBe(true);
+    await tick();
+    expect(request).toHaveBeenNthCalledWith(2, "thread/settings/update", {
+      threadId: "thread-runtime-goal",
+      serviceTier: "fast",
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+
+    const persistedPermission = proc.updatePermissionSettingsForNextTurn({
+      approvalPolicy: "never",
+    });
+    resolveSpeed({});
+    await expect(persistedSpeed).resolves.toBe(true);
+    await tick();
+    expect(request).toHaveBeenNthCalledWith(3, "thread/settings/update", {
+      threadId: "thread-runtime-goal",
+      approvalPolicy: "never",
+    });
+    expect(request).toHaveBeenCalledTimes(3);
+
+    resolvePermission({});
+    await persistedPermission;
+    await expect(resumedGoal).resolves.toEqual(goal);
+    expect(request).toHaveBeenNthCalledWith(4, "thread/goal/set", {
+      threadId: "thread-runtime-goal",
+      status: "active",
+    });
+  });
+
+  it("keeps turn/start fallback state when runtime fields are unsupported", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-old-runtime";
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockRejectedValue(
+        new CodexRpcError(
+          "thread/settings/update",
+          "Invalid params: unknown field effort",
+          -32602,
+        ),
+      );
+
+    try {
+      proc.setModel("gpt-5.6-sol", "ultra");
+      proc.setServiceTier("fast");
+
+      await expect(proc.persistRuntimeModelForNextTurn()).resolves.toBe(false);
+      await expect(
+        proc.persistRuntimeServiceTierForNextTurn(),
+      ).resolves.toBe(false);
+
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(proc.model).toBe("gpt-5.6-sol");
+      expect(proc.modelReasoningEffort).toBe("ultra");
+      expect(proc.serviceTier).toBe("fast");
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it("probes next-turn permission support on the exact runtime", async () => {
@@ -509,6 +683,7 @@ describe("CodexProcess (app-server)", () => {
         result: {
           thread: { id: "thr_1" },
           model: "gpt-5.3-codex",
+          serviceTier: "priority",
           approvalPolicy: "on-request",
           approvalsReviewer: "guardian_subagent",
           sandbox: {
@@ -530,6 +705,7 @@ describe("CodexProcess (app-server)", () => {
         approvalPolicy: "on-request",
         approvalsReviewer: "auto_review",
         sandboxMode: "workspace-write",
+        serviceTier: "fast",
         networkAccessEnabled: false,
       }),
     );
@@ -1747,22 +1923,79 @@ describe("CodexProcess (app-server)", () => {
     await tick();
     drainSkillsList(child);
 
-    proc.setModel("gpt-5.4-mini", "low");
+    proc.setModel("gpt-5.6-sol", "ultra");
     proc.setServiceTier("fast");
-    proc.sendInput("continue with a smaller model");
+    proc.sendInput("continue with ultra reasoning at fast speed");
     await tick();
 
     const turnReq = nextOutgoingRequest(child);
     expect(turnReq.method).toBe("turn/start");
     expect(turnReq.params).toMatchObject({
-      model: "gpt-5.4-mini",
-      effort: "low",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
       serviceTier: "fast",
       collaborationMode: {
         mode: "default",
         settings: {
-          model: "gpt-5.4-mini",
-          reasoning_effort: "low",
+          model: "gpt-5.6-sol",
+          reasoning_effort: "ultra",
+        },
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("encodes Standard as null on the next turn/start", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-standard-tier", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const startReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: {
+          thread: { id: "thr_standard_tier", model: "gpt-5.6-sol" },
+          reasoningEffort: "ultra",
+          serviceTier: "fast",
+        },
+      })}\n`,
+    );
+
+    await tick();
+    drainSkillsList(child);
+    proc.setServiceTier("standard");
+    proc.sendInput("continue at standard speed");
+    await tick();
+
+    const turnReq = nextOutgoingRequest(child);
+    expect(turnReq.method).toBe("turn/start");
+    expect(turnReq.params).toMatchObject({
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+      serviceTier: null,
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.6-sol",
+          reasoning_effort: "ultra",
         },
       },
     });

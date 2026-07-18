@@ -18,6 +18,10 @@ import {
 import { codexCliJoinTarget } from "./codex-app-server-config.js";
 import { resolvePlatformPath } from "./path-utils.js";
 import { parseSessionInsightsNotification } from "./local-features/slots/session-insights.js";
+import {
+  normalizeCodexServiceTier as normalizeServiceTier,
+  normalizeCodexServiceTierForClient as normalizeServiceTierForClient,
+} from "./codex-service-tier.js";
 
 export { buildCodexSpawnSpec };
 
@@ -357,8 +361,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private _networkAccessEnabled = false;
   private _additionalWritableRoots: string[] = [];
   private _pendingThreadSettingsUpdate: Promise<void> | null = null;
+  private _pendingRuntimeThreadSettingsUpdate: Promise<void> | null = null;
   private _threadSettingsUpdateTail: Promise<void> = Promise.resolve();
   private _supportsNextTurnPermissionUpdates = false;
+  private _threadSettingsUpdateMethodSupport:
+    | "unknown"
+    | "supported"
+    | "unsupported" = "unknown";
   private _collaborationMode: "plan" | "default" = "default";
   private _runtimeModel: string | undefined;
   private _runtimeModelReasoningEffort:
@@ -478,6 +487,24 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   /**
+   * Persist the selected model and effort for app-server-owned turns.
+   *
+   * Normal user turns still receive the same values on `turn/start`. This
+   * best-effort experimental update closes the separate Goal continuation
+   * path, where app-server starts the next turn without a Bridge RPC.
+   */
+  persistRuntimeModelForNextTurn(): Promise<boolean> {
+    return this.persistRuntimeThreadSettings(this.runtimeModelSettingsParams());
+  }
+
+  /** Persist Fast/Standard for app-server-owned Goal continuations. */
+  persistRuntimeServiceTierForNextTurn(): Promise<boolean> {
+    return this.persistRuntimeThreadSettings({
+      serviceTier: this._runtimeServiceTier ?? null,
+    });
+  }
+
+  /**
    * Update approval policy at runtime.
    * Takes effect on the next `turn/start` RPC call.
    */
@@ -539,7 +566,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         params.sandboxPolicy = sandboxPolicy;
       }
 
-      await this.request("thread/settings/update", params);
+      try {
+        await this.request("thread/settings/update", params);
+      } catch (err) {
+        if (isUnsupportedThreadSettingsMethod(err)) {
+          this._threadSettingsUpdateMethodSupport = "unsupported";
+          this._supportsNextTurnPermissionUpdates = false;
+        }
+        throw err;
+      }
+      this._threadSettingsUpdateMethodSupport = "supported";
       this._supportsNextTurnPermissionUpdates = true;
 
       if (settings.approvalPolicy !== undefined) {
@@ -596,8 +632,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       await this.request("thread/settings/update", {
         threadId: this._threadId,
       });
+      this._threadSettingsUpdateMethodSupport = "supported";
       this._supportsNextTurnPermissionUpdates = true;
     } catch (err) {
+      this._threadSettingsUpdateMethodSupport =
+        isUnsupportedThreadSettingsMethod(err) ? "unsupported" : "unknown";
       this._supportsNextTurnPermissionUpdates = false;
       console.log(
         `[codex-process] next-turn permission updates unavailable: ${err instanceof Error ? err.message : String(err)}`,
@@ -620,6 +659,104 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       // An update can be appended while the previous operation is awaited.
       if (this._pendingThreadSettingsUpdate === pending) {
         this._pendingThreadSettingsUpdate = null;
+        return;
+      }
+    }
+  }
+
+  private persistRuntimeThreadSettings(
+    settings: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (
+      !this._threadId ||
+      this._threadSettingsUpdateMethodSupport === "unsupported"
+    ) {
+      return Promise.resolve(false);
+    }
+
+    const threadId = this._threadId;
+    const operation = this._threadSettingsUpdateTail.then(async () => {
+      try {
+        await this.request("thread/settings/update", {
+          threadId,
+          ...settings,
+        });
+        this._threadSettingsUpdateMethodSupport = "supported";
+        return true;
+      } catch (err) {
+        if (isUnsupportedThreadSettingsMethod(err)) {
+          this._threadSettingsUpdateMethodSupport = "unsupported";
+          this._supportsNextTurnPermissionUpdates = false;
+        }
+        console.warn(
+          `[codex-process] Runtime settings will fall back to turn/start: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return false;
+      }
+    });
+
+    // Share ordering with permission updates, but keep this path best-effort:
+    // an older app-server must still start the next ordinary turn using the
+    // existing turn/start overrides.
+    this._threadSettingsUpdateTail = operation.then(() => undefined);
+    const pending = operation.then(() => undefined);
+    this._pendingRuntimeThreadSettingsUpdate = pending;
+    void pending.then(() => {
+      if (this._pendingRuntimeThreadSettingsUpdate === pending) {
+        this._pendingRuntimeThreadSettingsUpdate = null;
+      }
+    });
+    return operation;
+  }
+
+  private runtimeModelSettingsParams(): Record<string, unknown> {
+    const model = this.model;
+    const effort = this._runtimeModelReasoningEffort;
+    const modeSettings: Record<string, unknown> = { model };
+    if (effort !== undefined) {
+      modeSettings.reasoning_effort = effort;
+    }
+    return {
+      model,
+      ...(effort !== undefined ? { effort } : {}),
+      collaborationMode: {
+        mode: this._collaborationMode,
+        settings: modeSettings,
+      },
+    };
+  }
+
+  private async waitForPendingRuntimeThreadSettingsUpdate(): Promise<void> {
+    while (true) {
+      const pending = this._pendingRuntimeThreadSettingsUpdate;
+      if (!pending) return;
+      await pending;
+      if (this._pendingRuntimeThreadSettingsUpdate === pending) {
+        this._pendingRuntimeThreadSettingsUpdate = null;
+        return;
+      }
+    }
+  }
+
+  /**
+   * Wait until the shared settings queue is stable across both operation kinds.
+   *
+   * A permission update can be appended while a model/speed update is being
+   * awaited (and vice versa). Rechecking both trackers after every await keeps
+   * the following turn or Goal action behind the complete serialized tail.
+   */
+  private async waitForPendingThreadSettingsUpdates(): Promise<void> {
+    while (true) {
+      if (this._pendingThreadSettingsUpdate) {
+        await this.waitForPendingThreadSettingsUpdate();
+      }
+      if (this._pendingRuntimeThreadSettingsUpdate) {
+        await this.waitForPendingRuntimeThreadSettingsUpdate();
+      }
+      if (
+        !this._pendingThreadSettingsUpdate &&
+        !this._pendingRuntimeThreadSettingsUpdate
+      ) {
         return;
       }
     }
@@ -721,7 +858,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal update");
     }
-    await this.waitForPendingThreadSettingsUpdate();
+    await this.waitForPendingThreadSettingsUpdates();
     const response = (await this.request("thread/goal/set", {
       threadId: this._threadId,
       ...(update.objective !== undefined
@@ -1018,8 +1155,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.platform,
     );
     this._pendingThreadSettingsUpdate = null;
+    this._pendingRuntimeThreadSettingsUpdate = null;
     this._threadSettingsUpdateTail = Promise.resolve();
     this._supportsNextTurnPermissionUpdates = false;
+    this._threadSettingsUpdateMethodSupport = "unknown";
     this._collaborationMode = options?.collaborationMode ?? "default";
     this.lastPlanItemText = null;
     this.lastResultText = null;
@@ -1804,6 +1943,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       if (resolvedSettings.networkAccessEnabled !== undefined) {
         this._networkAccessEnabled = resolvedSettings.networkAccessEnabled;
       }
+      if (resolvedSettings.modelReasoningEffort !== undefined) {
+        this._runtimeModelReasoningEffort = normalizeReasoningEffort(
+          resolvedSettings.modelReasoningEffort,
+        );
+      }
+      if (resolvedSettings.serviceTier !== undefined) {
+        this._runtimeServiceTier = normalizeServiceTier(
+          resolvedSettings.serviceTier,
+        );
+      }
 
       this._threadId = threadId;
       this._agentNickname = stringOrNull(thread?.agentNickname);
@@ -2210,30 +2359,28 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       // Settings and the following input can arrive on adjacent WebSocket
       // frames. Do not let the new turn overtake the persisted update.
-      if (this._pendingThreadSettingsUpdate) {
-        try {
-          await this.waitForPendingThreadSettingsUpdate();
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.emitMessage({
-            type: "error",
-            errorCode: "set_permission_mode_rejected",
-            message:
-              "The queued permission update failed, so this input was not started: " +
-              message,
-          });
-          this.emitMessage({
-            type: "result",
-            subtype: "error",
-            error: message,
-            sessionId: this._threadId,
-          });
-          await Promise.all(
-            tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
-          );
-          this.setStatus("idle");
-          continue;
-        }
+      try {
+        await this.waitForPendingThreadSettingsUpdates();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.emitMessage({
+          type: "error",
+          errorCode: "set_permission_mode_rejected",
+          message:
+            "The queued permission update failed, so this input was not started: " +
+            message,
+        });
+        this.emitMessage({
+          type: "result",
+          subtype: "error",
+          error: message,
+          sessionId: this._threadId,
+        });
+        await Promise.all(
+          tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
+        );
+        this.setStatus("idle");
+        continue;
       }
 
       this.setStatus("running");
@@ -3761,17 +3908,12 @@ function extractServiceTiers(raw: Record<string, unknown>): string[] {
   return tiers;
 }
 
-function normalizeServiceTier(value: string): string | null {
-  const normalized = value.trim();
-  return !normalized || normalized === "standard" || normalized === "default"
-    ? null
-    : normalized;
-}
-
-function normalizeServiceTierForClient(value: unknown): string {
-  if (typeof value !== "string") return "standard";
-  const normalized = value.trim();
-  return !normalized || normalized === "default" ? "standard" : normalized;
+function isUnsupportedThreadSettingsMethod(error: unknown): boolean {
+  return (
+    error instanceof CodexRpcError &&
+    error.method === "thread/settings/update" &&
+    error.code === -32601
+  );
 }
 
 function sanitizeCodexModel(value: unknown): string | undefined {

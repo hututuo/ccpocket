@@ -3970,6 +3970,7 @@ export class BridgeWebSocketServer {
 
         const process = session.process as CodexProcess;
         process.setModel(model, modelReasoningEffort);
+        void process.persistRuntimeModelForNextTurn();
         session.codexSettings = {
           ...(session.codexSettings ?? {}),
           model,
@@ -4017,6 +4018,7 @@ export class BridgeWebSocketServer {
 
         const process = session.process as CodexProcess;
         process.setServiceTier(serviceTier);
+        void process.persistRuntimeServiceTierForNextTurn();
         session.codexSettings = {
           ...(session.codexSettings ?? {}),
           serviceTier,

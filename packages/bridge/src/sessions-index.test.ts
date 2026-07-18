@@ -1055,6 +1055,56 @@ describe("codex sessions integration", () => {
     expect(result.sessions[0].codexSettings?.serviceTier).toBe("standard");
   });
 
+  it("normalizes persisted Codex priority tier to client Fast", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68015";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T12-00-00-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: threadId, cwd: "/tmp/project-a" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.500Z",
+          type: "turn_context",
+          payload: { model: "gpt-5.6-sol", service_tier: "default" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.750Z",
+          type: "event_msg",
+          payload: {
+            type: "thread_settings_applied",
+            thread_settings: {
+              model: "gpt-5.6-sol",
+              reasoning_effort: "ultra",
+              service_tier: "priority",
+            },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "keep Fast selected" },
+        }),
+      ].join("\n"),
+    );
+
+    const result = await getAllRecentSessions({
+      provider: "codex",
+      limit: 200,
+    });
+
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0].codexSettings?.serviceTier).toBe("fast");
+    expect(result.sessions[0].codexSettings?.modelReasoningEffort).toBe(
+      "ultra",
+    );
+  });
+
   it("preserves non-UI Codex service tiers from turn_context", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68014";
     const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");

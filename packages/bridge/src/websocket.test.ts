@@ -237,9 +237,11 @@ vi.mock("./session.js", async () => {
           this.model = model;
           this.modelReasoningEffort = modelReasoningEffort;
         }),
+        persistRuntimeModelForNextTurn: vi.fn(async () => true),
         setServiceTier: vi.fn(function (this: any, value: string) {
           this.serviceTier = value;
         }),
+        persistRuntimeServiceTierForNextTurn: vi.fn(async () => true),
         listThreads: vi.fn(async () => ({ data: [], nextCursor: null })),
         listAvailableModels: vi.fn(async () => []),
         listAvailableModelMetadata: vi.fn(async () => []),
@@ -516,6 +518,8 @@ vi.mock("./session.js", async () => {
         setCollaborationMode: vi.fn(function (this: any, value: string) {
           this.collaborationMode = value;
         }),
+        persistRuntimeModelForNextTurn: vi.fn(async () => true),
+        persistRuntimeServiceTierForNextTurn: vi.fn(async () => true),
         listThreads: vi.fn(async () => ({ data: [], nextCursor: null })),
         sendInput: vi.fn(() => false),
         sendInputWithImage: vi.fn(),
@@ -5402,19 +5406,22 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       {
         type: "set_codex_model",
         sessionId,
-        model: "gpt-5.4-mini",
-        modelReasoningEffort: "low",
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
       },
       ws,
     );
 
     expect(session.process.setModel).toHaveBeenCalledWith(
-      "gpt-5.4-mini",
-      "low",
+      "gpt-5.6-sol",
+      "ultra",
     );
+    expect(
+      session.process.persistRuntimeModelForNextTurn,
+    ).toHaveBeenCalledOnce();
     expect(session.codexSettings).toMatchObject({
-      model: "gpt-5.4-mini",
-      modelReasoningEffort: "low",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
     });
 
     const messages = ws.send.mock.calls.map((c: unknown[]) =>
@@ -5427,16 +5434,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     ).toMatchObject({
       sessionId,
       provider: "codex",
-      model: "gpt-5.4-mini",
-      modelReasoningEffort: "low",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
     });
     expect(messages.find((m: any) => m.type === "session_list")).toMatchObject({
       sessions: expect.arrayContaining([
         expect.objectContaining({
           id: sessionId,
           codexSettings: expect.objectContaining({
-            model: "gpt-5.4-mini",
-            modelReasoningEffort: "low",
+            model: "gpt-5.6-sol",
+            modelReasoningEffort: "ultra",
           }),
         }),
       ]),
@@ -5453,6 +5460,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
 
     expect(session.process.setServiceTier).toHaveBeenCalledWith("fast");
+    expect(
+      session.process.persistRuntimeServiceTierForNextTurn,
+    ).toHaveBeenCalledOnce();
     expect(session.codexSettings).toMatchObject({ serviceTier: "fast" });
     expect(
       ws.send.mock.calls
