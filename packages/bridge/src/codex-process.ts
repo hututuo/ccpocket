@@ -1248,6 +1248,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     await this.request("thread/archive", { threadId });
   }
 
+  /** Restore a historical Codex thread via the stable app-server RPC. */
+  async unarchiveThread(threadId: string): Promise<void> {
+    await this.request("thread/unarchive", { threadId });
+  }
+
+  /** Permanently delete a historical Codex thread and its spawned descendants. */
+  async deleteThread(threadId: string): Promise<void> {
+    await this.request("thread/delete", { threadId });
+  }
+
   /**
    * Narrow extension seam for optional local read-only modules. Method names
    * must follow the app-server `.../read` or `.../list` convention so feature

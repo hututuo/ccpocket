@@ -146,6 +146,8 @@ const FILE_PEEK_TEXT_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
 const CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY =
   "codex_permission_apply_strategy_v1";
+const CODEX_SESSION_LIFECYCLE_CAPABILITY = "codex_session_lifecycle_v1";
+const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
 const KNOWN_CODEX_GOAL_STATUSES = new Set([
   "active",
@@ -168,6 +170,8 @@ const PERMISSION_RESTART_BLOCKED_MESSAGE_TYPES = new Set([
   "stop_session",
   "interrupt",
   "archive_session",
+  "unarchive_session",
+  "delete_session",
   "rewind",
   "fork",
   "rename_session",
@@ -706,6 +710,26 @@ function isUnsupportedCodexRpc(err: unknown): boolean {
   );
 }
 
+type SessionLifecycleErrorCode =
+  | "session_active"
+  | "session_not_archived"
+  | "archive_identity_mismatch"
+  | "unsupported_capability"
+  | "provider_rpc_failed"
+  | "local_store_failed"
+  | "partial_failure"
+  | "path_not_allowed";
+
+class SessionLifecycleError extends Error {
+  constructor(
+    readonly code: SessionLifecycleErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SessionLifecycleError";
+  }
+}
+
 function isClaudeAutoModeUnavailableError(err: unknown): boolean {
   const message = errorMessageOf(err).toLowerCase();
   const autoMentionsMode =
@@ -985,6 +1009,9 @@ export class BridgeWebSocketServer {
   private debugEvents = new Map<string, DebugTraceEvent[]>();
   private notifiedPermissionToolUses = new Map<string, Set<string>>();
   private archiveStore: ArchiveStore;
+  private archiveStoreReady: Promise<void>;
+  private archiveStoreInitializationError: Error | null = null;
+  private codexLifecycleMutations = new Map<string, Promise<void>>();
   private codexProfiles: string[] = [];
   private defaultCodexProfile: string | undefined;
   private codexMetadataRequest: Promise<void> | null = null;
@@ -1100,6 +1127,11 @@ export class BridgeWebSocketServer {
     );
 
     this.archiveStore = new ArchiveStore();
+    this.archiveStoreReady = this.archiveStore.init().catch((err) => {
+      console.error("[ws] Failed to initialize archive store:", err);
+      this.archiveStoreInitializationError =
+        err instanceof Error ? err : new Error(String(err));
+    });
     void this.debugTraceStore.init().catch((err) => {
       console.error("[ws] Failed to initialize debug trace store:", err);
     });
@@ -1108,9 +1140,6 @@ export class BridgeWebSocketServer {
         console.error("[ws] Failed to initialize recording store:", err);
       });
     }
-    void this.archiveStore.init().catch((err) => {
-      console.error("[ws] Failed to initialize archive store:", err);
-    });
     if (!this.pushRelay.isConfigured) {
       console.log("[ws] Push relay disabled (Firebase auth not available)");
     } else {
@@ -5356,44 +5385,22 @@ export class BridgeWebSocketServer {
       }
 
       case "archive_session": {
-        const { sessionId, provider, projectPath } = msg;
-        this.archiveStore
-          .archive(sessionId, provider, projectPath)
-          .then(() => {
-            // For Codex sessions, also call thread/archive RPC (best-effort).
-            // Requires a running Codex app-server process; skip if none active.
-            if (provider === "codex") {
-              const activeSessions = this.sessionManager.list();
-              const codexSession = activeSessions.find(
-                (s) => s.provider === "codex",
-              );
-              if (codexSession) {
-                const session = this.sessionManager.get(codexSession.id);
-                if (session) {
-                  (session.process as CodexProcess)
-                    .archiveThread(sessionId)
-                    .catch((err) => {
-                      console.warn(
-                        `[ws] Codex thread/archive failed (non-fatal): ${err}`,
-                      );
-                    });
-                }
-              }
-            }
-            this.send(ws, {
-              type: "archive_result",
-              sessionId,
-              success: true,
-            } as Record<string, unknown>);
-          })
-          .catch((err) => {
-            this.send(ws, {
-              type: "archive_result",
-              sessionId,
-              success: false,
-              error: String(err),
-            } as Record<string, unknown>);
-          });
+        void this.handleArchiveSession(msg, ws);
+        break;
+      }
+
+      case "list_archived_sessions": {
+        void this.handleListArchivedSessions(msg.requestId, ws);
+        break;
+      }
+
+      case "unarchive_session": {
+        void this.handleUnarchiveSession(msg, ws);
+        break;
+      }
+
+      case "delete_session": {
+        void this.handleDeleteSession(msg, ws);
         break;
       }
 
@@ -5459,57 +5466,6 @@ export class BridgeWebSocketServer {
         // Resume flow: keep past history in SessionInfo and deliver it only
         // via get_history(sessionId) to avoid duplicate/missed replay races.
         if (provider === "codex") {
-          const runningSession = this.findRunningCodexSession(sessionRefId);
-          if (runningSession) {
-            this.sendCodexResumeResult(ws, runningSession, sessionRefId);
-            this.sendSessionList(ws);
-            break;
-          }
-
-          const wtMapping = this.worktreeStore.get(sessionRefId);
-          const effectiveProjectPath = resolvePlatformPath(
-              wtMapping?.projectPath ?? resumeProjectPath,
-              this.platform,
-            );
-          const effectiveProfile = msg.profile
-            ? await this.resolveCodexResumeProfile(
-                msg.profile,
-                sessionRefId,
-                effectiveProjectPath,
-              )
-            : undefined;
-          const additionalWritableRoots = this.normalizeAdditionalWritableRoots(
-              msg.additionalWritableRoots,
-              effectiveProjectPath,
-            );
-          if (additionalWritableRoots.deniedRoot) {
-            this.send(
-              ws,
-              this.buildPathNotAllowedError(additionalWritableRoots.deniedRoot),
-            );
-            break;
-          }
-          let worktreeOpts:
-            | {
-                useWorktree?: boolean;
-                worktreeBranch?: string;
-                existingWorktreePath?: string;
-              }
-            | undefined;
-          if (wtMapping) {
-            if (worktreeExists(wtMapping.worktreePath)) {
-              worktreeOpts = {
-                existingWorktreePath: wtMapping.worktreePath,
-                worktreeBranch: wtMapping.worktreeBranch,
-              };
-            } else {
-              worktreeOpts = {
-                useWorktree: true,
-                worktreeBranch: wtMapping.worktreeBranch,
-              };
-            }
-          }
-
           const pendingClients =
             this.pendingCodexResumeClients.get(sessionRefId);
           if (pendingClients) {
@@ -5518,8 +5474,79 @@ export class BridgeWebSocketServer {
           }
           const resumeClients = new Set<WebSocket>([ws]);
           this.pendingCodexResumeClients.set(sessionRefId, resumeClients);
+          let releaseThreadOperation: (() => void) | undefined;
 
           try {
+            releaseThreadOperation =
+              await this.acquireCodexThreadOperation(sessionRefId);
+            const runningSession = this.findRunningCodexSession(sessionRefId);
+            if (runningSession) {
+              for (const waitingClient of resumeClients) {
+                this.sendCodexResumeResult(
+                  waitingClient,
+                  runningSession,
+                  sessionRefId,
+                );
+                this.sendSessionList(waitingClient);
+              }
+              break;
+            }
+            await this.requireArchiveStoreReady();
+            if (this.archiveStore.isArchived(sessionRefId, "codex")) {
+              throw new Error(
+                "The Codex thread is archived. Restore it before resuming.",
+              );
+            }
+
+            const wtMapping = this.worktreeStore.get(sessionRefId);
+            const effectiveProjectPath = resolvePlatformPath(
+              wtMapping?.projectPath ?? resumeProjectPath,
+              this.platform,
+            );
+            const effectiveProfile = msg.profile
+              ? await this.resolveCodexResumeProfile(
+                  msg.profile,
+                  sessionRefId,
+                  effectiveProjectPath,
+                )
+              : undefined;
+            const additionalWritableRoots =
+              this.normalizeAdditionalWritableRoots(
+              msg.additionalWritableRoots,
+              effectiveProjectPath,
+            );
+            if (additionalWritableRoots.deniedRoot) {
+              for (const waitingClient of resumeClients) {
+                this.send(
+                  waitingClient,
+                  this.buildPathNotAllowedError(
+                    additionalWritableRoots.deniedRoot,
+                  ),
+                );
+              }
+              break;
+            }
+            let worktreeOpts:
+              | {
+                  useWorktree?: boolean;
+                  worktreeBranch?: string;
+                  existingWorktreePath?: string;
+                }
+              | undefined;
+            if (wtMapping) {
+              if (worktreeExists(wtMapping.worktreePath)) {
+                worktreeOpts = {
+                  existingWorktreePath: wtMapping.worktreePath,
+                  worktreeBranch: wtMapping.worktreeBranch,
+                };
+              } else {
+                worktreeOpts = {
+                  useWorktree: true,
+                  worktreeBranch: wtMapping.worktreeBranch,
+                };
+              }
+            }
+
             const pastMessages = await this.getCodexThreadHistory(
               sessionRefId,
               effectiveProjectPath,
@@ -5599,6 +5626,7 @@ export class BridgeWebSocketServer {
               this.send(waitingClient, error);
             }
           } finally {
+            releaseThreadOperation?.();
             if (
               this.pendingCodexResumeClients.get(sessionRefId) ===
               resumeClients
@@ -7463,7 +7491,10 @@ export class BridgeWebSocketServer {
       codexProfiles: this.codexProfiles,
       defaultCodexProfile: this.defaultCodexProfile,
       bridgeVersion: getPackageVersion(),
-      bridgeCapabilities: [CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY],
+      bridgeCapabilities: [
+        CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
+        CODEX_SESSION_LIFECYCLE_CAPABILITY,
+      ],
     });
   }
 
@@ -7500,7 +7531,10 @@ export class BridgeWebSocketServer {
       codexProfiles: this.codexProfiles,
       defaultCodexProfile: this.defaultCodexProfile,
       bridgeVersion: getPackageVersion(),
-      bridgeCapabilities: [CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY],
+      bridgeCapabilities: [
+        CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
+        CODEX_SESSION_LIFECYCLE_CAPABILITY,
+      ],
     });
   }
 
@@ -7702,6 +7736,7 @@ export class BridgeWebSocketServer {
   private async listRecentSessions(
     msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
   ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
+    await this.requireArchiveStoreReady();
     if (msg.provider === "codex") {
       return this.listRecentCodexSessions(msg);
     }
@@ -7717,7 +7752,7 @@ export class BridgeWebSocketServer {
       provider: msg.provider,
       namedOnly: msg.namedOnly,
       searchQuery: msg.searchQuery,
-      archivedSessionIds: this.archiveStore.archivedIds(),
+      archivedSessionKeys: this.archiveStore.archivedKeys(),
     });
   }
 
@@ -7735,7 +7770,7 @@ export class BridgeWebSocketServer {
         projectPath: msg.projectPath,
         namedOnly: msg.namedOnly,
         searchQuery: msg.searchQuery,
-        archivedSessionIds: this.archiveStore.archivedIds(),
+        archivedSessionKeys: this.archiveStore.archivedKeys(),
       }),
       this.listRecentCodexSessions({
         ...msg,
@@ -7775,9 +7810,354 @@ export class BridgeWebSocketServer {
         provider: "codex",
         namedOnly: msg.namedOnly,
         searchQuery: msg.searchQuery,
-        archivedSessionIds: this.archiveStore.archivedIds(),
+        archivedSessionKeys: this.archiveStore.archivedKeys(),
       });
     }
+  }
+
+  private async handleArchiveSession(
+    msg: Extract<ClientMessage, { type: "archive_session" }>,
+    ws: WebSocket,
+  ): Promise<void> {
+    const { sessionId, provider, requestId } = msg;
+    try {
+      await this.requireArchiveStoreReady();
+      const projectPath = this.resolveLifecycleProjectPath(msg.projectPath);
+      this.assertProviderSessionInactive(provider, sessionId);
+      if (provider === "codex") {
+        await this.runCodexLifecycleMutation(sessionId, () =>
+          this.withCodexLifecycleProcess(projectPath, async (codexProcess) => {
+            this.assertProviderSessionInactive(provider, sessionId);
+            await codexProcess.archiveThread(sessionId);
+            try {
+              await this.archiveStore.archive(sessionId, provider, projectPath, {
+                name: msg.name,
+                summary: msg.summary,
+                firstPrompt: msg.firstPrompt,
+                modified: msg.modified,
+              });
+            } catch (storeError) {
+              try {
+                await codexProcess.unarchiveThread(sessionId);
+              } catch (compensationError) {
+                throw new SessionLifecycleError(
+                  "partial_failure",
+                  `Codex archived the thread, local bookkeeping failed, and automatic restoration also failed: ${errorMessageOf(compensationError)}`,
+                );
+              }
+              throw new SessionLifecycleError(
+                "local_store_failed",
+                `Local archive bookkeeping failed; the Codex thread was restored: ${errorMessageOf(storeError)}`,
+              );
+            }
+          }),
+        );
+      } else {
+        try {
+          await this.archiveStore.archive(sessionId, provider, projectPath, {
+            name: msg.name,
+            summary: msg.summary,
+            firstPrompt: msg.firstPrompt,
+            modified: msg.modified,
+          });
+        } catch (error) {
+          throw new SessionLifecycleError(
+            "local_store_failed",
+            `Failed to save the local archive: ${errorMessageOf(error)}`,
+          );
+        }
+      }
+      this.send(ws, {
+        type: "archive_result",
+        ...(requestId ? { requestId } : {}),
+        sessionId,
+        provider,
+        success: true,
+      });
+    } catch (error) {
+      const failure = this.classifySessionLifecycleError(error);
+      this.send(ws, {
+        type: "archive_result",
+        ...(requestId ? { requestId } : {}),
+        sessionId,
+        provider,
+        success: false,
+        error: failure.message,
+        errorCode: failure.code,
+      });
+    }
+  }
+
+  private async requireArchiveStoreReady(): Promise<void> {
+    await this.archiveStoreReady;
+    if (this.archiveStoreInitializationError) {
+      throw new SessionLifecycleError(
+        "local_store_failed",
+        `Archive store initialization failed: ${this.archiveStoreInitializationError.message}`,
+      );
+    }
+  }
+
+  private async handleListArchivedSessions(
+    requestId: string,
+    ws: WebSocket,
+  ): Promise<void> {
+    try {
+      await this.requireArchiveStoreReady();
+      const sessions = this.archiveStore.list(ARCHIVED_SESSION_LIST_LIMIT + 1);
+      this.send(ws, {
+        type: "archived_sessions_result",
+        requestId,
+        success: true,
+        sessions: sessions.slice(0, ARCHIVED_SESSION_LIST_LIMIT),
+        ...(sessions.length > ARCHIVED_SESSION_LIST_LIMIT
+          ? { truncated: true }
+          : {}),
+      });
+    } catch (error) {
+      this.send(ws, {
+        type: "archived_sessions_result",
+        requestId,
+        success: false,
+        sessions: [],
+        error: errorMessageOf(error),
+        errorCode: "local_store_failed",
+      });
+    }
+  }
+
+  private async handleUnarchiveSession(
+    msg: Extract<ClientMessage, { type: "unarchive_session" }>,
+    ws: WebSocket,
+  ): Promise<void> {
+    const { requestId, sessionId } = msg;
+    try {
+      await this.requireArchiveStoreReady();
+      const entry = this.requireArchivedSession(msg);
+      this.assertProviderSessionInactive(entry.provider, sessionId);
+      if (entry.provider === "codex") {
+        await this.runCodexLifecycleMutation(sessionId, () =>
+          this.withCodexLifecycleProcess(entry.projectPath, async (codexProcess) => {
+            this.assertProviderSessionInactive(entry.provider, sessionId);
+            await codexProcess.unarchiveThread(sessionId);
+            try {
+              await this.archiveStore.unarchive(sessionId, entry.provider);
+            } catch (storeError) {
+              try {
+                await codexProcess.archiveThread(sessionId);
+              } catch (compensationError) {
+                throw new SessionLifecycleError(
+                  "partial_failure",
+                  `Codex restored the thread, local bookkeeping failed, and automatic re-archive also failed: ${errorMessageOf(compensationError)}`,
+                );
+              }
+              throw new SessionLifecycleError(
+                "local_store_failed",
+                `Local restore bookkeeping failed; the Codex thread was re-archived: ${errorMessageOf(storeError)}`,
+              );
+            }
+          }),
+        );
+      } else {
+        try {
+          await this.archiveStore.unarchive(sessionId, entry.provider);
+        } catch (error) {
+          throw new SessionLifecycleError(
+            "local_store_failed",
+            `Failed to restore the local archive: ${errorMessageOf(error)}`,
+          );
+        }
+      }
+      this.send(ws, {
+        type: "unarchive_result",
+        requestId,
+        sessionId,
+        success: true,
+      });
+    } catch (error) {
+      const failure = this.classifySessionLifecycleError(error);
+      this.send(ws, {
+        type: "unarchive_result",
+        requestId,
+        sessionId,
+        success: false,
+        error: failure.message,
+        errorCode: failure.code,
+      });
+    }
+  }
+
+  private async handleDeleteSession(
+    msg: Extract<ClientMessage, { type: "delete_session" }>,
+    ws: WebSocket,
+  ): Promise<void> {
+    const { requestId, sessionId } = msg;
+    try {
+      await this.requireArchiveStoreReady();
+      const entry = this.requireArchivedSession(msg);
+      if (entry.provider !== "codex") {
+        throw new SessionLifecycleError(
+          "archive_identity_mismatch",
+          "Permanent deletion is available only for Codex threads.",
+        );
+      }
+      this.assertProviderSessionInactive("codex", sessionId);
+      await this.runCodexLifecycleMutation(sessionId, () =>
+        this.withCodexLifecycleProcess(entry.projectPath, async (codexProcess) => {
+          this.assertProviderSessionInactive("codex", sessionId);
+          await codexProcess.deleteThread(sessionId);
+          try {
+            await this.archiveStore.remove(sessionId, entry.provider);
+          } catch (error) {
+            throw new SessionLifecycleError(
+              "partial_failure",
+              `Codex deleted the thread, but local archive cleanup failed: ${errorMessageOf(error)}`,
+            );
+          }
+        }),
+      );
+      this.send(ws, {
+        type: "delete_session_result",
+        requestId,
+        sessionId,
+        success: true,
+      });
+    } catch (error) {
+      const failure = this.classifySessionLifecycleError(error);
+      this.send(ws, {
+        type: "delete_session_result",
+        requestId,
+        sessionId,
+        success: false,
+        error: failure.message,
+        errorCode: failure.code,
+      });
+    }
+  }
+
+  private requireArchivedSession(
+    msg: Extract<
+      ClientMessage,
+      { type: "unarchive_session" | "delete_session" }
+    >,
+  ) {
+    const entry = this.archiveStore
+      .list()
+      .find(
+        (session) =>
+          session.sessionId === msg.sessionId &&
+          session.provider === msg.provider,
+      );
+    if (!entry) {
+      throw new SessionLifecycleError(
+        "session_not_archived",
+        "The session is not present in this Bridge's archive.",
+      );
+    }
+    const requestedPath = this.resolveLifecycleProjectPath(msg.projectPath);
+    const storedPath = this.resolveLifecycleProjectPath(entry.projectPath);
+    if (entry.provider !== msg.provider || storedPath !== requestedPath) {
+      throw new SessionLifecycleError(
+        "archive_identity_mismatch",
+        "The archived session identity no longer matches this request.",
+      );
+    }
+    return { ...entry, projectPath: storedPath };
+  }
+
+  private resolveLifecycleProjectPath(projectPath: string): string {
+    const resolved = resolvePlatformPath(projectPath, this.platform);
+    if (!this.isPathAllowed(resolved)) {
+      throw new SessionLifecycleError(
+        "path_not_allowed",
+        `Project path is outside the Bridge allowlist: ${projectPath}`,
+      );
+    }
+    return resolved;
+  }
+
+  private assertProviderSessionInactive(
+    provider: Provider,
+    providerSessionId: string,
+  ): void {
+    for (const summary of this.sessionManager.list()) {
+      if (summary.provider !== provider) continue;
+      const session = this.sessionManager.get(summary.id);
+      const liveProviderSessionId =
+        session?.claudeSessionId ??
+        (session?.provider === "codex"
+          ? (session.process as CodexProcess).sessionId
+          : undefined);
+      if (liveProviderSessionId === providerSessionId) {
+        throw new SessionLifecycleError(
+          "session_active",
+          "Stop or close the active session before changing its archive state.",
+        );
+      }
+    }
+  }
+
+  private async withCodexLifecycleProcess<T>(
+    projectPath: string,
+    operation: (process: CodexProcess) => Promise<T>,
+  ): Promise<T> {
+    const activeProcess = this.getActiveCodexProcess();
+    const codexProcess =
+      activeProcess ?? (await this.createStandaloneCodexProcess(projectPath));
+    try {
+      return await operation(codexProcess);
+    } finally {
+      if (!activeProcess) codexProcess.stop();
+    }
+  }
+
+  private async runCodexLifecycleMutation<T>(
+    threadId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const release = await this.acquireCodexThreadOperation(threadId);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  private async acquireCodexThreadOperation(
+    threadId: string,
+  ): Promise<() => void> {
+    const previous = this.codexLifecycleMutations.get(threadId);
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    this.codexLifecycleMutations.set(threadId, gate);
+    if (previous) await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      openGate();
+      if (this.codexLifecycleMutations.get(threadId) === gate) {
+        this.codexLifecycleMutations.delete(threadId);
+      }
+    };
+  }
+
+  private classifySessionLifecycleError(error: unknown): {
+    code: SessionLifecycleErrorCode;
+    message: string;
+  } {
+    if (error instanceof SessionLifecycleError) {
+      return { code: error.code, message: error.message };
+    }
+    if (isUnsupportedCodexRpc(error)) {
+      return {
+        code: "unsupported_capability",
+        message: "This Codex app-server does not support the requested lifecycle operation.",
+      };
+    }
+    return { code: "provider_rpc_failed", message: errorMessageOf(error) };
   }
 
   private async refreshCodexMetadata(projectPath?: string): Promise<void> {
@@ -8032,7 +8412,7 @@ export class BridgeWebSocketServer {
     const isStandalone = process !== this.getActiveCodexProcess();
 
     try {
-      const archivedIds = this.archiveStore.archivedIds();
+      const archivedIds = this.archiveStore.archivedIds("codex");
       const visibleThreads: CodexThreadSummary[] = [];
       let cursor: string | null | undefined;
       let hasServerMore = false;

@@ -380,6 +380,27 @@ export type ClientMessage =
       sessionId: string;
       provider: Provider;
       projectPath: string;
+      requestId?: string;
+      name?: string;
+      summary?: string;
+      firstPrompt?: string;
+      modified?: string;
+    }
+  | { type: "list_archived_sessions"; requestId: string }
+  | {
+      type: "unarchive_session";
+      requestId: string;
+      sessionId: string;
+      provider: Provider;
+      projectPath: string;
+    }
+  | {
+      type: "delete_session";
+      requestId: string;
+      sessionId: string;
+      provider: "codex";
+      projectPath: string;
+      confirmDescendantDeletion: true;
     }
   | { type: "refresh_branch"; sessionId: string }
   // ---- Git Operations (Phase 1-3) ----
@@ -786,6 +807,32 @@ export type ServerMessage =
       success: boolean;
       error?: string;
     }
+  | {
+      type: "archive_result";
+      requestId?: string;
+      sessionId: string;
+      provider?: Provider;
+      success: boolean;
+      error?: string;
+      errorCode?: string;
+    }
+  | {
+      type: "archived_sessions_result";
+      requestId: string;
+      sessions: ArchivedSessionPayload[];
+      success: boolean;
+      truncated?: boolean;
+      error?: string;
+      errorCode?: string;
+    }
+  | {
+      type: "unarchive_result" | "delete_session_result";
+      requestId: string;
+      sessionId: string;
+      success: boolean;
+      error?: string;
+      errorCode?: string;
+    }
   // ---- Git Operations (Phase 1-3) ----
   | { type: "git_stage_result"; success: boolean; error?: string }
   | { type: "git_unstage_result"; success: boolean; error?: string }
@@ -853,6 +900,17 @@ export type ServerMessage =
 export interface UsageWindowPayload {
   utilization: number;
   resetsAt: string;
+}
+
+export interface ArchivedSessionPayload {
+  sessionId: string;
+  provider: Provider;
+  projectPath: string;
+  archivedAt: string;
+  name?: string;
+  summary?: string;
+  firstPrompt?: string;
+  modified?: string;
 }
 
 export interface UsageInfoPayload {
@@ -1826,9 +1884,78 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (typeof msg.projectPath !== "string") return null;
         break;
       case "archive_session":
-        if (typeof msg.sessionId !== "string") return null;
+        if (
+          typeof msg.sessionId !== "string" ||
+          msg.sessionId.length === 0 ||
+          msg.sessionId.length > 256
+        )
+          return null;
         if (msg.provider !== "claude" && msg.provider !== "codex") return null;
-        if (typeof msg.projectPath !== "string") return null;
+        if (
+          typeof msg.projectPath !== "string" ||
+          msg.projectPath.length === 0 ||
+          msg.projectPath.length > 16_384
+        )
+          return null;
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.length === 0 ||
+            msg.requestId.length > 128)
+        )
+          return null;
+        for (const [key, maxLength] of [
+          ["name", 1_024],
+          ["summary", 16_384],
+          ["firstPrompt", 16_384],
+          ["modified", 64],
+        ] as const) {
+          const value = msg[key];
+          if (
+            value !== undefined &&
+            (typeof value !== "string" || value.length > maxLength)
+          )
+            return null;
+        }
+        break;
+      case "list_archived_sessions":
+        if (
+          typeof msg.requestId !== "string" ||
+          msg.requestId.length === 0 ||
+          msg.requestId.length > 128
+        )
+          return null;
+        break;
+      case "unarchive_session":
+        if (
+          typeof msg.requestId !== "string" ||
+          msg.requestId.length === 0 ||
+          msg.requestId.length > 128 ||
+          typeof msg.sessionId !== "string" ||
+          msg.sessionId.length === 0 ||
+          msg.sessionId.length > 256 ||
+          (msg.provider !== "claude" && msg.provider !== "codex") ||
+          typeof msg.projectPath !== "string" ||
+          msg.projectPath.length === 0 ||
+          msg.projectPath.length > 16_384
+        )
+          return null;
+        break;
+      case "delete_session":
+        if (
+          typeof msg.requestId !== "string" ||
+          msg.requestId.length === 0 ||
+          msg.requestId.length > 128 ||
+          typeof msg.sessionId !== "string" ||
+          msg.sessionId.length === 0 ||
+          msg.sessionId.length > 256 ||
+          msg.provider !== "codex" ||
+          typeof msg.projectPath !== "string" ||
+          msg.projectPath.length === 0 ||
+          msg.projectPath.length > 16_384 ||
+          msg.confirmDescendantDeletion !== true
+        )
+          return null;
         break;
       default:
         return null;

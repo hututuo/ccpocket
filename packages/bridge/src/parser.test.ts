@@ -1239,4 +1239,87 @@ describe("parseClientMessage", () => {
       ),
     ).toBeNull();
   });
+
+  it("parses correlated archive lifecycle requests", () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "archive_session",
+          requestId: "archive-1",
+          sessionId: "thread-1",
+          provider: "codex",
+          projectPath: "/project",
+          name: "Named thread",
+          firstPrompt: "hello",
+          modified: "2026-07-18T10:00:00Z",
+        }),
+      ),
+    ).toMatchObject({ type: "archive_session", requestId: "archive-1" });
+    expect(
+      parseClientMessage(
+        '{"type":"list_archived_sessions","requestId":"list-1"}',
+      ),
+    ).toEqual({ type: "list_archived_sessions", requestId: "list-1" });
+    expect(
+      parseClientMessage(
+        '{"type":"unarchive_session","requestId":"restore-1","sessionId":"thread-1","provider":"codex","projectPath":"/project"}',
+      ),
+    ).toMatchObject({ type: "unarchive_session", sessionId: "thread-1" });
+    expect(
+      parseClientMessage(
+        '{"type":"delete_session","requestId":"delete-1","sessionId":"thread-1","provider":"codex","projectPath":"/project","confirmDescendantDeletion":true}',
+      ),
+    ).toMatchObject({ type: "delete_session", sessionId: "thread-1" });
+  });
+
+  it("fails closed for unsafe lifecycle request shapes", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"list_archived_sessions","requestId":""}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"unarchive_session","requestId":"restore-1","sessionId":"thread-1","provider":"other","projectPath":"/project"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"delete_session","requestId":"delete-1","sessionId":"thread-1","provider":"claude","projectPath":"/project","confirmDescendantDeletion":true}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"delete_session","requestId":"delete-1","sessionId":"thread-1","provider":"codex","projectPath":"/project","confirmDescendantDeletion":false}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "archive_session",
+          sessionId: "x".repeat(257),
+          provider: "codex",
+          projectPath: "/project",
+        }),
+      ),
+    ).toBeNull();
+    for (const type of [
+      "archive_session",
+      "unarchive_session",
+      "delete_session",
+    ]) {
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type,
+            requestId: "request-1",
+            sessionId: "thread-1",
+            provider: "codex",
+            projectPath: "x".repeat(16_385),
+            confirmDescendantDeletion: true,
+          }),
+        ),
+      ).toBeNull();
+    }
+  });
 });

@@ -254,6 +254,9 @@ vi.mock("./session.js", async () => {
         listAvailableModelMetadata: vi.fn(async () => []),
         readProfileConfig: vi.fn(async () => ({ profiles: [] })),
         readThread: vi.fn(async () => ({ id: "thread-read", turns: [] })),
+        archiveThread: vi.fn(async () => {}),
+        unarchiveThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
         rollbackThread: vi.fn(async () => ({
           id: "thread-rollback",
           turns: [],
@@ -629,6 +632,435 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     httpServer.close();
   });
 
+  it("does not persist Codex archive bookkeeping when the official RPC fails", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const archive = vi.fn(async () => {});
+    const archiveThread = vi.fn(async () => {
+      throw new Error("official archive rejected");
+    });
+    const stop = vi.fn();
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      archive,
+      list: vi.fn(() => []),
+      archivedIds: vi.fn(() => new Set()),
+      archivedKeys: vi.fn(() => new Set()),
+    };
+    const createStandalone = vi
+      .spyOn(bridge as any, "createStandaloneCodexProcess")
+      .mockResolvedValue({ archiveThread, stop });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-request",
+        sessionId: "thread-archive",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(ws.send).toHaveBeenCalled();
+    });
+    expect(archiveThread).toHaveBeenCalledWith("thread-archive");
+    expect(archive).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(createStandalone).toHaveBeenCalledWith("/project");
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) => JSON.parse(call[0] as string)),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "archive_result",
+        requestId: "archive-request",
+        sessionId: "thread-archive",
+        success: false,
+        errorCode: "provider_rpc_failed",
+      }),
+    );
+    bridge.close();
+  });
+
+  it("persists Codex archive bookkeeping after the official RPC succeeds", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const archive = vi.fn(async () => {});
+    const archiveThread = vi.fn(async () => {});
+    const stop = vi.fn();
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = { archive };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      archiveThread,
+      unarchiveThread: vi.fn(async () => {}),
+      stop,
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-request",
+        sessionId: "thread-archive",
+        provider: "codex",
+        projectPath: "/project",
+        name: "Saved title",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(archive).toHaveBeenCalled();
+    });
+    expect(archiveThread.mock.invocationCallOrder[0]).toBeLessThan(
+      archive.mock.invocationCallOrder[0],
+    );
+    expect(archive).toHaveBeenCalledWith(
+      "thread-archive",
+      "codex",
+      "/project",
+      expect.objectContaining({ name: "Saved title" }),
+    );
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "archive_result",
+      requestId: "archive-request",
+      success: true,
+    });
+    bridge.close();
+  });
+
+  it("fails closed when archive store initialization failed", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const archive = vi.fn(async () => {});
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = new Error("bad json");
+    (bridge as any).archiveStore = { archive };
+    const standalone = vi.spyOn(bridge as any, "createStandaloneCodexProcess");
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-request",
+        sessionId: "thread-archive",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(ws.send).toHaveBeenCalled();
+    });
+    expect(archive).not.toHaveBeenCalled();
+    expect(standalone).not.toHaveBeenCalled();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "archive_result",
+      success: false,
+      errorCode: "local_store_failed",
+    });
+    bridge.close();
+  });
+
+  it("uses a standalone Codex app-server to restore an archived thread", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const unarchive = vi.fn(async () => ({ sessionId: "thread-restore" }));
+    const unarchiveThread = vi.fn(async () => {});
+    const stop = vi.fn();
+    const entry = {
+      sessionId: "thread-restore",
+      provider: "codex",
+      projectPath: "/project",
+      archivedAt: "2026-07-18T00:00:00Z",
+    };
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      list: vi.fn(() => [entry]),
+      unarchive,
+    };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      unarchiveThread,
+      archiveThread: vi.fn(async () => {}),
+      stop,
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "unarchive_session",
+        requestId: "restore-request",
+        sessionId: "thread-restore",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(unarchive).toHaveBeenCalledWith("thread-restore", "codex");
+    });
+    expect(unarchiveThread).toHaveBeenCalledWith("thread-restore");
+    expect(unarchiveThread.mock.invocationCallOrder[0]).toBeLessThan(
+      unarchive.mock.invocationCallOrder[0],
+    );
+    expect(stop).toHaveBeenCalledOnce();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "unarchive_result",
+      requestId: "restore-request",
+      success: true,
+    });
+    bridge.close();
+  });
+
+  it("returns a bounded archived-session list correlated to its request", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const entries = Array.from({ length: 1_001 }, (_, index) => ({
+      sessionId: `thread-${index}`,
+      provider: "codex",
+      projectPath: "/project",
+      archivedAt: "2026-07-18T00:00:00Z",
+    }));
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      list: vi.fn(() => entries),
+    };
+
+    (bridge as any).handleClientMessage(
+      { type: "list_archived_sessions", requestId: "list-request" },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(ws.send).toHaveBeenCalled();
+    });
+    const result = JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string);
+    expect(result).toMatchObject({
+      type: "archived_sessions_result",
+      requestId: "list-request",
+      success: true,
+      truncated: true,
+    });
+    expect(result.sessions).toHaveLength(1_000);
+    bridge.close();
+  });
+
+  it("uses a standalone Codex app-server for confirmed permanent deletion", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const remove = vi.fn(async () => ({ sessionId: "thread-delete" }));
+    const deleteThread = vi.fn(async () => {});
+    const stop = vi.fn();
+    const entry = {
+      sessionId: "thread-delete",
+      provider: "codex",
+      projectPath: "/project",
+      archivedAt: "2026-07-18T00:00:00Z",
+    };
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      list: vi.fn(() => [entry]),
+      remove,
+    };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      deleteThread,
+      stop,
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "delete_session",
+        requestId: "delete-request",
+        sessionId: "thread-delete",
+        provider: "codex",
+        projectPath: "/project",
+        confirmDescendantDeletion: true,
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(remove).toHaveBeenCalledWith("thread-delete", "codex");
+    });
+    expect(deleteThread).toHaveBeenCalledWith("thread-delete");
+    expect(deleteThread.mock.invocationCallOrder[0]).toBeLessThan(
+      remove.mock.invocationCallOrder[0],
+    );
+    expect(stop).toHaveBeenCalledOnce();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "delete_session_result",
+      requestId: "delete-request",
+      success: true,
+    });
+    bridge.close();
+  });
+
+  it("reports irreversible local cleanup failure after provider deletion as partial", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const deleteThread = vi.fn(async () => {});
+    const remove = vi.fn(async () => {
+      throw new Error("disk full");
+    });
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      list: vi.fn(() => [
+        {
+          sessionId: "thread-delete",
+          provider: "codex",
+          projectPath: "/project",
+          archivedAt: "2026-07-18T00:00:00Z",
+        },
+      ]),
+      remove,
+    };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      deleteThread,
+      stop: vi.fn(),
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "delete_session",
+        requestId: "delete-partial",
+        sessionId: "thread-delete",
+        provider: "codex",
+        projectPath: "/project",
+        confirmDescendantDeletion: true,
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(ws.send).toHaveBeenCalled();
+    });
+    expect(deleteThread).toHaveBeenCalledOnce();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "delete_session_result",
+      requestId: "delete-partial",
+      success: false,
+      errorCode: "partial_failure",
+    });
+    bridge.close();
+  });
+
+  it("refuses archive lifecycle mutations for a live provider thread", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const archive = vi.fn(async () => {});
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = { archive };
+    (bridge as any).sessionManager.create(
+      "/project",
+      { sessionId: "thread-live" },
+      [],
+      undefined,
+      "codex",
+      { threadId: "thread-live" },
+    );
+    const standalone = vi.spyOn(bridge as any, "createStandaloneCodexProcess");
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-live",
+        sessionId: "thread-live",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(ws.send).toHaveBeenCalled();
+    });
+    expect(archive).not.toHaveBeenCalled();
+    expect(standalone).not.toHaveBeenCalled();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "archive_result",
+      success: false,
+      errorCode: "session_active",
+    });
+    bridge.close();
+  });
+
+  it("rechecks activity after a racing Codex resume acquires the thread", async () => {
+    let resolveHistory:
+      ((messages: Array<Record<string, unknown>>) => void) | undefined;
+    getCodexSessionHistoryMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveHistory = resolve;
+        }),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const resumeWs = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const archiveWs = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const archive = vi.fn(async () => {});
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      archive,
+      isArchived: vi.fn(() => false),
+    };
+    const acquire = vi.spyOn(bridge as any, "acquireCodexThreadOperation");
+
+    const resume = (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "thread-racing-resume",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      resumeWs,
+    );
+    await vi.waitFor(() => {
+      expect(resolveHistory).toBeTypeOf("function");
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-racing-resume",
+        sessionId: "thread-racing-resume",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      archiveWs,
+    );
+    await vi.waitFor(() => {
+      expect(acquire).toHaveBeenCalledTimes(2);
+    });
+
+    resolveHistory?.([]);
+    await resume;
+    await vi.waitFor(() => {
+      expect(archiveWs.send).toHaveBeenCalled();
+    });
+
+    const session = (bridge as any).sessionManager.get("s-1");
+    expect(session.process.archiveThread).not.toHaveBeenCalled();
+    expect(archive).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(archiveWs.send.mock.calls.at(-1)?.[0] as string),
+    ).toMatchObject({
+      type: "archive_result",
+      requestId: "archive-racing-resume",
+      provider: "codex",
+      success: false,
+      errorCode: "session_active",
+    });
+
+    bridge.close();
+  });
+
   it("echoes recent session request metadata for project scoped requests", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -748,6 +1180,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
   it("keeps recent session request generations isolated between clients", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
+    await (bridge as any).archiveStoreReady;
     const wsA = {
       readyState: OPEN_STATE,
       send: vi.fn(),
@@ -782,6 +1215,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       { type: "list_recent_sessions", provider: "claude" },
       wsB,
     );
+    await vi.waitFor(() => {
+      expect(resolveA).toBeDefined();
+      expect(resolveB).toBeDefined();
+    });
 
     resolveB?.({ sessions: [{ sessionId: "client-b" }], hasMore: false });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2105,7 +2542,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     };
 
     const resumeA = (bridge as any).handleClientMessage(request, wsA);
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(resolveHistory).toBeTypeOf("function");
+    });
     const resumeB = (bridge as any).handleClientMessage(request, wsB);
     await Promise.resolve();
     resolveHistory?.([]);
@@ -2128,15 +2567,14 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
   });
 
   it("sends one Codex resume result when the same client retries concurrently", async () => {
-    let resolveHistory:
-      ((messages: Array<Record<string, unknown>>) => void) | undefined;
-    getCodexSessionHistoryMock.mockImplementationOnce(
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    let resolveName: (() => void) | undefined;
+    vi.spyOn(bridge as any, "loadAndSetSessionName").mockImplementationOnce(
       () =>
-        new Promise((resolve) => {
-          resolveHistory = resolve;
+        new Promise<void>((resolve) => {
+          resolveName = resolve;
         }),
     );
-    const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
@@ -2149,10 +2587,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     };
 
     const firstResume = (bridge as any).handleClientMessage(request, ws);
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(resolveName).toBeTypeOf("function");
+      expect((bridge as any).sessionManager.list()).toHaveLength(1);
+    });
     const retryResume = (bridge as any).handleClientMessage(request, ws);
     await Promise.resolve();
-    resolveHistory?.([]);
+    resolveName?.();
     await Promise.all([firstResume, retryResume]);
 
     const createdMessages = ws.send.mock.calls
@@ -2191,7 +2632,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     };
 
     const firstResume = (bridge as any).handleClientMessage(request, ws);
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(rejectHistory).toBeTypeOf("function");
+    });
     const retryResume = (bridge as any).handleClientMessage(request, ws);
     await Promise.resolve();
     rejectHistory?.(new Error("history unavailable"));

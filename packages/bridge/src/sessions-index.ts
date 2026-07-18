@@ -75,6 +75,8 @@ export interface GetRecentSessionsOptions {
   projectPath?: string; // filter by project
   /** Session IDs to exclude (archived sessions). */
   archivedSessionIds?: ReadonlySet<string>;
+  /** Provider-scoped identities (`provider\0sessionId`) to exclude safely. */
+  archivedSessionKeys?: ReadonlySet<string>;
   /** Filter by provider (claude or codex). */
   provider?: "claude" | "codex";
   /** Show only sessions with a non-empty name. */
@@ -180,6 +182,7 @@ function logRecentSessionsPerf(
       namedOnly: options.namedOnly ?? false,
       searchQuery: options.searchQuery ? "<set>" : "<none>",
       archivedSessionIds: options.archivedSessionIds?.size ?? 0,
+      archivedSessionKeys: options.archivedSessionKeys?.size ?? 0,
     },
     durationsMs: Object.fromEntries(
       Object.entries(durations).map(([k, v]) => [k, Number(v.toFixed(1))]),
@@ -1136,9 +1139,15 @@ export async function getAllRecentSessions(
 
   // Filter out archived sessions
   const archivedIds = options.archivedSessionIds;
-  let filtered = archivedIds
-    ? entries.filter((e) => !archivedIds.has(e.sessionId))
-    : [...entries];
+  const archivedKeys = options.archivedSessionKeys;
+  let filtered =
+    archivedIds || archivedKeys
+      ? entries.filter(
+          (entry) =>
+            !archivedIds?.has(entry.sessionId) &&
+            !archivedKeys?.has(`${entry.provider}\u0000${entry.sessionId}`),
+        )
+      : [...entries];
   perfStats.counts.beforeArchive = entries.length;
   perfStats.counts.afterArchive = filtered.length;
 

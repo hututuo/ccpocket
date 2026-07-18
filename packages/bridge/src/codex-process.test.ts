@@ -2039,6 +2039,25 @@ describe("CodexProcess (app-server)", () => {
     ).rejects.toThrow("Refusing non-read-only RPC method");
   });
 
+  it("maps historical lifecycle mutations to stable app-server RPCs", async () => {
+    const proc = new CodexProcess("linux");
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue({});
+
+    await proc.archiveThread("thread-archive");
+    await proc.unarchiveThread("thread-unarchive");
+    await proc.deleteThread("thread-delete");
+
+    expect(request).toHaveBeenNthCalledWith(1, "thread/archive", {
+      threadId: "thread-archive",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "thread/unarchive", {
+      threadId: "thread-unarchive",
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "thread/delete", {
+      threadId: "thread-delete",
+    });
+  });
+
   it("ignores placeholder codex model names from resume state", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
