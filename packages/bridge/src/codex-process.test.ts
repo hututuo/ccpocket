@@ -93,6 +93,74 @@ describe("CodexProcess (app-server)", () => {
     }
   });
 
+  it("persists client message identity on start and steer RPCs", async () => {
+    const proc = new CodexProcess("linux");
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValue({ turn: { id: "turn-1" } });
+
+    await (proc as any).requestWithClientUserMessageIdFallback(
+      "turn/start",
+      { threadId: "thread-1", input: [{ type: "text", text: "hello" }] },
+      "mobile-message-1",
+    );
+    expect(request).toHaveBeenNthCalledWith(1, "turn/start", {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "hello" }],
+      clientUserMessageId: "mobile-message-1",
+    });
+
+    (proc as any)._threadId = "thread-1";
+    (proc as any).pendingTurnId = "turn-1";
+    await proc.steerInputStructured("follow up", {
+      clientMessageId: "mobile-message-2",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "turn/steer", {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "follow up" }],
+      expectedTurnId: "turn-1",
+      clientUserMessageId: "mobile-message-2",
+    });
+  });
+
+  it("sticky-downgrades client message identity for an older app-server", async () => {
+    const proc = new CodexProcess("linux");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockRejectedValueOnce(
+        new CodexRpcError(
+          "turn/start",
+          "invalid params: unknown field clientUserMessageId",
+          -32602,
+        ),
+      )
+      .mockResolvedValue({ turn: { id: "turn-1" } });
+    const params = {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "hello" }],
+    };
+
+    await (proc as any).requestWithClientUserMessageIdFallback(
+      "turn/start",
+      params,
+      "mobile-message-1",
+    );
+    await (proc as any).requestWithClientUserMessageIdFallback(
+      "turn/start",
+      params,
+      "mobile-message-2",
+    );
+
+    expect(request.mock.calls).toEqual([
+      ["turn/start", { ...params, clientUserMessageId: "mobile-message-1" }],
+      ["turn/start", params],
+      ["turn/start", params],
+    ]);
+    expect(warning).toHaveBeenCalledTimes(1);
+    warning.mockRestore();
+  });
+
   it("maps goal get, set, and clear to app-server RPCs", async () => {
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-1";
@@ -1761,11 +1829,15 @@ describe("CodexProcess (app-server)", () => {
       }),
     );
 
-    proc.sendInput("continue");
+    proc.sendInput("continue", "mobile-message-loop");
     await tick();
     const turnReq = nextOutgoingRequest(child);
     expect(turnReq.method).toBe("turn/start");
     expect(turnReq.params).not.toHaveProperty("model");
+    expect(turnReq.params).toHaveProperty(
+      "clientUserMessageId",
+      "mobile-message-loop",
+    );
     expect(turnReq.params).toMatchObject({
       collaborationMode: {
         mode: "default",

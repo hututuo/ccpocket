@@ -150,6 +150,8 @@ export interface CodexProcessEvents {
 
 interface PendingInput {
   text: string;
+  /** Persisted by app-server as UserMessageThreadItem.clientId. */
+  clientMessageId?: string;
   images?: Array<{
     base64: string;
     mimeType: string;
@@ -179,6 +181,20 @@ export class CodexRpcError extends Error {
     super(message);
     this.name = "CodexRpcError";
   }
+}
+
+function isUnsupportedClientUserMessageIdError(error: unknown): boolean {
+  if (!(error instanceof CodexRpcError)) return false;
+  let detail = error.message;
+  try {
+    detail += ` ${JSON.stringify(error.data)}`;
+  } catch {}
+  return (
+    /clientUserMessageId|client_user_message_id/i.test(detail) &&
+    /unknown|unexpected|unsupported|unrecognized|invalid|additional field/i.test(
+      detail,
+    )
+  );
 }
 
 interface PendingRpc {
@@ -432,6 +448,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private rpcSeq = 1;
   private pendingRpc = new Map<number, PendingRpc>();
+  /** Sticky per-method downgrade for builds predating clientUserMessageId. */
+  private readonly clientUserMessageIdSupport = new Map<
+    "turn/start" | "turn/steer",
+    boolean
+  >();
 
   private stdoutBuffer = "";
 
@@ -1478,19 +1499,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
   }
 
-  sendInput(text: string): void {
+  sendInput(text: string, clientMessageId?: string): void {
     if (!this.inputResolve) {
       console.error("[codex-process] No pending input resolver for sendInput");
       return;
     }
     const resolve = this.inputResolve;
     this.inputResolve = null;
-    resolve({ text });
+    resolve({ text, clientMessageId });
   }
 
   sendInputWithImages(
     text: string,
     images: Array<{ base64: string; mimeType: string }>,
+    clientMessageId?: string,
   ): void {
     if (!this.inputResolve) {
       console.error(
@@ -1500,7 +1522,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
     const resolve = this.inputResolve;
     this.inputResolve = null;
-    resolve({ text, images });
+    resolve({ text, images, clientMessageId });
   }
 
   sendInputWithSkill(
@@ -1516,6 +1538,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       images?: Array<{ base64: string; mimeType: string }>;
       skills?: Array<{ name: string; path: string }>;
       mentions?: Array<{ name: string; path: string }>;
+      clientMessageId?: string;
     },
   ): void {
     if (!this.inputResolve) {
@@ -1531,6 +1554,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       images: options?.images,
       skills: options?.skills,
       mentions: options?.mentions,
+      clientMessageId: options?.clientMessageId,
     });
   }
 
@@ -1540,6 +1564,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       images?: Array<{ base64: string; mimeType: string }>;
       skills?: Array<{ name: string; path: string }>;
       mentions?: Array<{ name: string; path: string }>;
+      clientMessageId?: string;
     },
   ): Promise<void> {
     if (!this._threadId || !this.pendingTurnId) {
@@ -1552,17 +1577,22 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       images: options?.images,
       skills: options?.skills,
       mentions: options?.mentions,
+      clientMessageId: options?.clientMessageId,
     });
     this.steerTempPaths.push(...tempPaths);
     try {
       if (!input) {
         throw new Error("No Codex input to steer");
       }
-      await this.request("turn/steer", {
-        threadId: this._threadId,
-        input,
-        expectedTurnId,
-      });
+      await this.requestWithClientUserMessageIdFallback(
+        "turn/steer",
+        {
+          threadId: this._threadId,
+          input,
+          expectedTurnId,
+        },
+        options?.clientMessageId,
+      );
     } catch (err) {
       this.steerTempPaths = this.steerTempPaths.filter(
         (path) => !tempPaths.includes(path),
@@ -2703,7 +2733,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         console.log(
           `[codex-process] turn/start: approval=${params.approvalPolicy}, sandbox=${this._runtimeSandboxMode ?? "config"}, collaboration=${this._collaborationMode}`,
         );
-        void this.request("turn/start", params)
+        void this.requestWithClientUserMessageIdFallback(
+          "turn/start",
+          params,
+          pendingInput.clientMessageId,
+        )
           .then((result) => {
             const turn = (result as Record<string, unknown>).turn as
               Record<string, unknown> | undefined;
@@ -3859,6 +3893,34 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
 
     return { input, tempPaths };
+  }
+
+  private async requestWithClientUserMessageIdFallback(
+    method: "turn/start" | "turn/steer",
+    params: Record<string, unknown>,
+    clientMessageId?: string,
+  ): Promise<unknown> {
+    if (
+      !clientMessageId ||
+      this.clientUserMessageIdSupport.get(method) === false
+    ) {
+      return this.request(method, params);
+    }
+    try {
+      const result = await this.request(method, {
+        ...params,
+        clientUserMessageId: clientMessageId,
+      });
+      this.clientUserMessageIdSupport.set(method, true);
+      return result;
+    } catch (error) {
+      if (!isUnsupportedClientUserMessageIdError(error)) throw error;
+      this.clientUserMessageIdSupport.set(method, false);
+      console.warn(
+        "[codex-process] app-server does not support clientUserMessageId; retrying without durable client acknowledgement",
+      );
+      return this.request(method, params);
+    }
   }
 
   private request(

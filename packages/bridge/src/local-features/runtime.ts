@@ -12,11 +12,18 @@ export interface LocalFeatureSession {
 }
 
 export interface LocalFeatureRuntime {
+  /** Stable installation identity; persisted by the Bridge host when available. */
+  readonly bridgeInstanceId?: string;
   getSession(sessionId: string): LocalFeatureSession | undefined;
   getCodexThreadId(session: LocalFeatureSession): string | undefined;
   getActiveCodexProcess(): CodexProcess | null;
-  createStandaloneCodexProcess(timeoutMs?: number): Promise<CodexProcess>;
+  createStandaloneCodexProcess(
+    timeoutMs?: number,
+    projectPath?: string,
+  ): Promise<CodexProcess>;
   createDedicatedCodexProcess?(): CodexProcess;
+  /** Host-owned authorization seam for optional features that accept a cwd. */
+  isProjectPathAllowed?(projectPath: string): boolean;
   send(client: object, message: LocalFeatureServerMessage | {
     type: "error";
     message: string;

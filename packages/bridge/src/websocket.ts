@@ -958,6 +958,7 @@ export class BridgeWebSocketServer {
   private pushRelay: PushRelayClient;
   private promptHistoryBackup: PromptHistoryBackupStore | null;
   private promptHistoryStore: PromptHistoryStore | null;
+  private readonly bridgeInstanceId?: string;
   private artifactManager: ArtifactManager | null;
 
   private recentSessionsRequestId = 0;
@@ -1041,6 +1042,11 @@ export class BridgeWebSocketServer {
     this.pushRelay = new PushRelayClient({ firebaseAuth });
     this.promptHistoryBackup = promptHistoryBackup ?? null;
     this.promptHistoryStore = promptHistoryStore ?? null;
+    // Durable mobile cache identity must never silently become process-local.
+    // Production wires PromptHistoryStore; test/custom hosts without it keep
+    // the optional mirror feature unavailable rather than orphaning copies on
+    // every restart.
+    this.bridgeInstanceId = promptHistoryStore?.bridgeInstanceId;
     this.artifactManager = artifactManager ?? null;
     this.platform = platform ?? process.platform;
     this.fileListMaxEntries = normalizePositiveLimit(
@@ -1114,13 +1120,21 @@ export class BridgeWebSocketServer {
       onCapabilityChanged: () => this.broadcastSessionList(),
     });
     this.localFeatures = createLocalFeaturesController({
+      bridgeInstanceId: this.bridgeInstanceId,
       getSession: (sessionId) => this.sessionManager.get(sessionId),
       getCodexThreadId: (session) =>
         this.codexThreadIdForSession(session as SessionInfo),
       getActiveCodexProcess: () => this.getActiveCodexProcess(),
-      createStandaloneCodexProcess: (requestTimeoutMs) =>
-        this.createStandaloneCodexProcess(undefined, requestTimeoutMs),
+      createStandaloneCodexProcess: (requestTimeoutMs, projectPath) =>
+        this.createStandaloneCodexProcess(
+          projectPath
+            ? resolvePlatformPath(projectPath, this.platform)
+            : undefined,
+          requestTimeoutMs,
+        ),
       createDedicatedCodexProcess: () => new CodexProcess(this.platform),
+      isProjectPathAllowed: (projectPath) =>
+        this.isPathAllowed(resolvePlatformPath(projectPath, this.platform)),
       send: (client, message) =>
         this.send(client as WebSocket, message as ServerMessage),
       supports: (client, messageType) =>
@@ -1237,6 +1251,8 @@ export class BridgeWebSocketServer {
     appMetadata?: Array<Record<string, unknown>>;
     plugins?: string[];
     pluginMetadata?: Array<Record<string, unknown>>;
+    /** Durable provider id already known by an explicit resume request. */
+    providerSessionId?: string;
     sourceSessionId?: string;
   }): SystemServerMessage {
     const {
@@ -1257,6 +1273,7 @@ export class BridgeWebSocketServer {
       appMetadata,
       plugins,
       pluginMetadata,
+      providerSessionId,
       sourceSessionId,
     } = params;
     const derivedCodexSettings =
@@ -1359,6 +1376,13 @@ export class BridgeWebSocketServer {
             worktreePath: session.worktreePath,
             worktreeBranch: session.worktreeBranch,
           }
+        : {}),
+      // This legacy field is already understood by every client. On a resume
+      // it carries the provider's durable identity (Codex thread id or Claude
+      // session id), avoiding a new top-level protocol field. Fresh sessions
+      // keep the previous shape because the provider id is not known yet.
+      ...((providerSessionId ?? session?.claudeSessionId)
+        ? { claudeSessionId: providerSessionId ?? session?.claudeSessionId }
         : {}),
       ...(sourceSessionId ? { sourceSessionId } : {}),
     };
@@ -2935,6 +2959,7 @@ export class BridgeWebSocketServer {
             userMessageUuid: nextCodexUserTurnUuid(session),
             ...(images.length > 0 ? { imageCount: images.length, images } : {}),
             ...(imageRefs ? { imageRefs } : {}),
+            ...(clientMessageId ? { clientMessageId } : {}),
             ...(codexSkills.length > 0 ? { skills: codexSkills } : {}),
             ...(codexMentions.length > 0 ? { mentions: codexMentions } : {}),
           });
@@ -3038,6 +3063,7 @@ export class BridgeWebSocketServer {
               images,
               skills: codexSkills,
               mentions: codexMentions,
+              ...(clientMessageId ? { clientMessageId } : {}),
             });
           } else if (msg.imageId && this.galleryStore) {
             this.galleryStore
@@ -3048,12 +3074,14 @@ export class BridgeWebSocketServer {
                     images: [imageData],
                     skills: codexSkills,
                     mentions: codexMentions,
+                    ...(clientMessageId ? { clientMessageId } : {}),
                   });
                 } else {
                   console.warn(`[ws] Image not found: ${msg.imageId}`);
                   codexProc.sendInputStructured(text, {
                     skills: codexSkills,
                     mentions: codexMentions,
+                    ...(clientMessageId ? { clientMessageId } : {}),
                   });
                 }
               })
@@ -3062,15 +3090,21 @@ export class BridgeWebSocketServer {
                 codexProc.sendInputStructured(text, {
                   skills: codexSkills,
                   mentions: codexMentions,
+                  ...(clientMessageId ? { clientMessageId } : {}),
                 });
               });
           } else if (codexSkills.length > 0 || codexMentions.length > 0) {
             codexProc.sendInputStructured(text, {
               skills: codexSkills,
               mentions: codexMentions,
+              ...(clientMessageId ? { clientMessageId } : {}),
             });
           } else {
-            codexProc.sendInput(text);
+            if (clientMessageId) {
+              codexProc.sendInput(text, clientMessageId);
+            } else {
+              codexProc.sendInput(text);
+            }
           }
           break;
         }
@@ -5431,6 +5465,7 @@ export class BridgeWebSocketServer {
                 permissionMode: legacyPermissionMode,
                 executionMode,
                 planMode,
+                providerSessionId: sessionRefId,
               }),
             );
             this.broadcastSessionList();

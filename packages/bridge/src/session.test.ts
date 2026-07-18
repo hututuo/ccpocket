@@ -838,6 +838,7 @@ describe("SessionManager codex path", () => {
       itemId: "queued-1",
       text: "Follow up",
       createdAt: "2026-04-25T00:00:00.000Z",
+      clientMessageId: "mobile-queued-1",
       imageCount: 1,
       images: [{ base64: "aGVsbG8=", mimeType: "image/png" }],
       imageRefs: [{ id: "img-1", url: "/images/img-1", mimeType: "image/png" }],
@@ -858,6 +859,7 @@ describe("SessionManager codex path", () => {
       images: [{ base64: "aGVsbG8=", mimeType: "image/png" }],
       skills: [{ name: "skill", path: "/skills/skill" }],
       mentions: [{ name: "note", path: "/tmp/note.md" }],
+      clientMessageId: "mobile-queued-1",
     });
 
     const queueMessages = forwarded
@@ -876,6 +878,7 @@ describe("SessionManager codex path", () => {
           entry.sessionId === sessionId &&
           entry.msg.type === "user_input" &&
           entry.msg.text === "Follow up" &&
+          entry.msg.clientMessageId === "mobile-queued-1" &&
           "imageCount" in entry.msg &&
           entry.msg.imageCount === 1,
       ),
@@ -1166,6 +1169,7 @@ describe("SessionManager codex path", () => {
         itemId: "queued-1",
         text: "Steer this",
         createdAt: "2026-04-25T00:00:00.000Z",
+        clientMessageId: "mobile-steer-1",
         skills: [{ name: "skill", path: "/skills/skill" }],
         mentions: [{ name: "note", path: "/tmp/note.md" }],
       }),
@@ -1181,6 +1185,7 @@ describe("SessionManager codex path", () => {
         images: undefined,
         skills: [{ name: "skill", path: "/skills/skill" }],
         mentions: [{ name: "note", path: "/tmp/note.md" }],
+        clientMessageId: "mobile-steer-1",
       },
     );
     expect(
@@ -1196,7 +1201,8 @@ describe("SessionManager codex path", () => {
         (entry) =>
           entry.sessionId === sessionId &&
           entry.msg.type === "user_input" &&
-          entry.msg.text === "Steer this",
+          entry.msg.text === "Steer this" &&
+          entry.msg.clientMessageId === "mobile-steer-1",
       ),
     ).toBe(true);
   });

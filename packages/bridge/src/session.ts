@@ -152,6 +152,7 @@ export type HistoryDeltaResult =
 
 export interface QueuedCodexInput extends QueuedInputItem {
   userMessageUuid?: string;
+  clientMessageId?: string;
   images?: Array<{
     base64: string;
     mimeType: string;
@@ -1667,6 +1668,9 @@ export class SessionManager {
         images: queued.images,
         skills: queued.skills,
         mentions: queued.mentions,
+        ...(queued.clientMessageId
+          ? { clientMessageId: queued.clientMessageId }
+          : {}),
       });
     } catch (err) {
       return {
@@ -1714,6 +1718,9 @@ export class SessionManager {
       images: queued.images,
       skills: queued.skills,
       mentions: queued.mentions,
+      ...(queued.clientMessageId
+        ? { clientMessageId: queued.clientMessageId }
+        : {}),
     });
   }
 
@@ -1723,6 +1730,9 @@ export class SessionManager {
       text: queued.text,
       ...(queued.userMessageUuid
         ? { userMessageUuid: queued.userMessageUuid }
+        : {}),
+      ...(queued.clientMessageId
+        ? { clientMessageId: queued.clientMessageId }
         : {}),
       timestamp: new Date().toISOString(),
       ...(queued.imageCount ? { imageCount: queued.imageCount } : {}),

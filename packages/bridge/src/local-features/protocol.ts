@@ -1,4 +1,14 @@
 import {
+  codexCoreActionsProtocolContribution,
+  type CodexCoreActionsClientMessage,
+  type CodexCoreActionsServerMessage,
+} from "./slots/codex-core-actions-protocol.js";
+import {
+  conversationMirrorProtocolContribution,
+  type ConversationMirrorClientMessage,
+  type ConversationMirrorEventMessage,
+} from "./slots/conversation-mirror-protocol.js";
+import {
   sessionInsightsProtocolContribution,
   type SessionInsightsClientMessage,
   type SessionInsightsServerMessage,
@@ -19,6 +29,17 @@ import type {
 } from "./protocol-slot.js";
 
 export type {
+  CodexCoreAction,
+  CodexCoreActionStatus,
+  CodexCoreActionsClientMessage,
+  CodexCoreActionsServerMessage,
+  CodexMcpServerInfoSummary,
+  CodexMcpServerStatusSummary,
+  CodexMcpStatusResultStatus,
+  CodexMcpToolSummary,
+  CodexReviewRequestTarget,
+} from "./slots/codex-core-actions-protocol.js";
+export type {
   CodexTokenUsageBreakdown,
   ContextUsageMessage,
   SessionUsageInfoPayload,
@@ -32,18 +53,31 @@ export type {
   SideChatPermissionDecision,
 } from "./slots/side-chat-protocol.js";
 export type { CodexSubagentInfo } from "./slots/subagents-protocol.js";
+export type {
+  ConversationMirrorClientMessage,
+  ConversationMirrorEntry,
+  ConversationMirrorEventMessage,
+  ConversationMirrorProvider,
+  ConversationMirrorThreadStatus,
+} from "./slots/conversation-mirror-protocol.js";
 
 export type LocalFeatureClientMessage =
+  | CodexCoreActionsClientMessage
+  | ConversationMirrorClientMessage
   | SessionInsightsClientMessage
   | SubagentsClientMessage
   | SideChatClientMessage;
 
 export type LocalFeatureServerMessage =
+  | CodexCoreActionsServerMessage
+  | ConversationMirrorEventMessage
   | SessionInsightsServerMessage
   | SubagentsServerMessage
   | SideChatEventMessage;
 
 const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
+  codexCoreActionsProtocolContribution,
+  conversationMirrorProtocolContribution,
   sessionInsightsProtocolContribution,
   subagentsProtocolContribution,
   sideChatProtocolContribution,

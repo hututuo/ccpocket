@@ -2238,6 +2238,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .map((c: unknown[]) => JSON.parse(c[0] as string))
       .find((m: any) => m.type === "system" && m.subtype === "session_created");
     const sessionId = created.sessionId as string;
+    expect(created).not.toHaveProperty("claudeSessionId");
     const manager = (bridge as any).sessionManager;
     const first = manager.appendHistory(sessionId, {
       type: "status",
@@ -4940,6 +4941,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
     expect(created).toBeDefined();
     expect(created.provider).toBe("codex");
+    expect(created.claudeSessionId).toBe("codex-thread-1");
 
     bridge.close();
   });
@@ -8326,6 +8328,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const created = ws.send.mock.calls
       .map((c: unknown[]) => JSON.parse(c[0] as string))
       .find((m: any) => m.type === "system" && m.subtype === "session_created");
+    expect(created).not.toHaveProperty("claudeSessionId");
     const sessionId = created.sessionId as string;
 
     (bridge as any).handleClientMessage(
@@ -8360,6 +8363,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       userMessageUuid: "codex:user-turn:1",
       clientMessageId: "cm-codex-1",
     });
+    expect(session.process.sendInput).toHaveBeenCalledWith(
+      "first codex turn",
+      "cm-codex-1",
+    );
 
     bridge.close();
   });
