@@ -199,6 +199,7 @@ vi.mock("./session.js", async () => {
       const id = `s-${++this.seq}`;
       const process = {
         status: "idle",
+        isRunning: true,
         sessionId:
           codexOptions &&
           typeof codexOptions === "object" &&
@@ -299,7 +300,13 @@ vi.mock("./session.js", async () => {
         id,
         projectPath,
         startOptions: options,
-        claudeSessionId: options?.sessionId,
+        claudeSessionId:
+          provider === "codex" &&
+          codexOptions &&
+          typeof codexOptions === "object" &&
+          "threadId" in codexOptions
+            ? (codexOptions as { threadId?: string }).threadId
+            : options?.sessionId,
         pastMessages,
         codexOptions,
         codexSettings: codexOptions,
@@ -1977,6 +1984,128 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       threadId: "thr_123",
       additionalWritableRoots: [resolve("/tmp/shared")],
     });
+
+    bridge.close();
+  });
+
+  it("reuses an already running Codex provider thread across clients", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const wsA = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const wsB = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const manager = (bridge as any).sessionManager;
+    const create = vi.spyOn(manager, "create");
+    const request = {
+      type: "resume_session",
+      sessionId: "thr_running_once",
+      projectPath: "/tmp/project-a",
+      provider: "codex",
+    };
+
+    await (bridge as any).handleClientMessage(request, wsA);
+    await (bridge as any).handleClientMessage(request, wsB);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(getCodexSessionHistoryMock).toHaveBeenCalledTimes(1);
+    const createdFor = (ws: typeof wsA) =>
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find(
+          (message: any) =>
+            message.type === "system" &&
+            message.subtype === "session_created",
+        );
+    expect(createdFor(wsA)?.sessionId).toBe("s-1");
+    expect(createdFor(wsB)?.sessionId).toBe("s-1");
+    expect(createdFor(wsB)?.claudeSessionId).toBe("thr_running_once");
+
+    bridge.close();
+  });
+
+  it("does not attach a Codex resume to a stopped provider runtime", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const manager = (bridge as any).sessionManager;
+    const create = vi.spyOn(manager, "create");
+    const request = {
+      type: "resume_session",
+      sessionId: "thr_restart_stopped",
+      projectPath: "/tmp/project-a",
+      provider: "codex",
+    };
+
+    await (bridge as any).handleClientMessage(request, ws);
+    manager.get("s-1").process.isRunning = false;
+    await (bridge as any).handleClientMessage(request, ws);
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(getCodexSessionHistoryMock).toHaveBeenCalledTimes(2);
+    const createdSessionIds = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      )
+      .map((message: any) => message.sessionId);
+    expect(createdSessionIds).toEqual(["s-1", "s-2"]);
+
+    bridge.close();
+  });
+
+  it("coalesces concurrent Codex resumes for one provider thread", async () => {
+    let resolveHistory:
+      ((messages: Array<Record<string, unknown>>) => void) | undefined;
+    getCodexSessionHistoryMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveHistory = resolve;
+        }),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const wsA = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const wsB = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const manager = (bridge as any).sessionManager;
+    const create = vi.spyOn(manager, "create");
+    const request = {
+      type: "resume_session",
+      sessionId: "thr_concurrent_once",
+      projectPath: "/tmp/project-a",
+      provider: "codex",
+    };
+
+    const resumeA = (bridge as any).handleClientMessage(request, wsA);
+    await Promise.resolve();
+    const resumeB = (bridge as any).handleClientMessage(request, wsB);
+    await Promise.resolve();
+    resolveHistory?.([]);
+    await Promise.all([resumeA, resumeB]);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(getCodexSessionHistoryMock).toHaveBeenCalledTimes(1);
+    const createdSessionIds = [wsA, wsB].map((ws) =>
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find(
+          (message: any) =>
+            message.type === "system" &&
+            message.subtype === "session_created",
+        )?.sessionId,
+    );
+    expect(createdSessionIds).toEqual(["s-1", "s-1"]);
 
     bridge.close();
   });

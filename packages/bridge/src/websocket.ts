@@ -1013,6 +1013,7 @@ export class BridgeWebSocketServer {
     WebSocket,
     Map<string, InputClientMessage[]>
   >();
+  private pendingCodexResumeClients = new Map<string, Set<WebSocket>>();
   private restoringManagedGalleryPaths = new Set<string>();
   private readonly localFeatures: LocalFeaturesController;
   private readonly codexGoals: CodexGoalController;
@@ -1751,7 +1752,58 @@ export class BridgeWebSocketServer {
     session: SessionInfo,
   ): string | undefined {
     return session.claudeSessionId ?? session.process.sessionId ?? undefined;
+  }
+
+  private findRunningCodexSession(threadId: string): SessionInfo | undefined {
+    for (const summary of this.sessionManager.list()) {
+      if (summary.provider !== "codex") continue;
+      const session = this.sessionManager.get(summary.id);
+      if ((session?.process as { isRunning?: boolean })?.isRunning !== true) {
+        continue;
+      }
+      if (
+        session &&
+        this.providerSessionIdForSession(session) === threadId
+      ) {
+        return session;
+      }
     }
+    return undefined;
+  }
+
+  private sendCodexResumeResult(
+    ws: WebSocket,
+    session: SessionInfo,
+    threadId: string,
+  ): void {
+    const process = session.process as CodexProcess;
+    const executionMode = deriveExecutionMode({
+      provider: "codex",
+      approvalPolicy:
+        session.codexSettings?.approvalPolicy ?? process.approvalPolicy,
+    });
+    const planMode = process.collaborationMode === "plan";
+    this.send(
+      ws,
+      this.buildSessionCreatedMessage({
+        sessionId: session.id,
+        provider: "codex",
+        projectPath: session.projectPath,
+        session,
+        sandboxMode: session.codexSettings?.sandboxMode
+          ? sandboxModeToExternal(session.codexSettings.sandboxMode)
+          : undefined,
+        permissionMode: modesToLegacyPermissionMode(
+          "codex",
+          executionMode,
+          planMode,
+        ),
+        executionMode,
+        planMode,
+        providerSessionId: threadId,
+      }),
+    );
+  }
 
   private codexThreadIdForSession(session: SessionInfo): string | undefined {
     return session.provider === "codex"
@@ -5362,6 +5414,13 @@ export class BridgeWebSocketServer {
         // Resume flow: keep past history in SessionInfo and deliver it only
         // via get_history(sessionId) to avoid duplicate/missed replay races.
         if (provider === "codex") {
+          const runningSession = this.findRunningCodexSession(sessionRefId);
+          if (runningSession) {
+            this.sendCodexResumeResult(ws, runningSession, sessionRefId);
+            this.sendSessionList(ws);
+            break;
+          }
+
           const wtMapping = this.worktreeStore.get(sessionRefId);
           const effectiveProjectPath = resolvePlatformPath(
               wtMapping?.projectPath ?? resumeProjectPath,
@@ -5405,6 +5464,15 @@ export class BridgeWebSocketServer {
               };
             }
           }
+
+          const pendingClients =
+            this.pendingCodexResumeClients.get(sessionRefId);
+          if (pendingClients) {
+            pendingClients.add(ws);
+            break;
+          }
+          const waitingClients = new Set<WebSocket>();
+          this.pendingCodexResumeClients.set(sessionRefId, waitingClients);
 
           try {
             const pastMessages = await this.getCodexThreadHistory(
@@ -5450,34 +5518,25 @@ export class BridgeWebSocketServer {
               },
             );
             const createdSession = this.sessionManager.get(sessionId);
+            if (!createdSession) {
+              throw new Error(
+                `Bridge session was not registered: ${sessionId}`,
+              );
+            }
             await this.loadAndSetSessionName(
               createdSession,
               "codex",
               effectiveProjectPath,
               sessionRefId,
             );
-            this.send(
-              ws,
-              this.buildSessionCreatedMessage({
-                sessionId,
-                provider: "codex",
-                projectPath: effectiveProjectPath,
-                session: createdSession,
-                sandboxMode: createdSession?.codexSettings?.sandboxMode
-                  ? sandboxModeToExternal(
-                      createdSession.codexSettings.sandboxMode,
-                    )
-                  : undefined,
-                approvalsReviewer:
-                  createdSession?.codexSettings?.approvalsReviewer,
-                codexPermissionsMode:
-                  createdSession?.codexSettings?.codexPermissionsMode,
-                permissionMode: legacyPermissionMode,
-                executionMode,
-                planMode,
-                providerSessionId: sessionRefId,
-              }),
-            );
+            this.sendCodexResumeResult(ws, createdSession, sessionRefId);
+            for (const waitingClient of waitingClients) {
+              this.sendCodexResumeResult(
+                waitingClient,
+                createdSession,
+                sessionRefId,
+              );
+            }
             this.broadcastSessionList();
             this.debugEvents.set(sessionId, []);
             this.recordDebugEvent(sessionId, {
@@ -5488,10 +5547,21 @@ export class BridgeWebSocketServer {
             });
             this.projectHistory?.addProject(effectiveProjectPath);
           } catch (err) {
-            this.send(ws, {
+            const error = {
               type: "error",
               message: `Failed to load Codex session history: ${err}`,
-            });
+            } as const;
+            this.send(ws, error);
+            for (const waitingClient of waitingClients) {
+              this.send(waitingClient, error);
+            }
+          } finally {
+            if (
+              this.pendingCodexResumeClients.get(sessionRefId) ===
+              waitingClients
+            ) {
+              this.pendingCodexResumeClients.delete(sessionRefId);
+            }
           }
           break;
         }
@@ -7887,14 +7957,14 @@ export class BridgeWebSocketServer {
   }
 
   private getActiveCodexProcess(): CodexProcess | null {
-    const summary = this.sessionManager
-      .list()
-      .find((session) => session.provider === "codex");
-    if (!summary) return null;
-    const session = this.sessionManager.get(summary.id);
-    return session?.provider === "codex"
-      ? (session.process as CodexProcess)
-      : null;
+    for (const summary of this.sessionManager.list()) {
+      if (summary.provider !== "codex") continue;
+      const session = this.sessionManager.get(summary.id);
+      if (session?.provider !== "codex") continue;
+      const process = session.process as CodexProcess;
+      if (process.isRunning) return process;
+    }
+    return null;
   }
 
   private getActiveClaudeProcess(): SdkProcess | null {
