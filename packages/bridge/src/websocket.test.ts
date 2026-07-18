@@ -42,6 +42,10 @@ vi.mock("./sessions-index.js", () => ({
   codexUserTurnUuid: (ordinal: number) => `codex:user-turn:${ordinal}`,
   getAllRecentSessions: getAllRecentSessionsMock,
   getCodexSessionIndexMetadata: getCodexSessionIndexMetadataMock,
+  normalizeWorktreePath: (path: string) => {
+    const match = path.match(/^(.+)-worktrees[\\/][^\\/]+$/);
+    return match?.[1] ?? path;
+  },
   saveCodexSessionProfile: saveCodexSessionProfileMock,
   renameClaudeSession: vi.fn().mockResolvedValue(true),
   renameCodexSession: vi.fn().mockResolvedValue(true),
@@ -9204,7 +9208,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
             preview: "Review failing tests",
             createdAt: 1771492643,
             updatedAt: 1771496243,
-            cwd: "/tmp/project-codex",
+            cwd: "/tmp/project-codex-worktrees/fix-tests",
             agentNickname: null,
             agentRole: null,
             gitBranch: "fix/tests",
@@ -9236,6 +9240,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       name: "Test failures",
       gitBranch: "fix/tests",
       projectPath: "/tmp/project-codex",
+      resumeCwd: "/tmp/project-codex-worktrees/fix-tests",
     });
 
     bridge.close();

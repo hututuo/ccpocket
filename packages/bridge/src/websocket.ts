@@ -66,6 +66,7 @@ import {
   getCodexSessionIndexMetadata,
   type CodexSessionIndexMetadata,
   loadCodexSessionNames,
+  normalizeWorktreePath,
   renameClaudeSession,
   renameCodexSession,
   saveCodexSessionProfile,
@@ -849,6 +850,10 @@ function codexThreadToRecentSession(
   thread: CodexThreadSummary,
   indexed?: CodexSessionIndexMetadata,
 ): Record<string, unknown> {
+  const projectPath = normalizeWorktreePath(thread.cwd);
+  const resumeCwd =
+    indexed?.resumeCwd ??
+    (thread.cwd !== projectPath ? thread.cwd : undefined);
   // thread/list only exposes a single preview blob; prefer the real
   // first/last/summary texts parsed from the rollout file so display-mode
   // switches (first prompt / last prompt / summary) show distinct content.
@@ -864,8 +869,8 @@ function codexThreadToRecentSession(
     created: threadTimestampToIso(thread.createdAt),
     modified: threadTimestampToIso(thread.updatedAt),
     gitBranch: thread.gitBranch ?? "",
-    projectPath: thread.cwd,
-    ...(indexed?.resumeCwd ? { resumeCwd: indexed.resumeCwd } : {}),
+    projectPath,
+    ...(resumeCwd ? { resumeCwd } : {}),
     isSidechain: false,
     ...(indexed?.codexSettings ? { codexSettings: indexed.codexSettings } : {}),
   };
