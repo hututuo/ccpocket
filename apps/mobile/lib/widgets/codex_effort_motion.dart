@@ -36,6 +36,17 @@ double _normalizedIndex(int index, int count) {
   return index.clamp(0, count - 1) / (count - 1);
 }
 
+bool _selectsSemanticIndex(CodexEffortMotionSlider widget, int? semanticIndex) {
+  if (semanticIndex == null ||
+      semanticIndex < 0 ||
+      semanticIndex >= widget.labels.length ||
+      widget.labels.isEmpty) {
+    return false;
+  }
+  return widget.selectedIndex.clamp(0, widget.labels.length - 1) ==
+      semanticIndex;
+}
+
 enum _EffortMotion {
   idle,
   move,
@@ -48,33 +59,40 @@ enum _EffortMotion {
 }
 
 class _EffortParticleSpec {
-  final double angle;
+  final double unitX;
+  final double unitY;
   final double distance;
   final double radius;
   final double delay;
 
-  const _EffortParticleSpec(this.angle, this.distance, this.radius, this.delay);
+  const _EffortParticleSpec(
+    this.unitX,
+    this.unitY,
+    this.distance,
+    this.radius,
+    this.delay,
+  );
 }
 
 // Precomputed so the painter never allocates random particle geometry per
 // frame. Values intentionally have a little asymmetry like the Desktop burst.
 const _maxParticles = <_EffortParticleSpec>[
-  _EffortParticleSpec(-2.96, 25, 1.35, 0.00),
-  _EffortParticleSpec(-2.58, 21, 1.10, 0.08),
-  _EffortParticleSpec(-2.20, 28, 1.45, 0.02),
-  _EffortParticleSpec(-1.82, 24, 1.05, 0.12),
-  _EffortParticleSpec(-1.45, 29, 1.40, 0.04),
-  _EffortParticleSpec(-1.05, 22, 1.15, 0.15),
-  _EffortParticleSpec(-0.66, 27, 1.35, 0.07),
-  _EffortParticleSpec(-0.25, 23, 1.00, 0.18),
-  _EffortParticleSpec(0.18, 26, 1.40, 0.01),
-  _EffortParticleSpec(0.58, 21, 1.05, 0.11),
-  _EffortParticleSpec(0.96, 29, 1.30, 0.05),
-  _EffortParticleSpec(1.37, 24, 1.10, 0.16),
-  _EffortParticleSpec(1.76, 27, 1.45, 0.03),
-  _EffortParticleSpec(2.12, 22, 1.00, 0.13),
-  _EffortParticleSpec(2.48, 28, 1.35, 0.06),
-  _EffortParticleSpec(2.82, 23, 1.10, 0.17),
+  _EffortParticleSpec(-0.98356, -0.18060, 25, 1.35, 0.00),
+  _EffortParticleSpec(-0.84641, -0.53253, 21, 1.10, 0.08),
+  _EffortParticleSpec(-0.58850, -0.80850, 28, 1.45, 0.02),
+  _EffortParticleSpec(-0.24663, -0.96911, 24, 1.05, 0.12),
+  _EffortParticleSpec(0.12050, -0.99271, 29, 1.40, 0.04),
+  _EffortParticleSpec(0.49757, -0.86742, 22, 1.15, 0.15),
+  _EffortParticleSpec(0.78999, -0.61312, 27, 1.35, 0.07),
+  _EffortParticleSpec(0.96891, -0.24740, 23, 1.00, 0.18),
+  _EffortParticleSpec(0.98384, 0.17903, 26, 1.40, 0.01),
+  _EffortParticleSpec(0.83646, 0.54802, 21, 1.05, 0.11),
+  _EffortParticleSpec(0.57352, 0.81919, 29, 1.30, 0.05),
+  _EffortParticleSpec(0.19945, 0.97991, 24, 1.10, 0.16),
+  _EffortParticleSpec(-0.18808, 0.98215, 27, 1.45, 0.03),
+  _EffortParticleSpec(-0.52201, 0.85294, 22, 1.00, 0.13),
+  _EffortParticleSpec(-0.78901, 0.61437, 28, 1.35, 0.06),
+  _EffortParticleSpec(-0.94873, 0.31608, 23, 1.10, 0.17),
 ];
 
 @visibleForTesting
@@ -126,6 +144,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   bool _reduceMotion = false;
   int? _locallyRequestedIndex;
   int? _dragStartedIndex;
+  int? _dragLastEmittedIndex;
 
   int get _count => widget.labels.length;
 
@@ -165,11 +184,27 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   void didUpdateWidget(CodexEffortMotionSlider oldWidget) {
     super.didUpdateWidget(oldWidget);
     final next = _normalizedIndex(_selectedIndex, _count);
+    final enteringMax =
+        _selectsSemanticIndex(widget, widget.maxIndex) &&
+        !_selectsSemanticIndex(oldWidget, oldWidget.maxIndex);
+    final enteringUltra =
+        _selectsSemanticIndex(widget, widget.ultraIndex) &&
+        !_selectsSemanticIndex(oldWidget, oldWidget.ultraIndex);
     final acknowledged = _locallyRequestedIndex == _selectedIndex;
     if (acknowledged) _locallyRequestedIndex = null;
     if (_motion == _EffortMotion.drag) {
       _toPosition = next;
       _toFast = widget.fastModeEnabled ? 1 : 0;
+      return;
+    }
+    final preservesLocalTierReveal =
+        acknowledged &&
+        (_toPosition - next).abs() < 0.0001 &&
+        ((enteringMax && _motion == _EffortMotion.maxReveal) ||
+            (enteringUltra && _motion == _EffortMotion.ultraReveal));
+    if (preservesLocalTierReveal) return;
+    if (enteringMax || enteringUltra) {
+      _animateTo(next, enteringMax: enteringMax, enteringUltra: enteringUltra);
       return;
     }
     if (oldWidget.fastModeEnabled != widget.fastModeEnabled &&
@@ -186,13 +221,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
         oldWidget.labels.length == widget.labels.length) {
       return;
     }
-    final enteringMax =
-        widget.maxIndex == _selectedIndex &&
-        oldWidget.selectedIndex != widget.maxIndex;
-    final enteringUltra =
-        widget.ultraIndex == _selectedIndex &&
-        oldWidget.selectedIndex != widget.ultraIndex;
-    _animateTo(next, enteringMax: enteringMax, enteringUltra: enteringUltra);
+    _animateTo(next);
   }
 
   @override
@@ -400,20 +429,28 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     _motion = _EffortMotion.drag;
     _pressed = true;
     _dragStartedIndex = _selectedIndex;
+    _dragLastEmittedIndex = _selectedIndex;
     setState(() {});
-    _controller.value = _clampUnit(position);
+    final normalized = _clampUnit(position);
+    _controller.value = normalized;
+    _emitDragIndex(_indexFromPosition(normalized));
   }
 
   void _updateDrag(double position) {
     if (_motion != _EffortMotion.drag) return;
     final normalized = _clampUnit(position);
     _controller.value = normalized;
-    final next = _indexFromPosition(normalized);
-    if (next != _selectedIndex && next != _locallyRequestedIndex) {
-      _locallyRequestedIndex = next;
-      HapticFeedback.selectionClick();
-      widget.onSelected(next);
-    }
+    _emitDragIndex(_indexFromPosition(normalized));
+  }
+
+  void _emitDragIndex(int index) {
+    final next = index.clamp(0, _count - 1);
+    final changed = next != _dragLastEmittedIndex;
+    if (!changed) return;
+    _dragLastEmittedIndex = next;
+    _locallyRequestedIndex = next;
+    HapticFeedback.selectionClick();
+    widget.onSelected(next);
   }
 
   void _finishDrag() {
@@ -424,7 +461,9 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
         next == widget.maxIndex && _dragStartedIndex != widget.maxIndex;
     final enteringUltra =
         next == widget.ultraIndex && _dragStartedIndex != widget.ultraIndex;
+    _emitDragIndex(next);
     _dragStartedIndex = null;
+    _dragLastEmittedIndex = null;
     _animateTo(
       _normalizedIndex(next, _count),
       enteringMax: enteringMax,
@@ -696,6 +735,12 @@ class _CodexEffortTrackPainter extends CustomPainter {
     required this.purple,
   }) : super(repaint: animation);
 
+  @visibleForTesting
+  bool get debugUsesSolidActivePaint =>
+      !maxSelected &&
+      !ultraSelected &&
+      _fast(reduceMotion ? 1 : animation.value) <= 0.0001;
+
   double _position(double phase) {
     if (motion == _EffortMotion.drag) return _clampUnit(phase);
     if (motion == _EffortMotion.idle || motion == _EffortMotion.thumb) {
@@ -815,22 +860,25 @@ class _CodexEffortTrackPainter extends CustomPainter {
             thumbX,
             trackRect.bottom,
           );
+    final useSolidActivePaint = !highTier && fastProgress <= 0.0001;
+    final activePaint = Paint();
+    if (useSolidActivePaint) {
+      activePaint.color = primary;
+    } else {
+      activePaint.shader = LinearGradient(
+        begin: direction == TextDirection.rtl
+            ? Alignment.centerRight
+            : Alignment.centerLeft,
+        end: direction == TextDirection.rtl
+            ? Alignment.centerLeft
+            : Alignment.centerRight,
+        colors: [activeStart, activeEnd],
+      ).createShader(trackRect);
+    }
 
     canvas.save();
     canvas.clipRRect(trackRRect);
-    canvas.drawRect(
-      activeRect,
-      Paint()
-        ..shader = LinearGradient(
-          begin: direction == TextDirection.rtl
-              ? Alignment.centerRight
-              : Alignment.centerLeft,
-          end: direction == TextDirection.rtl
-              ? Alignment.centerLeft
-              : Alignment.centerRight,
-          colors: [activeStart, activeEnd],
-        ).createShader(trackRect),
-    );
+    canvas.drawRect(activeRect, activePaint);
 
     if (motion == _EffortMotion.fastEnter && !reduceMotion) {
       _paintFastBurst(canvas, Offset(thumbX, centerY), phase, trackRect);
@@ -896,12 +944,16 @@ class _CodexEffortTrackPainter extends CustomPainter {
       thumbY -= 2 * (1 - codexDesktopMotionCurve.transform(enter));
     }
     final thumbCenter = Offset(thumbX, thumbY);
-    final thumbPaint = Paint()
-      ..shader = LinearGradient(
+    final thumbPaint = Paint();
+    if (useSolidActivePaint) {
+      thumbPaint.color = primary;
+    } else {
+      thumbPaint.shader = LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
-        colors: highTier ? [activeStart, activeEnd] : [primary, primary],
+        colors: [activeStart, activeEnd],
       ).createShader(Rect.fromCircle(center: thumbCenter, radius: thumbRadius));
+    }
     canvas.drawCircle(thumbCenter, thumbRadius, thumbPaint);
     canvas.drawCircle(
       thumbCenter,
@@ -927,11 +979,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
         eased,
       )!.withValues(alpha: math.pow(1 - local, 1.7).toDouble());
       canvas.drawCircle(
-        origin +
-            Offset(
-              math.cos(particle.angle) * distance,
-              math.sin(particle.angle) * distance,
-            ),
+        origin + Offset(particle.unitX * distance, particle.unitY * distance),
         particle.radius * (1 - local * 0.35),
         particlePaint,
       );
@@ -951,8 +999,8 @@ class _CodexEffortTrackPainter extends CustomPainter {
       if (local <= 0 || local >= 1) continue;
       final eased = Curves.easeOutCubic.transform(local);
       final rawOffset = Offset(
-        math.cos(particle.angle) * particle.distance * eased,
-        math.sin(particle.angle) * particle.distance * eased * 0.48,
+        particle.unitX * particle.distance * eased,
+        particle.unitY * particle.distance * eased * 0.48,
       );
       final point = origin + rawOffset;
       if (!trackRect.inflate(1).contains(point)) continue;
@@ -1027,28 +1075,29 @@ class _CodexEffortTrackPainter extends CustomPainter {
 }
 
 class _FastParticleSpec {
-  final double angle;
+  final double unitX;
+  final double unitY;
   final double distance;
   final double delay;
 
-  const _FastParticleSpec(this.angle, this.distance, this.delay);
+  const _FastParticleSpec(this.unitX, this.unitY, this.distance, this.delay);
 }
 
 const _fastParticles = <_FastParticleSpec>[
-  _FastParticleSpec(-2.95, 23, 0.00),
-  _FastParticleSpec(-2.52, 19, 0.08),
-  _FastParticleSpec(-2.08, 24, 0.02),
-  _FastParticleSpec(-1.63, 21, 0.12),
-  _FastParticleSpec(-1.18, 24, 0.04),
-  _FastParticleSpec(-0.73, 20, 0.14),
-  _FastParticleSpec(-0.28, 23, 0.06),
-  _FastParticleSpec(0.18, 20, 0.11),
-  _FastParticleSpec(0.63, 24, 0.01),
-  _FastParticleSpec(1.08, 21, 0.13),
-  _FastParticleSpec(1.52, 23, 0.05),
-  _FastParticleSpec(1.98, 19, 0.15),
-  _FastParticleSpec(2.43, 24, 0.03),
-  _FastParticleSpec(2.86, 21, 0.10),
+  _FastParticleSpec(-0.98170, -0.19042, 23, 0.00),
+  _FastParticleSpec(-0.81295, -0.58233, 19, 0.08),
+  _FastParticleSpec(-0.48748, -0.87313, 24, 0.02),
+  _FastParticleSpec(-0.05917, -0.99825, 21, 0.12),
+  _FastParticleSpec(0.38092, -0.92461, 24, 0.04),
+  _FastParticleSpec(0.74517, -0.66687, 20, 0.14),
+  _FastParticleSpec(0.96106, -0.27636, 23, 0.06),
+  _FastParticleSpec(0.98384, 0.17903, 20, 0.11),
+  _FastParticleSpec(0.80803, 0.58914, 24, 0.01),
+  _FastParticleSpec(0.47133, 0.88196, 21, 0.13),
+  _FastParticleSpec(0.05077, 0.99871, 23, 0.05),
+  _FastParticleSpec(-0.39788, 0.91744, 19, 0.15),
+  _FastParticleSpec(-0.75732, 0.65304, 24, 0.03),
+  _FastParticleSpec(-0.96061, 0.27789, 21, 0.10),
 ];
 
 @visibleForTesting

@@ -41,6 +41,92 @@ void main() {
     expect(find.text('ultra'), findsOneWidget);
   });
 
+  testWidgets(
+    'drag start/end emits its tier and same-frame return is not lost',
+    (tester) async {
+      final key = GlobalKey<_EffortHarnessState>();
+      await tester.pumpWidget(_EffortHarness(key: key));
+
+      GestureDetector detector() => tester.widget<GestureDetector>(
+        find.descendant(
+          of: find.byKey(const ValueKey('motion_slider')),
+          matching: find.byType(GestureDetector),
+        ),
+      );
+
+      final width = tester
+          .getSize(find.byKey(const ValueKey('motion_slider')))
+          .width;
+      double xFor(double position) => 16 + (width - 32) * position;
+
+      // Drag recognizers may deliver start followed immediately by end. The
+      // start position itself must therefore update the real effort state.
+      detector().onHorizontalDragStart!(
+        DragStartDetails(localPosition: Offset(xFor(1), 24)),
+      );
+      detector().onHorizontalDragEnd!(DragEndDetails());
+      expect(key.currentState!.wireEfforts, [ReasoningEffort.ultra]);
+
+      key.currentState!.reset();
+      await tester.pump();
+      final sameFrameDetector = detector();
+      sameFrameDetector.onHorizontalDragStart!(
+        DragStartDetails(localPosition: Offset(xFor(0.4), 24)),
+      );
+      sameFrameDetector.onHorizontalDragUpdate!(
+        DragUpdateDetails(
+          globalPosition: Offset(xFor(0.6), 24),
+          localPosition: Offset(xFor(0.6), 24),
+        ),
+      );
+      sameFrameDetector.onHorizontalDragUpdate!(
+        DragUpdateDetails(
+          globalPosition: Offset(xFor(0.4), 24),
+          localPosition: Offset(xFor(0.4), 24),
+        ),
+      );
+      sameFrameDetector.onHorizontalDragEnd!(DragEndDetails());
+      expect(key.currentState!.wireEfforts, [
+        ReasoningEffort.xhigh,
+        ReasoningEffort.high,
+      ]);
+
+      key.currentState!.reset();
+      await tester.pumpAndSettle();
+      final bounds = tester.getRect(
+        find.byKey(const ValueKey('motion_slider')),
+      );
+      final gesture = await tester.startGesture(
+        Offset(bounds.left + xFor(0.4), bounds.center.dy),
+      );
+      await gesture.moveTo(Offset(bounds.left + xFor(1), bounds.center.dy));
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(key.currentState!.wireEfforts, isNotEmpty);
+      expect(key.currentState!.wireEfforts.last, ReasoningEffort.ultra);
+      expect(key.currentState!.effort, ReasoningEffort.ultra);
+    },
+  );
+
+  testWidgets('local Max acknowledgement does not restart its reveal', (
+    tester,
+  ) async {
+    final key = GlobalKey<_EffortHarnessState>();
+    await tester.pumpWidget(_EffortHarness(key: key, deferAck: true));
+    final bounds = tester.getRect(find.byKey(const ValueKey('motion_slider')));
+    final maxX = bounds.left + 16 + (bounds.width - 32) * 0.8;
+
+    await tester.tapAt(Offset(maxX, bounds.center.dy));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(tester.hasRunningAnimations, isTrue);
+    key.currentState!.ackPendingEffort();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1510));
+    await tester.pump();
+    expect(tester.hasRunningAnimations, isFalse);
+  });
+
   testWidgets('exposes slider semantics and keyboard steps', (tester) async {
     final semantics = tester.ensureSemantics();
     final key = GlobalKey<_EffortHarnessState>();
@@ -67,6 +153,42 @@ void main() {
     await tester.pump();
     expect(key.currentState!.effort, ReasoningEffort.ultra);
     semantics.dispose();
+  });
+
+  testWidgets('same index enters Max and Ultra when semantic tiers change', (
+    tester,
+  ) async {
+    final key = GlobalKey<_SemanticTierHarnessState>();
+    await tester.pumpWidget(_SemanticTierHarness(key: key));
+
+    key.currentState!.showMaxAtSameIndex();
+    await tester.pump();
+    expect(tester.hasRunningAnimations, isTrue);
+    await tester.pump(const Duration(milliseconds: 2010));
+    expect(tester.hasRunningAnimations, isFalse);
+
+    key.currentState!.showUltraAtSameIndex();
+    await tester.pump();
+    expect(tester.hasRunningAnimations, isTrue);
+    await tester.pump(const Duration(milliseconds: 1110));
+    expect(tester.hasRunningAnimations, isFalse);
+  });
+
+  testWidgets('RTL pointer and keyboard directions remain native', (
+    tester,
+  ) async {
+    final key = GlobalKey<_EffortHarnessState>();
+    await tester.pumpWidget(_EffortHarness(key: key, rtl: true));
+    final finder = find.byKey(const ValueKey('motion_slider'));
+    final bounds = tester.getRect(finder);
+
+    await tester.tapAt(Offset(bounds.left + 15, bounds.center.dy));
+    await tester.pumpAndSettle();
+    expect(key.currentState!.effort, ReasoningEffort.ultra);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(key.currentState!.effort, ReasoningEffort.max);
   });
 
   testWidgets(
@@ -100,13 +222,31 @@ void main() {
       );
       final dynamic painter = customPaint.painter;
       expect(painter.animation.isAnimating, isFalse);
-      expect(painter.shouldRepaint(painter), isFalse);
 
       key.currentState!.setFast(false);
       await tester.pump();
       expect(tester.hasRunningAnimations, isTrue);
       await tester.pump(const Duration(milliseconds: 360));
       expect(tester.hasRunningAnimations, isFalse);
+
+      key.currentState!.setEffort(ReasoningEffort.high);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 310));
+      final dynamic oldPainter = tester
+          .widget<CustomPaint>(
+            find.byKey(const ValueKey('motion_slider_paint')),
+          )
+          .painter;
+      expect(oldPainter.debugUsesSolidActivePaint, isTrue);
+      key.currentState!.rebuildOnly();
+      await tester.pump();
+      final dynamic rebuiltPainter = tester
+          .widget<CustomPaint>(
+            find.byKey(const ValueKey('motion_slider_paint')),
+          )
+          .painter;
+      expect(identical(oldPainter, rebuiltPainter), isFalse);
+      expect(rebuiltPainter.shouldRepaint(oldPainter), isFalse);
 
       key.currentState!.setFast(true);
       await tester.pump();
@@ -140,12 +280,58 @@ void main() {
     final dynamic painter = customPaint.painter;
     expect(painter.animation.isAnimating, isFalse);
   });
+
+  testWidgets('enabling reduce motion stops an in-flight reveal', (
+    tester,
+  ) async {
+    final key = GlobalKey<_EffortHarnessState>();
+    await tester.pumpWidget(_EffortHarness(key: key));
+
+    key.currentState!.setEffort(ReasoningEffort.max);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(tester.hasRunningAnimations, isTrue);
+    key.currentState!.setReduceMotion(true);
+    await tester.pump();
+    expect(tester.hasRunningAnimations, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('rapid effort and Fast prop churn settles on the latest state', (
+    tester,
+  ) async {
+    final key = GlobalKey<_EffortHarnessState>();
+    await tester.pumpWidget(_EffortHarness(key: key));
+
+    key.currentState!.setEffort(ReasoningEffort.max);
+    await tester.pump(const Duration(milliseconds: 80));
+    key.currentState!.setFast(true);
+    await tester.pump(const Duration(milliseconds: 80));
+    key.currentState!.setEffort(ReasoningEffort.ultra);
+    await tester.pump(const Duration(milliseconds: 80));
+    key.currentState!.setFast(false);
+    await tester.pump(const Duration(milliseconds: 80));
+    key.currentState!.setEffort(ReasoningEffort.low);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 310));
+
+    expect(key.currentState!.effort, ReasoningEffort.low);
+    expect(key.currentState!.speed, CodexSpeed.standard);
+    expect(tester.hasRunningAnimations, isFalse);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _EffortHarness extends StatefulWidget {
   final bool disableAnimations;
+  final bool rtl;
+  final bool deferAck;
 
-  const _EffortHarness({super.key, this.disableAnimations = false});
+  const _EffortHarness({
+    super.key,
+    this.disableAnimations = false,
+    this.rtl = false,
+    this.deferAck = false,
+  });
 
   @override
   State<_EffortHarness> createState() => _EffortHarnessState();
@@ -154,44 +340,127 @@ class _EffortHarness extends StatefulWidget {
 class _EffortHarnessState extends State<_EffortHarness> {
   ReasoningEffort effort = ReasoningEffort.high;
   CodexSpeed speed = CodexSpeed.standard;
+  final wireEfforts = <ReasoningEffort>[];
+  late bool reduceMotion;
+  ReasoningEffort? pendingEffort;
+
+  @override
+  void initState() {
+    super.initState();
+    reduceMotion = widget.disableAnimations;
+  }
 
   void setEffort(ReasoningEffort value) => setState(() => effort = value);
 
   void setFast(bool value) =>
       setState(() => speed = value ? CodexSpeed.fast : CodexSpeed.standard);
 
+  void setReduceMotion(bool value) => setState(() => reduceMotion = value);
+
+  void rebuildOnly() => setState(() {});
+
+  void reset() => setState(() {
+    effort = ReasoningEffort.high;
+    speed = CodexSpeed.standard;
+    pendingEffort = null;
+    wireEfforts.clear();
+  });
+
+  void _onEffortChanged(ReasoningEffort value) {
+    wireEfforts.add(value);
+    if (widget.deferAck) {
+      pendingEffort = value;
+    } else {
+      setState(() => effort = value);
+    }
+  }
+
+  void ackPendingEffort() {
+    final pending = pendingEffort;
+    if (pending == null) return;
+    pendingEffort = null;
+    setState(() => effort = pending);
+  }
+
   @override
   Widget build(BuildContext context) => MaterialApp(
     home: MediaQuery(
       data: MediaQueryData(
         size: const Size(390, 844),
-        disableAnimations: widget.disableAnimations,
-        accessibleNavigation: widget.disableAnimations,
+        disableAnimations: reduceMotion,
+        accessibleNavigation: reduceMotion,
       ),
-      child: Material(
-        child: Center(
-          child: SizedBox(
-            width: 320,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CodexEffortSlider(
-                  efforts: const [
-                    ReasoningEffort.low,
-                    ReasoningEffort.medium,
-                    ReasoningEffort.high,
-                    ReasoningEffort.xhigh,
-                    ReasoningEffort.max,
-                    ReasoningEffort.ultra,
-                  ],
-                  value: effort,
-                  speed: speed,
-                  onChanged: setEffort,
-                  sliderKey: 'motion_slider',
-                ),
-                Text(effort.label),
-              ],
+      child: Directionality(
+        textDirection: widget.rtl ? TextDirection.rtl : TextDirection.ltr,
+        child: Material(
+          child: Center(
+            child: SizedBox(
+              width: 320,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CodexEffortSlider(
+                    efforts: const [
+                      ReasoningEffort.low,
+                      ReasoningEffort.medium,
+                      ReasoningEffort.high,
+                      ReasoningEffort.xhigh,
+                      ReasoningEffort.max,
+                      ReasoningEffort.ultra,
+                    ],
+                    value: effort,
+                    speed: speed,
+                    onChanged: _onEffortChanged,
+                    sliderKey: 'motion_slider',
+                  ),
+                  Text(effort.label),
+                ],
+              ),
             ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _SemanticTierHarness extends StatefulWidget {
+  const _SemanticTierHarness({super.key});
+
+  @override
+  State<_SemanticTierHarness> createState() => _SemanticTierHarnessState();
+}
+
+class _SemanticTierHarnessState extends State<_SemanticTierHarness> {
+  List<String> labels = const ['light', 'medium', 'high'];
+  int? maxIndex;
+  int? ultraIndex;
+
+  void showMaxAtSameIndex() => setState(() {
+    labels = const ['light', 'medium', 'max'];
+    maxIndex = 2;
+    ultraIndex = null;
+  });
+
+  void showUltraAtSameIndex() => setState(() {
+    labels = const ['light', 'medium', 'ultra'];
+    maxIndex = null;
+    ultraIndex = 2;
+  });
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    home: Material(
+      child: Center(
+        child: SizedBox(
+          width: 320,
+          child: CodexEffortMotionSlider(
+            labels: labels,
+            selectedIndex: 2,
+            maxIndex: maxIndex,
+            ultraIndex: ultraIndex,
+            onSelected: (_) {},
+            sliderKey: 'semantic_motion_slider',
           ),
         ),
       ),

@@ -346,10 +346,7 @@ class CodexEffortSlider extends StatelessWidget {
         ultraIndex: ultraIndex < 0 ? null : ultraIndex,
         fastModeEnabled: speed == CodexSpeed.fast,
         sliderKey: sliderKey,
-        onSelected: (index) {
-          final next = quickEfforts[index];
-          if (next != value) onChanged(next);
-        },
+        onSelected: (index) => onChanged(quickEfforts[index]),
       ),
     );
   }
