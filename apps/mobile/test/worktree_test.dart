@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/services/bridge_service.dart';
+import 'package:ccpocket/widgets/codex_effort_motion.dart';
 import 'package:ccpocket/widgets/new_session_sheet.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1148,12 +1149,12 @@ void main() {
         const ValueKey('dialog_codex_effort_label'),
       );
       expect(tester.widget<Text>(effortLabel).data, 'ultra');
-      final slider = tester.widget<Slider>(
-        find.byKey(const ValueKey('dialog_codex_effort_slider')),
+      final slider = tester.widget<CodexEffortMotionSlider>(
+        find.byType(CodexEffortMotionSlider),
       );
-      expect(slider.max, 5);
-      expect(slider.divisions, 5);
-      expect(slider.value, 5);
+      expect(slider.labels.length, 6);
+      expect(slider.selectedIndex, 5);
+      expect(slider.ultraIndex, 5);
       expect(
         find.ancestor(of: effortLabel, matching: find.byType(ConstrainedBox)),
         findsWidgets,
