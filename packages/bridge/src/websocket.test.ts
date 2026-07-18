@@ -636,7 +636,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
   it("does not persist Codex archive bookkeeping when the official RPC fails", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
-    const archive = vi.fn(async () => {});
+    const reservation = {
+      sessionId: "thread-archive",
+      provider: "codex",
+      identityKey: "codex\0thread-archive",
+      token: Symbol("archive"),
+      alreadyArchived: false,
+    };
+    const reserveArchiveCapacity = vi.fn(async () => reservation);
+    const commitReservedArchive = vi.fn(async () => {});
+    const releaseArchiveCapacity = vi.fn(async () => {});
     const archiveThread = vi.fn(async () => {
       throw new Error("official archive rejected");
     });
@@ -644,7 +653,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     (bridge as any).archiveStoreReady = Promise.resolve();
     (bridge as any).archiveStoreInitializationError = null;
     (bridge as any).archiveStore = {
-      archive,
+      reserveArchiveCapacity,
+      commitReservedArchive,
+      releaseArchiveCapacity,
       list: vi.fn(() => []),
       archivedIds: vi.fn(() => new Set()),
       archivedKeys: vi.fn(() => new Set()),
@@ -667,8 +678,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await vi.waitFor(() => {
       expect(ws.send).toHaveBeenCalled();
     });
+    expect(reserveArchiveCapacity).toHaveBeenCalledWith(
+      "thread-archive",
+      "codex",
+    );
     expect(archiveThread).toHaveBeenCalledWith("thread-archive");
-    expect(archive).not.toHaveBeenCalled();
+    expect(commitReservedArchive).not.toHaveBeenCalled();
+    expect(releaseArchiveCapacity).toHaveBeenCalledWith(reservation);
     expect(stop).toHaveBeenCalledOnce();
     expect(createStandalone).toHaveBeenCalledWith("/project");
     expect(
@@ -688,12 +704,25 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
   it("persists Codex archive bookkeeping after the official RPC succeeds", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
-    const archive = vi.fn(async () => {});
+    const reservation = {
+      sessionId: "thread-archive",
+      provider: "codex",
+      identityKey: "codex\0thread-archive",
+      token: Symbol("archive"),
+      alreadyArchived: false,
+    };
+    const reserveArchiveCapacity = vi.fn(async () => reservation);
+    const commitReservedArchive = vi.fn(async () => {});
+    const releaseArchiveCapacity = vi.fn(async () => {});
     const archiveThread = vi.fn(async () => {});
     const stop = vi.fn();
     (bridge as any).archiveStoreReady = Promise.resolve();
     (bridge as any).archiveStoreInitializationError = null;
-    (bridge as any).archiveStore = { archive };
+    (bridge as any).archiveStore = {
+      reserveArchiveCapacity,
+      commitReservedArchive,
+      releaseArchiveCapacity,
+    };
     vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
       archiveThread,
       unarchiveThread: vi.fn(async () => {}),
@@ -713,17 +742,20 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
 
     await vi.waitFor(() => {
-      expect(archive).toHaveBeenCalled();
+      expect(commitReservedArchive).toHaveBeenCalled();
     });
-    expect(archiveThread.mock.invocationCallOrder[0]).toBeLessThan(
-      archive.mock.invocationCallOrder[0],
+    expect(reserveArchiveCapacity.mock.invocationCallOrder[0]).toBeLessThan(
+      archiveThread.mock.invocationCallOrder[0],
     );
-    expect(archive).toHaveBeenCalledWith(
-      "thread-archive",
-      "codex",
+    expect(archiveThread.mock.invocationCallOrder[0]).toBeLessThan(
+      commitReservedArchive.mock.invocationCallOrder[0],
+    );
+    expect(commitReservedArchive).toHaveBeenCalledWith(
+      reservation,
       "/project",
       expect.objectContaining({ name: "Saved title" }),
     );
+    expect(releaseArchiveCapacity).toHaveBeenCalledWith(reservation);
     expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
       type: "archive_result",
       requestId: "archive-request",
@@ -732,13 +764,113 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("reserves local capacity before the official Codex archive RPC", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const reserveArchiveCapacity = vi.fn(async () => {
+      throw new Error("Archive store has reached the supported 10000-entry limit");
+    });
+    const archiveThread = vi.fn(async () => {});
+    const stop = vi.fn();
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = { reserveArchiveCapacity };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      archiveThread,
+      stop,
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-full",
+        sessionId: "thread-overflow",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(ws.send).toHaveBeenCalled();
+    });
+    expect(reserveArchiveCapacity).toHaveBeenCalledOnce();
+    expect(archiveThread).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "archive_result",
+      requestId: "archive-full",
+      success: false,
+      errorCode: "local_store_failed",
+    });
+    bridge.close();
+  });
+
+  it("holds the reservation through local failure compensation", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const reservation = {
+      sessionId: "thread-compensated",
+      provider: "codex",
+      identityKey: "codex\0thread-compensated",
+      token: Symbol("archive"),
+      alreadyArchived: false,
+    };
+    const reserveArchiveCapacity = vi.fn(async () => reservation);
+    const commitReservedArchive = vi.fn(async () => {
+      throw new Error("disk full");
+    });
+    const releaseArchiveCapacity = vi.fn(async () => {});
+    const archiveThread = vi.fn(async () => {});
+    const unarchiveThread = vi.fn(async () => {});
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      reserveArchiveCapacity,
+      commitReservedArchive,
+      releaseArchiveCapacity,
+    };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      archiveThread,
+      unarchiveThread,
+      stop: vi.fn(),
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-compensated",
+        sessionId: "thread-compensated",
+        provider: "codex",
+        projectPath: "/project",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(ws.send).toHaveBeenCalled();
+    });
+    expect(archiveThread).toHaveBeenCalledOnce();
+    expect(unarchiveThread).toHaveBeenCalledOnce();
+    expect(unarchiveThread.mock.invocationCallOrder[0]).toBeLessThan(
+      releaseArchiveCapacity.mock.invocationCallOrder[0],
+    );
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "archive_result",
+      requestId: "archive-compensated",
+      success: false,
+      errorCode: "local_store_failed",
+    });
+    bridge.close();
+  });
+
   it("fails closed when archive store initialization failed", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
-    const archive = vi.fn(async () => {});
+    const reserveArchiveCapacity = vi.fn(async () => {});
     (bridge as any).archiveStoreReady = Promise.resolve();
     (bridge as any).archiveStoreInitializationError = new Error("bad json");
-    (bridge as any).archiveStore = { archive };
+    (bridge as any).archiveStore = { reserveArchiveCapacity };
     const standalone = vi.spyOn(bridge as any, "createStandaloneCodexProcess");
 
     (bridge as any).handleClientMessage(
@@ -755,7 +887,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await vi.waitFor(() => {
       expect(ws.send).toHaveBeenCalled();
     });
-    expect(archive).not.toHaveBeenCalled();
+    expect(reserveArchiveCapacity).not.toHaveBeenCalled();
     expect(standalone).not.toHaveBeenCalled();
     expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
       type: "archive_result",
@@ -954,10 +1086,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
   it("refuses archive lifecycle mutations for a live provider thread", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
-    const archive = vi.fn(async () => {});
+    const reserveArchiveCapacity = vi.fn(async () => {});
     (bridge as any).archiveStoreReady = Promise.resolve();
     (bridge as any).archiveStoreInitializationError = null;
-    (bridge as any).archiveStore = { archive };
+    (bridge as any).archiveStore = { reserveArchiveCapacity };
     (bridge as any).sessionManager.create(
       "/project",
       { sessionId: "thread-live" },
@@ -982,7 +1114,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await vi.waitFor(() => {
       expect(ws.send).toHaveBeenCalled();
     });
-    expect(archive).not.toHaveBeenCalled();
+    expect(reserveArchiveCapacity).not.toHaveBeenCalled();
     expect(standalone).not.toHaveBeenCalled();
     expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
       type: "archive_result",
@@ -1004,11 +1136,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const resumeWs = { readyState: OPEN_STATE, send: vi.fn() } as any;
     const archiveWs = { readyState: OPEN_STATE, send: vi.fn() } as any;
-    const archive = vi.fn(async () => {});
+    const reserveArchiveCapacity = vi.fn(async () => {});
     (bridge as any).archiveStoreReady = Promise.resolve();
     (bridge as any).archiveStoreInitializationError = null;
     (bridge as any).archiveStore = {
-      archive,
+      reserveArchiveCapacity,
       isArchived: vi.fn(() => false),
     };
     const acquire = vi.spyOn(bridge as any, "acquireCodexThreadOperation");
@@ -1048,7 +1180,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
     const session = (bridge as any).sessionManager.get("s-1");
     expect(session.process.archiveThread).not.toHaveBeenCalled();
-    expect(archive).not.toHaveBeenCalled();
+    expect(reserveArchiveCapacity).not.toHaveBeenCalled();
     expect(
       JSON.parse(archiveWs.send.mock.calls.at(-1)?.[0] as string),
     ).toMatchObject({

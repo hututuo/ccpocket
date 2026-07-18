@@ -27,6 +27,20 @@ interface ArchiveStoreData {
   archivedSessions: ArchivedSession[];
 }
 
+export interface ArchiveCapacityReservation {
+  readonly sessionId: string;
+  readonly provider: ArchivedSession["provider"];
+  readonly identityKey: string;
+  readonly token: symbol | null;
+  readonly alreadyArchived: boolean;
+}
+
+interface PendingArchiveReservation {
+  readonly token: symbol;
+  readonly released: Promise<void>;
+  readonly release: () => void;
+}
+
 /**
  * Manages a persistent set of archived session IDs.
  * Data is stored in `~/.ccpocket/archived-sessions.json`.
@@ -38,6 +52,10 @@ export class ArchiveStore {
   private cache = new Set<string>();
   private data: ArchiveStoreData = { version: 1, archivedSessions: [] };
   private mutationTail: Promise<void> = Promise.resolve();
+  private readonly archiveReservations = new Map<
+    string,
+    PendingArchiveReservation
+  >();
 
   constructor(dirPath = join(homedir(), ".ccpocket")) {
     this.dirPath = dirPath;
@@ -89,17 +107,127 @@ export class ArchiveStore {
       "name" | "summary" | "firstPrompt" | "modified"
     > = {},
   ): Promise<void> {
+    const reservation = await this.reserveArchiveCapacity(sessionId, provider);
+    try {
+      await this.commitReservedArchive(reservation, projectPath, metadata);
+    } finally {
+      await this.releaseArchiveCapacity(reservation);
+    }
+  }
+
+  /**
+   * Reserve one persistent archive slot before a provider-side mutation starts.
+   *
+   * Reservations are serialized with all store mutations. A concurrent request
+   * for the same provider/session identity waits for the owner and then observes
+   * the committed entry as an idempotent no-op. Different identities cannot
+   * reserve beyond the on-disk limit.
+   */
+  async reserveArchiveCapacity(
+    sessionId: string,
+    provider: ArchivedSession["provider"],
+  ): Promise<ArchiveCapacityReservation> {
+    const identityKey = archiveIdentityKey(provider, sessionId);
+    for (;;) {
+      const result = await this.mutate(async () => {
+        if (this.cache.has(identityKey)) {
+          return {
+            kind: "reservation" as const,
+            value: {
+              sessionId,
+              provider,
+              identityKey,
+              token: null,
+              alreadyArchived: true,
+            } satisfies ArchiveCapacityReservation,
+          };
+        }
+
+        const owner = this.archiveReservations.get(identityKey);
+        if (owner) {
+          return { kind: "wait" as const, value: owner.released };
+        }
+
+        if (
+          this.data.archivedSessions.length +
+            this.uncommittedReservationCount() >=
+          MAX_ARCHIVED_SESSIONS
+        ) {
+          throw new Error(
+            `Archive store has reached the supported ${MAX_ARCHIVED_SESSIONS}-entry limit`,
+          );
+        }
+
+        const token = Symbol(identityKey);
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        this.archiveReservations.set(identityKey, {
+          token,
+          released,
+          release,
+        });
+        return {
+          kind: "reservation" as const,
+          value: {
+            sessionId,
+            provider,
+            identityKey,
+            token,
+            alreadyArchived: false,
+          } satisfies ArchiveCapacityReservation,
+        };
+      });
+
+      if (result.kind === "reservation") return result.value;
+      await result.value;
+    }
+  }
+
+  /** Persist an entry while its capacity reservation remains owned. */
+  async commitReservedArchive(
+    reservation: ArchiveCapacityReservation,
+    projectPath: string,
+    metadata: Pick<
+      ArchivedSession,
+      "name" | "summary" | "firstPrompt" | "modified"
+    > = {},
+  ): Promise<void> {
+    if (reservation.alreadyArchived) return;
     await this.mutate(async () => {
-      if (this.cache.has(archiveIdentityKey(provider, sessionId))) return;
+      const owner = this.archiveReservations.get(reservation.identityKey);
+      if (!owner || owner.token !== reservation.token) {
+        throw new Error("Archive capacity reservation is no longer owned");
+      }
+      if (this.cache.has(reservation.identityKey)) return;
+      if (this.data.archivedSessions.length >= MAX_ARCHIVED_SESSIONS) {
+        throw new Error(
+          `Archive store has reached the supported ${MAX_ARCHIVED_SESSIONS}-entry limit`,
+        );
+      }
       const entry: ArchivedSession = {
-        sessionId,
-        provider,
+        sessionId: reservation.sessionId,
+        provider: reservation.provider,
         projectPath,
         archivedAt: new Date().toISOString(),
         ...sanitizeDisplayMetadata(metadata),
       };
       await this.commit([...this.data.archivedSessions, entry]);
-      console.log(`[archive-store] Archived session ${sessionId}`);
+      console.log(`[archive-store] Archived session ${reservation.sessionId}`);
+    });
+  }
+
+  /** Release a reservation after provider compensation has completed. */
+  async releaseArchiveCapacity(
+    reservation: ArchiveCapacityReservation,
+  ): Promise<void> {
+    if (reservation.alreadyArchived) return;
+    await this.mutate(async () => {
+      const owner = this.archiveReservations.get(reservation.identityKey);
+      if (!owner || owner.token !== reservation.token) return;
+      this.archiveReservations.delete(reservation.identityKey);
+      owner.release();
     });
   }
 
@@ -186,6 +314,11 @@ export class ArchiveStore {
   }
 
   private async commit(archivedSessions: ArchivedSession[]): Promise<void> {
+    if (archivedSessions.length > MAX_ARCHIVED_SESSIONS) {
+      throw new Error(
+        `Archive store has reached the supported ${MAX_ARCHIVED_SESSIONS}-entry limit`,
+      );
+    }
     const next: ArchiveStoreData = { version: 1, archivedSessions };
     await this.save(next);
     this.data = next;
@@ -194,6 +327,14 @@ export class ArchiveStore {
         archiveIdentityKey(session.provider, session.sessionId),
       ),
     );
+  }
+
+  private uncommittedReservationCount(): number {
+    let count = 0;
+    for (const identityKey of this.archiveReservations.keys()) {
+      if (!this.cache.has(identityKey)) count += 1;
+    }
+    return count;
   }
 
   /** Atomic write: write to temp file, then rename. */

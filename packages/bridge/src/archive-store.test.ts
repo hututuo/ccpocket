@@ -22,6 +22,32 @@ describe("ArchiveStore", () => {
     return { store, dir };
   }
 
+  async function createSeededStore(count: number): Promise<{
+    store: ArchiveStore;
+    dir: string;
+    filePath: string;
+  }> {
+    const dir = await mkdtemp(join(tmpdir(), "ccpocket-archive-store-"));
+    tempDirs.push(dir);
+    const filePath = join(dir, "archived-sessions.json");
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        archivedSessions: Array.from({ length: count }, (_, index) => ({
+          sessionId: `thread-${index}`,
+          provider: "codex",
+          projectPath: "/project",
+          archivedAt: `2026-01-01T00:00:${String(index % 60).padStart(2, "0")}.000Z`,
+        })),
+      }),
+      "utf8",
+    );
+    const store = new ArchiveStore(dir);
+    await store.init();
+    return { store, dir, filePath };
+  }
+
   it("serializes concurrent archives without losing an entry", async () => {
     const { store, dir } = await createStore();
 
@@ -44,6 +70,68 @@ describe("ArchiveStore", () => {
       "thread-a",
       "thread-b",
     ]);
+  });
+
+  it("keeps concurrent archives for one identity idempotent", async () => {
+    const { store } = await createStore();
+
+    await Promise.all([
+      store.archive("same-thread", "codex", "/project"),
+      store.archive("same-thread", "codex", "/project"),
+    ]);
+
+    expect(store.list()).toHaveLength(1);
+    expect(store.isArchived("same-thread", "codex")).toBe(true);
+  });
+
+  it("rejects entry 10001 without changing disk and remains restart-readable", async () => {
+    const { store, dir, filePath } = await createSeededStore(10_000);
+    const before = await readFile(filePath, "utf8");
+
+    await expect(
+      store.archive("thread-overflow", "codex", "/project"),
+    ).rejects.toThrow("10000-entry limit");
+    await expect(
+      store.archive("thread-0", "codex", "/project"),
+    ).resolves.toBeUndefined();
+
+    expect(store.list()).toHaveLength(10_000);
+    await expect(readFile(filePath, "utf8")).resolves.toBe(before);
+    const reloaded = new ArchiveStore(dir);
+    await expect(reloaded.init()).resolves.toBeUndefined();
+    expect(reloaded.list()).toHaveLength(10_000);
+  });
+
+  it("reserves the final slot atomically across concurrent identities", async () => {
+    const { store, dir } = await createSeededStore(9_999);
+
+    const results = await Promise.allSettled([
+      store.reserveArchiveCapacity("boundary-a", "codex"),
+      store.reserveArchiveCapacity("boundary-b", "codex"),
+    ]);
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<
+        Awaited<ReturnType<ArchiveStore["reserveArchiveCapacity"]>>
+      > => result.status === "fulfilled",
+    );
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0].reason)).toContain("10000-entry limit");
+
+    const reservation = fulfilled[0].value;
+    try {
+      await store.commitReservedArchive(reservation, "/project");
+    } finally {
+      await store.releaseArchiveCapacity(reservation);
+    }
+
+    expect(store.list()).toHaveLength(10_000);
+    const reloaded = new ArchiveStore(dir);
+    await expect(reloaded.init()).resolves.toBeUndefined();
+    expect(reloaded.list()).toHaveLength(10_000);
   });
 
   it("returns defensive list and id snapshots", async () => {

@@ -74,7 +74,10 @@ import {
 import type { ImageRef, ImageStore } from "./image-store.js";
 import type { GalleryStore } from "./gallery-store.js";
 import type { ProjectHistory } from "./project-history.js";
-import { ArchiveStore } from "./archive-store.js";
+import {
+  ArchiveStore,
+  type ArchiveCapacityReservation,
+} from "./archive-store.js";
 import { WorktreeStore } from "./worktree-store.js";
 import {
   listWorktrees,
@@ -7881,27 +7884,48 @@ export class BridgeWebSocketServer {
         await this.runCodexLifecycleMutation(sessionId, () =>
           this.withCodexLifecycleProcess(projectPath, async (codexProcess) => {
             this.assertProviderSessionInactive(provider, sessionId);
-            await codexProcess.archiveThread(sessionId);
+            let reservation: ArchiveCapacityReservation;
             try {
-              await this.archiveStore.archive(sessionId, provider, projectPath, {
-                name: msg.name,
-                summary: msg.summary,
-                firstPrompt: msg.firstPrompt,
-                modified: msg.modified,
-              });
-            } catch (storeError) {
-              try {
-                await codexProcess.unarchiveThread(sessionId);
-              } catch (compensationError) {
-                throw new SessionLifecycleError(
-                  "partial_failure",
-                  `Codex archived the thread, local bookkeeping failed, and automatic restoration also failed: ${errorMessageOf(compensationError)}`,
-                );
-              }
+              reservation = await this.archiveStore.reserveArchiveCapacity(
+                sessionId,
+                provider,
+              );
+            } catch (error) {
               throw new SessionLifecycleError(
                 "local_store_failed",
-                `Local archive bookkeeping failed; the Codex thread was restored: ${errorMessageOf(storeError)}`,
+                `Failed to reserve the local archive: ${errorMessageOf(error)}`,
               );
+            }
+            try {
+              if (reservation.alreadyArchived) return;
+              await codexProcess.archiveThread(sessionId);
+              try {
+                await this.archiveStore.commitReservedArchive(
+                  reservation,
+                  projectPath,
+                  {
+                    name: msg.name,
+                    summary: msg.summary,
+                    firstPrompt: msg.firstPrompt,
+                    modified: msg.modified,
+                  },
+                );
+              } catch (storeError) {
+                try {
+                  await codexProcess.unarchiveThread(sessionId);
+                } catch (compensationError) {
+                  throw new SessionLifecycleError(
+                    "partial_failure",
+                    `Codex archived the thread, local bookkeeping failed, and automatic restoration also failed: ${errorMessageOf(compensationError)}`,
+                  );
+                }
+                throw new SessionLifecycleError(
+                  "local_store_failed",
+                  `Local archive bookkeeping failed; the Codex thread was restored: ${errorMessageOf(storeError)}`,
+                );
+              }
+            } finally {
+              await this.archiveStore.releaseArchiveCapacity(reservation);
             }
           }),
         );
