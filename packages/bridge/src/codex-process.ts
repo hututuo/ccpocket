@@ -42,7 +42,27 @@ export interface CodexStartOptions {
   networkAccessEnabled?: boolean;
   webSearchMode?: "disabled" | "cached" | "live";
   collaborationMode?: "plan" | "default";
+  /** Resume a goal that Bridge paused only to perform an immediate restart. */
+  resumeGoalAfterStart?: boolean;
 }
+
+export interface CodexNextTurnPermissionSettings {
+  approvalPolicy?: CodexStartOptions["approvalPolicy"] | null;
+  approvalsReviewer?: CodexStartOptions["approvalsReviewer"] | null;
+  codexPermissionsMode?: CodexStartOptions["codexPermissionsMode"];
+  sandboxMode?: CodexStartOptions["sandboxMode"] | null;
+}
+
+type CodexSandboxPolicy =
+  | { type: "dangerFullAccess" }
+  | { type: "readOnly"; networkAccess: boolean }
+  | {
+      type: "workspaceWrite";
+      writableRoots: string[];
+      networkAccess: boolean;
+      excludeTmpdirEnvVar: boolean;
+      excludeSlashTmp: boolean;
+    };
 
 export interface CodexProcessEvents {
   message: [ServerMessage];
@@ -327,10 +347,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private stdoutBuffer = "";
 
   // Collaboration mode & plan completion state
-  private _approvalPolicy: string | undefined = undefined;
-  private _approvalsReviewer: string | undefined = undefined;
+  private _approvalPolicy: string | null | undefined = undefined;
+  private _approvalsReviewer: string | null | undefined = undefined;
   private _codexPermissionsMode:
     CodexStartOptions["codexPermissionsMode"] | undefined;
+  private _runtimeSandboxMode: CodexStartOptions["sandboxMode"] | undefined;
+  private _runtimeSandboxPolicy: CodexSandboxPolicy | null | undefined;
+  private _workspaceWriteSandboxPolicy: CodexSandboxPolicy | undefined;
+  private _networkAccessEnabled = false;
+  private _additionalWritableRoots: string[] = [];
+  private _pendingThreadSettingsUpdate: Promise<void> | null = null;
+  private _threadSettingsUpdateTail: Promise<void> = Promise.resolve();
+  private _supportsNextTurnPermissionUpdates = false;
   private _collaborationMode: "plan" | "default" = "default";
   private _runtimeModel: string | undefined;
   private _runtimeModelReasoningEffort:
@@ -395,6 +423,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   get codexPermissionsMode():
     CodexStartOptions["codexPermissionsMode"] | undefined {
     return this._codexPermissionsMode;
+  }
+
+  get supportsNextTurnPermissionUpdates(): boolean {
+    return this._supportsNextTurnPermissionUpdates;
   }
 
   get model(): string {
@@ -468,6 +500,182 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   /**
+   * Persist permission settings for turns that have not started yet.
+   *
+   * This uses the app-server thread setting rather than only caching values in
+   * Bridge. Goal continuations are started by app-server itself, so a local
+   * `turn/start` override cannot cover them reliably.
+   */
+  updatePermissionSettingsForNextTurn(
+    settings: CodexNextTurnPermissionSettings,
+  ): Promise<void> {
+    const operation = this._threadSettingsUpdateTail.then(async () => {
+      if (!this._threadId) {
+        throw new Error("No thread ID available for permission update");
+      }
+
+      const sandboxPolicy =
+        settings.sandboxMode === undefined
+          ? undefined
+          : settings.sandboxMode === null
+            ? null
+            : await this.buildSandboxPolicy(settings.sandboxMode);
+      const params: Record<string, unknown> = { threadId: this._threadId };
+      if (settings.approvalPolicy !== undefined) {
+        params.approvalPolicy =
+          settings.approvalPolicy === null
+            ? null
+            : normalizeApprovalPolicy(settings.approvalPolicy);
+      }
+      if (settings.approvalsReviewer !== undefined) {
+        params.approvalsReviewer =
+          settings.approvalsReviewer === null
+            ? null
+            : normalizeApprovalsReviewerForAppServer(
+                settings.approvalsReviewer,
+              );
+      }
+      if (sandboxPolicy !== undefined) {
+        params.sandboxPolicy = sandboxPolicy;
+      }
+
+      await this.request("thread/settings/update", params);
+      this._supportsNextTurnPermissionUpdates = true;
+
+      if (settings.approvalPolicy !== undefined) {
+        this._approvalPolicy = settings.approvalPolicy;
+      }
+      if (settings.approvalsReviewer !== undefined) {
+        this._approvalsReviewer =
+          settings.approvalsReviewer === null
+            ? null
+            : normalizeApprovalsReviewerForAppServer(
+                settings.approvalsReviewer,
+              );
+      }
+      if (settings.codexPermissionsMode !== undefined) {
+        this._codexPermissionsMode = settings.codexPermissionsMode;
+      }
+      if (settings.sandboxMode !== undefined) {
+        this._runtimeSandboxMode = settings.sandboxMode ?? undefined;
+        this._runtimeSandboxPolicy = sandboxPolicy;
+        if (sandboxPolicy?.type === "workspaceWrite") {
+          this._workspaceWriteSandboxPolicy = sandboxPolicy;
+        }
+      }
+    });
+
+    // Keep later updates serial without letting one rejection poison the tail.
+    // The public pending promise remains the real operation so a dependent
+    // turn cannot silently pass a failed permission update.
+    this._threadSettingsUpdateTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this._pendingThreadSettingsUpdate = operation;
+    void operation.then(
+      () => {
+        if (this._pendingThreadSettingsUpdate === operation) {
+          this._pendingThreadSettingsUpdate = null;
+        }
+      },
+      () => {
+        if (this._pendingThreadSettingsUpdate === operation) {
+          this._pendingThreadSettingsUpdate = null;
+        }
+      },
+    );
+    return operation;
+  }
+
+  private async probeNextTurnPermissionUpdates(): Promise<void> {
+    if (!this._threadId) return;
+    try {
+      // An empty partial update is a no-op. It verifies support on this exact
+      // app-server process without changing any effective thread setting.
+      await this.request("thread/settings/update", {
+        threadId: this._threadId,
+      });
+      this._supportsNextTurnPermissionUpdates = true;
+    } catch (err) {
+      this._supportsNextTurnPermissionUpdates = false;
+      console.log(
+        `[codex-process] next-turn permission updates unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!this.stopped) {
+      this.emitMessage({
+        type: "system",
+        subtype: "runtime_capabilities",
+        provider: "codex",
+      });
+    }
+  }
+
+  private async waitForPendingThreadSettingsUpdate(): Promise<void> {
+    while (true) {
+      const pending = this._pendingThreadSettingsUpdate;
+      if (!pending) return;
+      await pending;
+      // An update can be appended while the previous operation is awaited.
+      if (this._pendingThreadSettingsUpdate === pending) {
+        this._pendingThreadSettingsUpdate = null;
+        return;
+      }
+    }
+  }
+
+  private async buildSandboxPolicy(
+    mode: NonNullable<CodexStartOptions["sandboxMode"]>,
+  ): Promise<CodexSandboxPolicy> {
+    if (mode === "danger-full-access") {
+      return { type: "dangerFullAccess" };
+    }
+    if (mode === "read-only") {
+      return {
+        type: "readOnly",
+        networkAccess: this._networkAccessEnabled,
+      };
+    }
+    const cachedWorkspacePolicy =
+      this._workspaceWriteSandboxPolicy?.type === "workspaceWrite"
+        ? this._workspaceWriteSandboxPolicy
+        : undefined;
+    let configuredRoots: string[] = [];
+    if (this._projectPath) {
+      try {
+        const response = await this.request("config/read", {
+          includeLayers: false,
+          cwd: this._projectPath,
+        });
+        configuredRoots = extractWritableRootsFromConfigRead(response);
+      } catch (err) {
+        console.warn(
+          `[codex-process] Failed to read workspace roots for next-turn permissions: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    const writableRoots = normalizeWritableRoots(
+      [
+        ...(this._projectPath ? [this._projectPath] : []),
+        ...(cachedWorkspacePolicy?.writableRoots ?? []),
+        ...configuredRoots,
+        ...this._additionalWritableRoots,
+      ],
+      this.platform,
+    );
+    return {
+      type: "workspaceWrite",
+      writableRoots,
+      networkAccess:
+        cachedWorkspacePolicy?.networkAccess ?? this._networkAccessEnabled,
+      excludeTmpdirEnvVar:
+        cachedWorkspacePolicy?.excludeTmpdirEnvVar ?? false,
+      excludeSlashTmp: cachedWorkspacePolicy?.excludeSlashTmp ?? false,
+    };
+  }
+
+  /**
    * Set collaboration mode ("plan" or "default").
    * Takes effect on the next `turn/start` RPC call.
    */
@@ -513,6 +721,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal update");
     }
+    await this.waitForPendingThreadSettingsUpdate();
     const response = (await this.request("thread/goal/set", {
       threadId: this._threadId,
       ...(update.objective !== undefined
@@ -800,6 +1009,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         ? undefined
         : normalizeApprovalsReviewerForAppServer(options.approvalsReviewer);
     this._codexPermissionsMode = options?.codexPermissionsMode;
+    this._runtimeSandboxMode = options?.sandboxMode;
+    this._runtimeSandboxPolicy = undefined;
+    this._workspaceWriteSandboxPolicy = undefined;
+    this._networkAccessEnabled = options?.networkAccessEnabled ?? false;
+    this._additionalWritableRoots = normalizeWritableRoots(
+      options?.additionalWritableRoots ?? [],
+      this.platform,
+    );
+    this._pendingThreadSettingsUpdate = null;
+    this._threadSettingsUpdateTail = Promise.resolve();
+    this._supportsNextTurnPermissionUpdates = false;
     this._collaborationMode = options?.collaborationMode ?? "default";
     this.lastPlanItemText = null;
     this.lastResultText = null;
@@ -860,18 +1080,51 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   interrupt(): void {
-    if (!this._threadId || !this.pendingTurnId) return;
-
-    void this.request("turn/interrupt", {
-      threadId: this._threadId,
-      turnId: this.pendingTurnId,
-    }).catch((err) => {
+    void this.interruptCurrentTurn().catch((err) => {
       if (!this.stopped) {
         console.warn(
           `[codex-process] turn/interrupt failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     });
+  }
+
+  /** Interrupt the active turn and wait until app-server accepts the request. */
+  async interruptCurrentTurn(): Promise<void> {
+    if (!this._threadId || !this.pendingTurnId) return;
+    await this.request("turn/interrupt", {
+      threadId: this._threadId,
+      turnId: this.pendingTurnId,
+    });
+  }
+
+  /** Interrupt the active turn and wait for its terminal notification. */
+  async interruptCurrentTurnAndWait(timeoutMs = 5000): Promise<void> {
+    const threadId = this._threadId;
+    if (!threadId) return;
+    const deadline = Date.now() + timeoutMs;
+    while (!this.stopped && !this.pendingTurnId && this._status === "running") {
+      if (Date.now() >= deadline) {
+        throw new Error("Timed out waiting for the active turn id");
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
+    const turnId = this.pendingTurnId;
+    if (!turnId) return;
+    try {
+      await this.request("turn/interrupt", { threadId, turnId });
+    } catch (err) {
+      // Completion can win the race with the interrupt response.
+      if (this.pendingTurnId !== turnId) return;
+      throw err;
+    }
+
+    while (!this.stopped && this.pendingTurnId === turnId) {
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for turn ${turnId} to stop`);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
   }
 
   sendInput(text: string): void {
@@ -1524,6 +1777,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
       const resolvedSettings =
         extractResolvedSettingsFromThreadResponse(response);
+      const resolvedSandboxPolicy = normalizeSandboxPolicyFromRpc(
+        response.sandbox,
+      );
       if (resolvedSettings.model) {
         this.startModel = resolvedSettings.model;
       }
@@ -1534,6 +1790,19 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         this._approvalsReviewer = normalizeApprovalsReviewerForAppServer(
           resolvedSettings.approvalsReviewer as CodexStartOptions["approvalsReviewer"],
         );
+      }
+      if (resolvedSettings.sandboxMode) {
+        this._runtimeSandboxMode =
+          resolvedSettings.sandboxMode as CodexStartOptions["sandboxMode"];
+      }
+      if (resolvedSandboxPolicy) {
+        this._runtimeSandboxPolicy = resolvedSandboxPolicy;
+        if (resolvedSandboxPolicy.type === "workspaceWrite") {
+          this._workspaceWriteSandboxPolicy = resolvedSandboxPolicy;
+        }
+      }
+      if (resolvedSettings.networkAccessEnabled !== undefined) {
+        this._networkAccessEnabled = resolvedSettings.networkAccessEnabled;
       }
 
       this._threadId = threadId;
@@ -1592,10 +1861,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       });
       this.setStatus("idle");
 
+      if (options?.resumeGoalAfterStart) {
+        await this.request("thread/goal/set", {
+          threadId,
+          status: "active",
+        });
+      }
+
       // Fetch skills/apps in background (non-blocking)
       this._projectPath = projectPath;
       setTimeout(() => {
         if (!this.stopped) {
+          void this.probeNextTurnPermissionUpdates();
           void this.fetchCompletionEntities(projectPath);
         }
       }, 25);
@@ -1931,6 +2208,34 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         continue;
       }
 
+      // Settings and the following input can arrive on adjacent WebSocket
+      // frames. Do not let the new turn overtake the persisted update.
+      if (this._pendingThreadSettingsUpdate) {
+        try {
+          await this.waitForPendingThreadSettingsUpdate();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.emitMessage({
+            type: "error",
+            errorCode: "set_permission_mode_rejected",
+            message:
+              "The queued permission update failed, so this input was not started: " +
+              message,
+          });
+          this.emitMessage({
+            type: "result",
+            subtype: "error",
+            error: message,
+            sessionId: this._threadId,
+          });
+          await Promise.all(
+            tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
+          );
+          this.setStatus("idle");
+          continue;
+        }
+      }
+
       this.setStatus("running");
       this.lastTokenUsage = null;
 
@@ -1941,15 +2246,25 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           threadId: this._threadId,
           input,
         };
-        if (this._approvalPolicy) {
-          params.approvalPolicy = normalizeApprovalPolicy(
-            this._approvalPolicy as CodexStartOptions["approvalPolicy"],
-          );
+        if (this._approvalPolicy !== undefined) {
+          params.approvalPolicy =
+            this._approvalPolicy === null
+              ? null
+              : normalizeApprovalPolicy(
+                  this._approvalPolicy as CodexStartOptions["approvalPolicy"],
+                );
         }
-        if (this._approvalsReviewer) {
-          params.approvalsReviewer = normalizeApprovalsReviewerForAppServer(
-            this._approvalsReviewer as CodexStartOptions["approvalsReviewer"],
-          );
+        if (this._approvalsReviewer !== undefined) {
+          params.approvalsReviewer =
+            this._approvalsReviewer === null
+              ? null
+              : normalizeApprovalsReviewerForAppServer(
+                  this
+                    ._approvalsReviewer as CodexStartOptions["approvalsReviewer"],
+                );
+        }
+        if (this._runtimeSandboxPolicy !== undefined) {
+          params.sandboxPolicy = this._runtimeSandboxPolicy;
         }
         const requestedModel =
           sanitizeCodexModel(this._runtimeModel) ??
@@ -1984,7 +2299,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         };
 
         console.log(
-          `[codex-process] turn/start: approval=${params.approvalPolicy}, collaboration=${this._collaborationMode}`,
+          `[codex-process] turn/start: approval=${params.approvalPolicy}, sandbox=${this._runtimeSandboxMode ?? "config"}, collaboration=${this._collaborationMode}`,
         );
         void this.request("turn/start", params)
           .then((result) => {
@@ -3519,6 +3834,41 @@ function normalizeSandboxModeFromRpc(value: unknown): string | undefined {
       return "read-only";
     default:
       return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+}
+
+function normalizeSandboxPolicyFromRpc(
+  value: unknown,
+): CodexSandboxPolicy | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const policy = value as Record<string, unknown>;
+  const networkAccess = policy.networkAccess ?? policy.network_access;
+  const writableRoots = policy.writableRoots ?? policy.writable_roots;
+  const excludeTmpdirEnvVar =
+    policy.excludeTmpdirEnvVar ?? policy.exclude_tmpdir_env_var;
+  const excludeSlashTmp = policy.excludeSlashTmp ?? policy.exclude_slash_tmp;
+  switch (policy.type) {
+    case "dangerFullAccess":
+      return { type: "dangerFullAccess" };
+    case "readOnly":
+      return {
+        type: "readOnly",
+        networkAccess: networkAccess === true,
+      };
+    case "workspaceWrite":
+      return {
+        type: "workspaceWrite",
+        writableRoots: Array.isArray(writableRoots)
+          ? writableRoots.filter(
+              (root): root is string => typeof root === "string",
+            )
+          : [],
+        networkAccess: networkAccess === true,
+        excludeTmpdirEnvVar: excludeTmpdirEnvVar === true,
+        excludeSlashTmp: excludeSlashTmp === true,
+      };
+    default:
+      return undefined;
   }
 }
 

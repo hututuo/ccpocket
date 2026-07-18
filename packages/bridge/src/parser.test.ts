@@ -315,7 +315,7 @@ describe("parseClientMessage", () => {
 
   it("parses set_permission_mode message", () => {
     const msg = parseClientMessage(
-      '{"type":"set_permission_mode","mode":"plan","sessionId":"s1","approvalsReviewer":"guardian_subagent","codexPermissionsMode":"custom"}',
+      '{"type":"set_permission_mode","mode":"plan","sessionId":"s1","approvalsReviewer":"guardian_subagent","codexPermissionsMode":"custom","applyStrategy":"next_turn","permissionChangeId":"change-1"}',
     );
     expect(msg).toEqual({
       type: "set_permission_mode",
@@ -323,12 +323,30 @@ describe("parseClientMessage", () => {
       sessionId: "s1",
       approvalsReviewer: "guardian_subagent",
       codexPermissionsMode: "custom",
+      applyStrategy: "next_turn",
+      permissionChangeId: "change-1",
     });
   });
 
   it("rejects set_permission_mode with invalid mode", () => {
     expect(
       parseClientMessage('{"type":"set_permission_mode","mode":"unsupported"}'),
+    ).toBeNull();
+  });
+
+  it("rejects set_permission_mode with invalid apply strategy", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"set_permission_mode","mode":"default","applyStrategy":"after_current_tool"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects an empty permission change id", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"set_permission_mode","mode":"default","permissionChangeId":""}',
+      ),
     ).toBeNull();
   });
 

@@ -32,7 +32,9 @@ import {
 import type { StartOptions } from "./sdk-process.js";
 import {
   CodexProcess,
+  CodexRpcError,
   type CodexModelMetadata,
+  type CodexNextTurnPermissionSettings,
   type CodexStartOptions,
   type CodexThreadSourceKind,
   type CodexThreadSummary,
@@ -132,6 +134,25 @@ type ClaudePermissionMode =
 
 const FILE_PEEK_TEXT_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
+const CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY =
+  "codex_permission_apply_strategy_v1";
+const PERMISSION_RESTART_BLOCKED_MESSAGE_TYPES = new Set([
+  "update_queued_input",
+  "cancel_queued_input",
+  "steer_queued_input",
+  "set_codex_model",
+  "set_codex_speed",
+  "set_goal",
+  "clear_goal",
+  "set_sandbox_mode",
+  "install_tool_suggestion",
+  "stop_session",
+  "interrupt",
+  "archive_session",
+  "rewind",
+  "fork",
+  "rename_session",
+]);
 
 class FilePeekReadError extends Error {
   constructor(
@@ -640,6 +661,13 @@ function codexSettingsFromPermissionsMode(
 
 function errorMessageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isUnsupportedCodexRpc(err: unknown): boolean {
+  return (
+    (err instanceof CodexRpcError && err.code === -32601) ||
+    /method not found|unsupported method/i.test(errorMessageOf(err))
+  );
 }
 
 function isClaudeAutoModeUnavailableError(err: unknown): boolean {
@@ -2476,6 +2504,22 @@ export class BridgeWebSocketServer {
       this.recordingStore?.record(incomingSessionId, "incoming", msg);
     }
 
+    const incomingSession = incomingSessionId
+      ? this.sessionManager.get(incomingSessionId)
+      : undefined;
+    if (
+      incomingSession?.permissionRestartInProgress &&
+      PERMISSION_RESTART_BLOCKED_MESSAGE_TYPES.has(msg.type)
+    ) {
+      this.send(ws, {
+        type: "error",
+        message: `Cannot process ${msg.type} while the permission restart is in progress.`,
+        errorCode: "permission_restart_in_progress",
+        sessionId: incomingSession.id,
+      });
+      return;
+    }
+
     const localFeatureRequest = this.localFeatures.handle(ws, msg);
     if (localFeatureRequest) {
       await localFeatureRequest;
@@ -2760,6 +2804,17 @@ export class BridgeWebSocketServer {
             message: "No active session. Send 'start' first.",
           });
           return;
+        }
+        if (session.permissionRestartInProgress) {
+          this.send(ws, {
+            type: "input_rejected",
+            sessionId: session.id,
+            ...(msg.clientMessageId
+              ? { clientMessageId: msg.clientMessageId }
+              : {}),
+            reason: "Permission restart in progress",
+          });
+          break;
         }
         const text = msg.text;
         const clientMessageId = msg.clientMessageId;
@@ -3234,18 +3289,39 @@ export class BridgeWebSocketServer {
             type: "error",
             message: "Failed to set permission mode: forced test failure",
             errorCode: "set_permission_mode_rejected",
+            ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+            ...(msg.permissionChangeId
+              ? { permissionChangeId: msg.permissionChangeId }
+              : {}),
           });
           break;
         }
         const session = this.resolveSession(msg.sessionId);
         if (!session) {
-          this.send(ws, { type: "error", message: "No active session." });
+          this.send(ws, {
+            type: "error",
+            message: "No active session.",
+            errorCode: "set_permission_mode_rejected",
+            ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+            ...(msg.permissionChangeId
+              ? { permissionChangeId: msg.permissionChangeId }
+              : {}),
+          });
           return;
         }
+        if (session.permissionRestartInProgress) {
+          this.send(ws, {
+            type: "error",
+            message: "A permission restart is already in progress.",
+            errorCode: "set_permission_mode_rejected",
+            sessionId: session.id,
+            ...(msg.permissionChangeId
+              ? { permissionChangeId: msg.permissionChangeId }
+              : {}),
+          });
+          break;
+        }
         if (session.provider === "codex") {
-          // Permission mode for Codex requires a session restart (like sandbox mode).
-          // approvalPolicy and collaborationMode are thread-level settings that
-          // only take effect reliably at thread/start or thread/resume time.
           const requestedCodexPermissionsMode = normalizeCodexPermissionsMode(
             msg.codexPermissionsMode,
           );
@@ -3319,15 +3395,111 @@ export class BridgeWebSocketServer {
                 currentReviewer);
           const currentCollaboration = process.collaborationMode;
           if (
+            msg.applyStrategy !== "restart_now" &&
             newApproval === currentApproval &&
             newReviewer === currentReviewer &&
             newSandboxMode === currentSandboxMode &&
             newPermissionsMode === currentPermissionsMode &&
             newCollaboration === currentCollaboration
           ) {
+            if (msg.permissionChangeId) {
+              this.send(ws, {
+                type: "system",
+                subtype: "set_permission_mode",
+                sessionId: session.id,
+                permissionMode: legacyPermissionMode,
+                executionMode,
+                approvalPolicy: newApproval,
+                approvalsReviewer: newReviewer,
+                codexPermissionsMode: newPermissionsMode,
+                planMode,
+                sandboxMode: newSandboxMode,
+                permissionChangeId: msg.permissionChangeId,
+              });
+            }
             break; // No change needed
           }
+          const nextTurnSettings: CodexNextTurnPermissionSettings = {
+            approvalPolicy:
+              requestedCodexPermissionsMode === "custom"
+                ? null
+                : newApproval,
+            approvalsReviewer:
+              requestedCodexPermissionsMode === "custom"
+                ? null
+                : (newReviewer as CodexStartOptions["approvalsReviewer"]),
+            codexPermissionsMode: newPermissionsMode,
+            sandboxMode:
+              requestedCodexPermissionsMode === "custom"
+                ? null
+                : (newSandboxMode as CodexStartOptions["sandboxMode"]),
+          };
+
+          if (msg.applyStrategy === "next_turn") {
+            try {
+              await process.updatePermissionSettingsForNextTurn(
+                nextTurnSettings,
+              );
+            } catch (err) {
+              const unsupported = isUnsupportedCodexRpc(err);
+              this.send(ws, {
+                type: "error",
+                message: unsupported
+                  ? "This Codex backend does not support next-turn permission updates. Choose Restart now instead."
+                  : `Failed to save permissions for the next turn: ${errorMessageOf(err)}`,
+                errorCode: "set_permission_mode_rejected",
+                sessionId: session.id,
+                ...(msg.permissionChangeId
+                  ? { permissionChangeId: msg.permissionChangeId }
+                  : {}),
+              });
+              break;
+            }
+
+            session.codexSettings = {
+              ...(session.codexSettings ?? {}),
+              approvalPolicy: newApproval,
+              approvalsReviewer: newReviewer,
+              codexPermissionsMode: newPermissionsMode,
+              sandboxMode: newSandboxMode,
+            };
+            session.lastActivityAt = new Date();
+            this.broadcast({
+              type: "system",
+              subtype: "set_permission_mode",
+              sessionId: session.id,
+              permissionMode: legacyPermissionMode,
+              executionMode,
+              approvalPolicy: newApproval,
+              approvalsReviewer: newReviewer,
+              codexPermissionsMode: newPermissionsMode,
+              planMode,
+              sandboxMode: newSandboxMode,
+              ...(msg.permissionChangeId
+                ? { permissionChangeId: msg.permissionChangeId }
+                : {}),
+            });
+            this.broadcast({
+              type: "system",
+              subtype: "tip",
+              sessionId: session.id,
+              tipCode: "permission_mode_next_turn_applied",
+            });
+            this.broadcastSessionList();
+            this.recordDebugEvent(session.id, {
+              direction: "internal" as const,
+              channel: "bridge" as const,
+              type: "permission_mode_changed",
+              detail: `mode=${msg.mode} approval=${newApproval} reviewer=${newReviewer} sandbox=${newSandboxMode} applied=next-turn`,
+            });
+            console.log(
+              `[ws] set_permission_mode(codex): execution=${executionMode} plan=${planMode} → approval=${newApproval}, reviewer=${newReviewer}, sandbox=${newSandboxMode} (next turn)`,
+            );
+            break;
+          }
+
           const canApplyModeInPlace =
+            msg.applyStrategy !== "restart_now" &&
             session.status === "idle" &&
             requestedCodexPermissionsMode !== "custom" &&
             newSandboxMode === currentSandboxMode;
@@ -3385,11 +3557,57 @@ export class BridgeWebSocketServer {
           const worktreePath = session.worktreePath;
           const worktreeBranch = session.worktreeBranch;
           const sessionName = session.name;
+          let goalPausedForRestart = false;
 
-          this.destroySession(oldSessionId);
-          console.log(
-            `[ws] Permission mode change: destroyed session ${oldSessionId}`,
-          );
+          {
+            // Every path that actually recreates a session uses the same gate,
+            // including legacy iOS clients and runtime-capability fallback.
+            // Set it before the first await so no session mutation can overtake
+            // the restart.
+            session.permissionRestartInProgress = true;
+            try {
+              let currentGoal = session.codexGoal;
+              if (threadId) {
+                try {
+                  currentGoal = await process.getGoal();
+                } catch (goalErr) {
+                  if (!isUnsupportedCodexRpc(goalErr)) throw goalErr;
+                  currentGoal = null;
+                }
+              }
+              if (threadId && currentGoal?.status === "active") {
+                await process.setGoal({ status: "paused" });
+                goalPausedForRestart = true;
+              }
+              if (
+                session.status !== "idle" &&
+                session.status !== "starting"
+              ) {
+                await process.interruptCurrentTurnAndWait();
+              }
+            } catch (err) {
+              if (goalPausedForRestart) {
+                try {
+                  await process.setGoal({ status: "active" });
+                } catch (resumeErr) {
+                  console.warn(
+                    `[ws] Failed to resume goal after restart abort: ${errorMessageOf(resumeErr)}`,
+                  );
+                }
+              }
+              session.permissionRestartInProgress = false;
+              this.send(ws, {
+                type: "error",
+                message: `Failed to settle the current turn before restart: ${errorMessageOf(err)}`,
+                errorCode: "set_permission_mode_rejected",
+                sessionId: session.id,
+                ...(msg.permissionChangeId
+                  ? { permissionChangeId: msg.permissionChangeId }
+                  : {}),
+              });
+              break;
+            }
+          }
 
           const hasUserMessages =
             session.history?.some(
@@ -3397,6 +3615,109 @@ export class BridgeWebSocketServer {
                 m.type === "user_input" || m.type === "assistant",
             ) ||
             (session.pastMessages && session.pastMessages.length > 0);
+          const restartWorktreeMapping = threadId
+            ? this.worktreeStore.get(threadId)
+            : undefined;
+          const restartEffectiveProjectPath =
+            restartWorktreeMapping?.projectPath ?? projectPath;
+          let restartPastMessages: SessionHistoryMessage[] | undefined;
+          if (threadId && hasUserMessages) {
+            try {
+              // Read the canonical history before destroying the only healthy
+              // runtime. A read failure must leave the old session usable and,
+              // for goal mode, restore the goal we paused above.
+              restartPastMessages = await this.getCodexThreadHistory(
+                threadId,
+                restartEffectiveProjectPath,
+              );
+            } catch (err) {
+              if (goalPausedForRestart) {
+                try {
+                  await process.setGoal({ status: "active" });
+                } catch (resumeErr) {
+                  console.warn(
+                    `[ws] Failed to resume goal after history preflight abort: ${errorMessageOf(resumeErr)}`,
+                  );
+                }
+              }
+              session.permissionRestartInProgress = false;
+              this.send(ws, {
+                type: "error",
+                message: `Failed to prepare session history for permission restart: ${errorMessageOf(err)}`,
+                errorCode: "set_permission_mode_rejected",
+                sessionId: oldSessionId,
+                ...(msg.permissionChangeId
+                  ? { permissionChangeId: msg.permissionChangeId }
+                  : {}),
+              });
+              break;
+            }
+          }
+
+          if (goalPausedForRestart) {
+            try {
+              const latestGoal = await process.getGoal();
+              if (latestGoal == null) {
+                // Another Codex client cleared the goal while the restart was
+                // settling. Respect that change and do not reactivate it.
+                goalPausedForRestart = false;
+              } else if (latestGoal.status !== "paused") {
+                session.permissionRestartInProgress = false;
+                this.send(ws, {
+                  type: "error",
+                  message:
+                    "The goal changed while the permission restart was settling. Try again from the current goal state.",
+                  errorCode: "set_permission_mode_rejected",
+                  sessionId: oldSessionId,
+                  ...(msg.permissionChangeId
+                    ? { permissionChangeId: msg.permissionChangeId }
+                    : {}),
+                });
+                break;
+              }
+            } catch (err) {
+              try {
+                await process.setGoal({ status: "active" });
+              } catch (resumeErr) {
+                console.warn(
+                  `[ws] Failed to resume goal after final restart check: ${errorMessageOf(resumeErr)}`,
+                );
+              }
+              session.permissionRestartInProgress = false;
+              this.send(ws, {
+                type: "error",
+                message: `Failed to verify the paused goal before permission restart: ${errorMessageOf(err)}`,
+                errorCode: "set_permission_mode_rejected",
+                sessionId: oldSessionId,
+                ...(msg.permissionChangeId
+                  ? { permissionChangeId: msg.permissionChangeId }
+                  : {}),
+              });
+              break;
+            }
+          }
+          if (
+            this.sessionManager.get(oldSessionId) !== session ||
+            !session.permissionRestartInProgress
+          ) {
+            this.send(ws, {
+              type: "error",
+              message:
+                "The session changed while the permission restart was settling. Try again on the current session.",
+              errorCode: "set_permission_mode_rejected",
+              sessionId: oldSessionId,
+              ...(msg.permissionChangeId
+                ? { permissionChangeId: msg.permissionChangeId }
+                : {}),
+            });
+            break;
+          }
+
+          this.destroySession(oldSessionId);
+          console.log(
+            `[ws] Permission mode change: destroyed session ${oldSessionId}`,
+          );
+
           if (!threadId || !hasUserMessages) {
             const newId = this.sessionManager.create(
               projectPath,
@@ -3425,10 +3746,28 @@ export class BridgeWebSocketServer {
                 webSearchMode: oldSettings.webSearchMode as
                   "disabled" | "cached" | "live" | undefined,
                 collaborationMode: newCollaboration,
+                ...(goalPausedForRestart
+                  ? { resumeGoalAfterStart: true }
+                  : {}),
               },
             );
             const newSession = this.sessionManager.get(newId);
             if (newSession && sessionName) newSession.name = sessionName;
+            if (msg.permissionChangeId) {
+              this.broadcast({
+                type: "system",
+                subtype: "set_permission_mode",
+                sessionId: oldSessionId,
+                permissionMode: legacyPermissionMode,
+                executionMode,
+                approvalPolicy: newApproval,
+                approvalsReviewer: newReviewer,
+                codexPermissionsMode: newPermissionsMode,
+                planMode,
+                sandboxMode: newSandboxMode,
+                permissionChangeId: msg.permissionChangeId,
+              });
+            }
             this.broadcast(
               this.buildSessionCreatedMessage({
                 sessionId: newId,
@@ -3454,8 +3793,8 @@ export class BridgeWebSocketServer {
           }
 
           // Worktree resolution
-          const wtMapping = this.worktreeStore.get(threadId);
-          const effectiveProjectPath = wtMapping?.projectPath ?? projectPath;
+          const wtMapping = restartWorktreeMapping;
+          const effectiveProjectPath = restartEffectiveProjectPath;
           let worktreeOpts:
             | {
                 useWorktree?: boolean;
@@ -3482,85 +3821,98 @@ export class BridgeWebSocketServer {
             };
           }
 
-          this.getCodexThreadHistory(threadId, effectiveProjectPath)
-            .then((pastMessages) => {
-              const newId = this.sessionManager.create(
-                effectiveProjectPath,
-                undefined,
-                pastMessages,
-                worktreeOpts,
-                "codex",
-                {
-                  threadId,
-                  approvalPolicy: newApproval,
-                  approvalsReviewer: newReviewer as
-                    "user" | "auto_review" | "guardian_subagent",
-                  codexPermissionsMode: newPermissionsMode,
-                  sandboxMode: newSandboxMode as
-                    | "read-only"
-                    | "workspace-write"
-                    | "danger-full-access"
-                    | undefined,
-                  model: oldSettings.model,
-                  modelReasoningEffort:
-                    oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
-                  serviceTier: oldSettings.serviceTier,
-                  networkAccessEnabled: oldSettings.networkAccessEnabled as
-                    boolean | undefined,
-                  webSearchMode: oldSettings.webSearchMode as
-                    "disabled" | "cached" | "live" | undefined,
-                  collaborationMode: newCollaboration,
-                },
-              );
+          const newId = this.sessionManager.create(
+            effectiveProjectPath,
+            undefined,
+            restartPastMessages ?? [],
+            worktreeOpts,
+            "codex",
+            {
+              threadId,
+              approvalPolicy: newApproval,
+              approvalsReviewer: newReviewer as
+                | "user"
+                | "auto_review"
+                | "guardian_subagent",
+              codexPermissionsMode: newPermissionsMode,
+              sandboxMode: newSandboxMode as
+                | "read-only"
+                | "workspace-write"
+                | "danger-full-access"
+                | undefined,
+              model: oldSettings.model,
+              modelReasoningEffort:
+                oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
+              serviceTier: oldSettings.serviceTier,
+              networkAccessEnabled: oldSettings.networkAccessEnabled as
+                | boolean
+                | undefined,
+              webSearchMode: oldSettings.webSearchMode as
+                | "disabled"
+                | "cached"
+                | "live"
+                | undefined,
+              collaborationMode: newCollaboration,
+              ...(goalPausedForRestart
+                ? { resumeGoalAfterStart: true }
+                : {}),
+            },
+          );
 
-              const newSession = this.sessionManager.get(newId);
-              if (newSession && sessionName) {
-                newSession.name = sessionName;
-              }
-
-              void this.loadAndSetSessionName(
-                newSession,
-                "codex",
-                effectiveProjectPath,
-                threadId,
-              ).then(() => {
-                this.broadcast(
-                  this.buildSessionCreatedMessage({
-                    sessionId: newId,
-                    provider: "codex",
-                    projectPath: effectiveProjectPath,
-                    session: newSession,
-                    permissionMode: legacyPermissionMode,
-                    executionMode,
-                    planMode,
-                    sandboxMode: newSandboxMode
-                      ? sandboxModeToExternal(newSandboxMode)
-                      : undefined,
-                    approvalsReviewer: newReviewer,
-                    codexPermissionsMode: newPermissionsMode,
-                    sourceSessionId: oldSessionId,
-                  }),
-                );
-                this.broadcastSessionList();
-              });
-
-              this.debugEvents.set(newId, []);
-              this.recordDebugEvent(newId, {
-                direction: "internal" as const,
-                channel: "bridge" as const,
-                type: "permission_mode_changed",
-                detail: `mode=${msg.mode} approval=${newApproval} reviewer=${newReviewer} collaboration=${newCollaboration} thread=${threadId} oldSession=${oldSessionId}`,
-              });
-              console.log(
-                `[ws] Permission mode change: created new session ${newId} (thread=${threadId}, mode=${msg.mode})`,
-              );
-            })
-            .catch((err) => {
-              this.send(ws, {
-                type: "error",
-                message: `Failed to restart session for permission mode change: ${err}`,
-              });
+          const newSession = this.sessionManager.get(newId);
+          if (newSession && sessionName) {
+            newSession.name = sessionName;
+          }
+          await this.loadAndSetSessionName(
+            newSession,
+            "codex",
+            effectiveProjectPath,
+            threadId,
+          );
+          if (msg.permissionChangeId) {
+            this.broadcast({
+              type: "system",
+              subtype: "set_permission_mode",
+              sessionId: oldSessionId,
+              permissionMode: legacyPermissionMode,
+              executionMode,
+              approvalPolicy: newApproval,
+              approvalsReviewer: newReviewer,
+              codexPermissionsMode: newPermissionsMode,
+              planMode,
+              sandboxMode: newSandboxMode,
+              permissionChangeId: msg.permissionChangeId,
             });
+          }
+          this.broadcast(
+            this.buildSessionCreatedMessage({
+              sessionId: newId,
+              provider: "codex",
+              projectPath: effectiveProjectPath,
+              session: newSession,
+              permissionMode: legacyPermissionMode,
+              executionMode,
+              planMode,
+              sandboxMode: newSandboxMode
+                ? sandboxModeToExternal(newSandboxMode)
+                : undefined,
+              approvalsReviewer: newReviewer,
+              codexPermissionsMode: newPermissionsMode,
+              sourceSessionId: oldSessionId,
+            }),
+          );
+          this.broadcastSessionList();
+
+          this.debugEvents.set(newId, []);
+          this.recordDebugEvent(newId, {
+            direction: "internal" as const,
+            channel: "bridge" as const,
+            type: "permission_mode_changed",
+            detail: `mode=${msg.mode} approval=${newApproval} reviewer=${newReviewer} collaboration=${newCollaboration} thread=${threadId} oldSession=${oldSessionId}`,
+          });
+          console.log(
+            `[ws] Permission mode change: created new session ${newId} (thread=${threadId}, mode=${msg.mode})`,
+          );
           break;
         }
         (session.process as SdkProcess)
@@ -4061,6 +4413,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectDuringPermissionRestart(ws, session, "approve")) break;
         if (session.provider === "codex") {
           (session.process as CodexProcess).approve(msg.id);
           break;
@@ -4133,6 +4486,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectDuringPermissionRestart(ws, session, "approve")) break;
         if (session.provider === "codex") {
           (session.process as CodexProcess).approveAlways(msg.id);
           break;
@@ -4147,6 +4501,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectDuringPermissionRestart(ws, session, "reject")) break;
         if (session.provider === "codex") {
           (session.process as CodexProcess).reject(msg.id, msg.message);
           break;
@@ -4161,6 +4516,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectDuringPermissionRestart(ws, session, "answer")) break;
         if (session.provider === "codex") {
           (session.process as CodexProcess).answer(msg.toolUseId, msg.result);
           break;
@@ -6666,6 +7022,7 @@ export class BridgeWebSocketServer {
       codexProfiles: this.codexProfiles,
       defaultCodexProfile: this.defaultCodexProfile,
       bridgeVersion: getPackageVersion(),
+      bridgeCapabilities: [CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY],
     });
   }
 
@@ -6702,6 +7059,7 @@ export class BridgeWebSocketServer {
       codexProfiles: this.codexProfiles,
       defaultCodexProfile: this.defaultCodexProfile,
       bridgeVersion: getPackageVersion(),
+      bridgeCapabilities: [CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY],
     });
   }
 
@@ -7631,7 +7989,7 @@ export class BridgeWebSocketServer {
   ): void {
     if (!this.shouldSendToClient(ws, msg)) return;
     const sessionId = this.extractSessionIdFromServerMessage(msg);
-    if (sessionId) {
+    if (sessionId && this.sessionManager.get(sessionId)) {
       this.recordDebugEvent(sessionId, {
         direction: "outgoing",
         channel: "ws",
@@ -8047,6 +8405,21 @@ export class BridgeWebSocketServer {
     }
     this.debugEvents.set(sessionId, events);
     this.debugTraceStore.record(fullEvent);
+  }
+
+  private rejectDuringPermissionRestart(
+    ws: WebSocket,
+    session: SessionInfo,
+    action: string,
+  ): boolean {
+    if (!session.permissionRestartInProgress) return false;
+    this.send(ws, {
+      type: "error",
+      message: `Cannot ${action} while the permission restart is in progress.`,
+      errorCode: "permission_restart_in_progress",
+      sessionId: session.id,
+    });
+    return true;
   }
 
   private getDebugEvents(sessionId: string, limit: number): DebugTraceEvent[] {

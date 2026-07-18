@@ -212,6 +212,20 @@ vi.mock("./session.js", async () => {
         setApprovalsReviewer: vi.fn(function (this: any, value: string) {
           this.approvalsReviewer = value;
         }),
+        updatePermissionSettingsForNextTurn: vi.fn(async function (
+          this: any,
+          value: Record<string, unknown>,
+        ) {
+          if (value.approvalPolicy !== undefined) {
+            this.approvalPolicy = value.approvalPolicy ?? "on-request";
+          }
+          if (value.approvalsReviewer !== undefined) {
+            this.approvalsReviewer = value.approvalsReviewer ?? "user";
+          }
+        }),
+        supportsNextTurnPermissionUpdates: true,
+        interruptCurrentTurn: vi.fn(async () => {}),
+        interruptCurrentTurnAndWait: vi.fn(async () => {}),
         setCollaborationMode: vi.fn(function (this: any, value: string) {
           this.collaborationMode = value;
         }),
@@ -439,6 +453,8 @@ vi.mock("./session.js", async () => {
         gitBranch: "",
         lastMessage: "",
         codexSettings: s.codexSettings,
+        codexPermissionApplyStrategySupported:
+          s.process.supportsNextTurnPermissionUpdates ?? false,
         queuedInput: s.codexQueuedInput,
       }));
     }
@@ -483,6 +499,20 @@ vi.mock("./session.js", async () => {
         setApprovalsReviewer: vi.fn(function (this: any, value: string) {
           this.approvalsReviewer = value;
         }),
+        updatePermissionSettingsForNextTurn: vi.fn(async function (
+          this: any,
+          value: Record<string, unknown>,
+        ) {
+          if (value.approvalPolicy !== undefined) {
+            this.approvalPolicy = value.approvalPolicy ?? "on-request";
+          }
+          if (value.approvalsReviewer !== undefined) {
+            this.approvalsReviewer = value.approvalsReviewer ?? "user";
+          }
+        }),
+        supportsNextTurnPermissionUpdates: true,
+        interruptCurrentTurn: vi.fn(async () => {}),
+        interruptCurrentTurnAndWait: vi.fn(async () => {}),
         setCollaborationMode: vi.fn(function (this: any, value: string) {
           this.collaborationMode = value;
         }),
@@ -5536,7 +5566,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(oldSession).toBeDefined();
     oldSession.status = "running";
 
-    (bridge as any).handleClientMessage(
+    await (bridge as any).handleClientMessage(
       {
         type: "set_permission_mode",
         sessionId: oldSessionId,
@@ -5545,6 +5575,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
+    expect(
+      oldSession.process.interruptCurrentTurnAndWait,
+    ).toHaveBeenCalledOnce();
     expect((bridge as any).sessionManager.get(oldSessionId)).toBeUndefined();
 
     const sessions = (bridge as any).sessionManager.list();
@@ -5552,6 +5585,423 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(sessions[0].id).not.toBe(oldSessionId);
     expect(sessions[0].provider).toBe("codex");
 
+    bridge.close();
+  });
+
+  it("persists codex permissions for the next turn without replacing an active session", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-next-turn",
+        provider: "codex",
+        codexPermissionsMode: "default",
+      },
+      ws,
+    );
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.status = "waiting_approval";
+    const pendingPermission = {
+      toolUseId: "pending-current-turn",
+      toolName: "Bash",
+      input: { command: "git status" },
+    };
+    session.process.getPendingPermission.mockReturnValue(pendingPermission);
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId,
+        mode: "acceptEdits",
+        executionMode: "fullAccess",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        codexPermissionsMode: "fullAccess",
+        planMode: false,
+        applyStrategy: "next_turn",
+        permissionChangeId: "permission-change-next",
+      },
+      ws,
+    );
+
+    expect((bridge as any).sessionManager.get(sessionId)).toBe(session);
+    expect((bridge as any).sessionManager.list()).toHaveLength(1);
+    expect(session.process.updatePermissionSettingsForNextTurn).toHaveBeenCalledWith(
+      {
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        codexPermissionsMode: "fullAccess",
+        sandboxMode: "danger-full-access",
+      },
+    );
+    expect(session.process.getPendingPermission()).toMatchObject({
+      toolUseId: "pending-current-turn",
+    });
+    expect(
+      session.process.interruptCurrentTurnAndWait,
+    ).not.toHaveBeenCalled();
+
+    const messages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "set_permission_mode",
+        sessionId,
+        codexPermissionsMode: "fullAccess",
+        sandboxMode: "danger-full-access",
+        permissionChangeId: "permission-change-next",
+      }),
+    );
+    expect(messages).toContainEqual({
+      type: "system",
+      subtype: "tip",
+      sessionId,
+      tipCode: "permission_mode_next_turn_applied",
+    });
+    expect(
+      messages.find((message: any) => message.type === "session_list")
+        ?.bridgeCapabilities,
+    ).toContain("codex_permission_apply_strategy_v1");
+
+    bridge.close();
+  });
+
+  it("interrupts an active codex turn before an explicit permission restart", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-restart-now",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const oldSessionId = created.sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "running";
+    oldSession.claudeSessionId = "thread-restart-now";
+    oldSession.process.approvalPolicy = "on-request";
+    oldSession.process.approvalsReviewer = "auto_review";
+    oldSession.codexSettings = {
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      codexPermissionsMode: "autoReview",
+      sandboxMode: "workspace-write",
+    };
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+        permissionChangeId: "permission-change-restart",
+      },
+      ws,
+    );
+
+    expect(
+      oldSession.process.updatePermissionSettingsForNextTurn,
+    ).not.toHaveBeenCalled();
+    expect(
+      oldSession.process.interruptCurrentTurnAndWait,
+    ).toHaveBeenCalledOnce();
+    expect((bridge as any).sessionManager.get(oldSessionId)).toBeUndefined();
+    expect((bridge as any).sessionManager.list()).toHaveLength(1);
+
+    const messages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "set_permission_mode",
+        sessionId: oldSessionId,
+        permissionChangeId: "permission-change-restart",
+      }),
+    );
+
+    bridge.close();
+  });
+
+  it("blocks input and approval while an explicit permission restart settles", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-restart-gate",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "running";
+    oldSession.claudeSessionId = "thread-restart-gate";
+
+    let releaseInterrupt!: () => void;
+    oldSession.process.interruptCurrentTurnAndWait.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseInterrupt = resolve;
+        }),
+    );
+    const restart = (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+        permissionChangeId: "permission-change-gated",
+      },
+      ws,
+    );
+    await vi.waitFor(() => {
+      expect(oldSession.permissionRestartInProgress).toBe(true);
+      expect(
+        oldSession.process.interruptCurrentTurnAndWait,
+      ).toHaveBeenCalledOnce();
+    });
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "input",
+        sessionId: oldSessionId,
+        text: "must not overtake restart",
+        clientMessageId: "blocked-input",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      { type: "approve", sessionId: oldSessionId, id: "old-approval" },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_goal",
+        sessionId: oldSessionId,
+        objective: "must not replace the paused goal",
+        status: "active",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      { type: "stop_session", sessionId: oldSessionId },
+      ws,
+    );
+
+    expect(oldSession.process.sendInput).not.toHaveBeenCalled();
+    expect(oldSession.process.approve).not.toHaveBeenCalled();
+    expect(oldSession.process.setGoal).not.toHaveBeenCalled();
+    expect((bridge as any).sessionManager.get(oldSessionId)).toBe(oldSession);
+    const blockedMessages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(blockedMessages).toContainEqual({
+      type: "input_rejected",
+      sessionId: oldSessionId,
+      clientMessageId: "blocked-input",
+      reason: "Permission restart in progress",
+    });
+    expect(blockedMessages).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        errorCode: "permission_restart_in_progress",
+        sessionId: oldSessionId,
+      }),
+    );
+    expect(
+      blockedMessages.filter(
+        (message: any) =>
+          message.errorCode === "permission_restart_in_progress",
+      ),
+    ).toHaveLength(3);
+
+    releaseInterrupt();
+    await restart;
+    bridge.close();
+  });
+
+  it("pauses an active goal and resumes it through the replacement runtime", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-restart",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "running";
+    oldSession.claudeSessionId = "thread-goal-restart";
+    oldSession.history.push({ type: "user_input", text: "continue goal" });
+    oldSession.process.getGoal
+      .mockResolvedValueOnce({
+        threadId: "thread-goal-restart",
+        objective: "Complete the goal",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 1,
+        timeUsedSeconds: 1,
+        createdAt: 1,
+        updatedAt: 2,
+      })
+      .mockResolvedValueOnce({
+        threadId: "thread-goal-restart",
+        objective: "Complete the goal",
+        status: "paused",
+        tokenBudget: null,
+        tokensUsed: 1,
+        timeUsedSeconds: 2,
+        createdAt: 1,
+        updatedAt: 3,
+      });
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+        permissionChangeId: "permission-change-goal",
+      },
+      ws,
+    );
+
+    expect(oldSession.process.setGoal).toHaveBeenCalledWith({ status: "paused" });
+    expect(
+      oldSession.process.setGoal.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      oldSession.process.interruptCurrentTurnAndWait.mock.invocationCallOrder[0],
+    );
+    const replacementSummary = (bridge as any).sessionManager.list()[0];
+    const replacement = (bridge as any).sessionManager.get(
+      replacementSummary.id,
+    );
+    expect(replacement.codexOptions).toMatchObject({
+      threadId: "thread-goal-restart",
+      resumeGoalAfterStart: true,
+    });
+    bridge.close();
+  });
+
+  it("keeps the old goal session usable when restart history preflight fails", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-preflight",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "running";
+    oldSession.claudeSessionId = "thread-goal-preflight";
+    oldSession.history.push({ type: "user_input", text: "continue goal" });
+    oldSession.process.getGoal.mockResolvedValue({
+      threadId: "thread-goal-preflight",
+      objective: "Complete the goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 1,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    oldSession.process.readThread.mockRejectedValueOnce(
+      new Error("history unavailable"),
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+        permissionChangeId: "permission-change-preflight",
+      },
+      ws,
+    );
+
+    expect((bridge as any).sessionManager.get(oldSessionId)).toBe(oldSession);
+    expect(oldSession.permissionRestartInProgress).toBe(false);
+    expect(oldSession.process.setGoal).toHaveBeenNthCalledWith(1, {
+      status: "paused",
+    });
+    expect(oldSession.process.setGoal).toHaveBeenNthCalledWith(2, {
+      status: "active",
+    });
+    const failure = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) =>
+        String(message.message).includes("history unavailable"),
+      );
+    expect(failure).toMatchObject({
+      type: "error",
+      errorCode: "set_permission_mode_rejected",
+      sessionId: oldSessionId,
+      permissionChangeId: "permission-change-preflight",
+    });
     bridge.close();
   });
 
@@ -5830,6 +6280,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(last).toEqual({
       type: "error",
       message: "No active session.",
+      errorCode: "set_permission_mode_rejected",
+      sessionId: "missing",
     });
 
     bridge.close();
@@ -5857,6 +6309,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       type: "error",
       message: "Failed to set permission mode: forced test failure",
       errorCode: "set_permission_mode_rejected",
+      sessionId: "s-1",
     });
 
     bridge.close();
@@ -5971,7 +6424,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect((bridge as any).debugEvents.size).toBe(0);
+    expect((bridge as any).debugEvents.has("missing-session")).toBe(false);
     bridge.close();
   });
 

@@ -92,6 +92,8 @@ export interface SessionInfo {
   codexQueuedInput?: QueuedCodexInput;
   /** Latest Codex goal state. Kept out of chat history. */
   codexGoal?: CodexGoal | null;
+  /** Blocks input and approval actions during an explicit permission restart. */
+  permissionRestartInProgress?: boolean;
   /** Synthetic Codex user UUIDs waiting for their app-server echo. */
   pendingCodexUserEchoUuids?: Set<string>;
   /** Raw Codex app-server user item ids mapped to valid ccpocket turn UUIDs. */
@@ -191,6 +193,8 @@ export interface SessionSummary {
     input: Record<string, unknown>;
   };
   queuedInput?: QueuedInputItem;
+  /** Runtime-probed support for app-server next-turn permission settings. */
+  codexPermissionApplyStrategySupported?: boolean;
 }
 
 const MAX_HISTORY_PER_SESSION = 100;
@@ -683,6 +687,15 @@ export class SessionManager {
         ) {
           this.onSessionUpdated?.(session.id);
         }
+        if (
+          msg.type === "system" &&
+          msg.subtype === "runtime_capabilities"
+        ) {
+          // Capability probes finish after the initial session_created frame.
+          // Re-broadcast the session list so clients learn the capability for
+          // this exact Codex runtime instead of relying on a global guess.
+          this.onSessionUpdated?.(session.id);
+        }
 
           const providerSessionId =
             session.claudeSessionId ?? proc.sessionId ?? undefined;
@@ -1120,6 +1133,10 @@ export class SessionManager {
         agentRole:
           s.process instanceof CodexProcess
             ? (s.process.agentRole ?? undefined)
+            : undefined,
+        codexPermissionApplyStrategySupported:
+          s.process instanceof CodexProcess
+            ? s.process.supportsNextTurnPermissionUpdates
             : undefined,
         sandboxEnabled: s.sandboxEnabled,
         pendingPermission,

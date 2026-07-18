@@ -130,6 +130,243 @@ describe("CodexProcess (app-server)", () => {
     });
   });
 
+  it("persists next-turn permissions before resuming an active goal", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-next-turn";
+    (proc as any)._projectPath = "/tmp/project-next-turn";
+    let resolveSettings!: (value: unknown) => void;
+    const settingsResponse = new Promise((resolve) => {
+      resolveSettings = resolve;
+    });
+    const goal = {
+      threadId: "thread-next-turn",
+      objective: "Continue safely",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementationOnce(() => settingsResponse)
+      .mockResolvedValueOnce({ goal });
+
+    const settings = proc.updatePermissionSettingsForNextTurn({
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      codexPermissionsMode: "fullAccess",
+      sandboxMode: "danger-full-access",
+    });
+    const resumeGoal = proc.setGoal({ status: "active" });
+    await tick();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenNthCalledWith(1, "thread/settings/update", {
+      threadId: "thread-next-turn",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+
+    resolveSettings({});
+    await settings;
+    await expect(resumeGoal).resolves.toEqual(goal);
+    expect(request).toHaveBeenNthCalledWith(2, "thread/goal/set", {
+      threadId: "thread-next-turn",
+      status: "active",
+    });
+  });
+
+  it("waits for permission updates appended while a goal update is waiting", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-serial-settings";
+    let resolveFirst!: (value: unknown) => void;
+    let resolveSecond!: (value: unknown) => void;
+    const first = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+    const goal = {
+      threadId: "thread-serial-settings",
+      objective: "Continue safely",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => second)
+      .mockResolvedValueOnce({ goal });
+
+    const firstUpdate = proc.updatePermissionSettingsForNextTurn({
+      approvalPolicy: "on-request",
+    });
+    const goalUpdate = proc.setGoal({ status: "active" });
+    const secondUpdate = proc.updatePermissionSettingsForNextTurn({
+      approvalsReviewer: "auto_review",
+    });
+    resolveFirst({});
+    await firstUpdate;
+    await tick();
+
+    expect(request).toHaveBeenCalledTimes(2);
+    resolveSecond({});
+    await secondUpdate;
+    await expect(goalUpdate).resolves.toEqual(goal);
+    expect(request).toHaveBeenNthCalledWith(3, "thread/goal/set", {
+      threadId: "thread-serial-settings",
+      status: "active",
+    });
+  });
+
+  it("does not resume a goal when its pending permission update fails", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-failed-settings";
+    let rejectSettings!: (error: Error) => void;
+    const settings = new Promise((_, reject) => {
+      rejectSettings = reject;
+    });
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementationOnce(() => settings);
+
+    const update = proc.updatePermissionSettingsForNextTurn({
+      approvalPolicy: "on-request",
+    });
+    const goalUpdate = proc.setGoal({ status: "active" });
+    rejectSettings(new Error("settings rejected"));
+
+    await expect(update).rejects.toThrow("settings rejected");
+    await expect(goalUpdate).rejects.toThrow("settings rejected");
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("serializes next-turn permission updates and propagates unsupported RPCs", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-unsupported";
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockRejectedValue(
+        new CodexRpcError(
+          "thread/settings/update",
+          "Method not found",
+          -32601,
+        ),
+      );
+
+    await expect(
+      proc.updatePermissionSettingsForNextTurn({
+        approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
+        codexPermissionsMode: "autoReview",
+        sandboxMode: "danger-full-access",
+      }),
+    ).rejects.toMatchObject({ code: -32601 });
+    expect(proc.approvalPolicy).toBe("on-request");
+    expect(proc.approvalsReviewer).toBe("user");
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("sends a complete workspace sandbox policy for next-turn permissions", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-workspace";
+    (proc as any)._projectPath = "/tmp/project-workspace";
+    (proc as any)._additionalWritableRoots = ["/tmp/extra-root"];
+    (proc as any)._networkAccessEnabled = true;
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({
+        config: {
+          sandbox_workspace_write: {
+            writable_roots: ["/tmp/config-root"],
+          },
+        },
+      })
+      .mockResolvedValueOnce({});
+
+    await proc.updatePermissionSettingsForNextTurn({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      codexPermissionsMode: "autoReview",
+      sandboxMode: "workspace-write",
+    });
+
+    expect(request).toHaveBeenNthCalledWith(2, "thread/settings/update", {
+      threadId: "thread-workspace",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "guardian_subagent",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [
+          "/tmp/project-workspace",
+          "/tmp/config-root",
+          "/tmp/extra-root",
+        ],
+        networkAccess: true,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+    });
+  });
+
+  it("probes next-turn permission support on the exact runtime", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-probe";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({});
+
+    await (proc as any).probeNextTurnPermissionUpdates();
+
+    expect(request).toHaveBeenCalledWith("thread/settings/update", {
+      threadId: "thread-probe",
+    });
+    expect(proc.supportsNextTurnPermissionUpdates).toBe(true);
+    expect(messages).toContainEqual({
+      type: "system",
+      subtype: "runtime_capabilities",
+      provider: "codex",
+    });
+  });
+
+  it("waits for the interrupted turn terminal notification", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-interrupt";
+    (proc as any).pendingTurnId = "turn-interrupt";
+    (proc as any)._status = "running";
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({});
+    let settled = false;
+
+    const interrupt = proc.interruptCurrentTurnAndWait(500).then(() => {
+      settled = true;
+    });
+    await tick();
+    expect(request).toHaveBeenCalledWith("turn/interrupt", {
+      threadId: "thread-interrupt",
+      turnId: "turn-interrupt",
+    });
+    expect(settled).toBe(false);
+
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-interrupt",
+      turn: { id: "turn-interrupt", status: "interrupted" },
+    });
+    await interrupt;
+    expect(settled).toBe(true);
+  });
+
   it("validates goal payloads received from app-server", () => {
     expect(() => parseCodexGoal({ status: "active" })).toThrow("invalid shape");
     expect(() =>

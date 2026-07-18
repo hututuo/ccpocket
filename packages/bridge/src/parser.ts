@@ -173,6 +173,8 @@ export type ClientMessage =
   | {
       type: "set_permission_mode";
       mode: PermissionMode;
+      applyStrategy?: "next_turn" | "restart_now";
+      permissionChangeId?: string;
       executionMode?: ExecutionMode;
       approvalPolicy?: CodexApprovalPolicy;
       approvalsReviewer?: CodexApprovalsReviewer;
@@ -513,6 +515,7 @@ export type ServerMessage =
       clearContext?: boolean;
       sourceSessionId?: string;
       tipCode?: string;
+      permissionChangeId?: string;
       codexCliJoin?: CodexCliJoinTarget;
     }
   | {
@@ -557,7 +560,13 @@ export type ServerMessage =
       toolCalls?: number;
       fileEdits?: number;
     }
-  | { type: "error"; message: string; errorCode?: string }
+  | {
+      type: "error";
+      message: string;
+      errorCode?: string;
+      sessionId?: string;
+      permissionChangeId?: string;
+    }
   | { type: "status"; status: ProcessStatus }
   | { type: "history"; messages: ServerMessage[] }
   | {
@@ -1163,6 +1172,18 @@ export function parseClientMessage(data: string): ClientMessage | null {
         )
           return null;
         if (msg.planMode !== undefined && typeof msg.planMode !== "boolean")
+          return null;
+        if (
+          msg.applyStrategy !== undefined &&
+          msg.applyStrategy !== "next_turn" &&
+          msg.applyStrategy !== "restart_now"
+        )
+          return null;
+        if (
+          msg.permissionChangeId !== undefined &&
+          (typeof msg.permissionChangeId !== "string" ||
+            msg.permissionChangeId.trim() === "")
+        )
           return null;
         break;
       case "set_codex_model":

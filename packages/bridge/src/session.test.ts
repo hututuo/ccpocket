@@ -10,6 +10,7 @@ const { codexInstances, sdkInstances, fakeDirs, fakeFiles } = vi.hoisted(
   () => ({
     codexInstances: [] as Array<{
       isWaitingForInput: boolean;
+      supportsNextTurnPermissionUpdates: boolean;
       start: ReturnType<typeof vi.fn>;
       stop: ReturnType<typeof vi.fn>;
       sendInputStructured: ReturnType<typeof vi.fn>;
@@ -94,6 +95,7 @@ vi.mock("node:fs", () => {
 vi.mock("./codex-process.js", () => ({
   CodexProcess: class MockCodexProcess extends EventEmitter {
     public isWaitingForInput = false;
+    public supportsNextTurnPermissionUpdates = false;
     public start = vi.fn((_: string, __?: unknown) => {});
     public stop = vi.fn(() => {});
     public sendInputStructured = vi.fn();
@@ -436,6 +438,44 @@ describe("SessionManager codex path", () => {
       sandboxMode: "workspace-write",
       networkAccessEnabled: false,
     });
+  });
+
+  it("rebroadcasts per-runtime permission capability after its probe", () => {
+    const onSessionUpdated = vi.fn();
+    const manager = new SessionManager(
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      onSessionUpdated,
+    );
+    const sessionId = manager.create(
+      "/tmp/project-codex-capability",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+
+    expect(
+      manager.list().find((entry) => entry.id === sessionId)
+        ?.codexPermissionApplyStrategySupported,
+    ).toBe(false);
+    proc.supportsNextTurnPermissionUpdates = true;
+    proc.emit("message", {
+      type: "system",
+      subtype: "runtime_capabilities",
+      provider: "codex",
+    });
+
+    expect(onSessionUpdated).toHaveBeenCalledOnce();
+    expect(onSessionUpdated).toHaveBeenCalledWith(sessionId);
+    expect(
+      manager.list().find((entry) => entry.id === sessionId)
+        ?.codexPermissionApplyStrategySupported,
+    ).toBe(true);
   });
 
   it("ignores placeholder codex model names from runtime messages", () => {
