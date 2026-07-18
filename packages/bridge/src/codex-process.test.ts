@@ -38,6 +38,7 @@ vi.mock("node:child_process", () => ({
 
 import {
   buildCodexSpawnSpec,
+  CodexCoreActionPreconditionError,
   CodexProcess,
   CodexRpcError,
   createCodexGoalResumeLease,
@@ -2055,6 +2056,310 @@ describe("CodexProcess (app-server)", () => {
     });
     expect(request).toHaveBeenNthCalledWith(3, "thread/delete", {
       threadId: "thread-delete",
+    });
+  });
+
+  it("maps compact and inline review to stable app-server RPCs", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-core-actions";
+    (proc as any)._status = "idle";
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        turn: { id: "turn-review" },
+        reviewThreadId: "thread-core-actions",
+      });
+    const options = { timeoutMs: 12_000 };
+
+    await expect(proc.compactThread(options)).resolves.toBeUndefined();
+    (proc as any).handleNotification("turn/started", {
+      threadId: "thread-core-actions",
+      turn: { id: "turn-compact" },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-core-actions",
+      turn: { id: "turn-compact", status: "completed" },
+    });
+    await expect(
+      proc.startInlineReview(
+        { type: "commit", sha: "abc123", title: null },
+        options,
+      ),
+    ).resolves.toEqual({
+      turnId: "turn-review",
+      reviewThreadId: "thread-core-actions",
+    });
+    (proc as any).handleNotification("turn/started", {
+      threadId: "thread-core-actions",
+      turn: { id: "turn-review" },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-core-actions",
+      turn: { id: "turn-review", status: "completed" },
+    });
+
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "thread/compact/start",
+      { threadId: "thread-core-actions" },
+      options,
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "review/start",
+      {
+        threadId: "thread-core-actions",
+        target: { type: "commit", sha: "abc123", title: null },
+        delivery: "inline",
+      },
+      options,
+    );
+  });
+
+  it("fails core actions closed unless the active thread is idle", async () => {
+    const proc = new CodexProcess("linux");
+    const request = vi.spyOn(proc as any, "request");
+
+    await expect(proc.compactThread()).rejects.toEqual(
+      expect.objectContaining<CodexCoreActionPreconditionError>({
+        code: "thread_unavailable",
+      }),
+    );
+
+    (proc as any)._threadId = "thread-busy";
+    (proc as any)._status = "running";
+    await expect(
+      proc.startInlineReview({ type: "uncommittedChanges" }),
+    ).rejects.toEqual(
+      expect.objectContaining<CodexCoreActionPreconditionError>({
+        code: "session_busy",
+      }),
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("owns the core-action ack window until turn/started takes over", async () => {
+    const proc = new CodexProcess("linux");
+    const inputResolve = vi.fn();
+    const inputError = vi.spyOn(console, "error").mockImplementation(() => {});
+    (proc as any)._threadId = "thread-core-action-lock";
+    (proc as any)._status = "idle";
+    (proc as any).inputResolve = inputResolve;
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ data: [], nextCursor: null });
+
+    await expect(proc.compactThread()).resolves.toBeUndefined();
+    expect(proc.hasPendingCoreAction).toBe(true);
+    expect(proc.status).toBe("running");
+    expect(proc.isWaitingForInput).toBe(false);
+
+    await expect(
+      proc.startInlineReview({ type: "uncommittedChanges" }),
+    ).rejects.toMatchObject({ code: "session_busy" });
+    proc.sendInput("must not overtake compact", "message-during-compact");
+    expect(inputResolve).not.toHaveBeenCalled();
+    expect((proc as any).inputResolve).toBe(inputResolve);
+    expect(request).toHaveBeenCalledTimes(1);
+
+    await expect(proc.listMcpServerStatus()).resolves.toEqual({
+      data: [],
+      nextCursor: null,
+    });
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "mcpServerStatus/list",
+      {
+        cursor: null,
+        limit: 64,
+        detail: "toolsAndAuthOnly",
+        threadId: "thread-core-action-lock",
+      },
+      {},
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      threadId: "thread-core-action-lock",
+      turn: { id: "turn-compact" },
+    });
+    expect(proc.hasPendingCoreAction).toBe(false);
+    expect(proc.status).toBe("running");
+    expect(proc.isWaitingForInput).toBe(false);
+
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-core-action-lock",
+      turn: { id: "turn-compact", status: "completed" },
+    });
+    expect(proc.status).toBe("idle");
+    expect(proc.isWaitingForInput).toBe(true);
+    inputError.mockRestore();
+  });
+
+  it("matches review admission to its returned turn id", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-review-lock";
+    (proc as any)._status = "idle";
+    vi.spyOn(proc as any, "request").mockResolvedValue({
+      turn: { id: "turn-review" },
+      reviewThreadId: "thread-review-lock",
+    });
+
+    await expect(
+      proc.startInlineReview({ type: "uncommittedChanges" }),
+    ).resolves.toMatchObject({ turnId: "turn-review" });
+    expect(proc.hasPendingCoreAction).toBe(true);
+
+    (proc as any).handleNotification("turn/started", {
+      threadId: "thread-review-lock",
+      turn: { id: "turn-unrelated" },
+    });
+    expect(proc.hasPendingCoreAction).toBe(true);
+
+    (proc as any).handleNotification("turn/started", {
+      threadId: "thread-review-lock",
+      turn: { id: "turn-review" },
+    });
+    expect(proc.hasPendingCoreAction).toBe(false);
+    expect(proc.status).toBe("running");
+
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-review-lock",
+      turn: { id: "turn-review", status: "completed" },
+    });
+  });
+
+  it("releases admission on RPC failure without fabricating a busy turn", async () => {
+    const proc = new CodexProcess("linux");
+    const inputResolve = vi.fn();
+    (proc as any)._threadId = "thread-core-action-failure";
+    (proc as any)._status = "idle";
+    (proc as any).inputResolve = inputResolve;
+    vi.spyOn(proc as any, "request").mockRejectedValue(
+      new CodexRpcError("thread/compact/start", "rejected", -32000),
+    );
+
+    await expect(proc.compactThread()).rejects.toThrow("rejected");
+    expect(proc.hasPendingCoreAction).toBe(false);
+    expect(proc.status).toBe("idle");
+    expect(proc.isWaitingForInput).toBe(true);
+
+    proc.sendInput("safe after failure", "message-after-failure");
+    expect(inputResolve).toHaveBeenCalledWith({
+      text: "safe after failure",
+      clientMessageId: "message-after-failure",
+    });
+  });
+
+  it("keeps normal busy state when an observed action turn wins an RPC failure", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-core-action-started-failure";
+    (proc as any)._status = "idle";
+    let rejectRequest!: (error: Error) => void;
+    vi.spyOn(proc as any, "request").mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectRequest = reject;
+      }),
+    );
+
+    const compact = proc.compactThread();
+    expect(proc.hasPendingCoreAction).toBe(true);
+    (proc as any).handleNotification("turn/started", {
+      threadId: "thread-core-action-started-failure",
+      turn: { id: "turn-compact" },
+    });
+    rejectRequest(new Error("late RPC failure"));
+
+    await expect(compact).rejects.toThrow("late RPC failure");
+    expect(proc.hasPendingCoreAction).toBe(false);
+    expect(proc.status).toBe("running");
+    expect((proc as any).pendingTurnId).toBe("turn-compact");
+
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-core-action-started-failure",
+      turn: { id: "turn-compact", status: "failed" },
+    });
+  });
+
+  it("clears an acked admission on terminal events, start timeout, and stop", async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-core-action-cleanup";
+    (proc as any)._status = "idle";
+    vi.spyOn(proc as any, "request").mockResolvedValue({});
+    try {
+      await proc.compactThread({ timeoutMs: 1 });
+      expect(proc.hasPendingCoreAction).toBe(true);
+      (proc as any).handleNotification("turn/completed", {
+        threadId: "thread-core-action-cleanup",
+        turn: { id: "turn-completed-early", status: "failed" },
+      });
+      expect(proc.hasPendingCoreAction).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+
+      await proc.compactThread({ timeoutMs: 1 });
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(proc.hasPendingCoreAction).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(proc.hasPendingCoreAction).toBe(false);
+      expect(proc.status).toBe("idle");
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("within 15000ms"),
+      );
+
+      await proc.compactThread();
+      expect(proc.hasPendingCoreAction).toBe(true);
+      proc.stop();
+      expect(proc.hasPendingCoreAction).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      proc.stop();
+      warning.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("requests one bounded low-detail MCP status page", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-mcp-status";
+    const response = {
+      data: [{ name: "filesystem", authStatus: "unsupported" }],
+      nextCursor: "next-page",
+    };
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue(response);
+    const options = { timeoutMs: 10_000 };
+
+    await expect(proc.listMcpServerStatus(options)).resolves.toEqual(response);
+    expect(request).toHaveBeenCalledWith(
+      "mcpServerStatus/list",
+      {
+        cursor: null,
+        limit: 64,
+        detail: "toolsAndAuthOnly",
+        threadId: "thread-mcp-status",
+      },
+      options,
+    );
+  });
+
+  it("rejects malformed review and MCP status responses", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-invalid-response";
+    (proc as any)._status = "idle";
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({ turn: {}, reviewThreadId: "thread" })
+      .mockResolvedValueOnce({ data: null });
+
+    await expect(
+      proc.startInlineReview({ type: "uncommittedChanges" }),
+    ).rejects.toMatchObject({
+      method: "review/start",
+    });
+    await expect(proc.listMcpServerStatus()).rejects.toMatchObject({
+      method: "mcpServerStatus/list",
     });
   });
 

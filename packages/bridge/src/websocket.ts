@@ -2986,6 +2986,23 @@ export class BridgeWebSocketServer {
         const codexSkills = msg.skills ?? (msg.skill ? [msg.skill] : []);
         const codexMentions = msg.mentions ?? [];
 
+        // A compact/review RPC can be accepted before app-server publishes the
+        // corresponding turn/started notification. During that narrow window
+        // the Codex input loop is still waiting, but consuming it would race a
+        // non-steerable core action. The process owns this admission state.
+        if (
+          session.provider === "codex" &&
+          (session.process as CodexProcess).hasPendingCoreAction
+        ) {
+          this.send(ws, {
+            type: "input_rejected",
+            sessionId: session.id,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            reason: "Codex compact or review is starting",
+          });
+          break;
+        }
+
         // Snapshot busy state before dispatch. We prefer the actual enqueue
         // result returned by SdkProcess sendInput* below, but keep this as a
         // fallback for test doubles and async paths.

@@ -200,6 +200,7 @@ vi.mock("./session.js", async () => {
       const process = {
         status: "idle",
         isRunning: true,
+        hasPendingCoreAction: false,
         sessionId:
           codexOptions &&
           typeof codexOptions === "object" &&
@@ -1423,6 +1424,236 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
     (bridge as any).send(ws, msg);
     expect(ws.send).toHaveBeenCalledWith(JSON.stringify(msg));
+
+    bridge.close();
+  });
+
+  it("routes correlated Codex core actions through the local-feature websocket seam", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-core-actions",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-core-actions" },
+    );
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.process.compactThread = vi.fn(async () => {});
+    session.process.startInlineReview = vi.fn(async () => ({
+      turnId: "turn-review",
+      reviewThreadId: "thread-core-actions",
+    }));
+    session.process.listMcpServerStatus = vi.fn(async () => ({
+      data: [
+        {
+          name: "filesystem",
+          authStatus: "unsupported",
+          tools: {},
+          serverInfo: null,
+        },
+      ],
+      nextCursor: null,
+    }));
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "codex_action_result",
+          "codex_mcp_status_result",
+        ],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "codex_compact_request",
+        sessionId,
+        requestId: "compact-ws-1",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "codex_mcp_status_request",
+        sessionId,
+        requestId: "mcp-ws-1",
+      },
+      ws,
+    );
+
+    expect(session.process.compactThread).toHaveBeenCalledOnce();
+    expect(session.process.listMcpServerStatus).toHaveBeenCalledOnce();
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) => JSON.parse(call[0] as string)),
+    ).toEqual([
+      expect.objectContaining({
+        type: "codex_action_result",
+        sessionId,
+        requestId: "compact-ws-1",
+        action: "compact",
+        status: "accepted",
+      }),
+      expect.objectContaining({
+        type: "codex_mcp_status_result",
+        sessionId,
+        requestId: "mcp-ws-1",
+        status: "completed",
+        servers: [
+          expect.objectContaining({
+            name: "filesystem",
+            authStatus: "unsupported",
+          }),
+        ],
+      }),
+    ]);
+
+    bridge.close();
+  });
+
+  it("rejects input and a second action during the process-owned core-action ack window", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-core-action-admission",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-core-action-admission" },
+    );
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.process.compactThread = vi.fn(async () => {
+      session.process.hasPendingCoreAction = true;
+    });
+    session.process.startInlineReview = vi.fn(async () => ({
+      turnId: "turn-review",
+      reviewThreadId: "thread-core-action-admission",
+    }));
+    session.process.listMcpServerStatus = vi.fn(async () => ({
+      data: [],
+      nextCursor: null,
+    }));
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "codex_action_result",
+          "codex_mcp_status_result",
+        ],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "codex_compact_request",
+        sessionId,
+        requestId: "compact-admission",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "codex_review_request",
+        sessionId,
+        requestId: "review-admission",
+        target: { type: "uncommittedChanges" },
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "input",
+        sessionId,
+        text: "must not receive a false ack",
+        clientMessageId: "message-admission",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "codex_mcp_status_request",
+        sessionId,
+        requestId: "mcp-admission",
+      },
+      ws,
+    );
+
+    const admissionMessages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(admissionMessages).toContainEqual(
+      expect.objectContaining({
+        type: "codex_action_result",
+        requestId: "review-admission",
+        status: "rejected",
+        errorCode: "session_busy",
+      }),
+    );
+    expect(admissionMessages).toContainEqual({
+      type: "input_rejected",
+      sessionId,
+      clientMessageId: "message-admission",
+      reason: "Codex compact or review is starting",
+    });
+    expect(admissionMessages).not.toContainEqual(
+      expect.objectContaining({
+        type: "input_ack",
+        clientMessageId: "message-admission",
+      }),
+    );
+    expect(admissionMessages).not.toContainEqual(
+      expect.objectContaining({
+        type: "user_input",
+        clientMessageId: "message-admission",
+      }),
+    );
+    expect(session.history).toEqual([]);
+    expect(session.codexQueuedInput).toBeUndefined();
+    expect(session.process.sendInput).not.toHaveBeenCalled();
+    expect(session.process.startInlineReview).not.toHaveBeenCalled();
+    expect(session.process.listMcpServerStatus).toHaveBeenCalledOnce();
+
+    // Models the process releasing admission after an RPC failure. Only then
+    // may the ordinary input path acknowledge and consume the message.
+    session.process.hasPendingCoreAction = false;
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "input",
+        sessionId,
+        text: "safe after admission release",
+        clientMessageId: "message-after-release",
+      },
+      ws,
+    );
+    const releasedMessages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(releasedMessages).toContainEqual(
+      expect.objectContaining({
+        type: "input_ack",
+        clientMessageId: "message-after-release",
+        queued: false,
+      }),
+    );
+    expect(session.process.sendInput).toHaveBeenCalledWith(
+      "safe after admission release",
+      "message-after-release",
+    );
 
     bridge.close();
   });

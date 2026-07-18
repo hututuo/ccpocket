@@ -202,6 +202,39 @@ export class CodexNativePlanModeProbeRetryError extends Error {
     this.name = "CodexNativePlanModeProbeRetryError";
   }
 }
+
+export type CodexCoreActionPreconditionCode =
+  | "thread_unavailable"
+  | "session_busy";
+
+export class CodexCoreActionPreconditionError extends Error {
+  constructor(
+    public readonly code: CodexCoreActionPreconditionCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "CodexCoreActionPreconditionError";
+  }
+}
+
+export type CodexReviewTarget =
+  | { type: "uncommittedChanges" }
+  | { type: "baseBranch"; branch: string }
+  | { type: "commit"; sha: string; title: string | null }
+  | { type: "custom"; instructions: string };
+
+export interface CodexInlineReviewStartResult {
+  turnId: string;
+  reviewThreadId: string;
+}
+
+export interface CodexMcpServerStatusPage {
+  data: unknown[];
+  nextCursor: string | null;
+}
+
+const CODEX_MCP_STATUS_PAGE_SIZE = 64;
+const CODEX_CORE_ACTION_START_TIMEOUT_MS = 15_000;
 function isUnsupportedClientUserMessageIdError(error: unknown): boolean {
   if (!(error instanceof CodexRpcError)) return false;
   let detail = error.message;
@@ -224,6 +257,17 @@ interface PendingRpc {
   timeout?: ReturnType<typeof setTimeout>;
   signal?: AbortSignal;
   abortListener?: () => void;
+}
+
+type CodexCoreActionMethod = "thread/compact/start" | "review/start";
+
+interface PendingCoreAction {
+  method: CodexCoreActionMethod;
+  phase: "requesting" | "awaiting_start";
+  expectedTurnId: string | null;
+  observedTurnId: string | null;
+  observedTurnCompleted: boolean;
+  startTimeout?: ReturnType<typeof setTimeout>;
 }
 
 /** Skill metadata returned by the Codex `skills/list` RPC. */
@@ -426,6 +470,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private inputResolve: ((input: PendingInput) => void) | null = null;
   private pendingTurnId: string | null = null;
   private pendingTurnCompletion: PendingTurnCompletion | null = null;
+  private pendingCoreAction: PendingCoreAction | null = null;
+  private activeCoreActionTurnId: string | null = null;
   private pendingApprovals = new Map<string, PendingApproval>();
   private pendingUserInputs = new Map<string, PendingUserInputRequest>();
   private goalOperationSequence = 0;
@@ -527,7 +573,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   get isWaitingForInput(): boolean {
-    return this.inputResolve !== null;
+    return (
+      this.inputResolve !== null &&
+      this._status !== "running" &&
+      this.pendingCoreAction === null &&
+      this.activeCoreActionTurnId === null
+    );
+  }
+
+  /** True only while compact/review is admitted but not yet a normal Turn. */
+  get hasPendingCoreAction(): boolean {
+    return this.pendingCoreAction !== null;
   }
 
   private getMessageModel(): string {
@@ -1258,6 +1314,239 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     await this.request("thread/delete", { threadId });
   }
 
+  /** Start a stable app-server compaction for the active, idle thread. */
+  async compactThread(options: CodexRpcRequestOptions = {}): Promise<void> {
+    const operation = this.beginCoreAction("thread/compact/start");
+    try {
+      await this.request(
+        "thread/compact/start",
+        { threadId: operation.threadId },
+        options,
+      );
+      this.markCoreActionAccepted(operation.action, null);
+    } catch (error) {
+      this.failCoreAction(operation.action);
+      throw error;
+    }
+  }
+
+  /** Start an inline stable app-server review for the active, idle thread. */
+  async startInlineReview(
+    target: CodexReviewTarget,
+    options: CodexRpcRequestOptions = {},
+  ): Promise<CodexInlineReviewStartResult> {
+    const operation = this.beginCoreAction("review/start");
+    try {
+      const response = (await this.request(
+        "review/start",
+        {
+          threadId: operation.threadId,
+          target,
+          delivery: "inline",
+        },
+        options,
+      )) as Record<string, unknown>;
+      const turn = asRecord(response?.turn);
+      const turnId = stringValue(turn?.id);
+      const reviewThreadId = stringValue(response?.reviewThreadId);
+      if (!turnId || !reviewThreadId) {
+        throw new CodexRpcError(
+          "review/start",
+          "review/start returned an invalid response",
+        );
+      }
+      this.markCoreActionAccepted(operation.action, turnId);
+      return { turnId, reviewThreadId };
+    } catch (error) {
+      this.failCoreAction(operation.action);
+      throw error;
+    }
+  }
+
+  /** Read one bounded, low-detail page of MCP server inventory/status. */
+  async listMcpServerStatus(
+    options: CodexRpcRequestOptions = {},
+  ): Promise<CodexMcpServerStatusPage> {
+    if (!this._threadId) {
+      throw new CodexCoreActionPreconditionError(
+        "thread_unavailable",
+        "No Codex thread is available",
+      );
+    }
+    const response = (await this.requestReadOnlyRpc(
+      "mcpServerStatus/list",
+      {
+        cursor: null,
+        limit: CODEX_MCP_STATUS_PAGE_SIZE,
+        detail: "toolsAndAuthOnly",
+        threadId: this._threadId,
+      },
+      options,
+    )) as Record<string, unknown>;
+    if (!Array.isArray(response?.data)) {
+      throw new CodexRpcError(
+        "mcpServerStatus/list",
+        "mcpServerStatus/list returned an invalid response",
+      );
+    }
+    return {
+      data: response.data,
+      nextCursor:
+        typeof response.nextCursor === "string" && response.nextCursor.length > 0
+          ? response.nextCursor
+          : null,
+    };
+  }
+
+  private beginCoreAction(method: CodexCoreActionMethod): {
+    threadId: string;
+    action: PendingCoreAction;
+  } {
+    const threadId = this.requireIdleCoreAction(method);
+    const action: PendingCoreAction = {
+      method,
+      phase: "requesting",
+      expectedTurnId: null,
+      observedTurnId: null,
+      observedTurnCompleted: false,
+    };
+    this.pendingCoreAction = action;
+    this.setStatus("running");
+    return { threadId, action };
+  }
+
+  private requireIdleCoreAction(method: CodexCoreActionMethod): string {
+    if (!this._threadId) {
+      throw new CodexCoreActionPreconditionError(
+        "thread_unavailable",
+        `No Codex thread is available for ${method}`,
+      );
+    }
+    if (
+      this._status !== "idle" ||
+      this.pendingTurnId !== null ||
+      this.pendingCoreAction !== null ||
+      this.activeCoreActionTurnId !== null
+    ) {
+      throw new CodexCoreActionPreconditionError(
+        "session_busy",
+        `Cannot call ${method} while Codex is ${this._status}`,
+      );
+    }
+    return this._threadId;
+  }
+
+  private markCoreActionAccepted(
+    action: PendingCoreAction,
+    expectedTurnId: string | null,
+  ): void {
+    if (this.pendingCoreAction !== action) return;
+    action.phase = "awaiting_start";
+    action.expectedTurnId = expectedTurnId;
+    if (
+      action.observedTurnId &&
+      (!expectedTurnId || action.observedTurnId === expectedTurnId)
+    ) {
+      if (action.observedTurnCompleted) {
+        this.releaseCoreAction(action);
+      } else {
+        this.transferCoreActionToStartedTurn(action, action.observedTurnId);
+      }
+      return;
+    }
+
+    action.startTimeout = setTimeout(() => {
+      if (this.pendingCoreAction !== action) return;
+      console.warn(
+        `[codex-process] ${action.method} was accepted but no matching turn/started arrived within ${CODEX_CORE_ACTION_START_TIMEOUT_MS}ms`,
+      );
+      this.releaseCoreAction(action);
+      if (
+        this._status === "running" &&
+        !this.pendingTurnId &&
+        !this.activeCoreActionTurnId
+      ) {
+        this.setStatus("idle");
+      }
+    }, CODEX_CORE_ACTION_START_TIMEOUT_MS);
+  }
+
+  private observeCoreActionTurnStarted(turnId: string): void {
+    const action = this.pendingCoreAction;
+    if (!action) return;
+    if (action.phase === "requesting") {
+      action.observedTurnId = turnId;
+      action.observedTurnCompleted = false;
+      return;
+    }
+    if (!action.expectedTurnId || action.expectedTurnId === turnId) {
+      this.transferCoreActionToStartedTurn(action, turnId);
+    }
+  }
+
+  private observeCoreActionTurnCompleted(turnId: string | null): void {
+    if (
+      this.activeCoreActionTurnId &&
+      (!turnId || this.activeCoreActionTurnId === turnId)
+    ) {
+      this.activeCoreActionTurnId = null;
+    }
+
+    const action = this.pendingCoreAction;
+    if (!action) return;
+    const matchesObserved =
+      action.observedTurnId !== null &&
+      (!turnId || action.observedTurnId === turnId);
+    const matchesExpected =
+      action.expectedTurnId !== null &&
+      (!turnId || action.expectedTurnId === turnId);
+    const matchesCompactWithoutStart =
+      action.method === "thread/compact/start" &&
+      action.phase === "awaiting_start" &&
+      action.observedTurnId === null;
+
+    if (matchesObserved) {
+      action.observedTurnCompleted = true;
+    }
+    if (
+      action.phase === "awaiting_start" &&
+      (matchesObserved || matchesExpected || matchesCompactWithoutStart)
+    ) {
+      this.releaseCoreAction(action);
+    }
+  }
+
+  private transferCoreActionToStartedTurn(
+    action: PendingCoreAction,
+    turnId: string,
+  ): void {
+    if (this.pendingCoreAction !== action) return;
+    this.activeCoreActionTurnId = turnId;
+    this.releaseCoreAction(action);
+  }
+
+  private failCoreAction(action: PendingCoreAction): void {
+    if (this.pendingCoreAction !== action) return;
+    if (action.observedTurnId && !action.observedTurnCompleted) {
+      this.activeCoreActionTurnId = action.observedTurnId;
+    }
+    this.releaseCoreAction(action);
+    if (
+      this._status === "running" &&
+      !this.pendingTurnId &&
+      !this.activeCoreActionTurnId
+    ) {
+      this.setStatus("idle");
+    }
+  }
+
+  private releaseCoreAction(expected?: PendingCoreAction): void {
+    const action = this.pendingCoreAction;
+    if (!action || (expected && action !== expected)) return;
+    if (action.startTimeout) clearTimeout(action.startTimeout);
+    this.pendingCoreAction = null;
+  }
+
   /**
    * Narrow extension seam for optional local read-only modules. Method names
    * must follow the app-server `.../read` or `.../list` convention so feature
@@ -1489,6 +1778,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     projectPath: string,
     options?: CodexStartOptions,
   ): void {
+    this.releaseCoreAction();
+    this.activeCoreActionTurnId = null;
     this.stopped = false;
     this._runtimeGeneration += 1;
     this._threadId = null;
@@ -1564,6 +1855,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
     transport.on("error", (err) => {
       if (this.stopped) return;
+      this.releaseCoreAction();
+      this.activeCoreActionTurnId = null;
       console.error("[codex-process] app-server process error:", err);
       this.emitMessage(codexAppServerStartError(err));
       this.setStatus("idle");
@@ -1636,11 +1929,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   sendInput(text: string, clientMessageId?: string): void {
-    if (!this.inputResolve) {
+    const resolve = this.inputResolve;
+    if (!resolve || !this.isWaitingForInput) {
       console.error("[codex-process] No pending input resolver for sendInput");
       return;
     }
-    const resolve = this.inputResolve;
     this.inputResolve = null;
     resolve({ text, clientMessageId });
   }
@@ -1650,13 +1943,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     images: Array<{ base64: string; mimeType: string }>,
     clientMessageId?: string,
   ): void {
-    if (!this.inputResolve) {
+    const resolve = this.inputResolve;
+    if (!resolve || !this.isWaitingForInput) {
       console.error(
         "[codex-process] No pending input resolver for sendInputWithImages",
       );
       return;
     }
-    const resolve = this.inputResolve;
     this.inputResolve = null;
     resolve({ text, images, clientMessageId });
   }
@@ -1677,13 +1970,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       clientMessageId?: string;
     },
   ): void {
-    if (!this.inputResolve) {
+    const resolve = this.inputResolve;
+    if (!resolve || !this.isWaitingForInput) {
       console.error(
         "[codex-process] No pending input resolver for sendInputStructured",
       );
       return;
     }
-    const resolve = this.inputResolve;
     this.inputResolve = null;
     resolve({
       text,
@@ -3318,6 +3611,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const turn = params.turn as Record<string, unknown> | undefined;
         if (typeof turn?.id === "string") {
           this.pendingTurnId = turn.id;
+          this.observeCoreActionTurnStarted(turn.id);
         }
         this.setStatus("running");
         break;
@@ -3562,6 +3856,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   private handleTurnCompleted(turn: Record<string, unknown> | undefined): void {
+    this.observeCoreActionTurnCompleted(stringValue(turn?.id) ?? null);
     const status = String(turn?.status ?? "completed");
 
     const usage = this.lastTokenUsage;
@@ -4211,6 +4506,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   private rejectAllPending(error: Error): void {
+    this.releaseCoreAction();
+    this.activeCoreActionTurnId = null;
     for (const pending of this.pendingRpc.values()) {
       this.clearPendingRpcLifecycle(pending);
       pending.reject(error);
