@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:marionette_flutter/marionette_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shorebird_code_push/shorebird_code_push.dart';
@@ -32,6 +33,9 @@ import 'l10n/app_localizations.dart';
 import 'features/auto_approval/auto_approval_service.dart';
 import 'features/conversation_mirror/conversation_mirror_service.dart';
 import 'features/conversation_mirror/storage/conversation_mirror_storage.dart';
+import 'features/file_transfer/file_transfer_service.dart';
+import 'features/file_transfer/file_transfer_storage.dart';
+import 'features/file_transfer/ios_file_transfer_gateway.dart';
 import 'features/session_list/state/session_list_cubit.dart';
 import 'features/git/state/git_status_cubit.dart';
 import 'features/git/state/git_view_cache_service.dart';
@@ -153,6 +157,35 @@ void main() async {
 
   final bridge = BridgeService();
   bridge.onDisconnect = sshBridgeTunnelService?.closeAll;
+  const fileTransferSecureStorage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accountName: 'ccpocket_file_transfer_v2',
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+      synchronizable: false,
+    ),
+  );
+  final FileTransferPlatformGateway fileTransferPlatform = isIOSPlatform
+      ? const IosFileTransferGateway()
+      : const UnsupportedFileTransferGateway();
+  final fileTransferService = FileTransferService(
+    bridge: BridgeServiceFileTransferGateway(bridge),
+    storage: FileTransferStorage(
+      applicationSupportDirectory: getApplicationSupportDirectory,
+      downloadsDirectory: defaultFileTransferDownloadsDirectory,
+      secretStore: const FlutterSecureFileTransferSecretStore(
+        fileTransferSecureStorage,
+      ),
+    ),
+    picker: fileTransferPlatform,
+    capacity: fileTransferPlatform,
+    commit: fileTransferPlatform,
+    platformSupported: isIOSPlatform,
+    notifications: NotificationServiceFileTransferGateway(
+      NotificationService.instance,
+    ),
+    preferences: prefs,
+  );
+  await fileTransferService.initialize();
   final autoApprovalService = AutoApprovalService(
     bridge: bridge,
     preferences: prefs,
@@ -219,6 +252,10 @@ void main() async {
         ),
         ChangeNotifierProvider<AutoApprovalService>(
           create: (_) => autoApprovalService,
+          lazy: false,
+        ),
+        ChangeNotifierProvider<FileTransferService>(
+          create: (_) => fileTransferService,
           lazy: false,
         ),
         ChangeNotifierProvider<ConversationMirrorService>(

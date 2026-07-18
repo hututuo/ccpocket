@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/utils/platform_helper.dart';
 import 'dart:convert';
 
 void main() {
@@ -475,7 +476,13 @@ void main() {
         'archived_sessions_result',
         'unarchive_result',
         'delete_session_result',
-        ...LocalFeatureProtocolHost.supportedServerMessageTypes,
+        ...LocalFeatureProtocolHost.supportedServerMessageTypes.where(
+          (type) =>
+              !fileTransferProtocolSlot.supportedServerMessageTypes.contains(
+                type,
+              ) ||
+              isIOSPlatform,
+        ),
       ]);
     });
 

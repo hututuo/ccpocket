@@ -113,6 +113,7 @@ class LocalFeatureProtocolHost {
     sideChatProtocolSlot,
     conversationMirrorProtocolSlot,
     codexCoreActionsProtocolSlot,
+    fileTransferProtocolSlot,
   ];
 
   static List<String> get supportedServerMessageTypes => List.unmodifiable(

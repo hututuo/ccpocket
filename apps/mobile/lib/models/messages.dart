@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../utils/request_user_input.dart';
+import '../utils/platform_helper.dart';
 
 part 'local_features/protocol_host.dart';
 part 'local_features/slots/session_insights_models_slot.dart';
@@ -13,6 +14,7 @@ part 'local_features/slots/side_chat_models_slot.dart';
 part 'local_features/slots/side_chat_protocol_slot.dart';
 part 'local_features/slots/conversation_mirror_protocol_slot.dart';
 part 'local_features/slots/codex_core_actions_protocol_slot.dart';
+part 'local_features/slots/file_transfer_protocol_slot.dart';
 
 bool isCodexAutoReviewApprovalsReviewer(String? value) {
   return value == 'auto_review' || value == 'guardian_subagent';
@@ -4188,7 +4190,13 @@ class ClientMessage {
           'archived_sessions_result',
           'unarchive_result',
           'delete_session_result',
-          ...LocalFeatureProtocolHost.supportedServerMessageTypes,
+          ...LocalFeatureProtocolHost.supportedServerMessageTypes.where(
+            (type) =>
+                !fileTransferProtocolSlot.supportedServerMessageTypes.contains(
+                  type,
+                ) ||
+                isIOSPlatform,
+          ),
         ];
     return ClientMessage._(<String, dynamic>{
       'type': 'client_capabilities',

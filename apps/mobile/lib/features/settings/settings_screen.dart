@@ -30,6 +30,7 @@ import '../../services/support_banner_service.dart';
 import '../../utils/platform_helper.dart';
 import '../../widgets/workspace_pane_chrome.dart';
 import '../auto_approval/auto_approval_global_control.dart';
+import '../file_transfer/file_transfer_sheet.dart';
 import '../session_list/workspace_shell_screen.dart';
 import 'code_font_settings_screen.dart';
 import 'state/settings_cubit.dart';
@@ -349,6 +350,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               const AutoApprovalGlobalControl(),
               const SizedBox(height: 8),
+              if (isIOSPlatform) ...[
+                const FileTransferSettingsTile(),
+                const SizedBox(height: 8),
+              ],
 
               // ── General ──
               _SectionHeader(title: l.sectionGeneral),
