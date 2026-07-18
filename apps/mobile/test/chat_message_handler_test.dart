@@ -735,7 +735,7 @@ void main() {
       expect(update.askInput, isNotNull);
     });
 
-    test('clears AskUserQuestion state after result in history', () {
+    test('preserves AskUserQuestion state after success in history', () {
       final update = handler.handle(
         HistoryMessage(
           messages: [
@@ -758,6 +758,38 @@ void main() {
               ),
             ),
             const ResultMessage(subtype: 'success'),
+            const StatusMessage(status: ProcessStatus.waitingApproval),
+          ],
+        ),
+        isBackground: false,
+      );
+      expect(update.askToolUseId, 'tu-ask');
+      expect(update.askInput, isNotNull);
+    });
+
+    test('clears AskUserQuestion state after stopped result in history', () {
+      final update = handler.handle(
+        HistoryMessage(
+          messages: [
+            AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'msg-1',
+                role: 'assistant',
+                content: [
+                  const ToolUseContent(
+                    id: 'tu-ask',
+                    name: 'AskUserQuestion',
+                    input: {
+                      'questions': [
+                        {'question': 'Which option?'},
+                      ],
+                    },
+                  ),
+                ],
+                model: 'test',
+              ),
+            ),
+            const ResultMessage(subtype: 'stopped'),
             const StatusMessage(status: ProcessStatus.waitingApproval),
           ],
         ),

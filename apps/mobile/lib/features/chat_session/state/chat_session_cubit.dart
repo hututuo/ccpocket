@@ -43,6 +43,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Tool use IDs that have already been answered locally.
   static const _maxRespondedToolUseIds = 512;
   final _respondedToolUseIds = <String>{};
+  final Map<String, PermissionRequestMessage> _pendingPermissionRequests = {};
 
   void _markToolUseResponded(String toolUseId) {
     _bridge.markToolUseResponded(sessionId, toolUseId);
@@ -200,6 +201,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final cachedMessages = _bridge.cachedSessionMessages(sessionId);
     if (cachedMessages.isEmpty) return;
     try {
+      _replacePendingPermissionsFromHistory(cachedMessages);
       final history = HistoryMessage(messages: cachedMessages);
       final update = _handler.handle(
         history,
@@ -257,12 +259,34 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       emit(state.copyWith(goal: msg.goal));
       return;
     }
+    if (msg is HistoryMessage) {
+      _replacePendingPermissionsFromHistory(msg.messages);
+    } else if (msg is PermissionRequestMessage &&
+        !_respondedToolUseIds.contains(msg.toolUseId)) {
+      _pendingPermissionRequests[msg.toolUseId] = msg;
+    } else if (msg is StatusMessage &&
+        (msg.status == ProcessStatus.idle ||
+            msg.status == ProcessStatus.starting)) {
+      _pendingPermissionRequests.clear();
+    } else if (msg is ResultMessage && msg.subtype == 'stopped') {
+      _pendingPermissionRequests.clear();
+    }
     if (msg is PermissionResolvedMessage) {
+      _pendingPermissionRequests.remove(msg.toolUseId);
       _markToolUseResponded(msg.toolUseId);
       _emitNextApprovalOrNone(msg.toolUseId);
     }
 
     try {
+      final resolvesExitPlan =
+          isCodex &&
+          msg is ToolResultMessage &&
+          _pendingPermissionRequests.containsKey(msg.toolUseId) &&
+          _isExitPlanApproval(msg.toolUseId);
+      final resolvesPermission =
+          isCodex &&
+          msg is ToolResultMessage &&
+          _pendingPermissionRequests.containsKey(msg.toolUseId);
       final update = _handler.handle(
         msg,
         isBackground: true,
@@ -270,6 +294,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ignoredToolUseIds: _respondedToolUseIds,
       );
       _applyUpdate(update, msg);
+      if (msg is ToolResultMessage && resolvesPermission) {
+        _pendingPermissionRequests.remove(msg.toolUseId);
+        _markToolUseResponded(msg.toolUseId);
+        _emitNextApprovalOrNone(
+          msg.toolUseId,
+          exitPlanModeResolved: resolvesExitPlan,
+        );
+      }
     } catch (e, st) {
       logger.error(
         '[session:$sessionId] Failed to handle message: '
@@ -1549,31 +1581,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Find next pending permission after resolving [resolvedToolUseId].
   ///
-  /// Searches entries for PermissionRequestMessage that haven't been resolved
-  /// by a corresponding ToolResultMessage.
+  /// Advances to the next live pending permission without rescanning completed
+  /// transcript history from older turns.
   void _emitNextApprovalOrNone(
     String resolvedToolUseId, {
     bool exitPlanModeResolved = false,
   }) {
-    final pendingPermissions = <String, PermissionRequestMessage>{};
-    final resolvedIds = <String>{resolvedToolUseId, ..._respondedToolUseIds};
-
-    for (final entry in state.entries) {
-      if (entry is ServerChatEntry) {
-        final msg = entry.message;
-        if (msg is PermissionRequestMessage) {
-          pendingPermissions[msg.toolUseId] = msg;
-        } else if (msg is PermissionResolvedMessage) {
-          resolvedIds.add(msg.toolUseId);
-        } else if (msg is ToolResultMessage) {
-          resolvedIds.add(msg.toolUseId);
-        }
-      }
-    }
-
-    // Remove resolved permissions
-    for (final id in resolvedIds) {
-      pendingPermissions.remove(id);
+    _pendingPermissionRequests.remove(resolvedToolUseId);
+    for (final id in _respondedToolUseIds) {
+      _pendingPermissionRequests.remove(id);
     }
 
     final resolvedPermissionMode = exitPlanModeResolved
@@ -1584,14 +1600,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           )
         : state.permissionMode;
 
-    if (pendingPermissions.isNotEmpty) {
-      final next = pendingPermissions.values.first;
+    if (_pendingPermissionRequests.isNotEmpty) {
+      final next = _pendingPermissionRequests.values.first;
+      final nextApproval = next.usesAskUserUi
+          ? ApprovalState.askUser(
+              toolUseId: next.toolUseId,
+              input: next.input,
+            )
+          : ApprovalState.permission(
+              toolUseId: next.toolUseId,
+              request: next,
+            );
       emit(
         state.copyWith(
-          approval: ApprovalState.permission(
-            toolUseId: next.toolUseId,
-            request: next,
-          ),
+          approval: nextApproval,
           permissionMode: resolvedPermissionMode,
           planMode: next.toolName == 'ExitPlanMode'
               ? true
@@ -1613,7 +1635,35 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
   }
 
+  void _replacePendingPermissionsFromHistory(List<ServerMessage> messages) {
+    _pendingPermissionRequests.clear();
+    ProcessStatus? lastStatus;
+    for (final message in messages) {
+      if (message is StatusMessage) {
+        lastStatus = message.status;
+        if (message.status == ProcessStatus.idle ||
+            message.status == ProcessStatus.starting) {
+          _pendingPermissionRequests.clear();
+        }
+      } else if (message is PermissionRequestMessage &&
+          !_respondedToolUseIds.contains(message.toolUseId)) {
+        _pendingPermissionRequests[message.toolUseId] = message;
+      } else if (message is PermissionResolvedMessage) {
+        _pendingPermissionRequests.remove(message.toolUseId);
+      } else if (message is ToolResultMessage) {
+        _pendingPermissionRequests.remove(message.toolUseId);
+      } else if (message is ResultMessage && message.subtype == 'stopped') {
+        _pendingPermissionRequests.clear();
+      }
+    }
+    if (lastStatus != ProcessStatus.waitingApproval) {
+      _pendingPermissionRequests.clear();
+    }
+  }
+
   bool _isExitPlanApproval(String toolUseId) {
+    final pending = _pendingPermissionRequests[toolUseId];
+    if (pending != null) return pending.toolName == 'ExitPlanMode';
     final approval = state.approval;
     if (approval is ApprovalPermission &&
         approval.toolUseId == toolUseId &&

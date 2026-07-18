@@ -733,8 +733,9 @@ class ChatMessageHandler {
             lastAskInput = null;
           }
         }
-        // A result message means the turn completed
-        if (m is ResultMessage) {
+        // Only an explicit stop terminates every pending interaction. A normal
+        // successful result may precede another concurrent question/approval.
+        if (m is ResultMessage && m.subtype == 'stopped') {
           pendingPermissions.clear();
           lastAskToolUseId = null;
           lastAskInput = null;

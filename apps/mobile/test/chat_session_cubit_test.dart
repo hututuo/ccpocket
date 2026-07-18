@@ -345,6 +345,251 @@ void main() {
       expect(perm.request.toolName, 'bash');
     });
 
+    test('automatic tool result restores an earlier manual question', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      const question = PermissionRequestMessage(
+        toolUseId: 'question-1',
+        toolName: 'AskUserQuestion',
+        input: {
+          'questions': [
+            {
+              'id': 'choice',
+              'header': 'Choice',
+              'question': 'Choose one',
+              'options': [
+                {'label': 'A', 'description': 'Option A'},
+              ],
+            },
+          ],
+        },
+      );
+      const command = PermissionRequestMessage(
+        toolUseId: 'command-1',
+        toolName: 'Bash',
+        input: {'command': 'pwd'},
+      );
+
+      mockBridge.emitMessage(question, sessionId: 's1');
+      await Future.microtask(() {});
+      expect(cubit.state.approval, isA<ApprovalAskUser>());
+
+      mockBridge.emitMessage(command, sessionId: 's1');
+      await Future.microtask(() {});
+      expect(cubit.state.approval, isA<ApprovalPermission>());
+      expect(
+        (cubit.state.approval as ApprovalPermission).toolUseId,
+        'command-1',
+      );
+
+      mockBridge.emitMessage(
+        const ToolResultMessage(toolUseId: 'command-1', content: 'ok'),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.approval, isA<ApprovalAskUser>());
+      expect((cubit.state.approval as ApprovalAskUser).toolUseId, 'question-1');
+    });
+
+    test(
+      'automatic plan result exits plan mode and restores a manual question',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'set_permission_mode',
+            provider: 'codex',
+            permissionMode: 'plan',
+            executionMode: 'default',
+            planMode: true,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'question-before-plan',
+            toolName: 'AskUserQuestion',
+            input: {
+              'questions': [
+                {
+                  'id': 'choice',
+                  'header': 'Choice',
+                  'question': 'Choose one',
+                  'options': [
+                    {'label': 'A', 'description': 'Option A'},
+                  ],
+                },
+              ],
+            },
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'automatic-plan',
+            toolName: 'ExitPlanMode',
+            input: {'plan': 'Run it'},
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+        expect(cubit.state.planMode, isTrue);
+        expect(cubit.state.inPlanMode, isTrue);
+
+        mockBridge.emitMessage(
+          const ToolResultMessage(
+            toolUseId: 'automatic-plan',
+            content: 'Plan approved',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.approval, isA<ApprovalAskUser>());
+        expect(
+          (cubit.state.approval as ApprovalAskUser).toolUseId,
+          'question-before-plan',
+        );
+        expect(cubit.state.planMode, isFalse);
+        expect(cubit.state.inPlanMode, isFalse);
+      },
+    );
+
+    test(
+      'history success result preserves a question across automatic plan completion',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              PermissionRequestMessage(
+                toolUseId: 'history-question',
+                toolName: 'AskUserQuestion',
+                input: {
+                  'questions': [
+                    {'question': 'Choose one'},
+                  ],
+                },
+              ),
+              StatusMessage(status: ProcessStatus.waitingApproval),
+              ResultMessage(subtype: 'success'),
+              PermissionRequestMessage(
+                toolUseId: 'history-plan',
+                toolName: 'ExitPlanMode',
+                input: {'plan': 'Run it'},
+              ),
+              StatusMessage(status: ProcessStatus.waitingApproval),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const ToolResultMessage(
+            toolUseId: 'history-plan',
+            content: 'Plan approved',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.approval, isA<ApprovalAskUser>());
+        expect(
+          (cubit.state.approval as ApprovalAskUser).toolUseId,
+          'history-question',
+        );
+      },
+    );
+
+    test('ordinary tool results do not mutate approval tracking', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      mockBridge.emitMessage(
+        const PermissionRequestMessage(
+          toolUseId: 'question-stays-manual',
+          toolName: 'AskUserQuestion',
+          input: {
+            'questions': [
+              {'question': 'Choose one'},
+            ],
+          },
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      mockBridge.emitMessage(
+        const ToolResultMessage(
+          toolUseId: 'ordinary-tool',
+          content: 'done',
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.approval, isA<ApprovalAskUser>());
+      expect(
+        mockBridge.respondedToolUseIds('s1'),
+        isNot(contains('ordinary-tool')),
+      );
+    });
+
+    test('a completed older turn cannot regain approval focus', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      mockBridge.emitMessage(
+        const PermissionRequestMessage(
+          toolUseId: 'old-request',
+          toolName: 'Bash',
+          input: {'command': 'old'},
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      mockBridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.idle),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.approval, isA<ApprovalNone>());
+
+      mockBridge.emitMessage(
+        const PermissionRequestMessage(
+          toolUseId: 'new-request',
+          toolName: 'Bash',
+          input: {'command': 'new'},
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      mockBridge.emitMessage(
+        const ToolResultMessage(toolUseId: 'new-request', content: 'done'),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.approval, isA<ApprovalNone>());
+    });
+
     test('sendMessage adds user entry and sends to bridge', () async {
       final cubit = createCubit('s1');
       addTearDown(cubit.close);
