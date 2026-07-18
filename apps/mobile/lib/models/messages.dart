@@ -130,6 +130,7 @@ enum CodexThreadGoalStatus {
     'usageLimited' => CodexThreadGoalStatus.usageLimited,
     'budgetLimited' => CodexThreadGoalStatus.budgetLimited,
     'complete' => CodexThreadGoalStatus.complete,
+    'active' => CodexThreadGoalStatus.active,
     _ => CodexThreadGoalStatus.active,
   };
 }
@@ -138,6 +139,7 @@ class CodexGoal {
   final String threadId;
   final String objective;
   final CodexThreadGoalStatus status;
+  final String? rawStatus;
   final int? tokenBudget;
   final int tokensUsed;
   final int timeUsedSeconds;
@@ -148,6 +150,7 @@ class CodexGoal {
     required this.threadId,
     required this.objective,
     required this.status,
+    this.rawStatus,
     required this.tokenBudget,
     required this.tokensUsed,
     required this.timeUsedSeconds,
@@ -155,15 +158,27 @@ class CodexGoal {
     required this.updatedAt,
   });
 
-  factory CodexGoal.fromJson(Map<String, dynamic> json) => CodexGoal(
-    threadId: json['threadId'] as String,
-    objective: json['objective'] as String,
-    status: CodexThreadGoalStatus.fromString(json['status'] as String),
-    tokenBudget: json['tokenBudget'] as int?,
-    tokensUsed: json['tokensUsed'] as int? ?? 0,
-    timeUsedSeconds: json['timeUsedSeconds'] as int? ?? 0,
-    createdAt: json['createdAt'] as int? ?? 0,
-    updatedAt: json['updatedAt'] as int? ?? 0,
+  factory CodexGoal.fromJson(Map<String, dynamic> json) {
+    final rawStatus = json['status'] as String;
+    return CodexGoal(
+      threadId: json['threadId'] as String,
+      objective: json['objective'] as String,
+      status: CodexThreadGoalStatus.fromString(rawStatus),
+      rawStatus: rawStatus,
+      tokenBudget: json['tokenBudget'] as int?,
+      tokensUsed: json['tokensUsed'] as int? ?? 0,
+      timeUsedSeconds: json['timeUsedSeconds'] as int? ?? 0,
+      createdAt: json['createdAt'] as int? ?? 0,
+      updatedAt: json['updatedAt'] as int? ?? 0,
+    );
+  }
+
+  String get effectiveStatus => rawStatus ?? status.value;
+
+  /// Future app-server statuses retain their raw value without widening the
+  /// legacy enum and breaking exhaustive switches in older presentation code.
+  bool get hasUnknownStatus => !CodexThreadGoalStatus.values.any(
+    (knownStatus) => knownStatus.value == effectiveStatus,
   );
 
   @override
@@ -172,7 +187,7 @@ class CodexGoal {
       other is CodexGoal &&
           threadId == other.threadId &&
           objective == other.objective &&
-          status == other.status &&
+          effectiveStatus == other.effectiveStatus &&
           tokenBudget == other.tokenBudget &&
           tokensUsed == other.tokensUsed &&
           timeUsedSeconds == other.timeUsedSeconds &&
@@ -183,7 +198,7 @@ class CodexGoal {
   int get hashCode => Object.hash(
     threadId,
     objective,
-    status,
+    effectiveStatus,
     tokenBudget,
     tokensUsed,
     timeUsedSeconds,
@@ -972,6 +987,7 @@ sealed class ServerMessage {
         errorCode: json['errorCode'] as String?,
         sessionId: json['sessionId'] as String?,
         permissionChangeId: json['permissionChangeId'] as String?,
+        goalChangeId: json['goalChangeId'] as String?,
       ),
       'status' => StatusMessage(
         status: ProcessStatus.fromString(json['status'] as String),
@@ -1018,6 +1034,8 @@ sealed class ServerMessage {
       ),
       'goal_state' => GoalStateMessage(
         sessionId: json['sessionId'] as String?,
+        goalChangeId: json['goalChangeId'] as String?,
+        goalOperationSequence: (json['goalOperationSequence'] as num?)?.toInt(),
         goal: json['goal'] is Map<String, dynamic>
             ? CodexGoal.fromJson(json['goal'] as Map<String, dynamic>)
             : null,
@@ -1757,11 +1775,13 @@ class ErrorMessage implements ServerMessage {
   final String? errorCode;
   final String? sessionId;
   final String? permissionChangeId;
+  final String? goalChangeId;
   const ErrorMessage({
     required this.message,
     this.errorCode,
     this.sessionId,
     this.permissionChangeId,
+    this.goalChangeId,
   });
 }
 
@@ -2945,7 +2965,14 @@ class ConversationQueueMessage implements ServerMessage {
 class GoalStateMessage implements ServerMessage {
   final String? sessionId;
   final CodexGoal? goal;
-  const GoalStateMessage({this.sessionId, required this.goal});
+  final String? goalChangeId;
+  final int? goalOperationSequence;
+  const GoalStateMessage({
+    this.sessionId,
+    required this.goal,
+    this.goalChangeId,
+    this.goalOperationSequence,
+  });
 }
 
 class InputRejectedMessage implements ServerMessage {
@@ -3789,6 +3816,7 @@ class SessionInfo {
   final String? codexWebSearchMode;
   final List<String> codexAdditionalWritableRoots;
   final bool codexPermissionApplyStrategySupported;
+  final bool? codexGoalControlSupported;
   final PermissionRequestMessage? pendingPermission;
   final QueuedInputItem? queuedInput;
 
@@ -3823,6 +3851,7 @@ class SessionInfo {
     this.codexWebSearchMode,
     this.codexAdditionalWritableRoots = const [],
     this.codexPermissionApplyStrategySupported = false,
+    this.codexGoalControlSupported,
     this.pendingPermission,
     this.queuedInput,
   });
@@ -3866,6 +3895,8 @@ class SessionInfo {
     String? codexWebSearchMode,
     List<String>? codexAdditionalWritableRoots,
     bool? codexPermissionApplyStrategySupported,
+    bool? codexGoalControlSupported,
+    bool clearCodexGoalControlSupported = false,
     PermissionRequestMessage? pendingPermission,
     bool clearPermission = false,
     QueuedInputItem? queuedInput,
@@ -3908,6 +3939,9 @@ class SessionInfo {
       codexPermissionApplyStrategySupported:
           codexPermissionApplyStrategySupported ??
           this.codexPermissionApplyStrategySupported,
+      codexGoalControlSupported: clearCodexGoalControlSupported
+          ? null
+          : (codexGoalControlSupported ?? this.codexGoalControlSupported),
       pendingPermission: clearPermission
           ? null
           : (pendingPermission ?? this.pendingPermission),
@@ -3967,6 +4001,7 @@ class SessionInfo {
       ),
       codexPermissionApplyStrategySupported:
           json['codexPermissionApplyStrategySupported'] as bool? ?? false,
+      codexGoalControlSupported: json['codexGoalControlSupported'] as bool?,
       pendingPermission: permJson != null
           ? PermissionRequestMessage(
               toolUseId: permJson['toolUseId'] as String,
@@ -3996,6 +4031,7 @@ class ClientMessage {
   String get type => _json['type'] as String;
   String? get sessionId => _json['sessionId'] as String?;
   String? get permissionChangeId => _json['permissionChangeId'] as String?;
+  String? get goalChangeId => _json['goalChangeId'] as String?;
 
   factory ClientMessage.clientCapabilities({
     String? appVersion,
@@ -4007,6 +4043,7 @@ class ClientMessage {
         <String>[
           'conversation_queue',
           'goal_state',
+          'goal_state_raw_status',
           'history_delta',
           'history_snapshot',
           'git_status_result',
@@ -4241,22 +4278,39 @@ class ClientMessage {
     });
   }
 
-  factory ClientMessage.getGoal(String sessionId) =>
-      ClientMessage._({'type': 'get_goal', 'sessionId': sessionId});
+  factory ClientMessage.getGoal(String sessionId) => ClientMessage._({
+    'type': 'get_goal',
+    'sessionId': sessionId,
+  }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.setGoal({
     required String sessionId,
     String? objective,
     CodexThreadGoalStatus? status,
+    int? tokenBudget,
+    bool includeTokenBudget = false,
+    String? goalChangeId,
+    int? expectedGoalOperationSequence,
   }) => ClientMessage._({
     'type': 'set_goal',
     'sessionId': sessionId,
     'objective': ?objective,
     if (status != null) 'status': status.value,
-  });
+    if (includeTokenBudget) 'tokenBudget': tokenBudget,
+    'goalChangeId': ?goalChangeId,
+    'expectedGoalOperationSequence': ?expectedGoalOperationSequence,
+  }, delivery: ClientMessageDelivery.ephemeral);
 
-  factory ClientMessage.clearGoal(String sessionId) =>
-      ClientMessage._({'type': 'clear_goal', 'sessionId': sessionId});
+  factory ClientMessage.clearGoal(
+    String sessionId, {
+    String? goalChangeId,
+    int? expectedGoalOperationSequence,
+  }) => ClientMessage._({
+    'type': 'clear_goal',
+    'sessionId': sessionId,
+    'goalChangeId': ?goalChangeId,
+    'expectedGoalOperationSequence': ?expectedGoalOperationSequence,
+  }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.setSandboxMode(
     String sandboxMode, {

@@ -57,6 +57,8 @@ void main() {
         ServerMessage.fromJson({
               'type': 'goal_state',
               'sessionId': 's1',
+              'goalChangeId': 'goal-change-1',
+              'goalOperationSequence': 7,
               'goal': {
                 'threadId': 'thread-1',
                 'objective': 'Ship Goal support',
@@ -71,6 +73,8 @@ void main() {
             as GoalStateMessage;
 
     expect(message.sessionId, 's1');
+    expect(message.goalChangeId, 'goal-change-1');
+    expect(message.goalOperationSequence, 7);
     expect(message.goal?.objective, 'Ship Goal support');
     expect(message.goal?.status, CodexThreadGoalStatus.usageLimited);
     expect(message.goal?.tokenBudget, 80000);
@@ -79,14 +83,84 @@ void main() {
         ClientMessage.setGoal(
           sessionId: 's1',
           status: CodexThreadGoalStatus.paused,
+          tokenBudget: null,
+          includeTokenBudget: true,
+          goalChangeId: 'goal-change-1',
+          expectedGoalOperationSequence: 7,
         ).toJson(),
       ),
-      {'type': 'set_goal', 'sessionId': 's1', 'status': 'paused'},
+      {
+        'type': 'set_goal',
+        'sessionId': 's1',
+        'status': 'paused',
+        'tokenBudget': null,
+        'goalChangeId': 'goal-change-1',
+        'expectedGoalOperationSequence': 7,
+      },
     );
-    expect(jsonDecode(ClientMessage.clearGoal('s1').toJson()), {
+    final clear = ClientMessage.clearGoal(
+      's1',
+      goalChangeId: 'goal-change-2',
+      expectedGoalOperationSequence: 8,
+    );
+    expect(jsonDecode(clear.toJson()), {
       'type': 'clear_goal',
       'sessionId': 's1',
+      'goalChangeId': 'goal-change-2',
+      'expectedGoalOperationSequence': 8,
     });
+    expect(clear.delivery, ClientMessageDelivery.ephemeral);
+    expect(
+      ClientMessage.getGoal('s1').delivery,
+      ClientMessageDelivery.ephemeral,
+    );
+  });
+
+  test('Codex Goal preserves future statuses without widening the enum', () {
+    expect(
+      CodexThreadGoalStatus.fromString('waitingForFutureResource'),
+      CodexThreadGoalStatus.active,
+    );
+    final goal = CodexGoal.fromJson({
+      'threadId': 'thread-1',
+      'objective': 'Wait safely',
+      'status': 'waitingForFutureResource',
+      'tokenBudget': null,
+    });
+    expect(goal.status, CodexThreadGoalStatus.active);
+    expect(goal.hasUnknownStatus, isTrue);
+    expect(goal.effectiveStatus, 'waitingForFutureResource');
+  });
+
+  test('Codex Goal operation routing survives errors and session lists', () {
+    final error =
+        ServerMessage.fromJson({
+              'type': 'error',
+              'message': 'Goal is temporarily blocked',
+              'errorCode': 'permission_restart_in_progress',
+              'sessionId': 's1',
+              'goalChangeId': 'goal-change-3',
+            })
+            as ErrorMessage;
+    expect(error.sessionId, 's1');
+    expect(error.goalChangeId, 'goal-change-3');
+
+    final session = SessionInfo.fromJson({
+      'id': 's1',
+      'provider': 'codex',
+      'projectPath': '/tmp/project',
+      'status': 'idle',
+      'createdAt': '',
+      'lastActivityAt': '',
+      'codexGoalControlSupported': true,
+    });
+    expect(session.codexGoalControlSupported, isTrue);
+    expect(
+      session
+          .copyWith(clearCodexGoalControlSupported: true)
+          .codexGoalControlSupported,
+      isNull,
+    );
   });
 
   test('ReasoningEffort preserves model-advertised future values', () {
@@ -392,6 +466,7 @@ void main() {
       expect(json['supportedServerMessages'], [
         'conversation_queue',
         'goal_state',
+        'goal_state_raw_status',
         'history_delta',
         'history_snapshot',
         'git_status_result',

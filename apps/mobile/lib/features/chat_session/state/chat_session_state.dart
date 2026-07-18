@@ -5,6 +5,46 @@ import '../../../widgets/slash_command_sheet.dart' show SlashCommand;
 
 part 'chat_session_state.freezed.dart';
 
+enum CodexGoalSupport { unknown, supported, unsupported }
+
+enum CodexGoalMutationKind { create, edit, pause, resume, updateBudget, clear }
+
+enum CodexGoalErrorKind {
+  disconnected,
+  connectRequired,
+  unsupported,
+  unknownStatus,
+  invalidBudget,
+  timeout,
+  objectiveRequired,
+  objectiveTooLong,
+  budgetResumeRequired,
+  conflict,
+  readFailed,
+  updateFailed,
+  clearFailed,
+}
+
+class CodexGoalMutation {
+  final String id;
+  final CodexGoalMutationKind kind;
+  final String? objective;
+  final CodexThreadGoalStatus? status;
+  final bool includesTokenBudget;
+  final int? tokenBudget;
+  final int? expectedOperationSequence;
+
+  const CodexGoalMutation({
+    required this.id,
+    required this.kind,
+    this.objective,
+    this.status,
+    this.includesTokenBudget = false,
+    this.tokenBudget,
+    this.expectedOperationSequence,
+  });
+}
+
 /// Core state for a single chat session, managed by [ChatSessionNotifier].
 @freezed
 abstract class ChatSessionState with _$ChatSessionState {
@@ -68,6 +108,16 @@ abstract class ChatSessionState with _$ChatSessionState {
 
     // Persisted Codex thread goal (Bridge/app-server is the source of truth).
     CodexGoal? goal,
+
+    // Goal control is live-only. Bridge/app-server remains authoritative.
+    @Default(false) bool goalStateLoaded,
+    @Default(CodexGoalSupport.unknown) CodexGoalSupport goalSupport,
+    @Default(false) bool advancedGoalControlSupported,
+    int? goalOperationSequence,
+    CodexGoalMutation? goalMutation,
+    String? goalMutationError,
+    CodexGoalErrorKind? goalMutationErrorKind,
+    CodexGoalErrorKind? goalLoadErrorKind,
   }) = _ChatSessionState;
 }
 

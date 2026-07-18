@@ -25,6 +25,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const offlineQueuedInputPrefix = 'offline:';
   static const deliveryPendingQueuedInputPrefix = 'pending:';
   static const _deliveryPendingDelay = Duration(milliseconds: 600);
+  static const _goalMutationTimeout = Duration(seconds: 20);
+  static const _goalReadTimeout = Duration(seconds: 12);
 
   final String sessionId;
   final Provider? provider;
@@ -33,8 +35,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final ChatMessageHandler _handler = ChatMessageHandler();
 
   StreamSubscription<ServerMessage>? _subscription;
+  StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
+  StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
   bool _pastHistoryLoaded = false;
   Timer? _statusRefreshTimer;
+  Timer? _goalMutationTimer;
+  Timer? _goalReadTimer;
+  bool _goalReadPending = false;
+  bool _goalUserRefreshPending = false;
   final Map<String, Timer> _deliveryPendingTimers = {};
   final Map<String, QueuedInputItem> _deliveryPendingInputs = {};
 
@@ -70,6 +78,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool get isCodex => provider == Provider.codex;
 
   bool get isPermissionChangePending => _pendingPermissionChangeId != null;
+
+  bool get isGoalMutationPending => state.goalMutation != null;
+
+  bool get supportsAdvancedGoalControl => state.advancedGoalControlSupported;
 
   bool get bridgeSupportsCodexPermissionApplyStrategy =>
       _bridge.bridgeCapabilities.contains(
@@ -186,6 +198,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // Subscribe to messages for this session
     _subscription = _bridge.messagesForSession(sessionId).listen(_onMessage);
 
+    if (isCodex) {
+      _goalConnectionSubscription = _bridge.connectionStatus.listen(
+        _onGoalConnectionState,
+      );
+      _goalSessionListSubscription = _bridge.sessionList.listen(
+        _updateGoalSupportFromSessions,
+      );
+      _updateGoalSupportFromSessions(_bridge.sessions);
+    }
+
     _restoreCachedRuntimeMessages();
     _restoreDeliveryPendingInput();
     if (isCodex &&
@@ -214,6 +236,60 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       _bridge.requestSessionHistory(sessionId);
     });
+  }
+
+  void _onGoalConnectionState(BridgeConnectionState connectionState) {
+    if (!isCodex || isClosed) return;
+    if (connectionState == BridgeConnectionState.connected) {
+      _updateGoalSupportFromSessions(_bridge.sessions);
+      requestGoal();
+      return;
+    }
+    _failPendingGoalMutation(
+      'Goal change was not confirmed because the Bridge disconnected.',
+      kind: CodexGoalErrorKind.disconnected,
+    );
+    _goalReadTimer?.cancel();
+    _goalReadTimer = null;
+    _goalReadPending = false;
+    _goalUserRefreshPending = false;
+    if (state.goalSupport != CodexGoalSupport.unknown ||
+        state.goalStateLoaded ||
+        state.goalLoadErrorKind != CodexGoalErrorKind.disconnected) {
+      emit(
+        state.copyWith(
+          goalSupport: CodexGoalSupport.unknown,
+          goalStateLoaded: false,
+          advancedGoalControlSupported: false,
+          goalOperationSequence: null,
+          goalLoadErrorKind: CodexGoalErrorKind.disconnected,
+        ),
+      );
+    }
+  }
+
+  void _updateGoalSupportFromSessions(List<SessionInfo> sessions) {
+    if (!isCodex || isClosed) return;
+    bool? supported;
+    for (final session in sessions) {
+      if (session.id == sessionId) {
+        supported = session.codexGoalControlSupported;
+        break;
+      }
+    }
+    if (supported == null) return;
+    final next = supported
+        ? CodexGoalSupport.supported
+        : CodexGoalSupport.unsupported;
+    if (state.goalSupport != next ||
+        state.advancedGoalControlSupported != supported) {
+      emit(
+        state.copyWith(
+          goalSupport: next,
+          advancedGoalControlSupported: supported,
+        ),
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -267,6 +343,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (msg is ErrorMessage) {
       logger.error('[session:$sessionId] Error from bridge: ${msg.message}');
       _rollbackFailedModeChange(msg);
+      if (isCodex && _handleGoalError(msg)) {
+        return;
+      }
     }
     if (msg is SystemMessage && msg.subtype == 'set_permission_mode') {
       _clearPendingPermissionModeRollback(msg.permissionChangeId);
@@ -296,7 +375,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     if (msg is GoalStateMessage) {
-      emit(state.copyWith(goal: msg.goal));
+      _applyGoalState(msg);
       return;
     }
     if (msg is HistoryMessage) {
@@ -350,6 +429,202 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         st,
       );
     }
+  }
+
+  bool _handleGoalError(ErrorMessage error) {
+    final code = error.errorCode;
+    final changeId = error.goalChangeId?.trim();
+    final isCorrelatedGoalError = changeId != null && changeId.isNotEmpty;
+    final isPreGoalBridgeRejection =
+        (code == 'unsupported_message' &&
+            const {
+              'get_goal',
+              'set_goal',
+              'clear_goal',
+            }.contains(error.message)) ||
+        (code == null &&
+            error.message == 'Invalid message format' &&
+            (_goalReadPending || state.goalMutation != null));
+    if ((code == null || !code.startsWith('goal_')) &&
+        !isCorrelatedGoalError &&
+        !isPreGoalBridgeRejection) {
+      return false;
+    }
+    if (error.sessionId != null && error.sessionId != sessionId) return true;
+
+    final isUnsupported =
+        isPreGoalBridgeRejection ||
+        code == 'goal_get_unsupported' ||
+        code == 'goal_set_unsupported' ||
+        code == 'goal_clear_unsupported' ||
+        code == 'goal_status_unsupported';
+    if (isUnsupported) {
+      _completeGoalRead();
+      final hadPendingMutation = state.goalMutation != null;
+      _failPendingGoalMutation(
+        error.message,
+        kind: CodexGoalErrorKind.unsupported,
+      );
+      emit(
+        state.copyWith(
+          goalStateLoaded: true,
+          goalSupport: CodexGoalSupport.unsupported,
+          advancedGoalControlSupported: false,
+          goalLoadErrorKind: null,
+          goalMutationError: hadPendingMutation
+              ? state.goalMutationError
+              : null,
+          goalMutationErrorKind: hadPendingMutation
+              ? state.goalMutationErrorKind
+              : null,
+        ),
+      );
+      return true;
+    }
+    if (code == 'goal_get_failed') {
+      final showError = _goalUserRefreshPending;
+      _completeGoalRead();
+      emit(
+        state.copyWith(
+          goalSupport: CodexGoalSupport.unknown,
+          goalStateLoaded: false,
+          goalLoadErrorKind: CodexGoalErrorKind.readFailed,
+          goalMutationError: showError ? error.message : null,
+          goalMutationErrorKind: showError
+              ? CodexGoalErrorKind.readFailed
+              : null,
+        ),
+      );
+      return true;
+    }
+
+    final pending = state.goalMutation;
+    if (pending != null &&
+        changeId != null &&
+        changeId.isNotEmpty &&
+        changeId != pending.id) {
+      return true;
+    }
+    final conflict = code == 'goal_conflict';
+    final errorKind = switch (code) {
+      'goal_clear_failed' => CodexGoalErrorKind.clearFailed,
+      'goal_set_failed' => CodexGoalErrorKind.updateFailed,
+      _ when conflict => CodexGoalErrorKind.conflict,
+      _ => CodexGoalErrorKind.updateFailed,
+    };
+    _failPendingGoalMutation(error.message, kind: errorKind);
+    if (conflict) requestGoal();
+    return true;
+  }
+
+  void _completeGoalRead() {
+    _goalReadTimer?.cancel();
+    _goalReadTimer = null;
+    _goalReadPending = false;
+    _goalUserRefreshPending = false;
+  }
+
+  void _applyGoalState(GoalStateMessage message) {
+    if (message.sessionId != null && message.sessionId != sessionId) return;
+    _completeGoalRead();
+    final incoming = message.goal;
+    final current = state.goal;
+    final incomingSequence = message.goalOperationSequence;
+    final currentSequence = state.goalOperationSequence;
+
+    final pending = state.goalMutation;
+    var acknowledgesPending = false;
+    if (pending != null) {
+      final changeId = message.goalChangeId?.trim();
+      acknowledgesPending = changeId != null && changeId.isNotEmpty
+          ? changeId == pending.id
+          : incomingSequence == null &&
+                _goalStateMatchesMutation(incoming, pending);
+    }
+
+    final isStaleSequence =
+        incomingSequence != null &&
+        currentSequence != null &&
+        incomingSequence < currentSequence;
+    final isStaleTimestamp =
+        incoming != null &&
+        current != null &&
+        incoming.threadId == current.threadId &&
+        incoming.updatedAt < current.updatedAt;
+    final isSequenceLessAckAfterAdvance =
+        acknowledgesPending &&
+        incomingSequence == null &&
+        pending?.expectedOperationSequence != null &&
+        currentSequence != null &&
+        currentSequence > pending!.expectedOperationSequence!;
+    if (isStaleSequence || isStaleTimestamp || isSequenceLessAckAfterAdvance) {
+      if (acknowledgesPending) {
+        _goalMutationTimer?.cancel();
+        _goalMutationTimer = null;
+        emit(
+          state.copyWith(
+            goalMutation: null,
+            goalMutationError: null,
+            goalMutationErrorKind: null,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (acknowledgesPending) {
+      _goalMutationTimer?.cancel();
+      _goalMutationTimer = null;
+    }
+
+    emit(
+      state.copyWith(
+        goal: incoming,
+        goalStateLoaded: true,
+        goalSupport: CodexGoalSupport.supported,
+        goalLoadErrorKind: null,
+        goalOperationSequence: incomingSequence ?? state.goalOperationSequence,
+        goalMutation: acknowledgesPending ? null : state.goalMutation,
+        goalMutationError: acknowledgesPending ? null : state.goalMutationError,
+        goalMutationErrorKind: acknowledgesPending
+            ? null
+            : state.goalMutationErrorKind,
+      ),
+    );
+  }
+
+  bool _goalStateMatchesMutation(CodexGoal? goal, CodexGoalMutation mutation) {
+    if (mutation.kind == CodexGoalMutationKind.clear) return goal == null;
+    if (goal == null) return false;
+    if (mutation.objective != null && goal.objective != mutation.objective) {
+      return false;
+    }
+    if (mutation.status != null && goal.status != mutation.status) {
+      return false;
+    }
+    if (mutation.includesTokenBudget &&
+        goal.tokenBudget != mutation.tokenBudget) {
+      return false;
+    }
+    return true;
+  }
+
+  void _failPendingGoalMutation(String message, {CodexGoalErrorKind? kind}) {
+    if (isClosed || state.goalMutation == null) return;
+    _goalMutationTimer?.cancel();
+    _goalMutationTimer = null;
+    emit(
+      state.copyWith(
+        goalMutation: null,
+        goalMutationError: message.trim(),
+        goalMutationErrorKind: kind,
+      ),
+    );
+  }
+
+  void clearGoalMutationError() {
+    if (state.goalMutationError == null) return;
+    emit(state.copyWith(goalMutationError: null, goalMutationErrorKind: null));
   }
 
   void _applyUpdate(ChatStateUpdate update, ServerMessage originalMsg) {
@@ -1326,6 +1601,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         case '/goal':
           requestGoal();
           return;
+        case '/goal edit':
+          requestGoal();
+          return;
         case '/goal pause':
           setGoalStatus(CodexThreadGoalStatus.paused);
           return;
@@ -1437,36 +1715,333 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
   }
 
-  void requestGoal() {
-    if (!isCodex) return;
-    _bridge.send(ClientMessage.getGoal(sessionId));
+  void requestGoal({bool userInitiated = false}) {
+    if (!isCodex || state.goalMutation != null) return;
+    if (state.goalSupport == CodexGoalSupport.unsupported && !userInitiated) {
+      return;
+    }
+    if (_goalReadPending) {
+      _goalUserRefreshPending = _goalUserRefreshPending || userInitiated;
+      return;
+    }
+    if (!_bridge.isConnected) {
+      if (userInitiated) {
+        _setGoalOperationError(
+          'Connect to the Bridge before managing this goal.',
+          kind: CodexGoalErrorKind.connectRequired,
+        );
+      }
+      if (state.goalLoadErrorKind != CodexGoalErrorKind.disconnected) {
+        emit(
+          state.copyWith(
+            goalStateLoaded: false,
+            goalSupport: CodexGoalSupport.unknown,
+            goalLoadErrorKind: CodexGoalErrorKind.disconnected,
+          ),
+        );
+      }
+      return;
+    }
+    try {
+      _goalReadPending = true;
+      _goalUserRefreshPending = userInitiated;
+      _goalReadTimer?.cancel();
+      _goalReadTimer = Timer(_goalReadTimeout, () {
+        if (!_goalReadPending || isClosed) return;
+        final showError = _goalUserRefreshPending;
+        _completeGoalRead();
+        emit(
+          state.copyWith(
+            goalStateLoaded: false,
+            goalSupport: CodexGoalSupport.unknown,
+            goalLoadErrorKind: CodexGoalErrorKind.readFailed,
+            goalMutationError: showError
+                ? 'Goal state could not be loaded from the Bridge.'
+                : null,
+            goalMutationErrorKind: showError
+                ? CodexGoalErrorKind.readFailed
+                : null,
+          ),
+        );
+      });
+      if (state.goalLoadErrorKind != null ||
+          state.goalSupport == CodexGoalSupport.unsupported) {
+        emit(
+          state.copyWith(
+            goalSupport: CodexGoalSupport.unknown,
+            goalStateLoaded: false,
+            goalLoadErrorKind: null,
+          ),
+        );
+      }
+      _bridge.send(ClientMessage.getGoal(sessionId));
+    } catch (error) {
+      _completeGoalRead();
+      emit(
+        state.copyWith(
+          goalStateLoaded: false,
+          goalSupport: CodexGoalSupport.unknown,
+          goalLoadErrorKind: CodexGoalErrorKind.readFailed,
+          goalMutationError: userInitiated ? error.toString() : null,
+          goalMutationErrorKind: userInitiated
+              ? CodexGoalErrorKind.readFailed
+              : null,
+        ),
+      );
+    }
   }
 
-  void setGoalObjective(String objective) {
-    if (!isCodex) return;
+  bool startGoal(
+    String objective, {
+    int? tokenBudget,
+    bool includeTokenBudget = false,
+  }) {
     final normalized = objective.trim();
-    if (normalized.isEmpty || normalized.length > 4000) return;
-    _bridge.send(
-      ClientMessage.setGoal(sessionId: sessionId, objective: normalized),
+    if (!_isValidGoalObjective(normalized)) return false;
+    return _beginGoalMutation(
+      CodexGoalMutation(
+        id: _uuid.v4(),
+        kind: CodexGoalMutationKind.create,
+        objective: normalized,
+        status: CodexThreadGoalStatus.active,
+        includesTokenBudget: includeTokenBudget,
+        tokenBudget: tokenBudget,
+        expectedOperationSequence: state.goalOperationSequence,
+      ),
+      (changeId) => ClientMessage.setGoal(
+        sessionId: sessionId,
+        objective: normalized,
+        status: CodexThreadGoalStatus.active,
+        tokenBudget: tokenBudget,
+        includeTokenBudget: includeTokenBudget,
+        goalChangeId: changeId,
+        expectedGoalOperationSequence: state.goalOperationSequence,
+      ),
     );
   }
 
-  void toggleGoalPaused() {
-    if (!isCodex || state.goal == null) return;
-    final next = state.goal!.status == CodexThreadGoalStatus.paused
-        ? CodexThreadGoalStatus.active
-        : CodexThreadGoalStatus.paused;
-    setGoalStatus(next);
+  bool editGoal(
+    String objective, {
+    int? tokenBudget,
+    bool includeTokenBudget = false,
+    bool includeObjective = true,
+  }) {
+    if (state.goal == null) {
+      return startGoal(
+        objective,
+        tokenBudget: tokenBudget,
+        includeTokenBudget: includeTokenBudget,
+      );
+    }
+    final normalized = objective.trim();
+    if (includeObjective && !_isValidGoalObjective(normalized)) return false;
+    if (!includeObjective && !includeTokenBudget) return true;
+    return _beginGoalMutation(
+      CodexGoalMutation(
+        id: _uuid.v4(),
+        kind: includeTokenBudget
+            ? CodexGoalMutationKind.updateBudget
+            : CodexGoalMutationKind.edit,
+        objective: includeObjective ? normalized : null,
+        includesTokenBudget: includeTokenBudget,
+        tokenBudget: tokenBudget,
+        expectedOperationSequence: state.goalOperationSequence,
+      ),
+      (changeId) => ClientMessage.setGoal(
+        sessionId: sessionId,
+        objective: includeObjective ? normalized : null,
+        tokenBudget: tokenBudget,
+        includeTokenBudget: includeTokenBudget,
+        goalChangeId: changeId,
+        expectedGoalOperationSequence: state.goalOperationSequence,
+      ),
+    );
   }
 
-  void setGoalStatus(CodexThreadGoalStatus status) {
-    if (!isCodex) return;
-    _bridge.send(ClientMessage.setGoal(sessionId: sessionId, status: status));
+  bool setGoalObjective(String objective) => editGoal(objective);
+
+  bool toggleGoalPaused() {
+    final goal = state.goal;
+    if (!isCodex || goal == null) return false;
+    return goal.status == CodexThreadGoalStatus.paused
+        ? resumeGoal()
+        : setGoalStatus(CodexThreadGoalStatus.paused);
   }
 
-  void clearGoal() {
-    if (!isCodex) return;
-    _bridge.send(ClientMessage.clearGoal(sessionId));
+  bool resumeGoal({
+    String? objective,
+    int? tokenBudget,
+    bool includeTokenBudget = false,
+  }) {
+    final goal = state.goal;
+    if (goal == null) return false;
+    final normalizedObjective = objective?.trim();
+    if (normalizedObjective != null &&
+        !_isValidGoalObjective(normalizedObjective)) {
+      return false;
+    }
+    if (goal.status == CodexThreadGoalStatus.budgetLimited &&
+        (!includeTokenBudget ||
+            (tokenBudget != null && tokenBudget <= goal.tokensUsed))) {
+      _setGoalOperationError(
+        'Raise the token budget above the used amount, or remove the budget, before resuming.',
+        kind: CodexGoalErrorKind.budgetResumeRequired,
+      );
+      return false;
+    }
+    return _beginGoalMutation(
+      CodexGoalMutation(
+        id: _uuid.v4(),
+        kind: CodexGoalMutationKind.resume,
+        objective: normalizedObjective,
+        status: CodexThreadGoalStatus.active,
+        includesTokenBudget: includeTokenBudget,
+        tokenBudget: tokenBudget,
+        expectedOperationSequence: state.goalOperationSequence,
+      ),
+      (changeId) => ClientMessage.setGoal(
+        sessionId: sessionId,
+        objective: normalizedObjective,
+        status: CodexThreadGoalStatus.active,
+        tokenBudget: tokenBudget,
+        includeTokenBudget: includeTokenBudget,
+        goalChangeId: changeId,
+        expectedGoalOperationSequence: state.goalOperationSequence,
+      ),
+    );
+  }
+
+  bool setGoalStatus(CodexThreadGoalStatus status) {
+    if (!isCodex || state.goal == null) return false;
+    if (status != CodexThreadGoalStatus.active &&
+        status != CodexThreadGoalStatus.paused) {
+      return false;
+    }
+    if (status == CodexThreadGoalStatus.active) return resumeGoal();
+    return _beginGoalMutation(
+      CodexGoalMutation(
+        id: _uuid.v4(),
+        kind: CodexGoalMutationKind.pause,
+        status: status,
+        expectedOperationSequence: state.goalOperationSequence,
+      ),
+      (changeId) => ClientMessage.setGoal(
+        sessionId: sessionId,
+        status: status,
+        goalChangeId: changeId,
+        expectedGoalOperationSequence: state.goalOperationSequence,
+      ),
+    );
+  }
+
+  bool clearGoal() {
+    if (!isCodex || state.goal == null) return false;
+    return _beginGoalMutation(
+      CodexGoalMutation(
+        id: _uuid.v4(),
+        kind: CodexGoalMutationKind.clear,
+        expectedOperationSequence: state.goalOperationSequence,
+      ),
+      (changeId) => ClientMessage.clearGoal(
+        sessionId,
+        goalChangeId: changeId,
+        expectedGoalOperationSequence: state.goalOperationSequence,
+      ),
+    );
+  }
+
+  bool _beginGoalMutation(
+    CodexGoalMutation mutation,
+    ClientMessage Function(String changeId) buildMessage,
+  ) {
+    if (!isCodex || state.goalMutation != null) return false;
+    if (state.goalSupport == CodexGoalSupport.unsupported) {
+      _setGoalOperationError(
+        'This Codex runtime does not support Goal controls.',
+        kind: CodexGoalErrorKind.unsupported,
+      );
+      return false;
+    }
+    if (!_bridge.isConnected) {
+      _setGoalOperationError(
+        'Goal controls require a live Bridge connection and are never queued offline.',
+        kind: CodexGoalErrorKind.connectRequired,
+      );
+      return false;
+    }
+    if (!state.goalStateLoaded ||
+        state.goalSupport != CodexGoalSupport.supported) {
+      _setGoalOperationError(
+        'Load the current Goal from the Bridge before changing it.',
+        kind: CodexGoalErrorKind.readFailed,
+      );
+      return false;
+    }
+    if (state.goal?.hasUnknownStatus == true) {
+      _setGoalOperationError(
+        'This Goal uses a newer status and is read-only on this app version.',
+        kind: CodexGoalErrorKind.unknownStatus,
+      );
+      return false;
+    }
+    if (mutation.includesTokenBudget &&
+        mutation.tokenBudget != null &&
+        mutation.tokenBudget! <= 0) {
+      _setGoalOperationError(
+        'Token budget must be a positive number.',
+        kind: CodexGoalErrorKind.invalidBudget,
+      );
+      return false;
+    }
+
+    emit(
+      state.copyWith(
+        goalMutation: mutation,
+        goalMutationError: null,
+        goalMutationErrorKind: null,
+      ),
+    );
+    _goalMutationTimer?.cancel();
+    _goalMutationTimer = Timer(_goalMutationTimeout, () {
+      if (state.goalMutation?.id != mutation.id) return;
+      _failPendingGoalMutation(
+        'Goal change timed out. The current Goal will be refreshed.',
+        kind: CodexGoalErrorKind.timeout,
+      );
+      requestGoal();
+    });
+    try {
+      _bridge.send(buildMessage(mutation.id));
+      return true;
+    } catch (error) {
+      if (state.goalMutation?.id == mutation.id) {
+        _failPendingGoalMutation(error.toString());
+      }
+      return false;
+    }
+  }
+
+  bool _isValidGoalObjective(String objective) {
+    if (objective.isNotEmpty && objective.length <= 4000) return true;
+    _setGoalOperationError(
+      objective.isEmpty
+          ? 'Enter a goal objective.'
+          : 'Goal objectives are limited to 4,000 characters.',
+      kind: objective.isEmpty
+          ? CodexGoalErrorKind.objectiveRequired
+          : CodexGoalErrorKind.objectiveTooLong,
+    );
+    return false;
+  }
+
+  void _setGoalOperationError(String message, {CodexGoalErrorKind? kind}) {
+    if (isClosed) return;
+    emit(
+      state.copyWith(
+        goalMutationError: message.trim(),
+        goalMutationErrorKind: kind,
+      ),
+    );
   }
 
   void _scheduleDeliveryPendingQueue({
@@ -2422,6 +2997,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   @override
   Future<void> close() {
     _statusRefreshTimer?.cancel();
+    _goalMutationTimer?.cancel();
+    _goalReadTimer?.cancel();
+    _goalConnectionSubscription?.cancel();
+    _goalSessionListSubscription?.cancel();
     for (final timer in _deliveryPendingTimers.values) {
       timer.cancel();
     }

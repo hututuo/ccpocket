@@ -15,6 +15,7 @@ import '../models/offline_pending_action.dart';
 import '../utils/codex_plan_update.dart';
 import '../utils/network_endpoint.dart';
 import 'bridge_service_base.dart';
+import 'codex_goal_request_router.dart';
 import 'session_runtime_store.dart';
 
 /// A mobile-owned hook that may observe one live session permission request
@@ -133,6 +134,7 @@ class BridgeService implements BridgeServiceBase {
   String? _bridgeVersion;
   Set<String> _bridgeCapabilities = const {};
   final Map<String, _PendingPermissionChange> _pendingPermissionChanges = {};
+  final CodexGoalRequestRouter _goalRequestRouter = CodexGoalRequestRouter();
   final Duration permissionChangeTimeout;
   String? _promptHistoryBridgeId;
   UsageResultMessage? _lastUsageResult;
@@ -1107,6 +1109,7 @@ class BridgeService implements BridgeServiceBase {
             _logicalConnectionIdentity != nextLogicalIdentity);
     _connectionEpoch++;
     _clearPendingLocalFeatureRequests();
+    _goalRequestRouter.clear();
     final epoch = _connectionEpoch;
     _intentionalDisconnect = false;
     _reconnectTimer?.cancel();
@@ -1136,8 +1139,16 @@ class BridgeService implements BridgeServiceBase {
           if (epoch != _connectionEpoch) return;
           try {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
-            final sessionId = json['sessionId'] as String?;
-            final msg = ServerMessage.fromJson(json);
+            var sessionId = json['sessionId'] as String?;
+            var msg = ServerMessage.fromJson(json);
+            final routedGoalSessionId = _goalRequestRouter.route(
+              msg,
+              wireSessionId: sessionId,
+            );
+            if (sessionId == null && routedGoalSessionId != null) {
+              sessionId = routedGoalSessionId;
+              msg = _withEffectiveGoalSessionId(msg, routedGoalSessionId);
+            }
             _completePendingPermissionChange(msg);
             if (_consumeArtifactInfrastructureMessage(msg)) return;
             if (_consumeLocalFeatureInfrastructureMessage(
@@ -1314,6 +1325,15 @@ class BridgeService implements BridgeServiceBase {
                 }
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
+              case GoalStateMessage():
+                if (sessionId == null) {
+                  logger.warning(
+                    'Ignoring an unscoped Goal state with no unique live request owner.',
+                  );
+                } else {
+                  _taggedMessageController.add((msg, sessionId));
+                }
+                _messageController.add(msg);
               case AssistantServerMessage(:final message):
                 if (sessionId != null) {
                   _patchSessionLastMessage(sessionId, message);
@@ -1380,7 +1400,13 @@ class BridgeService implements BridgeServiceBase {
                   _fallbackPendingHistoryDeltaRequests();
                 }
                 logger.error('Bridge error: $message');
-                _taggedMessageController.add((msg, sessionId));
+                if (sessionId == null && _isUnscopedGoalProtocolError(msg)) {
+                  logger.warning(
+                    'Ignoring an unscoped Goal error with no live request owner.',
+                  );
+                } else {
+                  _taggedMessageController.add((msg, sessionId));
+                }
                 _messageController.add(msg);
               default:
                 _taggedMessageController.add((msg, sessionId));
@@ -1397,6 +1423,7 @@ class BridgeService implements BridgeServiceBase {
           if (epoch != _connectionEpoch) return;
           logger.error('WS stream error', error, stackTrace);
           _clearPendingLocalFeatureRequests();
+          _goalRequestRouter.clear();
           _failPendingPermissionChanges(
             'Bridge disconnected before the permission change was confirmed.',
           );
@@ -1419,6 +1446,7 @@ class BridgeService implements BridgeServiceBase {
           if (epoch != _connectionEpoch) return;
           _channel = null;
           _clearPendingLocalFeatureRequests();
+          _goalRequestRouter.clear();
           _failPendingPermissionChanges(
             'Bridge disconnected before the permission change was confirmed.',
           );
@@ -1442,6 +1470,7 @@ class BridgeService implements BridgeServiceBase {
     } catch (e, st) {
       logger.error('WS connect failed', e, st);
       _clearPendingLocalFeatureRequests();
+      _goalRequestRouter.clear();
       _failPendingPermissionChanges(
         'Bridge connection failed before the permission change was confirmed.',
       );
@@ -1469,6 +1498,7 @@ class BridgeService implements BridgeServiceBase {
 
   void _clearBridgeScopedState({required bool clearOfflineQueue}) {
     _clearPendingLocalFeatureRequests();
+    _goalRequestRouter.clear();
     _failPendingArtifactResolutions(
       const ArtifactResolveException(
         code: 'bridge_changed',
@@ -1645,11 +1675,13 @@ class BridgeService implements BridgeServiceBase {
         final pendingLocalRequest = _registerPendingLocalFeatureRequest(
           message,
         );
+        final pendingGoalRequest = _goalRequestRouter.register(message);
         try {
           sendEphemeralRpc(message);
         } catch (error, stackTrace) {
           _rollbackPendingPermissionChange(pendingPermissionChange);
           _rollbackPendingLocalFeatureRequest(pendingLocalRequest);
+          _goalRequestRouter.rollback(pendingGoalRequest);
           logger.warning('WS ephemeral RPC send failed', error, stackTrace);
           rethrow;
         }
@@ -3027,6 +3059,45 @@ class BridgeService implements BridgeServiceBase {
     _sessionListController.add(_sessions);
   }
 
+  ServerMessage _withEffectiveGoalSessionId(
+    ServerMessage message,
+    String sessionId,
+  ) => switch (message) {
+    ErrorMessage(
+      message: final errorMessage,
+      :final errorCode,
+      :final permissionChangeId,
+      :final goalChangeId,
+    ) =>
+      ErrorMessage(
+        message: errorMessage,
+        errorCode: errorCode,
+        sessionId: sessionId,
+        permissionChangeId: permissionChangeId,
+        goalChangeId: goalChangeId,
+      ),
+    GoalStateMessage(
+      :final goal,
+      :final goalChangeId,
+      :final goalOperationSequence,
+    ) =>
+      GoalStateMessage(
+        sessionId: sessionId,
+        goal: goal,
+        goalChangeId: goalChangeId,
+        goalOperationSequence: goalOperationSequence,
+      ),
+    _ => message,
+  };
+
+  bool _isUnscopedGoalProtocolError(ErrorMessage error) {
+    final code = error.errorCode;
+    if (error.goalChangeId?.isNotEmpty == true) return true;
+    if (code?.startsWith('goal_') == true) return true;
+    return code == 'unsupported_message' &&
+        const {'get_goal', 'set_goal', 'clear_goal'}.contains(error.message);
+  }
+
   @override
   Stream<ServerMessage> messagesForSession(String sessionId) {
     return _taggedMessageController.stream
@@ -3243,6 +3314,7 @@ class BridgeService implements BridgeServiceBase {
     _reconnectTimer?.cancel();
     _cancelPendingPermissionChanges();
     _clearPendingLocalFeatureRequests();
+    _goalRequestRouter.clear();
     _permissionRequestObservers.clear();
     for (final timer in _inFlightPendingVisibilityTimers.values) {
       timer.cancel();
