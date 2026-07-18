@@ -11,6 +11,8 @@ part 'local_features/slots/subagents_protocol_slot.dart';
 part 'local_features/slots/add_to_conversation_protocol_slot.dart';
 part 'local_features/slots/side_chat_models_slot.dart';
 part 'local_features/slots/side_chat_protocol_slot.dart';
+part 'local_features/slots/conversation_mirror_protocol_slot.dart';
+part 'local_features/slots/codex_core_actions_protocol_slot.dart';
 
 bool isCodexAutoReviewApprovalsReviewer(String? value) {
   return value == 'auto_review' || value == 'guardian_subagent';

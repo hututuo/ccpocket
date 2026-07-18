@@ -111,6 +111,8 @@ class LocalFeatureProtocolHost {
     subagentsProtocolSlot,
     addToConversationProtocolSlot,
     sideChatProtocolSlot,
+    conversationMirrorProtocolSlot,
+    codexCoreActionsProtocolSlot,
   ];
 
   static List<String> get supportedServerMessageTypes => List.unmodifiable(
