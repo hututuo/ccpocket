@@ -718,6 +718,60 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("keeps recent session request generations isolated between clients", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const wsA = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const wsB = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    let resolveA:
+      ((value: { sessions: any[]; hasMore: boolean }) => void) | undefined;
+    let resolveB:
+      ((value: { sessions: any[]; hasMore: boolean }) => void) | undefined;
+    getAllRecentSessionsMock
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveA = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveB = resolve;
+          }),
+      );
+
+    (bridge as any).handleClientMessage(
+      { type: "list_recent_sessions", provider: "claude" },
+      wsA,
+    );
+    (bridge as any).handleClientMessage(
+      { type: "list_recent_sessions", provider: "claude" },
+      wsB,
+    );
+
+    resolveB?.({ sessions: [{ sessionId: "client-b" }], hasMore: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    resolveA?.({ sessions: [{ sessionId: "client-a" }], hasMore: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const recentFor = (ws: typeof wsA) =>
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .filter((message: any) => message.type === "recent_sessions");
+    expect(recentFor(wsA)).toHaveLength(1);
+    expect(recentFor(wsA)[0].sessions[0].sessionId).toBe("client-a");
+    expect(recentFor(wsB)).toHaveLength(1);
+    expect(recentFor(wsB)[0].sessions[0].sessionId).toBe("client-b");
+
+    bridge.close();
+  });
+
   it("sends codex model list without deprecated models", () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

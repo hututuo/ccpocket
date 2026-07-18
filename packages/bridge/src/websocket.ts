@@ -961,7 +961,7 @@ export class BridgeWebSocketServer {
   private readonly bridgeInstanceId?: string;
   private artifactManager: ArtifactManager | null;
 
-  private recentSessionsRequestId = 0;
+  private recentSessionsRequestIds = new WeakMap<WebSocket, number>();
   private debugEvents = new Map<string, DebugTraceEvent[]>();
   private notifiedPermissionToolUses = new Map<string, Set<string>>();
   private archiveStore: ArchiveStore;
@@ -5217,13 +5217,17 @@ export class BridgeWebSocketServer {
 
       case "list_recent_sessions": {
         const isProjectScopedRequest = msg.requestScope === "project";
+        const currentRequestId = this.recentSessionsRequestIds.get(ws) ?? 0;
         const requestId = isProjectScopedRequest
-          ? this.recentSessionsRequestId
-          : ++this.recentSessionsRequestId;
+          ? currentRequestId
+          : currentRequestId + 1;
+        if (!isProjectScopedRequest) {
+          this.recentSessionsRequestIds.set(ws, requestId);
+        }
         this.listRecentSessions(msg)
           .then(({ sessions, hasMore }) => {
             // Drop stale responses when rapid filter switches cause out-of-order completion
-            if (requestId !== this.recentSessionsRequestId) {
+            if (requestId !== (this.recentSessionsRequestIds.get(ws) ?? 0)) {
               return;
             }
             this.send(ws, {
@@ -5237,7 +5241,7 @@ export class BridgeWebSocketServer {
             } as Record<string, unknown>);
           })
           .catch((err) => {
-            if (requestId !== this.recentSessionsRequestId) {
+            if (requestId !== (this.recentSessionsRequestIds.get(ws) ?? 0)) {
               return;
             }
             this.send(ws, {
