@@ -2570,4 +2570,208 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get artifactPrepareFailed => 'Unable to prepare the file.';
+
+  @override
+  String get goalTitle => 'Goal';
+
+  @override
+  String get goalStart => 'Start Goal';
+
+  @override
+  String get goalManage => 'Manage Goal';
+
+  @override
+  String get goalUnavailable => 'Unavailable in this Codex';
+
+  @override
+  String get goalUnavailableBody =>
+      'This Codex runtime does not provide Goal controls. Update Codex or reconnect to a compatible Bridge.';
+
+  @override
+  String get goalLoading => 'Loading Goal…';
+
+  @override
+  String get goalNoActiveTitle => 'No active Goal';
+
+  @override
+  String get goalNoActiveBody =>
+      'Start a Goal to let Codex keep working through a sequence of ordinary turns.';
+
+  @override
+  String get goalManagementTitle => 'Goal management';
+
+  @override
+  String get goalRefreshTooltip => 'Refresh Goal';
+
+  @override
+  String get goalEditTooltip => 'Edit Goal';
+
+  @override
+  String get goalPauseTooltip => 'Pause Goal';
+
+  @override
+  String get goalResumeTooltip => 'Resume Goal';
+
+  @override
+  String get goalUpdateBudgetResume => 'Update budget and resume';
+
+  @override
+  String get goalClearTooltip => 'Clear Goal';
+
+  @override
+  String get goalStatusActive => 'Pursuing';
+
+  @override
+  String get goalStatusPaused => 'Paused';
+
+  @override
+  String get goalStatusBlocked => 'Blocked';
+
+  @override
+  String get goalStatusUsageLimited => 'Usage limited';
+
+  @override
+  String get goalStatusBudgetLimited => 'Budget limited';
+
+  @override
+  String get goalStatusComplete => 'Complete';
+
+  @override
+  String get goalStatusUnknown => 'Unknown';
+
+  @override
+  String get goalUpdating => 'Updating Goal…';
+
+  @override
+  String get goalMutationStarting => 'Starting Goal…';
+
+  @override
+  String get goalMutationSaving => 'Saving Goal…';
+
+  @override
+  String get goalMutationPausing => 'Pausing after the current step…';
+
+  @override
+  String get goalMutationResuming => 'Resuming Goal…';
+
+  @override
+  String get goalMutationBudget => 'Updating Goal budget…';
+
+  @override
+  String get goalMutationClearing => 'Clearing Goal…';
+
+  @override
+  String get goalTokensUnit => 'tokens';
+
+  @override
+  String get goalBlockedExplanation =>
+      'Goal mode stopped after repeated blockers. Resume after supplying the missing input or changing the objective.';
+
+  @override
+  String get goalUsageLimitedExplanation =>
+      'Goal mode paused because the current account usage limit was reached.';
+
+  @override
+  String get goalBudgetLimitedExplanation =>
+      'The Goal token budget is exhausted. Raise it or remove the limit before resuming.';
+
+  @override
+  String get goalCompleteExplanation =>
+      'Codex marked this Goal complete. Clear it before starting a different Goal.';
+
+  @override
+  String get goalUnknownExplanation =>
+      'This Goal status comes from a newer Codex version. Its state is shown without guessing.';
+
+  @override
+  String get goalStartTitle => 'Start Goal';
+
+  @override
+  String get goalEditTitle => 'Edit Goal';
+
+  @override
+  String get goalObjectiveLabel => 'Objective';
+
+  @override
+  String get goalObjectiveHint =>
+      'Describe the outcome, constraints, and how Codex can verify completion.';
+
+  @override
+  String get goalObjectiveRequired => 'Enter a Goal objective.';
+
+  @override
+  String get goalTokenBudgetTitle => 'Token budget';
+
+  @override
+  String get goalTokenBudgetDescription =>
+      'Optional. Goal mode pauses automatically when this budget is exhausted.';
+
+  @override
+  String get goalMaximumTokens => 'Maximum tokens';
+
+  @override
+  String get goalTokensAlreadyUsedSuffix => 'tokens already used';
+
+  @override
+  String get goalTokenBudgetPositive => 'Enter a positive token budget.';
+
+  @override
+  String get goalTokenBudgetAboveUsed =>
+      'Budget must be greater than the tokens already used.';
+
+  @override
+  String get goalBudgetResumeDescription =>
+      'Resuming a budget-limited Goal must raise the budget or remove it. Both changes are applied together.';
+
+  @override
+  String get goalBudgetBridgeUpdate =>
+      'Update the Bridge before changing a Goal token budget.';
+
+  @override
+  String get goalBudgetBridgeUpdateExisting =>
+      'This Goal has a token budget. Update the Bridge to change it.';
+
+  @override
+  String get goalResumeAction => 'Resume';
+
+  @override
+  String get goalClearTitle => 'Clear Goal?';
+
+  @override
+  String get goalClearBody =>
+      'Codex will stop starting new Goal steps. A step that is already running may still finish.';
+
+  @override
+  String get goalClearAction => 'Clear';
+
+  @override
+  String get goalChangedElsewhere =>
+      'This Goal changed on another client. Your draft is preserved; cancel, review the latest Goal, then reopen the editor.';
+
+  @override
+  String get goalReconnectToManage =>
+      'Reconnect and refresh to manage this Goal.';
+
+  @override
+  String get goalMutationTimeout =>
+      'The Goal change timed out. Its current state is being refreshed.';
+
+  @override
+  String get goalObjectiveTooLong =>
+      'Goal objectives are limited to 4,000 characters.';
+
+  @override
+  String get goalLoadFailedTitle => 'Couldn’t load Goal';
+
+  @override
+  String get goalLoadFailedBody =>
+      'The Bridge did not return an authoritative Goal state. No Goal was changed. Reconnect or retry.';
+
+  @override
+  String get goalUpdateFailed =>
+      'Couldn’t save the Goal change. Your draft is still here.';
+
+  @override
+  String get goalClearFailed =>
+      'Couldn’t clear the Goal. Refresh it and try again.';
 }

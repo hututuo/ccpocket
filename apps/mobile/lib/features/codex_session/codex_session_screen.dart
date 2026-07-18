@@ -56,6 +56,7 @@ import '../claude_session/widgets/rewind_message_list_sheet.dart'
     show UserMessageHistorySheet;
 import 'state/codex_session_cubit.dart';
 import 'widgets/codex_goal_card.dart';
+import 'widgets/codex_goal_management.dart';
 import 'widgets/codex_rewind_dialog.dart';
 import 'widgets/tool_suggestion_card.dart';
 
@@ -724,6 +725,66 @@ class _CodexChatBody extends HookWidget {
       return sub.cancel;
     }, [sessionId]);
 
+    useEffect(() {
+      final codexCubit = chatSessionCubit as CodexSessionCubit;
+      final sub = codexCubit.goalUiIntents.listen((intent) {
+        if (!context.mounted || isBackgroundRef.value) return;
+        switch (intent) {
+          case CodexGoalUiIntent.manage:
+            unawaited(CodexGoalManagement.showManager(context));
+          case CodexGoalUiIntent.edit:
+            final goal = chatSessionCubit.state.goal;
+            if (goal == null) {
+              unawaited(CodexGoalManagement.showManager(context));
+            } else {
+              unawaited(CodexGoalManagement.showEditor(context, goal));
+            }
+        }
+      });
+      return sub.cancel;
+    }, [sessionId]);
+
+    useEffect(() {
+      if (isBackground || bridgeState != BridgeConnectionState.connected) {
+        return null;
+      }
+      chatSessionCubit.requestGoal();
+      final timer = Timer.periodic(const Duration(seconds: 5), (_) {
+        chatSessionCubit.requestGoal();
+      });
+      return timer.cancel;
+    }, [sessionId, isBackground, bridgeState]);
+
+    useEffect(
+      () {
+        final error = sessionState.goalMutationError;
+        if (error == null || error.isEmpty || isBackground) return null;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              SnackBar(
+                content: Text(
+                  CodexGoalManagement.errorLabel(
+                    sessionState.goalMutationErrorKind,
+                    error,
+                    l,
+                  ),
+                ),
+              ),
+            );
+          chatSessionCubit.clearGoalMutationError();
+        });
+        return null;
+      },
+      [
+        sessionState.goalMutationError,
+        sessionState.goalMutationErrorKind,
+        isBackground,
+      ],
+    );
+
     // --- Initial requests on mount ---
     useEffect(
       () {
@@ -836,7 +897,7 @@ class _CodexChatBody extends HookWidget {
     final approval = sessionState.approval;
     final inPlanMode = sessionState.inPlanMode;
     final queuedInput = sessionState.queuedInput;
-    final currentGoal = _goalCardData(sessionState.goal);
+    final currentGoal = CodexGoalManagement.cardData(sessionState.goal);
 
     // Approval state pattern matching (Codex: permission + ask-user only)
     String? pendingToolUseId;
@@ -1184,6 +1245,10 @@ class _CodexChatBody extends HookWidget {
                               _openGalleryScreen(context, sessionId: sessionId);
                             case 'rename':
                               _renameSession(context, sessionId);
+                            case 'goal':
+                              unawaited(
+                                CodexGoalManagement.showManager(context),
+                              );
                             case 'terminal':
                               _openInTerminal(context, effectiveProjectPath);
                           }
@@ -1201,6 +1266,33 @@ class _CodexChatBody extends HookWidget {
                               child: ListTile(
                                 leading: Icon(Icons.edit_outlined, size: 20),
                                 title: Text('Rename'),
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                            PopupMenuItem(
+                              key: const ValueKey('menu_goal'),
+                              value: 'goal',
+                              enabled:
+                                  sessionState.goalSupport !=
+                                  CodexGoalSupport.unsupported,
+                              child: ListTile(
+                                leading: const Icon(
+                                  Icons.track_changes,
+                                  size: 20,
+                                ),
+                                title: Text(
+                                  currentGoal == null
+                                      ? sessionState.goalStateLoaded
+                                            ? l.goalStart
+                                            : l.goalTitle
+                                      : l.goalManage,
+                                ),
+                                subtitle:
+                                    sessionState.goalSupport ==
+                                        CodexGoalSupport.unsupported
+                                    ? Text(l.goalUnavailable)
+                                    : null,
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
                               ),
@@ -1427,15 +1519,54 @@ class _CodexChatBody extends HookWidget {
                   if (currentGoal != null)
                     CodexGoalCard(
                       goal: currentGoal,
+                      busy: sessionState.goalMutation != null,
+                      busyLabel: CodexGoalManagement.mutationLabel(
+                        sessionState.goalMutation?.kind,
+                        l,
+                      ),
+                      controlsEnabled:
+                          bridgeState == BridgeConnectionState.connected &&
+                          sessionState.goalStateLoaded &&
+                          sessionState.goalSupport ==
+                              CodexGoalSupport.supported &&
+                          sessionState.goal?.hasUnknownStatus != true,
+                      disabledLabel: CodexGoalManagement.controlsDisabledLabel(
+                        sessionState,
+                        sessionState.goal!,
+                        l,
+                      ),
                       onEdit: () => unawaited(
-                        _showCodexGoalEditor(
+                        CodexGoalManagement.showEditor(
                           context,
-                          sessionState.goal?.objective ?? currentGoal.objective,
+                          sessionState.goal,
                         ),
                       ),
-                      onTogglePaused: () =>
-                          context.read<ChatSessionCubit>().toggleGoalPaused(),
-                      onClear: () => unawaited(_confirmCodexGoalClear(context)),
+                      onTogglePaused: () {
+                        final goal = sessionState.goal;
+                        if (goal == null) return;
+                        if (goal.status == CodexThreadGoalStatus.blocked ||
+                            goal.status == CodexThreadGoalStatus.usageLimited) {
+                          context.read<ChatSessionCubit>().resumeGoal();
+                          return;
+                        }
+                        context.read<ChatSessionCubit>().toggleGoalPaused();
+                      },
+                      onResolveBudget:
+                          chatSessionCubit.supportsAdvancedGoalControl
+                          ? () => unawaited(
+                              CodexGoalManagement.showEditor(
+                                context,
+                                sessionState.goal,
+                                resumeAfterSave: true,
+                              ),
+                            )
+                          : null,
+                      onClear: () => unawaited(
+                        CodexGoalManagement.confirmClear(
+                          context,
+                          sessionState.goal!,
+                        ),
+                      ),
                     ),
                 if (approval is ApprovalNone)
                   if (queuedInput != null)
@@ -2060,94 +2191,6 @@ class CodexQueuedInputPanel extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-CodexGoalCardData? _goalCardData(CodexGoal? goal) {
-  if (goal == null) return null;
-  return CodexGoalCardData(
-    objective: goal.objective,
-    status: switch (goal.status) {
-      CodexThreadGoalStatus.active => CodexGoalStatus.active,
-      CodexThreadGoalStatus.paused => CodexGoalStatus.paused,
-      CodexThreadGoalStatus.blocked => CodexGoalStatus.blocked,
-      CodexThreadGoalStatus.usageLimited => CodexGoalStatus.usageLimited,
-      CodexThreadGoalStatus.budgetLimited => CodexGoalStatus.budgetLimited,
-      CodexThreadGoalStatus.complete => CodexGoalStatus.complete,
-    },
-  );
-}
-
-Future<void> _showCodexGoalEditor(
-  BuildContext context,
-  String objective,
-) async {
-  final formKey = GlobalKey<FormState>();
-  var nextObjective = objective;
-  final saved = await showDialog<bool>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('Edit goal'),
-      content: Form(
-        key: formKey,
-        child: TextFormField(
-          key: const ValueKey('goal_objective_field'),
-          initialValue: objective,
-          onChanged: (value) => nextObjective = value,
-          autofocus: true,
-          minLines: 2,
-          maxLines: 5,
-          maxLength: 4000,
-          decoration: const InputDecoration(
-            labelText: 'Objective',
-            hintText: 'What should Codex keep pursuing?',
-          ),
-          validator: (value) => value == null || value.trim().isEmpty
-              ? 'Enter a goal objective.'
-              : null,
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(dialogContext).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          key: const ValueKey('goal_save_button'),
-          onPressed: () {
-            if (formKey.currentState?.validate() != true) return;
-            Navigator.of(dialogContext).pop(true);
-          },
-          child: const Text('Save'),
-        ),
-      ],
-    ),
-  );
-  if (saved != true || !context.mounted) return;
-  context.read<ChatSessionCubit>().setGoalObjective(nextObjective);
-}
-
-Future<void> _confirmCodexGoalClear(BuildContext context) async {
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('Clear goal?'),
-      content: const Text('Codex will stop pursuing this goal.'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(dialogContext).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton.tonal(
-          key: const ValueKey('goal_clear_confirm_button'),
-          onPressed: () => Navigator.of(dialogContext).pop(true),
-          child: const Text('Clear'),
-        ),
-      ],
-    ),
-  );
-  if (confirmed == true && context.mounted) {
-    context.read<ChatSessionCubit>().clearGoal();
   }
 }
 

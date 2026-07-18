@@ -1,4 +1,5 @@
 import 'package:ccpocket/features/codex_session/widgets/codex_goal_card.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/mock/mock_scenarios.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,9 +11,17 @@ void main() {
     CodexGoalCardData goal = activeGoal,
     VoidCallback? onEdit,
     VoidCallback? onTogglePaused,
+    VoidCallback? onResolveBudget,
     VoidCallback? onClear,
+    bool busy = false,
+    String? busyLabel,
+    bool controlsEnabled = true,
+    Locale locale = const Locale('en'),
   }) {
     return MaterialApp(
+      locale: locale,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
@@ -25,8 +34,12 @@ void main() {
           alignment: Alignment.bottomCenter,
           child: CodexGoalCard(
             goal: goal,
+            busy: busy,
+            busyLabel: busyLabel,
+            controlsEnabled: controlsEnabled,
             onEdit: onEdit ?? () {},
             onTogglePaused: onTogglePaused ?? () {},
+            onResolveBudget: onResolveBudget,
             onClear: onClear ?? () {},
           ),
         ),
@@ -117,6 +130,121 @@ void main() {
       await tester.pumpWidget(buildSubject());
 
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('shows localized status, usage, and budget progress', (
+      tester,
+    ) async {
+      var budgetActions = 0;
+      await tester.pumpWidget(
+        buildSubject(
+          goal: const CodexGoalCardData(
+            objective: '完成跨端 Goal 管理',
+            status: CodexGoalStatus.budgetLimited,
+            tokensUsed: 12400,
+            tokenBudget: 80000,
+            timeUsedSeconds: 1080,
+          ),
+          onResolveBudget: () => budgetActions += 1,
+          locale: const Locale('zh'),
+        ),
+      );
+
+      expect(find.text('目标'), findsOneWidget);
+      expect(find.text('预算耗尽'), findsOneWidget);
+      expect(find.text('完成跨端 Goal 管理'), findsOneWidget);
+      expect(find.text('12.4k / 80k tokens'), findsOneWidget);
+      expect(find.text('18m'), findsOneWidget);
+      final progress = tester.widget<LinearProgressIndicator>(
+        find.byKey(const ValueKey('goal_budget_progress')),
+      );
+      expect(progress.value, closeTo(0.155, 0.0001));
+
+      await tester.tap(find.byKey(const ValueKey('goal_pause_button')));
+      expect(budgetActions, 1);
+    });
+
+    testWidgets('pending mutation disables every destructive action', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        buildSubject(busy: true, busyLabel: 'Saving Goal…'),
+      );
+
+      expect(find.text('Saving Goal…'), findsOneWidget);
+      for (final key in const [
+        ValueKey('goal_edit_button'),
+        ValueKey('goal_pause_button'),
+        ValueKey('goal_clear_button'),
+      ]) {
+        final button = find.descendant(
+          of: find.byKey(key),
+          matching: find.byType(IconButton),
+        );
+        expect(tester.widget<IconButton>(button).onPressed, isNull);
+      }
+    });
+
+    testWidgets('stale Goal stays visible but controls require reconnect', (
+      tester,
+    ) async {
+      var edits = 0;
+      await tester.pumpWidget(
+        buildSubject(
+          controlsEnabled: false,
+          onEdit: () => edits += 1,
+          locale: const Locale('zh'),
+        ),
+      );
+
+      expect(find.text(activeGoal.objective), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('goal_controls_disabled')),
+        findsOneWidget,
+      );
+      expect(find.text('重新连接并刷新后才能管理这个目标。'), findsOneWidget);
+      final editButton = tester.widget<IconButton>(
+        find.descendant(
+          of: find.byKey(const ValueKey('goal_edit_button')),
+          matching: find.byType(IconButton),
+        ),
+      );
+      expect(editButton.onPressed, isNull);
+      await tester.tap(find.byKey(const ValueKey('goal_edit_button')));
+      expect(edits, 0);
+    });
+
+    testWidgets('unknown future state preserves raw status and is read-only', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        buildSubject(
+          goal: const CodexGoalCardData(
+            objective: 'Future state',
+            status: CodexGoalStatus.unknown,
+            rawStatus: 'waitingForFutureResource',
+          ),
+        ),
+      );
+
+      expect(find.text('Unknown · waitingForFutureResource'), findsOneWidget);
+      for (final key in const [
+        ValueKey('goal_edit_button'),
+        ValueKey('goal_pause_button'),
+        ValueKey('goal_clear_button'),
+      ]) {
+        expect(
+          tester
+              .widget<IconButton>(
+                find.descendant(
+                  of: find.byKey(key),
+                  matching: find.byType(IconButton),
+                ),
+              )
+              .onPressed,
+          isNull,
+        );
+      }
     });
   });
 

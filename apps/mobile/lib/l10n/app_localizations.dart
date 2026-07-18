@@ -4608,32 +4608,425 @@ abstract class AppLocalizations {
   /// **'このコンテンツを表示できませんでした'**
   String get renderErrorFallback;
 
-  /// Label for a generic artifact attachment.
+  /// No description provided for @artifactFile.
+  ///
+  /// In ja, this message translates to:
+  /// **'ファイル'**
   String get artifactFile;
 
-  /// Label for a source-code artifact attachment.
+  /// No description provided for @artifactSource.
+  ///
+  /// In ja, this message translates to:
+  /// **'ソース'**
   String get artifactSource;
 
-  /// Label for a source location opened at a specific line.
+  /// No description provided for @artifactLineLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'{line} 行目'**
   String artifactLineLabel(int line);
 
-  /// Shown when the resolved artifact URL cannot be opened.
+  /// No description provided for @artifactOpenFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'ファイルを開けませんでした。'**
   String get artifactOpenFailed;
 
-  /// Shown when the referenced local file changed or disappeared.
+  /// No description provided for @artifactUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'このファイルは利用できなくなりました。'**
   String get artifactUnavailable;
 
-  /// Shown when artifact resolution loses its Bridge connection.
+  /// No description provided for @artifactReconnect.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge に再接続して、もう一度お試しください。'**
   String get artifactReconnect;
 
-  /// Shown when the connected Bridge predates artifact resolution support.
+  /// No description provided for @artifactBridgeUpdateRequired.
+  ///
+  /// In ja, this message translates to:
+  /// **'パソコン側の Bridge を更新してから、再接続してください。'**
   String get artifactBridgeUpdateRequired;
 
-  /// Shown when artifact resolution exceeds its timeout.
+  /// No description provided for @artifactTimeout.
+  ///
+  /// In ja, this message translates to:
+  /// **'ファイルの準備がタイムアウトしました。'**
   String get artifactTimeout;
 
-  /// Generic artifact resolution failure.
+  /// No description provided for @artifactPrepareFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'ファイルを準備できませんでした。'**
   String get artifactPrepareFailed;
+
+  /// No description provided for @goalTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goal'**
+  String get goalTitle;
+
+  /// No description provided for @goalStart.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを開始'**
+  String get goalStart;
+
+  /// No description provided for @goalManage.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを管理'**
+  String get goalManage;
+
+  /// No description provided for @goalUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'このCodexでは利用できません'**
+  String get goalUnavailable;
+
+  /// No description provided for @goalUnavailableBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'このCodexランタイムはGoal操作に対応していません。Codexを更新するか、互換性のあるBridgeへ再接続してください。'**
+  String get goalUnavailableBody;
+
+  /// No description provided for @goalLoading.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを読み込み中…'**
+  String get goalLoading;
+
+  /// No description provided for @goalNoActiveTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'進行中のGoalはありません'**
+  String get goalNoActiveTitle;
+
+  /// No description provided for @goalNoActiveBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを開始すると、Codexが通常のターンを重ねながら継続して作業します。'**
+  String get goalNoActiveBody;
+
+  /// No description provided for @goalManagementTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goal管理'**
+  String get goalManagementTitle;
+
+  /// No description provided for @goalRefreshTooltip.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを更新'**
+  String get goalRefreshTooltip;
+
+  /// No description provided for @goalEditTooltip.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを編集'**
+  String get goalEditTooltip;
+
+  /// No description provided for @goalPauseTooltip.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを一時停止'**
+  String get goalPauseTooltip;
+
+  /// No description provided for @goalResumeTooltip.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを再開'**
+  String get goalResumeTooltip;
+
+  /// No description provided for @goalUpdateBudgetResume.
+  ///
+  /// In ja, this message translates to:
+  /// **'予算を変更して再開'**
+  String get goalUpdateBudgetResume;
+
+  /// No description provided for @goalClearTooltip.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを削除'**
+  String get goalClearTooltip;
+
+  /// No description provided for @goalStatusActive.
+  ///
+  /// In ja, this message translates to:
+  /// **'進行中'**
+  String get goalStatusActive;
+
+  /// No description provided for @goalStatusPaused.
+  ///
+  /// In ja, this message translates to:
+  /// **'一時停止中'**
+  String get goalStatusPaused;
+
+  /// No description provided for @goalStatusBlocked.
+  ///
+  /// In ja, this message translates to:
+  /// **'ブロック中'**
+  String get goalStatusBlocked;
+
+  /// No description provided for @goalStatusUsageLimited.
+  ///
+  /// In ja, this message translates to:
+  /// **'利用上限'**
+  String get goalStatusUsageLimited;
+
+  /// No description provided for @goalStatusBudgetLimited.
+  ///
+  /// In ja, this message translates to:
+  /// **'予算上限'**
+  String get goalStatusBudgetLimited;
+
+  /// No description provided for @goalStatusComplete.
+  ///
+  /// In ja, this message translates to:
+  /// **'完了'**
+  String get goalStatusComplete;
+
+  /// No description provided for @goalStatusUnknown.
+  ///
+  /// In ja, this message translates to:
+  /// **'不明'**
+  String get goalStatusUnknown;
+
+  /// No description provided for @goalUpdating.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを更新中…'**
+  String get goalUpdating;
+
+  /// No description provided for @goalMutationStarting.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを開始中…'**
+  String get goalMutationStarting;
+
+  /// No description provided for @goalMutationSaving.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを保存中…'**
+  String get goalMutationSaving;
+
+  /// No description provided for @goalMutationPausing.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在のステップ後に一時停止します…'**
+  String get goalMutationPausing;
+
+  /// No description provided for @goalMutationResuming.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを再開中…'**
+  String get goalMutationResuming;
+
+  /// No description provided for @goalMutationBudget.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalの予算を更新中…'**
+  String get goalMutationBudget;
+
+  /// No description provided for @goalMutationClearing.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを削除中…'**
+  String get goalMutationClearing;
+
+  /// No description provided for @goalTokensUnit.
+  ///
+  /// In ja, this message translates to:
+  /// **'tokens'**
+  String get goalTokensUnit;
+
+  /// No description provided for @goalBlockedExplanation.
+  ///
+  /// In ja, this message translates to:
+  /// **'ブロックが繰り返されたためGoalモードが停止しました。必要な情報を追加するか目標を変更してから再開してください。'**
+  String get goalBlockedExplanation;
+
+  /// No description provided for @goalUsageLimitedExplanation.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在のアカウントが利用上限に達したためGoalモードが一時停止しました。'**
+  String get goalUsageLimitedExplanation;
+
+  /// No description provided for @goalBudgetLimitedExplanation.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalのtoken予算を使い切りました。予算を増やすか解除してから再開してください。'**
+  String get goalBudgetLimitedExplanation;
+
+  /// No description provided for @goalCompleteExplanation.
+  ///
+  /// In ja, this message translates to:
+  /// **'CodexがこのGoalを完了と判断しました。別のGoalを始める前に削除してください。'**
+  String get goalCompleteExplanation;
+
+  /// No description provided for @goalUnknownExplanation.
+  ///
+  /// In ja, this message translates to:
+  /// **'この状態は新しいCodexバージョンから届いています。推測せずそのまま表示します。'**
+  String get goalUnknownExplanation;
+
+  /// No description provided for @goalStartTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを開始'**
+  String get goalStartTitle;
+
+  /// No description provided for @goalEditTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを編集'**
+  String get goalEditTitle;
+
+  /// No description provided for @goalObjectiveLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'目標'**
+  String get goalObjectiveLabel;
+
+  /// No description provided for @goalObjectiveHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'成果、制約、完了を確認する方法を入力してください。'**
+  String get goalObjectiveHint;
+
+  /// No description provided for @goalObjectiveRequired.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalの目標を入力してください。'**
+  String get goalObjectiveRequired;
+
+  /// No description provided for @goalTokenBudgetTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Token予算'**
+  String get goalTokenBudgetTitle;
+
+  /// No description provided for @goalTokenBudgetDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'任意。予算を使い切るとGoalモードは自動的に一時停止します。'**
+  String get goalTokenBudgetDescription;
+
+  /// No description provided for @goalMaximumTokens.
+  ///
+  /// In ja, this message translates to:
+  /// **'最大token数'**
+  String get goalMaximumTokens;
+
+  /// No description provided for @goalTokensAlreadyUsedSuffix.
+  ///
+  /// In ja, this message translates to:
+  /// **'tokens 使用済み'**
+  String get goalTokensAlreadyUsedSuffix;
+
+  /// No description provided for @goalTokenBudgetPositive.
+  ///
+  /// In ja, this message translates to:
+  /// **'0より大きいtoken予算を入力してください。'**
+  String get goalTokenBudgetPositive;
+
+  /// No description provided for @goalTokenBudgetAboveUsed.
+  ///
+  /// In ja, this message translates to:
+  /// **'予算は使用済みtoken数より大きくしてください。'**
+  String get goalTokenBudgetAboveUsed;
+
+  /// No description provided for @goalBudgetResumeDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'予算上限に達したGoalを再開するには、予算を増やすか解除する必要があります。両方の変更は同時に適用されます。'**
+  String get goalBudgetResumeDescription;
+
+  /// No description provided for @goalBudgetBridgeUpdate.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalのtoken予算を変更する前にBridgeを更新してください。'**
+  String get goalBudgetBridgeUpdate;
+
+  /// No description provided for @goalBudgetBridgeUpdateExisting.
+  ///
+  /// In ja, this message translates to:
+  /// **'このGoalにはtoken予算があります。変更するにはBridgeを更新してください。'**
+  String get goalBudgetBridgeUpdateExisting;
+
+  /// No description provided for @goalResumeAction.
+  ///
+  /// In ja, this message translates to:
+  /// **'再開'**
+  String get goalResumeAction;
+
+  /// No description provided for @goalClearTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを削除しますか？'**
+  String get goalClearTitle;
+
+  /// No description provided for @goalClearBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'Codexは新しいGoalステップを開始しなくなります。実行中のステップは完了する場合があります。'**
+  String get goalClearBody;
+
+  /// No description provided for @goalClearAction.
+  ///
+  /// In ja, this message translates to:
+  /// **'削除'**
+  String get goalClearAction;
+
+  /// No description provided for @goalChangedElsewhere.
+  ///
+  /// In ja, this message translates to:
+  /// **'このGoalは別のクライアントで変更されました。下書きは保持されています。キャンセルして最新のGoalを確認し、編集画面を開き直してください。'**
+  String get goalChangedElsewhere;
+
+  /// No description provided for @goalReconnectToManage.
+  ///
+  /// In ja, this message translates to:
+  /// **'このGoalを管理するには、再接続して更新してください。'**
+  String get goalReconnectToManage;
+
+  /// No description provided for @goalMutationTimeout.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalの変更がタイムアウトしました。現在の状態を更新しています。'**
+  String get goalMutationTimeout;
+
+  /// No description provided for @goalObjectiveTooLong.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalの目標は4,000文字以内で入力してください。'**
+  String get goalObjectiveTooLong;
+
+  /// No description provided for @goalLoadFailedTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalを読み込めませんでした'**
+  String get goalLoadFailedTitle;
+
+  /// No description provided for @goalLoadFailedBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridgeから確定したGoal状態が返されませんでした。既存のGoalは変更されていません。再接続するか再試行してください。'**
+  String get goalLoadFailedBody;
+
+  /// No description provided for @goalUpdateFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalの変更を保存できませんでした。下書きは保持されています。'**
+  String get goalUpdateFailed;
+
+  /// No description provided for @goalClearFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'Goalをクリアできませんでした。更新してから再試行してください。'**
+  String get goalClearFailed;
 }
 
 class _AppLocalizationsDelegate

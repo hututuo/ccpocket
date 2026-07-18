@@ -2467,12 +2467,205 @@ class AppLocalizationsJa extends AppLocalizations {
   String get artifactReconnect => 'Bridge に再接続して、もう一度お試しください。';
 
   @override
-  String get artifactBridgeUpdateRequired =>
-      'パソコン側の Bridge を更新してから、再接続してください。';
+  String get artifactBridgeUpdateRequired => 'パソコン側の Bridge を更新してから、再接続してください。';
 
   @override
   String get artifactTimeout => 'ファイルの準備がタイムアウトしました。';
 
   @override
   String get artifactPrepareFailed => 'ファイルを準備できませんでした。';
+
+  @override
+  String get goalTitle => 'Goal';
+
+  @override
+  String get goalStart => 'Goalを開始';
+
+  @override
+  String get goalManage => 'Goalを管理';
+
+  @override
+  String get goalUnavailable => 'このCodexでは利用できません';
+
+  @override
+  String get goalUnavailableBody =>
+      'このCodexランタイムはGoal操作に対応していません。Codexを更新するか、互換性のあるBridgeへ再接続してください。';
+
+  @override
+  String get goalLoading => 'Goalを読み込み中…';
+
+  @override
+  String get goalNoActiveTitle => '進行中のGoalはありません';
+
+  @override
+  String get goalNoActiveBody => 'Goalを開始すると、Codexが通常のターンを重ねながら継続して作業します。';
+
+  @override
+  String get goalManagementTitle => 'Goal管理';
+
+  @override
+  String get goalRefreshTooltip => 'Goalを更新';
+
+  @override
+  String get goalEditTooltip => 'Goalを編集';
+
+  @override
+  String get goalPauseTooltip => 'Goalを一時停止';
+
+  @override
+  String get goalResumeTooltip => 'Goalを再開';
+
+  @override
+  String get goalUpdateBudgetResume => '予算を変更して再開';
+
+  @override
+  String get goalClearTooltip => 'Goalを削除';
+
+  @override
+  String get goalStatusActive => '進行中';
+
+  @override
+  String get goalStatusPaused => '一時停止中';
+
+  @override
+  String get goalStatusBlocked => 'ブロック中';
+
+  @override
+  String get goalStatusUsageLimited => '利用上限';
+
+  @override
+  String get goalStatusBudgetLimited => '予算上限';
+
+  @override
+  String get goalStatusComplete => '完了';
+
+  @override
+  String get goalStatusUnknown => '不明';
+
+  @override
+  String get goalUpdating => 'Goalを更新中…';
+
+  @override
+  String get goalMutationStarting => 'Goalを開始中…';
+
+  @override
+  String get goalMutationSaving => 'Goalを保存中…';
+
+  @override
+  String get goalMutationPausing => '現在のステップ後に一時停止します…';
+
+  @override
+  String get goalMutationResuming => 'Goalを再開中…';
+
+  @override
+  String get goalMutationBudget => 'Goalの予算を更新中…';
+
+  @override
+  String get goalMutationClearing => 'Goalを削除中…';
+
+  @override
+  String get goalTokensUnit => 'tokens';
+
+  @override
+  String get goalBlockedExplanation =>
+      'ブロックが繰り返されたためGoalモードが停止しました。必要な情報を追加するか目標を変更してから再開してください。';
+
+  @override
+  String get goalUsageLimitedExplanation =>
+      '現在のアカウントが利用上限に達したためGoalモードが一時停止しました。';
+
+  @override
+  String get goalBudgetLimitedExplanation =>
+      'Goalのtoken予算を使い切りました。予算を増やすか解除してから再開してください。';
+
+  @override
+  String get goalCompleteExplanation =>
+      'CodexがこのGoalを完了と判断しました。別のGoalを始める前に削除してください。';
+
+  @override
+  String get goalUnknownExplanation =>
+      'この状態は新しいCodexバージョンから届いています。推測せずそのまま表示します。';
+
+  @override
+  String get goalStartTitle => 'Goalを開始';
+
+  @override
+  String get goalEditTitle => 'Goalを編集';
+
+  @override
+  String get goalObjectiveLabel => '目標';
+
+  @override
+  String get goalObjectiveHint => '成果、制約、完了を確認する方法を入力してください。';
+
+  @override
+  String get goalObjectiveRequired => 'Goalの目標を入力してください。';
+
+  @override
+  String get goalTokenBudgetTitle => 'Token予算';
+
+  @override
+  String get goalTokenBudgetDescription => '任意。予算を使い切るとGoalモードは自動的に一時停止します。';
+
+  @override
+  String get goalMaximumTokens => '最大token数';
+
+  @override
+  String get goalTokensAlreadyUsedSuffix => 'tokens 使用済み';
+
+  @override
+  String get goalTokenBudgetPositive => '0より大きいtoken予算を入力してください。';
+
+  @override
+  String get goalTokenBudgetAboveUsed => '予算は使用済みtoken数より大きくしてください。';
+
+  @override
+  String get goalBudgetResumeDescription =>
+      '予算上限に達したGoalを再開するには、予算を増やすか解除する必要があります。両方の変更は同時に適用されます。';
+
+  @override
+  String get goalBudgetBridgeUpdate => 'Goalのtoken予算を変更する前にBridgeを更新してください。';
+
+  @override
+  String get goalBudgetBridgeUpdateExisting =>
+      'このGoalにはtoken予算があります。変更するにはBridgeを更新してください。';
+
+  @override
+  String get goalResumeAction => '再開';
+
+  @override
+  String get goalClearTitle => 'Goalを削除しますか？';
+
+  @override
+  String get goalClearBody =>
+      'Codexは新しいGoalステップを開始しなくなります。実行中のステップは完了する場合があります。';
+
+  @override
+  String get goalClearAction => '削除';
+
+  @override
+  String get goalChangedElsewhere =>
+      'このGoalは別のクライアントで変更されました。下書きは保持されています。キャンセルして最新のGoalを確認し、編集画面を開き直してください。';
+
+  @override
+  String get goalReconnectToManage => 'このGoalを管理するには、再接続して更新してください。';
+
+  @override
+  String get goalMutationTimeout => 'Goalの変更がタイムアウトしました。現在の状態を更新しています。';
+
+  @override
+  String get goalObjectiveTooLong => 'Goalの目標は4,000文字以内で入力してください。';
+
+  @override
+  String get goalLoadFailedTitle => 'Goalを読み込めませんでした';
+
+  @override
+  String get goalLoadFailedBody =>
+      'Bridgeから確定したGoal状態が返されませんでした。既存のGoalは変更されていません。再接続するか再試行してください。';
+
+  @override
+  String get goalUpdateFailed => 'Goalの変更を保存できませんでした。下書きは保持されています。';
+
+  @override
+  String get goalClearFailed => 'Goalをクリアできませんでした。更新してから再試行してください。';
 }

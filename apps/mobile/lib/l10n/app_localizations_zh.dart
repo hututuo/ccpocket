@@ -2448,4 +2448,190 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get artifactPrepareFailed => '无法准备文件。';
+
+  @override
+  String get goalTitle => '目标';
+
+  @override
+  String get goalStart => '开启目标模式';
+
+  @override
+  String get goalManage => '管理目标';
+
+  @override
+  String get goalUnavailable => '当前 Codex 不支持目标模式';
+
+  @override
+  String get goalUnavailableBody =>
+      '当前 Codex 运行时没有提供目标控制。请更新 Codex，或重新连接兼容的 Bridge。';
+
+  @override
+  String get goalLoading => '正在加载目标…';
+
+  @override
+  String get goalNoActiveTitle => '当前没有目标';
+
+  @override
+  String get goalNoActiveBody => '开启目标模式后，Codex 会通过连续的普通对话轮次推进目标。';
+
+  @override
+  String get goalManagementTitle => '目标模式管理';
+
+  @override
+  String get goalRefreshTooltip => '刷新目标';
+
+  @override
+  String get goalEditTooltip => '修改目标';
+
+  @override
+  String get goalPauseTooltip => '暂停目标';
+
+  @override
+  String get goalResumeTooltip => '继续目标';
+
+  @override
+  String get goalUpdateBudgetResume => '修改预算并继续';
+
+  @override
+  String get goalClearTooltip => '删除目标';
+
+  @override
+  String get goalStatusActive => '执行中';
+
+  @override
+  String get goalStatusPaused => '已暂停';
+
+  @override
+  String get goalStatusBlocked => '已阻塞';
+
+  @override
+  String get goalStatusUsageLimited => '用量受限';
+
+  @override
+  String get goalStatusBudgetLimited => '预算耗尽';
+
+  @override
+  String get goalStatusComplete => '已完成';
+
+  @override
+  String get goalStatusUnknown => '未知状态';
+
+  @override
+  String get goalUpdating => '正在更新目标…';
+
+  @override
+  String get goalMutationStarting => '正在开启目标模式…';
+
+  @override
+  String get goalMutationSaving => '正在保存目标…';
+
+  @override
+  String get goalMutationPausing => '将在当前小轮结束后暂停…';
+
+  @override
+  String get goalMutationResuming => '正在继续目标…';
+
+  @override
+  String get goalMutationBudget => '正在更新目标预算…';
+
+  @override
+  String get goalMutationClearing => '正在删除目标…';
+
+  @override
+  String get goalTokensUnit => 'tokens';
+
+  @override
+  String get goalBlockedExplanation => '目标模式因多次遇到阻塞而停止。补充所需信息或修改目标后即可继续。';
+
+  @override
+  String get goalUsageLimitedExplanation => '当前账户已达到用量限制，目标模式已暂停。';
+
+  @override
+  String get goalBudgetLimitedExplanation => '目标的 token 预算已经用尽。提高或取消预算后才能继续。';
+
+  @override
+  String get goalCompleteExplanation => 'Codex 已将这个目标标记为完成。删除后可开启一个新目标。';
+
+  @override
+  String get goalUnknownExplanation => '这个状态来自较新的 Codex 版本；这里会原样显示，不会擅自猜测。';
+
+  @override
+  String get goalStartTitle => '开启目标模式';
+
+  @override
+  String get goalEditTitle => '修改目标';
+
+  @override
+  String get goalObjectiveLabel => '目标内容';
+
+  @override
+  String get goalObjectiveHint => '说明预期结果、限制条件，以及 Codex 如何验证已经完成。';
+
+  @override
+  String get goalObjectiveRequired => '请输入目标内容。';
+
+  @override
+  String get goalTokenBudgetTitle => 'Token 预算';
+
+  @override
+  String get goalTokenBudgetDescription => '可选。预算用尽时，目标模式会自动暂停。';
+
+  @override
+  String get goalMaximumTokens => 'Token 上限';
+
+  @override
+  String get goalTokensAlreadyUsedSuffix => 'tokens 已使用';
+
+  @override
+  String get goalTokenBudgetPositive => '请输入大于 0 的 token 预算。';
+
+  @override
+  String get goalTokenBudgetAboveUsed => '预算必须高于已经使用的 token 数。';
+
+  @override
+  String get goalBudgetResumeDescription => '继续预算耗尽的目标时，必须提高或取消预算；这两项更改会同时生效。';
+
+  @override
+  String get goalBudgetBridgeUpdate => '请先更新电脑端 Bridge，再修改目标的 token 预算。';
+
+  @override
+  String get goalBudgetBridgeUpdateExisting =>
+      '这个目标设有 token 预算；更新 Bridge 后才能修改。';
+
+  @override
+  String get goalResumeAction => '继续';
+
+  @override
+  String get goalClearTitle => '删除这个目标？';
+
+  @override
+  String get goalClearBody => 'Codex 将不再开始新的目标小轮；已经运行的小轮仍可能执行完毕。';
+
+  @override
+  String get goalClearAction => '删除';
+
+  @override
+  String get goalChangedElsewhere =>
+      '这个目标已在其他客户端发生变化。草稿仍会保留；请取消并查看最新目标，然后重新打开编辑器。';
+
+  @override
+  String get goalReconnectToManage => '重新连接并刷新后才能管理这个目标。';
+
+  @override
+  String get goalMutationTimeout => '目标修改等待超时，正在刷新当前状态。';
+
+  @override
+  String get goalObjectiveTooLong => '目标说明最多可输入 4,000 个字符。';
+
+  @override
+  String get goalLoadFailedTitle => '目标加载失败';
+
+  @override
+  String get goalLoadFailedBody => '后端没有返回可确认的目标状态，现有目标没有被更改。请重连或重试。';
+
+  @override
+  String get goalUpdateFailed => '保存目标失败，草稿仍保留在这里。';
+
+  @override
+  String get goalClearFailed => '清除目标失败，请刷新后重试。';
 }
