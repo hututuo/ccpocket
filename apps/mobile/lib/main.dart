@@ -29,6 +29,7 @@ import 'package:talker_bloc_logger/talker_bloc_logger.dart';
 
 import 'core/logger.dart';
 import 'l10n/app_localizations.dart';
+import 'features/auto_approval/auto_approval_service.dart';
 import 'features/session_list/state/session_list_cubit.dart';
 import 'features/git/state/git_status_cubit.dart';
 import 'features/git/state/git_view_cache_service.dart';
@@ -150,6 +151,10 @@ void main() async {
 
   final bridge = BridgeService();
   bridge.onDisconnect = sshBridgeTunnelService?.closeAll;
+  final autoApprovalService = AutoApprovalService(
+    bridge: bridge,
+    preferences: prefs,
+  )..initialize();
   final fcmService = FcmService();
   final draftService = DraftService(prefs);
   final inAppReviewService = InAppReviewService(prefs: prefs);
@@ -202,6 +207,10 @@ void main() async {
             unawaited(promptHistorySyncSub.cancel());
             service.dispose();
           },
+        ),
+        ChangeNotifierProvider<AutoApprovalService>(
+          create: (_) => autoApprovalService,
+          lazy: false,
         ),
         RepositoryProvider<GitViewCacheService>(
           create: (_) => gitViewCacheService,

@@ -463,12 +463,14 @@ class _SessionListScreenState extends State<SessionListScreen>
       setState(() => _isAutoConnecting = true);
       // Try to get API key from SecureStorage via MachineManagerCubit.
       String? apiKey;
+      String? logicalConnectionIdentity;
       try {
         final uri = Uri.tryParse(url);
         if (uri != null) {
           final cubit = context.read<MachineManagerCubit?>();
           final machine = await findAutoConnectMachine(cubit, uri);
           if (machine != null) {
+            logicalConnectionIdentity = 'machine:${machine.id}';
             apiKey = await cubit?.getApiKey(machine.id);
             if (machine.sshJumpHost?.trim().isNotEmpty == true) {
               if (!mounted) return;
@@ -483,6 +485,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       if (!mounted) return;
       final attempted = await context.read<BridgeService>().autoConnect(
         apiKey: apiKey,
+        logicalConnectionIdentity: logicalConnectionIdentity,
       );
       if (!attempted) {
         setState(() => _isAutoConnecting = false);
@@ -513,18 +516,20 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (!mounted) return;
     // Auto-save to Machines on successful health check (or user choosing to connect)
     final trimmedApiKey = apiKey?.trim() ?? '';
+    String? logicalConnectionIdentity;
     if (machineManagerCubit != null) {
       // Parse host and port from URL
       final uri = Uri.tryParse(
         url.replaceFirst('ws://', 'http://').replaceFirst('wss://', 'https://'),
       );
       if (uri != null) {
-        await machineManagerCubit.recordConnection(
+        final machine = await machineManagerCubit.recordConnection(
           host: uri.host,
           port: uri.port != 0 ? uri.port : 8765,
           apiKey: trimmedApiKey.isNotEmpty ? trimmedApiKey : null,
           useSsl: uri.scheme == 'https',
         );
+        logicalConnectionIdentity = 'machine:${machine.id}';
       }
     }
 
@@ -540,7 +545,10 @@ class _SessionListScreenState extends State<SessionListScreen>
       connectUrl = '$connectUrl${sep}token=$trimmedApiKey';
     }
     final bridge = context.read<BridgeService>();
-    bridge.connect(connectUrl);
+    bridge.connect(
+      connectUrl,
+      logicalConnectionIdentity: logicalConnectionIdentity,
+    );
     bridge.savePreferences(url);
   }
 
@@ -2283,7 +2291,10 @@ class _SessionListScreenState extends State<SessionListScreen>
 
     if (!mounted) return;
     final bridge = context.read<BridgeService>();
-    bridge.connect(wsUrl);
+    bridge.connect(
+      wsUrl,
+      logicalConnectionIdentity: 'machine:${machine.id}',
+    );
     bridge.savePreferences(machine.wsUrl);
     final tunnelService = context.read<SshBridgeTunnelService?>();
     if (tunnelService != null) {

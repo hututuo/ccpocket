@@ -4236,6 +4236,18 @@ class ClientMessage {
     });
   }
 
+  /// Sends the existing approve wire message only on the current live socket.
+  ///
+  /// Mobile automation must never replay an approval from the offline queue
+  /// after its original request may have expired or changed.
+  factory ClientMessage.approveLiveOnly(
+    String id, {
+    required String sessionId,
+  }) => ClientMessage._(
+    <String, dynamic>{'type': 'approve', 'id': id, 'sessionId': sessionId},
+    delivery: ClientMessageDelivery.ephemeral,
+  );
+
   factory ClientMessage.approveAlways(String id, {String? sessionId}) =>
       ClientMessage._(<String, dynamic>{
         'type': 'approve_always',

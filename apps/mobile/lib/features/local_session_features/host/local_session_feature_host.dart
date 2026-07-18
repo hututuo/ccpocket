@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../widgets/chat_selection_actions.dart';
+import '../../auto_approval/auto_approval_ui_slot.dart';
 import '../slots/add_to_conversation_ui_slot.dart';
 import '../slots/session_insights_ui_slot.dart';
 import '../slots/side_chat_ui_slot.dart';
@@ -15,6 +16,7 @@ class LocalSessionFeatureHost {
     subagentsUiSlot,
     addToConversationUiSlot,
     sideChatUiSlot,
+    autoApprovalUiSlot,
   ];
 
   static List<SessionMenuAction> overflowActions(

@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:flutter/foundation.dart' show protected, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show VoidCallback, protected, visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +16,20 @@ import '../utils/codex_plan_update.dart';
 import '../utils/network_endpoint.dart';
 import 'bridge_service_base.dart';
 import 'session_runtime_store.dart';
+
+/// A mobile-owned hook that may observe one live session permission request
+/// before it reaches ordinary chat UI subscribers.
+///
+/// Observers cannot suppress ordinary delivery. A failed observer is isolated,
+/// and with no registered observer the official path is unchanged.
+typedef SessionPermissionRequestObserver =
+    void Function(String sessionId, PermissionRequestMessage request);
+
+class _PermissionRequestObserverRegistration {
+  const _PermissionRequestObserverRegistration(this.observer);
+
+  final SessionPermissionRequestObserver observer;
+}
 
 class BridgeService implements BridgeServiceBase {
   void Function(ClientMessage message)? onOutgoingMessage;
@@ -102,6 +117,7 @@ class BridgeService implements BridgeServiceBase {
   BridgeConnectionState _connectionState = BridgeConnectionState.disconnected;
   final List<ClientMessage> _messageQueue = [];
   List<SessionInfo> _sessions = [];
+  int _authoritativeSessionListGeneration = 0;
   List<RecentSession> _recentSessions = [];
   RecentSessionsMessage? _lastRecentSessionsMessage;
   List<GalleryImage> _galleryImages = [];
@@ -130,6 +146,8 @@ class BridgeService implements BridgeServiceBase {
       _pendingArtifactResolutions = {};
   final Random _artifactRequestRandom = Random.secure();
   final List<_PendingLocalFeatureRequest> _pendingLocalFeatureRequests = [];
+  final List<_PermissionRequestObserverRegistration>
+  _permissionRequestObservers = [];
   List<LocalFeatureProtocolSlot>? _localFeatureProtocolSlotsForTest;
   DateTime Function() _localFeatureRequestClock = DateTime.now;
   Future<void> _fileReadSerial = Future<void>.value();
@@ -150,6 +168,7 @@ class BridgeService implements BridgeServiceBase {
 
   // Auto-reconnect
   String? _lastUrl;
+  String? _logicalConnectionIdentity;
   int _connectionEpoch = 0;
   Timer? _reconnectTimer;
   int _reconnectAttempt = 0;
@@ -163,6 +182,8 @@ class BridgeService implements BridgeServiceBase {
       _connectionController.stream;
   @override
   Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
+  int get authoritativeSessionListGeneration =>
+      _authoritativeSessionListGeneration;
   @override
   Stream<String> get stoppedSessions => _sessionStoppedController.stream;
   Stream<List<RecentSession>> get recentSessionsStream =>
@@ -770,6 +791,50 @@ class BridgeService implements BridgeServiceBase {
     );
   }
 
+  /// Register an optional mobile-only permission observation seam.
+  ///
+  /// Observers run in registration order. The returned callback removes
+  /// exactly this registration and is safe to invoke more than once.
+  VoidCallback registerPermissionRequestObserver(
+    SessionPermissionRequestObserver observer,
+  ) {
+    final registration = _PermissionRequestObserverRegistration(observer);
+    _permissionRequestObservers.add(registration);
+    var active = true;
+    return () {
+      if (!active) return;
+      active = false;
+      _permissionRequestObservers.remove(registration);
+    };
+  }
+
+  void _notifyPermissionRequestObservers(
+    String sessionId,
+    PermissionRequestMessage request,
+  ) {
+    for (final registration
+        in List<_PermissionRequestObserverRegistration>.of(
+          _permissionRequestObservers,
+        )) {
+      try {
+        registration.observer(sessionId, request);
+      } catch (error, stackTrace) {
+        logger.error(
+          '[bridge] Permission observer failed for '
+          '${request.toolUseId}',
+          error,
+          stackTrace,
+        );
+      }
+    }
+  }
+
+  @visibleForTesting
+  void notifyPermissionRequestObserversForTest(
+    String sessionId,
+    PermissionRequestMessage request,
+  ) => _notifyPermissionRequestObservers(sessionId, request);
+
   @visibleForTesting
   void clearPendingLocalFeatureRequestsForTest() {
     _clearPendingLocalFeatureRequests();
@@ -823,6 +888,11 @@ class BridgeService implements BridgeServiceBase {
 
   /// The last WebSocket URL used for connection (or reconnection).
   String? get lastUrl => _lastUrl;
+
+  /// Stable caller-owned identity for the configured machine, when known.
+  ///
+  /// This is intentionally local-only and never enters the Bridge protocol.
+  String? get logicalConnectionIdentity => _logicalConnectionIdentity;
 
   void _rememberPromptHistoryBridgeId(String? value) {
     if (value != null && value.isNotEmpty) {
@@ -909,7 +979,7 @@ class BridgeService implements BridgeServiceBase {
     _connectionController.add(state);
   }
 
-  void connect(String url) {
+  void connect(String url, {String? logicalConnectionIdentity}) {
     _failPendingArtifactResolutions(
       const ArtifactResolveException(
         code: 'bridge_changed',
@@ -917,8 +987,14 @@ class BridgeService implements BridgeServiceBase {
       ),
     );
     final previousUrl = _lastUrl;
+    final trimmedLogicalIdentity = logicalConnectionIdentity?.trim();
+    final nextLogicalIdentity = trimmedLogicalIdentity?.isEmpty == true
+        ? null
+        : trimmedLogicalIdentity;
     final isBridgeSwitch =
-        previousUrl != null && !_sameBridgeTarget(previousUrl, url);
+        previousUrl != null &&
+        (!_sameBridgeTarget(previousUrl, url) ||
+            _logicalConnectionIdentity != nextLogicalIdentity);
     _connectionEpoch++;
     _clearPendingLocalFeatureRequests();
     final epoch = _connectionEpoch;
@@ -935,6 +1011,7 @@ class BridgeService implements BridgeServiceBase {
       _clearBridgeScopedState(clearOfflineQueue: true);
     }
     _lastUrl = url;
+    _logicalConnectionIdentity = nextLogicalIdentity;
 
     _setBridgeConnectionState(BridgeConnectionState.connecting);
     try {
@@ -991,6 +1068,7 @@ class BridgeService implements BridgeServiceBase {
                 :final defaultCodexProfile,
                 :final bridgeVersion,
               ):
+                _authoritativeSessionListGeneration++;
                 _sessions = _applyLocalDeliveryPendingInputs(sessions);
                 _clearPendingStartActionsForSessions(_sessions);
                 _sessionListController.add(_sessions);
@@ -1131,6 +1209,7 @@ class BridgeService implements BridgeServiceBase {
                 _messageController.add(msg);
               case PermissionRequestMessage():
                 if (sessionId != null) {
+                  _notifyPermissionRequestObservers(sessionId, msg);
                   _patchSessionPermission(sessionId, msg);
                 }
                 _taggedMessageController.add((msg, sessionId));
@@ -1421,7 +1500,10 @@ class BridgeService implements BridgeServiceBase {
     _setBridgeConnectionState(BridgeConnectionState.reconnecting);
     _reconnectTimer = Timer(Duration(seconds: delay), () {
       if (_lastUrl != null && !_intentionalDisconnect) {
-        connect(_lastUrl!);
+        connect(
+          _lastUrl!,
+          logicalConnectionIdentity: _logicalConnectionIdentity,
+        );
       }
     });
   }
@@ -2836,7 +2918,10 @@ class BridgeService implements BridgeServiceBase {
   /// [apiKey] should be provided from [FlutterSecureStorage] via
   /// [MachineManagerService]. Falls back to legacy [SharedPreferences]
   /// for migration.
-  Future<bool> autoConnect({String? apiKey}) async {
+  Future<bool> autoConnect({
+    String? apiKey,
+    String? logicalConnectionIdentity,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     final url = prefs.getString(_prefKeyUrl);
     if (url == null || url.isEmpty) return false;
@@ -2856,7 +2941,10 @@ class BridgeService implements BridgeServiceBase {
       await prefs.remove(_prefKeyApiKey);
     }
 
-    connect(connectUrl);
+    connect(
+      connectUrl,
+      logicalConnectionIdentity: logicalConnectionIdentity,
+    );
     return true;
   }
 
@@ -2969,7 +3057,10 @@ class BridgeService implements BridgeServiceBase {
         _scheduleReconnect();
       }
     } else if (_connectionState == BridgeConnectionState.disconnected) {
-      connect(_lastUrl!);
+      connect(
+        _lastUrl!,
+        logicalConnectionIdentity: _logicalConnectionIdentity,
+      );
     }
     // If reconnecting, do nothing — already in progress.
   }
@@ -3018,6 +3109,7 @@ class BridgeService implements BridgeServiceBase {
     _intentionalDisconnect = true;
     _reconnectTimer?.cancel();
     _clearPendingLocalFeatureRequests();
+    _permissionRequestObservers.clear();
     for (final timer in _inFlightPendingVisibilityTimers.values) {
       timer.cancel();
     }
