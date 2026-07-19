@@ -1,0 +1,1888 @@
+import { createHash } from "node:crypto";
+import { watch, type FSWatcher } from "node:fs";
+import { open, stat, type FileHandle } from "node:fs/promises";
+import { StringDecoder } from "node:string_decoder";
+import type { ServerMessage } from "../../parser.js";
+import { resolveCodexSessionJsonlPath } from "../../sessions-index.js";
+import type {
+  CodexDesktopContinuityClientMessage,
+  CodexDesktopContinuityEventMessage,
+  CodexDesktopContinuityState,
+} from "./codex-desktop-continuity-protocol.js";
+import type {
+  LocalFeatureHandleContext,
+  LocalFeatureHandler,
+  LocalFeatureInputAdmission,
+  LocalFeatureInputMessage,
+  LocalFeatureRuntime,
+  LocalFeatureSession,
+} from "../runtime.js";
+
+const SERVER_MESSAGE_TYPE = "codex_desktop_continuity_event_v1";
+const MAX_MONITORS = 64;
+const MAX_WATCHERS = 256;
+const MAX_SEED_BYTES = 8 * 1024 * 1024;
+const READ_CHUNK_BYTES = 64 * 1024;
+const MAX_READ_BYTES_PER_PASS = 4 * 1024 * 1024;
+const MAX_LINE_BYTES = 2 * 1024 * 1024;
+const MAX_TEXT_BYTES = 256 * 1024;
+const MAX_TOOL_INPUT_BYTES = 256 * 1024;
+const MAX_DEDUPE_KEYS = 4096;
+const MAX_ACTIVE_TURNS = 32;
+const MAX_PENDING_ASSISTANT_MESSAGES = 128;
+const MAX_RECENT_RESPONSE_ASSISTANTS = 128;
+const ASSISTANT_PAIR_TOMBSTONE_MS = 5000;
+const POLL_MS = 750;
+const START_CLASSIFICATION_MS = 100;
+const ASSISTANT_MESSAGE_PAIR_MS = 40;
+const REHYDRATE_SETTLE_MS = 350;
+const REHYDRATE_RETRY_MS = 750;
+const MAX_REHYDRATE_ATTEMPTS = 3;
+
+type TurnOrigin = "desktop" | "local" | null;
+
+interface WatchRegistration {
+  client: object;
+  requestId: string;
+  sessionId: string;
+  threadId: string;
+}
+
+interface MonitorMessageEvent {
+  kind: "message";
+  itemKey: string;
+  turnId?: string;
+  timestamp?: string;
+  message: ServerMessage;
+}
+
+interface MonitorStateEvent {
+  kind: "state";
+  state: "idle" | "running";
+  turnId?: string;
+  outcome?: "completed" | "interrupted";
+  timestamp?: string;
+}
+
+export type CodexDesktopContinuityMonitorEvent =
+  MonitorMessageEvent | MonitorStateEvent;
+
+interface MonitorSnapshot {
+  state: CodexDesktopContinuityState;
+  turnId?: string;
+}
+
+interface ActiveTurn {
+  key: string;
+  turnId?: string;
+  origin: TurnOrigin;
+  timestamp?: string;
+  sequence: number;
+  pendingStartTimer: ReturnType<typeof setTimeout> | null;
+}
+
+interface PendingAssistantMessage {
+  key: string;
+  turnKey?: string;
+  turnId?: string;
+  phase: AssistantMessagePhase;
+  text: string;
+  timestamp?: string;
+  timestampMs?: number;
+  syntheticId: string;
+  timer: ReturnType<typeof setTimeout> | null;
+  syntheticEmitted: boolean;
+}
+
+interface RecentResponseAssistant {
+  key: string;
+  turnId?: string;
+  phase: AssistantMessagePhase;
+  text: string;
+  timestampMs?: number;
+}
+
+type AssistantMessagePhase = "commentary" | "final" | "unknown";
+
+interface RolloutEntry {
+  timestamp?: unknown;
+  type?: unknown;
+  payload?: unknown;
+}
+
+export function createCodexDesktopContinuityHandlers(
+  runtime: LocalFeatureRuntime,
+): readonly LocalFeatureHandler[] {
+  return [new CodexDesktopContinuityHandler(runtime)];
+}
+
+export interface CodexDesktopContinuityHandlerOptions {
+  resolveRolloutPath?: (threadId: string) => Promise<string | null>;
+  rehydrateSettleMs?: number;
+  rehydrateRetryMs?: number;
+}
+
+export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
+  readonly messageTypes = [
+    "codex_desktop_continuity_watch",
+    "codex_desktop_continuity_unwatch",
+  ] as const;
+
+  private readonly monitors = new Map<string, CodexRolloutMonitor>();
+  private readonly watchersByClient = new Map<
+    object,
+    Map<string, WatchRegistration>
+  >();
+  private readonly localClientMessageIds = new Map<string, Set<string>>();
+  private readonly rehydrateTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly rehydrateInFlight = new Set<string>();
+  private readonly rehydrateFailureCounts = new Map<string, number>();
+  /** Runtime sessions whose model-visible history trails the durable rollout. */
+  private readonly staleRuntimeSessionIds = new Set<string>();
+  private closed = false;
+
+  constructor(
+    private readonly runtime: LocalFeatureRuntime,
+    private readonly options: CodexDesktopContinuityHandlerOptions = {},
+  ) {}
+
+  async handle(
+    rawMessage: CodexDesktopContinuityClientMessage,
+    context: LocalFeatureHandleContext,
+  ): Promise<void> {
+    const message = rawMessage as CodexDesktopContinuityClientMessage;
+    if (!this.runtime.supports(context.client, SERVER_MESSAGE_TYPE)) {
+      this.runtime.send(context.client, {
+        type: "error",
+        errorCode: "unsupported_capability",
+        message: "Codex Desktop continuity capability was not negotiated",
+      });
+      return;
+    }
+    if (message.type === "codex_desktop_continuity_unwatch") {
+      this.removeWatch(context.client, message.sessionId, message.threadId);
+      this.send(context.client, message, { event: "unwatched" });
+      return;
+    }
+
+    const session = this.validateBinding(message);
+    if (!session) {
+      this.send(context.client, message, {
+        event: "error",
+        errorCode: "continuity_binding_mismatch",
+        error: "The runtime session no longer owns this Codex thread.",
+      });
+      return;
+    }
+    if (
+      this.runtime.isProjectPathAllowed &&
+      !this.runtime.isProjectPathAllowed(message.projectPath)
+    ) {
+      this.send(context.client, message, {
+        event: "error",
+        errorCode: "path_not_allowed",
+        error: "The project path is outside the Bridge allowlist.",
+      });
+      return;
+    }
+    if (
+      this.runtime.isSessionProjectPath &&
+      !this.runtime.isSessionProjectPath(session, message.projectPath)
+    ) {
+      this.send(context.client, message, {
+        event: "error",
+        errorCode: "continuity_binding_mismatch",
+        error: "The claimed project path does not match this runtime session.",
+      });
+      return;
+    }
+
+    try {
+      const monitor = await this.monitorFor(message.threadId);
+      this.registerWatch(context.client, message, monitor);
+      const snapshot = monitor.snapshot;
+      const handoffQueued =
+        snapshot.state === "idle" &&
+        ((this.runtime.hasCodexQueuedInput?.(session.id) ?? false) ||
+          this.isLocalRuntimeActive(message.threadId));
+      if (
+        monitor.hasExternalTurn ||
+        monitor.needsRehydrateSince(session.createdAt)
+      ) {
+        remember(this.staleRuntimeSessionIds, session.id, MAX_WATCHERS);
+      }
+      this.send(context.client, message, {
+        event: "watching",
+        state: snapshot.state,
+        ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+        ...(handoffQueued ? { handoffQueued: true } : {}),
+      });
+      if (
+        !monitor.hasExternalTurn &&
+        this.staleRuntimeSessionIds.has(session.id)
+      ) {
+        this.rehydrateFailureCounts.delete(session.id);
+        this.scheduleRehydrate(session.id, message.threadId, snapshot.turnId);
+      }
+    } catch (error) {
+      this.send(context.client, message, {
+        event: "error",
+        errorCode: "rollout_unavailable",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  admitInput(
+    client: object,
+    session: LocalFeatureSession,
+    _message: LocalFeatureInputMessage,
+  ): LocalFeatureInputAdmission | null | Promise<LocalFeatureInputAdmission> {
+    if (
+      session.provider !== "codex" ||
+      !this.runtime.supports(client, SERVER_MESSAGE_TYPE)
+    ) {
+      return null;
+    }
+    return this.admitSupportedInput(session);
+  }
+
+  private async admitSupportedInput(
+    session: LocalFeatureSession,
+  ): Promise<LocalFeatureInputAdmission> {
+    const threadId = this.runtime.getCodexThreadId(session);
+    if (!threadId) return { action: "allow" };
+    let monitor: CodexRolloutMonitor;
+    try {
+      monitor = await this.monitorFor(threadId);
+      await monitor.refreshNow();
+    } catch {
+      // Fail open for old/non-durable Codex sessions. The normal Bridge input
+      // path remains authoritative when no rollout can be resolved.
+      return { action: "allow" };
+    }
+    if (monitor.hasExternalTurn) {
+      remember(this.staleRuntimeSessionIds, session.id, MAX_WATCHERS);
+      return { action: "queue", reason: "desktop_turn_active" };
+    }
+    if (
+      this.staleRuntimeSessionIds.has(session.id) ||
+      monitor.needsRehydrateSince(session.createdAt)
+    ) {
+      remember(this.staleRuntimeSessionIds, session.id, MAX_WATCHERS);
+      if (
+        (this.rehydrateFailureCounts.get(session.id) ?? 0) >=
+        MAX_REHYDRATE_ATTEMPTS
+      ) {
+        this.rehydrateFailureCounts.delete(session.id);
+      }
+      this.scheduleRehydrate(session.id, threadId, monitor.snapshot.turnId);
+      return { action: "queue", reason: "desktop_history_refreshing" };
+    }
+    return { action: "allow" };
+  }
+
+  inputAccepted(
+    _client: object,
+    session: LocalFeatureSession,
+    message: LocalFeatureInputMessage,
+    queued: boolean,
+  ): void {
+    if (session.provider !== "codex" || !message.clientMessageId) return;
+    const threadId = this.runtime.getCodexThreadId(session);
+    if (!threadId) return;
+    const ids = this.localClientMessageIds.get(threadId) ?? new Set<string>();
+    ids.add(message.clientMessageId);
+    while (ids.size > 32) ids.delete(ids.values().next().value!);
+    setBoundedMap(this.localClientMessageIds, threadId, ids, MAX_MONITORS);
+    if (
+      queued &&
+      this.monitors.get(threadId)?.hasExternalTurn === false &&
+      !this.staleRuntimeSessionIds.has(session.id) &&
+      !this.rehydrateInFlight.has(session.id)
+    ) {
+      this.runtime.drainCodexQueuedInputIfReady?.(session.id);
+    }
+  }
+
+  externalCodexTurnId(session: LocalFeatureSession): string | undefined {
+    if (session.provider !== "codex") return undefined;
+    const threadId = this.runtime.getCodexThreadId(session);
+    if (!threadId) return undefined;
+    const monitor = this.monitors.get(threadId);
+    return monitor?.externalTurnIdForSteering;
+  }
+
+  /** Distinguishes ambiguous Desktop activity from an ordinary local turn. */
+  hasExternalCodexActivity(session: LocalFeatureSession): boolean {
+    if (session.provider !== "codex") return false;
+    const threadId = this.runtime.getCodexThreadId(session);
+    if (!threadId) return false;
+    return this.monitors.get(threadId)?.hasExternalTurn ?? false;
+  }
+
+  disconnect(client: object): void {
+    const registrations = this.watchersByClient.get(client);
+    if (!registrations) return;
+    for (const registration of registrations.values()) {
+      this.monitors.get(registration.threadId)?.removeWatcher(registration);
+    }
+    this.watchersByClient.delete(client);
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const timer of this.rehydrateTimers.values()) clearTimeout(timer);
+    this.rehydrateTimers.clear();
+    for (const monitor of this.monitors.values()) monitor.close();
+    this.monitors.clear();
+    this.watchersByClient.clear();
+    this.localClientMessageIds.clear();
+    this.staleRuntimeSessionIds.clear();
+    this.rehydrateFailureCounts.clear();
+    this.rehydrateInFlight.clear();
+  }
+
+  private validateBinding(
+    message: Extract<
+      CodexDesktopContinuityClientMessage,
+      { type: "codex_desktop_continuity_watch" }
+    >,
+  ): LocalFeatureSession | null {
+    const session = this.runtime.getSession(message.sessionId);
+    if (!session || session.provider !== "codex") return null;
+    return this.runtime.getCodexThreadId(session) === message.threadId
+      ? session
+      : null;
+  }
+
+  private async monitorFor(threadId: string): Promise<CodexRolloutMonitor> {
+    const existing = this.monitors.get(threadId);
+    if (existing) return existing;
+    if (this.monitors.size >= MAX_MONITORS) {
+      const idle = [...this.monitors.entries()].find(
+        ([, monitor]) => monitor.watcherCount === 0,
+      );
+      if (!idle) throw new Error("Too many Codex Desktop continuity monitors");
+      idle[1].close();
+      this.monitors.delete(idle[0]);
+    }
+    const path = await (
+      this.options.resolveRolloutPath ?? resolveCodexSessionJsonlPath
+    )(threadId);
+    if (!path) throw new Error(`No durable rollout found for ${threadId}`);
+    const monitor = new CodexRolloutMonitor({
+      threadId,
+      path,
+      isLocalRuntimeActive: () => this.isLocalRuntimeActive(threadId),
+      consumeLocalClientMessageId: (clientMessageId) =>
+        this.consumeLocalClientMessageId(threadId, clientMessageId),
+      onEvent: (event) => this.onMonitorEvent(threadId, event),
+    });
+    this.monitors.set(threadId, monitor);
+    try {
+      await monitor.start();
+    } catch (error) {
+      this.monitors.delete(threadId);
+      monitor.close();
+      throw error;
+    }
+    return monitor;
+  }
+
+  private isLocalRuntimeActive(threadId: string): boolean {
+    if (this.runtime.isCodexThreadLocallyActive?.(threadId)) return true;
+    for (const registrations of this.watchersByClient.values()) {
+      for (const registration of registrations.values()) {
+        if (registration.threadId !== threadId) continue;
+        const process = this.runtime.getSession(registration.sessionId)
+          ?.process as { isWaitingForInput?: boolean } | undefined;
+        if (process?.isWaitingForInput === false) return true;
+      }
+    }
+    return false;
+  }
+
+  private consumeLocalClientMessageId(
+    threadId: string,
+    clientMessageId: string,
+  ): boolean {
+    const ids = this.localClientMessageIds.get(threadId);
+    if (!ids?.delete(clientMessageId)) return false;
+    if (ids.size === 0) this.localClientMessageIds.delete(threadId);
+    return true;
+  }
+
+  private registerWatch(
+    client: object,
+    message: Extract<
+      CodexDesktopContinuityClientMessage,
+      { type: "codex_desktop_continuity_watch" }
+    >,
+    monitor: CodexRolloutMonitor,
+  ): void {
+    let registrations = this.watchersByClient.get(client);
+    const previous = registrations?.get(message.sessionId);
+    if (!previous && this.totalWatcherCount >= MAX_WATCHERS) {
+      throw new Error("Too many Codex Desktop continuity watchers");
+    }
+    if (!registrations) {
+      registrations = new Map();
+      this.watchersByClient.set(client, registrations);
+    }
+    if (previous) this.monitors.get(previous.threadId)?.removeWatcher(previous);
+    const registration: WatchRegistration = {
+      client,
+      requestId: message.requestId,
+      sessionId: message.sessionId,
+      threadId: message.threadId,
+    };
+    registrations.set(message.sessionId, registration);
+    monitor.addWatcher(registration);
+  }
+
+  private removeWatch(
+    client: object,
+    sessionId: string,
+    threadId: string,
+  ): void {
+    const registrations = this.watchersByClient.get(client);
+    const registration = registrations?.get(sessionId);
+    if (!registration || registration.threadId !== threadId) return;
+    registrations!.delete(sessionId);
+    if (registrations!.size === 0) this.watchersByClient.delete(client);
+    this.monitors.get(threadId)?.removeWatcher(registration);
+  }
+
+  private get totalWatcherCount(): number {
+    let count = 0;
+    for (const registrations of this.watchersByClient.values()) {
+      count += registrations.size;
+    }
+    return count;
+  }
+
+  private onMonitorEvent(
+    threadId: string,
+    event: CodexDesktopContinuityMonitorEvent,
+  ): void {
+    const monitor = this.monitors.get(threadId);
+    if (!monitor) return;
+    const registrations = monitor.watchers;
+    if (event.kind === "state") {
+      for (const registration of registrations) {
+        remember(
+          this.staleRuntimeSessionIds,
+          registration.sessionId,
+          MAX_WATCHERS,
+        );
+        if (event.state === "running") {
+          this.rehydrateFailureCounts.delete(registration.sessionId);
+        }
+      }
+    }
+    for (const registration of registrations) {
+      if (!this.runtime.supports(registration.client, SERVER_MESSAGE_TYPE)) {
+        continue;
+      }
+      if (event.kind === "message") {
+        this.runtime.send(registration.client, {
+          ...this.eventBase(registration),
+          event: "message",
+          itemKey: event.itemKey,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+          message: event.message,
+        });
+      } else {
+        const handoffQueued =
+          event.state === "idle" &&
+          ((this.runtime.hasCodexQueuedInput?.(registration.sessionId) ??
+            false) ||
+            this.isLocalRuntimeActive(threadId));
+        this.runtime.send(registration.client, {
+          ...this.eventBase(registration),
+          event: "state",
+          state: event.state,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          ...(event.outcome ? { outcome: event.outcome } : {}),
+          ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+          ...(handoffQueued ? { handoffQueued: true } : {}),
+        });
+      }
+    }
+    if (event.kind === "state" && event.state === "idle") {
+      const sessionIds = new Set(
+        registrations.map((registration) => registration.sessionId),
+      );
+      for (const sessionId of sessionIds) {
+        this.scheduleRehydrate(sessionId, threadId, event.turnId);
+      }
+    }
+  }
+
+  private scheduleRehydrate(
+    sessionId: string,
+    threadId: string,
+    completedTurnId?: string,
+    delayMs = this.options.rehydrateSettleMs ?? REHYDRATE_SETTLE_MS,
+  ): void {
+    if (this.closed) return;
+    const prior = this.rehydrateTimers.get(sessionId);
+    if (prior) clearTimeout(prior);
+    if (!prior && this.rehydrateTimers.size >= MAX_WATCHERS) {
+      const oldestSessionId = this.rehydrateTimers.keys().next().value;
+      if (oldestSessionId) {
+        clearTimeout(this.rehydrateTimers.get(oldestSessionId)!);
+        this.rehydrateTimers.delete(oldestSessionId);
+      }
+    }
+    const timer = setTimeout(() => {
+      this.rehydrateTimers.delete(sessionId);
+      void this.rehydrate(sessionId, threadId, completedTurnId);
+    }, delayMs);
+    timer.unref?.();
+    this.rehydrateTimers.set(sessionId, timer);
+  }
+
+  private async rehydrate(
+    sessionId: string,
+    threadId: string,
+    completedTurnId?: string,
+  ): Promise<void> {
+    if (this.closed || this.rehydrateInFlight.has(sessionId)) return;
+    const monitor = this.monitors.get(threadId);
+    if (!monitor || monitor.hasExternalTurn) return;
+    if (
+      completedTurnId &&
+      monitor.snapshot.turnId &&
+      monitor.snapshot.turnId !== completedTurnId
+    ) {
+      return;
+    }
+    const session = this.runtime.getSession(sessionId);
+    if (!session || this.runtime.getCodexThreadId(session) !== threadId) {
+      this.staleRuntimeSessionIds.delete(sessionId);
+      this.rehydrateFailureCounts.delete(sessionId);
+      return;
+    }
+    const process = session.process as { isWaitingForInput?: boolean };
+    if (process.isWaitingForInput === false) return;
+    const rehydrate = this.runtime.rehydrateCodexSessionAfterExternalTurn;
+    if (!rehydrate) return;
+    this.rehydrateInFlight.add(sessionId);
+    try {
+      const ok = await rehydrate(sessionId, threadId);
+      if (ok) {
+        this.staleRuntimeSessionIds.delete(sessionId);
+        this.rehydrateFailureCounts.delete(sessionId);
+        // The queue may have been accepted just after the replacement emitted
+        // input_ready. Recheck once after the atomic refresh so that race does
+        // not leave the phone handoff stuck until another turn completes.
+        this.runtime.drainCodexQueuedInputIfReady?.(sessionId);
+      } else {
+        this.retryOrReportRehydrateFailure(
+          monitor,
+          sessionId,
+          threadId,
+          completedTurnId,
+        );
+      }
+    } catch {
+      this.retryOrReportRehydrateFailure(
+        monitor,
+        sessionId,
+        threadId,
+        completedTurnId,
+      );
+    } finally {
+      this.rehydrateInFlight.delete(sessionId);
+    }
+  }
+
+  private retryOrReportRehydrateFailure(
+    monitor: CodexRolloutMonitor,
+    sessionId: string,
+    threadId: string,
+    completedTurnId?: string,
+  ): void {
+    if (this.closed) return;
+    const failures = (this.rehydrateFailureCounts.get(sessionId) ?? 0) + 1;
+    setBoundedMap(
+      this.rehydrateFailureCounts,
+      sessionId,
+      failures,
+      MAX_WATCHERS,
+    );
+    if (failures < MAX_REHYDRATE_ATTEMPTS && !this.closed) {
+      this.scheduleRehydrate(
+        sessionId,
+        threadId,
+        completedTurnId,
+        (this.options.rehydrateRetryMs ?? REHYDRATE_RETRY_MS) * failures,
+      );
+      return;
+    }
+    this.sendRehydrateError(monitor, sessionId, threadId);
+  }
+
+  private sendRehydrateError(
+    monitor: CodexRolloutMonitor,
+    sessionId: string,
+    threadId: string,
+  ): void {
+    for (const registration of monitor.watchers) {
+      if (registration.sessionId !== sessionId) continue;
+      this.runtime.send(registration.client, {
+        ...this.eventBase(registration),
+        event: "error",
+        errorCode: "runtime_rehydrate_failed",
+        error:
+          "Desktop output was synchronized, but the Bridge runtime could not be refreshed safely.",
+      });
+    }
+  }
+
+  private send(
+    client: object,
+    request: CodexDesktopContinuityClientMessage,
+    event:
+      | {
+          event: "watching";
+          state: CodexDesktopContinuityState;
+          turnId?: string;
+          handoffQueued?: boolean;
+        }
+      | { event: "unwatched" }
+      | { event: "error"; errorCode: string; error: string },
+  ): void {
+    this.runtime.send(client, {
+      type: SERVER_MESSAGE_TYPE,
+      requestId: request.requestId,
+      bridgeInstanceId: this.runtime.bridgeInstanceId ?? "bridge-local",
+      sessionId: request.sessionId,
+      threadId: request.threadId,
+      origin: "desktop_rollout",
+      ...event,
+    } as CodexDesktopContinuityEventMessage);
+  }
+
+  private eventBase(registration: WatchRegistration) {
+    return {
+      type: "codex_desktop_continuity_event_v1" as const,
+      requestId: registration.requestId,
+      bridgeInstanceId: this.runtime.bridgeInstanceId ?? "bridge-local",
+      sessionId: registration.sessionId,
+      threadId: registration.threadId,
+      origin: "desktop_rollout" as const,
+    };
+  }
+}
+
+export interface CodexRolloutMonitorOptions {
+  threadId: string;
+  path: string;
+  isLocalRuntimeActive: () => boolean;
+  consumeLocalClientMessageId: (clientMessageId: string) => boolean;
+  onEvent: (event: CodexDesktopContinuityMonitorEvent) => void;
+  assistantMessagePairMs?: number;
+}
+
+export class CodexRolloutMonitor {
+  readonly watchers: WatchRegistration[] = [];
+  private file: FileHandle | null = null;
+  private fsWatcher: FSWatcher | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshPromise: Promise<void> | null = null;
+  private refreshAgain = false;
+  private offset = 0;
+  private decoder = new StringDecoder("utf8");
+  private lineBuffer = "";
+  private discardingLongLine = false;
+  private state: CodexDesktopContinuityState = "unknown";
+  private readonly activeTurns = new Map<string, ActiveTurn>();
+  private turnSequence = 0;
+  private lastObservedTurnId: string | undefined;
+  private readonly pendingAssistantMessages = new Map<
+    string,
+    PendingAssistantMessage
+  >();
+  private readonly recentResponseAssistants = new Map<
+    string,
+    RecentResponseAssistant
+  >();
+  private assistantMessageSequence = 0;
+  private readonly emittedKeys = new Set<string>();
+  private readonly reasoningKeys = new Set<string>();
+  private readonly toolNames = new Map<string, string>();
+  private lastExternalTerminalTimestampMs: number | undefined;
+  private closed = false;
+
+  constructor(private readonly options: CodexRolloutMonitorOptions) {}
+
+  get watcherCount(): number {
+    return this.watchers.length;
+  }
+
+  get snapshot(): MonitorSnapshot {
+    const externalTurn = this.latestExternalTurn();
+    if (externalTurn) {
+      return {
+        state: "running",
+        ...(externalTurn.turnId ? { turnId: externalTurn.turnId } : {}),
+      };
+    }
+    if (this.activeTurns.size > 0) {
+      return { state: "idle" };
+    }
+    return {
+      state: this.state,
+      ...(this.lastObservedTurnId ? { turnId: this.lastObservedTurnId } : {}),
+    };
+  }
+
+  get hasExternalTurn(): boolean {
+    return this.latestExternalTurn() !== undefined;
+  }
+
+  get externalTurnIdForSteering(): string | undefined {
+    const externalTurns = [...this.activeTurns.values()].filter(
+      (turn) => turn.origin === "desktop" || turn.origin === null,
+    );
+    return externalTurns.length === 1 ? externalTurns[0].turnId : undefined;
+  }
+
+  needsRehydrateSince(createdAt?: Date): boolean {
+    return (
+      createdAt instanceof Date &&
+      Number.isFinite(createdAt.getTime()) &&
+      this.lastExternalTerminalTimestampMs !== undefined &&
+      this.lastExternalTerminalTimestampMs > createdAt.getTime()
+    );
+  }
+
+  async start(): Promise<void> {
+    this.file = await open(this.options.path, "r");
+    await this.seed();
+    try {
+      this.fsWatcher = watch(this.options.path, () => this.scheduleRefresh());
+      this.fsWatcher.on("error", () => {
+        this.fsWatcher?.close();
+        this.fsWatcher = null;
+      });
+    } catch {
+      this.fsWatcher = null;
+    }
+    this.pollTimer = setInterval(() => this.scheduleRefresh(), POLL_MS);
+    this.pollTimer.unref?.();
+  }
+
+  addWatcher(registration: WatchRegistration): void {
+    if (!this.watchers.includes(registration)) this.watchers.push(registration);
+  }
+
+  removeWatcher(registration: WatchRegistration): void {
+    const index = this.watchers.indexOf(registration);
+    if (index >= 0) this.watchers.splice(index, 1);
+  }
+
+  async refreshNow(): Promise<void> {
+    if (this.closed) return;
+    if (this.refreshPromise) {
+      this.refreshAgain = true;
+      await this.refreshPromise;
+      return;
+    }
+    this.refreshPromise = this.refreshLoop().finally(() => {
+      this.refreshPromise = null;
+    });
+    await this.refreshPromise;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.clearActiveTurns();
+    this.clearAssistantPairing();
+    this.emittedKeys.clear();
+    this.reasoningKeys.clear();
+    this.toolNames.clear();
+    this.refreshAgain = false;
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = null;
+    this.fsWatcher?.close();
+    this.fsWatcher = null;
+    this.watchers.splice(0);
+    void this.file?.close().catch(() => {});
+    this.file = null;
+  }
+
+  private scheduleRefresh(): void {
+    if (this.closed) return;
+    void this.refreshNow().catch(() => {});
+  }
+
+  private async refreshLoop(): Promise<void> {
+    do {
+      this.refreshAgain = false;
+      await this.readPass();
+    } while (this.refreshAgain && !this.closed);
+  }
+
+  private async seed(): Promise<void> {
+    const info = await stat(this.options.path);
+    const start = Math.max(0, info.size - MAX_SEED_BYTES);
+    const length = info.size - start;
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await this.file!.read(buffer, 0, length, start);
+    let text = buffer.subarray(0, bytesRead).toString("utf8");
+    let truncatedActiveLine = false;
+    if (start > 0) {
+      const firstNewline = text.indexOf("\n");
+      if (firstNewline >= 0) {
+        text = text.slice(firstNewline + 1);
+      } else {
+        // The seed window is wholly inside one oversized/incomplete item.
+        // Treat the thread as active until a future newline lets us observe a
+        // terminal event; never accept a competing mobile turn on uncertainty.
+        text = "";
+        truncatedActiveLine = true;
+        this.discardingLongLine = true;
+      }
+    }
+    this.seedLifecycle(text.split("\n"), info.mtimeMs, truncatedActiveLine);
+    this.offset = info.size;
+  }
+
+  private seedLifecycle(
+    lines: string[],
+    fileModifiedAtMs: number,
+    truncatedActiveLine: boolean,
+  ): void {
+    this.resetObservedState();
+    let sawActivity = truncatedActiveLine;
+    let sawLifecycle = truncatedActiveLine;
+    let sawExternalTerminalWithoutTimestamp = false;
+    if (truncatedActiveLine) {
+      this.addActiveTurn(undefined, "desktop", undefined, false);
+    }
+    for (const line of lines) {
+      if (!line || line.length > MAX_LINE_BYTES) continue;
+      let entry: RolloutEntry;
+      try {
+        entry = JSON.parse(line) as RolloutEntry;
+      } catch {
+        continue;
+      }
+      if (entry.type !== "event_msg" && entry.type !== "response_item") {
+        continue;
+      }
+      sawActivity = true;
+      if (entry.type !== "event_msg") continue;
+      const payload = asRecord(entry.payload);
+      if (!payload) continue;
+      const type = payload.type;
+      const timestampMs = parseTimestampMs(entry.timestamp);
+      if (type === "task_started") {
+        sawLifecycle = true;
+        this.addActiveTurn(
+          optionalString(payload.turn_id),
+          this.options.isLocalRuntimeActive() ? "local" : null,
+          optionalString(entry.timestamp),
+          false,
+        );
+      } else if (type === "user_message") {
+        const clientMessageId = optionalString(payload.client_id);
+        const hasLocalClientIdentity =
+          clientMessageId !== undefined &&
+          this.options.consumeLocalClientMessageId(clientMessageId);
+        const turn = this.turnForPayload(payload, true);
+        if (turn) {
+          turn.origin =
+            hasLocalClientIdentity || this.options.isLocalRuntimeActive()
+              ? "local"
+              : "desktop";
+        }
+      } else if (type === "task_complete" || type === "turn_aborted") {
+        sawLifecycle = true;
+        const turnId = optionalString(payload.turn_id);
+        const completed = this.takeActiveTurn(turnId);
+        const origin = completed?.origin ?? "desktop";
+        this.lastObservedTurnId = turnId ?? completed?.turnId;
+        if (origin === "desktop" && timestampMs !== undefined) {
+          this.lastExternalTerminalTimestampMs = timestampMs;
+        } else if (origin === "desktop") {
+          sawExternalTerminalWithoutTimestamp = true;
+        }
+      } else if (type === "thread_rolled_back") {
+        sawLifecycle = true;
+        this.clearExternalTurns();
+        this.lastObservedTurnId = undefined;
+        if (timestampMs !== undefined) {
+          this.lastExternalTerminalTimestampMs = timestampMs;
+        } else {
+          sawExternalTerminalWithoutTimestamp = true;
+        }
+      }
+    }
+    if (sawActivity && !sawLifecycle && this.activeTurns.size === 0) {
+      this.addActiveTurn(undefined, "desktop", undefined, false);
+    }
+    for (const turn of this.activeTurns.values()) {
+      if (turn.origin === null) turn.origin = "desktop";
+    }
+    if (this.activeTurns.size > 0) {
+      this.state = "running";
+    } else {
+      this.state = sawLifecycle || sawActivity ? "idle" : "unknown";
+    }
+    if (
+      sawExternalTerminalWithoutTimestamp &&
+      Number.isFinite(fileModifiedAtMs)
+    ) {
+      this.lastExternalTerminalTimestampMs = fileModifiedAtMs;
+    }
+  }
+
+  private async readPass(): Promise<void> {
+    if (!this.file || this.closed) return;
+    let info = await stat(this.options.path);
+    if (info.size < this.offset) {
+      this.offset = 0;
+      this.decoder = new StringDecoder("utf8");
+      this.lineBuffer = "";
+      this.discardingLongLine = false;
+      this.resetObservedState();
+    }
+    let remainingBudget = MAX_READ_BYTES_PER_PASS;
+    while (this.offset < info.size && remainingBudget > 0 && !this.closed) {
+      const length = Math.min(
+        READ_CHUNK_BYTES,
+        info.size - this.offset,
+        remainingBudget,
+      );
+      const buffer = Buffer.allocUnsafe(length);
+      const { bytesRead } = await this.file.read(
+        buffer,
+        0,
+        length,
+        this.offset,
+      );
+      if (bytesRead <= 0) break;
+      this.offset += bytesRead;
+      remainingBudget -= bytesRead;
+      this.consumeText(this.decoder.write(buffer.subarray(0, bytesRead)));
+      if (this.offset >= info.size) info = await stat(this.options.path);
+    }
+    if (this.offset < info.size) this.refreshAgain = true;
+  }
+
+  private consumeText(text: string): void {
+    let cursor = 0;
+    while (cursor < text.length) {
+      const newline = text.indexOf("\n", cursor);
+      const part = text.slice(cursor, newline < 0 ? text.length : newline);
+      cursor = newline < 0 ? text.length : newline + 1;
+      if (!this.discardingLongLine) {
+        this.lineBuffer += part;
+        if (Buffer.byteLength(this.lineBuffer, "utf8") > MAX_LINE_BYTES) {
+          this.lineBuffer = "";
+          this.discardingLongLine = true;
+        }
+      }
+      if (newline < 0) break;
+      if (!this.discardingLongLine && this.lineBuffer) {
+        this.consumeLine(this.lineBuffer);
+      }
+      this.lineBuffer = "";
+      this.discardingLongLine = false;
+    }
+  }
+
+  private consumeLine(line: string): void {
+    if (this.closed) return;
+    let entry: RolloutEntry;
+    try {
+      entry = JSON.parse(line) as RolloutEntry;
+    } catch {
+      return;
+    }
+    const payload = asRecord(entry.payload);
+    if (!payload) return;
+    const timestamp = optionalString(entry.timestamp);
+    if (entry.type === "event_msg") {
+      this.consumeEventMessage(payload, timestamp);
+    } else if (entry.type === "response_item") {
+      this.consumeResponseItem(payload, timestamp);
+    }
+  }
+
+  private consumeEventMessage(
+    payload: Record<string, unknown>,
+    timestamp?: string,
+  ): void {
+    const type = optionalString(payload.type);
+    if (type === "task_started") {
+      this.beginTurn(optionalString(payload.turn_id), timestamp);
+      return;
+    }
+    if (type === "task_complete" || type === "turn_aborted") {
+      this.completeTurn(
+        optionalString(payload.turn_id),
+        type === "turn_aborted" ? "interrupted" : "completed",
+        timestamp,
+      );
+      return;
+    }
+    if (type === "thread_rolled_back") {
+      this.consumeThreadRolledBack(timestamp);
+      return;
+    }
+    if (type === "user_message") {
+      this.consumeUserMessage(payload, timestamp);
+      return;
+    }
+    if (type === "agent_message") {
+      this.consumeAgentEventMessage(payload, timestamp);
+      return;
+    }
+    if (type === "agent_reasoning") {
+      const turn = this.turnForPayload(payload);
+      this.flushPendingStart(turn);
+      if (turn?.origin !== "desktop") return;
+      const text = boundedText(optionalString(payload.text) ?? "", 16 * 1024);
+      if (!text) return;
+      const key = `reasoning:${turn.key}:${hashText(text)}`;
+      if (!remember(this.reasoningKeys, key, 512)) return;
+      this.emitMessage(
+        key,
+        { type: "thinking_delta", text: `${text}\n` },
+        timestamp,
+        turn.turnId,
+      );
+      return;
+    }
+    if (
+      type === "mcp_tool_call_end" ||
+      type === "patch_apply_end" ||
+      type === "web_search_end" ||
+      type === "image_generation_end"
+    ) {
+      const turn = this.turnForPayload(payload);
+      this.flushPendingStart(turn);
+      if (turn?.origin === "desktop") {
+        this.consumeCompletedEventTool(type, payload, timestamp, turn.turnId);
+      }
+    }
+  }
+
+  private beginTurn(turnId?: string, timestamp?: string): void {
+    this.clearTurnDedupe();
+    this.state = "running";
+    // A local Bridge turn and a Desktop turn can overlap on the same durable
+    // thread. Keep a live start unclassified until the following user_message
+    // provides client identity; the short timer remains the fallback for
+    // older rollouts that omit that event or its client id.
+    this.addActiveTurn(turnId, null, timestamp, true);
+  }
+
+  private consumeUserMessage(
+    payload: Record<string, unknown>,
+    timestamp?: string,
+  ): void {
+    const clientMessageId = optionalString(payload.client_id);
+    const isLocal = clientMessageId
+      ? this.options.consumeLocalClientMessageId(clientMessageId)
+      : this.options.isLocalRuntimeActive();
+    const turn = this.turnForPayload(payload, true);
+    if (!turn) return;
+    if (isLocal) {
+      this.clearPendingStart(turn);
+      turn.origin = "local";
+      return;
+    }
+    const wasDesktop = turn.origin === "desktop";
+    this.clearPendingStart(turn);
+    turn.origin = "desktop";
+    if (!wasDesktop) {
+      this.options.onEvent({
+        kind: "state",
+        state: "running",
+        ...(turn.turnId ? { turnId: turn.turnId } : {}),
+        ...(turn.timestamp ? { timestamp: turn.timestamp } : {}),
+      });
+    }
+    const text = boundedText(
+      optionalString(payload.message) ?? "",
+      MAX_TEXT_BYTES,
+    );
+    const imageCount =
+      arrayLength(payload.images) + arrayLength(payload.local_images);
+    if (!text && imageCount === 0) return;
+    const itemKey = `user:${clientMessageId ?? hashText(`${timestamp ?? ""}:${text}`)}`;
+    this.emitMessage(
+      itemKey,
+      {
+        type: "user_input",
+        text:
+          text || `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`,
+        ...(clientMessageId ? { clientMessageId } : {}),
+        ...(imageCount > 0 ? { imageCount } : {}),
+        ...(timestamp ? { timestamp } : {}),
+      },
+      timestamp,
+      turn.turnId,
+    );
+  }
+
+  private flushPendingStart(turn: ActiveTurn | undefined): void {
+    if (!turn || turn.origin !== null) return;
+    this.clearPendingStart(turn);
+    if (this.options.isLocalRuntimeActive()) {
+      turn.origin = "local";
+      return;
+    }
+    turn.origin = "desktop";
+    this.options.onEvent({
+      kind: "state",
+      state: "running",
+      ...(turn.turnId ? { turnId: turn.turnId } : {}),
+      ...(turn.timestamp ? { timestamp: turn.timestamp } : {}),
+    });
+  }
+
+  private clearPendingStart(turn: ActiveTurn): void {
+    if (turn.pendingStartTimer) clearTimeout(turn.pendingStartTimer);
+    turn.pendingStartTimer = null;
+  }
+
+  private completeTurn(
+    turnId: string | undefined,
+    outcome: "completed" | "interrupted",
+    timestamp?: string,
+  ): void {
+    const candidate = this.turnForCompletion(turnId);
+    this.flushPendingStart(candidate);
+    const completed = this.takeActiveTurn(turnId);
+    const wasDesktop = (completed?.origin ?? "desktop") === "desktop";
+    const effectiveTurnId = turnId ?? completed?.turnId;
+    this.lastObservedTurnId = effectiveTurnId;
+    this.state = this.activeTurns.size > 0 ? "running" : "idle";
+    if (wasDesktop) {
+      this.lastExternalTerminalTimestampMs =
+        parseTimestampMs(timestamp) ?? Date.now();
+      const remainingExternal = this.latestExternalTurn();
+      if (remainingExternal) {
+        this.options.onEvent({
+          kind: "state",
+          state: "running",
+          ...(remainingExternal.turnId
+            ? { turnId: remainingExternal.turnId }
+            : {}),
+          ...(timestamp ? { timestamp } : {}),
+        });
+      } else {
+        this.options.onEvent({
+          kind: "state",
+          state: "idle",
+          outcome,
+          ...(effectiveTurnId ? { turnId: effectiveTurnId } : {}),
+          ...(timestamp ? { timestamp } : {}),
+        });
+      }
+    }
+  }
+
+  private consumeThreadRolledBack(timestamp?: string): void {
+    this.clearExternalTurns();
+    this.clearAssistantPairing();
+    this.lastObservedTurnId = undefined;
+    this.lastExternalTerminalTimestampMs =
+      parseTimestampMs(timestamp) ?? Date.now();
+    this.state = this.activeTurns.size > 0 ? "running" : "idle";
+    this.options.onEvent({
+      kind: "state",
+      state: "idle",
+      outcome: "interrupted",
+      ...(timestamp ? { timestamp } : {}),
+    });
+  }
+
+  private consumeAgentEventMessage(
+    payload: Record<string, unknown>,
+    timestamp?: string,
+  ): void {
+    if (!isMainAssistantEventPhase(payload.phase)) return;
+    const text = boundedText(
+      optionalString(payload.message) ?? "",
+      MAX_TEXT_BYTES,
+    );
+    if (!text) return;
+    const turn = this.turnForPayload(payload);
+    this.flushPendingStart(turn);
+    if (turn?.origin !== "desktop") return;
+    const phase = normalizeAssistantPhase(payload.phase);
+    const timestampMs = parseTimestampMs(timestamp);
+    const recent = this.findRecentResponseAssistant(
+      text,
+      phase,
+      optionalString(payload.turn_id),
+      timestampMs,
+    );
+    if (recent) {
+      this.recentResponseAssistants.delete(recent.key);
+      return;
+    }
+
+    const sequence = ++this.assistantMessageSequence;
+    const key = `event-assistant:${sequence}`;
+    const syntheticId = `desktop-event-${hashText(
+      `${timestamp ?? ""}:${turn.key}:${phase}:${text}:${sequence}`,
+    )}`;
+    const pending: PendingAssistantMessage = {
+      key,
+      turnKey: turn.key,
+      ...(turn.turnId ? { turnId: turn.turnId } : {}),
+      phase,
+      text,
+      ...(timestamp ? { timestamp } : {}),
+      ...(timestampMs !== undefined ? { timestampMs } : {}),
+      syntheticId,
+      timer: null,
+      syntheticEmitted: false,
+    };
+    const delayMs = boundedInteger(
+      this.options.assistantMessagePairMs,
+      ASSISTANT_MESSAGE_PAIR_MS,
+      0,
+      1000,
+    );
+    pending.timer = setTimeout(
+      () => this.flushPendingAssistantMessage(key),
+      delayMs,
+    );
+    pending.timer.unref?.();
+    this.pendingAssistantMessages.set(key, pending);
+    while (
+      this.pendingAssistantMessages.size > MAX_PENDING_ASSISTANT_MESSAGES
+    ) {
+      const oldestKey = this.pendingAssistantMessages.keys().next().value;
+      if (!oldestKey) break;
+      this.flushPendingAssistantMessage(oldestKey);
+      this.pendingAssistantMessages.delete(oldestKey);
+    }
+  }
+
+  private consumeAssistantResponseItem(
+    payload: Record<string, unknown>,
+    timestamp?: string,
+  ): void {
+    const text = boundedText(
+      extractContentText(payload.content),
+      MAX_TEXT_BYTES,
+    );
+    if (!text) return;
+    const phase = normalizeAssistantPhase(payload.phase);
+    const timestampMs = parseTimestampMs(timestamp);
+    const currentTurn = this.turnForPayload(payload);
+    const pending = this.findPendingAssistantMessage(
+      text,
+      phase,
+      optionalString(payload.turn_id),
+      timestampMs,
+    );
+    if (pending) {
+      if (pending.timer) clearTimeout(pending.timer);
+      this.pendingAssistantMessages.delete(pending.key);
+      if (pending.syntheticEmitted) return;
+      const id = optionalString(payload.id) ?? pending.syntheticId;
+      this.emitAssistantMessage(
+        id,
+        text,
+        timestamp ?? pending.timestamp,
+        pending.turnId,
+      );
+      return;
+    }
+
+    this.flushPendingStart(currentTurn);
+    if (currentTurn?.origin !== "desktop") return;
+    const id =
+      optionalString(payload.id) ??
+      `desktop-${hashText(`${timestamp ?? ""}:${text}`)}`;
+    this.emitAssistantMessage(id, text, timestamp, currentTurn.turnId);
+    const key = `response-assistant:${++this.assistantMessageSequence}`;
+    setBoundedMap(
+      this.recentResponseAssistants,
+      key,
+      {
+        key,
+        ...(currentTurn.turnId ? { turnId: currentTurn.turnId } : {}),
+        phase,
+        text,
+        ...(timestampMs !== undefined ? { timestampMs } : {}),
+      },
+      MAX_RECENT_RESPONSE_ASSISTANTS,
+    );
+  }
+
+  private flushPendingAssistantMessage(key: string): void {
+    const pending = this.pendingAssistantMessages.get(key);
+    if (!pending || pending.syntheticEmitted || this.closed) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = null;
+    pending.syntheticEmitted = true;
+    this.emitAssistantMessage(
+      pending.syntheticId,
+      pending.text,
+      pending.timestamp,
+      pending.turnId,
+    );
+  }
+
+  private emitAssistantMessage(
+    id: string,
+    text: string,
+    timestamp?: string,
+    turnId?: string,
+  ): void {
+    this.emitMessage(
+      `assistant:${id}`,
+      {
+        type: "assistant",
+        message: {
+          id,
+          role: "assistant",
+          content: [{ type: "text", text }],
+          model: "codex",
+        },
+      },
+      timestamp,
+      turnId,
+    );
+  }
+
+  private findPendingAssistantMessage(
+    text: string,
+    phase: AssistantMessagePhase,
+    turnId?: string,
+    timestampMs?: number,
+  ): PendingAssistantMessage | undefined {
+    for (const pending of this.pendingAssistantMessages.values()) {
+      if (
+        pending.text === text &&
+        assistantPhasesMatch(pending.phase, phase) &&
+        turnIdsMatch(pending.turnId, turnId) &&
+        assistantTimestampsMatch(pending.timestampMs, timestampMs)
+      ) {
+        return pending;
+      }
+    }
+    return undefined;
+  }
+
+  private findRecentResponseAssistant(
+    text: string,
+    phase: AssistantMessagePhase,
+    turnId?: string,
+    timestampMs?: number,
+  ): RecentResponseAssistant | undefined {
+    for (const recent of this.recentResponseAssistants.values()) {
+      if (
+        recent.text === text &&
+        assistantPhasesMatch(recent.phase, phase) &&
+        turnIdsMatch(recent.turnId, turnId) &&
+        assistantTimestampsMatch(recent.timestampMs, timestampMs)
+      ) {
+        return recent;
+      }
+    }
+    return undefined;
+  }
+
+  private consumeResponseItem(
+    payload: Record<string, unknown>,
+    timestamp?: string,
+  ): void {
+    const type = optionalString(payload.type);
+    if (type === "message" && payload.role === "assistant") {
+      this.consumeAssistantResponseItem(payload, timestamp);
+      return;
+    }
+    const turn = this.turnForPayload(payload);
+    this.flushPendingStart(turn);
+    if (turn?.origin !== "desktop") return;
+    if (type === "function_call" || type === "custom_tool_call") {
+      const callId =
+        optionalString(payload.call_id) ??
+        optionalString(payload.id) ??
+        `desktop-tool-${hashText(`${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`)}`;
+      const name = normalizeToolName(optionalString(payload.name) ?? "tool");
+      this.toolNames.set(callId, name);
+      while (this.toolNames.size > 512) {
+        this.toolNames.delete(this.toolNames.keys().next().value!);
+      }
+      const input = boundedToolInput(
+        type === "function_call" ? payload.arguments : payload.input,
+      );
+      this.emitMessage(
+        `tool-start:${callId}`,
+        {
+          type: "assistant",
+          message: {
+            id: callId,
+            role: "assistant",
+            content: [{ type: "tool_use", id: callId, name, input }],
+            model: "codex",
+          },
+          messageUuid: callId,
+        },
+        timestamp,
+        turn.turnId,
+      );
+      return;
+    }
+    if (type === "function_call_output" || type === "custom_tool_call_output") {
+      const callId = optionalString(payload.call_id);
+      if (!callId) return;
+      this.emitMessage(
+        `tool-result:${callId}`,
+        {
+          type: "tool_result",
+          toolUseId: callId,
+          content: boundedText(
+            formatToolOutput(payload.output),
+            MAX_TEXT_BYTES,
+          ),
+          ...(this.toolNames.get(callId)
+            ? { toolName: this.toolNames.get(callId) }
+            : {}),
+        },
+        timestamp,
+        turn.turnId,
+      );
+    }
+  }
+
+  private consumeCompletedEventTool(
+    type:
+      | "mcp_tool_call_end"
+      | "patch_apply_end"
+      | "web_search_end"
+      | "image_generation_end",
+    payload: Record<string, unknown>,
+    timestamp?: string,
+    turnId?: string,
+  ): void {
+    const imagePrompt = boundedText(
+      optionalString(payload.revised_prompt) ??
+        optionalString(payload.prompt) ??
+        "",
+      64 * 1024,
+    );
+    const imageStatus = boundedText(
+      optionalString(payload.status) ?? "completed",
+      1024,
+    );
+    const imageSavedPath = boundedText(
+      optionalString(payload.saved_path) ?? "",
+      16 * 1024,
+    );
+    const callId =
+      optionalString(payload.call_id) ??
+      (type === "image_generation_end"
+        ? `desktop-image-${hashText(
+            `${timestamp ?? ""}:${imageStatus}:${imageSavedPath}:${imagePrompt}`,
+          )}`
+        : undefined);
+    if (!callId) return;
+    let name: string;
+    let input: Record<string, unknown>;
+    let output: string;
+    if (type === "image_generation_end") {
+      name = "ImageGeneration";
+      const summary = {
+        prompt: imagePrompt,
+        status: imageStatus,
+        saved_path: imageSavedPath,
+      };
+      input = boundedToolInput(summary);
+      output = formatToolOutput(summary);
+    } else if (type === "patch_apply_end") {
+      name = "FileChange";
+      input = boundedToolInput(payload.changes);
+      output = formatToolOutput({
+        success: payload.success,
+        stdout: payload.stdout,
+        stderr: payload.stderr,
+      });
+    } else if (type === "web_search_end") {
+      name = "WebSearch";
+      input = boundedToolInput(payload.action ?? { query: payload.query });
+      output = formatToolOutput(
+        payload.results ?? payload.query ?? "Web search completed",
+      );
+    } else {
+      const invocation = asRecord(payload.invocation) ?? {};
+      const server = optionalString(invocation.server) ?? "mcp";
+      const tool = optionalString(invocation.tool) ?? "tool";
+      name = `mcp:${server}/${tool}`;
+      input = boundedToolInput(invocation.arguments);
+      output = formatToolOutput(payload.result);
+    }
+    setBoundedMap(this.toolNames, callId, name, 512);
+    this.emitMessage(
+      `tool-start:${callId}`,
+      {
+        type: "assistant",
+        message: {
+          id: callId,
+          role: "assistant",
+          content: [{ type: "tool_use", id: callId, name, input }],
+          model: "codex",
+        },
+        messageUuid: callId,
+      },
+      timestamp,
+      turnId,
+    );
+    this.emitMessage(
+      `tool-result:${callId}`,
+      {
+        type: "tool_result",
+        toolUseId: callId,
+        toolName: name,
+        content: boundedText(output, MAX_TEXT_BYTES),
+      },
+      timestamp,
+      turnId,
+    );
+  }
+
+  private addActiveTurn(
+    turnId: string | undefined,
+    origin: TurnOrigin,
+    timestamp: string | undefined,
+    scheduleClassification: boolean,
+  ): ActiveTurn {
+    const sequence = ++this.turnSequence;
+    const key = turnId ? `turn:${turnId}` : `turn:anonymous:${sequence}`;
+    const existing = this.activeTurns.get(key);
+    if (existing) {
+      this.clearPendingStart(existing);
+      this.activeTurns.delete(key);
+    }
+    const turn: ActiveTurn = {
+      key,
+      ...(turnId ? { turnId } : {}),
+      origin,
+      ...(timestamp ? { timestamp } : {}),
+      sequence,
+      pendingStartTimer: null,
+    };
+    this.activeTurns.set(key, turn);
+    if (scheduleClassification && origin === null) {
+      turn.pendingStartTimer = setTimeout(() => {
+        this.flushPendingStart(this.activeTurns.get(key));
+      }, START_CLASSIFICATION_MS);
+      turn.pendingStartTimer.unref?.();
+    }
+    while (this.activeTurns.size > MAX_ACTIVE_TURNS) {
+      const oldestKey = this.activeTurns.keys().next().value;
+      if (!oldestKey) break;
+      const oldest = this.activeTurns.get(oldestKey);
+      if (oldest) this.clearPendingStart(oldest);
+      this.activeTurns.delete(oldestKey);
+    }
+    return turn;
+  }
+
+  private turnForPayload(
+    payload: Record<string, unknown>,
+    preferPending = false,
+  ): ActiveTurn | undefined {
+    const explicitTurnId = optionalString(payload.turn_id);
+    if (explicitTurnId) {
+      const exact = this.activeTurns.get(`turn:${explicitTurnId}`);
+      if (exact) return exact;
+    }
+    const turns = [...this.activeTurns.values()];
+    if (preferPending) {
+      const pending = lastMatching(turns, (turn) => turn.origin === null);
+      if (pending) return pending;
+    }
+    return (
+      lastMatching(
+        turns,
+        (turn) => turn.origin === "desktop" || turn.origin === null,
+      ) ?? turns[turns.length - 1]
+    );
+  }
+
+  private turnForCompletion(turnId?: string): ActiveTurn | undefined {
+    if (!turnId) {
+      const turns = [...this.activeTurns.values()];
+      return turns[turns.length - 1];
+    }
+    const exact = this.activeTurns.get(`turn:${turnId}`);
+    if (exact) return exact;
+    return lastMatching(
+      this.activeTurns.values(),
+      (turn) => turn.turnId === undefined,
+    );
+  }
+
+  private takeActiveTurn(turnId?: string): ActiveTurn | undefined {
+    const turn = this.turnForCompletion(turnId);
+    if (!turn) return undefined;
+    this.clearPendingStart(turn);
+    this.activeTurns.delete(turn.key);
+    return turn;
+  }
+
+  private latestExternalTurn(): ActiveTurn | undefined {
+    return lastMatching(
+      this.activeTurns.values(),
+      (turn) => turn.origin === "desktop" || turn.origin === null,
+    );
+  }
+
+  private clearExternalTurns(): void {
+    for (const [key, turn] of this.activeTurns) {
+      if (turn.origin === "local") continue;
+      this.clearPendingStart(turn);
+      this.activeTurns.delete(key);
+    }
+  }
+
+  private clearActiveTurns(): void {
+    for (const turn of this.activeTurns.values()) {
+      this.clearPendingStart(turn);
+    }
+    this.activeTurns.clear();
+  }
+
+  private clearAssistantPairing(): void {
+    for (const pending of this.pendingAssistantMessages.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+    }
+    this.pendingAssistantMessages.clear();
+    this.recentResponseAssistants.clear();
+  }
+
+  private resetObservedState(): void {
+    this.clearActiveTurns();
+    this.clearAssistantPairing();
+    this.state = "unknown";
+    this.lastObservedTurnId = undefined;
+    this.lastExternalTerminalTimestampMs = undefined;
+    this.emittedKeys.clear();
+    this.reasoningKeys.clear();
+    this.toolNames.clear();
+  }
+
+  private emitMessage(
+    itemKey: string,
+    message: ServerMessage,
+    timestamp?: string,
+    turnId?: string,
+  ): void {
+    if (!remember(this.emittedKeys, itemKey, MAX_DEDUPE_KEYS)) return;
+    this.options.onEvent({
+      kind: "message",
+      itemKey,
+      message,
+      ...(turnId ? { turnId } : {}),
+      ...(timestamp ? { timestamp } : {}),
+    });
+  }
+
+  private clearTurnDedupe(): void {
+    // Keep cross-turn item ids for a bounded window: late rollout echoes must
+    // not duplicate the just-completed tool or assistant item.
+    while (this.emittedKeys.size > MAX_DEDUPE_KEYS / 2) {
+      this.emittedKeys.delete(this.emittedKeys.values().next().value!);
+    }
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseTimestampMs(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function arrayLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function extractContentText(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => entry !== null)
+    .filter(
+      (entry) =>
+        (entry.type === "output_text" || entry.type === "text") &&
+        typeof entry.text === "string",
+    )
+    .map((entry) => entry.text as string)
+    .join("\n");
+}
+
+function boundedToolInput(value: unknown): Record<string, unknown> {
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      parsed = { value };
+    }
+  }
+  const record = asRecord(parsed) ?? { value: parsed };
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(record);
+  } catch {
+    return { value: String(value) };
+  }
+  if (Buffer.byteLength(encoded, "utf8") <= MAX_TOOL_INPUT_BYTES) return record;
+  return {
+    truncated: true,
+    preview: boundedText(encoded, MAX_TOOL_INPUT_BYTES),
+  };
+}
+
+function formatToolOutput(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const text = value
+      .map((entry) => {
+        const item = asRecord(entry);
+        return typeof item?.text === "string" ? item.text : formatJson(entry);
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (text) return text;
+  }
+  const wrapper = asRecord(value);
+  if (wrapper && Object.prototype.hasOwnProperty.call(wrapper, "Ok")) {
+    return formatToolOutput(wrapper.Ok);
+  }
+  if (wrapper && Object.prototype.hasOwnProperty.call(wrapper, "Err")) {
+    return formatToolOutput(wrapper.Err);
+  }
+  return formatJson(value);
+}
+
+function formatJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function normalizeToolName(name: string): string {
+  if (name === "exec_command" || name === "write_stdin") {
+    return "Bash";
+  }
+  if (name.startsWith("mcp__")) {
+    const [server, ...tool] = name.slice(5).split("__");
+    if (server && tool.length > 0) return `mcp:${server}/${tool.join("__")}`;
+  }
+  return name;
+}
+
+function boundedText(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  const buffer = Buffer.from(value, "utf8");
+  return `${buffer.subarray(0, maxBytes).toString("utf8")}\n…[truncated by Bridge]`;
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("base64url").slice(0, 22);
+}
+
+function isMainAssistantEventPhase(value: unknown): boolean {
+  return value === "commentary" || value === "final" || value === "final_answer";
+}
+
+function normalizeAssistantPhase(value: unknown): AssistantMessagePhase {
+  if (value === "commentary") return "commentary";
+  if (value === "final" || value === "final_answer") return "final";
+  return "unknown";
+}
+
+function assistantPhasesMatch(
+  left: AssistantMessagePhase,
+  right: AssistantMessagePhase,
+): boolean {
+  return left === right || left === "unknown" || right === "unknown";
+}
+
+function turnIdsMatch(left?: string, right?: string): boolean {
+  return left === undefined || right === undefined || left === right;
+}
+
+function assistantTimestampsMatch(left?: number, right?: number): boolean {
+  return (
+    left === undefined ||
+    right === undefined ||
+    Math.abs(left - right) <= ASSISTANT_PAIR_TOMBSTONE_MS
+  );
+}
+
+function boundedInteger(
+  value: number | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const candidate =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.floor(value)
+      : fallback;
+  return Math.min(maximum, Math.max(minimum, candidate));
+}
+
+function remember(set: Set<string>, value: string, limit: number): boolean {
+  if (set.has(value)) return false;
+  set.add(value);
+  while (set.size > limit) set.delete(set.values().next().value!);
+  return true;
+}
+
+function setBoundedMap<K, V>(
+  map: Map<K, V>,
+  key: K,
+  value: V,
+  limit: number,
+): void {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > limit) map.delete(map.keys().next().value!);
+}
+
+function lastMatching<T>(
+  values: Iterable<T>,
+  predicate: (value: T) => boolean,
+): T | undefined {
+  let match: T | undefined;
+  for (const value of values) {
+    if (predicate(value)) match = value;
+  }
+  return match;
+}

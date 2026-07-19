@@ -301,6 +301,7 @@ vi.mock("./session.js", async () => {
         installToolSuggestion: vi.fn(async () => {}),
         interrupt: vi.fn(),
         getPendingPermission: vi.fn(() => undefined),
+        stop: vi.fn(),
       };
       this.sessions.set(id, {
         id,
@@ -327,6 +328,41 @@ vi.mock("./session.js", async () => {
         process,
       });
       return id;
+    }
+
+    async replaceCodexSession(
+      sessionId: string,
+      projectPath: string,
+      pastMessages: unknown[],
+      worktreeOptions: unknown,
+      codexOptions: unknown,
+    ): Promise<string> {
+      const current = this.sessions.get(sessionId);
+      if (!current || current.provider !== "codex") {
+        throw new Error("Cannot replace a missing or non-Codex session");
+      }
+      const temporaryId = this.create(
+        projectPath,
+        undefined,
+        pastMessages,
+        worktreeOptions,
+        "codex",
+        codexOptions,
+      );
+      const replacement = this.sessions.get(temporaryId);
+      this.sessions.delete(temporaryId);
+      replacement.id = sessionId;
+      replacement.name = current.name;
+      replacement.codexQueuedInput = current.codexQueuedInput;
+      replacement.codexGoal = current.codexGoal;
+      replacement.codexGoalUpdatedAt = current.codexGoalUpdatedAt;
+      replacement.codexGoalOperationSequence =
+        current.codexGoalOperationSequence;
+      replacement.codexGoalControlSupported =
+        current.codexGoalControlSupported;
+      this.sessions.set(sessionId, replacement);
+      current.process.stop();
+      return sessionId;
     }
 
     get(id: string) {
@@ -668,7 +704,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
     expect(initialMessages).toContainEqual(expect.objectContaining({
       type: "session_list",
-      bridgeCapabilities: expect.arrayContaining(["file_transfer_v2"]),
+      bridgeCapabilities: expect.arrayContaining([
+        "file_transfer_v2",
+        "codex_desktop_continuity_v1",
+      ]),
     }));
 
     const binding = fileTransfer.connect.mock.calls[0][1];
@@ -10773,6 +10812,106 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("rejects delayed guidance when the Desktop turn identity changed", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.codexQueuedInput = {
+      itemId: "queued-stale-turn",
+      text: "guide old turn",
+      createdAt: new Date().toISOString(),
+    };
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "externalCodexTurnId",
+    ).mockReturnValue("desktop-turn-new");
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "steer_queued_input",
+        sessionId: created.sessionId,
+        itemId: "queued-stale-turn",
+        expectedTurnId: "desktop-turn-old",
+      },
+      ws,
+    );
+
+    expect(session.process.steerInputStructured).not.toHaveBeenCalled();
+    expect(session.codexQueuedInput?.itemId).toBe("queued-stale-turn");
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "error",
+      errorCode: "queued_input_steer_stale_turn",
+    });
+    bridge.close();
+  });
+
+  it("rejects guidance when overlapping Desktop turns have no unique target", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    const steerQueuedInput = vi.spyOn(
+      (bridge as any).sessionManager,
+      "steerCodexQueuedInput",
+    );
+    session.codexQueuedInput = {
+      itemId: "queued-ambiguous-turn",
+      text: "do not route this ambiguously",
+      createdAt: new Date().toISOString(),
+    };
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "hasExternalCodexActivity",
+    ).mockReturnValue(true);
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "externalCodexTurnId",
+    ).mockReturnValue(undefined);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "steer_queued_input",
+        sessionId: created.sessionId,
+        itemId: "queued-ambiguous-turn",
+      },
+      ws,
+    );
+
+    expect(session.process.steerInputStructured).not.toHaveBeenCalled();
+    expect(steerQueuedInput).not.toHaveBeenCalled();
+    expect(session.codexQueuedInput?.itemId).toBe("queued-ambiguous-turn");
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "error",
+      errorCode: "queued_input_steer_ambiguous_turn",
+    });
+    bridge.close();
+  });
+
   it("rejects steer_queued_input for claude sessions", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -11519,5 +11658,79 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
 
     bridge.close();
+  });
+
+  it("preserves mobile queue changes made during Desktop history rehydration", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const manager = (bridge as any).sessionManager;
+    const oldSessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      [],
+      undefined,
+      "codex",
+      {
+        threadId: "thread-desktop",
+        approvalPolicy: "never",
+        model: "gpt-5.6",
+        modelReasoningEffort: "ultra",
+      },
+    );
+    const oldSession = manager.get(oldSessionId);
+    Object.setPrototypeOf(oldSession.process, CodexProcess.prototype);
+    oldSession.name = "Continuity";
+
+    let resolveHistory!: (history: unknown[]) => void;
+    const historyPromise = new Promise<unknown[]>((resolve) => {
+      resolveHistory = resolve;
+    });
+    const historyRead = vi
+      .spyOn(bridge as any, "getCodexThreadHistory")
+      .mockReturnValue(historyPromise);
+    vi.spyOn(bridge as any, "loadAndSetSessionName").mockResolvedValue(
+      undefined,
+    );
+
+    const rehydratePromise = (
+      bridge as any
+    ).rehydrateCodexSessionAfterExternalTurn(
+      oldSessionId,
+      "thread-desktop",
+    );
+    await vi.waitFor(() => expect(historyRead).toHaveBeenCalledOnce());
+    expect(oldSession.permissionRestartInProgress).toBeUndefined();
+
+    const queuedInput = {
+      itemId: "queue-during-preflight",
+      text: "continue from the phone",
+      createdAt: "2026-07-19T12:00:04Z",
+      userMessageUuid: "codex:user-turn:2",
+      clientMessageId: "mobile-during-preflight",
+    };
+    expect(manager.queueCodexInput(oldSessionId, queuedInput)).toBe(true);
+    const canonicalHistory = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "desktop turn" }],
+      },
+    ];
+    resolveHistory(canonicalHistory);
+
+    await expect(rehydratePromise).resolves.toBe(true);
+    const replacement = manager.get(oldSessionId);
+    expect(replacement).toMatchObject({
+      id: oldSessionId,
+      name: "Continuity",
+      pastMessages: canonicalHistory,
+      codexQueuedInput: queuedInput,
+      codexSettings: expect.objectContaining({
+        threadId: "thread-desktop",
+        model: "gpt-5.6",
+        modelReasoningEffort: "ultra",
+      }),
+    });
+    expect(oldSession.process.stop).toHaveBeenCalledOnce();
+
+    await bridge.close();
   });
 });

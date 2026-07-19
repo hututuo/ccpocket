@@ -1,6 +1,7 @@
 import { LocalFeaturesController } from "./controller.js";
 import type { LocalFeatureRuntime } from "./runtime.js";
 import { createCodexCoreActionsHandlers } from "./slots/codex-core-actions.js";
+import { createCodexDesktopContinuityHandlers } from "./slots/codex-desktop-continuity.js";
 import { createConversationMirrorHandlers } from "./slots/conversation-mirror.js";
 import { createSessionInsightsHandlers } from "./slots/session-insights.js";
 import { createSideChatHandlers } from "./slots/side-chat.js";
@@ -16,6 +17,7 @@ export function createLocalFeaturesController(
 ): LocalFeaturesController {
   return new LocalFeaturesController(runtime, [
     ...createCodexCoreActionsHandlers(runtime),
+    ...createCodexDesktopContinuityHandlers(runtime),
     ...createConversationMirrorHandlers(runtime),
     ...createSessionInsightsHandlers(runtime),
     ...createSubagentsHandlers(runtime),

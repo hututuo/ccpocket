@@ -4,6 +4,11 @@ import {
   type CodexCoreActionsServerMessage,
 } from "./slots/codex-core-actions-protocol.js";
 import {
+  codexDesktopContinuityProtocolContribution,
+  type CodexDesktopContinuityClientMessage,
+  type CodexDesktopContinuityEventMessage,
+} from "./slots/codex-desktop-continuity-protocol.js";
+import {
   conversationMirrorProtocolContribution,
   type ConversationMirrorClientMessage,
   type ConversationMirrorEventMessage,
@@ -40,6 +45,12 @@ export type {
   CodexReviewRequestTarget,
 } from "./slots/codex-core-actions-protocol.js";
 export type {
+  CodexDesktopContinuityClientMessage,
+  CodexDesktopContinuityEventMessage,
+  CodexDesktopContinuityOrigin,
+  CodexDesktopContinuityState,
+} from "./slots/codex-desktop-continuity-protocol.js";
+export type {
   CodexTokenUsageBreakdown,
   ContextUsageMessage,
   SessionUsageInfoPayload,
@@ -63,6 +74,7 @@ export type {
 
 export type LocalFeatureClientMessage =
   | CodexCoreActionsClientMessage
+  | CodexDesktopContinuityClientMessage
   | ConversationMirrorClientMessage
   | SessionInsightsClientMessage
   | SubagentsClientMessage
@@ -70,6 +82,7 @@ export type LocalFeatureClientMessage =
 
 export type LocalFeatureServerMessage =
   | CodexCoreActionsServerMessage
+  | CodexDesktopContinuityEventMessage
   | ConversationMirrorEventMessage
   | SessionInsightsServerMessage
   | SubagentsServerMessage
@@ -77,6 +90,7 @@ export type LocalFeatureServerMessage =
 
 const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   codexCoreActionsProtocolContribution,
+  codexDesktopContinuityProtocolContribution,
   conversationMirrorProtocolContribution,
   sessionInsightsProtocolContribution,
   subagentsProtocolContribution,

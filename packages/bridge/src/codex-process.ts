@@ -2003,7 +2003,28 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       throw new Error("No active Codex turn to steer");
     }
 
-    const expectedTurnId = this.pendingTurnId;
+    await this.steerTurnStructured(this.pendingTurnId, text, options);
+  }
+
+  /**
+   * Low-level app-server primitive used by optional continuity transports that
+   * already have an authoritative expectedTurnId. The app-server still
+   * validates ownership and rejects stale/non-steerable turns.
+   */
+  async steerTurnStructured(
+    expectedTurnId: string,
+    text: string,
+    options?: {
+      images?: Array<{ base64: string; mimeType: string }>;
+      skills?: Array<{ name: string; path: string }>;
+      mentions?: Array<{ name: string; path: string }>;
+      clientMessageId?: string;
+    },
+  ): Promise<void> {
+    if (!this._threadId || !expectedTurnId) {
+      throw new Error("No Codex thread or expected turn to steer");
+    }
+
     const { input, tempPaths } = await this.toRpcInput({
       text,
       images: options?.images,

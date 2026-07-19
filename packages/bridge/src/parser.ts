@@ -168,7 +168,12 @@ export type ClientMessage =
       skills?: Array<{ name: string; path: string }>;
       mentions?: Array<{ name: string; path: string }>;
     }
-  | { type: "steer_queued_input"; sessionId: string; itemId: string }
+  | {
+      type: "steer_queued_input";
+      sessionId: string;
+      itemId: string;
+      expectedTurnId?: string;
+    }
   | { type: "cancel_queued_input"; sessionId: string; itemId: string }
   | {
       type: "push_register";
@@ -1197,6 +1202,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "steer_queued_input":
         if (typeof msg.sessionId !== "string" || typeof msg.itemId !== "string")
+          return null;
+        if (
+          msg.expectedTurnId !== undefined &&
+          (typeof msg.expectedTurnId !== "string" ||
+            msg.expectedTurnId.length === 0 ||
+            msg.expectedTurnId.length > 256)
+        )
           return null;
         break;
       case "cancel_queued_input":

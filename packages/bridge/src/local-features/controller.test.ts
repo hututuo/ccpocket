@@ -75,6 +75,48 @@ describe("LocalFeaturesController", () => {
     expect(capabilitiesChanged).toHaveBeenCalledOnce();
     expect(capabilitiesChanged).toHaveBeenCalledWith(client);
   });
+
+  it("keeps the no-admission path synchronous and composes async gates", async () => {
+    const passive: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage"],
+      handle: async () => {},
+    };
+    const controller = new LocalFeaturesController(runtime(), [passive]);
+    const session = runtime().getSession("session-1")!;
+    const message = { type: "input" as const, sessionId: session.id };
+
+    expect(controller.admitInput({}, session, message)).toEqual({
+      action: "allow",
+    });
+
+    const queueing: LocalFeatureHandler = {
+      messageTypes: ["get_session_usage"],
+      handle: async () => {},
+      admitInput: async () => ({
+        action: "queue",
+        reason: "external_turn_active",
+      }),
+    };
+    const gated = new LocalFeaturesController(runtime(), [passive, queueing]);
+    await expect(gated.admitInput({}, session, message)).resolves.toEqual({
+      action: "queue",
+      reason: "external_turn_active",
+    });
+  });
+
+  it("reports external activity separately from a unique steer target", () => {
+    const session = runtime().getSession("session-1")!;
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage"],
+      handle: async () => {},
+      hasExternalCodexActivity: () => true,
+      externalCodexTurnId: () => undefined,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+
+    expect(controller.hasExternalCodexActivity(session)).toBe(true);
+    expect(controller.externalCodexTurnId(session)).toBeUndefined();
+  });
 });
 
 function runtime(

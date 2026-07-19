@@ -1,5 +1,11 @@
 import type { LocalFeatureClientMessage } from "./protocol.js";
-import type { LocalFeatureHandler, LocalFeatureRuntime } from "./runtime.js";
+import type {
+  LocalFeatureHandler,
+  LocalFeatureInputAdmission,
+  LocalFeatureInputMessage,
+  LocalFeatureRuntime,
+  LocalFeatureSession,
+} from "./runtime.js";
 
 /**
  * Single integration point for local, removable Bridge modules. Adding a
@@ -28,6 +34,61 @@ export class LocalFeaturesController {
       message as LocalFeatureClientMessage,
       handler,
     );
+  }
+
+  admitInput(
+    client: object,
+    session: LocalFeatureSession,
+    message: LocalFeatureInputMessage,
+  ): LocalFeatureInputAdmission | Promise<LocalFeatureInputAdmission> {
+    const handlers = [...new Set(this.handlers.values())];
+    const next = (
+      index: number,
+    ): LocalFeatureInputAdmission | Promise<LocalFeatureInputAdmission> => {
+      for (let cursor = index; cursor < handlers.length; cursor += 1) {
+        const result = handlers[cursor].admitInput?.(
+          client,
+          session,
+          message,
+        );
+        if (result instanceof Promise) {
+          return result.then((admission) =>
+            admission && admission.action !== "allow"
+              ? admission
+              : next(cursor + 1),
+          );
+        }
+        if (result && result.action !== "allow") return result;
+      }
+      return { action: "allow" };
+    };
+    return next(0);
+  }
+
+  inputAccepted(
+    client: object,
+    session: LocalFeatureSession,
+    message: LocalFeatureInputMessage,
+    queued: boolean,
+  ): void {
+    for (const handler of new Set(this.handlers.values())) {
+      handler.inputAccepted?.(client, session, message, queued);
+    }
+  }
+
+  externalCodexTurnId(session: LocalFeatureSession): string | undefined {
+    for (const handler of new Set(this.handlers.values())) {
+      const turnId = handler.externalCodexTurnId?.(session);
+      if (turnId) return turnId;
+    }
+    return undefined;
+  }
+
+  hasExternalCodexActivity(session: LocalFeatureSession): boolean {
+    for (const handler of new Set(this.handlers.values())) {
+      if (handler.hasExternalCodexActivity?.(session) === true) return true;
+    }
+    return false;
   }
 
   private async runHandler(

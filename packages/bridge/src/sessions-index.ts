@@ -2866,6 +2866,16 @@ async function findCodexSessionJsonlPath(
   return null;
 }
 
+/**
+ * Resolve the durable rollout owned by one Codex thread without exposing the
+ * broader recent-session scanner to optional local features.
+ */
+export async function resolveCodexSessionJsonlPath(
+  threadId: string,
+): Promise<string | null> {
+  return findCodexSessionJsonlPath(threadId);
+}
+
 async function codexJsonlHasThreadId(
   filePath: string,
   threadId: string,

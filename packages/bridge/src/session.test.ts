@@ -17,6 +17,7 @@ const { codexInstances, sdkInstances, fakeDirs, fakeFiles } = vi.hoisted(
       stop: ReturnType<typeof vi.fn>;
       sendInputStructured: ReturnType<typeof vi.fn>;
       steerInputStructured: ReturnType<typeof vi.fn>;
+      steerTurnStructured: ReturnType<typeof vi.fn>;
       emit: (event: string, ...args: unknown[]) => boolean;
     }>,
     sdkInstances: [] as Array<{
@@ -104,6 +105,7 @@ vi.mock("./codex-process.js", () => ({
     public stop = vi.fn(() => {});
     public sendInputStructured = vi.fn();
     public steerInputStructured = vi.fn(async () => {});
+    public steerTurnStructured = vi.fn(async () => {});
 
     constructor() {
       super();
@@ -175,6 +177,87 @@ describe("SessionManager codex path", () => {
     expect(manager.list()[0].codexSettings?.codexPermissionsMode).toBe(
       "default",
     );
+  });
+
+  it("replaces a Codex runtime under a stable session id only after input_ready", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-stable" },
+    );
+    const originalSession = manager.get(sessionId)!;
+    originalSession.name = "Stable session";
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-stable",
+        text: "before edit",
+        createdAt: "2026-07-19T00:00:00.000Z",
+      }),
+    ).toBe(true);
+
+    const replacementPromise = manager.replaceCodexSession(
+      sessionId,
+      "/tmp/project-codex",
+      [{ role: "assistant", content: [{ type: "text", text: "desktop" }] }],
+      undefined,
+      { threadId: "thread-stable" },
+      1_000,
+    );
+    expect(manager.get(sessionId)).toBe(originalSession);
+    expect(
+      manager.updateCodexQueuedInput(
+        sessionId,
+        "queued-stable",
+        "edited during bootstrap",
+      ),
+    ).toBe(true);
+
+    codexInstances[1].emit("input_ready");
+    await expect(replacementPromise).resolves.toBe(sessionId);
+
+    const replacement = manager.get(sessionId)!;
+    expect(replacement).not.toBe(originalSession);
+    expect(replacement.id).toBe(sessionId);
+    expect(replacement.name).toBe("Stable session");
+    expect(replacement.status).toBe("idle");
+    expect(replacement.codexQueuedInput?.text).toBe(
+      "edited during bootstrap",
+    );
+    expect(codexInstances[0].stop).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the old Codex runtime when a staged replacement exits", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-stable" },
+    );
+    const originalSession = manager.get(sessionId)!;
+
+    const replacementPromise = manager.replaceCodexSession(
+      sessionId,
+      "/tmp/project-codex",
+      [],
+      undefined,
+      { threadId: "thread-stable" },
+      1_000,
+    );
+    codexInstances[1].emit("exit", 1);
+
+    await expect(replacementPromise).rejects.toThrow(
+      "exited before it became ready",
+    );
+    expect(manager.get(sessionId)).toBe(originalSession);
+    expect(codexInstances[0].stop).not.toHaveBeenCalled();
+    expect(codexInstances[1].stop).toHaveBeenCalledOnce();
   });
 
   it("re-derives permissions after incremental runtime settings", () => {
@@ -929,6 +1012,33 @@ describe("SessionManager codex path", () => {
     ).toBe(true);
   });
 
+  it("drains a handoff queued just after input_ready", () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+    proc.isWaitingForInput = true;
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-after-ready",
+        text: "run after refresh",
+        createdAt: "2026-07-19T00:00:00.000Z",
+      }),
+    ).toBe(true);
+
+    expect(manager.drainCodexQueuedInputIfReady(sessionId)).toBe(true);
+    expect(manager.get(sessionId)?.codexQueuedInput).toBeUndefined();
+    expect(proc.sendInputStructured).toHaveBeenCalledWith(
+      "run after refresh",
+      expect.any(Object),
+    );
+  });
+
   it("keeps delayed artifact enrichment ahead of result and queued input drain", async () => {
     let markRegistrationStarted!: (input: any) => void;
     const registrationStarted = new Promise<any>((resolve) => {
@@ -1278,6 +1388,126 @@ describe("SessionManager codex path", () => {
       error: "No active Codex turn to steer",
     });
     expect(manager.get(sessionId)?.codexQueuedInput?.text).toBe("Steer this");
+  });
+
+  it("does not clear an edited queue snapshot while steer RPC is in flight", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    manager.queueCodexInput(sessionId, {
+      itemId: "queued-racing-edit",
+      text: "send this snapshot",
+      createdAt: "2026-07-19T00:00:00.000Z",
+    });
+    let resolveSteer!: () => void;
+    codexInstances[0].steerInputStructured.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolveSteer = resolve)),
+    );
+
+    const steering = manager.steerCodexQueuedInput(
+      sessionId,
+      "queued-racing-edit",
+    );
+    expect(
+      manager.updateCodexQueuedInput(
+        sessionId,
+        "queued-racing-edit",
+        "keep this edited follow-up",
+      ),
+    ).toBe(true);
+    resolveSteer();
+
+    await expect(steering).resolves.toEqual({ ok: true });
+    expect(manager.get(sessionId)?.codexQueuedInput?.text).toBe(
+      "keep this edited follow-up",
+    );
+    expect(manager.get(sessionId)?.history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "user_input",
+          text: "send this snapshot",
+        }),
+      ]),
+    );
+  });
+
+  it("does not erase a replacement queue item after an in-flight steer", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    manager.queueCodexInput(sessionId, {
+      itemId: "queued-racing-cancel",
+      text: "steer first",
+      createdAt: "2026-07-19T00:00:00.000Z",
+    });
+    let resolveSteer!: () => void;
+    codexInstances[0].steerInputStructured.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolveSteer = resolve)),
+    );
+
+    const steering = manager.steerCodexQueuedInput(
+      sessionId,
+      "queued-racing-cancel",
+    );
+    expect(
+      manager.cancelCodexQueuedInput(sessionId, "queued-racing-cancel"),
+    ).toBe(true);
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-replacement",
+        text: "next item",
+        createdAt: "2026-07-19T00:00:01.000Z",
+      }),
+    ).toBe(true);
+    resolveSteer();
+
+    await expect(steering).resolves.toEqual({ ok: true });
+    expect(manager.get(sessionId)?.codexQueuedInput?.itemId).toBe(
+      "queued-replacement",
+    );
+  });
+
+  it("best-effort steers a Desktop-owned turn by authoritative turn id", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-external",
+        text: "Guide the Desktop turn",
+        createdAt: "2026-07-19T00:00:00.000Z",
+        clientMessageId: "mobile-guide-1",
+      }),
+    ).toBe(true);
+
+    const result = await manager.steerCodexQueuedInput(
+      sessionId,
+      "queued-external",
+      "desktop-turn-1",
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(codexInstances[0].steerTurnStructured).toHaveBeenCalledWith(
+      "desktop-turn-1",
+      "Guide the Desktop turn",
+      expect.objectContaining({ clientMessageId: "mobile-guide-1" }),
+    );
+    expect(manager.get(sessionId)?.codexQueuedInput).toBeUndefined();
   });
 
   it("extracts Codex MCP base64 images into images for history and forwarding", async () => {

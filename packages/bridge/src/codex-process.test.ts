@@ -122,6 +122,17 @@ describe("CodexProcess (app-server)", () => {
       expectedTurnId: "turn-1",
       clientUserMessageId: "mobile-message-2",
     });
+
+    (proc as any).pendingTurnId = null;
+    await proc.steerTurnStructured("desktop-turn-1", "guide desktop", {
+      clientMessageId: "mobile-message-3",
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "turn/steer", {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "guide desktop" }],
+      expectedTurnId: "desktop-turn-1",
+      clientUserMessageId: "mobile-message-3",
+    });
   });
 
   it("sticky-downgrades client message identity for an older app-server", async () => {

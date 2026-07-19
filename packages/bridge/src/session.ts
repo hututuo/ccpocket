@@ -213,6 +213,13 @@ export interface SessionSummary {
   codexGoalControlSupported?: boolean | null;
 }
 
+interface SessionCreateInternalOptions {
+  replaceSessionId?: string;
+  replacementReadyTimeoutMs?: number;
+  onReplacementReady?: () => void;
+  onReplacementFailed?: (error: Error) => void;
+}
+
 const MAX_HISTORY_PER_SESSION = 100;
 const MAX_IDLE_SESSIONS = 30;
 
@@ -418,6 +425,42 @@ export class SessionManager {
       });
   }
 
+  /**
+   * Stage a fresh app-server for the same durable Codex thread and keep the
+   * public Bridge session id stable. The old runtime remains authoritative
+   * until the replacement reaches input_ready; bootstrap failure is therefore
+   * non-destructive and callers can retry safely.
+   */
+  async replaceCodexSession(
+    sessionId: string,
+    projectPath: string,
+    pastMessages: unknown[],
+    worktreeOpts: WorktreeOptions | undefined,
+    codexOptions: CodexStartOptions,
+    replacementReadyTimeoutMs?: number,
+  ): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      try {
+        this.create(
+          projectPath,
+          undefined,
+          pastMessages,
+          worktreeOpts,
+          "codex",
+          codexOptions,
+          {
+            replaceSessionId: sessionId,
+            replacementReadyTimeoutMs,
+            onReplacementReady: () => resolve(sessionId),
+            onReplacementFailed: reject,
+          },
+        );
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
   create(
     projectPath: string,
     options?: StartOptions,
@@ -425,8 +468,20 @@ export class SessionManager {
     worktreeOpts?: WorktreeOptions,
     provider?: Provider,
     codexOptions?: CodexStartOptions,
+    internal?: SessionCreateInternalOptions,
   ): string {
-    const id = randomUUID().slice(0, 8);
+    const replacementSession = internal?.replaceSessionId
+      ? this.sessions.get(internal.replaceSessionId)
+      : undefined;
+    if (
+      internal?.replaceSessionId &&
+      (!replacementSession ||
+        replacementSession.provider !== "codex" ||
+        provider !== "codex")
+    ) {
+      throw new Error("Cannot replace a missing or non-Codex session");
+    }
+    const id = internal?.replaceSessionId ?? randomUUID().slice(0, 8);
     const effectiveProvider = provider ?? "claude";
     const proc =
       effectiveProvider === "codex" ? new CodexProcess() : new SdkProcess();
@@ -493,6 +548,60 @@ export class SessionManager {
       // can return it immediately (before the SDK sends a system/result event).
       claudeSessionId: options?.sessionId,
     };
+    const ownsRuntimeSlot = (): boolean =>
+      replacementSession === undefined || this.sessions.get(id) === session;
+    let replacementSettled = false;
+    let replacementReadyTimer: ReturnType<typeof setTimeout> | undefined;
+    const failReplacement = (error: Error): void => {
+      if (!replacementSession || replacementSettled) return;
+      replacementSettled = true;
+      if (replacementReadyTimer) clearTimeout(replacementReadyTimer);
+      proc.removeAllListeners();
+      proc.stop();
+      internal?.onReplacementFailed?.(error);
+    };
+    const commitReplacement = (): void => {
+      if (!replacementSession || replacementSettled) return;
+      if (this.sessions.get(id) !== replacementSession) {
+        failReplacement(
+          new Error("Codex session changed before its replacement was ready"),
+        );
+        return;
+      }
+      replacementSettled = true;
+      if (replacementReadyTimer) clearTimeout(replacementReadyTimer);
+
+      // Recapture mutable phone-owned state at the atomic swap boundary. Queue
+      // edits/cancels made while app-server bootstrapped must land on the fresh
+      // runtime before its input_ready drain listener runs.
+      session.name = replacementSession.name;
+      session.autoRename = replacementSession.autoRename;
+      session.autoRenameAttempted = replacementSession.autoRenameAttempted;
+      // Preserve the queue object's identity across the atomic swap. The steer
+      // path uses that identity as its compare-and-clear revision, so an edit
+      // or cancel racing an in-flight RPC cannot be mistaken for the snapshot
+      // that was actually sent.
+      session.codexQueuedInput = replacementSession.codexQueuedInput;
+      session.codexGoal = replacementSession.codexGoal;
+      session.codexGoalUpdatedAt = replacementSession.codexGoalUpdatedAt;
+      session.codexGoalOperationSequence =
+        replacementSession.codexGoalOperationSequence;
+      session.codexGoalControlSupported =
+        replacementSession.codexGoalControlSupported;
+      // The staged runtime's initial idle status event was intentionally
+      // ignored while the old runtime owned the public session slot.
+      // `input_ready` is the authoritative idle boundary; publish that state
+      // as part of the same atomic swap before a queued handoff is drained.
+      session.status = "idle";
+      session.lastActivityAt = replacementSession.lastActivityAt;
+
+      this.sessions.set(id, session);
+      replacementSession.process.removeAllListeners();
+      replacementSession.process.stop();
+      internal?.onReplacementReady?.();
+      this.onSessionUpdated?.(id);
+      this.evictStaleIdleSessions();
+    };
     if (effectiveProvider === "codex") {
       this.seedCodexPastUserTurnUuidMap(session);
     }
@@ -511,6 +620,7 @@ export class SessionManager {
       messageProcessing = tracked;
     };
     proc.on("message", (msg) => {
+      if (!ownsRuntimeSlot()) return;
       // Detach provider-local paths before any asynchronous operation. For
       // assistant text, AST extraction is synchronous and lets us retain the
       // legacy synchronous fast path when no artifact exists.
@@ -922,6 +1032,7 @@ export class SessionManager {
     });
 
     proc.on("status", (status) => {
+      if (!ownsRuntimeSlot()) return;
       session.status = status;
       if (status === "idle") {
         this.evictStaleIdleSessions();
@@ -929,7 +1040,11 @@ export class SessionManager {
     });
 
     if (proc instanceof CodexProcess) {
+      if (replacementSession) {
+        proc.prependOnceListener("input_ready", commitReplacement);
+      }
       proc.on("input_ready", () => {
+        if (!ownsRuntimeSlot()) return;
         const drain = (): void => this.drainCodexQueue(session);
         if (messageProcessing) {
           trackMessageWork(messageProcessing.then(drain));
@@ -940,6 +1055,12 @@ export class SessionManager {
     }
 
     proc.on("exit", () => {
+      if (!ownsRuntimeSlot()) {
+        failReplacement(
+          new Error("Replacement Codex runtime exited before it became ready"),
+        );
+        return;
+      }
       const finish = (): void => {
       session.status = "idle";
       session.codexQueuedInput = undefined;
@@ -1023,16 +1144,39 @@ export class SessionManager {
       }
     }
 
-    if (effectiveProvider === "codex") {
-      (proc as CodexProcess).start(effectiveCwd, codexOptions);
-    } else {
-      (proc as SdkProcess).start(effectiveCwd, options);
+    try {
+      if (effectiveProvider === "codex") {
+        (proc as CodexProcess).start(effectiveCwd, codexOptions);
+      } else {
+        (proc as SdkProcess).start(effectiveCwd, options);
+      }
+    } catch (error) {
+      // A replacement must fail atomically: the old session remains mapped
+      // and usable if the new provider cannot even start.
+      proc.removeAllListeners();
+      proc.stop();
+      throw error;
     }
 
     // Add session to Map only after proc.start() succeeds.
     // If start() throws, no zombie session is left behind.
-    this.sessions.set(id, session);
-    this.evictStaleIdleSessions();
+    if (replacementSession) {
+      const timeoutMs = Math.max(
+        1,
+        internal?.replacementReadyTimeoutMs ?? 30_000,
+      );
+      replacementReadyTimer = setTimeout(
+        () =>
+          failReplacement(
+            new Error("Replacement Codex runtime did not become ready in time"),
+          ),
+        timeoutMs,
+      );
+      replacementReadyTimer.unref?.();
+    } else {
+      this.sessions.set(id, session);
+      this.evictStaleIdleSessions();
+    }
 
     console.log(
       `[session] Created ${effectiveProvider} session ${id} for ${effectiveCwd}${wtPath ? ` (worktree of ${projectPath})` : ""}`,
@@ -1660,6 +1804,7 @@ export class SessionManager {
   async steerCodexQueuedInput(
     id: string,
     itemId: string,
+    expectedExternalTurnId?: string,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     const session = this.sessions.get(id);
     if (!session || session.provider !== "codex") {
@@ -1674,14 +1819,23 @@ export class SessionManager {
     }
 
     try {
-      await session.process.steerInputStructured(queued.text, {
+      const options = {
         images: queued.images,
         skills: queued.skills,
         mentions: queued.mentions,
         ...(queued.clientMessageId
           ? { clientMessageId: queued.clientMessageId }
           : {}),
-      });
+      };
+      if (expectedExternalTurnId) {
+        await session.process.steerTurnStructured(
+          expectedExternalTurnId,
+          queued.text,
+          options,
+        );
+      } else {
+        await session.process.steerInputStructured(queued.text, options);
+      }
     } catch (err) {
       return {
         ok: false,
@@ -1689,14 +1843,24 @@ export class SessionManager {
       };
     }
 
-    session.codexQueuedInput = undefined;
-    session.lastActivityAt = new Date();
-    this.broadcastCodexQueue(session);
+    // Re-resolve the stable session after the asynchronous RPC. A Desktop
+    // history refresh may have atomically swapped the underlying process while
+    // guidance was in flight. Clear only the exact queue object that was sent;
+    // edits/cancels replace that object and therefore remain queued.
+    const currentSession = this.sessions.get(id);
+    if (!currentSession || currentSession.provider !== "codex") {
+      return { ok: true };
+    }
+    if (currentSession.codexQueuedInput === queued) {
+      currentSession.codexQueuedInput = undefined;
+      currentSession.lastActivityAt = new Date();
+      this.broadcastCodexQueue(currentSession);
+    }
 
     const userMsg = this.buildQueuedUserInputMessage(queued);
-    this.appendHistoryToSession(session, userMsg);
-    this.markPendingCodexUserEcho(session, userMsg);
-    this.onMessage(session.id, userMsg);
+    this.appendHistoryToSession(currentSession, userMsg);
+    this.markPendingCodexUserEcho(currentSession, userMsg);
+    this.onMessage(currentSession.id, userMsg);
     return { ok: true };
   }
 
@@ -1708,6 +1872,25 @@ export class SessionManager {
       limit: 1,
       items: item ? [item] : [],
     });
+  }
+
+  /**
+   * Close the narrow race where a queued handoff arrives immediately after a
+   * refreshed Codex runtime already emitted input_ready.
+   */
+  drainCodexQueuedInputIfReady(id: string): boolean {
+    const session = this.sessions.get(id);
+    if (
+      !session ||
+      session.provider !== "codex" ||
+      !session.codexQueuedInput ||
+      !(session.process instanceof CodexProcess) ||
+      !session.process.isWaitingForInput
+    ) {
+      return false;
+    }
+    this.drainCodexQueue(session);
+    return session.codexQueuedInput === undefined;
   }
 
   private drainCodexQueue(session: SessionInfo): void {

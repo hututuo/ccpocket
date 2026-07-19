@@ -157,6 +157,8 @@ const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
 const CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY =
   "codex_permission_apply_strategy_v1";
 const CODEX_SESSION_LIFECYCLE_CAPABILITY = "codex_session_lifecycle_v1";
+const CODEX_DESKTOP_CONTINUITY_CAPABILITY =
+  "codex_desktop_continuity_v1";
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
 const KNOWN_CODEX_GOAL_STATUSES = new Set([
@@ -1230,6 +1232,39 @@ export class BridgeWebSocketServer {
       createDedicatedCodexProcess: () => new CodexProcess(this.platform),
       isProjectPathAllowed: (projectPath) =>
         this.isPathAllowed(resolvePlatformPath(projectPath, this.platform)),
+      isSessionProjectPath: (rawSession, projectPath) => {
+        const session = rawSession as SessionInfo;
+        const claimed = canonicalRecentProjectPath(projectPath, this.platform);
+        return [session.projectPath, session.worktreePath]
+          .filter((path): path is string => Boolean(path))
+          .some(
+            (path) =>
+              canonicalRecentProjectPath(path, this.platform) === claimed,
+          );
+      },
+      isCodexThreadLocallyActive: (threadId) =>
+        this.sessionManager.list().some(({ id }) => {
+          const session = this.sessionManager.get(id);
+          if (
+            !session ||
+            session.provider !== "codex" ||
+            this.codexThreadIdForSession(session) !== threadId ||
+            !(session.process instanceof CodexProcess)
+          ) {
+            return false;
+          }
+          return (
+            session.process.status === "running" ||
+            session.process.status === "waiting_approval" ||
+            session.process.status === "compacting"
+          );
+        }),
+      rehydrateCodexSessionAfterExternalTurn: (sessionId, threadId) =>
+        this.rehydrateCodexSessionAfterExternalTurn(sessionId, threadId),
+      hasCodexQueuedInput: (sessionId) =>
+        this.sessionManager.get(sessionId)?.codexQueuedInput != null,
+      drainCodexQueuedInputIfReady: (sessionId) =>
+        this.sessionManager.drainCodexQueuedInputIfReady(sessionId),
       send: (client, message) =>
         this.send(client as WebSocket, message as ServerMessage),
       supports: (client, messageType) =>
@@ -3124,7 +3159,7 @@ export class BridgeWebSocketServer {
       }
 
       case "input": {
-        const session = this.resolveSession(msg.sessionId);
+        let session = this.resolveSession(msg.sessionId);
         if (!session) {
           const pendingInputs = msg.sessionId
             ? this.pendingClaudeResumeInputs.get(ws)?.get(msg.sessionId)
@@ -3226,9 +3261,47 @@ export class BridgeWebSocketServer {
           break;
         }
 
+        const localFeatureAdmissionResult =
+          session.provider === "codex"
+            ? this.localFeatures.admitInput(ws, session, msg)
+            : { action: "allow" as const };
+        const localFeatureAdmission =
+          localFeatureAdmissionResult instanceof Promise
+            ? await localFeatureAdmissionResult
+            : localFeatureAdmissionResult;
+        const currentSession = this.sessionManager.get(session.id);
+        if (currentSession !== session) {
+          const priorThreadId = this.codexThreadIdForSession(session);
+          if (
+            !currentSession ||
+            currentSession.provider !== "codex" ||
+            this.codexThreadIdForSession(currentSession) !== priorThreadId
+          ) {
+            this.send(ws, {
+              type: "input_rejected",
+              sessionId: session.id,
+              ...(clientMessageId ? { clientMessageId } : {}),
+              reason: "Session changed while input was being admitted",
+            });
+            break;
+          }
+          session = currentSession;
+        }
+        if (localFeatureAdmission.action === "reject") {
+          this.send(ws, {
+            type: "input_rejected",
+            sessionId: session.id,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            reason: localFeatureAdmission.reason,
+          });
+          break;
+        }
+        const queueForExternalCodexTurn =
+          localFeatureAdmission.action === "queue";
+
         if (
           session.provider === "codex" &&
-          !session.process.isWaitingForInput
+          (queueForExternalCodexTurn || !session.process.isWaitingForInput)
         ) {
           if (session.codexQueuedInput) {
             this.send(ws, {
@@ -3284,6 +3357,7 @@ export class BridgeWebSocketServer {
             acceptedSeq: session.historyRevision,
             queued: true,
           });
+          this.localFeatures.inputAccepted(ws, session, msg, true);
           this.broadcastSessionList();
           break;
         }
@@ -3345,6 +3419,7 @@ export class BridgeWebSocketServer {
             acceptedSeq,
             queued: false,
           });
+          this.localFeatures.inputAccepted(ws, session, msg, false);
           const codexProc = session.process as CodexProcess;
           if (images.length > 0) {
             codexProc.sendInputStructured(text, {
@@ -3565,9 +3640,34 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active Codex session." });
           return;
         }
+        const externalTurnId =
+          this.localFeatures.externalCodexTurnId(session);
+        const hasExternalActivity =
+          this.localFeatures.hasExternalCodexActivity(session);
+        if (
+          msg.expectedTurnId !== undefined &&
+          msg.expectedTurnId !== externalTurnId
+        ) {
+          this.send(ws, {
+            type: "error",
+            message: "The Desktop turn changed before guidance was applied.",
+            errorCode: "queued_input_steer_stale_turn",
+          });
+          return;
+        }
+        if (hasExternalActivity && externalTurnId === undefined) {
+          this.send(ws, {
+            type: "error",
+            message:
+              "Multiple or unclassified Desktop turns are active; guidance cannot be routed safely.",
+            errorCode: "queued_input_steer_ambiguous_turn",
+          });
+          return;
+        }
         const result = await this.sessionManager.steerCodexQueuedInput(
           session.id,
           msg.itemId,
+          msg.expectedTurnId ?? externalTurnId,
         );
         if (!result.ok) {
           this.send(ws, {
@@ -7681,6 +7781,7 @@ export class BridgeWebSocketServer {
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
+        CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
     });
@@ -7722,6 +7823,7 @@ export class BridgeWebSocketServer {
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
+        CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
     });
@@ -7877,6 +7979,125 @@ export class BridgeWebSocketServer {
   private destroySession(sessionId: string): void {
     this.flushSessionDeltaBatches(sessionId);
     this.sessionManager.destroy(sessionId);
+  }
+
+  /**
+   * A CodexProcess resumed before a Desktop-owned turn does not learn that
+   * turn's new model-visible history. Recreate the idle runtime from the
+   * durable thread before accepting the next mobile turn, preserving the
+   * existing runtime-switch contract used by permission/sandbox restarts.
+   */
+  private async rehydrateCodexSessionAfterExternalTurn(
+    sessionId: string,
+    threadId: string,
+  ): Promise<boolean> {
+    const session = this.sessionManager.get(sessionId);
+    if (
+      !session ||
+      session.provider !== "codex" ||
+      this.codexThreadIdForSession(session) !== threadId ||
+      !(session.process instanceof CodexProcess) ||
+      !session.process.isWaitingForInput ||
+      session.permissionRestartInProgress
+    ) {
+      return false;
+    }
+
+    const process = session.process;
+    const initialMapping = this.worktreeStore.get(threadId);
+    const historyProjectPath =
+      initialMapping?.projectPath ?? session.projectPath;
+    let canonicalHistory: SessionHistoryMessage[];
+    try {
+      canonicalHistory = await this.getCodexThreadHistory(
+        threadId,
+        historyProjectPath,
+      );
+    } catch (error) {
+      console.warn(
+        `[ws] Desktop continuity rehydrate preflight failed for ${threadId}: ${errorMessageOf(error)}`,
+      );
+      return false;
+    }
+    if (
+      this.sessionManager.get(sessionId) !== session ||
+      this.codexThreadIdForSession(session) !== threadId ||
+      session.process !== process ||
+      !process.isWaitingForInput ||
+      session.permissionRestartInProgress
+    ) {
+      return false;
+    }
+
+    // Everything below is recaptured after the async history preflight. Mobile
+    // input remains admitted into the normal one-item queue while this runtime
+    // is marked stale, so edits/cancels made during the read are preserved.
+    const settings = { ...(session.codexSettings ?? {}) };
+    const collaborationMode = process.collaborationMode;
+
+    const mapping = this.worktreeStore.get(threadId);
+    const effectiveProjectPath = mapping?.projectPath ?? session.projectPath;
+    const mappedWorktreePath = mapping?.worktreePath ?? session.worktreePath;
+    const mappedWorktreeBranch =
+      mapping?.worktreeBranch ?? session.worktreeBranch;
+    let worktreeOptions: WorktreeOptions | undefined;
+    if (mappedWorktreePath && worktreeExists(mappedWorktreePath)) {
+      worktreeOptions = {
+        existingWorktreePath: mappedWorktreePath,
+        worktreeBranch: mappedWorktreeBranch,
+      };
+    } else if (mappedWorktreeBranch) {
+      worktreeOptions = {
+        useWorktree: true,
+        worktreeBranch: mappedWorktreeBranch,
+      };
+    }
+
+    const newId = await this.sessionManager.replaceCodexSession(
+      sessionId,
+      effectiveProjectPath,
+      canonicalHistory,
+      worktreeOptions,
+      {
+        threadId,
+        profile: settings.profile,
+        approvalPolicy:
+          settings.approvalPolicy as CodexStartOptions["approvalPolicy"],
+        approvalsReviewer:
+          settings.approvalsReviewer as CodexStartOptions["approvalsReviewer"],
+        codexPermissionsMode:
+          settings.codexPermissionsMode as CodexStartOptions["codexPermissionsMode"],
+        sandboxMode: settings.sandboxMode as CodexStartOptions["sandboxMode"],
+        model: settings.model,
+        modelReasoningEffort: settings.modelReasoningEffort,
+        serviceTier: settings.serviceTier,
+        networkAccessEnabled: settings.networkAccessEnabled,
+        webSearchMode:
+          settings.webSearchMode as CodexStartOptions["webSearchMode"],
+        additionalWritableRoots: settings.additionalWritableRoots,
+        collaborationMode,
+      },
+    );
+    const newSession = this.sessionManager.get(newId);
+    if (!newSession) return false;
+
+    this.broadcastSessionList();
+    void this.loadAndSetSessionName(
+      newSession,
+      "codex",
+      effectiveProjectPath,
+      threadId,
+    ).then(() => this.broadcastSessionList());
+    this.recordDebugEvent(newId, {
+      direction: "internal",
+      channel: "bridge",
+      type: "desktop_continuity_rehydrated",
+      detail: `thread=${threadId} stableSession=${sessionId}`,
+    });
+    console.log(
+      `[ws] Desktop continuity: refreshed ${sessionId} in place for thread ${threadId}`,
+    );
+    return true;
   }
 
   private trackSessionMessage(sessionId: string, msg: ServerMessage): void {

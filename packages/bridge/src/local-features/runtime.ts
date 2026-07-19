@@ -9,6 +9,19 @@ export interface LocalFeatureSession {
   id: string;
   provider: string;
   process: unknown;
+  projectPath?: string;
+  createdAt?: Date;
+}
+
+export type LocalFeatureInputAdmission =
+  | { action: "allow" }
+  | { action: "queue"; reason: string }
+  | { action: "reject"; reason: string };
+
+export interface LocalFeatureInputMessage {
+  type: "input";
+  sessionId?: string;
+  clientMessageId?: string;
 }
 
 export interface LocalFeatureRuntime {
@@ -24,6 +37,21 @@ export interface LocalFeatureRuntime {
   createDedicatedCodexProcess?(): CodexProcess;
   /** Host-owned authorization seam for optional features that accept a cwd. */
   isProjectPathAllowed?(projectPath: string): boolean;
+  /** Host-owned identity check between a runtime session and a claimed cwd. */
+  isSessionProjectPath?(
+    session: LocalFeatureSession,
+    projectPath: string,
+  ): boolean;
+  /** True only when this Bridge owns an active turn for the durable thread. */
+  isCodexThreadLocallyActive?(threadId: string): boolean;
+  /** Recreate a stale Codex runtime from durable history after Desktop work. */
+  rehydrateCodexSessionAfterExternalTurn?(
+    sessionId: string,
+    threadId: string,
+  ): Promise<boolean>;
+  hasCodexQueuedInput?(sessionId: string): boolean;
+  /** Drain a queued phone turn only after a stale runtime refresh succeeded. */
+  drainCodexQueuedInputIfReady?(sessionId: string): boolean;
   send(client: object, message: LocalFeatureServerMessage | {
     type: "error";
     message: string;
@@ -44,6 +72,23 @@ export interface LocalFeatureHandler {
     message: LocalFeatureClientMessage,
     context: LocalFeatureHandleContext,
   ): Promise<void>;
+  admitInput?(
+    client: object,
+    session: LocalFeatureSession,
+    message: LocalFeatureInputMessage,
+  ):
+    | LocalFeatureInputAdmission
+    | null
+    | Promise<LocalFeatureInputAdmission | null>;
+  inputAccepted?(
+    client: object,
+    session: LocalFeatureSession,
+    message: LocalFeatureInputMessage,
+    queued: boolean,
+  ): void;
+  /** True when a Desktop-owned turn exists, even if no unique turn id exists. */
+  hasExternalCodexActivity?(session: LocalFeatureSession): boolean;
+  externalCodexTurnId?(session: LocalFeatureSession): string | undefined;
   capabilitiesChanged?(client: object): void;
   disconnect?(client: object): void;
   close?(): void;
