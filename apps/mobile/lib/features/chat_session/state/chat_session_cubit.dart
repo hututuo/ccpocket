@@ -1212,42 +1212,27 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> historyEntries,
   }) {
     return historyEntries.map((historyEntry) {
-      final historyAssistant = _assistantMessageFromEntry(historyEntry);
-      if (historyAssistant == null) return historyEntry;
-
       final existingIndex = _indexOfEquivalentEntry(
         existingEntries,
         historyEntry,
+        allowWeakMatch: false,
       );
       if (existingIndex == -1) return historyEntry;
       final existingEntry = existingEntries[existingIndex];
-      final existingAssistant = _assistantMessageFromEntry(existingEntry);
-      if (existingAssistant == null) return historyEntry;
 
-      return _hasRenderableAssistantContent(existingAssistant) &&
-              !_hasRenderableAssistantContent(historyAssistant)
-          ? existingEntry
+      final sameMergeableMessageKind =
+          (existingEntry is ServerChatEntry &&
+              historyEntry is ServerChatEntry &&
+              existingEntry.message is AssistantServerMessage &&
+              historyEntry.message is AssistantServerMessage) ||
+          (existingEntry is ServerChatEntry &&
+              historyEntry is ServerChatEntry &&
+              existingEntry.message is ToolResultMessage &&
+              historyEntry.message is ToolResultMessage);
+      return sameMergeableMessageKind
+          ? _mergeEquivalentEntry(existingEntry, historyEntry)
           : historyEntry;
     }).toList();
-  }
-
-  AssistantMessage? _assistantMessageFromEntry(ChatEntry entry) {
-    if (entry case ServerChatEntry(
-      message: AssistantServerMessage(:final message),
-    )) {
-      return message;
-    }
-    return null;
-  }
-
-  bool _hasRenderableAssistantContent(AssistantMessage message) {
-    return message.content.any(
-      (content) => switch (content) {
-        TextContent(:final text) => text.trim().isNotEmpty,
-        ThinkingContent(:final thinking) => thinking.trim().isNotEmpty,
-        ToolUseContent() => true,
-      },
-    );
   }
 
   ({List<ChatEntry> entries, bool didChange}) _appendEntriesDeduped(

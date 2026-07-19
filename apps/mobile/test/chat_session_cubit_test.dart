@@ -1218,6 +1218,114 @@ void main() {
     );
 
     test(
+      'history replace losslessly merges a shorter assistant with the same id',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        const liveAssistant = AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'assistant-owner',
+            role: 'assistant',
+            content: [TextContent(text: 'Complete response')],
+            model: 'codex',
+          ),
+          artifacts: [
+            ArtifactRef(
+              id: 'artifact-live',
+              filename: 'report.pdf',
+              mimeType: 'application/pdf',
+              sizeBytes: 12,
+              kind: 'preview',
+              source: 'assistant_markdown',
+              textContentIndex: 0,
+            ),
+          ],
+          artifactContentIndexOffset: 2,
+        );
+        const historyAssistant = AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'assistant-owner',
+            role: 'assistant',
+            content: [TextContent(text: 'Complete')],
+            model: 'codex',
+          ),
+        );
+
+        mockBridge.emitMessage(liveAssistant, sessionId: 's1');
+        await pumpEventQueue();
+        mockBridge.emitMessage(
+          const HistoryMessage(messages: [historyAssistant]),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final assistant = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .single;
+        expect(assistant.message.content, const [
+          TextContent(text: 'Complete response'),
+        ]);
+        expect(assistant.artifacts.single.id, 'artifact-live');
+        expect(assistant.artifactMessageId, 'assistant-owner');
+        expect(assistant.artifactContentIndexOffset, 2);
+      },
+    );
+
+    test(
+      'history replace losslessly merges a tool result with the same id',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        const liveResult = ToolResultMessage(
+          toolUseId: 'tool-owner',
+          content: 'Complete tool output',
+          toolName: 'Read',
+          images: [
+            ImageRef(
+              id: 'image-live',
+              url: '/artifacts/image-live',
+              mimeType: 'image/png',
+            ),
+          ],
+          artifacts: [
+            ArtifactRef(
+              id: 'artifact-tool-live',
+              filename: 'output.txt',
+              mimeType: 'text/plain',
+              sizeBytes: 20,
+              kind: 'download',
+              source: 'structured_tool',
+            ),
+          ],
+        );
+        const historyResult = ToolResultMessage(
+          toolUseId: 'tool-owner',
+          content: 'Complete',
+        );
+
+        mockBridge.emitMessage(liveResult, sessionId: 's1');
+        await pumpEventQueue();
+        mockBridge.emitMessage(
+          const HistoryMessage(messages: [historyResult]),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final result = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<ToolResultMessage>()
+            .single;
+        expect(result.content, 'Complete tool output');
+        expect(result.toolName, 'Read');
+        expect(result.images.single.id, 'image-live');
+        expect(result.artifacts.single.id, 'artifact-tool-live');
+      },
+    );
+
+    test(
       'history replace deduplicates matching assistants with different ids',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
