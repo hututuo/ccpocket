@@ -15,6 +15,8 @@ class MockBridgeService extends BridgeService {
       StreamController<(ServerMessage, String?)>.broadcast();
   final _connectionController =
       StreamController<BridgeConnectionState>.broadcast();
+  final _localFeatureController =
+      StreamController<(LocalFeatureServerMessage, String)>.broadcast();
   final _sessionListController =
       StreamController<List<SessionInfo>>.broadcast();
   final sentMessages = <ClientMessage>[];
@@ -24,6 +26,9 @@ class MockBridgeService extends BridgeService {
   final historySeqBySession = <String, int>{};
   bool connected = true;
   List<SessionInfo> sessionSnapshot = const [];
+  Set<String> advertisedBridgeCapabilities = const {
+    ChatSessionCubit.codexDesktopContinuityCapability,
+  };
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
     _taggedController.add((msg, sessionId));
@@ -33,6 +38,13 @@ class MockBridgeService extends BridgeService {
   void emitConnection(BridgeConnectionState state) {
     connected = state == BridgeConnectionState.connected;
     _connectionController.add(state);
+  }
+
+  void emitLocalFeature(
+    LocalFeatureServerMessage message, {
+    required String sessionId,
+  }) {
+    _localFeatureController.add((message, sessionId));
   }
 
   void emitSessions(List<SessionInfo> sessions) {
@@ -57,9 +69,21 @@ class MockBridgeService extends BridgeService {
   List<SessionInfo> get sessions => sessionSnapshot;
 
   @override
+  Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
+
+  @override
   Stream<ServerMessage> messagesForSession(String sessionId) {
     return _taggedController.stream
         .where((pair) => pair.$2 == null || pair.$2 == sessionId)
+        .map((pair) => pair.$1);
+  }
+
+  @override
+  Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
+    String sessionId,
+  ) {
+    return _localFeatureController.stream
+        .where((pair) => pair.$2 == sessionId)
         .map((pair) => pair.$1);
   }
 
@@ -145,6 +169,7 @@ class MockBridgeService extends BridgeService {
     _messageController.close();
     _taggedController.close();
     _connectionController.close();
+    _localFeatureController.close();
     _sessionListController.close();
     super.dispose();
   }
@@ -362,6 +387,454 @@ void main() {
 
       expect(cubit.state.status, ProcessStatus.running);
     });
+
+    test(
+      'Codex Desktop continuity watches the bound thread and preserves queue semantics',
+      () async {
+        final cubit = createCubit(
+          's1',
+          provider: Provider.codex,
+          initialProjectPath: '/project',
+        );
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-1',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        final watch = mockBridge.sentMessages.lastWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final watchJson = jsonDecode(watch.toJson()) as Map<String, dynamic>;
+        final requestId = watchJson['requestId'] as String;
+        expect(watchJson, containsPair('sessionId', 's1'));
+        expect(watchJson, containsPair('threadId', 'thread-1'));
+
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+            turnId: 'turn-desktop',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+
+        cubit.sendMessage('follow up');
+        expect(mockBridge.sentMessages.last.type, 'input');
+
+        final queued = QueuedInputItem(
+          itemId: 'queued-1',
+          text: 'follow up',
+          createdAt: DateTime(2026).toIso8601String(),
+        );
+        mockBridge.emitMessage(
+          ConversationQueueMessage(sessionId: 's1', limit: 1, items: [queued]),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.queuedInput?.itemId, 'queued-1');
+
+        cubit.steerQueuedInput(queued);
+        final steerMessage = mockBridge.sentMessages.last;
+        final steerJson =
+            jsonDecode(steerMessage.toJson()) as Map<String, dynamic>;
+        expect(steerJson['type'], 'steer_queued_input');
+        expect(steerJson['expectedTurnId'], 'turn-desktop');
+        expect(steerMessage.delivery, ClientMessageDelivery.ephemeral);
+
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        final messageCountBeforeAmbiguousSteer =
+            mockBridge.sentMessages.length;
+        cubit.steerQueuedInput(queued);
+        expect(
+          mockBridge.sentMessages.length,
+          messageCountBeforeAmbiguousSteer,
+        );
+
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+            turnId: 'turn-desktop',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.message,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            turnId: 'turn-desktop',
+            itemKey: 'assistant:desktop-1',
+            payload: const AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'desktop-1',
+                role: 'assistant',
+                content: [TextContent(text: 'Desktop progress')],
+                model: 'codex',
+              ),
+            ),
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.message,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            turnId: 'turn-desktop',
+            itemKey: 'tool-start:desktop-tool-1',
+            payload: const AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'desktop-tool-1',
+                role: 'assistant',
+                content: [
+                  ToolUseContent(
+                    id: 'desktop-tool-1',
+                    name: 'exec',
+                    input: {'command': 'inspect'},
+                  ),
+                ],
+                model: 'codex',
+              ),
+            ),
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.message,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            turnId: 'turn-desktop',
+            itemKey: 'tool-result:desktop-tool-1',
+            payload: const ToolResultMessage(
+              toolUseId: 'desktop-tool-1',
+              toolName: 'exec',
+              content: 'inspection complete',
+            ),
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.queuedInput?.itemId, 'queued-1');
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().any(
+            (entry) =>
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.id ==
+                    'desktop-1',
+          ),
+          isTrue,
+        );
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().any(
+            (entry) =>
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.content.any(
+                  (content) =>
+                      content is ToolUseContent &&
+                      content.id == 'desktop-tool-1',
+                ),
+          ),
+          isTrue,
+        );
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().any(
+            (entry) =>
+                entry.message is ToolResultMessage &&
+                (entry.message as ToolResultMessage).toolUseId ==
+                    'desktop-tool-1',
+          ),
+          isTrue,
+        );
+
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.idle,
+            turnId: 'turn-desktop',
+            outcome: 'completed',
+            handoffQueued: true,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.queuedInput?.itemId, 'queued-1');
+      },
+    );
+
+    test('Codex Desktop continuity stays disabled on an older Bridge', () async {
+      mockBridge.advertisedBridgeCapabilities = const {};
+      final cubit = createCubit(
+        's1',
+        provider: Provider.codex,
+        initialProjectPath: '/project',
+      );
+      addTearDown(cubit.close);
+
+      mockBridge.emitMessage(
+        const SystemMessage(
+          subtype: 'init',
+          sessionId: 'thread-1',
+          provider: 'codex',
+          projectPath: '/project',
+        ),
+        sessionId: 's1',
+      );
+      mockBridge.emitSessions(const []);
+      await Future.microtask(() {});
+      await Future.microtask(() {});
+
+      expect(
+        mockBridge.sentMessages.where(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        ),
+        isEmpty,
+      );
+    });
+
+    test(
+      'Codex Desktop continuity settles running state when reconnecting to an older Bridge',
+      () async {
+        final cubit = createCubit(
+          's1',
+          provider: Provider.codex,
+          initialProjectPath: '/project',
+        );
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-1',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        final watch = mockBridge.sentMessages.lastWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final requestId =
+            (jsonDecode(watch.toJson()) as Map<String, dynamic>)['requestId']
+                as String;
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+            turnId: 'desktop-turn',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        mockBridge.advertisedBridgeCapabilities = const {};
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitSessions([
+          const SessionInfo(
+            id: 's1',
+            projectPath: '/project',
+            status: 'idle',
+            provider: 'codex',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.state.status, ProcessStatus.idle);
+        expect(mockBridge.lastRequestedSessionId, 's1');
+      },
+    );
+
+    test(
+      'Desktop reasoning is incremental and stale continuity bindings are ignored',
+      () async {
+        final cubit = createCubit(
+          's1',
+          provider: Provider.codex,
+          initialProjectPath: '/project',
+        );
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-1',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        final watch = mockBridge.sentMessages.lastWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final requestId =
+            (jsonDecode(watch.toJson()) as Map<String, dynamic>)['requestId']
+                as String;
+
+        CodexDesktopContinuityEventMessage reasoning(String id) =>
+            CodexDesktopContinuityEventMessage(
+              event: CodexDesktopContinuityEventKind.message,
+              requestId: id,
+              bridgeInstanceId: 'bridge-1',
+              sessionId: 's1',
+              threadId: 'thread-1',
+              origin: 'desktop_rollout',
+              itemKey: 'reasoning:1',
+              payload: const ThinkingDeltaMessage(text: 'Inspecting\n'),
+            );
+
+        mockBridge.emitLocalFeature(reasoning('stale'), sessionId: 's1');
+        await Future.microtask(() {});
+        expect(streamingCubit.state.thinking, isEmpty);
+
+        mockBridge.emitLocalFeature(reasoning(requestId), sessionId: 's1');
+        mockBridge.emitLocalFeature(reasoning(requestId), sessionId: 's1');
+        await Future.microtask(() {});
+        expect(streamingCubit.state.thinking, 'Inspecting\n');
+      },
+    );
+
+    test(
+      'Desktop continuity reconciles an offline completion without losing handoff state',
+      () async {
+        final cubit = createCubit(
+          's1',
+          provider: Provider.codex,
+          initialProjectPath: '/project',
+        );
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-1',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        final firstWatch = mockBridge.sentMessages.lastWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final firstRequestId =
+            (jsonDecode(firstWatch.toJson())
+                    as Map<String, dynamic>)['requestId']
+                as String;
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: firstRequestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+            turnId: 'turn-desktop',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        await Future.microtask(() {});
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.state.status, ProcessStatus.running);
+
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        await Future.microtask(() {});
+        final reconnectWatch = mockBridge.sentMessages.lastWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final reconnectRequestId =
+            (jsonDecode(reconnectWatch.toJson())
+                    as Map<String, dynamic>)['requestId']
+                as String;
+        expect(reconnectRequestId, isNot(firstRequestId));
+
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.watching,
+            requestId: reconnectRequestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.idle,
+            turnId: 'turn-desktop',
+            handoffQueued: true,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.state.status, ProcessStatus.running);
+      },
+    );
 
     test(
       'initial project path is available before bridge metadata arrives',

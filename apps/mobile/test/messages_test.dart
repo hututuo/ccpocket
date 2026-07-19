@@ -658,12 +658,15 @@ void main() {
       final msg = ClientMessage.steerQueuedInput(
         sessionId: 'session-1',
         itemId: 'queued-1',
+        expectedTurnId: 'desktop-turn-1',
       );
 
       final json = jsonDecode(msg.toJson()) as Map<String, dynamic>;
       expect(json['type'], 'steer_queued_input');
       expect(json['sessionId'], 'session-1');
       expect(json['itemId'], 'queued-1');
+      expect(json['expectedTurnId'], 'desktop-turn-1');
+      expect(msg.delivery, ClientMessageDelivery.ephemeral);
     });
 
     test('RecentSession parses codex thread options from codexSettings', () {

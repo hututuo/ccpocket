@@ -21,6 +21,8 @@ import 'streaming_state_cubit.dart';
 class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const codexPermissionApplyStrategyCapability =
       'codex_permission_apply_strategy_v1';
+  static const codexDesktopContinuityCapability =
+      'codex_desktop_continuity_v1';
   static const _uuid = Uuid();
   static const offlineQueuedInputPrefix = 'offline:';
   static const deliveryPendingQueuedInputPrefix = 'pending:';
@@ -37,16 +39,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<ServerMessage>? _subscription;
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
+  StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
+  StreamSubscription<BridgeConnectionState>?
+      _desktopContinuityConnectionSubscription;
   bool _pastHistoryLoaded = false;
   bool _historyBootstrapSucceeded = false;
   bool _historyFallbackRequested = false;
   Timer? _statusRefreshTimer;
   Timer? _goalMutationTimer;
   Timer? _goalReadTimer;
+  Timer? _desktopContinuityReconcileTimer;
   bool _goalReadPending = false;
   bool _goalUserRefreshPending = false;
   final Map<String, Timer> _deliveryPendingTimers = {};
   final Map<String, QueuedInputItem> _deliveryPendingInputs = {};
+  final Set<String> _desktopContinuityItemKeys = {};
+  String? _desktopContinuityRequestId;
+  String? _desktopContinuityThreadId;
+  String? _desktopContinuityProjectPath;
+  bool _desktopContinuityWasExternalBeforeDisconnect = false;
 
   /// Number of entries prepended from past_history, so that [replaceEntries]
   /// can preserve them while replacing in-memory history entries.
@@ -208,6 +219,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _updateCodexRuntimeSupportFromSessions,
       );
       _updateCodexRuntimeSupportFromSessions(_bridge.sessions);
+      _desktopContinuitySubscription = _bridge
+          .localFeatureMessagesForSession(sessionId)
+          .listen(_onDesktopContinuityMessage);
+      _desktopContinuityConnectionSubscription = _bridge.connectionStatus
+          .listen(_onDesktopContinuityConnectionState);
     }
 
     _restoreCachedRuntimeMessages();
@@ -284,9 +300,259 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
   }
 
+  void _onDesktopContinuityConnectionState(
+    BridgeConnectionState connectionState,
+  ) {
+    if (!isCodex || isClosed) return;
+    if (connectionState == BridgeConnectionState.connected) {
+      _ensureDesktopContinuityWatch(force: true);
+      return;
+    }
+    _desktopContinuityReconcileTimer?.cancel();
+    _desktopContinuityReconcileTimer = null;
+    if (state.externalDesktopTurnActive) {
+      _desktopContinuityWasExternalBeforeDisconnect = true;
+      emit(
+        state.copyWith(
+          externalDesktopTurnActive: false,
+          externalDesktopTurnId: null,
+        ),
+      );
+    }
+  }
+
+  void _ensureDesktopContinuityWatch({
+    String? threadId,
+    String? projectPath,
+    bool force = false,
+  }) {
+    if (!isCodex ||
+        !_bridge.isConnected ||
+        isClosed ||
+        !_bridge.bridgeCapabilities.contains(
+          codexDesktopContinuityCapability,
+        )) {
+      return;
+    }
+    final nextThreadId = (threadId ?? state.claudeSessionId)?.trim();
+    final nextProjectPath = (projectPath ?? state.projectPath)?.trim();
+    if (nextThreadId == null ||
+        nextThreadId.isEmpty ||
+        nextProjectPath == null ||
+        nextProjectPath.isEmpty) {
+      return;
+    }
+    if (!force &&
+        _desktopContinuityThreadId == nextThreadId &&
+        _desktopContinuityProjectPath == nextProjectPath &&
+        _desktopContinuityRequestId != null) {
+      return;
+    }
+    _unwatchDesktopContinuity();
+    final requestId = _uuid.v4();
+    _desktopContinuityRequestId = requestId;
+    _desktopContinuityThreadId = nextThreadId;
+    _desktopContinuityProjectPath = nextProjectPath;
+    _desktopContinuityItemKeys.clear();
+    _bridge.send(
+      requestCodexDesktopContinuityWatch(
+        requestId: requestId,
+        sessionId: sessionId,
+        threadId: nextThreadId,
+        projectPath: nextProjectPath,
+      ),
+    );
+  }
+
+  void _unwatchDesktopContinuity() {
+    final requestId = _desktopContinuityRequestId;
+    final threadId = _desktopContinuityThreadId;
+    if (requestId != null &&
+        threadId != null &&
+        _bridge.isConnected &&
+        !isClosed) {
+      _bridge.send(
+        requestCodexDesktopContinuityUnwatch(
+          requestId: requestId,
+          sessionId: sessionId,
+          threadId: threadId,
+        ),
+      );
+    }
+    _desktopContinuityRequestId = null;
+    _desktopContinuityThreadId = null;
+    _desktopContinuityProjectPath = null;
+    _desktopContinuityItemKeys.clear();
+  }
+
+  void _onDesktopContinuityMessage(LocalFeatureServerMessage rawMessage) {
+    if (!isCodex || isClosed) return;
+    if (rawMessage is LocalFeatureRequestErrorMessage &&
+        rawMessage.featureId == 'codex_desktop_continuity') {
+      logger.info(
+        '[session:$sessionId] Desktop continuity unavailable: '
+        '${rawMessage.message}',
+      );
+      return;
+    }
+    if (rawMessage is! CodexDesktopContinuityEventMessage ||
+        rawMessage.sessionId != sessionId ||
+        rawMessage.requestId != _desktopContinuityRequestId ||
+        rawMessage.threadId != _desktopContinuityThreadId) {
+      return;
+    }
+    switch (rawMessage.event) {
+      case CodexDesktopContinuityEventKind.watching:
+        if (rawMessage.state == CodexDesktopContinuityState.running) {
+          _desktopContinuityWasExternalBeforeDisconnect = false;
+          _setExternalDesktopRunning(rawMessage.turnId);
+        } else if (rawMessage.state == CodexDesktopContinuityState.idle &&
+            _desktopContinuityWasExternalBeforeDisconnect) {
+          _desktopContinuityWasExternalBeforeDisconnect = false;
+          _finishExternalDesktopTurn(rawMessage);
+        }
+        return;
+      case CodexDesktopContinuityEventKind.state:
+        if (rawMessage.state == CodexDesktopContinuityState.running) {
+          _desktopContinuityWasExternalBeforeDisconnect = false;
+          _setExternalDesktopRunning(rawMessage.turnId);
+        } else if (rawMessage.state == CodexDesktopContinuityState.idle) {
+          _desktopContinuityWasExternalBeforeDisconnect = false;
+          _finishExternalDesktopTurn(rawMessage);
+        }
+        return;
+      case CodexDesktopContinuityEventKind.message:
+        final itemKey = rawMessage.itemKey;
+        final payload = rawMessage.payload;
+        if (itemKey == null ||
+            payload == null ||
+            !_desktopContinuityItemKeys.add(itemKey)) {
+          return;
+        }
+        while (_desktopContinuityItemKeys.length > 4096) {
+          _desktopContinuityItemKeys.remove(_desktopContinuityItemKeys.first);
+        }
+        _applyExternalDesktopPayload(payload);
+        return;
+      case CodexDesktopContinuityEventKind.error:
+        logger.warning(
+          '[session:$sessionId] Desktop continuity error '
+          '${rawMessage.errorCode}: ${rawMessage.error}',
+        );
+        if (rawMessage.errorCode == 'runtime_rehydrate_failed') {
+          emit(
+            state.copyWith(
+              status: ProcessStatus.idle,
+              externalDesktopTurnActive: false,
+              externalDesktopTurnId: null,
+            ),
+          );
+          _bridge.requestSessionHistory(sessionId);
+          _applyExternalDesktopPayload(
+            ErrorMessage(
+              message:
+                  rawMessage.error ??
+                  'Desktop history synchronized, but the mobile runtime could not be refreshed.',
+              errorCode: rawMessage.errorCode,
+            ),
+          );
+        }
+        return;
+      case CodexDesktopContinuityEventKind.unwatched:
+      case CodexDesktopContinuityEventKind.unknown:
+        return;
+    }
+  }
+
+  void _setExternalDesktopRunning(String? turnId) {
+    _desktopContinuityReconcileTimer?.cancel();
+    _desktopContinuityReconcileTimer = null;
+    if (state.externalDesktopTurnActive &&
+        state.externalDesktopTurnId == turnId &&
+        state.status == ProcessStatus.running) {
+      return;
+    }
+    emit(
+      state.copyWith(
+        status: ProcessStatus.running,
+        externalDesktopTurnActive: true,
+        externalDesktopTurnId: turnId,
+      ),
+    );
+  }
+
+  void _finishExternalDesktopTurn(CodexDesktopContinuityEventMessage message) {
+    emit(
+      state.copyWith(
+        status: message.handoffQueued
+            ? ProcessStatus.running
+            : ProcessStatus.idle,
+        externalDesktopTurnActive: false,
+        externalDesktopTurnId: null,
+        approval: const ApprovalState.none(),
+      ),
+    );
+    _desktopContinuityReconcileTimer?.cancel();
+    _desktopContinuityReconcileTimer = Timer(
+      const Duration(milliseconds: 900),
+      () {
+        if (isClosed || state.externalDesktopTurnActive) return;
+        _bridge.requestSessionHistory(sessionId);
+      },
+    );
+  }
+
+  void _applyExternalDesktopPayload(ServerMessage message) {
+    try {
+      final update = _handler.handle(
+        message,
+        isBackground: true,
+        isCodex: true,
+        ignoredToolUseIds: _respondedToolUseIds,
+      );
+      _applyUpdate(update, message, allowUserDelivery: false);
+    } catch (error, stackTrace) {
+      logger.error(
+        '[session:$sessionId] Failed to apply Desktop continuity payload',
+        error,
+        stackTrace,
+      );
+    }
+  }
+
   void _updateCodexRuntimeSupportFromSessions(List<SessionInfo> sessions) {
     _updateNativePlanModeSupportFromSessions(sessions);
     _updateGoalSupportFromSessions(sessions);
+    // BridgeService publishes the session-list stream immediately before its
+    // capability snapshot is visible to listeners. Retry in the next
+    // microtask so a reconnect can arm continuity without sending an unknown
+    // request to an older Bridge.
+    scheduleMicrotask(() {
+      if (isClosed || !_bridge.isConnected) return;
+      if (_bridge.bridgeCapabilities.contains(
+        codexDesktopContinuityCapability,
+      )) {
+        _ensureDesktopContinuityWatch();
+        return;
+      }
+      if (!_desktopContinuityWasExternalBeforeDisconnect) return;
+      var authoritativeStatus = ProcessStatus.idle;
+      for (final session in sessions) {
+        if (session.id == sessionId) {
+          authoritativeStatus = ProcessStatus.fromString(session.status);
+          break;
+        }
+      }
+      _desktopContinuityWasExternalBeforeDisconnect = false;
+      emit(
+        state.copyWith(
+          status: authoritativeStatus,
+          externalDesktopTurnActive: false,
+          externalDesktopTurnId: null,
+        ),
+      );
+      _bridge.requestSessionHistory(sessionId);
+    });
   }
 
   void _updateNativePlanModeSupportFromSessions(List<SessionInfo> sessions) {
@@ -397,6 +663,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _onMessage(ServerMessage msg) {
+    if (state.externalDesktopTurnActive &&
+        msg is StatusMessage &&
+        (msg.status == ProcessStatus.idle ||
+            msg.status == ProcessStatus.starting)) {
+      // The Bridge-owned app-server is idle while Codex Desktop independently
+      // owns the durable thread. Its local status must not erase the external
+      // running state that the rollout monitor has already established.
+      return;
+    }
     if (msg is SystemMessage &&
         msg.subtype == 'set_permission_mode' &&
         _captureSupersededPermissionAcknowledgement(msg)) {
@@ -690,8 +965,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     emit(state.copyWith(goalMutationError: null, goalMutationErrorKind: null));
   }
 
-  void _applyUpdate(ChatStateUpdate update, ServerMessage originalMsg) {
+  void _applyUpdate(
+    ChatStateUpdate update,
+    ServerMessage originalMsg, {
+    bool allowUserDelivery = true,
+  }) {
     final current = state;
+    final markUserMessagesSent =
+        update.markUserMessagesSent && allowUserDelivery;
 
     // --- Streaming state (separate cubit) ---
     if (update.resetStreaming) {
@@ -732,7 +1013,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // - queued ack: first sending -> queued
     // - sent ack / assistant/result: first queued -> sent
     //   (fallback to first sending -> sent for non-queued path)
-    if (update.markUserMessagesSent) {
+    if (markUserMessagesSent) {
       final targetStatus = update.markUserMessagesQueued
           ? MessageStatus.queued
           : MessageStatus.sent;
@@ -988,7 +1269,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         sessionId,
         itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
       );
-    } else if (update.markUserMessagesSent) {
+    } else if (markUserMessagesSent) {
       for (final timer in _deliveryPendingTimers.values) {
         timer.cancel();
       }
@@ -1040,7 +1321,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
     }
     if (originalMsg is! InputAckMessage &&
-        update.markUserMessagesSent &&
+        markUserMessagesSent &&
         isDeliveryPendingQueuedInput(nextQueuedInput)) {
       deliveredPendingInput = nextQueuedInput;
       deliveredPendingClientMessageId = deliveryPendingClientMessageId(
@@ -1051,7 +1332,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _deliveryPendingInputs.remove(deliveredPendingClientMessageId);
       }
     } else if (originalMsg is! InputAckMessage &&
-        update.markUserMessagesSent &&
+        markUserMessagesSent &&
         _deliveryPendingInputs.isNotEmpty) {
       final entry = _deliveryPendingInputs.entries.first;
       _deliveryPendingInputs.remove(entry.key);
@@ -1077,7 +1358,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     emit(
       current.copyWith(
-        status: update.status ?? current.status,
+        status: current.externalDesktopTurnActive
+            ? ProcessStatus.running
+            : (update.status ?? current.status),
         entries: nextEntries,
         approval: approval,
         totalCost: usage.totalCost,
@@ -1104,6 +1387,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         hiddenToolUseIds: hiddenToolUseIds,
       ),
     );
+
+    if (isCodex &&
+        (newClaudeSessionId != _desktopContinuityThreadId ||
+            newProjectPath != _desktopContinuityProjectPath)) {
+      _ensureDesktopContinuityWatch(
+        threadId: newClaudeSessionId,
+        projectPath: newProjectPath,
+      );
+    }
 
     // Persist initial Claude settings when claudeSessionId is first known.
     if (update.claudeSessionId != null &&
@@ -2334,8 +2626,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         isDeliveryPendingQueuedInput(item)) {
       return;
     }
+    if (state.externalDesktopTurnActive &&
+        state.externalDesktopTurnId == null) {
+      // Multiple/unclassified Desktop turns have no safe turn/steer target.
+      // Keep the item queued until one authoritative turn remains.
+      return;
+    }
     _bridge.send(
-      ClientMessage.steerQueuedInput(sessionId: sessionId, itemId: item.itemId),
+      ClientMessage.steerQueuedInput(
+        sessionId: sessionId,
+        itemId: item.itemId,
+        expectedTurnId: state.externalDesktopTurnId,
+      ),
     );
   }
 
@@ -3308,11 +3610,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   @override
   Future<void> close() {
+    _unwatchDesktopContinuity();
     _statusRefreshTimer?.cancel();
     _goalMutationTimer?.cancel();
     _goalReadTimer?.cancel();
+    _desktopContinuityReconcileTimer?.cancel();
     _goalConnectionSubscription?.cancel();
     _goalSessionListSubscription?.cancel();
+    _desktopContinuitySubscription?.cancel();
+    _desktopContinuityConnectionSubscription?.cancel();
     for (final timer in _deliveryPendingTimers.values) {
       timer.cancel();
     }

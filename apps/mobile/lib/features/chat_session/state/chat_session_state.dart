@@ -73,6 +73,12 @@ abstract class ChatSessionState with _$ChatSessionState {
     @Default(false) bool inPlanMode,
     @Default(false) bool collapseToolResults,
 
+    // True only while the same Codex thread is owned by Codex Desktop's
+    // independent app-server. The effective status remains `running`, while
+    // normal mobile queue/edit/cancel behavior stays available.
+    @Default(false) bool externalDesktopTurnActive,
+    String? externalDesktopTurnId,
+
     // Legacy permission mode kept for compatibility with older bridge/app flows.
     @Default(PermissionMode.defaultMode) PermissionMode permissionMode,
 

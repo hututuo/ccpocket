@@ -14,6 +14,7 @@ part 'local_features/slots/side_chat_models_slot.dart';
 part 'local_features/slots/side_chat_protocol_slot.dart';
 part 'local_features/slots/conversation_mirror_protocol_slot.dart';
 part 'local_features/slots/codex_core_actions_protocol_slot.dart';
+part 'local_features/slots/codex_desktop_continuity_protocol_slot.dart';
 part 'local_features/slots/file_transfer_protocol_slot.dart';
 
 bool isCodexAutoReviewApprovalsReviewer(String? value) {
@@ -4330,12 +4331,14 @@ class ClientMessage {
   factory ClientMessage.steerQueuedInput({
     required String sessionId,
     required String itemId,
+    String? expectedTurnId,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'steer_queued_input',
       'sessionId': sessionId,
       'itemId': itemId,
-    });
+      'expectedTurnId': ?expectedTurnId,
+    }, delivery: ClientMessageDelivery.ephemeral);
   }
 
   factory ClientMessage.cancelQueuedInput({

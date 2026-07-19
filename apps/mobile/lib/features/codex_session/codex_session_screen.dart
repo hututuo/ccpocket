@@ -1633,7 +1633,9 @@ class _CodexChatBody extends HookWidget {
                           ChatSessionCubit.isOfflineQueuedInput(queuedInput) ||
                               ChatSessionCubit.isDeliveryPendingQueuedInput(
                                 queuedInput,
-                              )
+                              ) ||
+                              (sessionState.externalDesktopTurnActive &&
+                                  sessionState.externalDesktopTurnId == null)
                           ? null
                           : () => context
                                 .read<ChatSessionCubit>()
