@@ -949,6 +949,139 @@ describe("CodexProcess (app-server)", () => {
     });
   });
 
+  it("binds an id-less delta to the only started agent message", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-started-agent" },
+    });
+    (proc as any).handleNotification("item/started", {
+      turnId: "turn-started-agent",
+      item: { id: "agent-started", type: "agentMessage" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      turnId: "turn-started-agent",
+      delta: "Bound response",
+    });
+    (proc as any).handleNotification("item/completed", {
+      turnId: "turn-started-agent",
+      item: { id: "agent-started", type: "agentMessage" },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: { id: "turn-started-agent", status: "completed" },
+    });
+
+    expect(messages.filter((message) => message.type === "assistant")).toEqual([
+      expect.objectContaining({
+        message: expect.objectContaining({
+          id: "agent-started",
+          content: [{ type: "text", text: "Bound response" }],
+        }),
+      }),
+    ]);
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Bound response" },
+    );
+  });
+
+  it("suppresses a turn-scoped late completion without polluting the next result", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-first" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      turnId: "turn-first",
+      itemId: "agent-first",
+      delta: "First result",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: { id: "turn-first", status: "completed" },
+    });
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-second" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      turnId: "turn-second",
+      itemId: "agent-second",
+      delta: "Second result",
+    });
+    (proc as any).handleNotification("item/completed", {
+      turnId: "turn-first",
+      item: {
+        id: "agent-first",
+        type: "agentMessage",
+        text: "First result",
+      },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: { id: "turn-second", status: "completed" },
+    });
+
+    const assistantTexts = messages
+      .filter((message) => message.type === "assistant")
+      .map(
+        (message) =>
+          ((message.message as any).content[0] as Record<string, unknown>).text,
+      );
+    expect(assistantTexts).toEqual(["First result", "Second result"]);
+    expect(
+      messages
+        .filter((message) => message.type === "result")
+        .map((message) => message.result),
+    ).toEqual(["First result", "Second result"]);
+  });
+
+  it("resets agent turn tombstones when preparing a new launch", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-old-runtime" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      turnId: "turn-old-runtime",
+      itemId: "agent-reused",
+      delta: "Old runtime response",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: { id: "turn-old-runtime", status: "completed" },
+    });
+
+    (proc as any).prepareLaunch("/tmp/new-runtime");
+    messages.length = 0;
+    (proc as any).handleNotification("item/completed", {
+      turnId: "turn-old-runtime",
+      item: {
+        id: "agent-reused",
+        type: "agentMessage",
+        text: "New runtime response",
+      },
+    });
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "assistant",
+        message: expect.objectContaining({
+          id: "agent-reused",
+          content: [{ type: "text", text: "New runtime response" }],
+        }),
+      }),
+    );
+  });
+
   it("finalizes multiple streamed agent items independently", () => {
     const proc = new CodexProcess("linux");
     const messages: Array<Record<string, unknown>> = [];
