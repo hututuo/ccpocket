@@ -18,9 +18,12 @@ abstract final class CodexEffortMotionMetrics {
   static const double interactionHeight = 48;
   static const double trackHeight = 24;
   static const double trackRadius = 12;
+  static const double trackOuterInset = 3;
   static const double thumbDiameter = 28;
   static const double activeThumbDiameter = 32;
   static const double tickDiameter = 4;
+  static const double maxVisualThumbRadius =
+      activeThumbDiameter / 2 * 1.16 * 1.15;
 }
 
 bool codexMotionDisabled(BuildContext context) {
@@ -34,6 +37,33 @@ double _clampUnit(double value) => value.clamp(0.0, 1.0).toDouble();
 double _normalizedIndex(int index, int count) {
   if (count < 2) return 0;
   return index.clamp(0, count - 1) / (count - 1);
+}
+
+double _safeThumbRadius(double width) => math.min(
+  CodexEffortMotionMetrics.maxVisualThumbRadius,
+  math.max(0, width) / 2,
+);
+
+double _positionX(double position, double width, TextDirection direction) {
+  final inset = _safeThumbRadius(width);
+  final usable = math.max(0.0, width - inset * 2);
+  final visual = direction == TextDirection.rtl
+      ? 1 - _clampUnit(position)
+      : _clampUnit(position);
+  return inset + usable * visual;
+}
+
+Rect _trackRectForSize(Size size) {
+  final inset = math.min(
+    CodexEffortMotionMetrics.trackOuterInset,
+    math.max(0, size.width) / 2,
+  );
+  return Rect.fromLTWH(
+    inset,
+    size.height / 2 - CodexEffortMotionMetrics.trackHeight / 2,
+    math.max(0, size.width - inset * 2),
+    CodexEffortMotionMetrics.trackHeight,
+  );
 }
 
 bool _selectsSemanticIndex(CodexEffortMotionSlider widget, int? semanticIndex) {
@@ -238,7 +268,9 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     }
     var positionPhase = _clampUnit(phase);
     if (_motion == _EffortMotion.maxReveal ||
-        _motion == _EffortMotion.ultraReveal) {
+        _motion == _EffortMotion.ultraReveal ||
+        _motion == _EffortMotion.fastEnter ||
+        _motion == _EffortMotion.fastExit) {
       // The position settles in 300 ms while the gradient reveal continues.
       positionPhase = _clampUnit(positionPhase / _maxPositionInterval);
     }
@@ -330,15 +362,17 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
 
   void _animateFastTo(bool enabled) {
     final currentPosition = _positionAt(_controller.value);
+    final targetPosition = _toPosition;
     final currentThumb = _thumbAt(_controller.value);
     final currentFast = _fastAt(_controller.value);
     _controller.stop();
     _fromPosition = currentPosition;
-    _toPosition = currentPosition;
+    _toPosition = targetPosition;
     _fromThumb = currentThumb;
     _toThumb = _pressed || _hovered ? 1 : 0;
     _fromFast = currentFast;
     _toFast = enabled ? 1 : 0;
+    _maxPositionInterval = enabled ? 300 / 1150 : 300 / 350;
     _motion = enabled ? _EffortMotion.fastEnter : _EffortMotion.fastExit;
     if (_reduceMotion) {
       _controller.value = 1;
@@ -357,6 +391,15 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
 
   void _animateThumbTo(double target, Duration duration) {
     if (_motion == _EffortMotion.drag) return;
+    if (_controller.isAnimating &&
+        _motion != _EffortMotion.idle &&
+        _motion != _EffortMotion.thumb) {
+      // Hover/press feedback must not stop an in-flight tier glide. The shared
+      // controller can finish the position first and settle the thumb at this
+      // latest target without freezing halfway between two efforts.
+      setState(() => _toThumb = target);
+      return;
+    }
     final currentPosition = _positionAt(_controller.value);
     final currentThumb = _thumbAt(_controller.value);
     final currentFast = _fastAt(_controller.value);
@@ -403,7 +446,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   }
 
   double _positionFromLocal(double dx, double width, TextDirection direction) {
-    final inset = CodexEffortMotionMetrics.activeThumbDiameter / 2;
+    final inset = _safeThumbRadius(width);
     final usable = math.max(1.0, width - inset * 2);
     var result = _clampUnit((dx - inset) / usable);
     if (direction == TextDirection.rtl) result = 1 - result;
@@ -741,6 +784,17 @@ class _CodexEffortTrackPainter extends CustomPainter {
       !ultraSelected &&
       _fast(reduceMotion ? 1 : animation.value) <= 0.0001;
 
+  @visibleForTesting
+  double get debugLogicalPosition =>
+      _position(reduceMotion ? 1 : animation.value);
+
+  @visibleForTesting
+  double debugThumbCenterX(double width) =>
+      _positionX(debugLogicalPosition, width, direction);
+
+  @visibleForTesting
+  Rect debugTrackBounds(Size size) => _trackRectForSize(size);
+
   double _position(double phase) {
     if (motion == _EffortMotion.drag) return _clampUnit(phase);
     if (motion == _EffortMotion.idle || motion == _EffortMotion.thumb) {
@@ -748,7 +802,9 @@ class _CodexEffortTrackPainter extends CustomPainter {
     }
     var value = _clampUnit(phase);
     if (motion == _EffortMotion.maxReveal ||
-        motion == _EffortMotion.ultraReveal) {
+        motion == _EffortMotion.ultraReveal ||
+        motion == _EffortMotion.fastEnter ||
+        motion == _EffortMotion.fastExit) {
       value = _clampUnit(value / maxPositionInterval);
     }
     return lerpDouble(
@@ -792,19 +848,11 @@ class _CodexEffortTrackPainter extends CustomPainter {
     final phase = reduceMotion ? 1.0 : animation.value;
     final logicalPosition = _position(phase);
     final fastProgress = _fast(phase);
-    final visualPosition = direction == TextDirection.rtl
-        ? 1 - logicalPosition
-        : logicalPosition;
-    const inset = CodexEffortMotionMetrics.activeThumbDiameter / 2;
-    final usable = math.max(1.0, size.width - inset * 2);
-    final thumbX = inset + usable * visualPosition;
+    final thumbX = _positionX(logicalPosition, size.width, direction);
+    final positionInset = _safeThumbRadius(size.width);
+    final positionTravel = math.max(0.0, size.width - positionInset * 2);
     final centerY = size.height / 2;
-    final trackRect = Rect.fromLTWH(
-      inset,
-      centerY - CodexEffortMotionMetrics.trackHeight / 2,
-      usable,
-      CodexEffortMotionMetrics.trackHeight,
-    );
+    final trackRect = _trackRectForSize(size);
     final trackRRect = RRect.fromRectAndRadius(
       trackRect,
       const Radius.circular(CodexEffortMotionMetrics.trackRadius),
@@ -891,7 +939,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
     final tickPaint = Paint();
     for (var i = 0; i <= divisions; i++) {
       final raw = divisions == 0 ? 0.0 : i / divisions;
-      final x = inset + usable * raw;
+      final x = positionInset + positionTravel * raw;
       final tickLogical = direction == TextDirection.rtl ? 1 - raw : raw;
       final active = tickLogical <= logicalPosition + 0.0001;
       final baseTickColor = active
@@ -943,6 +991,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
       thumbRadius *= _fastSelectionScale.transform(enter);
       thumbY -= 2 * (1 - codexDesktopMotionCurve.transform(enter));
     }
+    thumbRadius = math.min(thumbRadius, _safeThumbRadius(size.width));
     final thumbCenter = Offset(thumbX, thumbY);
     final thumbPaint = Paint();
     if (useSolidActivePaint) {

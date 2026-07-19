@@ -57,7 +57,10 @@ void main() {
       final width = tester
           .getSize(find.byKey(const ValueKey('motion_slider')))
           .width;
-      double xFor(double position) => 16 + (width - 32) * position;
+      double xFor(double position) {
+        final inset = CodexEffortMotionMetrics.maxVisualThumbRadius;
+        return inset + (width - inset * 2) * position;
+      }
 
       // Drag recognizers may deliver start followed immediately by end. The
       // start position itself must therefore update the real effort state.
@@ -125,6 +128,76 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1510));
     await tester.pump();
     expect(tester.hasRunningAnimations, isFalse);
+  });
+
+  testWidgets('effort increase visibly glides the thumb and active range', (
+    tester,
+  ) async {
+    final key = GlobalKey<_EffortHarnessState>();
+    await tester.pumpWidget(_EffortHarness(key: key));
+    final finder = find.byKey(const ValueKey('motion_slider'));
+    final bounds = tester.getRect(finder);
+    final targetX =
+        bounds.left +
+        CodexEffortMotionMetrics.maxVisualThumbRadius +
+        (bounds.width - CodexEffortMotionMetrics.maxVisualThumbRadius * 2) *
+            0.6;
+
+    dynamic painter() => tester
+        .widget<CustomPaint>(find.byKey(const ValueKey('motion_slider_paint')))
+        .painter;
+
+    expect(painter().debugLogicalPosition, closeTo(0.4, 0.001));
+    await tester.tapAt(Offset(targetX, bounds.center.dy));
+    await tester.pump();
+    expect(painter().debugLogicalPosition, closeTo(0.4, 0.001));
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(painter().debugLogicalPosition, greaterThan(0.4));
+    expect(painter().debugLogicalPosition, lessThan(0.6));
+    await tester.pump(const Duration(milliseconds: 190));
+    expect(painter().debugLogicalPosition, closeTo(0.6, 0.001));
+  });
+
+  testWidgets('endpoint dots and overshooting thumb stay inside the control', (
+    tester,
+  ) async {
+    final key = GlobalKey<_EffortHarnessState>();
+    await tester.pumpWidget(_EffortHarness(key: key));
+    final paintFinder = find.byKey(const ValueKey('motion_slider_paint'));
+    final size = tester.getSize(paintFinder);
+    final dynamic painter = tester.widget<CustomPaint>(paintFinder).painter;
+    final Rect track = painter.debugTrackBounds(size) as Rect;
+    final firstX = CodexEffortMotionMetrics.maxVisualThumbRadius;
+    final lastX = size.width - CodexEffortMotionMetrics.maxVisualThumbRadius;
+    final tickRadius = CodexEffortMotionMetrics.tickDiameter / 2;
+
+    expect(firstX - tickRadius, greaterThanOrEqualTo(track.left));
+    expect(lastX + tickRadius, lessThanOrEqualTo(track.right));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: SizedBox(
+            width: 24,
+            child: CodexEffortMotionSlider(
+              labels: const ['light', 'ultra'],
+              selectedIndex: 1,
+              sliderKey: 'narrow_slider',
+              onSelected: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+    final narrowPaint = find.byKey(const ValueKey('narrow_slider_paint'));
+    final narrowSize = tester.getSize(narrowPaint);
+    final dynamic narrowPainter = tester
+        .widget<CustomPaint>(narrowPaint)
+        .painter;
+    expect(
+      narrowPainter.debugThumbCenterX(narrowSize.width),
+      inInclusiveRange(0.0, narrowSize.width),
+    );
   });
 
   testWidgets('exposes slider semantics and keyboard steps', (tester) async {
