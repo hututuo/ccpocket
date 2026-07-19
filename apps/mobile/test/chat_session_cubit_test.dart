@@ -710,6 +710,87 @@ void main() {
     );
 
     test(
+      'Codex Desktop continuity reconciles a queued handoff after downgrade to an older Bridge',
+      () async {
+        final cubit = createCubit(
+          's1',
+          provider: Provider.codex,
+          initialProjectPath: '/project',
+        );
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-1',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        final watch = mockBridge.sentMessages.lastWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final requestId =
+            (jsonDecode(watch.toJson()) as Map<String, dynamic>)['requestId']
+                as String;
+
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+            turnId: 'desktop-turn',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.idle,
+            turnId: 'desktop-turn',
+            outcome: 'completed',
+            handoffQueued: true,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.state.status, ProcessStatus.running);
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        mockBridge.advertisedBridgeCapabilities = const {};
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitSessions([
+          const SessionInfo(
+            id: 's1',
+            projectPath: '/project',
+            status: 'idle',
+            provider: 'codex',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.state.status, ProcessStatus.idle);
+        expect(mockBridge.lastRequestedSessionId, 's1');
+      },
+    );
+
+    test(
       'Desktop reasoning is incremental and stale continuity bindings are ignored',
       () async {
         final cubit = createCubit(

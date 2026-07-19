@@ -310,8 +310,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     _desktopContinuityReconcileTimer?.cancel();
     _desktopContinuityReconcileTimer = null;
-    if (state.externalDesktopTurnActive) {
+    // A continuity terminal can hand a queued phone turn to the Bridge and
+    // deliberately leave the visible status at running after the external
+    // flag has cleared. Keep the binding itself as the downgrade/reconnect
+    // fence so an older Bridge can replace that synthetic status with its
+    // authoritative session-list value.
+    if (_desktopContinuityRequestId != null) {
       _desktopContinuityWasExternalBeforeDisconnect = true;
+    }
+    if (state.externalDesktopTurnActive) {
       emit(
         state.copyWith(
           externalDesktopTurnActive: false,
@@ -535,7 +542,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _ensureDesktopContinuityWatch();
         return;
       }
-      if (!_desktopContinuityWasExternalBeforeDisconnect) return;
+      final hadContinuityBinding = _desktopContinuityRequestId != null;
+      if (!hadContinuityBinding &&
+          !_desktopContinuityWasExternalBeforeDisconnect) {
+        return;
+      }
       var authoritativeStatus = ProcessStatus.idle;
       for (final session in sessions) {
         if (session.id == sessionId) {
@@ -544,6 +555,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         }
       }
       _desktopContinuityWasExternalBeforeDisconnect = false;
+      // Do not send an unwatch request to a Bridge that did not advertise the
+      // feature. Retire the stale local binding so later capability snapshots
+      // cannot accept messages from the previous Bridge instance.
+      _desktopContinuityRequestId = null;
+      _desktopContinuityThreadId = null;
+      _desktopContinuityProjectPath = null;
+      _desktopContinuityItemKeys.clear();
       emit(
         state.copyWith(
           status: authoritativeStatus,
