@@ -3072,6 +3072,8 @@ class BridgeService implements BridgeServiceBase {
             : current.codexModel,
         codexModelReasoningEffort:
             message.modelReasoningEffort ?? current.codexModelReasoningEffort,
+        codexServiceTier:
+            message.serviceTier ?? current.codexServiceTier,
         codexNetworkAccessEnabled:
             message.networkAccessEnabled ?? current.codexNetworkAccessEnabled,
         codexWebSearchMode: message.webSearchMode ?? current.codexWebSearchMode,

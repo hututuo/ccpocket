@@ -96,6 +96,7 @@ class CodexSettingsPanel extends StatelessWidget {
   final bool supportsFast;
   final ValueChanged<CodexSpeed> onSpeedChanged;
   final String speedButtonKey;
+  final String? speedTooltip;
   final bool showAdvanced;
   final String advancedLabel;
   final String toggleButtonKey;
@@ -115,6 +116,7 @@ class CodexSettingsPanel extends StatelessWidget {
     required this.supportsFast,
     required this.onSpeedChanged,
     required this.speedButtonKey,
+    this.speedTooltip,
     required this.showAdvanced,
     required this.advancedLabel,
     required this.toggleButtonKey,
@@ -151,6 +153,7 @@ class CodexSettingsPanel extends StatelessWidget {
             supportsFast: supportsFast,
             onSpeedChanged: onSpeedChanged,
             speedButtonKey: speedButtonKey,
+            speedTooltip: speedTooltip,
             showAdvanced: showAdvanced,
             advancedLabel: advancedLabel,
             toggleButtonKey: toggleButtonKey,
@@ -196,6 +199,7 @@ class _CodexSettingsHeader extends StatelessWidget {
   final bool supportsFast;
   final ValueChanged<CodexSpeed> onSpeedChanged;
   final String speedButtonKey;
+  final String? speedTooltip;
   final bool showAdvanced;
   final String advancedLabel;
   final String toggleButtonKey;
@@ -210,6 +214,7 @@ class _CodexSettingsHeader extends StatelessWidget {
     required this.supportsFast,
     required this.onSpeedChanged,
     required this.speedButtonKey,
+    this.speedTooltip,
     required this.showAdvanced,
     required this.advancedLabel,
     required this.toggleButtonKey,
@@ -248,6 +253,7 @@ class _CodexSettingsHeader extends StatelessWidget {
             enabled: supportsFast,
             onChanged: onSpeedChanged,
             buttonKey: speedButtonKey,
+            tooltip: speedTooltip,
           ),
           const SizedBox(width: 4),
           Expanded(
@@ -379,6 +385,7 @@ class CodexSpeedButton extends StatelessWidget {
   final ValueChanged<CodexSpeed> onChanged;
   final String buttonKey;
   final bool enabled;
+  final String? tooltip;
 
   const CodexSpeedButton({
     super.key,
@@ -386,24 +393,36 @@ class CodexSpeedButton extends StatelessWidget {
     required this.onChanged,
     required this.buttonKey,
     this.enabled = true,
+    this.tooltip,
   });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final isFast = speed == CodexSpeed.fast;
+    final isUnknown = speed == CodexSpeed.unknown;
     return Tooltip(
-      message: isFast ? 'Fast mode on' : 'Fast mode off',
+      message:
+          tooltip ??
+          (isUnknown
+              ? 'Custom service tier (read-only)'
+              : isFast
+              ? 'Fast mode on'
+              : 'Fast mode off'),
       child: IconButton(
         key: ValueKey(buttonKey),
-        onPressed: enabled
+        onPressed: enabled && !isUnknown
             ? () {
                 HapticFeedback.lightImpact();
                 onChanged(isFast ? CodexSpeed.standard : CodexSpeed.fast);
               }
             : null,
         icon: Icon(
-          isFast ? Icons.bolt : Icons.bolt_outlined,
+          isUnknown
+              ? Icons.tune
+              : isFast
+              ? Icons.bolt
+              : Icons.bolt_outlined,
           color: isFast ? cs.primary : cs.onSurfaceVariant,
         ),
         style: IconButton.styleFrom(

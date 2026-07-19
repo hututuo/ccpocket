@@ -561,7 +561,12 @@ ReasoningEffort? reasoningEffortByValue(String? raw) {
 
 enum CodexSpeed {
   standard('standard', 'Standard'),
-  fast('fast', 'Fast');
+  fast('fast', 'Fast'),
+
+  /// A service tier advertised by a newer Codex runtime that this client does
+  /// not know how to mutate yet. The exact wire value stays on the session
+  /// snapshot and is rendered read-only instead of being mislabeled Standard.
+  unknown('unknown', 'Custom');
 
   final String value;
   final String label;
@@ -570,8 +575,28 @@ enum CodexSpeed {
 
 CodexSpeed codexSpeedFromRaw(String? raw) => switch (raw?.trim()) {
   'fast' || 'priority' => CodexSpeed.fast,
-  _ => CodexSpeed.standard,
+  null || '' || 'standard' || 'default' => CodexSpeed.standard,
+  _ => CodexSpeed.unknown,
 };
+
+/// Parses persisted input for controls that can only select Standard or Fast.
+/// Unknown runtime tiers stay untouched unless the user explicitly chooses a
+/// supported value in an active-session control.
+CodexSpeed codexSelectableSpeedFromRaw(String? raw) {
+  final parsed = codexSpeedFromRaw(raw);
+  return parsed == CodexSpeed.unknown ? CodexSpeed.standard : parsed;
+}
+
+/// Parses the service tier of an already-running Codex session.
+///
+/// A null result means the runtime did not advertise the setting. Unknown
+/// non-empty values are preserved as [CodexSpeed.unknown]; callers keep the
+/// original wire value alongside the enum and present it read-only.
+CodexSpeed? codexRuntimeSpeedFromRaw(String? raw) {
+  final normalized = raw?.trim();
+  if (normalized == null || normalized.isEmpty) return null;
+  return codexSpeedFromRaw(normalized);
+}
 
 enum WebSearchMode {
   disabled('disabled', 'Disabled'),

@@ -622,6 +622,65 @@ void main() {
       expect(update.codexSpeed, CodexSpeed.fast);
     });
 
+    test('derives the complete Codex permission preset from init metadata', () {
+      final update = handler.handle(
+        const SystemMessage(
+          subtype: 'init',
+          provider: 'codex',
+          permissionMode: 'acceptEdits',
+          executionMode: 'fullAccess',
+          approvalPolicy: 'never',
+          approvalsReviewer: 'user',
+          sandboxMode: 'danger-full-access',
+        ),
+        isBackground: false,
+        isCodex: true,
+      );
+
+      expect(update.codexApprovalPolicy, CodexApprovalPolicy.never);
+      expect(update.codexPermissionsMode, CodexPermissionsMode.fullAccess);
+      expect(update.sandboxMode, SandboxMode.off);
+    });
+
+    test('restores the latest Codex permissions from history metadata', () {
+      final update = handler.handle(
+        const HistoryMessage(
+          messages: [
+            SystemMessage(
+              subtype: 'init',
+              provider: 'codex',
+              permissionMode: 'acceptEdits',
+              executionMode: 'default',
+              approvalPolicy: 'on-request',
+              approvalsReviewer: 'user',
+              sandboxMode: 'workspace-write',
+              planMode: false,
+            ),
+            SystemMessage(
+              subtype: 'codex_settings',
+              provider: 'codex',
+              permissionMode: 'bypassPermissions',
+              executionMode: 'fullAccess',
+              approvalPolicy: 'never',
+              approvalsReviewer: 'user',
+              codexPermissionsMode: 'fullAccess',
+              sandboxMode: 'danger-full-access',
+              planMode: false,
+            ),
+          ],
+        ),
+        isBackground: false,
+        isCodex: true,
+      );
+
+      expect(update.permissionMode, PermissionMode.bypassPermissions);
+      expect(update.executionMode, ExecutionMode.fullAccess);
+      expect(update.codexApprovalPolicy, CodexApprovalPolicy.never);
+      expect(update.codexPermissionsMode, CodexPermissionsMode.fullAccess);
+      expect(update.sandboxMode, SandboxMode.off);
+      expect(update.planMode, isFalse);
+    });
+
     test('restores pending permission when status is waitingApproval', () {
       final update = handler.handle(
         const HistoryMessage(

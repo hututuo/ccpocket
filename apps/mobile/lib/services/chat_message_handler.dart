@@ -34,6 +34,7 @@ class ChatStateUpdate {
   final CodexApprovalPolicy? codexApprovalPolicy;
   final String? codexApprovalsReviewer;
   final CodexPermissionsMode? codexPermissionsMode;
+  final SandboxMode? sandboxMode;
   final String? codexModel;
   final ReasoningEffort? codexModelReasoningEffort;
   final CodexSpeed? codexSpeed;
@@ -93,6 +94,7 @@ class ChatStateUpdate {
     this.codexApprovalPolicy,
     this.codexApprovalsReviewer,
     this.codexPermissionsMode,
+    this.sandboxMode,
     this.codexModel,
     this.codexModelReasoningEffort,
     this.codexSpeed,
@@ -594,6 +596,14 @@ class ChatMessageHandler {
     String? codexModel;
     ReasoningEffort? codexModelReasoningEffort;
     CodexSpeed? codexSpeed;
+    PermissionMode? permissionMode;
+    ExecutionMode? executionMode;
+    CodexApprovalPolicy? codexApprovalPolicy;
+    String? codexApprovalsReviewer;
+    CodexPermissionsMode? codexPermissionsMode;
+    SandboxMode? sandboxMode;
+    bool? planMode;
+    bool? inPlanMode;
     QueuedInputItem? queuedInput;
     var clearQueuedInput = false;
 
@@ -682,6 +692,29 @@ class ChatMessageHandler {
           projectPath = m.projectPath;
         }
         if (m is SystemMessage) {
+          final runtimeUpdate = _handleSystem(
+            m,
+            m.subtype,
+            m.slashCommands,
+            m.skills,
+            m.skillMetadata,
+            m.apps,
+            m.appMetadata,
+            plugins: m.plugins,
+            pluginMetadata: m.pluginMetadata,
+            isCodex: isCodexSession || m.provider == Provider.codex.value,
+          );
+          permissionMode = runtimeUpdate.permissionMode ?? permissionMode;
+          executionMode = runtimeUpdate.executionMode ?? executionMode;
+          codexApprovalPolicy =
+              runtimeUpdate.codexApprovalPolicy ?? codexApprovalPolicy;
+          codexApprovalsReviewer =
+              runtimeUpdate.codexApprovalsReviewer ?? codexApprovalsReviewer;
+          codexPermissionsMode =
+              runtimeUpdate.codexPermissionsMode ?? codexPermissionsMode;
+          sandboxMode = runtimeUpdate.sandboxMode ?? sandboxMode;
+          planMode = runtimeUpdate.planMode ?? planMode;
+          inPlanMode = runtimeUpdate.inPlanMode ?? inPlanMode;
           if (m.model?.trim().isNotEmpty == true) {
             codexModel = m.model;
           }
@@ -764,6 +797,14 @@ class ChatMessageHandler {
       askInput: isWaiting ? lastAskInput : null,
       claudeSessionId: claudeSessionId,
       projectPath: projectPath,
+      permissionMode: permissionMode,
+      executionMode: executionMode,
+      codexApprovalPolicy: codexApprovalPolicy,
+      codexApprovalsReviewer: codexApprovalsReviewer,
+      codexPermissionsMode: codexPermissionsMode,
+      sandboxMode: sandboxMode,
+      planMode: planMode,
+      inPlanMode: inPlanMode,
       codexModel: codexModel,
       codexModelReasoningEffort: codexModelReasoningEffort,
       codexSpeed: codexSpeed,
@@ -790,6 +831,7 @@ class ChatMessageHandler {
     CodexApprovalPolicy? codexApprovalPolicy;
     String? codexApprovalsReviewer;
     CodexPermissionsMode? codexPermissionsMode;
+    SandboxMode? sandboxMode;
     bool? inPlanMode;
     bool? planMode;
     String? codexModel;
@@ -865,6 +907,12 @@ class ChatMessageHandler {
           permissionMode: msg.permissionMode,
           approvalPolicy: msg.approvalPolicy,
         );
+        codexApprovalPolicy = codexApprovalPolicyFromRaw(
+          resolveCodexApprovalPolicy(
+            approvalPolicy: msg.approvalPolicy,
+            executionMode: msg.executionMode,
+          ),
+        );
       }
       if (hasPlanSignals(msg)) {
         planMode = derivePlanMode(
@@ -877,6 +925,19 @@ class ChatMessageHandler {
       }
     }
     if (msg is SystemMessage && msg.provider == Provider.codex.value) {
+      sandboxMode = switch (msg.sandboxMode) {
+        'danger-full-access' || 'off' => SandboxMode.off,
+        'workspace-write' || 'read-only' || 'on' => SandboxMode.on,
+        _ => null,
+      };
+      codexPermissionsMode ??=
+          msg.approvalPolicy != null && msg.sandboxMode != null
+          ? codexPermissionsModeFromSettings(
+              approvalPolicy: msg.approvalPolicy,
+              approvalsReviewer: msg.approvalsReviewer,
+              sandboxMode: msg.sandboxMode,
+            )
+          : null;
       codexModel = sanitizeCodexModelName(msg.model);
       codexModelReasoningEffort = reasoningEffortByValue(
         msg.modelReasoningEffort,
@@ -907,6 +968,7 @@ class ChatMessageHandler {
       codexApprovalPolicy: codexApprovalPolicy,
       codexApprovalsReviewer: codexApprovalsReviewer,
       codexPermissionsMode: codexPermissionsMode,
+      sandboxMode: sandboxMode,
       codexModel: codexModel,
       codexModelReasoningEffort: codexModelReasoningEffort,
       codexSpeed: codexSpeed,

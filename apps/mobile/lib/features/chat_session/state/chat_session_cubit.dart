@@ -39,6 +39,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<ServerMessage>? _subscription;
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
+  StreamSubscription<List<SessionInfo>>? _codexRuntimeSnapshotSubscription;
   StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
   StreamSubscription<BridgeConnectionState>?
       _desktopContinuityConnectionSubscription;
@@ -60,6 +61,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _desktopContinuityThreadId;
   String? _desktopContinuityProjectPath;
   bool _desktopContinuityWasExternalBeforeDisconnect = false;
+
+  /// Exact service tier reported by the active runtime. Unknown future values
+  /// remain visible read-only while [ChatSessionState.codexSpeed] carries the
+  /// bounded UI behavior (`standard`, `fast`, or `unknown`).
+  final ValueNotifier<String?> codexServiceTierRaw = ValueNotifier(null);
 
   /// Number of entries prepended from past_history, so that [replaceEntries]
   /// can preserve them while replacing in-memory history entries.
@@ -221,6 +227,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _updateCodexRuntimeSupportFromSessions,
       );
       _updateCodexRuntimeSupportFromSessions(_bridge.sessions);
+      _codexRuntimeSnapshotSubscription = _bridge.sessionList.listen(
+        _synchronizeCodexRuntimeSnapshot,
+      );
+      _synchronizeCodexRuntimeSnapshot(_bridge.sessions);
       _desktopContinuitySubscription = _bridge
           .localFeatureMessagesForSession(sessionId)
           .listen(_onDesktopContinuityMessage);
@@ -564,6 +574,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _updateCodexRuntimeSupportFromSessions(List<SessionInfo> sessions) {
+    _synchronizeCodexRuntimeSettingsFromSessions(sessions);
     _updateNativePlanModeSupportFromSessions(sessions);
     _updateGoalSupportFromSessions(sessions);
     // BridgeService publishes the session-list stream immediately before its
@@ -609,6 +620,209 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
       _bridge.requestSessionHistory(sessionId);
     });
+  }
+
+  void _synchronizeCodexRuntimeSettingsFromSessions(
+    List<SessionInfo> sessions,
+  ) {
+    if (!isCodex || isClosed) return;
+    SessionInfo? runtime;
+    for (final session in sessions) {
+      if (session.id == sessionId) {
+        runtime = session;
+        break;
+      }
+    }
+    if (runtime == null) return;
+
+    final current = state;
+    final incomingModel = sanitizeCodexModelName(runtime.codexModel);
+    final incomingEffort = reasoningEffortByValue(
+      runtime.codexModelReasoningEffort,
+    );
+    final incomingSpeed = runtime.codexServiceTier == null
+        ? null
+        : codexSpeedFromRaw(runtime.codexServiceTier);
+
+    var permissionMode = current.permissionMode;
+    var executionMode = current.executionMode;
+    var approvalPolicy = current.codexApprovalPolicy;
+    var approvalsReviewer = current.codexApprovalsReviewer;
+    var permissionsMode = current.codexPermissionsMode;
+    var sandboxMode = current.sandboxMode;
+    var planMode = current.planMode;
+    var inPlanMode = current.inPlanMode;
+
+    // A next-turn or restart-now mutation is already represented optimistically
+    // in state. Older init/session-list snapshots must not overwrite it before
+    // the correlated set_permission_mode acknowledgement or rollback arrives.
+    if (!isPermissionChangePending) {
+      for (final mode in PermissionMode.values) {
+        if (mode.value == runtime.effectivePermissionMode) {
+          permissionMode = mode;
+          break;
+        }
+      }
+      executionMode = runtime.resolvedExecutionMode;
+      planMode = runtime.resolvedPlanMode;
+      inPlanMode = runtime.resolvedPlanMode;
+      approvalPolicy =
+          codexApprovalPolicyFromRaw(runtime.codexApprovalPolicy) ??
+          approvalPolicy;
+      final reviewer = runtime.codexApprovalsReviewer?.trim();
+      if (reviewer != null && reviewer.isNotEmpty) {
+        approvalsReviewer = reviewer;
+      }
+      permissionsMode =
+          codexPermissionsModeFromRaw(runtime.codexPermissionsMode) ??
+          (runtime.codexApprovalPolicy != null &&
+                  runtime.codexSandboxMode != null
+              ? codexPermissionsModeFromSettings(
+                  approvalPolicy: runtime.codexApprovalPolicy,
+                  approvalsReviewer: runtime.codexApprovalsReviewer,
+                  sandboxMode: runtime.codexSandboxMode,
+                )
+              : permissionsMode);
+      sandboxMode = switch (runtime.codexSandboxMode) {
+        'danger-full-access' || 'off' => SandboxMode.off,
+        'workspace-write' || 'read-only' || 'on' => SandboxMode.on,
+        _ => sandboxMode,
+      };
+    }
+
+    final nextModel = incomingModel ?? current.codexModel;
+    final nextEffort = incomingEffort ?? current.codexModelReasoningEffort;
+    final nextSpeed = incomingSpeed ?? current.codexSpeed;
+    if (permissionMode == current.permissionMode &&
+        executionMode == current.executionMode &&
+        approvalPolicy == current.codexApprovalPolicy &&
+        approvalsReviewer == current.codexApprovalsReviewer &&
+        permissionsMode == current.codexPermissionsMode &&
+        sandboxMode == current.sandboxMode &&
+        planMode == current.planMode &&
+        inPlanMode == current.inPlanMode &&
+        nextModel == current.codexModel &&
+        nextEffort == current.codexModelReasoningEffort &&
+        nextSpeed == current.codexSpeed) {
+      return;
+    }
+    emit(
+      current.copyWith(
+        permissionMode: permissionMode,
+        executionMode: executionMode,
+        codexApprovalPolicy: approvalPolicy,
+        codexApprovalsReviewer: approvalsReviewer,
+        codexPermissionsMode: permissionsMode,
+        sandboxMode: sandboxMode,
+        planMode: planMode,
+        inPlanMode: inPlanMode,
+        codexModel: nextModel,
+        codexModelReasoningEffort: nextEffort,
+        codexSpeed: nextSpeed,
+      ),
+    );
+  }
+
+  void _synchronizeCodexRuntimeSnapshot(List<SessionInfo> sessions) {
+    if (!isCodex || isClosed) return;
+    final runtime = _runtimeSessionFrom(sessions);
+    if (runtime == null) return;
+    _updateCodexServiceTierRaw(runtime.codexServiceTier);
+    final normalizedTier = runtime.codexServiceTier?.trim();
+    if ((normalizedTier == null || normalizedTier.isEmpty) &&
+        state.codexSpeed == CodexSpeed.unknown) {
+      emit(state.copyWith(codexSpeed: CodexSpeed.standard));
+    }
+    _restoreRuntimeInteractions(runtime);
+  }
+
+  SessionInfo? _runtimeSessionFrom(List<SessionInfo> sessions) {
+    for (final session in sessions) {
+      if (session.id == sessionId) return session;
+    }
+    return null;
+  }
+
+  void _updateCodexServiceTierRaw(String? raw) {
+    final normalized = raw?.trim();
+    final next = normalized == null || normalized.isEmpty ? null : normalized;
+    if (codexServiceTierRaw.value != next) {
+      codexServiceTierRaw.value = next;
+    }
+  }
+
+  String? get unsupportedCodexServiceTier {
+    final raw = codexServiceTierRaw.value;
+    return codexRuntimeSpeedFromRaw(raw) == CodexSpeed.unknown ? raw : null;
+  }
+
+  void _restoreRuntimeInteractions(SessionInfo runtime) {
+    if (!isCodex || isClosed) return;
+    final current = state;
+    var approval = current.approval;
+    var queuedInput = current.queuedInput;
+    var changed = false;
+
+    final pending = runtime.pendingPermission;
+    if (pending != null && !_respondedToolUseIds.contains(pending.toolUseId)) {
+      _pendingPermissionRequests[pending.toolUseId] = pending;
+      if (!_approvalMatchesPending(approval, pending)) {
+        approval = pending.usesAskUserUi
+            ? ApprovalState.askUser(
+                toolUseId: pending.toolUseId,
+                input: pending.input,
+              )
+            : ApprovalState.permission(
+                toolUseId: pending.toolUseId,
+                request: pending,
+              );
+        changed = true;
+      }
+    }
+
+    final runtimeQueue = runtime.queuedInput;
+    if (runtimeQueue != null && !_sameQueuedInput(queuedInput, runtimeQueue)) {
+      queuedInput = runtimeQueue;
+      changed = true;
+    }
+
+    if (changed) {
+      emit(state.copyWith(approval: approval, queuedInput: queuedInput));
+    }
+  }
+
+  bool _approvalMatchesPending(
+    ApprovalState approval,
+    PermissionRequestMessage pending,
+  ) => pending.usesAskUserUi
+      ? approval is ApprovalAskUser && approval.toolUseId == pending.toolUseId
+      : approval is ApprovalPermission && approval.toolUseId == pending.toolUseId;
+
+  bool _sameQueuedInput(QueuedInputItem? left, QueuedInputItem right) =>
+      left != null &&
+      left.itemId == right.itemId &&
+      left.text == right.text &&
+      left.createdAt == right.createdAt &&
+      left.updatedAt == right.updatedAt &&
+      left.imageCount == right.imageCount;
+
+  void _captureCodexServiceTier(ServerMessage message) {
+    if (!isCodex) return;
+    if (message is SystemMessage &&
+        message.provider == Provider.codex.value &&
+        message.serviceTier != null) {
+      _updateCodexServiceTierRaw(message.serviceTier);
+      return;
+    }
+    if (message is! HistoryMessage) return;
+    for (final nested in message.messages.reversed) {
+      if (nested is SystemMessage &&
+          nested.provider == Provider.codex.value &&
+          nested.serviceTier != null) {
+        _updateCodexServiceTierRaw(nested.serviceTier);
+        return;
+      }
+    }
   }
 
   void _updateNativePlanModeSupportFromSessions(List<SessionInfo> sessions) {
@@ -733,6 +947,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _captureSupersededPermissionAcknowledgement(msg)) {
       return;
     }
+    _captureCodexServiceTier(msg);
     // Log errors prominently
     if (msg is ErrorMessage) {
       logger.error('[session:$sessionId] Error from bridge: ${msg.message}');
@@ -1030,6 +1245,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }) {
     final messageHandler = sourceHandler ?? _handler;
     final current = state;
+    final preservePendingCodexPermissions =
+        isCodex &&
+        isPermissionChangePending &&
+        (originalMsg is HistoryMessage ||
+            (originalMsg is SystemMessage &&
+                originalMsg.subtype != 'set_permission_mode'));
     final markUserMessagesSent =
         update.markUserMessagesSent && allowUserDelivery;
 
@@ -1429,21 +1650,35 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         approval: approval,
         totalCost: usage.totalCost,
         totalDuration: usage.totalDuration,
-        inPlanMode: update.inPlanMode ?? current.inPlanMode,
-        permissionMode: update.permissionMode ?? current.permissionMode,
-        executionMode: update.executionMode ?? current.executionMode,
-        codexApprovalPolicy:
-            update.codexApprovalPolicy ?? current.codexApprovalPolicy,
-        codexApprovalsReviewer:
-            update.codexApprovalsReviewer ?? current.codexApprovalsReviewer,
-        codexPermissionsMode:
-            update.codexPermissionsMode ?? current.codexPermissionsMode,
+        inPlanMode: preservePendingCodexPermissions
+            ? current.inPlanMode
+            : (update.inPlanMode ?? current.inPlanMode),
+        permissionMode: preservePendingCodexPermissions
+            ? current.permissionMode
+            : (update.permissionMode ?? current.permissionMode),
+        executionMode: preservePendingCodexPermissions
+            ? current.executionMode
+            : (update.executionMode ?? current.executionMode),
+        codexApprovalPolicy: preservePendingCodexPermissions
+            ? current.codexApprovalPolicy
+            : (update.codexApprovalPolicy ?? current.codexApprovalPolicy),
+        codexApprovalsReviewer: preservePendingCodexPermissions
+            ? current.codexApprovalsReviewer
+            : (update.codexApprovalsReviewer ?? current.codexApprovalsReviewer),
+        codexPermissionsMode: preservePendingCodexPermissions
+            ? current.codexPermissionsMode
+            : (update.codexPermissionsMode ?? current.codexPermissionsMode),
+        sandboxMode: preservePendingCodexPermissions
+            ? current.sandboxMode
+            : (update.sandboxMode ?? current.sandboxMode),
         codexModel: update.codexModel ?? current.codexModel,
         codexModelReasoningEffort:
             update.codexModelReasoningEffort ??
             current.codexModelReasoningEffort,
         codexSpeed: update.codexSpeed ?? current.codexSpeed,
-        planMode: update.planMode ?? current.planMode,
+        planMode: preservePendingCodexPermissions
+            ? current.planMode
+            : (update.planMode ?? current.planMode),
         slashCommands: update.slashCommands ?? current.slashCommands,
         queuedInput: nextQueuedInput,
         claudeSessionId: newClaudeSessionId,
@@ -3202,8 +3437,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setCodexSpeed(CodexSpeed speed) {
-    if (!isCodex || speed == state.codexSpeed) return;
+    if (!isCodex ||
+        speed == CodexSpeed.unknown ||
+        speed == state.codexSpeed) {
+      return;
+    }
     logger.info('[session:$sessionId] setCodexSpeed=${speed.value}');
+    _updateCodexServiceTierRaw(speed.value);
     emit(state.copyWith(codexSpeed: speed));
     _bridge.patchSessionCodexSpeed(sessionId, speed.value);
     _bridge.send(
@@ -3681,6 +3921,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityReconcileTimer?.cancel();
     _goalConnectionSubscription?.cancel();
     _goalSessionListSubscription?.cancel();
+    _codexRuntimeSnapshotSubscription?.cancel();
+    codexServiceTierRaw.dispose();
     _desktopContinuitySubscription?.cancel();
     _desktopContinuityConnectionSubscription?.cancel();
     for (final timer in _deliveryPendingTimers.values) {

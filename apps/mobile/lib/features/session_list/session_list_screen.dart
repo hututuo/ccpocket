@@ -1197,7 +1197,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       modelReasoningEffort: reasoningEffortFromRaw(
         session.codexModelReasoningEffort,
       ),
-      codexSpeed: codexSpeedFromRaw(session.codexServiceTier),
+      codexSpeed: codexSelectableSpeedFromRaw(session.codexServiceTier),
       networkAccessEnabled: session.codexNetworkAccessEnabled,
       webSearchMode: webSearchModeFromRaw(session.codexWebSearchMode),
       additionalWritableRoots: provider == Provider.codex

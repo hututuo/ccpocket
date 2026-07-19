@@ -69,14 +69,18 @@ class SessionModeBar extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (isCodex) ...[
-                  CodexModelChip(
-                    model: codexModel!,
-                    reasoningEffort: codexReasoningEffort,
-                    speed: chatCubit.state.codexSpeed,
-                    onTap: () => showCodexModelMenu(
-                      context,
-                      chatCubit,
-                      showExtendedEfforts: showExtendedCodexEfforts,
+                  ValueListenableBuilder<String?>(
+                    valueListenable: chatCubit.codexServiceTierRaw,
+                    builder: (context, serviceTierRaw, _) => CodexModelChip(
+                      model: codexModel!,
+                      reasoningEffort: codexReasoningEffort,
+                      speed: chatCubit.state.codexSpeed,
+                      serviceTierRaw: serviceTierRaw,
+                      onTap: () => showCodexModelMenu(
+                        context,
+                        chatCubit,
+                        showExtendedEfforts: showExtendedCodexEfforts,
+                      ),
                     ),
                   ),
                   Padding(
@@ -415,6 +419,7 @@ void showCodexModelMenu(
       initialModel: currentModel,
       initialEffort: currentEffort,
       initialSpeed: chatCubit.state.codexSpeed,
+      initialServiceTierRaw: chatCubit.codexServiceTierRaw.value,
       showExtendedEfforts: showExtendedEfforts,
       onModelChanged: (model, effort) =>
           chatCubit.setCodexModel(model, reasoningEffort: effort),
@@ -1151,6 +1156,7 @@ class CodexModelChip extends StatelessWidget {
   final String model;
   final ReasoningEffort? reasoningEffort;
   final CodexSpeed speed;
+  final String? serviceTierRaw;
   final VoidCallback onTap;
 
   const CodexModelChip({
@@ -1158,6 +1164,7 @@ class CodexModelChip extends StatelessWidget {
     required this.model,
     this.reasoningEffort,
     required this.speed,
+    this.serviceTierRaw,
     required this.onTap,
   });
 
@@ -1167,6 +1174,11 @@ class CodexModelChip extends StatelessWidget {
     final fg = cs.onSurfaceVariant;
     final label = codexModelDisplayName(model);
     final suffix = reasoningEffort == null ? '' : ' ${reasoningEffort!.label}';
+    final normalizedTier = serviceTierRaw?.trim();
+    final unknownTier =
+        codexRuntimeSpeedFromRaw(normalizedTier) == CodexSpeed.unknown
+        ? normalizedTier
+        : null;
 
     return Material(
       color: Colors.transparent,
@@ -1186,7 +1198,7 @@ class CodexModelChip extends StatelessWidget {
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 130),
                 child: Text(
-                  '$label$suffix',
+                  '$label$suffix${unknownTier == null ? '' : ' · $unknownTier'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -1232,7 +1244,7 @@ String _codexPermissionsSubtitle(
 ) => switch (mode) {
   CodexPermissionsMode.defaultPermissions => (
     _codexPermissionsIcon(mode),
-    'Default',
+    'On Request',
     cs.onSurfaceVariant,
   ),
   CodexPermissionsMode.autoReview => (

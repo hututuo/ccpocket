@@ -295,6 +295,149 @@ void main() {
       },
     );
 
+    test('Codex toolbar hydrates from the authoritative session snapshot', () {
+      mockBridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+          permissionMode: 'bypassPermissions',
+          executionMode: 'fullAccess',
+          codexApprovalPolicy: 'never',
+          codexApprovalsReviewer: 'user',
+          codexPermissionsMode: 'fullAccess',
+          codexSandboxMode: 'danger-full-access',
+          codexModel: 'gpt-5.6-sol',
+          codexModelReasoningEffort: 'ultra',
+          codexServiceTier: 'fast',
+        ),
+      ];
+
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+
+      expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+      expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+      expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+      expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.fullAccess);
+      expect(cubit.state.sandboxMode, SandboxMode.off);
+      expect(cubit.state.codexModel, 'gpt-5.6-sol');
+      expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+      expect(cubit.state.codexSpeed, CodexSpeed.fast);
+    });
+
+    test(
+      'session refresh synchronizes settings without overwriting a pending next-turn permission change',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            permissionMode: 'acceptEdits',
+            executionMode: 'default',
+            codexApprovalPolicy: 'on-request',
+            codexApprovalsReviewer: 'user',
+            codexPermissionsMode: 'default',
+            codexSandboxMode: 'workspace-write',
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'high',
+            codexServiceTier: 'standard',
+          ),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        cubit.setCodexPermissionsMode(
+          CodexPermissionsMode.autoReview,
+          applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+        );
+        expect(cubit.isPermissionChangePending, isTrue);
+
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            status: 'running',
+            createdAt: '',
+            lastActivityAt: '',
+            permissionMode: 'acceptEdits',
+            executionMode: 'default',
+            codexApprovalPolicy: 'on-request',
+            codexApprovalsReviewer: 'user',
+            codexPermissionsMode: 'default',
+            codexSandboxMode: 'workspace-write',
+            codexModel: 'gpt-5.6-terra',
+            codexModelReasoningEffort: 'medium',
+            codexServiceTier: 'fast',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.autoReview,
+        );
+        expect(cubit.state.codexApprovalsReviewer, 'auto_review');
+        expect(cubit.state.codexModel, 'gpt-5.6-terra');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.medium);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            provider: 'codex',
+            permissionMode: 'acceptEdits',
+            executionMode: 'default',
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'user',
+            codexPermissionsMode: 'default',
+            sandboxMode: 'workspace-write',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.autoReview,
+        );
+        expect(cubit.state.codexApprovalsReviewer, 'auto_review');
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              SystemMessage(
+                subtype: 'init',
+                provider: 'codex',
+                permissionMode: 'acceptEdits',
+                executionMode: 'default',
+                approvalPolicy: 'on-request',
+                approvalsReviewer: 'user',
+                codexPermissionsMode: 'default',
+                sandboxMode: 'workspace-write',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.autoReview,
+        );
+        expect(cubit.state.codexApprovalsReviewer, 'auto_review');
+      },
+    );
+
     test(
       'unknown old Bridge can request Plan but an explicit refusal rolls it back',
       () async {

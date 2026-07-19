@@ -206,6 +206,16 @@ void main() {
     expect(codexSpeedFromRaw('standard'), CodexSpeed.standard);
   });
 
+  test('running Codex sessions preserve unknown service tiers', () {
+    expect(codexRuntimeSpeedFromRaw('standard'), CodexSpeed.standard);
+    expect(codexRuntimeSpeedFromRaw('priority'), CodexSpeed.fast);
+    expect(codexRuntimeSpeedFromRaw('flex'), CodexSpeed.unknown);
+    expect(codexRuntimeSpeedFromRaw(null), isNull);
+    // Selectable new-session forms keep their stable fallback contract.
+    expect(codexSpeedFromRaw('flex'), CodexSpeed.unknown);
+    expect(codexSelectableSpeedFromRaw('flex'), CodexSpeed.standard);
+  });
+
   test('Codex effort display choices serialize canonical wire values', () {
     final cases = <ReasoningEffort, String>{
       ReasoningEffort.low: 'low',

@@ -29,6 +29,7 @@ class _MockBridgeService extends BridgeService {
   };
   bool runtimePermissionApplyStrategySupported = true;
   bool? runtimeNativePlanModeSupported;
+  String? runtimeServiceTier;
 
   @override
   List<String> get codexModels => availableCodexModels;
@@ -59,11 +60,17 @@ class _MockBridgeService extends BridgeService {
       codexPermissionApplyStrategySupported:
           runtimePermissionApplyStrategySupported,
       codexNativePlanModeSupported: runtimeNativePlanModeSupported,
+      codexServiceTier: runtimeServiceTier,
     ),
   ];
 
   void emitNativePlanModeSupport(bool? supported) {
     runtimeNativePlanModeSupported = supported;
+    _sessionListController.add(sessions);
+  }
+
+  void emitServiceTier(String? serviceTier) {
+    runtimeServiceTier = serviceTier;
     _sessionListController.add(sessions);
   }
 
@@ -323,7 +330,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     final plan = tester.getCenter(find.text('Plan Off')).dx;
-    final permissions = tester.getCenter(find.text('Default')).dx;
+    final permissions = tester.getCenter(find.text('On Request')).dx;
 
     expect(plan, lessThan(permissions));
     expect(find.text('Sandbox'), findsNothing);
@@ -546,6 +553,47 @@ void main() {
     );
   });
 
+  testWidgets('unknown runtime service tier stays visible and read-only', (
+    tester,
+  ) async {
+    bridge.availableCodexModels = const ['gpt-5.6-sol'];
+    bridge.availableCodexReasoningEfforts = const {
+      'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh'],
+    };
+    bridge.availableCodexServiceTiers = const {
+      'gpt-5.6-sol': ['fast'],
+    };
+
+    await tester.pumpWidget(_wrap(cubit));
+    bridge.emitServiceTier('flex');
+    await tester.pumpAndSettle();
+
+    expect(cubit.state.codexSpeed, CodexSpeed.unknown);
+    expect(cubit.codexServiceTierRaw.value, 'flex');
+    expect(find.textContaining('flex'), findsOneWidget);
+
+    await tester.tap(find.textContaining('flex'));
+    await tester.pumpAndSettle();
+    final speedButton = tester.widget<IconButton>(
+      find.byKey(const ValueKey('codex_speed_button')),
+    );
+    expect(speedButton.onPressed, isNull);
+
+    await tester.tap(find.byKey(const ValueKey('codex_settings_advanced')));
+    await tester.pumpAndSettle();
+    expect(find.text('flex (read-only)'), findsOneWidget);
+
+    Navigator.of(
+      tester.element(find.text('flex (read-only)')),
+    ).pop();
+    await tester.pumpAndSettle();
+    bridge.emitServiceTier(null);
+    await tester.pumpAndSettle();
+    expect(cubit.codexServiceTierRaw.value, isNull);
+    expect(cubit.state.codexSpeed, CodexSpeed.standard);
+    expect(find.textContaining('flex'), findsNothing);
+  });
+
   testWidgets('codex model change prefers the first advertised Effort', (
     tester,
   ) async {
@@ -659,7 +707,7 @@ void main() {
       await tester.pumpWidget(_wrap(cubit));
       await tester.pump(const Duration(milliseconds: 100));
 
-      await tester.tap(find.text('Default'));
+      await tester.tap(find.text('On Request'));
       await tester.pump(const Duration(milliseconds: 300));
       await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
       await tester.pumpAndSettle();
@@ -692,7 +740,7 @@ void main() {
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
 
-    await tester.tap(find.text('Default'));
+    await tester.tap(find.text('On Request'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
     await tester.pumpAndSettle();
@@ -713,7 +761,7 @@ void main() {
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
 
-    await tester.tap(find.text('Default'));
+    await tester.tap(find.text('On Request'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
     await tester.pumpAndSettle();
@@ -736,7 +784,7 @@ void main() {
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
 
-    await tester.tap(find.text('Default'));
+    await tester.tap(find.text('On Request'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
     await tester.pumpAndSettle();
@@ -760,6 +808,6 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('Sandbox'), findsNothing);
-    expect(find.text('Default'), findsOneWidget);
+    expect(find.text('On Request'), findsOneWidget);
   });
 }

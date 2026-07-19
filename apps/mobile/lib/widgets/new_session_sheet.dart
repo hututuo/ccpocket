@@ -390,7 +390,7 @@ NewSessionParams? sessionStartDefaultsFromJson(Map<String, dynamic> json) {
     modelReasoningEffort: reasoningEffortFromRaw(
       json['modelReasoningEffort'] as String?,
     ),
-    codexSpeed: codexSpeedFromRaw(json['serviceTier'] as String?),
+    codexSpeed: codexSelectableSpeedFromRaw(json['serviceTier'] as String?),
     networkAccessEnabled: json['networkAccessEnabled'] as bool?,
     webSearchMode: webSearchModeFromRaw(json['webSearchMode'] as String?),
     claudeModel: json['claudeModel'] as String?,

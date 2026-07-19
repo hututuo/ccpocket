@@ -12,6 +12,7 @@ class CodexSettingsSheet extends StatefulWidget {
   final String initialModel;
   final ReasoningEffort initialEffort;
   final CodexSpeed initialSpeed;
+  final String? initialServiceTierRaw;
   final bool showExtendedEfforts;
   final void Function(String model, ReasoningEffort effort) onModelChanged;
   final void Function(String model, ReasoningEffort effort) onEffortChanged;
@@ -25,6 +26,7 @@ class CodexSettingsSheet extends StatefulWidget {
     required this.initialModel,
     required this.initialEffort,
     required this.initialSpeed,
+    this.initialServiceTierRaw,
     this.showExtendedEfforts = false,
     required this.onModelChanged,
     required this.onEffortChanged,
@@ -44,6 +46,12 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
   List<ReasoningEffort> get _efforts =>
       widget.modelEfforts[_model] ?? const [ReasoningEffort.none];
 
+  String? get _unsupportedServiceTier {
+    final raw = widget.initialServiceTierRaw?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    return codexRuntimeSpeedFromRaw(raw) == CodexSpeed.unknown ? raw : null;
+  }
+
   bool get _supportsFast =>
       codexSupportsFast(_model, widget.modelServiceTiers, speed: _speed);
 
@@ -54,7 +62,11 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
   }
 
   void _selectSpeed(CodexSpeed speed) {
-    if (speed == _speed || (speed == CodexSpeed.fast && !_supportsFast)) return;
+    if (speed == CodexSpeed.unknown ||
+        speed == _speed ||
+        (speed == CodexSpeed.fast && !_supportsFast)) {
+      return;
+    }
     setState(() => _speed = speed);
     widget.onSpeedChanged(speed);
   }
@@ -65,7 +77,9 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
     final nextEffort = preferredCodexEffort(efforts, current: _effort);
     final supportsFast = codexSupportsFast(model, widget.modelServiceTiers);
     final previousSpeed = _speed;
-    final nextSpeed = supportsFast ? _speed : CodexSpeed.standard;
+    final nextSpeed = _speed == CodexSpeed.unknown
+        ? CodexSpeed.unknown
+        : (supportsFast ? _speed : CodexSpeed.standard);
     setState(() {
       _model = model;
       _effort = nextEffort;
@@ -85,9 +99,12 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
           model: _model,
           effort: _effort,
           speed: _speed,
-          supportsFast: _supportsFast,
+          supportsFast: _unsupportedServiceTier == null && _supportsFast,
           onSpeedChanged: _selectSpeed,
           speedButtonKey: 'codex_speed_button',
+          speedTooltip: _unsupportedServiceTier == null
+              ? null
+              : 'Current service tier: $_unsupportedServiceTier (read-only)',
           showAdvanced: _showAdvanced,
           advancedLabel: l.advanced,
           toggleButtonKey: 'codex_settings_advanced',
@@ -122,8 +139,12 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
               _SettingsRow(
                 key: const ValueKey('codex_speed_advanced'),
                 label: 'Speed',
-                value: _speed.label,
-                onTap: () => _showSpeedPicker(context),
+                value: _unsupportedServiceTier == null
+                    ? _speed.label
+                    : '$_unsupportedServiceTier (read-only)',
+                onTap: _unsupportedServiceTier == null
+                    ? () => _showSpeedPicker(context)
+                    : null,
               ),
             ],
           ),
@@ -235,7 +256,7 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
 class _SettingsRow extends StatelessWidget {
   final String label;
   final String value;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   const _SettingsRow({
     super.key,
@@ -254,8 +275,10 @@ class _SettingsRow extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(value, style: TextStyle(color: cs.onSurfaceVariant)),
-          const SizedBox(width: 4),
-          Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
+          if (onTap != null) ...[
+            const SizedBox(width: 4),
+            Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
+          ],
         ],
       ),
       onTap: onTap,
