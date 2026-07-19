@@ -88,6 +88,19 @@ interface ActiveTurn {
   pendingStartTimer: ReturnType<typeof setTimeout> | null;
 }
 
+type CompletedEventToolType =
+  | "mcp_tool_call_end"
+  | "patch_apply_end"
+  | "web_search_end"
+  | "image_generation_end";
+
+interface PendingCompletedTool {
+  type: CompletedEventToolType;
+  payload: Record<string, unknown>;
+  timestamp?: string;
+  turnId?: string;
+}
+
 interface PendingAssistantMessage {
   key: string;
   turnKey?: string;
@@ -1025,6 +1038,13 @@ export class CodexRolloutMonitor {
   private readonly emittedKeys = new Set<string>();
   private readonly reasoningKeys = new Set<string>();
   private readonly toolNames = new Map<string, string>();
+  /** Maps transport call ids to the canonical item ids used by history. */
+  private readonly toolIdAliases = new Map<string, string>();
+  /** Lets an adjacent response item establish the canonical id first. */
+  private readonly pendingCompletedTools = new Map<
+    string,
+    PendingCompletedTool
+  >();
   private lastExternalTerminalTimestampMs: number | undefined;
   private activityEpochValue = 0;
   private closed = false;
@@ -1134,6 +1154,8 @@ export class CodexRolloutMonitor {
     this.emittedKeys.clear();
     this.reasoningKeys.clear();
     this.toolNames.clear();
+    this.toolIdAliases.clear();
+    this.pendingCompletedTools.clear();
     this.refreshAgain = false;
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = null;
@@ -1371,6 +1393,7 @@ export class CodexRolloutMonitor {
       return;
     }
     if (type === "task_complete" || type === "turn_aborted") {
+      this.flushPendingCompletedTools();
       this.completeTurn(
         optionalString(payload.turn_id),
         type === "turn_aborted" ? "interrupted" : "completed",
@@ -1415,7 +1438,7 @@ export class CodexRolloutMonitor {
       const turn = this.turnForPayload(payload);
       this.flushPendingStart(turn);
       if (turn?.origin === "desktop") {
-        this.consumeCompletedEventTool(type, payload, timestamp, turn.turnId);
+        this.queueCompletedEventTool(type, payload, timestamp, turn.turnId);
       }
     }
   }
@@ -1821,6 +1844,9 @@ export class CodexRolloutMonitor {
       );
       return;
     }
+    if (this.consumeCompatibleResponseTool(type, payload, timestamp, turn)) {
+      return;
+    }
     if (type === "function_call_output" || type === "custom_tool_call_output") {
       const callId = optionalString(payload.call_id);
       if (!callId) return;
@@ -1843,12 +1869,183 @@ export class CodexRolloutMonitor {
     }
   }
 
+  private consumeCompatibleResponseTool(
+    type: string | undefined,
+    payload: Record<string, unknown>,
+    timestamp: string | undefined,
+    turn: ActiveTurn,
+  ): boolean {
+    let idPrefix: string;
+    let name: string;
+    let input: Record<string, unknown>;
+    let preferItemId = false;
+    let immediateResult: NormalizedToolResult | undefined;
+
+    switch (type) {
+      case "web_search_call":
+      case "web_search": {
+        idPrefix = "desktop-web-search";
+        name = "WebSearch";
+        preferItemId = type === "web_search";
+        const action = asRecord(payload.action);
+        const query =
+          optionalString(action?.query) ?? optionalString(payload.query);
+        input = query ? { query } : boundedToolInput(action ?? payload.action);
+        break;
+      }
+      case "image_generation_call":
+        idPrefix = "desktop-image";
+        name = "ImageGeneration";
+        input = boundedToolInput({
+          prompt: payload.prompt ?? payload.revised_prompt,
+          status: payload.status,
+        });
+        if (
+          Object.prototype.hasOwnProperty.call(payload, "output") ||
+          Object.prototype.hasOwnProperty.call(payload, "result")
+        ) {
+          immediateResult = normalizeImageGenerationResult(payload);
+        }
+        break;
+      case "command_execution":
+        idPrefix = "desktop-command";
+        name = "Bash";
+        preferItemId = true;
+        input =
+          typeof payload.command === "string"
+            ? { command: payload.command }
+            : boundedToolInput(payload);
+        if (hasCommandExecutionResult(payload)) {
+          immediateResult = normalizeCommandExecutionResult(payload);
+        }
+        break;
+      case "mcp_tool_call": {
+        idPrefix = "desktop-mcp";
+        preferItemId = true;
+        const server = optionalString(payload.server) ?? "mcp";
+        const tool = optionalString(payload.tool) ?? "tool";
+        name = `mcp:${server}/${tool}`;
+        input = boundedToolInput(payload.arguments);
+        break;
+      }
+      case "file_change":
+        idPrefix = "desktop-file-change";
+        name = "FileChange";
+        preferItemId = true;
+        input = boundedToolInput({ changes: payload.changes });
+        break;
+      default:
+        return false;
+    }
+
+    // Match sessions-index canonical ids. Older compatibility schemas use
+    // `id` as the item identity while their terminal events still refer to
+    // `call_id`, so retain an alias for the completion path.
+    const itemId = optionalString(payload.id);
+    const transportCallId = optionalString(payload.call_id);
+    const previouslyEmittedTransportId =
+      transportCallId && this.emittedKeys.has(`tool-start:${transportCallId}`)
+        ? transportCallId
+        : undefined;
+    const callId =
+      previouslyEmittedTransportId ??
+      (preferItemId ? itemId ?? transportCallId : transportCallId ?? itemId) ??
+      `${idPrefix}-${hashText(
+        `${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`,
+      )}`;
+    for (const alias of [itemId, transportCallId]) {
+      if (alias) setBoundedMap(this.toolIdAliases, alias, callId, 512);
+    }
+    if (transportCallId) {
+      this.flushPendingCompletedTool(`call:${transportCallId}`);
+    }
+    setBoundedMap(this.toolNames, callId, name, 512);
+    this.emitMessage(
+      `tool-start:${callId}`,
+      {
+        type: "assistant",
+        message: {
+          id: callId,
+          role: "assistant",
+          content: [{ type: "tool_use", id: callId, name, input }],
+          model: "codex",
+        },
+        messageUuid: callId,
+      },
+      timestamp,
+      turn.turnId,
+    );
+    if (immediateResult) {
+      this.emitMessage(
+        `tool-result:${callId}`,
+        {
+          type: "tool_result",
+          toolUseId: callId,
+          toolName: name,
+          content: boundedText(immediateResult.content, MAX_TEXT_BYTES),
+        },
+        timestamp,
+        turn.turnId,
+      );
+    }
+    return true;
+  }
+
+  private queueCompletedEventTool(
+    type: CompletedEventToolType,
+    payload: Record<string, unknown>,
+    timestamp?: string,
+    turnId?: string,
+  ): void {
+    const rawCallId = optionalString(payload.call_id);
+    if (rawCallId && this.toolIdAliases.has(rawCallId)) {
+      this.consumeCompletedEventTool(type, payload, timestamp, turnId);
+      return;
+    }
+    const key = rawCallId
+      ? `call:${rawCallId}`
+      : `anonymous:${type}:${hashText(
+          `${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`,
+        )}`;
+    const previous = this.pendingCompletedTools.get(key);
+    if (previous) {
+      this.pendingCompletedTools.delete(key);
+      this.consumeCompletedEventTool(
+        previous.type,
+        previous.payload,
+        previous.timestamp,
+        previous.turnId,
+      );
+    }
+    this.pendingCompletedTools.set(key, {
+      type,
+      payload,
+      ...(timestamp ? { timestamp } : {}),
+      ...(turnId ? { turnId } : {}),
+    });
+    queueMicrotask(() => this.flushPendingCompletedTool(key));
+  }
+
+  private flushPendingCompletedTool(key: string): void {
+    const pending = this.pendingCompletedTools.get(key);
+    if (!pending || this.closed) return;
+    this.pendingCompletedTools.delete(key);
+    this.consumeCompletedEventTool(
+      pending.type,
+      pending.payload,
+      pending.timestamp,
+      pending.turnId,
+    );
+  }
+
+  private flushPendingCompletedTools(): void {
+    for (const key of [...this.pendingCompletedTools.keys()]) {
+      this.flushPendingCompletedTool(key);
+    }
+  }
+
   private consumeCompletedEventTool(
-    type:
-      | "mcp_tool_call_end"
-      | "patch_apply_end"
-      | "web_search_end"
-      | "image_generation_end",
+    type: CompletedEventToolType,
     payload: Record<string, unknown>,
     timestamp?: string,
     turnId?: string,
@@ -1867,8 +2064,9 @@ export class CodexRolloutMonitor {
       optionalString(payload.saved_path) ?? "",
       16 * 1024,
     );
+    const rawCallId = optionalString(payload.call_id);
     const callId =
-      optionalString(payload.call_id) ??
+      (rawCallId ? this.toolIdAliases.get(rawCallId) ?? rawCallId : undefined) ??
       (type === "image_generation_end"
         ? `desktop-image-${hashText(
             `${timestamp ?? ""}:${imageStatus}:${imageSavedPath}:${imagePrompt}`,
@@ -1880,13 +2078,13 @@ export class CodexRolloutMonitor {
     let output: string;
     if (type === "image_generation_end") {
       name = "ImageGeneration";
-      const summary = {
+      input = boundedToolInput({
         prompt: imagePrompt,
         status: imageStatus,
         saved_path: imageSavedPath,
-      };
-      input = boundedToolInput(summary);
-      output = formatToolOutput(summary);
+      });
+      const normalized = normalizeImageGenerationResult(payload);
+      output = normalized.content;
     } else if (type === "patch_apply_end") {
       name = "FileChange";
       input = boundedToolInput(payload.changes);
@@ -1907,7 +2105,8 @@ export class CodexRolloutMonitor {
       const tool = optionalString(invocation.tool) ?? "tool";
       name = `mcp:${server}/${tool}`;
       input = boundedToolInput(invocation.arguments);
-      output = formatToolOutput(payload.result);
+      const normalized = normalizeMcpToolResult(payload.result);
+      output = normalized.content;
     }
     setBoundedMap(this.toolNames, callId, name, 512);
     this.emitMessage(
@@ -2078,6 +2277,8 @@ export class CodexRolloutMonitor {
     this.emittedKeys.clear();
     this.reasoningKeys.clear();
     this.toolNames.clear();
+    this.toolIdAliases.clear();
+    this.pendingCompletedTools.clear();
   }
 
   private emitMessage(
@@ -2159,6 +2360,131 @@ function boundedToolInput(value: unknown): Record<string, unknown> {
   return {
     truncated: true,
     preview: boundedText(encoded, MAX_TOOL_INPUT_BYTES),
+  };
+}
+
+interface NormalizedToolResult {
+  content: string;
+}
+
+function hasCommandExecutionResult(
+  payload: Record<string, unknown>,
+): boolean {
+  if (
+    ["output", "aggregated_output", "aggregatedOutput", "result"].some(
+      (key) => Object.prototype.hasOwnProperty.call(payload, key),
+    )
+  ) {
+    return true;
+  }
+  if (
+    typeof payload.exit_code === "number" ||
+    typeof payload.exitCode === "number"
+  ) {
+    return true;
+  }
+  return ["completed", "failed", "cancelled", "canceled"].includes(
+    optionalString(payload.status)?.toLowerCase() ?? "",
+  );
+}
+
+function normalizeCommandExecutionResult(
+  payload: Record<string, unknown>,
+): NormalizedToolResult {
+  const output =
+    optionalString(payload.aggregated_output) ??
+    optionalString(payload.aggregatedOutput) ??
+    optionalString(payload.output) ??
+    optionalString(payload.result) ??
+    "";
+  const exitCode =
+    typeof payload.exit_code === "number"
+      ? payload.exit_code
+      : typeof payload.exitCode === "number"
+        ? payload.exitCode
+        : undefined;
+  return {
+    content: output || `exit code: ${exitCode ?? "unknown"}`,
+  };
+}
+
+function normalizeImageGenerationResult(
+  payload: Record<string, unknown>,
+): NormalizedToolResult {
+  const status = optionalString(payload.status) ?? "completed";
+  const prompt =
+    optionalString(payload.revised_prompt) ??
+    optionalString(payload.revisedPrompt) ??
+    optionalString(payload.prompt);
+  const savedPath =
+    optionalString(payload.saved_path) ?? optionalString(payload.savedPath);
+  const result =
+    optionalString(payload.result)?.trim() ??
+    optionalString(payload.output)?.trim() ??
+    "";
+  const parts = [`status: ${status}`];
+  if (prompt) parts.push(`revisedPrompt: ${prompt}`);
+  if (savedPath) {
+    parts.push(`savedPath: ${savedPath}`);
+    return { content: parts.join("\n") };
+  }
+  if (!result) return { content: parts.join("\n") };
+  parts.push("Generated 1 image");
+  return { content: parts.join("\n") };
+}
+
+function normalizeMcpToolResult(value: unknown): NormalizedToolResult {
+  const wrapper = asRecord(value);
+  let result = value;
+  if (wrapper && Object.prototype.hasOwnProperty.call(wrapper, "Ok")) {
+    result = wrapper.Ok;
+  } else if (wrapper && Object.prototype.hasOwnProperty.call(wrapper, "Err")) {
+    result = wrapper.Err;
+  }
+  if (typeof result === "string") {
+    return { content: result };
+  }
+  const record = asRecord(result);
+  const contentItems = Array.isArray(record?.content) ? record.content : null;
+  if (!contentItems) {
+    return {
+      content: result == null ? "MCP call completed" : formatJson(result),
+    };
+  }
+
+  const textParts: string[] = [];
+  let imageCount = 0;
+  for (const entry of contentItems) {
+    const item = asRecord(entry);
+    if (!item) continue;
+    const type = optionalString(item.type) ?? "";
+    if (type === "text" && typeof item.text === "string") {
+      textParts.push(item.text);
+      continue;
+    }
+    if (type === "image") {
+      const source = asRecord(item.source);
+      const data =
+        optionalString(item.data) ??
+        (source?.type === "base64" ? optionalString(source.data) : undefined);
+      if (data) {
+        imageCount += 1;
+        continue;
+      }
+    }
+    textParts.push(formatJson(item));
+  }
+  const content = textParts.join("\n").trim();
+  if (content) return { content };
+  return {
+    content:
+      imageCount > 0
+        ? imageCount === 1
+          ? "Generated 1 image"
+          : `Generated ${imageCount} images`
+        : result == null
+          ? "MCP call completed"
+          : formatJson(result),
   };
 }
 
