@@ -647,6 +647,65 @@ void main() {
     });
 
     test(
+      'Codex Desktop continuity binds from session_list before history and stays stable',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        List<ClientMessage> sent(String type) => mockBridge.sentMessages
+            .where((message) => message.type == type)
+            .toList();
+
+        expect(cubit.state.claudeSessionId, 'thread-1');
+        expect(cubit.state.projectPath, '/project');
+        expect(sent('codex_desktop_continuity_watch'), hasLength(1));
+        expect(sent('codex_desktop_continuity_unwatch'), isEmpty);
+        final watchJson =
+            jsonDecode(sent('codex_desktop_continuity_watch').single.toJson())
+                as Map<String, dynamic>;
+        expect(watchJson, containsPair('threadId', 'thread-1'));
+
+        mockBridge.emitSessions(mockBridge.sessionSnapshot);
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'session_created',
+            sessionId: 'bridge-runtime-id',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-1',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(cubit.state.claudeSessionId, 'thread-1');
+        expect(sent('codex_desktop_continuity_watch'), hasLength(1));
+        expect(sent('codex_desktop_continuity_unwatch'), isEmpty);
+      },
+    );
+
+    test(
       'Codex Desktop continuity settles running state when reconnecting to an older Bridge',
       () async {
         final cubit = createCubit(
