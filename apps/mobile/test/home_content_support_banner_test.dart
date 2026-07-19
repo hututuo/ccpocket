@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:ccpocket/constants/app_constants.dart';
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/session_list/state/session_list_state.dart';
 import 'package:ccpocket/features/session_list/widgets/home_content.dart';
@@ -197,6 +198,34 @@ void main() {
 
     expect(find.byKey(const ValueKey('support_banner')), findsOneWidget);
     expect(find.text('CC Pocketが役に立っていたら'), findsOneWidget);
+  });
+
+  testWidgets('does not offer an official downgrade to a compat Bridge', (
+    tester,
+  ) async {
+    final reviewService = InAppReviewService(
+      prefs: prefs,
+      now: () => DateTime(2026, 4, 15, 12),
+      appVersionLoader: () async => '1.50.0',
+    );
+    final supportBannerService = SupportBannerService(
+      prefs: prefs,
+      reviewService: reviewService,
+    );
+
+    await tester.pumpWidget(
+      _buildHomeContent(
+        cubit: cubit,
+        draftService: draftService,
+        revenueCatService: _FakeRevenueCatService(catalog: _inactiveCatalog),
+        supportBannerService: supportBannerService,
+        bridgeVersion: '${AppConstants.expectedBridgeVersion}-compat.3',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('bridge_update_banner')), findsNothing);
+    expect(find.byKey(const ValueKey('support_banner')), findsOneWidget);
   });
 
   testWidgets('hides support banner when bridge update banner is visible', (

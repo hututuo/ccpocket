@@ -2,6 +2,33 @@ import 'package:ccpocket/models/machine.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('Bridge version compatibility', () {
+    test('treats a local compat suffix as the same official core', () {
+      expect(compareSemanticVersions('1.67.4-compat.3', '1.67.4'), 0);
+      expect(
+        const BridgeVersionInfo(
+          version: '1.67.4-compat.3',
+        ).needsUpdate('1.67.4'),
+        isFalse,
+      );
+    });
+
+    test('still detects genuinely older and newer official cores', () {
+      expect(compareSemanticVersions('1.67.3-compat.9', '1.67.4'), lessThan(0));
+      expect(compareSemanticVersions('1.67.4-compat.9', '1.67.5'), lessThan(0));
+      expect(
+        compareSemanticVersions('1.67.5-compat.1', '1.67.4'),
+        greaterThan(0),
+      );
+      expect(compareSemanticVersions('1.67.4-beta.1', '1.67.4'), lessThan(0));
+      expect(compareSemanticVersions('1.67.4-compat', '1.67.4'), lessThan(0));
+      expect(
+        compareSemanticVersions('1.67.4-compat.1.2', '1.67.4'),
+        lessThan(0),
+      );
+    });
+  });
+
   group('Machine URLs', () {
     test('defaults to ws/http when SSL is disabled', () {
       const machine = Machine(id: 'm1', host: 'bridge.example.com');

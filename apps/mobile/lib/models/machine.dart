@@ -5,13 +5,18 @@ import '../utils/network_endpoint.dart';
 part 'machine.freezed.dart';
 part 'machine.g.dart';
 
-/// Compare semantic version strings with up to three numeric components.
+/// Compare the three-component compatibility core of semantic versions.
+///
+/// Local Bridge builds append a suffix such as `-compat.3`. They still carry
+/// the complete official core version and must not be offered a destructive
+/// "update" to that same official release. A genuinely newer official core
+/// (for example 1.67.5 versus 1.67.4-compat.3) still wins normally.
 ///
 /// Returns a negative value when [left] is older than [right], zero when they
 /// are equal, and a positive value when [left] is newer than [right].
 int compareSemanticVersions(String left, String right) {
-  final parts1 = left.split('.').map(int.tryParse).toList();
-  final parts2 = right.split('.').map(int.tryParse).toList();
+  final parts1 = _semanticVersionCore(left);
+  final parts2 = _semanticVersionCore(right);
 
   for (var i = 0; i < 3; i++) {
     final p1 = i < parts1.length ? (parts1[i] ?? 0) : 0;
@@ -19,6 +24,13 @@ int compareSemanticVersions(String left, String right) {
     if (p1 != p2) return p1 - p2;
   }
   return 0;
+}
+
+List<int?> _semanticVersionCore(String version) {
+  // Narrowly recognize this fork's additive build suffix. Other prerelease
+  // labels retain the official app's existing conservative comparison.
+  final officialCore = version.replaceFirst(RegExp(r'-compat\.\d+$'), '');
+  return officialCore.split('.').map(int.tryParse).toList();
 }
 
 /// Status of a machine's Bridge Server
