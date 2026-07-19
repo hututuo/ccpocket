@@ -20,11 +20,15 @@ class SessionInsightsBar extends StatefulWidget {
     required this.sessionId,
     required this.bridgeService,
     this.controller,
+    this.compact = false,
+    this.showLeadingDivider = false,
   });
 
   final String sessionId;
   final BridgeService bridgeService;
   final SessionInsightsController? controller;
+  final bool compact;
+  final bool showLeadingDivider;
 
   @override
   State<SessionInsightsBar> createState() => _SessionInsightsBarState();
@@ -101,24 +105,36 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
         ? '$percent% · ${_compactTokens(usage.last.totalTokens)} / '
               '${_compactTokens(usage.modelContextWindow)}'
         : _compactQuotaSummary(l, strings, quota);
-    return Semantics(
+    final compactLabel = hasContext
+        ? '$percent%'
+        : _controller.isLoading
+        ? ''
+        : strings.quota;
+    final bar = Semantics(
       button: true,
       label: hasContext ? '${strings.context} $percent%' : strings.quota,
       child: InkWell(
-        key: const ValueKey('session_insights_bar'),
+        key: ValueKey(
+          widget.compact
+              ? 'session_insights_mode_chip'
+              : 'session_insights_bar',
+        ),
         onTap: _showDetails,
         borderRadius: BorderRadius.circular(10),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          padding: EdgeInsets.symmetric(
+            horizontal: widget.compact ? 8 : 10,
+            vertical: 7,
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               SizedBox.square(
-                dimension: 18,
+                dimension: widget.compact ? 16 : 18,
                 child: hasContext
                     ? CircularProgressIndicator(
                         value: usage.utilization,
-                        strokeWidth: 2.5,
+                        strokeWidth: widget.compact ? 2.25 : 2.5,
                         backgroundColor: cs.surfaceContainerHighest,
                         color: color,
                       )
@@ -126,14 +142,41 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
                     ? const CircularProgressIndicator(strokeWidth: 2)
                     : Icon(Icons.data_usage, size: 18, color: cs.primary),
               ),
-              const SizedBox(width: 7),
-              Text(label, style: Theme.of(context).textTheme.labelMedium),
-              const SizedBox(width: 2),
-              const Icon(Icons.expand_more, size: 17),
+              SizedBox(width: widget.compact ? 5 : 7),
+              Text(
+                widget.compact ? compactLabel : label,
+                style: widget.compact
+                    ? Theme.of(context).textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      )
+                    : Theme.of(context).textTheme.labelMedium,
+              ),
+              if (!widget.compact) ...[
+                const SizedBox(width: 2),
+                const Icon(Icons.expand_more, size: 17),
+              ],
             ],
           ),
         ),
       ),
+    );
+    if (!widget.showLeadingDivider) return bar;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: SizedBox(
+            height: 20,
+            child: VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: cs.outlineVariant.withValues(alpha: 0.4),
+            ),
+          ),
+        ),
+        bar,
+      ],
     );
   }
 

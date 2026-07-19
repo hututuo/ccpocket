@@ -79,6 +79,8 @@ abstract class LocalSessionFeatureSlot {
 
   List<Widget> statusWidgets(CodexSessionFeatureContext context) => const [];
 
+  List<Widget> modeBarWidgets(CodexSessionFeatureContext context) => const [];
+
   List<ChatSelectionAction> selectionActions(
     CodexSessionFeatureContext context,
   ) => const [];

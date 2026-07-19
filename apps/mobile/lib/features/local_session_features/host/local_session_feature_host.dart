@@ -79,6 +79,12 @@ class LocalSessionFeatureHost {
     );
   }
 
+  static List<Widget> modeBarWidgets(CodexSessionFeatureContext context) {
+    return List.unmodifiable(
+      _slots.expand((slot) => slot.modeBarWidgets(context)),
+    );
+  }
+
   static List<ChatSelectionAction> selectionActions(
     CodexSessionFeatureContext context,
   ) {

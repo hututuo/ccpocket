@@ -1502,6 +1502,10 @@ class _CodexChatBody extends HookWidget {
                       right: 0,
                       child: Center(
                         child: SessionModeBar(
+                          trailingWidgets:
+                              LocalSessionFeatureHost.modeBarWidgets(
+                                localFeatureContext,
+                              ),
                           showExtendedCodexEfforts: context
                               .watch<SettingsCubit>()
                               .state

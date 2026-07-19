@@ -118,7 +118,11 @@ class _MockBridgeService extends BridgeService {
   }
 }
 
-Widget _wrap(ChatSessionCubit cubit, {bool showExtendedCodexEfforts = false}) {
+Widget _wrap(
+  ChatSessionCubit cubit, {
+  bool showExtendedCodexEfforts = false,
+  List<Widget> trailingWidgets = const [],
+}) {
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
@@ -129,6 +133,7 @@ Widget _wrap(ChatSessionCubit cubit, {bool showExtendedCodexEfforts = false}) {
         value: cubit,
         child: SessionModeBar(
           showExtendedCodexEfforts: showExtendedCodexEfforts,
+          trailingWidgets: trailingWidgets,
         ),
       ),
     ),
@@ -159,6 +164,34 @@ void main() {
     await cubit.close();
     await streamingCubit.close();
     bridge.dispose();
+  });
+
+  testWidgets('mode bar accepts a compact local-feature slot', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        cubit,
+        trailingWidgets: const [
+          SizedBox(
+            key: ValueKey('test_context_ring_slot'),
+            width: 42,
+            height: 28,
+          ),
+        ],
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('test_context_ring_slot')), findsOneWidget);
+    expect(find.byType(VerticalDivider), findsNWidgets(2));
+  });
+
+  testWidgets('empty local-feature slot leaves no orphan divider', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _wrap(cubit, trailingWidgets: const [SizedBox.shrink()]),
+    );
+
+    expect(find.byType(VerticalDivider), findsNWidgets(2));
   });
 
   test('Codex Fast mode supports current and legacy metadata', () {

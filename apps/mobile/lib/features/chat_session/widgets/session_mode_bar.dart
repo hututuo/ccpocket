@@ -15,11 +15,13 @@ import 'codex_settings_sheet.dart';
 class SessionModeBar extends StatelessWidget {
   final Future<void> Function()? onBeforeRestart;
   final bool showExtendedCodexEfforts;
+  final List<Widget> trailingWidgets;
 
   const SessionModeBar({
     super.key,
     this.onBeforeRestart,
     this.showExtendedCodexEfforts = false,
+    this.trailingWidgets = const [],
   });
 
   @override
@@ -164,6 +166,7 @@ class SessionModeBar extends StatelessWidget {
                     ),
                   ),
                 ],
+                ...trailingWidgets,
               ],
             ),
           ),

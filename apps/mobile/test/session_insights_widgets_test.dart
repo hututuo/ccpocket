@@ -14,9 +14,10 @@ class _Bridge extends BridgeService {
       StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
   final sent = <ClientMessage>[];
   List<SessionUsageInfo> quotaProviders = const [];
+  bool connected = true;
 
   @override
-  bool get isConnected => true;
+  bool get isConnected => connected;
 
   @override
   Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
@@ -243,5 +244,69 @@ void main() {
     expect(find.byKey(const ValueKey('session_insights_bar')), findsOneWidget);
     expect(find.textContaining('5h'), findsOneWidget);
     expect(find.textContaining('33%'), findsOneWidget);
+  });
+
+  testWidgets('compact context ring fits the session mode toolbar', (
+    tester,
+  ) async {
+    final bridge = _Bridge();
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      _app(
+        Center(
+          child: SessionInsightsBar(
+            sessionId: 's1',
+            bridgeService: bridge,
+            compact: true,
+            showLeadingDivider: true,
+          ),
+        ),
+      ),
+    );
+    bridge.emit(
+      const ContextUsageMessage(
+        usage: ContextUsage(
+          sessionId: 's1',
+          last: ContextTokenUsage(totalTokens: 53),
+          total: ContextTokenUsage(totalTokens: 53),
+          modelContextWindow: 100,
+        ),
+      ),
+      's1',
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('session_insights_mode_chip')),
+      findsOneWidget,
+    );
+    expect(find.text('53%'), findsOneWidget);
+    expect(find.textContaining('53% ·'), findsNothing);
+    expect(find.byType(VerticalDivider), findsOneWidget);
+  });
+
+  testWidgets('empty compact insight slot hides its leading divider', (
+    tester,
+  ) async {
+    final bridge = _Bridge()..connected = false;
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      _app(
+        SessionInsightsBar(
+          sessionId: 's1',
+          bridgeService: bridge,
+          compact: true,
+          showLeadingDivider: true,
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey('session_insights_mode_chip')),
+      findsNothing,
+    );
+    expect(find.byType(VerticalDivider), findsNothing);
   });
 }

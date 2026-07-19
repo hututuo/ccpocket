@@ -11,13 +11,13 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
   String get featureId => 'session_insights';
 
   @override
-  List<Widget> statusWidgets(CodexSessionFeatureContext context) => [
-    Align(
-      alignment: Alignment.centerRight,
-      child: SessionInsightsBar(
-        sessionId: context.sessionId,
-        bridgeService: context.bridge,
-      ),
+  List<Widget> modeBarWidgets(CodexSessionFeatureContext context) => [
+    SessionInsightsBar(
+      key: ValueKey('session_insights_${context.sessionId}'),
+      sessionId: context.sessionId,
+      bridgeService: context.bridge,
+      compact: true,
+      showLeadingDivider: true,
     ),
   ];
 
