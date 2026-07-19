@@ -54,6 +54,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final Map<String, Timer> _deliveryPendingTimers = {};
   final Map<String, QueuedInputItem> _deliveryPendingInputs = {};
   final Set<String> _desktopContinuityItemKeys = {};
+  final Map<String, ChatMessageHandler> _desktopContinuityHandlers = {};
+  String? _desktopContinuityStreamingTurnKey;
   String? _desktopContinuityRequestId;
   String? _desktopContinuityThreadId;
   String? _desktopContinuityProjectPath;
@@ -361,6 +363,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityThreadId = nextThreadId;
     _desktopContinuityProjectPath = nextProjectPath;
     _desktopContinuityItemKeys.clear();
+    _desktopContinuityHandlers.clear();
+    _desktopContinuityStreamingTurnKey = null;
     _bridge.send(
       requestCodexDesktopContinuityWatch(
         requestId: requestId,
@@ -390,6 +394,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityThreadId = null;
     _desktopContinuityProjectPath = null;
     _desktopContinuityItemKeys.clear();
+    _desktopContinuityHandlers.clear();
+    _desktopContinuityStreamingTurnKey = null;
   }
 
   void _onDesktopContinuityMessage(LocalFeatureServerMessage rawMessage) {
@@ -439,7 +445,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         while (_desktopContinuityItemKeys.length > 4096) {
           _desktopContinuityItemKeys.remove(_desktopContinuityItemKeys.first);
         }
-        _applyExternalDesktopPayload(payload);
+        _applyExternalDesktopPayload(payload, turnId: rawMessage.turnId);
         return;
       case CodexDesktopContinuityEventKind.error:
         logger.warning(
@@ -509,15 +515,45 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
   }
 
-  void _applyExternalDesktopPayload(ServerMessage message) {
+  void _applyExternalDesktopPayload(
+    ServerMessage message, {
+    String? turnId,
+  }) {
     try {
-      final update = _handler.handle(
+      final turnKey = turnId ?? '__unattributed_desktop_turn__';
+      final handler = _desktopContinuityHandlers.putIfAbsent(
+        turnKey,
+        ChatMessageHandler.new,
+      );
+      while (_desktopContinuityHandlers.length > 32) {
+        final oldest = _desktopContinuityHandlers.keys.first;
+        if (oldest == turnKey && _desktopContinuityHandlers.length == 1) break;
+        _desktopContinuityHandlers.remove(oldest);
+      }
+      if ((message is ThinkingDeltaMessage || message is StreamDeltaMessage) &&
+          _desktopContinuityStreamingTurnKey != turnKey) {
+        // The shared visual streaming surface can display only one turn at a
+        // time. Reset it when explicit Desktop turn identity changes, while
+        // each turn's handler keeps its own reasoning accumulator for the
+        // correct completed assistant message.
+        _streamingCubit.reset();
+        _desktopContinuityStreamingTurnKey = turnKey;
+      }
+      final update = handler.handle(
         message,
         isBackground: true,
         isCodex: true,
         ignoredToolUseIds: _respondedToolUseIds,
       );
-      _applyUpdate(update, message, allowUserDelivery: false);
+      _applyUpdate(
+        update,
+        message,
+        allowUserDelivery: false,
+        sourceHandler: handler,
+        affectVisibleStreaming:
+            _desktopContinuityStreamingTurnKey == null ||
+            _desktopContinuityStreamingTurnKey == turnKey,
+      );
     } catch (error, stackTrace) {
       logger.error(
         '[session:$sessionId] Failed to apply Desktop continuity payload',
@@ -562,6 +598,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _desktopContinuityThreadId = null;
       _desktopContinuityProjectPath = null;
       _desktopContinuityItemKeys.clear();
+      _desktopContinuityHandlers.clear();
+      _desktopContinuityStreamingTurnKey = null;
       emit(
         state.copyWith(
           status: authoritativeStatus,
@@ -987,24 +1025,31 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     ChatStateUpdate update,
     ServerMessage originalMsg, {
     bool allowUserDelivery = true,
+    ChatMessageHandler? sourceHandler,
+    bool affectVisibleStreaming = true,
   }) {
+    final messageHandler = sourceHandler ?? _handler;
     final current = state;
     final markUserMessagesSent =
         update.markUserMessagesSent && allowUserDelivery;
 
     // --- Streaming state (separate cubit) ---
     if (update.resetStreaming) {
-      _handler.currentStreaming = null;
-      _streamingCubit.reset();
+      messageHandler.currentStreaming = null;
+      if (affectVisibleStreaming) _streamingCubit.reset();
     }
 
     // Handle stream delta → streaming cubit
     if (originalMsg is StreamDeltaMessage) {
-      _streamingCubit.appendText(originalMsg.text);
+      if (affectVisibleStreaming) {
+        _streamingCubit.appendText(originalMsg.text);
+      }
       return; // No main state update needed for deltas
     }
     if (originalMsg is ThinkingDeltaMessage) {
-      _streamingCubit.appendThinking(originalMsg.text);
+      if (affectVisibleStreaming) {
+        _streamingCubit.appendThinking(originalMsg.text);
+      }
       return;
     }
 
@@ -1014,7 +1059,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     // When assistant message arrives and streaming was active, reset streaming
     if (originalMsg is AssistantServerMessage &&
-        _handler.currentStreaming == null) {
+        messageHandler.currentStreaming == null &&
+        affectVisibleStreaming) {
       _streamingCubit.reset();
     }
 

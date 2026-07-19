@@ -840,6 +840,121 @@ void main() {
     );
 
     test(
+      'Desktop reasoning stays isolated by explicit turn identity',
+      () async {
+        final cubit = createCubit(
+          's1',
+          provider: Provider.codex,
+          initialProjectPath: '/project',
+        );
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-1',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        final watch = mockBridge.sentMessages.lastWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final requestId =
+            (jsonDecode(watch.toJson()) as Map<String, dynamic>)['requestId']
+                as String;
+
+        void emitDesktop({
+          required String turnId,
+          required String itemKey,
+          required ServerMessage payload,
+        }) {
+          mockBridge.emitLocalFeature(
+            CodexDesktopContinuityEventMessage(
+              event: CodexDesktopContinuityEventKind.message,
+              requestId: requestId,
+              bridgeInstanceId: 'bridge-1',
+              sessionId: 's1',
+              threadId: 'thread-1',
+              origin: 'desktop_rollout',
+              turnId: turnId,
+              itemKey: itemKey,
+              payload: payload,
+            ),
+            sessionId: 's1',
+          );
+        }
+
+        emitDesktop(
+          turnId: 'turn-a',
+          itemKey: 'reasoning:a',
+          payload: const ThinkingDeltaMessage(text: 'Reasoning A'),
+        );
+        await Future.microtask(() {});
+        expect(streamingCubit.state.thinking, 'Reasoning A');
+
+        emitDesktop(
+          turnId: 'turn-b',
+          itemKey: 'reasoning:b',
+          payload: const ThinkingDeltaMessage(text: 'Reasoning B'),
+        );
+        await Future.microtask(() {});
+        expect(streamingCubit.state.thinking, 'Reasoning B');
+
+        // A can complete while B remains the visible streaming turn. Its
+        // assistant must not clear B's live indicator or steal B's reasoning.
+        emitDesktop(
+          turnId: 'turn-a',
+          itemKey: 'assistant:a',
+          payload: const AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-a',
+              role: 'assistant',
+              content: [TextContent(text: 'Answer A')],
+              model: 'codex',
+            ),
+          ),
+        );
+        await Future.microtask(() {});
+        expect(streamingCubit.state.thinking, 'Reasoning B');
+
+        emitDesktop(
+          turnId: 'turn-b',
+          itemKey: 'assistant:b',
+          payload: const AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-b',
+              role: 'assistant',
+              content: [TextContent(text: 'Answer B')],
+              model: 'codex',
+            ),
+          ),
+        );
+        await Future.microtask(() {});
+
+        AssistantServerMessage assistant(String id) =>
+            (cubit.state.entries.whereType<ServerChatEntry>().firstWhere(
+                      (entry) =>
+                          entry.message is AssistantServerMessage &&
+                          (entry.message as AssistantServerMessage).message.id ==
+                              id,
+                    ).message
+                    as AssistantServerMessage);
+        final assistantA = assistant('assistant-a').message;
+        final assistantB = assistant('assistant-b').message;
+        expect(
+          assistantA.content.whereType<ThinkingContent>().single.thinking,
+          'Reasoning A',
+        );
+        expect(
+          assistantB.content.whereType<ThinkingContent>().single.thinking,
+          'Reasoning B',
+        );
+      },
+    );
+
+    test(
       'Desktop continuity reconciles an offline completion without losing handoff state',
       () async {
         final cubit = createCubit(
