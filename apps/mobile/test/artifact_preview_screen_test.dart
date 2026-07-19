@@ -173,6 +173,8 @@ void main() {
     quickLook.dismissed.complete();
     await tester.pump();
 
+    final popScope = tester.widget<PopScope<void>>(find.byType(PopScope<void>));
+    expect(popScope.canPop, isTrue);
     expect(
       find.ancestor(
         of: find.byIcon(Icons.visibility_outlined),
