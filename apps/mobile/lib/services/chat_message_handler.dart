@@ -954,11 +954,12 @@ class ChatMessageHandler {
         codexSpeed = codexSpeedFromRaw(msg.serviceTier);
       }
     }
-    // Extract claudeSessionId from session_created or init messages.
-    // Prefer the full Claude CLI UUID (claudeSessionId) over the Bridge's
-    // internal 8-char ID (sessionId) for JSONL file lookups.
+    // A session_created message uses sessionId for the Bridge runtime id. It
+    // is not a durable Codex thread id unless the Bridge also supplies the
+    // provider identity in claudeSessionId. An init message is emitted by the
+    // provider itself, so its sessionId remains a valid legacy fallback.
     final sessionId = msg is SystemMessage
-        ? (msg.claudeSessionId ?? msg.sessionId)
+        ? (msg.claudeSessionId ?? (subtype == 'init' ? msg.sessionId : null))
         : null;
     // Track git tip to suppress duplicate git errors later
     if (subtype == 'tip' &&

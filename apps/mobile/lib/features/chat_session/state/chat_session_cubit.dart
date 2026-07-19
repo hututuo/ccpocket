@@ -609,6 +609,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void _updateCodexRuntimeSupportFromSessions(List<SessionInfo> sessions) {
     _synchronizeCodexRuntimeSettingsFromSessions(sessions);
+    _syncCodexContinuityBindingFromSessions(sessions);
     _updateNativePlanModeSupportFromSessions(sessions);
     _updateGoalSupportFromSessions(sessions);
     // BridgeService publishes the session-list stream immediately before its
@@ -753,6 +754,37 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         codexModel: nextModel,
         codexModelReasoningEffort: nextEffort,
         codexSpeed: nextSpeed,
+      ),
+    );
+  }
+
+  void _syncCodexContinuityBindingFromSessions(List<SessionInfo> sessions) {
+    if (!isCodex || isClosed) return;
+    SessionInfo? snapshot;
+    for (final session in sessions) {
+      if (session.id == sessionId && session.provider == Provider.codex.value) {
+        snapshot = session;
+        break;
+      }
+    }
+    if (snapshot == null) return;
+
+    final threadId = snapshot.claudeSessionId?.trim();
+    final projectPath = snapshot.projectPath.trim();
+    final nextThreadId = threadId == null || threadId.isEmpty
+        ? state.claudeSessionId
+        : threadId;
+    final nextProjectPath = projectPath.isEmpty
+        ? state.projectPath
+        : projectPath;
+    if (nextThreadId == state.claudeSessionId &&
+        nextProjectPath == state.projectPath) {
+      return;
+    }
+    emit(
+      state.copyWith(
+        claudeSessionId: nextThreadId,
+        projectPath: nextProjectPath,
       ),
     );
   }
