@@ -76,6 +76,19 @@ export class LocalFeaturesController {
     }
   }
 
+  admitCodexQueuedInputDrain(session: LocalFeatureSession): boolean {
+    for (const handler of new Set(this.handlers.values())) {
+      if (handler.admitCodexQueuedInputDrain?.(session) === false) return false;
+    }
+    return true;
+  }
+
+  codexQueuedInputDrainBlocked(session: LocalFeatureSession): void {
+    for (const handler of new Set(this.handlers.values())) {
+      handler.codexQueuedInputDrainBlocked?.(session);
+    }
+  }
+
   externalCodexTurnId(session: LocalFeatureSession): string | undefined {
     for (const handler of new Set(this.handlers.values())) {
       const turnId = handler.externalCodexTurnId?.(session);

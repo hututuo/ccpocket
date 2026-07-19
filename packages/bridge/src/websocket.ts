@@ -1211,6 +1211,12 @@ export class BridgeWebSocketServer {
       this.worktreeStore,
       () => this.broadcastSessionList(),
       artifactManager,
+      {
+        canDrain: (session) =>
+          this.localFeatures.admitCodexQueuedInputDrain(session),
+        onBlocked: (session) =>
+          this.localFeatures.codexQueuedInputDrainBlocked(session),
+      },
     );
     this.codexGoals = new CodexGoalController({
       getSession: (sessionId) => this.sessionManager.get(sessionId),

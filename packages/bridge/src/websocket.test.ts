@@ -110,6 +110,7 @@ vi.mock("./session.js", async () => {
     private seq = 0;
     private onMessage: (sessionId: string, msg: any) => void;
     private artifactManager: any;
+    public codexQueueDrainHooks: any;
 
     constructor(
       onMessage?: (sessionId: string, msg: any) => void,
@@ -119,9 +120,11 @@ vi.mock("./session.js", async () => {
       _worktreeStore?: unknown,
       _onSessionUpdated?: unknown,
       artifactManager?: unknown,
+      codexQueueDrainHooks?: unknown,
     ) {
       this.onMessage = onMessage ?? (() => {});
       this.artifactManager = artifactManager;
+      this.codexQueueDrainHooks = codexQueueDrainHooks ?? {};
     }
 
     async enrichArtifactsForSession(
@@ -475,6 +478,24 @@ vi.mock("./session.js", async () => {
       this.appendHistory(id, userMsg);
       this.onMessage(id, userMsg);
       return { ok: true };
+    }
+
+    drainCodexQueuedInputIfReady(id: string) {
+      const session = this.sessions.get(id);
+      if (!session?.codexQueuedInput || !session.process.isWaitingForInput) {
+        return false;
+      }
+      if (this.codexQueueDrainHooks.canDrain?.(session) === false) {
+        this.codexQueueDrainHooks.onBlocked?.(session);
+        return false;
+      }
+      session.process.sendInputStructured?.(session.codexQueuedInput.text, {
+        images: session.codexQueuedInput.images,
+        skills: session.codexQueuedInput.skills,
+        mentions: session.codexQueuedInput.mentions,
+      });
+      session.codexQueuedInput = undefined;
+      return true;
     }
 
     appendHistory(id: string, msg: any) {
@@ -10708,6 +10729,47 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
     expect(session.codexQueuedInput).toBeUndefined();
 
+    bridge.close();
+  });
+
+  it("wires local feature guards into SessionManager queue drains", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.process.isWaitingForInput = true;
+    session.codexQueuedInput = {
+      itemId: "queued-wiring",
+      text: "stay queued",
+      createdAt: new Date().toISOString(),
+    };
+    const admit = vi
+      .spyOn((bridge as any).localFeatures, "admitCodexQueuedInputDrain")
+      .mockReturnValue(false);
+    const blocked = vi.spyOn(
+      (bridge as any).localFeatures,
+      "codexQueuedInputDrainBlocked",
+    );
+
+    expect(
+      (bridge as any).sessionManager.drainCodexQueuedInputIfReady(
+        created.sessionId,
+      ),
+    ).toBe(false);
+    expect(admit).toHaveBeenCalledWith(session);
+    expect(blocked).toHaveBeenCalledWith(session);
+    expect(session.codexQueuedInput?.itemId).toBe("queued-wiring");
     bridge.close();
   });
 

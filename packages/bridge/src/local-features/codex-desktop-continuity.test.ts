@@ -102,6 +102,41 @@ describe("CodexRolloutMonitor", () => {
     monitor.close();
   });
 
+  it("keeps a delayed local turn unpublished and unsteerable while unknown", async () => {
+    vi.useFakeTimers();
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    let localTurnId: string | undefined;
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-delayed-local",
+      path,
+      getLocalActiveTurnId: () => localTurnId,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event("event_msg", {
+        type: "task_started",
+        turn_id: "turn-delayed-local",
+      }),
+    ]);
+    await monitor.refreshNow();
+
+    expect(monitor.snapshot).toEqual({ state: "unknown" });
+    expect(monitor.hasExternalTurn).toBe(false);
+    expect(monitor.hasBlockingExternalActivity).toBe(true);
+    expect(monitor.externalTurnIdForSteering).toBeUndefined();
+    expect(events).toEqual([]);
+
+    localTurnId = "turn-delayed-local";
+    await vi.advanceTimersByTimeAsync(100);
+    expect(monitor.snapshot).toEqual({ state: "idle" });
+    expect(monitor.hasBlockingExternalActivity).toBe(false);
+    expect(events).toEqual([]);
+    monitor.close();
+  });
+
   it("streams Desktop user, reasoning, assistant, tool, and terminal items", async () => {
     const path = await rollout();
     const events: CodexDesktopContinuityMonitorEvent[] = [];
@@ -934,6 +969,80 @@ describe("CodexRolloutMonitor", () => {
 });
 
 describe("CodexDesktopContinuityHandler", () => {
+  it("reports unknown to a watcher that joins during ownership delay", async () => {
+    vi.useFakeTimers();
+    const path = await rollout();
+    const sentByClient = new Map<object, any[]>();
+    let localTurnId: string | undefined;
+    const session = {
+      id: "runtime-unknown-watch",
+      provider: "codex",
+      projectPath: "/project",
+      process: { isWaitingForInput: false },
+    };
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => session,
+      getCodexThreadId: () => "thread-unknown-watch",
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: async () => {
+        throw new Error("not used");
+      },
+      getLocallyActiveCodexTurnId: () => localTurnId,
+      send: (client, message) => {
+        const sent = sentByClient.get(client) ?? [];
+        sent.push(message);
+        sentByClient.set(client, sent);
+      },
+      supports: () => true,
+    };
+    const handler = new CodexDesktopContinuityHandler(runtime, {
+      resolveRolloutPath: async () => path,
+    });
+    const client1 = {};
+    const client2 = {};
+    const watch = (client: object, requestId: string) =>
+      handler.handle(
+        {
+          type: "codex_desktop_continuity_watch",
+          protocolVersion: 1,
+          requestId,
+          sessionId: session.id,
+          threadId: "thread-unknown-watch",
+          projectPath: "/project",
+        },
+        { client, signal: new AbortController().signal, runtime },
+      );
+    await watch(client1, "watch-before-start");
+    await appendEntries(path, [
+      event("event_msg", {
+        type: "task_started",
+        turn_id: "turn-delayed-watch",
+      }),
+    ]);
+    await (handler as any).monitors
+      .get("thread-unknown-watch")
+      .refreshNow();
+    await watch(client2, "watch-during-delay");
+
+    expect(sentByClient.get(client2)?.at(-1)).toMatchObject({
+      event: "watching",
+      requestId: "watch-during-delay",
+      state: "unknown",
+    });
+    expect(sentByClient.get(client2)?.at(-1)).not.toHaveProperty("turnId");
+    expect(handler.externalCodexTurnId(session)).toBeUndefined();
+    expect(handler.hasExternalCodexActivity(session)).toBe(true);
+
+    localTurnId = "turn-delayed-watch";
+    await vi.advanceTimersByTimeAsync(100);
+    expect(
+      sentByClient
+        .get(client2)
+        ?.some((message) => message.event === "state"),
+    ).toBe(false);
+    handler.close();
+  });
+
   it("drops an aborted watch and closes its unused monitor", async () => {
     const path = await rollout();
     const client = {};
@@ -982,6 +1091,91 @@ describe("CodexDesktopContinuityHandler", () => {
     expect(sent).toEqual([]);
     expect((handler as any).watchersByClient.size).toBe(0);
     expect((handler as any).monitors.size).toBe(0);
+    handler.close();
+  });
+
+  it("uses watch intent CAS across delayed watch, unwatch, and supersede", async () => {
+    const path = await rollout();
+    const client = {};
+    const sent: any[] = [];
+    let releaseFirst!: (path: string) => void;
+    const firstPath = new Promise<string>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let resolveCalls = 0;
+    const resolveRolloutPath = vi.fn(() => {
+      resolveCalls += 1;
+      return resolveCalls === 1 ? firstPath : Promise.resolve(path);
+    });
+    const session = {
+      id: "runtime-watch-cas",
+      provider: "codex",
+      projectPath: "/project",
+      process: { isWaitingForInput: true },
+    };
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => session,
+      getCodexThreadId: () => "thread-watch-cas",
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: async () => {
+        throw new Error("not used");
+      },
+      send: (_client, message) => sent.push(message),
+      supports: () => true,
+    };
+    const handler = new CodexDesktopContinuityHandler(runtime, {
+      resolveRolloutPath,
+    });
+    const context = {
+      client,
+      signal: new AbortController().signal,
+      runtime,
+    };
+    const request = (type: "watch" | "unwatch", requestId: string) =>
+      handler.handle(
+        type === "watch"
+          ? {
+              type: "codex_desktop_continuity_watch",
+              protocolVersion: 1,
+              requestId,
+              sessionId: session.id,
+              threadId: "thread-watch-cas",
+              projectPath: "/project",
+            }
+          : {
+              type: "codex_desktop_continuity_unwatch",
+              protocolVersion: 1,
+              requestId,
+              sessionId: session.id,
+              threadId: "thread-watch-cas",
+            },
+        context,
+      );
+
+    const watch1 = request("watch", "watch-1");
+    await vi.waitFor(() => expect(resolveRolloutPath).toHaveBeenCalledOnce());
+    await request("unwatch", "watch-1");
+    await request("watch", "watch-2");
+    releaseFirst(path);
+    await watch1;
+
+    const registration = (handler as any).watchersByClient
+      .get(client)
+      ?.get(session.id);
+    expect(registration?.requestId).toBe("watch-2");
+    expect(
+      sent
+        .filter((message) => message.event === "watching")
+        .map((message) => message.requestId),
+    ).toEqual(["watch-2"]);
+
+    await request("unwatch", "watch-1");
+    expect(
+      (handler as any).watchersByClient.get(client)?.get(session.id)?.requestId,
+    ).toBe("watch-2");
+    expect((handler as any).monitors.get("thread-watch-cas")?.watcherCount).toBe(
+      1,
+    );
     handler.close();
   });
 
@@ -1304,6 +1498,118 @@ describe("CodexDesktopContinuityHandler", () => {
     );
     expect(rehydrate).toHaveBeenCalledOnce();
     expect(drainQueuedInput).not.toHaveBeenCalled();
+    handler.close();
+  });
+
+  it("rehydrates once before draining C after external B ends before local A", async () => {
+    const path = await rollout();
+    const client = {};
+    let localTurnId: string | undefined = "local-a";
+    let queued = false;
+    let drainCount = 0;
+    const process = { isWaitingForInput: false };
+    const session = {
+      id: "runtime-a-b-c",
+      provider: "codex",
+      projectPath: "/project",
+      createdAt: new Date("2026-07-20T00:00:00Z"),
+      process,
+    };
+    const rehydrate = vi.fn(async () => true);
+    let handler!: CodexDesktopContinuityHandler;
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => session,
+      getCodexThreadId: () => "thread-a-b-c",
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: async () => {
+        throw new Error("not used");
+      },
+      getLocallyActiveCodexTurnId: () => localTurnId,
+      rehydrateCodexSessionAfterExternalTurn: rehydrate,
+      hasCodexQueuedInput: () => queued,
+      drainCodexQueuedInputIfReady: (_sessionId, isStillSafe) => {
+        if (isStillSafe?.() === false || !process.isWaitingForInput || !queued) {
+          return false;
+        }
+        if (!handler.admitCodexQueuedInputDrain(session)) {
+          handler.codexQueuedInputDrainBlocked(session);
+          return false;
+        }
+        queued = false;
+        drainCount += 1;
+        return true;
+      },
+      send: () => {},
+      supports: () => true,
+    };
+    handler = new CodexDesktopContinuityHandler(runtime, {
+      resolveRolloutPath: async () => path,
+      rehydrateSettleMs: 1,
+    });
+    await handler.handle(
+      {
+        type: "codex_desktop_continuity_watch",
+        protocolVersion: 1,
+        requestId: "watch-a-b-c",
+        sessionId: session.id,
+        threadId: "thread-a-b-c",
+        projectPath: "/project",
+      },
+      { client, signal: new AbortController().signal, runtime },
+    );
+    await appendEntries(path, [
+      event("event_msg", { type: "task_started", turn_id: "local-a" }),
+      event("event_msg", { type: "task_started", turn_id: "desktop-b" }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "desktop-b-user",
+        message: "Desktop B",
+      }),
+    ]);
+    const monitor = (handler as any).monitors.get("thread-a-b-c");
+    await monitor.refreshNow();
+    queued = true;
+    expect(
+      await handler.admitInput!(client, session, {
+        type: "input",
+        sessionId: session.id,
+        clientMessageId: "mobile-c",
+      }),
+    ).toEqual({ action: "queue", reason: "desktop_turn_active" });
+    handler.inputAccepted!(
+      client,
+      session,
+      {
+        type: "input",
+        sessionId: session.id,
+        clientMessageId: "mobile-c",
+      },
+      true,
+    );
+
+    await appendEntries(path, [
+      event("event_msg", { type: "task_complete", turn_id: "desktop-b" }),
+    ]);
+    await monitor.refreshNow();
+    await vi.waitFor(() =>
+      expect((handler as any).blockedDrainSessionIds.has(session.id)).toBe(true),
+    );
+    expect(rehydrate).not.toHaveBeenCalled();
+    expect(drainCount).toBe(0);
+
+    await appendEntries(path, [
+      event("event_msg", { type: "task_complete", turn_id: "local-a" }),
+    ]);
+    localTurnId = undefined;
+    process.isWaitingForInput = true;
+    // Ordinary input_ready happens before fs.watch consumes local A's terminal.
+    expect(runtime.drainCodexQueuedInputIfReady!(session.id)).toBe(false);
+
+    await vi.waitFor(() => expect(drainCount).toBe(1));
+    expect(rehydrate).toHaveBeenCalledOnce();
+    expect(queued).toBe(false);
+    expect((handler as any).staleRuntimeSessionIds.has(session.id)).toBe(false);
+    expect((handler as any).blockedDrainSessionIds.has(session.id)).toBe(false);
     handler.close();
   });
 

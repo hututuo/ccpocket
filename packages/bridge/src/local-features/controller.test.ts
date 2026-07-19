@@ -117,6 +117,30 @@ describe("LocalFeaturesController", () => {
     expect(controller.hasExternalCodexActivity(session)).toBe(true);
     expect(controller.externalCodexTurnId(session)).toBeUndefined();
   });
+
+  it("composes generic queued-input drain guards and blocked callbacks", () => {
+    const session = runtime().getSession("session-1")!;
+    const blocked = vi.fn();
+    const allowing: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage"],
+      handle: async () => {},
+      admitCodexQueuedInputDrain: () => true,
+      codexQueuedInputDrainBlocked: blocked,
+    };
+    const rejecting: LocalFeatureHandler = {
+      messageTypes: ["get_session_usage"],
+      handle: async () => {},
+      admitCodexQueuedInputDrain: () => false,
+    };
+    const controller = new LocalFeaturesController(runtime(), [
+      allowing,
+      rejecting,
+    ]);
+
+    expect(controller.admitCodexQueuedInputDrain(session)).toBe(false);
+    controller.codexQueuedInputDrainBlocked(session);
+    expect(blocked).toHaveBeenCalledWith(session);
+  });
 });
 
 function runtime(

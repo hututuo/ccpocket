@@ -92,6 +92,10 @@ export interface LocalFeatureHandler {
     message: LocalFeatureInputMessage,
     queued: boolean,
   ): void;
+  /** Synchronous guard before SessionManager promotes a queued Codex input. */
+  admitCodexQueuedInputDrain?(session: LocalFeatureSession): boolean;
+  /** Notification that an input_ready/explicit drain was held by a guard. */
+  codexQueuedInputDrainBlocked?(session: LocalFeatureSession): void;
   /** True when a Desktop-owned turn exists, even if no unique turn id exists. */
   hasExternalCodexActivity?(session: LocalFeatureSession): boolean;
   externalCodexTurnId?(session: LocalFeatureSession): string | undefined;

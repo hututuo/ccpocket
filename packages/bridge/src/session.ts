@@ -227,6 +227,12 @@ const MAX_IDLE_SESSIONS = 30;
 export type GalleryImageCallback = (meta: GalleryImageMeta) => void;
 export type SessionUpdatedCallback = (sessionId: string) => void;
 
+/** Optional module-neutral hooks around queued Codex input promotion. */
+export interface CodexQueueDrainHooks {
+  canDrain?(session: SessionInfo): boolean;
+  onBlocked?(session: SessionInfo): void;
+}
+
 function mergeCodexSettings(
   current: SessionInfo["codexSettings"],
   msg: Extract<ServerMessage, { type: "system" }>,
@@ -316,6 +322,7 @@ export class SessionManager {
   private worktreeStore: WorktreeStore | null;
   private onSessionUpdated: SessionUpdatedCallback | null;
   private artifactManager: ArtifactManager | null;
+  private codexQueueDrainHooks: CodexQueueDrainHooks;
 
   /** Cache slash commands per project path for early loading on subsequent sessions. */
   private commandCache = new Map<
@@ -339,6 +346,7 @@ export class SessionManager {
     worktreeStore?: WorktreeStore,
     onSessionUpdated?: SessionUpdatedCallback,
     artifactManager?: ArtifactManager,
+    codexQueueDrainHooks: CodexQueueDrainHooks = {},
   ) {
     this.onMessage = onMessage;
     this.imageStore = imageStore ?? null;
@@ -347,6 +355,7 @@ export class SessionManager {
     this.worktreeStore = worktreeStore ?? null;
     this.onSessionUpdated = onSessionUpdated ?? null;
     this.artifactManager = artifactManager ?? null;
+    this.codexQueueDrainHooks = codexQueueDrainHooks;
   }
 
   /**
@@ -1055,13 +1064,6 @@ export class SessionManager {
       proc.on("input_ready", () => {
         if (!ownsRuntimeSlot()) return;
         const drain = (): void => {
-          // Continuity replacements are followed by a fresh rollout read in
-          // their owning handler. Never drain at input_ready when such a
-          // fence exists: a competing Desktop start may already be durable
-          // but not yet observed by the monitor.
-          if (replacementSession && internal?.replacementStillValid) {
-            return;
-          }
           this.drainCodexQueue(session);
         };
         if (messageProcessing) {
@@ -1920,15 +1922,18 @@ export class SessionManager {
     ) {
       return false;
     }
-    this.drainCodexQueue(session);
-    return session.codexQueuedInput === undefined;
+    return this.drainCodexQueue(session);
   }
 
-  private drainCodexQueue(session: SessionInfo): void {
-    if (session.provider !== "codex") return;
+  private drainCodexQueue(session: SessionInfo): boolean {
+    if (session.provider !== "codex") return false;
     const queued = session.codexQueuedInput;
-    if (!queued || !(session.process instanceof CodexProcess)) return;
-    if (!session.process.isWaitingForInput) return;
+    if (!queued || !(session.process instanceof CodexProcess)) return false;
+    if (!session.process.isWaitingForInput) return false;
+    if (this.codexQueueDrainHooks.canDrain?.(session) === false) {
+      this.codexQueueDrainHooks.onBlocked?.(session);
+      return false;
+    }
 
     session.codexQueuedInput = undefined;
     this.broadcastCodexQueue(session);
@@ -1946,6 +1951,7 @@ export class SessionManager {
         ? { clientMessageId: queued.clientMessageId }
         : {}),
     });
+    return true;
   }
 
   private buildQueuedUserInputMessage(queued: QueuedCodexInput): ServerMessage {

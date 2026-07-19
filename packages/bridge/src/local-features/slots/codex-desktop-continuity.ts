@@ -48,6 +48,13 @@ interface WatchRegistration {
   threadId: string;
 }
 
+interface WatchIntent {
+  generation: number;
+  requestId: string;
+  sessionId: string;
+  threadId: string;
+}
+
 interface MonitorMessageEvent {
   kind: "message";
   itemKey: string;
@@ -133,6 +140,11 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     object,
     Map<string, WatchRegistration>
   >();
+  private readonly watchIntentsByClient = new Map<
+    object,
+    Map<string, WatchIntent>
+  >();
+  private watchGeneration = 0;
   private readonly localClientMessageIds = new Map<string, Set<string>>();
   private readonly rehydrateTimers = new Map<
     string,
@@ -142,6 +154,7 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
   private readonly rehydrateFailureCounts = new Map<string, number>();
   /** Runtime sessions whose model-visible history trails the durable rollout. */
   private readonly staleRuntimeSessionIds = new Set<string>();
+  private readonly blockedDrainSessionIds = new Set<string>();
   private closed = false;
 
   constructor(
@@ -163,7 +176,18 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       return;
     }
     if (message.type === "codex_desktop_continuity_unwatch") {
-      this.removeWatch(context.client, message.sessionId, message.threadId);
+      this.invalidateWatchIntent(
+        context.client,
+        message.sessionId,
+        message.threadId,
+        message.requestId,
+      );
+      this.removeWatch(
+        context.client,
+        message.sessionId,
+        message.threadId,
+        message.requestId,
+      );
       this.send(context.client, message, { event: "unwatched" });
       return;
     }
@@ -200,18 +224,36 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       return;
     }
 
+    const intent = this.beginWatchIntent(context.client, message);
+
     try {
       const monitor = await this.monitorFor(message.threadId);
       // Resolving and seeding a rollout can await filesystem work. A socket
       // may disappear in that window, so never register a watcher after its
       // controller has already been aborted.
-      if (this.closed || context.signal.aborted) {
+      if (
+        this.closed ||
+        context.signal.aborted ||
+        !this.isCurrentWatchIntent(context.client, intent)
+      ) {
+        if (context.signal.aborted) {
+          this.invalidateWatchIntentIfCurrent(context.client, intent);
+        }
         this.disposeMonitorIfUnused(message.threadId, monitor);
         return;
       }
-      this.registerWatch(context.client, message, monitor);
+      if (!this.registerWatch(context.client, message, monitor, intent)) {
+        this.disposeMonitorIfUnused(message.threadId, monitor);
+        return;
+      }
       if (this.closed || context.signal.aborted) {
-        this.removeWatch(context.client, message.sessionId, message.threadId);
+        this.invalidateWatchIntentIfCurrent(context.client, intent);
+        this.removeWatch(
+          context.client,
+          message.sessionId,
+          message.threadId,
+          message.requestId,
+        );
         this.disposeMonitorIfUnused(message.threadId, monitor);
         return;
       }
@@ -233,13 +275,21 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
         ...(handoffQueued ? { handoffQueued: true } : {}),
       });
       if (
-        !monitor.hasExternalTurn &&
+        !monitor.hasBlockingExternalActivity &&
         this.staleRuntimeSessionIds.has(session.id)
       ) {
         this.rehydrateFailureCounts.delete(session.id);
         this.scheduleRehydrate(session.id, message.threadId, snapshot.turnId);
       }
     } catch (error) {
+      if (
+        this.closed ||
+        context.signal.aborted ||
+        !this.isCurrentWatchIntent(context.client, intent)
+      ) {
+        return;
+      }
+      this.invalidateWatchIntentIfCurrent(context.client, intent);
       this.send(context.client, message, {
         event: "error",
         errorCode: "rollout_unavailable",
@@ -276,7 +326,7 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       // path remains authoritative when no rollout can be resolved.
       return { action: "allow" };
     }
-    if (monitor.hasExternalTurn) {
+    if (monitor.hasBlockingExternalActivity) {
       remember(this.staleRuntimeSessionIds, session.id, MAX_WATCHERS);
       return { action: "queue", reason: "desktop_turn_active" };
     }
@@ -312,11 +362,51 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     setBoundedMap(this.localClientMessageIds, threadId, ids, MAX_MONITORS);
     if (
       queued &&
-      this.monitors.get(threadId)?.hasExternalTurn === false &&
+      this.monitors.get(threadId)?.hasBlockingExternalActivity === false &&
       !this.staleRuntimeSessionIds.has(session.id) &&
       !this.rehydrateInFlight.has(session.id)
     ) {
       this.runtime.drainCodexQueuedInputIfReady?.(session.id);
+    }
+  }
+
+  admitCodexQueuedInputDrain(session: LocalFeatureSession): boolean {
+    if (session.provider !== "codex") return true;
+    const threadId = this.runtime.getCodexThreadId(session);
+    if (!threadId) return true;
+    const monitor = this.monitors.get(threadId);
+    if (!monitor) return true;
+    if (monitor.hasBlockingExternalActivity) return false;
+    if (monitor.needsRehydrateSince(session.createdAt)) {
+      remember(this.staleRuntimeSessionIds, session.id, MAX_WATCHERS);
+    }
+    return (
+      !this.staleRuntimeSessionIds.has(session.id) &&
+      !this.rehydrateInFlight.has(session.id)
+    );
+  }
+
+  codexQueuedInputDrainBlocked(session: LocalFeatureSession): void {
+    if (session.provider !== "codex") return;
+    const threadId = this.runtime.getCodexThreadId(session);
+    if (!threadId) return;
+    remember(this.blockedDrainSessionIds, session.id, MAX_WATCHERS);
+    const monitor = this.monitors.get(threadId);
+    if (!monitor) return;
+    if (monitor.hasExternalTurn) {
+      remember(this.staleRuntimeSessionIds, session.id, MAX_WATCHERS);
+    }
+    if (
+      monitor.hasBlockingExternalActivity ||
+      this.rehydrateInFlight.has(session.id)
+    ) {
+      return;
+    }
+    if (monitor.needsRehydrateSince(session.createdAt)) {
+      remember(this.staleRuntimeSessionIds, session.id, MAX_WATCHERS);
+    }
+    if (this.staleRuntimeSessionIds.has(session.id)) {
+      this.scheduleRehydrate(session.id, threadId, monitor.snapshot.turnId, 0);
     }
   }
 
@@ -333,16 +423,22 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     if (session.provider !== "codex") return false;
     const threadId = this.runtime.getCodexThreadId(session);
     if (!threadId) return false;
-    return this.monitors.get(threadId)?.hasExternalTurn ?? false;
+    return this.monitors.get(threadId)?.hasBlockingExternalActivity ?? false;
   }
 
   disconnect(client: object): void {
+    this.watchIntentsByClient.delete(client);
     const registrations = this.watchersByClient.get(client);
-    if (!registrations) return;
-    for (const registration of registrations.values()) {
-      this.monitors.get(registration.threadId)?.removeWatcher(registration);
+    if (registrations) {
+      for (const registration of registrations.values()) {
+        const monitor = this.monitors.get(registration.threadId);
+        monitor?.removeWatcher(registration);
+        if (monitor) {
+          this.disposeMonitorIfUnused(registration.threadId, monitor);
+        }
+      }
+      this.watchersByClient.delete(client);
     }
-    this.watchersByClient.delete(client);
   }
 
   close(): void {
@@ -352,8 +448,10 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     for (const monitor of this.monitors.values()) monitor.close();
     this.monitors.clear();
     this.watchersByClient.clear();
+    this.watchIntentsByClient.clear();
     this.localClientMessageIds.clear();
     this.staleRuntimeSessionIds.clear();
+    this.blockedDrainSessionIds.clear();
     this.rehydrateFailureCounts.clear();
     this.rehydrateInFlight.clear();
   }
@@ -385,7 +483,10 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     const path = await (
       this.options.resolveRolloutPath ?? resolveCodexSessionJsonlPath
     )(threadId);
+    if (this.closed) throw new Error("Continuity handler is closed");
     if (!path) throw new Error(`No durable rollout found for ${threadId}`);
+    const racedBeforeStart = this.monitors.get(threadId);
+    if (racedBeforeStart) return racedBeforeStart;
     const monitor = new CodexRolloutMonitor({
       threadId,
       path,
@@ -394,15 +495,25 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       consumeLocalClientMessageId: (clientMessageId) =>
         this.consumeLocalClientMessageId(threadId, clientMessageId),
       onEvent: (event) => this.onMonitorEvent(threadId, event),
+      onLocalOwnershipSettled: () =>
+        this.onMonitorLocalOwnershipSettled(threadId),
     });
-    this.monitors.set(threadId, monitor);
     try {
       await monitor.start();
     } catch (error) {
-      this.monitors.delete(threadId);
       monitor.close();
       throw error;
     }
+    const racedAfterStart = this.monitors.get(threadId);
+    if (racedAfterStart) {
+      monitor.close();
+      return racedAfterStart;
+    }
+    if (this.closed) {
+      monitor.close();
+      throw new Error("Continuity handler is closed");
+    }
+    this.monitors.set(threadId, monitor);
     return monitor;
   }
 
@@ -436,7 +547,9 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       { type: "codex_desktop_continuity_watch" }
     >,
     monitor: CodexRolloutMonitor,
-  ): void {
+    intent: WatchIntent,
+  ): boolean {
+    if (!this.isCurrentWatchIntent(client, intent)) return false;
     let registrations = this.watchersByClient.get(client);
     const previous = registrations?.get(message.sessionId);
     if (!previous && this.totalWatcherCount >= MAX_WATCHERS) {
@@ -446,7 +559,13 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       registrations = new Map();
       this.watchersByClient.set(client, registrations);
     }
-    if (previous) this.monitors.get(previous.threadId)?.removeWatcher(previous);
+    if (previous) {
+      const previousMonitor = this.monitors.get(previous.threadId);
+      previousMonitor?.removeWatcher(previous);
+      if (previousMonitor && previousMonitor !== monitor) {
+        this.disposeMonitorIfUnused(previous.threadId, previousMonitor);
+      }
+    }
     const registration: WatchRegistration = {
       client,
       requestId: message.requestId,
@@ -455,19 +574,87 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     };
     registrations.set(message.sessionId, registration);
     monitor.addWatcher(registration);
+    return true;
   }
 
   private removeWatch(
     client: object,
     sessionId: string,
     threadId: string,
+    requestId: string,
   ): void {
     const registrations = this.watchersByClient.get(client);
     const registration = registrations?.get(sessionId);
-    if (!registration || registration.threadId !== threadId) return;
+    if (
+      !registration ||
+      registration.threadId !== threadId ||
+      registration.requestId !== requestId
+    ) {
+      return;
+    }
     registrations!.delete(sessionId);
     if (registrations!.size === 0) this.watchersByClient.delete(client);
-    this.monitors.get(threadId)?.removeWatcher(registration);
+    const monitor = this.monitors.get(threadId);
+    monitor?.removeWatcher(registration);
+    if (monitor) this.disposeMonitorIfUnused(threadId, monitor);
+  }
+
+  private beginWatchIntent(
+    client: object,
+    message: Extract<
+      CodexDesktopContinuityClientMessage,
+      { type: "codex_desktop_continuity_watch" }
+    >,
+  ): WatchIntent {
+    const intent: WatchIntent = {
+      generation: ++this.watchGeneration,
+      requestId: message.requestId,
+      sessionId: message.sessionId,
+      threadId: message.threadId,
+    };
+    const intents =
+      this.watchIntentsByClient.get(client) ?? new Map<string, WatchIntent>();
+    intents.set(message.sessionId, intent);
+    this.watchIntentsByClient.set(client, intents);
+    return intent;
+  }
+
+  private isCurrentWatchIntent(client: object, intent: WatchIntent): boolean {
+    return (
+      this.watchIntentsByClient.get(client)?.get(intent.sessionId) === intent
+    );
+  }
+
+  private invalidateWatchIntent(
+    client: object,
+    sessionId: string,
+    threadId: string,
+    requestId: string,
+  ): void {
+    const intents = this.watchIntentsByClient.get(client);
+    const intent = intents?.get(sessionId);
+    if (
+      !intent ||
+      intent.threadId !== threadId ||
+      intent.requestId !== requestId
+    ) {
+      return;
+    }
+    intents!.delete(sessionId);
+    if (intents!.size === 0) this.watchIntentsByClient.delete(client);
+  }
+
+  private invalidateWatchIntentIfCurrent(
+    client: object,
+    intent: WatchIntent,
+  ): void {
+    if (!this.isCurrentWatchIntent(client, intent)) return;
+    this.invalidateWatchIntent(
+      client,
+      intent.sessionId,
+      intent.threadId,
+      intent.requestId,
+    );
   }
 
   private disposeMonitorIfUnused(
@@ -476,12 +663,22 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
   ): void {
     if (
       monitor.watcherCount !== 0 ||
-      this.monitors.get(threadId) !== monitor
+      this.monitors.get(threadId) !== monitor ||
+      this.hasCurrentWatchIntentForThread(threadId)
     ) {
       return;
     }
     monitor.close();
     this.monitors.delete(threadId);
+  }
+
+  private hasCurrentWatchIntentForThread(threadId: string): boolean {
+    for (const intents of this.watchIntentsByClient.values()) {
+      for (const intent of intents.values()) {
+        if (intent.threadId === threadId) return true;
+      }
+    }
+    return false;
   }
 
   private get totalWatcherCount(): number {
@@ -551,6 +748,27 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     }
   }
 
+  private onMonitorLocalOwnershipSettled(threadId: string): void {
+    const sessionIds = new Set(this.blockedDrainSessionIds);
+    const monitor = this.monitors.get(threadId);
+    for (const registration of monitor?.watchers ?? []) {
+      sessionIds.add(registration.sessionId);
+    }
+    for (const sessionId of sessionIds) {
+      const session = this.runtime.getSession(sessionId);
+      if (!session) {
+        this.blockedDrainSessionIds.delete(sessionId);
+        continue;
+      }
+      if (this.runtime.getCodexThreadId(session) !== threadId) continue;
+      if (!this.admitCodexQueuedInputDrain(session)) continue;
+      const drained = this.runtime.drainCodexQueuedInputIfReady?.(sessionId);
+      if (drained || !(this.runtime.hasCodexQueuedInput?.(sessionId) ?? false)) {
+        this.blockedDrainSessionIds.delete(sessionId);
+      }
+    }
+  }
+
   private scheduleRehydrate(
     sessionId: string,
     threadId: string,
@@ -582,7 +800,27 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
   ): Promise<void> {
     if (this.closed || this.rehydrateInFlight.has(sessionId)) return;
     const monitor = this.monitors.get(threadId);
-    if (!monitor || monitor.hasExternalTurn) return;
+    if (!monitor) return;
+    try {
+      // input_ready can beat fs.watch delivery. Establish the epoch only after
+      // consuming every durable lifecycle event already on disk.
+      await monitor.refreshNow();
+    } catch {
+      this.retryOrReportRehydrateFailure(
+        monitor,
+        sessionId,
+        threadId,
+        completedTurnId,
+      );
+      return;
+    }
+    if (
+      this.closed ||
+      this.rehydrateInFlight.has(sessionId) ||
+      monitor.hasBlockingExternalActivity
+    ) {
+      return;
+    }
     if (
       completedTurnId &&
       monitor.snapshot.turnId &&
@@ -597,7 +835,13 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       return;
     }
     const process = session.process as { isWaitingForInput?: boolean };
-    if (process.isWaitingForInput === false) return;
+    if (process.isWaitingForInput === false) {
+      // The local turn still owns this runtime. Keep the stale fence and let
+      // the generic input_ready drain guard wake a fresh rehydrate attempt;
+      // otherwise a queued handoff could bypass Desktop history calibration.
+      remember(this.blockedDrainSessionIds, sessionId, MAX_WATCHERS);
+      return;
+    }
     const rehydrate = this.runtime.rehydrateCodexSessionAfterExternalTurn;
     if (!rehydrate) return;
     const activityEpoch = monitor.activityEpoch;
@@ -605,7 +849,7 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       !this.closed &&
       this.monitors.get(threadId) === monitor &&
       monitor.activityEpoch === activityEpoch &&
-      !monitor.hasExternalTurn;
+      !monitor.hasBlockingExternalActivity;
     this.rehydrateInFlight.add(sessionId);
     try {
       const ok = await rehydrate(sessionId, threadId, isStillSafe);
@@ -614,10 +858,23 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       if (ok) {
         this.staleRuntimeSessionIds.delete(sessionId);
         this.rehydrateFailureCounts.delete(sessionId);
+        // The atomic replacement and post-refresh fence are complete. Release
+        // the in-flight drain gate synchronously before promoting the queue;
+        // finally still performs idempotent cleanup on every exit path.
+        this.rehydrateInFlight.delete(sessionId);
         // The queue may have been accepted just after the replacement emitted
         // input_ready. Recheck once after the atomic refresh so that race does
         // not leave the phone handoff stuck until another turn completes.
-        this.runtime.drainCodexQueuedInputIfReady?.(sessionId, isStillSafe);
+        const drained = this.runtime.drainCodexQueuedInputIfReady?.(
+          sessionId,
+          isStillSafe,
+        );
+        if (
+          drained ||
+          !(this.runtime.hasCodexQueuedInput?.(sessionId) ?? false)
+        ) {
+          this.blockedDrainSessionIds.delete(sessionId);
+        }
       } else {
         this.retryOrReportRehydrateFailure(
           monitor,
@@ -724,6 +981,8 @@ export interface CodexRolloutMonitorOptions {
   getLocalActiveTurnId: () => string | undefined;
   consumeLocalClientMessageId: (clientMessageId: string) => boolean;
   onEvent: (event: CodexDesktopContinuityMonitorEvent) => void;
+  /** Internal wake-up when an unpublished provisional turn proves local. */
+  onLocalOwnershipSettled?: () => void;
   assistantMessagePairMs?: number;
 }
 
@@ -777,6 +1036,9 @@ export class CodexRolloutMonitor {
         ...(externalTurn.turnId ? { turnId: externalTurn.turnId } : {}),
       };
     }
+    if (this.hasUnclassifiedTurn) {
+      return { state: "unknown" };
+    }
     if (this.activeTurns.size > 0) {
       return { state: "idle" };
     }
@@ -790,9 +1052,18 @@ export class CodexRolloutMonitor {
     return this.latestExternalTurn() !== undefined;
   }
 
+  /** Admission/drain fails closed while ownership is not yet proven. */
+  get hasBlockingExternalActivity(): boolean {
+    return this.hasExternalTurn || this.hasUnclassifiedTurn;
+  }
+
+  private get hasUnclassifiedTurn(): boolean {
+    return [...this.activeTurns.values()].some((turn) => turn.origin === null);
+  }
+
   get externalTurnIdForSteering(): string | undefined {
     const externalTurns = [...this.activeTurns.values()].filter(
-      (turn) => turn.origin === "desktop" || turn.origin === null,
+      (turn) => turn.origin === "desktop",
     );
     return externalTurns.length === 1 ? externalTurns[0].turnId : undefined;
   }
@@ -1168,6 +1439,7 @@ export class CodexRolloutMonitor {
       if (turn.origin === null) {
         turn.origin = "local";
         this.bumpActivityEpoch();
+        this.options.onLocalOwnershipSettled?.();
       }
       return;
     }
@@ -1176,6 +1448,7 @@ export class CodexRolloutMonitor {
       this.clearPendingStart(turn);
       turn.origin = "local";
       this.bumpActivityEpoch();
+      this.options.onLocalOwnershipSettled?.();
       return;
     }
     // No client identity is not proof of Desktop ownership. Give the exact
@@ -1223,6 +1496,7 @@ export class CodexRolloutMonitor {
     if (this.isExactlyLocalTurn(turn.turnId)) {
       turn.origin = "local";
       this.bumpActivityEpoch();
+      this.options.onLocalOwnershipSettled?.();
       return;
     }
     turn.origin = "desktop";
@@ -1249,9 +1523,9 @@ export class CodexRolloutMonitor {
     // A terminal without a matching id cannot select one of several active
     // turns safely. Keep them active until their exact terminal arrives.
     if (!candidate && this.activeTurns.size > 0) return;
-    this.bumpActivityEpoch();
     this.flushPendingStart(candidate);
     const completed = candidate ? this.takeActiveTurn(candidate) : undefined;
+    this.bumpActivityEpoch();
     const wasDesktop = (completed?.origin ?? "desktop") === "desktop";
     const effectiveTurnId = turnId ?? completed?.turnId;
     this.lastObservedTurnId = effectiveTurnId;
@@ -1755,7 +2029,7 @@ export class CodexRolloutMonitor {
   private latestExternalTurn(): ActiveTurn | undefined {
     return lastMatching(
       this.activeTurns.values(),
-      (turn) => turn.origin === "desktop" || turn.origin === null,
+      (turn) => turn.origin === "desktop",
     );
   }
 

@@ -294,7 +294,17 @@ describe("SessionManager codex path", () => {
   });
 
   it("never drains a continuity queue at replacement input_ready", async () => {
-    const manager = new SessionManager(() => {});
+    const onBlocked = vi.fn();
+    const manager = new SessionManager(
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { canDrain: () => false, onBlocked },
+    );
     const sessionId = manager.create(
       "/tmp/project-codex",
       undefined,
@@ -326,6 +336,7 @@ describe("SessionManager codex path", () => {
       "queued-race",
     );
     expect(codexInstances[1].sendInputStructured).not.toHaveBeenCalled();
+    expect(onBlocked).toHaveBeenCalledOnce();
   });
 
   it("re-derives permissions after incremental runtime settings", () => {
@@ -1078,6 +1089,51 @@ describe("SessionManager codex path", () => {
           entry.msg.imageCount === 1,
       ),
     ).toBe(true);
+  });
+
+  it("guards both input_ready and explicit Codex queue drains", () => {
+    let allowDrain = false;
+    const onBlocked = vi.fn();
+    const manager = new SessionManager(
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        canDrain: () => allowDrain,
+        onBlocked,
+      },
+    );
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    manager.queueCodexInput(sessionId, {
+      itemId: "queued-guarded",
+      text: "wait for continuity",
+      createdAt: "2026-07-20T00:00:00.000Z",
+    });
+    const proc = codexInstances[0];
+    proc.isWaitingForInput = true;
+
+    proc.emit("input_ready");
+    expect(manager.get(sessionId)?.codexQueuedInput?.itemId).toBe(
+      "queued-guarded",
+    );
+    expect(manager.drainCodexQueuedInputIfReady(sessionId)).toBe(false);
+    expect(onBlocked).toHaveBeenCalledTimes(2);
+    expect(proc.sendInputStructured).not.toHaveBeenCalled();
+
+    allowDrain = true;
+    expect(manager.drainCodexQueuedInputIfReady(sessionId)).toBe(true);
+    expect(proc.sendInputStructured).toHaveBeenCalledOnce();
+    expect(manager.get(sessionId)?.codexQueuedInput).toBeUndefined();
   });
 
   it("drains a handoff queued just after input_ready", () => {
