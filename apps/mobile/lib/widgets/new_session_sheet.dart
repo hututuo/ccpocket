@@ -2907,6 +2907,7 @@ class _CodexSettingsSwitcherState extends State<_CodexSettingsSwitcher> {
         key: const ValueKey('dialog_codex_effort_control'),
         efforts: widget.reasoningEfforts,
         value: effectiveEffort,
+        speed: widget.speed,
         onChanged: widget.onReasoningEffortChanged,
         sliderKey: 'dialog_codex_effort_slider',
         includeExtended: widget.showExtendedEfforts,

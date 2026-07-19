@@ -8,6 +8,7 @@ import 'package:ccpocket/features/chat_session/widgets/session_mode_bar.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
+import 'package:ccpocket/widgets/codex_effort_motion.dart';
 import 'package:ccpocket/widgets/codex_effort_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -369,14 +370,13 @@ void main() {
       'high',
     );
     expect(find.byKey(const ValueKey('codex_effort_slider')), findsOneWidget);
-    final slider = tester.widget<Slider>(
-      find.byKey(const ValueKey('codex_effort_slider')),
+    final slider = tester.widget<CodexEffortMotionSlider>(
+      find.byType(CodexEffortMotionSlider),
     );
-    expect(slider.min, 0);
-    expect(slider.max, 5);
-    expect(slider.divisions, 5);
-    expect(slider.value, 2);
-    expect(slider.label, 'high');
+    expect(slider.labels, ['light', 'medium', 'high', 'x-high', 'max', 'ultra']);
+    expect(slider.selectedIndex, 2);
+    expect(slider.maxIndex, 4);
+    expect(slider.ultraIndex, 5);
     final modeButton = find.byKey(const ValueKey('codex_settings_advanced'));
     expect(
       find.descendant(
@@ -415,7 +415,7 @@ void main() {
       FontWeight.w400,
     );
 
-    slider.onChanged?.call(5);
+    slider.onSelected(5);
     await tester.pumpAndSettle();
     expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
     expect(
