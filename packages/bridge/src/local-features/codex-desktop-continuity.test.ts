@@ -2,6 +2,7 @@ import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ServerMessage } from "../parser.js";
 import {
   CodexDesktopContinuityHandler,
   CodexRolloutMonitor,
@@ -332,6 +333,273 @@ describe("CodexRolloutMonitor", () => {
     });
     expect(monitor.hasExternalTurn).toBe(true);
     expect(events).toEqual([]);
+    monitor.close();
+  });
+
+  it("streams every tool schema supported by canonical Codex history", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-tool-parity",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event("event_msg", { type: "task_started", turn_id: "turn-tools" }),
+      event("event_msg", {
+        type: "user_message",
+        turn_id: "turn-tools",
+        client_id: "desktop-tools",
+        message: "exercise every tool schema",
+      }),
+      event("response_item", {
+        type: "web_search_call",
+        call_id: "web-1",
+        action: { type: "search", query: "CC Pocket" },
+      }),
+      event("response_item", {
+        type: "web_search",
+        query: "legacy search without id",
+      }),
+      event("response_item", {
+        type: "image_generation_call",
+        id: "image-1",
+        prompt: "orange bridge",
+      }),
+      event("response_item", {
+        type: "image_generation_call",
+        id: "image-inline",
+        status: "completed",
+        revised_prompt: "inline orange bridge",
+        result: "data:image/png;base64,aW1hZ2U=",
+      }),
+      event("response_item", {
+        type: "command_execution",
+        id: "command-item-1",
+        call_id: "command-call-1",
+        command: "git status",
+        output: "",
+        exit_code: 17,
+      }),
+      event("response_item", {
+        type: "command_execution",
+        id: "command-start-only",
+        command: "long-running-task",
+      }),
+      event("response_item", {
+        type: "mcp_tool_call",
+        id: "mcp-item-1",
+        call_id: "mcp-call-1",
+        server: "computer-use",
+        tool: "get_app_state",
+        arguments: { app: "Simulator" },
+      }),
+      event("response_item", {
+        type: "mcp_tool_call",
+        id: "mcp-error-item",
+        call_id: "mcp-error-call",
+        server: "computer-use",
+        tool: "get_app_state",
+        arguments: { app: "Missing" },
+      }),
+      event("response_item", {
+        type: "file_change",
+        id: "file-item-1",
+        call_id: "file-call-1",
+        changes: [{ path: "lib/main.dart", kind: "update" }],
+      }),
+      event("event_msg", {
+        type: "mcp_tool_call_end",
+        call_id: "mcp-late-call",
+        invocation: {
+          server: "computer-use",
+          tool: "get_app_state",
+          arguments: { app: "Late" },
+        },
+        result: { Ok: { content: [{ type: "text", text: "late ready" }] } },
+      }),
+      event("response_item", {
+        type: "mcp_tool_call",
+        id: "mcp-late-item",
+        call_id: "mcp-late-call",
+        server: "computer-use",
+        tool: "get_app_state",
+        arguments: { app: "Late" },
+      }),
+      event("event_msg", {
+        type: "mcp_tool_call_end",
+        call_id: "mcp-call-1",
+        invocation: {
+          server: "computer-use",
+          tool: "get_app_state",
+          arguments: { app: "Simulator" },
+        },
+        result: {
+          Ok: {
+            content: [
+              { type: "text", text: "ready" },
+              {
+                type: "image",
+                data: "data:image/png;base64,c2NyZWVuc2hvdA==",
+                mimeType: "image/png",
+              },
+            ],
+          },
+        },
+      }),
+      event("event_msg", {
+        type: "mcp_tool_call_end",
+        call_id: "mcp-error-call",
+        invocation: {
+          server: "computer-use",
+          tool: "get_app_state",
+          arguments: { app: "Missing" },
+        },
+        result: { Err: "simulator unavailable" },
+      }),
+      event("event_msg", {
+        type: "patch_apply_end",
+        call_id: "file-call-1",
+        success: true,
+        stdout: "updated",
+      }),
+      event("event_msg", {
+        type: "web_search_end",
+        call_id: "web-1",
+        query: "CC Pocket",
+        results: [{ title: "CC Pocket" }],
+      }),
+      event("event_msg", {
+        type: "image_generation_end",
+        call_id: "image-late-call",
+        prompt: "late orange bridge",
+        saved_path: "/tmp/late-bridge.png",
+        status: "completed",
+      }),
+      event("response_item", {
+        type: "image_generation_call",
+        id: "image-late-item",
+        call_id: "image-late-call",
+        prompt: "late orange bridge",
+        result: "data:image/png;base64,bGF0ZQ==",
+      }),
+      event("event_msg", { type: "task_complete", turn_id: "turn-tools" }),
+    ]);
+
+    await monitor.refreshNow();
+
+    const toolStarts = events
+      .filter(
+        (entry): entry is Extract<
+          CodexDesktopContinuityMonitorEvent,
+          { kind: "message" }
+        > =>
+          entry.kind === "message" &&
+          entry.itemKey.startsWith("tool-start:"),
+      )
+      .map((entry) => {
+        const message = entry.message;
+        if (message.type !== "assistant") return null;
+        const tool = message.message.content.find(
+          (content) => content.type === "tool_use",
+        );
+        return tool?.type === "tool_use" ? [tool.id, tool.name] : null;
+      })
+      .filter((entry): entry is string[] => entry !== null);
+    expect(toolStarts).toEqual(
+      expect.arrayContaining([
+        ["web-1", "WebSearch"],
+        ["image-1", "ImageGeneration"],
+        ["command-item-1", "Bash"],
+        ["command-start-only", "Bash"],
+        ["mcp-item-1", "mcp:computer-use/get_app_state"],
+        ["mcp-error-item", "mcp:computer-use/get_app_state"],
+        ["mcp-late-item", "mcp:computer-use/get_app_state"],
+        ["file-item-1", "FileChange"],
+        ["image-late-call", "ImageGeneration"],
+      ]),
+    );
+    expect(toolStarts.filter(([id]) => id === "mcp-item-1")).toHaveLength(1);
+    expect(toolStarts.filter(([id]) => id === "file-item-1")).toHaveLength(1);
+    expect(
+      toolStarts.filter(([id]) => id === "image-late-call"),
+    ).toHaveLength(1);
+    expect(
+      toolStarts.filter(([id]) => id === "image-late-item"),
+    ).toHaveLength(0);
+    expect(toolStarts.filter(([id]) => id === "mcp-late-item")).toHaveLength(
+      1,
+    );
+    expect(toolStarts.filter(([id]) => id === "mcp-late-call")).toHaveLength(
+      0,
+    );
+    const legacySearchStarts = events.filter((entry) => {
+      if (entry.kind !== "message" || entry.message.type !== "assistant") {
+        return false;
+      }
+      return entry.message.message.content.some(
+        (content) =>
+          content.type === "tool_use" &&
+          content.name === "WebSearch" &&
+          content.input.query === "legacy search without id",
+      );
+    });
+    expect(legacySearchStarts).toHaveLength(1);
+
+    const toolResults = events
+      .filter(
+        (entry): entry is Extract<
+          CodexDesktopContinuityMonitorEvent,
+          { kind: "message" }
+        > & { message: Extract<ServerMessage, { type: "tool_result" }> } =>
+          entry.kind === "message" && entry.message.type === "tool_result",
+      )
+      .map((entry) => entry.message);
+    const resultIds = toolResults.map((message) => message.toolUseId);
+    expect(resultIds).toEqual(
+      expect.arrayContaining([
+        "command-item-1",
+        "mcp-item-1",
+        "mcp-error-item",
+        "mcp-late-item",
+        "file-item-1",
+        "web-1",
+        "image-inline",
+        "image-late-call",
+      ]),
+    );
+    expect(resultIds).not.toContain("command-start-only");
+    expect(
+      toolResults.find((message) => message.toolUseId === "command-item-1")
+        ?.content,
+    ).toBe("exit code: 17");
+    const inlineImage = toolResults.find(
+      (message) => message.toolUseId === "image-inline",
+    );
+    expect(inlineImage?.content).toContain("Generated 1 image");
+    expect(inlineImage?.content).not.toContain("aW1hZ2U=");
+    expect(JSON.stringify(inlineImage)).not.toContain("aW1hZ2U=");
+    const mcpResult = toolResults.find(
+      (message) => message.toolUseId === "mcp-item-1",
+    );
+    expect(mcpResult?.content).toBe("ready");
+    expect(mcpResult?.content).not.toContain("c2NyZWVuc2hvdA==");
+    expect(JSON.stringify(mcpResult)).not.toContain("c2NyZWVuc2hvdA==");
+    expect(
+      toolResults.find((message) => message.toolUseId === "mcp-error-item")
+        ?.content,
+    ).toBe("simulator unavailable");
+    expect(
+      toolResults.find((message) => message.toolUseId === "image-late-call")
+        ?.content,
+    ).toContain("savedPath: /tmp/late-bridge.png");
+    expect(
+      toolResults.find((message) => message.toolUseId === "mcp-late-item")
+        ?.content,
+    ).toBe("late ready");
     monitor.close();
   });
 
