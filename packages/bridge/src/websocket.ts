@@ -1960,7 +1960,16 @@ export class BridgeWebSocketServer {
       if (contents) contents.push(contentKey);
       else canonicalAssistantContentsByUser.set(canonicalUserKey, [contentKey]);
     }
-    let pendingCanonicalAssistantContents: string[] = [];
+    const remainingCanonicalAssistantContentsByUser = new Map(
+      [...canonicalAssistantContentsByUser.entries()].map(([key, contents]) => [
+        key,
+        [...contents],
+      ]),
+    );
+    let liveUserKey = canonicalUserKey ?? session.codexLiveHistoryUserKey ?? null;
+    const previousAssistantUserKeys =
+      session.codexLiveAssistantUserKeyByIdentity ?? new Map<string, string>();
+    const retainedAssistantUserKeys = new Map<string, string>();
     const retainedMessages: ServerMessage[] = [];
     const retainedEntries: HistoryEntry[] = [];
     for (const entry of liveEntries) {
@@ -1971,12 +1980,19 @@ export class BridgeWebSocketServer {
         const userKey = entry.message.userMessageUuid
           ? `user:${entry.message.userMessageUuid}`
           : null;
-        pendingCanonicalAssistantContents =
-          matchesCanonical && userKey
-            ? [...(canonicalAssistantContentsByUser.get(userKey) ?? [])]
-            : [];
+        if (userKey) liveUserKey = userKey;
       }
       if (entry.message.type === "assistant") {
+        const assistantIdentity = keys.find((key) =>
+          key.startsWith("assistant:"),
+        );
+        const assistantUserKey =
+          (assistantIdentity
+            ? previousAssistantUserKeys.get(assistantIdentity)
+            : undefined) ?? liveUserKey;
+        const pendingCanonicalAssistantContents = assistantUserKey
+          ? remainingCanonicalAssistantContentsByUser.get(assistantUserKey) ?? []
+          : [];
         const contentKey = this.historyValueKey(entry.message.message.content);
         const contentIndex =
           pendingCanonicalAssistantContents.indexOf(contentKey);
@@ -1991,6 +2007,9 @@ export class BridgeWebSocketServer {
           pendingCanonicalAssistantContents.splice(contentIndex, 1);
         }
         if (matchesCanonicalTurnAssistant) continue;
+        if (assistantIdentity && assistantUserKey) {
+          retainedAssistantUserKeys.set(assistantIdentity, assistantUserKey);
+        }
       }
       if (matchesCanonical) continue;
       const seq = ++nextSeq;
@@ -2004,6 +2023,8 @@ export class BridgeWebSocketServer {
     session.historyEntries = retainedEntries;
     session.historyRevision = nextSeq;
     session.codexCanonicalHistoryRevision = canonicalEntries.at(-1)?.seq ?? 0;
+    session.codexLiveHistoryUserKey = liveUserKey ?? undefined;
+    session.codexLiveAssistantUserKeyByIdentity = retainedAssistantUserKeys;
     session.historyLowWatermark =
       retainedEntries[0]?.seq ?? session.historyRevision + 1;
 

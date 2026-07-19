@@ -107,6 +107,10 @@ export interface SessionInfo {
   codexUserTurnUuidByRawId?: Map<string, string>;
   /** Last Bridge history seq covered by the canonical Codex thread snapshot. */
   codexCanonicalHistoryRevision?: number;
+  /** Latest canonical/live Codex user turn used to scope residual assistants. */
+  codexLiveHistoryUserKey?: string;
+  /** Stable live assistant identity to its Codex user turn across baselines. */
+  codexLiveAssistantUserKeyByIdentity?: Map<string, string>;
   /** Whether to generate a session name after the first completed turn. */
   autoRename?: boolean;
   /** Prevents automatic rename from running more than once. */

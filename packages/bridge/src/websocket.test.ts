@@ -4413,6 +4413,106 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("deduplicates a residual live assistant after an earlier baseline consumed its user row", async () => {
+    const canonicalUser = {
+      role: "user" as const,
+      uuid: "codex:user-turn:1",
+      timestamp: "2026-05-29T00:00:00.000Z",
+      content: [{ type: "text", text: "Reply with OK" }],
+    };
+    const canonicalAssistant = {
+      role: "assistant" as const,
+      uuid: "canonical-ok",
+      content: [{ type: "text", text: "OK" }],
+    };
+    codexThreadToSessionHistoryMock
+      .mockReturnValueOnce([canonicalUser])
+      .mockReturnValue([canonicalUser, canonicalAssistant]);
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "system" && m.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const manager = (bridge as any).sessionManager;
+    const session = manager.get(sessionId);
+    session.claudeSessionId = "thr_codex_residual";
+    session.codexSettings = { model: "gpt-5.3-codex" };
+    session.process.readThread.mockResolvedValue({
+      id: "thr_codex_residual",
+      turns: [],
+    });
+    manager.appendHistory(sessionId, {
+      type: "user_input",
+      text: "Reply with OK",
+      userMessageUuid: "codex:user-turn:1",
+    });
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_delta",
+        sessionId,
+        sinceSeq: 0,
+      },
+      ws,
+    );
+    expect(session.historyEntries).toEqual([]);
+
+    manager.appendHistory(sessionId, {
+      type: "assistant",
+      message: {
+        id: "live-ok",
+        role: "assistant",
+        content: [{ type: "text", text: "OK" }],
+        model: "gpt-5.3-codex",
+      },
+    });
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_delta",
+        sessionId,
+        sinceSeq: 0,
+      },
+      ws,
+    );
+
+    const snapshot = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((message: any) => message.type === "history_snapshot");
+    expect(snapshot.messages).toHaveLength(2);
+    expect(snapshot.messages[0].message).toMatchObject({
+      type: "user_input",
+      userMessageUuid: "codex:user-turn:1",
+    });
+    expect(snapshot.messages[1].message).toMatchObject({
+      type: "assistant",
+      messageUuid: "canonical-ok",
+      message: { id: "canonical-ok" },
+    });
+    expect(session.historyEntries).toEqual([]);
+
+    bridge.close();
+  });
+
   it("keeps codex live assistant with same text as canonical assistant when ids differ", async () => {
     codexThreadToSessionHistoryMock.mockReturnValue([
       {
