@@ -2,6 +2,19 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.67.4-compat.3] - 2026-07-20
+
+### Added
+- Mirror Codex Desktop-owned turn state, reasoning, tool activity, and assistant messages from the durable rollout into connected mobile sessions.
+- Preserve the existing one-item mobile queue during Desktop work, including edit, cancel, and exact-turn guidance when the active Desktop turn is unambiguous.
+
+### Fixed
+- Track overlapping and out-of-order Desktop turns independently so one terminal event cannot make another active turn appear idle.
+- Refresh stale Codex runtime history under the same Bridge session ID before handing off queued mobile input, without destroying the previous runtime on bootstrap failure.
+
+### Compatibility
+- Negotiate Desktop continuity as an additive capability; new mobile clients stay silent on older Bridges and older mobile clients retain the previous behavior on this Bridge.
+
 ## [1.67.4-compat.2] - 2026-07-19
 
 ### Changed
