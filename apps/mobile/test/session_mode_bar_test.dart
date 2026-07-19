@@ -8,7 +8,6 @@ import 'package:ccpocket/features/chat_session/widgets/session_mode_bar.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
-import 'package:ccpocket/widgets/codex_effort_motion.dart';
 import 'package:ccpocket/widgets/codex_effort_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -182,6 +181,16 @@ void main() {
     ];
 
     expect(codexQuickEfforts(available).last, ReasoningEffort.xhigh);
+    expect(
+      codexQuickEfforts(available, current: ReasoningEffort.ultra),
+      [
+        ReasoningEffort.low,
+        ReasoningEffort.medium,
+        ReasoningEffort.high,
+        ReasoningEffort.xhigh,
+        ReasoningEffort.ultra,
+      ],
+    );
     expect(
       codexQuickEfforts(available, includeExtended: true),
       containsAllInOrder([ReasoningEffort.max, ReasoningEffort.ultra]),
@@ -360,13 +369,14 @@ void main() {
       'high',
     );
     expect(find.byKey(const ValueKey('codex_effort_slider')), findsOneWidget);
-    final slider = tester.widget<CodexEffortMotionSlider>(
-      find.byType(CodexEffortMotionSlider),
+    final slider = tester.widget<Slider>(
+      find.byKey(const ValueKey('codex_effort_slider')),
     );
-    expect(slider.labels, ['light', 'medium', 'high', 'x-high', 'max', 'ultra']);
-    expect(slider.selectedIndex, 2);
-    expect(slider.maxIndex, 4);
-    expect(slider.ultraIndex, 5);
+    expect(slider.min, 0);
+    expect(slider.max, 5);
+    expect(slider.divisions, 5);
+    expect(slider.value, 2);
+    expect(slider.label, 'high');
     final modeButton = find.byKey(const ValueKey('codex_settings_advanced'));
     expect(
       find.descendant(
@@ -405,7 +415,7 @@ void main() {
       FontWeight.w400,
     );
 
-    slider.onSelected(5);
+    slider.onChanged?.call(5);
     await tester.pumpAndSettle();
     expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
     expect(

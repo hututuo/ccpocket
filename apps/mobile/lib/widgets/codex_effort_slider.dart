@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/messages.dart';
-import 'codex_effort_motion.dart';
 
 String codexModelDisplayName(String model) {
   final raw = model.replaceFirst(RegExp(r'^gpt-'), '');
@@ -30,6 +29,7 @@ const _quickEffortOrder = <ReasoningEffort>[
 List<ReasoningEffort> codexQuickEfforts(
   List<ReasoningEffort> availableEfforts, {
   bool includeExtended = false,
+  ReasoningEffort? current,
 }) {
   bool isExtended(ReasoningEffort effort) =>
       effort == ReasoningEffort.max || effort == ReasoningEffort.ultra;
@@ -45,6 +45,11 @@ List<ReasoningEffort> codexQuickEfforts(
           !_quickEffortOrder.contains(effort) &&
           (includeExtended || !isExtended(effort)),
     ),
+    if (!includeExtended &&
+        current != null &&
+        isExtended(current) &&
+        availableEfforts.contains(current))
+      current,
   ];
   return efforts.isNotEmpty ? efforts : const [ReasoningEffort.none];
 }
@@ -124,10 +129,6 @@ class CodexSettingsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final reduceMotion = codexMotionDisabled(context);
-    final panelDuration = reduceMotion
-        ? Duration.zero
-        : const Duration(milliseconds: 300);
     return Material(
       color: cs.surfaceContainerHigh,
       shape: RoundedRectangleBorder(
@@ -153,14 +154,14 @@ class CodexSettingsPanel extends StatelessWidget {
             effortLabelKey: effortLabelKey,
           ),
           AnimatedSize(
-            duration: panelDuration,
-            curve: codexDesktopMotionCurve,
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeInOutCubic,
             alignment: Alignment.topCenter,
             child: AnimatedSwitcher(
-              duration: panelDuration,
-              reverseDuration: panelDuration,
-              switchInCurve: codexDesktopMotionCurve,
-              switchOutCurve: codexDesktopMotionCurve,
+              duration: const Duration(milliseconds: 220),
+              reverseDuration: const Duration(milliseconds: 180),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
               transitionBuilder: (child, animation) {
                 final offset = Tween<Offset>(
                   begin: const Offset(0, 0.025),
@@ -215,19 +216,13 @@ class _CodexSettingsHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final reduceMotion = codexMotionDisabled(context);
-    final highTier =
-        effort == ReasoningEffort.max || effort == ReasoningEffort.ultra;
-    final highTierColor = Theme.of(context).brightness == Brightness.dark
-        ? const Color(0xFFB59CFF)
-        : const Color(0xFF7957E8);
     final effortText = Text(
       effort.label,
       key: ValueKey(effortLabelKey),
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
       style: TextStyle(
-        color: highTier ? highTierColor : cs.onSurfaceVariant,
+        color: cs.onSurfaceVariant,
         fontSize: 12,
         fontWeight: FontWeight.w400,
       ),
@@ -293,11 +288,7 @@ class _CodexSettingsHeader extends StatelessWidget {
                   visualDensity: VisualDensity.compact,
                 ),
                 icon: AnimatedSwitcher(
-                  duration: reduceMotion
-                      ? Duration.zero
-                      : const Duration(milliseconds: 300),
-                  switchInCurve: codexDesktopMotionCurve,
-                  switchOutCurve: codexDesktopMotionCurve,
+                  duration: const Duration(milliseconds: 180),
                   transitionBuilder: (child, animation) => FadeTransition(
                     opacity: animation,
                     child: ScaleTransition(scale: animation, child: child),
@@ -322,7 +313,6 @@ class _CodexSettingsHeader extends StatelessWidget {
 class CodexEffortSlider extends StatelessWidget {
   final List<ReasoningEffort> efforts;
   final ReasoningEffort value;
-  final CodexSpeed speed;
   final ValueChanged<ReasoningEffort> onChanged;
   final String sliderKey;
   final bool includeExtended;
@@ -331,7 +321,6 @@ class CodexEffortSlider extends StatelessWidget {
     super.key,
     required this.efforts,
     required this.value,
-    this.speed = CodexSpeed.standard,
     required this.onChanged,
     required this.sliderKey,
     this.includeExtended = false,
@@ -342,26 +331,47 @@ class CodexEffortSlider extends StatelessWidget {
     final quickEfforts = codexQuickEfforts(
       efforts,
       includeExtended: includeExtended,
+      current: value,
     );
     final selectedIndex = quickEfforts.indexOf(value);
     final sliderIndex = selectedIndex < 0
         ? quickEfforts.length - 1
         : selectedIndex;
-    final maxIndex = quickEfforts.indexOf(ReasoningEffort.max);
-    final ultraIndex = quickEfforts.indexOf(ReasoningEffort.ultra);
+    final cs = Theme.of(context).colorScheme;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-      child: CodexEffortMotionSlider(
-        labels: quickEfforts.map((effort) => effort.label).toList(
-          growable: false,
+      child: SliderTheme(
+        data: SliderTheme.of(context).copyWith(
+          trackHeight: 7,
+          activeTrackColor: cs.primary,
+          inactiveTrackColor: cs.surfaceContainerHighest,
+          thumbColor: cs.primary,
+          overlayColor: cs.primary.withValues(alpha: 0.12),
+          tickMarkShape: const RoundSliderTickMarkShape(tickMarkRadius: 2),
+          activeTickMarkColor: cs.onPrimary.withValues(alpha: 0.45),
+          inactiveTickMarkColor: cs.onSurfaceVariant.withValues(alpha: 0.45),
         ),
-        selectedIndex: sliderIndex,
-        maxIndex: maxIndex < 0 ? null : maxIndex,
-        ultraIndex: ultraIndex < 0 ? null : ultraIndex,
-        fastModeEnabled: speed == CodexSpeed.fast,
-        sliderKey: sliderKey,
-        onSelected: (index) => onChanged(quickEfforts[index]),
+        child: Semantics(
+          label: 'Effort',
+          value: value.label,
+          child: Slider(
+            key: ValueKey(sliderKey),
+            value: sliderIndex.toDouble(),
+            min: 0,
+            max: (quickEfforts.length - 1).toDouble(),
+            divisions: quickEfforts.length > 1 ? quickEfforts.length - 1 : null,
+            label: quickEfforts[sliderIndex].label,
+            onChanged: quickEfforts.length < 2
+                ? null
+                : (raw) {
+                    final next = quickEfforts[raw.round()];
+                    if (next == value) return;
+                    HapticFeedback.selectionClick();
+                    onChanged(next);
+                  },
+          ),
+        ),
       ),
     );
   }
@@ -398,11 +408,6 @@ class CodexSpeedButton extends StatelessWidget {
         icon: Icon(
           isFast ? Icons.bolt : Icons.bolt_outlined,
           color: isFast ? cs.primary : cs.onSurfaceVariant,
-        ),
-        style: IconButton.styleFrom(
-          backgroundColor: isFast
-              ? cs.primary.withValues(alpha: 0.14)
-              : Colors.transparent,
         ),
         visualDensity: VisualDensity.compact,
       ),

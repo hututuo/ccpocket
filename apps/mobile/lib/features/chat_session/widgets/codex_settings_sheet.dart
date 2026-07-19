@@ -99,7 +99,6 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
           quickChild: CodexEffortSlider(
             efforts: _efforts,
             value: _effort,
-            speed: _speed,
             onChanged: _selectEffort,
             sliderKey: 'codex_effort_slider',
             includeExtended: widget.showExtendedEfforts,
