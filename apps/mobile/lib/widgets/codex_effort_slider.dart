@@ -28,15 +28,25 @@ const _quickEffortOrder = <ReasoningEffort>[
 ];
 
 List<ReasoningEffort> codexQuickEfforts(
-  List<ReasoningEffort> availableEfforts,
-) {
+  List<ReasoningEffort> availableEfforts, {
+  bool includeExtended = false,
+}) {
+  bool isExtended(ReasoningEffort effort) =>
+      effort == ReasoningEffort.max || effort == ReasoningEffort.ultra;
+
   final efforts = <ReasoningEffort>[
-    ..._quickEffortOrder.where(availableEfforts.contains),
+    ..._quickEffortOrder.where(
+      (effort) =>
+          availableEfforts.contains(effort) &&
+          (includeExtended || !isExtended(effort)),
+    ),
     ...availableEfforts.where(
-      (effort) => !_quickEffortOrder.contains(effort),
+      (effort) =>
+          !_quickEffortOrder.contains(effort) &&
+          (includeExtended || !isExtended(effort)),
     ),
   ];
-  return efforts.isNotEmpty ? efforts : const [ReasoningEffort.medium];
+  return efforts.isNotEmpty ? efforts : const [ReasoningEffort.none];
 }
 
 ReasoningEffort preferredCodexEffort(
@@ -315,6 +325,7 @@ class CodexEffortSlider extends StatelessWidget {
   final CodexSpeed speed;
   final ValueChanged<ReasoningEffort> onChanged;
   final String sliderKey;
+  final bool includeExtended;
 
   const CodexEffortSlider({
     super.key,
@@ -323,11 +334,15 @@ class CodexEffortSlider extends StatelessWidget {
     this.speed = CodexSpeed.standard,
     required this.onChanged,
     required this.sliderKey,
+    this.includeExtended = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final quickEfforts = codexQuickEfforts(efforts);
+    final quickEfforts = codexQuickEfforts(
+      efforts,
+      includeExtended: includeExtended,
+    );
     final selectedIndex = quickEfforts.indexOf(value);
     final sliderIndex = selectedIndex < 0
         ? quickEfforts.length - 1

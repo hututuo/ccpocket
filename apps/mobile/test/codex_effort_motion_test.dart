@@ -412,6 +412,7 @@ class _EffortHarnessState extends State<_EffortHarness> {
                     speed: speed,
                     onChanged: _onEffortChanged,
                     sliderKey: 'motion_slider',
+                    includeExtended: true,
                   ),
                   Text(effort.label),
                 ],

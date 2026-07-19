@@ -2,6 +2,20 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.67.4-compat.2] - 2026-07-19
+
+### Changed
+- Rebase the compatibility build on official Bridge 1.67.4 while preserving the independently removable session, artifact, preview, and file-transfer modules.
+
+### Fixed
+- Include the official streamed-response finalization and same-turn history reconciliation fixes without collapsing distinct assistant responses.
+
+## [1.67.4] - 2026-07-19
+
+### Fixed
+- Preserve streamed Codex assistant responses when completion notifications are missing or delayed.
+- Deduplicate canonical and live Codex history for the same user turn without collapsing distinct responses.
+
 ## [1.67.3-compat.2] - 2026-07-18
 
 ### Changed
@@ -39,7 +53,6 @@ All notable changes to `@ccpocket/bridge` will be documented in this file.
 ### Security
 - Restrict path publication to a loopback-only control route and canonical paths inside `BRIDGE_ALLOWED_DIRS`.
 - Keep artifact capabilities in memory, omit source paths from URLs and responses, and isolate artifact routes from permissive CORS headers.
-
 ## [1.67.3] - 2026-07-18
 
 ### Fixed
