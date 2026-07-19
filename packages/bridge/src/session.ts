@@ -216,6 +216,7 @@ export interface SessionSummary {
 interface SessionCreateInternalOptions {
   replaceSessionId?: string;
   replacementReadyTimeoutMs?: number;
+  replacementStillValid?: () => boolean;
   onReplacementReady?: () => void;
   onReplacementFailed?: (error: Error) => void;
 }
@@ -438,6 +439,7 @@ export class SessionManager {
     worktreeOpts: WorktreeOptions | undefined,
     codexOptions: CodexStartOptions,
     replacementReadyTimeoutMs?: number,
+    replacementStillValid?: () => boolean,
   ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       try {
@@ -451,6 +453,7 @@ export class SessionManager {
           {
             replaceSessionId: sessionId,
             replacementReadyTimeoutMs,
+            replacementStillValid,
             onReplacementReady: () => resolve(sessionId),
             onReplacementFailed: reject,
           },
@@ -562,6 +565,12 @@ export class SessionManager {
     };
     const commitReplacement = (): void => {
       if (!replacementSession || replacementSettled) return;
+      if (internal?.replacementStillValid?.() === false) {
+        failReplacement(
+          new Error("Codex replacement invalidated before it became ready"),
+        );
+        return;
+      }
       if (this.sessions.get(id) !== replacementSession) {
         failReplacement(
           new Error("Codex session changed before its replacement was ready"),
@@ -1045,7 +1054,16 @@ export class SessionManager {
       }
       proc.on("input_ready", () => {
         if (!ownsRuntimeSlot()) return;
-        const drain = (): void => this.drainCodexQueue(session);
+        const drain = (): void => {
+          // Continuity replacements are followed by a fresh rollout read in
+          // their owning handler. Never drain at input_ready when such a
+          // fence exists: a competing Desktop start may already be durable
+          // but not yet observed by the monitor.
+          if (replacementSession && internal?.replacementStillValid) {
+            return;
+          }
+          this.drainCodexQueue(session);
+        };
         if (messageProcessing) {
           trackMessageWork(messageProcessing.then(drain));
         } else {
@@ -1804,7 +1822,8 @@ export class SessionManager {
   async steerCodexQueuedInput(
     id: string,
     itemId: string,
-    expectedExternalTurnId?: string,
+    expectedTurnId: string,
+    isExpectedTurnCurrent?: () => boolean,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     const session = this.sessions.get(id);
     if (!session || session.provider !== "codex") {
@@ -1817,6 +1836,12 @@ export class SessionManager {
     if (!(session.process instanceof CodexProcess)) {
       return { ok: false, error: "No active Codex process." };
     }
+    if (!expectedTurnId || isExpectedTurnCurrent?.() === false) {
+      return {
+        ok: false,
+        error: "The target turn changed before guidance was applied.",
+      };
+    }
 
     try {
       const options = {
@@ -1827,15 +1852,17 @@ export class SessionManager {
           ? { clientMessageId: queued.clientMessageId }
           : {}),
       };
-      if (expectedExternalTurnId) {
-        await session.process.steerTurnStructured(
-          expectedExternalTurnId,
-          queued.text,
-          options,
-        );
-      } else {
-        await session.process.steerInputStructured(queued.text, options);
+      if (isExpectedTurnCurrent?.() === false) {
+        return {
+          ok: false,
+          error: "The target turn changed before guidance was applied.",
+        };
       }
+      await session.process.steerTurnStructured(
+        expectedTurnId,
+        queued.text,
+        options,
+      );
     } catch (err) {
       return {
         ok: false,
@@ -1878,9 +1905,13 @@ export class SessionManager {
    * Close the narrow race where a queued handoff arrives immediately after a
    * refreshed Codex runtime already emitted input_ready.
    */
-  drainCodexQueuedInputIfReady(id: string): boolean {
+  drainCodexQueuedInputIfReady(
+    id: string,
+    isStillSafe?: () => boolean,
+  ): boolean {
     const session = this.sessions.get(id);
     if (
+      isStillSafe?.() === false ||
       !session ||
       session.provider !== "codex" ||
       !session.codexQueuedInput ||

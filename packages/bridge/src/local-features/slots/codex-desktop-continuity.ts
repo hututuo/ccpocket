@@ -202,7 +202,19 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
 
     try {
       const monitor = await this.monitorFor(message.threadId);
+      // Resolving and seeding a rollout can await filesystem work. A socket
+      // may disappear in that window, so never register a watcher after its
+      // controller has already been aborted.
+      if (this.closed || context.signal.aborted) {
+        this.disposeMonitorIfUnused(message.threadId, monitor);
+        return;
+      }
       this.registerWatch(context.client, message, monitor);
+      if (this.closed || context.signal.aborted) {
+        this.removeWatch(context.client, message.sessionId, message.threadId);
+        this.disposeMonitorIfUnused(message.threadId, monitor);
+        return;
+      }
       const snapshot = monitor.snapshot;
       const handoffQueued =
         snapshot.state === "idle" &&
@@ -377,7 +389,8 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     const monitor = new CodexRolloutMonitor({
       threadId,
       path,
-      isLocalRuntimeActive: () => this.isLocalRuntimeActive(threadId),
+      getLocalActiveTurnId: () =>
+        this.runtime.getLocallyActiveCodexTurnId?.(threadId),
       consumeLocalClientMessageId: (clientMessageId) =>
         this.consumeLocalClientMessageId(threadId, clientMessageId),
       onEvent: (event) => this.onMonitorEvent(threadId, event),
@@ -455,6 +468,20 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     registrations!.delete(sessionId);
     if (registrations!.size === 0) this.watchersByClient.delete(client);
     this.monitors.get(threadId)?.removeWatcher(registration);
+  }
+
+  private disposeMonitorIfUnused(
+    threadId: string,
+    monitor: CodexRolloutMonitor,
+  ): void {
+    if (
+      monitor.watcherCount !== 0 ||
+      this.monitors.get(threadId) !== monitor
+    ) {
+      return;
+    }
+    monitor.close();
+    this.monitors.delete(threadId);
   }
 
   private get totalWatcherCount(): number {
@@ -573,16 +600,24 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     if (process.isWaitingForInput === false) return;
     const rehydrate = this.runtime.rehydrateCodexSessionAfterExternalTurn;
     if (!rehydrate) return;
+    const activityEpoch = monitor.activityEpoch;
+    const isStillSafe = (): boolean =>
+      !this.closed &&
+      this.monitors.get(threadId) === monitor &&
+      monitor.activityEpoch === activityEpoch &&
+      !monitor.hasExternalTurn;
     this.rehydrateInFlight.add(sessionId);
     try {
-      const ok = await rehydrate(sessionId, threadId);
+      const ok = await rehydrate(sessionId, threadId, isStillSafe);
+      if (ok) await monitor.refreshNow();
+      if (!isStillSafe()) return;
       if (ok) {
         this.staleRuntimeSessionIds.delete(sessionId);
         this.rehydrateFailureCounts.delete(sessionId);
         // The queue may have been accepted just after the replacement emitted
         // input_ready. Recheck once after the atomic refresh so that race does
         // not leave the phone handoff stuck until another turn completes.
-        this.runtime.drainCodexQueuedInputIfReady?.(sessionId);
+        this.runtime.drainCodexQueuedInputIfReady?.(sessionId, isStillSafe);
       } else {
         this.retryOrReportRehydrateFailure(
           monitor,
@@ -685,7 +720,8 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
 export interface CodexRolloutMonitorOptions {
   threadId: string;
   path: string;
-  isLocalRuntimeActive: () => boolean;
+  /** Exact locally owned turn; generic runtime activity is not attribution. */
+  getLocalActiveTurnId: () => string | undefined;
   consumeLocalClientMessageId: (clientMessageId: string) => boolean;
   onEvent: (event: CodexDesktopContinuityMonitorEvent) => void;
   assistantMessagePairMs?: number;
@@ -719,12 +755,18 @@ export class CodexRolloutMonitor {
   private readonly reasoningKeys = new Set<string>();
   private readonly toolNames = new Map<string, string>();
   private lastExternalTerminalTimestampMs: number | undefined;
+  private activityEpochValue = 0;
   private closed = false;
 
   constructor(private readonly options: CodexRolloutMonitorOptions) {}
 
   get watcherCount(): number {
     return this.watchers.length;
+  }
+
+  /** Changes whenever live lifecycle/ownership evidence changes. */
+  get activityEpoch(): number {
+    return this.activityEpochValue;
   }
 
   get snapshot(): MonitorSnapshot {
@@ -887,9 +929,10 @@ export class CodexRolloutMonitor {
       const timestampMs = parseTimestampMs(entry.timestamp);
       if (type === "task_started") {
         sawLifecycle = true;
+        const turnId = optionalString(payload.turn_id);
         this.addActiveTurn(
-          optionalString(payload.turn_id),
-          this.options.isLocalRuntimeActive() ? "local" : null,
+          turnId,
+          this.isExactlyLocalTurn(turnId) ? "local" : null,
           optionalString(entry.timestamp),
           false,
         );
@@ -898,17 +941,29 @@ export class CodexRolloutMonitor {
         const hasLocalClientIdentity =
           clientMessageId !== undefined &&
           this.options.consumeLocalClientMessageId(clientMessageId);
-        const turn = this.turnForPayload(payload, true);
+        const turn = this.turnForUserMessage(payload);
         if (turn) {
-          turn.origin =
-            hasLocalClientIdentity || this.options.isLocalRuntimeActive()
-              ? "local"
-              : "desktop";
+          if (hasLocalClientIdentity) {
+            // A guide echo may arrive after a Desktop turn was already
+            // classified. Suppress that echo, but never rewrite proven
+            // Desktop ownership to local.
+            const exactLocalTurn = this.exactLocalActiveTurn();
+            if (!exactLocalTurn || exactLocalTurn === turn) {
+              if (turn.origin === null) turn.origin = "local";
+            }
+          } else if (turn.origin === null) {
+            if (this.isExactlyLocalTurn(turn.turnId)) {
+              turn.origin = "local";
+            } else if (clientMessageId !== undefined) {
+              turn.origin = "desktop";
+            }
+          }
         }
       } else if (type === "task_complete" || type === "turn_aborted") {
         sawLifecycle = true;
         const turnId = optionalString(payload.turn_id);
-        const completed = this.takeActiveTurn(turnId);
+        const candidate = this.turnForCompletion(turnId);
+        const completed = candidate ? this.takeActiveTurn(candidate) : undefined;
         const origin = completed?.origin ?? "desktop";
         this.lastObservedTurnId = turnId ?? completed?.turnId;
         if (origin === "desktop" && timestampMs !== undefined) {
@@ -931,7 +986,11 @@ export class CodexRolloutMonitor {
       this.addActiveTurn(undefined, "desktop", undefined, false);
     }
     for (const turn of this.activeTurns.values()) {
-      if (turn.origin === null) turn.origin = "desktop";
+      if (turn.origin === null) {
+        turn.origin = this.isExactlyLocalTurn(turn.turnId)
+          ? "local"
+          : "desktop";
+      }
     }
     if (this.activeTurns.size > 0) {
       this.state = "running";
@@ -1079,13 +1138,17 @@ export class CodexRolloutMonitor {
   }
 
   private beginTurn(turnId?: string, timestamp?: string): void {
+    this.bumpActivityEpoch();
     this.clearTurnDedupe();
     this.state = "running";
     // A local Bridge turn and a Desktop turn can overlap on the same durable
     // thread. Keep a live start unclassified until the following user_message
     // provides client identity; the short timer remains the fallback for
     // older rollouts that omit that event or its client id.
-    this.addActiveTurn(turnId, null, timestamp, true);
+    const origin: TurnOrigin = this.isExactlyLocalTurn(turnId)
+      ? "local"
+      : null;
+    this.addActiveTurn(turnId, origin, timestamp, origin === null);
   }
 
   private consumeUserMessage(
@@ -1095,18 +1158,35 @@ export class CodexRolloutMonitor {
     const clientMessageId = optionalString(payload.client_id);
     const isLocal = clientMessageId
       ? this.options.consumeLocalClientMessageId(clientMessageId)
-      : this.options.isLocalRuntimeActive();
-    const turn = this.turnForPayload(payload, true);
+      : false;
+    const turn = this.turnForUserMessage(payload);
     if (!turn) return;
     if (isLocal) {
+      const exactLocalTurn = this.exactLocalActiveTurn();
+      if (exactLocalTurn && exactLocalTurn !== turn) return;
       this.clearPendingStart(turn);
-      turn.origin = "local";
+      if (turn.origin === null) {
+        turn.origin = "local";
+        this.bumpActivityEpoch();
+      }
       return;
     }
+    if (turn.origin === "local") return;
+    if (turn.origin === null && this.isExactlyLocalTurn(turn.turnId)) {
+      this.clearPendingStart(turn);
+      turn.origin = "local";
+      this.bumpActivityEpoch();
+      return;
+    }
+    // No client identity is not proof of Desktop ownership. Give the exact
+    // local active-turn callback and short classification timer time to catch
+    // up instead of stealing a just-started phone turn.
+    if (turn.origin === null && clientMessageId === undefined) return;
     const wasDesktop = turn.origin === "desktop";
     this.clearPendingStart(turn);
     turn.origin = "desktop";
     if (!wasDesktop) {
+      this.bumpActivityEpoch();
       this.options.onEvent({
         kind: "state",
         state: "running",
@@ -1140,11 +1220,13 @@ export class CodexRolloutMonitor {
   private flushPendingStart(turn: ActiveTurn | undefined): void {
     if (!turn || turn.origin !== null) return;
     this.clearPendingStart(turn);
-    if (this.options.isLocalRuntimeActive()) {
+    if (this.isExactlyLocalTurn(turn.turnId)) {
       turn.origin = "local";
+      this.bumpActivityEpoch();
       return;
     }
     turn.origin = "desktop";
+    this.bumpActivityEpoch();
     this.options.onEvent({
       kind: "state",
       state: "running",
@@ -1164,8 +1246,12 @@ export class CodexRolloutMonitor {
     timestamp?: string,
   ): void {
     const candidate = this.turnForCompletion(turnId);
+    // A terminal without a matching id cannot select one of several active
+    // turns safely. Keep them active until their exact terminal arrives.
+    if (!candidate && this.activeTurns.size > 0) return;
+    this.bumpActivityEpoch();
     this.flushPendingStart(candidate);
-    const completed = this.takeActiveTurn(turnId);
+    const completed = candidate ? this.takeActiveTurn(candidate) : undefined;
     const wasDesktop = (completed?.origin ?? "desktop") === "desktop";
     const effectiveTurnId = turnId ?? completed?.turnId;
     this.lastObservedTurnId = effectiveTurnId;
@@ -1196,6 +1282,7 @@ export class CodexRolloutMonitor {
   }
 
   private consumeThreadRolledBack(timestamp?: string): void {
+    this.bumpActivityEpoch();
     this.clearExternalTurns();
     this.clearAssistantPairing();
     this.lastObservedTurnId = undefined;
@@ -1287,6 +1374,10 @@ export class CodexRolloutMonitor {
     const phase = normalizeAssistantPhase(payload.phase);
     const timestampMs = parseTimestampMs(timestamp);
     const currentTurn = this.turnForPayload(payload);
+    // Pairing by text is only a dedupe aid, not turn ownership evidence. If
+    // multiple active turns make this payload ambiguous, suppress it and let
+    // the terminal canonical rehydrate repair history.
+    if (!currentTurn) return;
     const pending = this.findPendingAssistantMessage(
       text,
       phase,
@@ -1601,45 +1692,64 @@ export class CodexRolloutMonitor {
 
   private turnForPayload(
     payload: Record<string, unknown>,
-    preferPending = false,
   ): ActiveTurn | undefined {
     const explicitTurnId = optionalString(payload.turn_id);
     if (explicitTurnId) {
-      const exact = this.activeTurns.get(`turn:${explicitTurnId}`);
-      if (exact) return exact;
+      return this.activeTurns.get(`turn:${explicitTurnId}`);
     }
     const turns = [...this.activeTurns.values()];
-    if (preferPending) {
-      const pending = lastMatching(turns, (turn) => turn.origin === null);
-      if (pending) return pending;
+    // Real rollouts commonly omit turn_id from reasoning, assistant and tool
+    // entries. They are attributable only while exactly one turn is active.
+    return turns.length === 1 ? turns[0] : undefined;
+  }
+
+  private turnForUserMessage(
+    payload: Record<string, unknown>,
+  ): ActiveTurn | undefined {
+    const explicitTurnId = optionalString(payload.turn_id);
+    if (explicitTurnId) {
+      return this.activeTurns.get(`turn:${explicitTurnId}`);
     }
-    return (
-      lastMatching(
-        turns,
-        (turn) => turn.origin === "desktop" || turn.origin === null,
-      ) ?? turns[turns.length - 1]
-    );
+    const turns = [...this.activeTurns.values()];
+    const pending = turns.filter((turn) => turn.origin === null);
+    if (pending.length === 1) return pending[0];
+    return turns.length === 1 ? turns[0] : undefined;
   }
 
   private turnForCompletion(turnId?: string): ActiveTurn | undefined {
-    if (!turnId) {
-      const turns = [...this.activeTurns.values()];
-      return turns[turns.length - 1];
-    }
+    const turns = [...this.activeTurns.values()];
+    if (!turnId) return turns.length === 1 ? turns[0] : undefined;
     const exact = this.activeTurns.get(`turn:${turnId}`);
     if (exact) return exact;
-    return lastMatching(
-      this.activeTurns.values(),
-      (turn) => turn.turnId === undefined,
-    );
+    const anonymous = turns.filter((turn) => turn.turnId === undefined);
+    return turns.length === 1 && anonymous.length === 1
+      ? anonymous[0]
+      : undefined;
   }
 
-  private takeActiveTurn(turnId?: string): ActiveTurn | undefined {
-    const turn = this.turnForCompletion(turnId);
-    if (!turn) return undefined;
+  private takeActiveTurn(turn: ActiveTurn): ActiveTurn {
     this.clearPendingStart(turn);
     this.activeTurns.delete(turn.key);
     return turn;
+  }
+
+  private isExactlyLocalTurn(turnId?: string): boolean {
+    return (
+      turnId !== undefined &&
+      this.options.getLocalActiveTurnId() === turnId
+    );
+  }
+
+  private exactLocalActiveTurn(): ActiveTurn | undefined {
+    const turnId = this.options.getLocalActiveTurnId();
+    return turnId ? this.activeTurns.get(`turn:${turnId}`) : undefined;
+  }
+
+  private bumpActivityEpoch(): void {
+    this.activityEpochValue =
+      this.activityEpochValue >= Number.MAX_SAFE_INTEGER
+        ? 1
+        : this.activityEpochValue + 1;
   }
 
   private latestExternalTurn(): ActiveTurn | undefined {
@@ -1673,6 +1783,7 @@ export class CodexRolloutMonitor {
   }
 
   private resetObservedState(): void {
+    this.bumpActivityEpoch();
     this.clearActiveTurns();
     this.clearAssistantPairing();
     this.state = "unknown";

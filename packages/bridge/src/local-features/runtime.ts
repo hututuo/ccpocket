@@ -44,14 +44,20 @@ export interface LocalFeatureRuntime {
   ): boolean;
   /** True only when this Bridge owns an active turn for the durable thread. */
   isCodexThreadLocallyActive?(threadId: string): boolean;
+  /** Exact turn owned by this Bridge, when ownership can be proven. */
+  getLocallyActiveCodexTurnId?(threadId: string): string | undefined;
   /** Recreate a stale Codex runtime from durable history after Desktop work. */
   rehydrateCodexSessionAfterExternalTurn?(
     sessionId: string,
     threadId: string,
+    isStillSafe?: () => boolean,
   ): Promise<boolean>;
   hasCodexQueuedInput?(sessionId: string): boolean;
   /** Drain a queued phone turn only after a stale runtime refresh succeeded. */
-  drainCodexQueuedInputIfReady?(sessionId: string): boolean;
+  drainCodexQueuedInputIfReady?(
+    sessionId: string,
+    isStillSafe?: () => boolean,
+  ): boolean;
   send(client: object, message: LocalFeatureServerMessage | {
     type: "error";
     message: string;

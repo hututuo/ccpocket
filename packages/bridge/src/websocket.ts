@@ -1259,12 +1259,40 @@ export class BridgeWebSocketServer {
             session.process.status === "compacting"
           );
         }),
-      rehydrateCodexSessionAfterExternalTurn: (sessionId, threadId) =>
-        this.rehydrateCodexSessionAfterExternalTurn(sessionId, threadId),
+      getLocallyActiveCodexTurnId: (threadId) => {
+        const turnIds = new Set<string>();
+        for (const { id } of this.sessionManager.list()) {
+          const session = this.sessionManager.get(id);
+          if (
+            !session ||
+            session.provider !== "codex" ||
+            this.codexThreadIdForSession(session) !== threadId ||
+            !(session.process instanceof CodexProcess)
+          ) {
+            continue;
+          }
+          const turnId = session.process.activeTurnId;
+          if (turnId) turnIds.add(turnId);
+        }
+        return turnIds.size === 1 ? turnIds.values().next().value : undefined;
+      },
+      rehydrateCodexSessionAfterExternalTurn: (
+        sessionId,
+        threadId,
+        isStillSafe,
+      ) =>
+        this.rehydrateCodexSessionAfterExternalTurn(
+          sessionId,
+          threadId,
+          isStillSafe,
+        ),
       hasCodexQueuedInput: (sessionId) =>
         this.sessionManager.get(sessionId)?.codexQueuedInput != null,
-      drainCodexQueuedInputIfReady: (sessionId) =>
-        this.sessionManager.drainCodexQueuedInputIfReady(sessionId),
+      drainCodexQueuedInputIfReady: (sessionId, isStillSafe) =>
+        this.sessionManager.drainCodexQueuedInputIfReady(
+          sessionId,
+          isStillSafe,
+        ),
       send: (client, message) =>
         this.send(client as WebSocket, message as ServerMessage),
       supports: (client, messageType) =>
@@ -3644,30 +3672,62 @@ export class BridgeWebSocketServer {
           this.localFeatures.externalCodexTurnId(session);
         const hasExternalActivity =
           this.localFeatures.hasExternalCodexActivity(session);
-        if (
-          msg.expectedTurnId !== undefined &&
-          msg.expectedTurnId !== externalTurnId
-        ) {
-          this.send(ws, {
-            type: "error",
-            message: "The Desktop turn changed before guidance was applied.",
-            errorCode: "queued_input_steer_stale_turn",
-          });
-          return;
-        }
-        if (hasExternalActivity && externalTurnId === undefined) {
-          this.send(ws, {
-            type: "error",
-            message:
-              "Multiple or unclassified Desktop turns are active; guidance cannot be routed safely.",
-            errorCode: "queued_input_steer_ambiguous_turn",
-          });
-          return;
+        let targetTurnId: string;
+        let isExpectedTurnCurrent: () => boolean;
+        if (msg.expectedTurnId) {
+          if (
+            !hasExternalActivity ||
+            msg.expectedTurnId !== externalTurnId
+          ) {
+            this.send(ws, {
+              type: "error",
+              message:
+                "The Desktop turn changed before guidance was applied.",
+              errorCode: "queued_input_steer_stale_turn",
+            });
+            return;
+          }
+          targetTurnId = msg.expectedTurnId;
+          isExpectedTurnCurrent = () =>
+            this.localFeatures.hasExternalCodexActivity(session) &&
+            this.localFeatures.externalCodexTurnId(session) === targetTurnId;
+        } else {
+          // Older/current Mobile clients omit expectedTurnId for a guide to
+          // their own running turn. Never reinterpret that omission as
+          // permission to steer a newly arrived Desktop turn.
+          if (hasExternalActivity) {
+            this.send(ws, {
+              type: "error",
+              message:
+                "A Desktop turn is active; local guidance was not rerouted.",
+              errorCode:
+                externalTurnId === undefined
+                  ? "queued_input_steer_ambiguous_turn"
+                  : "queued_input_steer_stale_turn",
+            });
+            return;
+          }
+          const localProcess = session.process as CodexProcess;
+          const localTurnId = localProcess.activeTurnId;
+          if (!localTurnId) {
+            this.send(ws, {
+              type: "error",
+              message: "No exact local Codex turn is available to guide.",
+              errorCode: "queued_input_steer_stale_turn",
+            });
+            return;
+          }
+          targetTurnId = localTurnId;
+          isExpectedTurnCurrent = () =>
+            this.sessionManager.get(session.id)?.process === localProcess &&
+            localProcess.activeTurnId === targetTurnId &&
+            !this.localFeatures.hasExternalCodexActivity(session);
         }
         const result = await this.sessionManager.steerCodexQueuedInput(
           session.id,
           msg.itemId,
-          msg.expectedTurnId ?? externalTurnId,
+          targetTurnId,
+          isExpectedTurnCurrent,
         );
         if (!result.ok) {
           this.send(ws, {
@@ -3676,7 +3736,10 @@ export class BridgeWebSocketServer {
             errorCode:
               result.error === "Queued message not found."
                 ? "queued_input_not_found"
-                : "queued_input_steer_failed",
+                : result.error ===
+                    "The target turn changed before guidance was applied."
+                  ? "queued_input_steer_stale_turn"
+                  : "queued_input_steer_failed",
           });
           return;
         }
@@ -7990,9 +8053,11 @@ export class BridgeWebSocketServer {
   private async rehydrateCodexSessionAfterExternalTurn(
     sessionId: string,
     threadId: string,
+    isStillSafe: () => boolean = () => true,
   ): Promise<boolean> {
     const session = this.sessionManager.get(sessionId);
     if (
+      !isStillSafe() ||
       !session ||
       session.provider !== "codex" ||
       this.codexThreadIdForSession(session) !== threadId ||
@@ -8020,6 +8085,7 @@ export class BridgeWebSocketServer {
       return false;
     }
     if (
+      !isStillSafe() ||
       this.sessionManager.get(sessionId) !== session ||
       this.codexThreadIdForSession(session) !== threadId ||
       session.process !== process ||
@@ -8077,6 +8143,8 @@ export class BridgeWebSocketServer {
         additionalWritableRoots: settings.additionalWritableRoots,
         collaborationMode,
       },
+      undefined,
+      isStillSafe,
     );
     const newSession = this.sessionManager.get(newId);
     if (!newSession) return false;

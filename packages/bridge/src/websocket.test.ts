@@ -200,6 +200,7 @@ vi.mock("./session.js", async () => {
       const process = {
         status: "idle",
         isRunning: true,
+        activeTurnId: undefined as string | undefined,
         hasPendingCoreAction: false,
         sessionId:
           codexOptions &&
@@ -294,6 +295,7 @@ vi.mock("./session.js", async () => {
         sendInputWithImage: vi.fn(),
         sendInputWithImages: vi.fn(() => false),
         steerInputStructured: vi.fn(async () => {}),
+        steerTurnStructured: vi.fn(async () => {}),
         approve: vi.fn(),
         approveAlways: vi.fn(),
         reject: vi.fn(),
@@ -336,10 +338,15 @@ vi.mock("./session.js", async () => {
       pastMessages: unknown[],
       worktreeOptions: unknown,
       codexOptions: unknown,
+      _replacementReadyTimeoutMs?: number,
+      replacementStillValid?: () => boolean,
     ): Promise<string> {
       const current = this.sessions.get(sessionId);
       if (!current || current.provider !== "codex") {
         throw new Error("Cannot replace a missing or non-Codex session");
+      }
+      if (replacementStillValid?.() === false) {
+        throw new Error("Codex replacement invalidated before it became ready");
       }
       const temporaryId = this.create(
         projectPath,
@@ -416,7 +423,12 @@ vi.mock("./session.js", async () => {
       return true;
     }
 
-    async steerCodexQueuedInput(id: string, itemId: string) {
+    async steerCodexQueuedInput(
+      id: string,
+      itemId: string,
+      expectedTurnId: string,
+      isExpectedTurnCurrent?: () => boolean,
+    ) {
       const session = this.sessions.get(id);
       if (!session || session.provider !== "codex") {
         return { ok: false, error: "No active Codex session." };
@@ -425,8 +437,20 @@ vi.mock("./session.js", async () => {
       if (!queued || queued.itemId !== itemId) {
         return { ok: false, error: "Queued message not found." };
       }
+      if (!expectedTurnId || isExpectedTurnCurrent?.() === false) {
+        return {
+          ok: false,
+          error: "The target turn changed before guidance was applied.",
+        };
+      }
       try {
-        await session.process.steerInputStructured(queued.text, {
+        if (isExpectedTurnCurrent?.() === false) {
+          return {
+            ok: false,
+            error: "The target turn changed before guidance was applied.",
+          };
+        }
+        await session.process.steerTurnStructured(expectedTurnId, queued.text, {
           images: queued.images,
           skills: queued.skills,
           mentions: queued.mentions,
@@ -10715,6 +10739,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .find((m: any) => m.type === "system" && m.subtype === "session_created");
     const sessionId = created.sessionId as string;
     const session = (bridge as any).sessionManager.get(sessionId);
+    session.process.activeTurnId = "local-turn-1";
     session.codexQueuedInput = {
       itemId: "queued-1",
       text: "steer now",
@@ -10734,7 +10759,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect(session.process.steerInputStructured).toHaveBeenCalledWith(
+    expect(session.process.steerTurnStructured).toHaveBeenCalledWith(
+      "local-turn-1",
       "steer now",
       {
         images: undefined,
@@ -10781,12 +10807,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .find((m: any) => m.type === "system" && m.subtype === "session_created");
     const sessionId = created.sessionId as string;
     const session = (bridge as any).sessionManager.get(sessionId);
+    session.process.activeTurnId = "local-turn-1";
     session.codexQueuedInput = {
       itemId: "queued-1",
       text: "steer now",
       createdAt: new Date().toISOString(),
     };
-    session.process.steerInputStructured.mockRejectedValueOnce(
+    session.process.steerTurnStructured.mockRejectedValueOnce(
       new Error("No active Codex turn to steer"),
     );
 
@@ -10809,6 +10836,54 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       errorCode: "queued_input_steer_failed",
     });
 
+    bridge.close();
+  });
+
+  it("does not reroute a local guide when Desktop starts before the RPC", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.process.activeTurnId = "local-turn-a";
+    session.codexQueuedInput = {
+      itemId: "queued-local-race",
+      text: "guide local A only",
+      createdAt: new Date().toISOString(),
+    };
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "hasExternalCodexActivity",
+    )
+      .mockReturnValueOnce(false)
+      .mockReturnValue(true);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "steer_queued_input",
+        sessionId: created.sessionId,
+        itemId: "queued-local-race",
+      },
+      ws,
+    );
+
+    expect(session.process.steerTurnStructured).not.toHaveBeenCalled();
+    expect(session.codexQueuedInput?.itemId).toBe("queued-local-race");
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "error",
+      errorCode: "queued_input_steer_stale_turn",
+    });
     bridge.close();
   });
 
@@ -10849,7 +10924,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect(session.process.steerInputStructured).not.toHaveBeenCalled();
+    expect(session.process.steerTurnStructured).not.toHaveBeenCalled();
     expect(session.codexQueuedInput?.itemId).toBe("queued-stale-turn");
     expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
       type: "error",
@@ -10902,7 +10977,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect(session.process.steerInputStructured).not.toHaveBeenCalled();
+    expect(session.process.steerTurnStructured).not.toHaveBeenCalled();
     expect(steerQueuedInput).not.toHaveBeenCalled();
     expect(session.codexQueuedInput?.itemId).toBe("queued-ambiguous-turn");
     expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({

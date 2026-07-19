@@ -260,6 +260,74 @@ describe("SessionManager codex path", () => {
     expect(codexInstances[1].stop).toHaveBeenCalledOnce();
   });
 
+  it("keeps the old runtime when continuity epoch changes before input_ready", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-stable" },
+    );
+    const originalSession = manager.get(sessionId)!;
+    let stillValid = true;
+
+    const replacementPromise = manager.replaceCodexSession(
+      sessionId,
+      "/tmp/project-codex",
+      [],
+      undefined,
+      { threadId: "thread-stable" },
+      1_000,
+      () => stillValid,
+    );
+    stillValid = false;
+    codexInstances[1].emit("input_ready");
+
+    await expect(replacementPromise).rejects.toThrow(
+      "invalidated before it became ready",
+    );
+    expect(manager.get(sessionId)).toBe(originalSession);
+    expect(codexInstances[0].stop).not.toHaveBeenCalled();
+    expect(codexInstances[1].stop).toHaveBeenCalledOnce();
+  });
+
+  it("never drains a continuity queue at replacement input_ready", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-stable" },
+    );
+    manager.queueCodexInput(sessionId, {
+      itemId: "queued-race",
+      text: "must stay queued",
+      createdAt: "2026-07-20T00:00:00.000Z",
+    });
+    let guardCalls = 0;
+    const replacementPromise = manager.replaceCodexSession(
+      sessionId,
+      "/tmp/project-codex",
+      [],
+      undefined,
+      { threadId: "thread-stable" },
+      1_000,
+      () => ++guardCalls === 1,
+    );
+    codexInstances[1].isWaitingForInput = true;
+    codexInstances[1].emit("input_ready");
+
+    await expect(replacementPromise).resolves.toBe(sessionId);
+    expect(manager.get(sessionId)?.codexQueuedInput?.itemId).toBe(
+      "queued-race",
+    );
+    expect(codexInstances[1].sendInputStructured).not.toHaveBeenCalled();
+  });
+
   it("re-derives permissions after incremental runtime settings", () => {
     const manager = new SessionManager(() => {});
     const sessionId = manager.create(
@@ -1329,11 +1397,16 @@ describe("SessionManager codex path", () => {
       }),
     ).toBe(true);
 
-    const result = await manager.steerCodexQueuedInput(sessionId, "queued-1");
+    const result = await manager.steerCodexQueuedInput(
+      sessionId,
+      "queued-1",
+      "local-turn-1",
+    );
 
     expect(result).toEqual({ ok: true });
     expect(manager.get(sessionId)?.codexQueuedInput).toBeUndefined();
-    expect(codexInstances[0].steerInputStructured).toHaveBeenCalledWith(
+    expect(codexInstances[0].steerTurnStructured).toHaveBeenCalledWith(
+      "local-turn-1",
       "Steer this",
       {
         images: undefined,
@@ -1377,17 +1450,53 @@ describe("SessionManager codex path", () => {
         createdAt: "2026-04-25T00:00:00.000Z",
       }),
     ).toBe(true);
-    codexInstances[0].steerInputStructured.mockRejectedValueOnce(
+    codexInstances[0].steerTurnStructured.mockRejectedValueOnce(
       new Error("No active Codex turn to steer"),
     );
 
-    const result = await manager.steerCodexQueuedInput(sessionId, "queued-1");
+    const result = await manager.steerCodexQueuedInput(
+      sessionId,
+      "queued-1",
+      "local-turn-1",
+    );
 
     expect(result).toEqual({
       ok: false,
       error: "No active Codex turn to steer",
     });
     expect(manager.get(sessionId)?.codexQueuedInput?.text).toBe("Steer this");
+  });
+
+  it("does not steer when the locked turn changes before the RPC", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    manager.queueCodexInput(sessionId, {
+      itemId: "queued-stale-lock",
+      text: "must not move to another turn",
+      createdAt: "2026-07-20T00:00:00.000Z",
+    });
+
+    await expect(
+      manager.steerCodexQueuedInput(
+        sessionId,
+        "queued-stale-lock",
+        "local-turn-a",
+        () => false,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: "The target turn changed before guidance was applied.",
+    });
+    expect(codexInstances[0].steerTurnStructured).not.toHaveBeenCalled();
+    expect(manager.get(sessionId)?.codexQueuedInput?.itemId).toBe(
+      "queued-stale-lock",
+    );
   });
 
   it("does not clear an edited queue snapshot while steer RPC is in flight", async () => {
@@ -1405,13 +1514,14 @@ describe("SessionManager codex path", () => {
       createdAt: "2026-07-19T00:00:00.000Z",
     });
     let resolveSteer!: () => void;
-    codexInstances[0].steerInputStructured.mockImplementationOnce(
+    codexInstances[0].steerTurnStructured.mockImplementationOnce(
       () => new Promise<void>((resolve) => (resolveSteer = resolve)),
     );
 
     const steering = manager.steerCodexQueuedInput(
       sessionId,
       "queued-racing-edit",
+      "local-turn-1",
     );
     expect(
       manager.updateCodexQueuedInput(
@@ -1451,13 +1561,14 @@ describe("SessionManager codex path", () => {
       createdAt: "2026-07-19T00:00:00.000Z",
     });
     let resolveSteer!: () => void;
-    codexInstances[0].steerInputStructured.mockImplementationOnce(
+    codexInstances[0].steerTurnStructured.mockImplementationOnce(
       () => new Promise<void>((resolve) => (resolveSteer = resolve)),
     );
 
     const steering = manager.steerCodexQueuedInput(
       sessionId,
       "queued-racing-cancel",
+      "local-turn-1",
     );
     expect(
       manager.cancelCodexQueuedInput(sessionId, "queued-racing-cancel"),

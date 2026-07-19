@@ -113,6 +113,7 @@ describe("CodexProcess (app-server)", () => {
 
     (proc as any)._threadId = "thread-1";
     (proc as any).pendingTurnId = "turn-1";
+    expect(proc.activeTurnId).toBe("turn-1");
     await proc.steerInputStructured("follow up", {
       clientMessageId: "mobile-message-2",
     });
@@ -124,6 +125,7 @@ describe("CodexProcess (app-server)", () => {
     });
 
     (proc as any).pendingTurnId = null;
+    expect(proc.activeTurnId).toBeUndefined();
     await proc.steerTurnStructured("desktop-turn-1", "guide desktop", {
       clientMessageId: "mobile-message-3",
     });

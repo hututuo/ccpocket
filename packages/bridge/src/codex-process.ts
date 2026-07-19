@@ -583,6 +583,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
   }
 
+  /**
+   * Exact app-server turn currently owned by this runtime. Continuity readers
+   * must compare this id with rollout lifecycle events; a generic `running`
+   * status is not strong enough to distinguish a phone turn from a competing
+   * Desktop turn on the same durable thread.
+   */
+  get activeTurnId(): string | undefined {
+    return this.pendingTurnId ?? this.activeCoreActionTurnId ?? undefined;
+  }
+
   /** True only while compact/review is admitted but not yet a normal Turn. */
   get hasPendingCoreAction(): boolean {
     return this.pendingCoreAction !== null;

@@ -65,7 +65,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -89,7 +89,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => true,
+      getLocalActiveTurnId: () => "turn-local",
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -108,7 +108,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -284,7 +284,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -306,7 +306,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -363,6 +363,106 @@ describe("CodexRolloutMonitor", () => {
     monitor.close();
   });
 
+  it("suppresses unscoped deltas while multiple turns are active", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-1",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event("event_msg", { type: "task_started", turn_id: "turn-a" }),
+      event("event_msg", {
+        type: "user_message",
+        turn_id: "turn-a",
+        client_id: "desktop-a",
+        message: "A",
+      }),
+      event("event_msg", { type: "task_started", turn_id: "turn-b" }),
+      event("event_msg", {
+        type: "user_message",
+        turn_id: "turn-b",
+        client_id: "desktop-b",
+        message: "B",
+      }),
+      event("event_msg", { type: "agent_reasoning", text: "ambiguous" }),
+      event("event_msg", {
+        type: "agent_message",
+        phase: "commentary",
+        message: "ambiguous assistant",
+      }),
+      event("response_item", {
+        type: "function_call",
+        call_id: "ambiguous-tool",
+        name: "exec",
+        arguments: "{}",
+      }),
+      event("event_msg", {
+        type: "agent_reasoning",
+        turn_id: "turn-a",
+        text: "scoped A",
+      }),
+    ]);
+
+    await monitor.refreshNow();
+
+    expect(JSON.stringify(events)).not.toContain("ambiguous assistant");
+    expect(JSON.stringify(events)).not.toContain("ambiguous-tool");
+    expect(JSON.stringify(events)).not.toContain('"text":"ambiguous\\n"');
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "message",
+        turnId: "turn-a",
+        message: { type: "thinking_delta", text: "scoped A\n" },
+      }),
+    );
+    monitor.close();
+  });
+
+  it("does not let a local guide id rewrite a Desktop-owned turn", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-1",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: (id) => id === "mobile-guide",
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event("event_msg", { type: "task_started", turn_id: "desktop-turn" }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "desktop-user",
+        message: "Desktop owns this",
+      }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "mobile-guide",
+        message: "guide echo",
+      }),
+      event("event_msg", { type: "agent_reasoning", text: "still desktop" }),
+    ]);
+
+    await monitor.refreshNow();
+
+    expect(monitor.hasExternalTurn).toBe(true);
+    expect(JSON.stringify(events)).not.toContain("guide echo");
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "message",
+        turnId: "desktop-turn",
+        message: { type: "thinking_delta", text: "still desktop\n" },
+      }),
+    );
+    monitor.close();
+  });
+
   it("bounds unterminated legacy turns while retaining the newest overlap", async () => {
     const path = await rollout(
       Array.from({ length: 48 }, (_, index) =>
@@ -375,7 +475,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: () => {},
     });
@@ -397,7 +497,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
       assistantMessagePairMs: 40,
@@ -484,7 +584,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -530,7 +630,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -586,7 +686,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -645,7 +745,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -694,7 +794,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: (id) => id === "mobile-1",
       onEvent: (entry) => events.push(entry),
     });
@@ -729,7 +829,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => true,
+      getLocalActiveTurnId: () => "some-other-local-turn",
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -737,11 +837,14 @@ describe("CodexRolloutMonitor", () => {
     await appendEntries(path, [
       event("event_msg", {
         type: "task_started",
+        turn_id: "some-other-local-turn",
+      }),
+      event("event_msg", {
+        type: "task_started",
         turn_id: "desktop-during-local",
       }),
       event("event_msg", {
         type: "user_message",
-        turn_id: "desktop-during-local",
         client_id: "desktop-explicit-id",
         message: "Desktop started this competing turn",
       }),
@@ -777,7 +880,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -805,7 +908,7 @@ describe("CodexRolloutMonitor", () => {
     const monitor = new CodexRolloutMonitor({
       threadId: "thread-1",
       path,
-      isLocalRuntimeActive: () => false,
+      getLocalActiveTurnId: () => undefined,
       consumeLocalClientMessageId: () => false,
       onEvent: (entry) => events.push(entry),
     });
@@ -831,6 +934,57 @@ describe("CodexRolloutMonitor", () => {
 });
 
 describe("CodexDesktopContinuityHandler", () => {
+  it("drops an aborted watch and closes its unused monitor", async () => {
+    const path = await rollout();
+    const client = {};
+    const sent: unknown[] = [];
+    let releasePath!: (path: string) => void;
+    const pathGate = new Promise<string>((resolve) => {
+      releasePath = resolve;
+    });
+    const resolveRolloutPath = vi.fn(() => pathGate);
+    const session = {
+      id: "runtime-aborted-watch",
+      provider: "codex",
+      projectPath: "/project",
+      process: { isWaitingForInput: true },
+    };
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => session,
+      getCodexThreadId: () => "thread-aborted-watch",
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: async () => {
+        throw new Error("not used");
+      },
+      send: (_client, message) => sent.push(message),
+      supports: () => true,
+    };
+    const handler = new CodexDesktopContinuityHandler(runtime, {
+      resolveRolloutPath,
+    });
+    const controller = new AbortController();
+    const handling = handler.handle(
+      {
+        type: "codex_desktop_continuity_watch",
+        protocolVersion: 1,
+        requestId: "watch-aborted",
+        sessionId: session.id,
+        threadId: "thread-aborted-watch",
+        projectPath: "/project",
+      },
+      { client, signal: controller.signal, runtime },
+    );
+    await vi.waitFor(() => expect(resolveRolloutPath).toHaveBeenCalledOnce());
+    controller.abort();
+    releasePath(path);
+    await handling;
+
+    expect(sent).toEqual([]);
+    expect((handler as any).watchersByClient.size).toBe(0);
+    expect((handler as any).monitors.size).toBe(0);
+    handler.close();
+  });
+
   it("rejects a claimed cwd that does not belong to the bound runtime", async () => {
     const client = {};
     const sent: unknown[] = [];
@@ -1037,8 +1191,15 @@ describe("CodexDesktopContinuityHandler", () => {
         }),
       ]),
     );
-    expect(rehydrate).toHaveBeenCalledWith("runtime-1", "thread-1");
-    expect(drainQueuedInput).toHaveBeenCalledWith("runtime-1");
+    expect(rehydrate).toHaveBeenCalledWith(
+      "runtime-1",
+      "thread-1",
+      expect.any(Function),
+    );
+    expect(drainQueuedInput).toHaveBeenCalledWith(
+      "runtime-1",
+      expect.any(Function),
+    );
     expect(
       sent.some(
         (message) =>
@@ -1052,6 +1213,97 @@ describe("CodexDesktopContinuityHandler", () => {
         sessionId: "runtime-1",
       }),
     ).toEqual({ action: "allow" });
+    handler.close();
+  });
+
+  it("refreshes the rollout before draining after rehydrate", async () => {
+    const path = await rollout([
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-finished" },
+        "2026-07-20T00:00:01Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-finished-user",
+          message: "first Desktop turn",
+        },
+        "2026-07-20T00:00:02Z",
+      ),
+      event(
+        "event_msg",
+        { type: "task_complete", turn_id: "desktop-finished" },
+        "2026-07-20T00:00:03Z",
+      ),
+    ]);
+    const client = {};
+    const session = {
+      id: "runtime-rehydrate-race",
+      provider: "codex",
+      projectPath: "/project",
+      createdAt: new Date("2026-07-20T00:00:00Z"),
+      process: { isWaitingForInput: true },
+    };
+    const drainQueuedInput = vi.fn(() => true);
+    const rehydrate = vi.fn(
+      async (
+        _sessionId: string,
+        _threadId: string,
+        isStillSafe?: () => boolean,
+      ) => {
+        expect(isStillSafe?.()).toBe(true);
+        // Simulate Desktop B becoming durable while the replacement runtime
+        // reaches input_ready, before fs.watch has refreshed the monitor.
+        await appendEntries(path, [
+          event("event_msg", {
+            type: "task_started",
+            turn_id: "desktop-b",
+          }),
+          event("event_msg", {
+            type: "user_message",
+            client_id: "desktop-b-user",
+            message: "competing Desktop turn",
+          }),
+        ]);
+        return true;
+      },
+    );
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => session,
+      getCodexThreadId: () => "thread-rehydrate-race",
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: async () => {
+        throw new Error("not used");
+      },
+      rehydrateCodexSessionAfterExternalTurn: rehydrate,
+      hasCodexQueuedInput: () => true,
+      drainCodexQueuedInputIfReady: drainQueuedInput,
+      send: () => {},
+      supports: () => true,
+    };
+    const handler = new CodexDesktopContinuityHandler(runtime, {
+      resolveRolloutPath: async () => path,
+      rehydrateSettleMs: 1,
+    });
+    await handler.handle(
+      {
+        type: "codex_desktop_continuity_watch",
+        protocolVersion: 1,
+        requestId: "watch-rehydrate-race",
+        sessionId: session.id,
+        threadId: "thread-rehydrate-race",
+        projectPath: "/project",
+      },
+      { client, signal: new AbortController().signal, runtime },
+    );
+
+    await vi.waitFor(() =>
+      expect(handler.hasExternalCodexActivity(session)).toBe(true),
+    );
+    expect(rehydrate).toHaveBeenCalledOnce();
+    expect(drainQueuedInput).not.toHaveBeenCalled();
     handler.close();
   });
 
@@ -1281,6 +1533,7 @@ describe("CodexDesktopContinuityHandler", () => {
     expect(rehydrate).toHaveBeenCalledWith(
       "runtime-rollback",
       "thread-rollback",
+      expect.any(Function),
     );
     handler.close();
   });
