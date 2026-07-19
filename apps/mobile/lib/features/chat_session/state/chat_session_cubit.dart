@@ -1174,10 +1174,19 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         : historyCurrentUserIndex == -1
         ? <ChatEntry>[]
         : historyEntries.skip(historyCurrentUserIndex).toList();
+    final consumedWeakCoveredIndexes = <int>{};
 
     for (final candidate in candidates) {
-      if (_indexOfEquivalentEntry(covered, candidate, allowWeakMatch: true) !=
-          -1) {
+      if (_indexOfEquivalentEntry(covered, candidate) != -1) {
+        continue;
+      }
+      final weakCoveredIndex = _indexOfConsumableHistoryAlias(
+        covered,
+        candidate,
+        consumedWeakCoveredIndexes,
+      );
+      if (weakCoveredIndex != -1) {
+        consumedWeakCoveredIndexes.add(weakCoveredIndex);
         continue;
       }
       if (!_shouldPreserveEntryAcrossHistoryReplace(candidate)) continue;
@@ -1211,12 +1220,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> existingEntries,
     required List<ChatEntry> historyEntries,
   }) {
+    final consumedExistingIndexes = <int>{};
     return historyEntries.map((historyEntry) {
-      final existingIndex = _indexOfEquivalentEntry(
+      var existingIndex = _indexOfEquivalentEntryExcluding(
         existingEntries,
         historyEntry,
-        allowWeakMatch: false,
+        consumedExistingIndexes,
       );
+      if (existingIndex == -1) {
+        existingIndex = _indexOfProvisionalAssistantAlias(
+          existingEntries,
+          historyEntry,
+          excludedIndexes: consumedExistingIndexes,
+        );
+      }
       if (existingIndex == -1) return historyEntry;
       final existingEntry = existingEntries[existingIndex];
 
@@ -1229,9 +1246,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               historyEntry is ServerChatEntry &&
               existingEntry.message is ToolResultMessage &&
               historyEntry.message is ToolResultMessage);
-      return sameMergeableMessageKind
-          ? _mergeEquivalentEntry(existingEntry, historyEntry)
-          : historyEntry;
+      if (!sameMergeableMessageKind) return historyEntry;
+      consumedExistingIndexes.add(existingIndex);
+      return _mergeEquivalentEntry(existingEntry, historyEntry);
     }).toList();
   }
 
@@ -1244,7 +1261,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     for (final addition in additions) {
       var matchIndex = _indexOfEquivalentEntry(next, addition);
-      if (matchIndex == -1 && _canWeakMatchAppendedEntry(addition)) {
+      if (matchIndex == -1 && _isCanonicalAssistantEntry(addition)) {
+        final lastUserIndex = next.lastIndexWhere((e) => e is UserChatEntry);
+        matchIndex = _indexOfProvisionalAssistantAlias(
+          next,
+          addition,
+          start: lastUserIndex + 1,
+        );
+      } else if (matchIndex == -1 && _canWeakMatchAppendedEntry(addition)) {
         final lastUserIndex = next.lastIndexWhere((e) => e is UserChatEntry);
         matchIndex = _indexOfEquivalentEntry(
           next,
@@ -1271,12 +1295,87 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   bool _canWeakMatchAppendedEntry(ChatEntry entry) {
+    return entry is ServerChatEntry && entry.message is ResultMessage;
+  }
+
+  bool _isCanonicalAssistantEntry(ChatEntry entry) {
     if (entry case ServerChatEntry(
       message: AssistantServerMessage(:final messageUuid),
     )) {
       return messageUuid?.isNotEmpty == true;
     }
-    return entry is ServerChatEntry && entry.message is ResultMessage;
+    return false;
+  }
+
+  bool _isProvisionalAssistantAlias(
+    ChatEntry existing,
+    ChatEntry canonical,
+  ) {
+    if (existing is! ServerChatEntry || canonical is! ServerChatEntry) {
+      return false;
+    }
+    final existingMessage = existing.message;
+    final canonicalMessage = canonical.message;
+    if (existingMessage is! AssistantServerMessage ||
+        canonicalMessage is! AssistantServerMessage) {
+      return false;
+    }
+    if (existingMessage.messageUuid?.isNotEmpty == true ||
+        canonicalMessage.messageUuid?.isNotEmpty != true) {
+      return false;
+    }
+    return _entriesEquivalent(existing, canonical, allowWeakMatch: true);
+  }
+
+  int _indexOfProvisionalAssistantAlias(
+    List<ChatEntry> entries,
+    ChatEntry canonical, {
+    int start = 0,
+    Set<int> excludedIndexes = const {},
+  }) {
+    for (var i = start; i < entries.length; i++) {
+      if (excludedIndexes.contains(i)) continue;
+      if (_isProvisionalAssistantAlias(entries[i], canonical)) return i;
+    }
+    return -1;
+  }
+
+  int _indexOfEquivalentEntryExcluding(
+    List<ChatEntry> entries,
+    ChatEntry target,
+    Set<int> excludedIndexes,
+  ) {
+    for (var i = 0; i < entries.length; i++) {
+      if (excludedIndexes.contains(i)) continue;
+      if (_entriesEquivalent(entries[i], target)) return i;
+    }
+    return -1;
+  }
+
+  int _indexOfConsumableHistoryAlias(
+    List<ChatEntry> historyEntries,
+    ChatEntry liveCandidate,
+    Set<int> consumedIndexes,
+  ) {
+    for (var i = 0; i < historyEntries.length; i++) {
+      if (consumedIndexes.contains(i)) continue;
+      final historyEntry = historyEntries[i];
+      if (liveCandidate is ServerChatEntry &&
+          liveCandidate.message is AssistantServerMessage) {
+        if (_isProvisionalAssistantAlias(liveCandidate, historyEntry)) {
+          return i;
+        }
+        continue;
+      }
+      if (_entriesEquivalent(
+        historyEntry,
+        liveCandidate,
+        allowWeakMatch: true,
+      )) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   int _indexOfEquivalentEntry(

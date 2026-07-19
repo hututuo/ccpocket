@@ -1339,6 +1339,7 @@ void main() {
           ),
         );
         final historyAssistant = AssistantServerMessage(
+          messageUuid: 'history-item-id',
           message: AssistantMessage(
             id: 'history-assistant-id',
             role: 'assistant',
@@ -1362,6 +1363,111 @@ void main() {
             .toList();
         expect(assistants, hasLength(1));
         expect(assistants.single.message.id, 'history-assistant-id');
+      },
+    );
+
+    test(
+      'history replace consumes provisional aliases one for one and keeps artifacts',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        AssistantServerMessage provisional(String id, {bool artifact = false}) {
+          return AssistantServerMessage(
+            message: AssistantMessage(
+              id: id,
+              role: 'assistant',
+              content: const [TextContent(text: 'Same response')],
+              model: 'codex',
+            ),
+            artifacts: artifact
+                ? const [
+                    ArtifactRef(
+                      id: 'artifact-provisional',
+                      filename: 'result.pdf',
+                      mimeType: 'application/pdf',
+                      sizeBytes: 12,
+                      kind: 'preview',
+                      source: 'assistant_markdown',
+                    ),
+                  ]
+                : const [],
+          );
+        }
+        const canonical = AssistantServerMessage(
+          messageUuid: 'canonical-item',
+          message: AssistantMessage(
+            id: 'canonical-item',
+            role: 'assistant',
+            content: [TextContent(text: 'Same response')],
+            model: 'codex',
+          ),
+        );
+
+        mockBridge.emitMessage(
+          provisional('live-1', artifact: true),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(provisional('live-2'), sessionId: 's1');
+        await pumpEventQueue();
+        mockBridge.emitMessage(
+          const HistoryMessage(messages: [canonical]),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final assistants = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList();
+        expect(assistants, hasLength(2));
+        expect(
+          assistants.expand((message) => message.artifacts).map((ref) => ref.id),
+          contains('artifact-provisional'),
+        );
+      },
+    );
+
+    test(
+      'canonical aliases consume distinct provisional assistants one for one',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        AssistantServerMessage assistant(String id, {String? uuid}) {
+          return AssistantServerMessage(
+            messageUuid: uuid,
+            message: AssistantMessage(
+              id: id,
+              role: 'assistant',
+              content: const [TextContent(text: 'Same response')],
+              model: 'codex',
+            ),
+          );
+        }
+
+        mockBridge.emitMessage(assistant('live-1'), sessionId: 's1');
+        mockBridge.emitMessage(assistant('live-2'), sessionId: 's1');
+        await pumpEventQueue();
+        mockBridge.emitMessage(
+          assistant('canonical-1', uuid: 'canonical-1'),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          assistant('canonical-2', uuid: 'canonical-2'),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final assistants = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList();
+        expect(assistants, hasLength(2));
+        expect(assistants.map((message) => message.messageUuid), [
+          'canonical-1',
+          'canonical-2',
+        ]);
       },
     );
 
