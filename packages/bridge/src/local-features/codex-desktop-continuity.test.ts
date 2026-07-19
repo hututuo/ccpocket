@@ -1613,6 +1613,156 @@ describe("CodexDesktopContinuityHandler", () => {
     handler.close();
   });
 
+  it.each(["unwatch", "disconnect"] as const)(
+    "keeps C fenced across %s monitor disposal until reconnect rehydrates",
+    async (disposal) => {
+      const path = await rollout();
+      const client = {};
+      const reconnectClient = disposal === "disconnect" ? {} : client;
+      const threadId = `thread-disposed-${disposal}`;
+      let localTurnId: string | undefined = "local-a";
+      let queued = false;
+      let drainCount = 0;
+      const process = { isWaitingForInput: false };
+      const session = {
+        id: `runtime-disposed-${disposal}`,
+        provider: "codex",
+        projectPath: "/project",
+        createdAt: new Date("2026-07-20T00:00:00Z"),
+        process,
+      };
+      const rehydrate = vi.fn(async () => true);
+      let handler!: CodexDesktopContinuityHandler;
+      const runtime: LocalFeatureRuntime = {
+        getSession: () => session,
+        getCodexThreadId: () => threadId,
+        getActiveCodexProcess: () => null,
+        createStandaloneCodexProcess: async () => {
+          throw new Error("not used");
+        },
+        getLocallyActiveCodexTurnId: () => localTurnId,
+        rehydrateCodexSessionAfterExternalTurn: rehydrate,
+        hasCodexQueuedInput: () => queued,
+        drainCodexQueuedInputIfReady: (_sessionId, isStillSafe) => {
+          if (
+            isStillSafe?.() === false ||
+            !process.isWaitingForInput ||
+            !queued
+          ) {
+            return false;
+          }
+          if (!handler.admitCodexQueuedInputDrain(session)) {
+            handler.codexQueuedInputDrainBlocked(session);
+            return false;
+          }
+          queued = false;
+          drainCount += 1;
+          return true;
+        },
+        send: () => {},
+        supports: () => true,
+      };
+      handler = new CodexDesktopContinuityHandler(runtime, {
+        resolveRolloutPath: async () => path,
+        rehydrateSettleMs: 1,
+      });
+      const watch = (targetClient: object, requestId: string) =>
+        handler.handle(
+          {
+            type: "codex_desktop_continuity_watch",
+            protocolVersion: 1,
+            requestId,
+            sessionId: session.id,
+            threadId,
+            projectPath: "/project",
+          },
+          {
+            client: targetClient,
+            signal: new AbortController().signal,
+            runtime,
+          },
+        );
+      await watch(client, "watch-before-dispose");
+      await appendEntries(path, [
+        event("event_msg", { type: "task_started", turn_id: "local-a" }),
+        event("event_msg", { type: "task_started", turn_id: "desktop-b" }),
+        event("event_msg", {
+          type: "user_message",
+          client_id: "desktop-b-user",
+          message: "Desktop B",
+        }),
+      ]);
+      const monitor = (handler as any).monitors.get(threadId);
+      await monitor.refreshNow();
+      queued = true;
+      expect(
+        await handler.admitInput!(client, session, {
+          type: "input",
+          sessionId: session.id,
+          clientMessageId: "mobile-c",
+        }),
+      ).toEqual({ action: "queue", reason: "desktop_turn_active" });
+      handler.inputAccepted!(
+        client,
+        session,
+        {
+          type: "input",
+          sessionId: session.id,
+          clientMessageId: "mobile-c",
+        },
+        true,
+      );
+      expect((handler as any).staleRuntimeSessionIds.has(session.id)).toBe(
+        true,
+      );
+
+      if (disposal === "unwatch") {
+        await handler.handle(
+          {
+            type: "codex_desktop_continuity_unwatch",
+            protocolVersion: 1,
+            requestId: "watch-before-dispose",
+            sessionId: session.id,
+            threadId,
+          },
+          {
+            client,
+            signal: new AbortController().signal,
+            runtime,
+          },
+        );
+      } else {
+        handler.disconnect(client);
+      }
+      expect((handler as any).monitors.size).toBe(0);
+
+      await appendEntries(path, [
+        event("event_msg", { type: "task_complete", turn_id: "desktop-b" }),
+        event("event_msg", { type: "task_complete", turn_id: "local-a" }),
+      ]);
+      localTurnId = undefined;
+      process.isWaitingForInput = true;
+      // There is no monitor in this disconnect window, but the session fence
+      // must still reject the ordinary input_ready drain.
+      expect(runtime.drainCodexQueuedInputIfReady!(session.id)).toBe(false);
+      expect(queued).toBe(true);
+      expect(drainCount).toBe(0);
+      expect(rehydrate).not.toHaveBeenCalled();
+
+      await watch(reconnectClient, "watch-after-dispose");
+      await vi.waitFor(() => expect(drainCount).toBe(1));
+      expect(rehydrate).toHaveBeenCalledOnce();
+      expect(queued).toBe(false);
+      expect((handler as any).staleRuntimeSessionIds.has(session.id)).toBe(
+        false,
+      );
+      expect((handler as any).blockedDrainSessionIds.has(session.id)).toBe(
+        false,
+      );
+      handler.close();
+    },
+  );
+
   it("clears external ownership without hiding an already-running phone turn", async () => {
     const path = await rollout();
     const client = {};

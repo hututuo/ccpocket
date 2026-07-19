@@ -374,6 +374,15 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     if (session.provider !== "codex") return true;
     const threadId = this.runtime.getCodexThreadId(session);
     if (!threadId) return true;
+    // Session-level stale/in-flight fences outlive a watcher and its monitor.
+    // Check them first so disconnect/unwatch cannot reopen the ordinary
+    // input_ready drain path before a reconnect performs canonical rehydrate.
+    if (
+      this.staleRuntimeSessionIds.has(session.id) ||
+      this.rehydrateInFlight.has(session.id)
+    ) {
+      return false;
+    }
     const monitor = this.monitors.get(threadId);
     if (!monitor) return true;
     if (monitor.hasBlockingExternalActivity) return false;
@@ -391,6 +400,9 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     const threadId = this.runtime.getCodexThreadId(session);
     if (!threadId) return;
     remember(this.blockedDrainSessionIds, session.id, MAX_WATCHERS);
+    if (this.rehydrateInFlight.has(session.id)) {
+      remember(this.staleRuntimeSessionIds, session.id, MAX_WATCHERS);
+    }
     const monitor = this.monitors.get(threadId);
     if (!monitor) return;
     if (monitor.hasExternalTurn) {
