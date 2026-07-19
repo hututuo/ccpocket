@@ -18,6 +18,8 @@ const replayToken = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 const etag = '"EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"';
 const changedEtag = '"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"';
 
+DateTime _fixtureNow() => DateTime.utc(2026, 7, 18, 12);
+
 void main() {
   late Directory root;
   late Directory support;
@@ -48,7 +50,7 @@ void main() {
     notifications: notificationsOverride ?? notifications,
     httpClient: client,
     preferences: preferences,
-    clock: clock,
+    clock: clock ?? _fixtureNow,
     requestIdGenerator: _SequenceIds().next,
     completionRecoveryRetryDelay: completionRecoveryRetryDelay,
     completionRecoveryRetryLimit: completionRecoveryRetryLimit,
