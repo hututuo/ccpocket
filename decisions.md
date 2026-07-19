@@ -28,6 +28,17 @@
   thread. Replayed or cross-socket resumes attach to the existing runtime;
   concurrent resumes are coalesced, and a stopped runtime is never reused.
 
+## Official 1.67.4 integration and rollback manifest
+
+- The official source boundary is merge commit `fa23f5b`, whose second parent is official `ba2decd` (Mobile `1.107.1+194`, Bridge `1.67.4`). The pre-merge local tree is retained at `backup/pre-upstream-1.67.4-20260719` (`677555d`). Use that safety branch to inspect or restore the complete pre-update tree; do not remove an individual local feature by reverting the official merge.
+- Treat streamed assistant identity as `(turnId, itemId)`, never as response text. The Bridge turn tracker is owned by `53a73ac` and is directly revertible. Anonymous deltas bind only when exactly one agent item is open; ambiguous data fails open rather than deleting a possibly distinct response.
+- Cross-baseline Bridge reconciliation is owned by `a68b3dc` and is directly revertible. Mobile lossless history reconciliation is a two-commit stack: remove `b370f10` first, then `257767a`. This preserves one-to-one provisional aliases, rich content, artifacts, and images without collapsing two legitimate equal-text replies.
+- The post-update Codex Effort animation is owned by `4bea555` and is directly revertible from the completed branch. `25b20b2` is the migration baseline that cancelled the pre-update animation ownership; do not revert it by itself. Reverting `4bea555` intentionally returns the UI to the official-style non-animated baseline while preserving the current Max/Ultra selection safeguard.
+- `044ba72` changes tests only: it injects a fixed clock for file-transfer resume expiry fixtures and does not relax production expiry behavior. It may be reverted independently after those fixtures are rewritten around another explicit clock seam.
+- Conflict-free reverse-application gates from the post-1.67.4 HEAD were executed for `53a73ac`, `a68b3dc`, the ordered pair `b370f10` then `257767a`, and `4bea555`. Every gate ended with `git revert --abort`, no retained `REVERT_HEAD`, and an unchanged final tree.
+- Major older optional stacks retain their existing reverse-removal order: file transfer `83a0ca9` then `e439bf3`; core actions `135ed32` then `72f693a`; conversation mirror `3a126c1`, `8ab54a2`, `d0ebe92`; lifecycle/archive `57d4647`, `6e466b5`, `9e0bdc3`, `b138aee`, `ceafa4a`; auto approval `af4be66`, `e295582`, `16adec7`; Goal management `a83dc30`, `80ff466`, `3e676f9`; artifact preview/link handling `02a6f33`, `138d575`, `ec3b0d3`, `659e98c`, `79e7c93`, `f856690`, `9ae7158`, `4066f6e`.
+- No update merge, rollback gate, or validation step in this integration authorizes deployment. Replacing the live Bridge, restarting its service, signing/installing iOS, or changing user configuration remains a separate explicit operation.
+
 ## Git-removable local session features
 
 - “Independent” means Git-level removability, not merely placing code in separate directories. Each optional feature commit must be directly revertible from the completed branch without conflicts, and the remaining Bridge and mobile targets must still build and pass their relevant tests.
