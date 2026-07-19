@@ -113,6 +113,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   String? _mainFrameError;
   _ArtifactTransferSession? _activeTransfer;
   var _handlingBack = false;
+  var _webViewCanGoBack = false;
 
   @override
   void initState() {
@@ -148,9 +149,11 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
                 _pageProgress = 0;
               });
             }
+            unawaited(_refreshWebViewBackState());
           },
           onPageFinished: (_) {
             if (mounted) setState(() => _pageProgress = 100);
+            unawaited(_refreshWebViewBackState());
           },
           onWebResourceError: (error) {
             final failedUrl = Uri.tryParse(error.url ?? '');
@@ -202,6 +205,14 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     setState(() => _chromeVisible = value);
   }
 
+  Future<void> _refreshWebViewBackState() async {
+    final controller = _controller;
+    if (controller == null) return;
+    final canGoBack = await controller.canGoBack();
+    if (!mounted || canGoBack == _webViewCanGoBack) return;
+    setState(() => _webViewCanGoBack = canGoBack);
+  }
+
   Future<void> _handleBack() async {
     if (_handlingBack) return;
     _handlingBack = true;
@@ -209,6 +220,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
       final controller = _controller;
       if (controller != null && await controller.canGoBack()) {
         await controller.goBack();
+        await _refreshWebViewBackState();
         return;
       }
       if (mounted) Navigator.of(context).pop();
@@ -625,7 +637,11 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope<void>(
-      canPop: false,
+      // Keep Flutter's native route pop enabled whenever the embedded viewer
+      // has no page of its own to return to. In particular, this restores the
+      // iOS edge-swipe gesture on the Office share/download fallback shown
+      // after Quick Look is dismissed.
+      canPop: !_webViewCanGoBack,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) unawaited(_handleBack());
       },
