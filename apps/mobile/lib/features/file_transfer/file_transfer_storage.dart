@@ -12,6 +12,34 @@ const fileTransferCheckpointVersion = 2;
 const fileTransferCheckpointRetention = Duration(days: 7);
 const fileTransferCheckpointScanLimit = 512;
 const fileTransferCheckpointMaxBytes = 64 * 1024;
+const fileTransferReceivedFileScanLimit = 2048;
+const fileTransferReceivedFileListLimit = 200;
+
+class StagedFileTransferIngress {
+  const StagedFileTransferIngress({
+    required this.file,
+    required this.filename,
+    required this.sizeBytes,
+  });
+
+  final File file;
+  final String filename;
+  final int sizeBytes;
+}
+
+class ReceivedFileTransfer {
+  const ReceivedFileTransfer({
+    required this.filename,
+    required this.path,
+    required this.sizeBytes,
+    required this.modifiedAt,
+  });
+
+  final String filename;
+  final String path;
+  final int sizeBytes;
+  final DateTime modifiedAt;
+}
 
 abstract interface class FileTransferSecretStore {
   Future<void> write(String key, String value);
@@ -335,6 +363,115 @@ class FileTransferStorage {
     );
     await directory.create(recursive: true);
     return directory;
+  }
+
+  Future<List<ReceivedFileTransfer>> listReceivedFiles({
+    int limit = fileTransferReceivedFileListLimit,
+  }) async {
+    if (limit <= 0 || limit > fileTransferReceivedFileListLimit) {
+      throw const FileTransferStorageException('invalid_received_file_limit');
+    }
+    final downloads = await downloadsDirectory();
+    final result = <ReceivedFileTransfer>[];
+    var scanned = 0;
+    await for (final entity in downloads.list(followLinks: false)) {
+      scanned += 1;
+      if (scanned > fileTransferReceivedFileScanLimit) break;
+      if (await FileSystemEntity.type(
+            entity.path,
+            followLinks: false,
+          ) !=
+          FileSystemEntityType.file) {
+        continue;
+      }
+      final filename = path.basename(entity.path);
+      if (filename.isEmpty || filename == '.' || filename == '..') continue;
+      try {
+        final stat = await entity.stat();
+        if (stat.size < 0 || stat.size > maxFileTransferBytes) continue;
+        result.add(
+          ReceivedFileTransfer(
+            filename: filename,
+            path: entity.path,
+            sizeBytes: stat.size,
+            modifiedAt: stat.modified.toUtc(),
+          ),
+        );
+      } on FileSystemException {
+        // A Files-app mutation may race this refresh. Skip the vanished item.
+      }
+    }
+    result.sort((left, right) {
+      final modified = right.modifiedAt.compareTo(left.modifiedAt);
+      return modified != 0
+          ? modified
+          : left.filename.compareTo(right.filename);
+    });
+    return result.take(limit).toList(growable: false);
+  }
+
+  /// Streams an external drag item into the same app-owned picker boundary
+  /// used by the native document picker. The existing adoptPickerCopy path can
+  /// then atomically move it into resumable upload storage.
+  Future<StagedFileTransferIngress> stageExternalFile({
+    required String filename,
+    required Stream<List<int>> bytes,
+    required int maxSizeBytes,
+    int? expectedSizeBytes,
+  }) async {
+    if (filename.trim().isEmpty ||
+        filename.length > 1024 ||
+        filename.contains('\u0000') ||
+        RegExp(r'[\x00-\x1f\x7f]').hasMatch(filename) ||
+        filename.contains('/') ||
+        filename.contains('\\') ||
+        filename == '.' ||
+        filename == '..' ||
+        expectedSizeBytes != null &&
+            (expectedSizeBytes < 0 || expectedSizeBytes > maxSizeBytes)) {
+      throw const FileTransferStorageException('invalid_external_file');
+    }
+    final pickerRoot = await pickerStagingDirectory();
+    final staging = await _createOwnedPickerDirectory(pickerRoot);
+    final temporary = File(path.join(staging.path, 'copy.tmp'));
+    final completed = File(path.join(staging.path, 'picked.stage'));
+    RandomAccessFile? output;
+    var copied = 0;
+    try {
+      output = await temporary.open(mode: FileMode.writeOnly);
+      await for (final chunk in bytes) {
+        if (chunk.isEmpty) continue;
+        copied += chunk.length;
+        if (copied > maxSizeBytes ||
+            expectedSizeBytes != null && copied > expectedSizeBytes) {
+          throw const FileTransferStorageException('file_too_large');
+        }
+        await output.writeFrom(chunk);
+      }
+      if (expectedSizeBytes != null && copied != expectedSizeBytes) {
+        throw const FileTransferStorageException('external_size_mismatch');
+      }
+      await output.flush();
+      await output.close();
+      output = null;
+      await temporary.rename(completed.path);
+      return StagedFileTransferIngress(
+        file: completed,
+        filename: filename,
+        sizeBytes: copied,
+      );
+    } catch (error, stackTrace) {
+      try {
+        await output?.close();
+      } catch (_) {}
+      try {
+        await _deleteOwnedPickerDirectory(
+          pickerRoot: pickerRoot,
+          candidate: staging,
+        );
+      } catch (_) {}
+      Error.throwWithStackTrace(error, stackTrace);
+    }
   }
 
   Future<File> receivePartial(ReceiveTransferCheckpoint checkpoint) async {
@@ -904,6 +1041,35 @@ Future<List<T>> _loadJsonFiles<T>(
 bool _isOwnedPickerDirectoryName(String value) => RegExp(
   r'^ccpocket-picker-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$',
 ).hasMatch(value);
+
+Future<Directory> _createOwnedPickerDirectory(Directory pickerRoot) async {
+  for (var attempt = 0; attempt < 8; attempt += 1) {
+    final candidate = Directory(
+      path.join(pickerRoot.path, 'ccpocket-picker-${_secureUuid()}'),
+    );
+    try {
+      await candidate.create();
+      return candidate;
+    } on FileSystemException {
+      if (await candidate.exists()) continue;
+      rethrow;
+    }
+  }
+  throw const FileTransferStorageException('staging_collision');
+}
+
+String _secureUuid() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  final hex = bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-'
+      '${hex.substring(8, 12)}-'
+      '${hex.substring(12, 16)}-'
+      '${hex.substring(16, 20)}-'
+      '${hex.substring(20)}';
+}
 
 bool _isOwnedUploadStageName(String value) =>
     RegExp(r'^[A-Za-z0-9_-]{1,128}\.stage$').hasMatch(value);

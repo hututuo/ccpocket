@@ -27,6 +27,8 @@ const fileTransferStorageSafetyReserveBytes = 512 * 1024 * 1024;
 const fileTransferCompletionRecoveryRetryLimit = 5;
 const fileTransferCompletionRecoveryMaxRetryDelay = Duration(minutes: 1);
 const _fileTransferAutoResumePreference = 'file_transfer_v2_auto_resume';
+const _fileTransferReceivedSeenBeforePreference =
+    'file_transfer_received_seen_before_v1';
 
 enum FileTransferDirection { receive, upload }
 
@@ -49,6 +51,7 @@ class FileTransferRecord {
   final int totalBytes;
   final DateTime updatedAt;
   final String? savedFilename;
+  final String? savedPath;
   final String? errorCode;
   final String? error;
 
@@ -61,6 +64,7 @@ class FileTransferRecord {
     required this.totalBytes,
     required this.updatedAt,
     this.savedFilename,
+    this.savedPath,
     this.errorCode,
     this.error,
   });
@@ -80,6 +84,16 @@ class FileTransferSelection {
     required this.filename,
     required this.sizeBytes,
   });
+}
+
+class FileTransferUploadTicket {
+  const FileTransferUploadTicket({
+    required this.id,
+    required this.completion,
+  });
+
+  final String id;
+  final Future<FileTransferRecord> completion;
 }
 
 abstract interface class FileTransferDocumentPicker {
@@ -200,6 +214,7 @@ class NotificationServiceFileTransferGateway
     title: 'File received',
     body: '$filename was saved to Files > CC Pocket > Downloads.',
     id: _notificationId('received:$filename'),
+    payload: fileTransferNotificationPayload,
   );
 
   @override
@@ -209,6 +224,8 @@ class NotificationServiceFileTransferGateway
     id: _notificationId('failed:$filename'),
   );
 }
+
+const fileTransferNotificationPayload = 'ccpocket:file-transfer';
 
 int _notificationId(String value) {
   var hash = 0;
@@ -236,6 +253,7 @@ class FileTransferService extends ChangeNotifier {
     required FileTransferCapacityGateway capacity,
     required FileTransferCommitGateway commit,
     required bool platformSupported,
+    bool receivedFileExportSupported = false,
     FileTransferNotificationGateway? notifications,
     http.Client? httpClient,
     SharedPreferences? preferences,
@@ -258,6 +276,8 @@ class FileTransferService extends ChangeNotifier {
        _capacity = capacity,
        _commit = commit,
        _platformSupported = platformSupported,
+       // ignore: prefer_initializing_formals
+       _receivedFileExportSupported = receivedFileExportSupported,
        _notifications = notifications,
        _httpClient = httpClient ?? defaultFileTransferHttpClient(),
        _ownsHttpClient = httpClient == null,
@@ -283,6 +303,7 @@ class FileTransferService extends ChangeNotifier {
   final FileTransferCapacityGateway _capacity;
   final FileTransferCommitGateway _commit;
   final bool _platformSupported;
+  final bool _receivedFileExportSupported;
   final FileTransferNotificationGateway? _notifications;
   final http.Client _httpClient;
   final bool _ownsHttpClient;
@@ -314,6 +335,9 @@ class FileTransferService extends ChangeNotifier {
   final List<FileTransferRecord> _recentResults = [];
   final Map<String, AdaptiveTransferChunkSizer> _chunkSizers = {};
   final Map<String, int> _completionRecoveryAttempts = {};
+  final Map<String, Completer<FileTransferRecord>> _uploadCompletions = {};
+  List<ReceivedFileTransfer> _receivedFiles = const [];
+  Set<String> _unreadReceivedPaths = const {};
 
   FileTransferCancellation? _activeCancellation;
   _TransferWork? _activeWork;
@@ -331,6 +355,8 @@ class FileTransferService extends ChangeNotifier {
   bool _recoveryRescanRequested = false;
   bool _disposed = false;
   bool _autoResume = true;
+  bool _receivedInboxLoaded = false;
+  int _receivedSeenBeforeMicros = 0;
   int _connectionEpoch = 0;
   int _logicalIdentityGeneration = 0;
   int _completionRecoveryRetryGeneration = 0;
@@ -340,6 +366,7 @@ class FileTransferService extends ChangeNotifier {
   ({bool connected, String? identity, bool supported})? _lastCapabilitySnapshot;
 
   bool get platformSupported => _platformSupported;
+  bool get receivedFileExportSupported => _receivedFileExportSupported;
   bool get isConnected => _bridge.isConnected;
   bool get supportedByBridge =>
       _bridge.capabilities.contains(fileTransferCapability);
@@ -360,6 +387,9 @@ class FileTransferService extends ChangeNotifier {
   };
   List<FileTransferRecord> get recentResults =>
       List.unmodifiable(_recentResults);
+  List<ReceivedFileTransfer> get receivedFiles =>
+      List.unmodifiable(_receivedFiles);
+  int get unreadReceivedCount => _unreadReceivedPaths.length;
   int get queuedReceiveCount => _receiveQueue.length;
   int get queuedReceiveBytes => _queuedReceiveBytes;
   int get queuedUploadCount => _uploadRecoveryQueue.length;
@@ -373,7 +403,55 @@ class FileTransferService extends ChangeNotifier {
         // File transfer is optional and must never block the app from starting.
       }
     }
+    try {
+      await refreshReceivedFiles(initialize: true);
+    } catch (_) {
+      // The inbox is advisory and must never block transfer recovery.
+    }
     _scheduleRecovery();
+  }
+
+  Future<void> refreshReceivedFiles({bool initialize = false}) async {
+    final files = await _storage.listReceivedFiles();
+    if (!_receivedInboxLoaded) {
+      final saved = _preferences?.getInt(
+        _fileTransferReceivedSeenBeforePreference,
+      );
+      if (saved == null && initialize) {
+        _receivedSeenBeforeMicros = _latestReceivedMicros(files);
+        if (_preferences != null) {
+          await _preferences.setInt(
+            _fileTransferReceivedSeenBeforePreference,
+            _receivedSeenBeforeMicros,
+          );
+        }
+      } else {
+        _receivedSeenBeforeMicros = saved ?? 0;
+      }
+      _receivedInboxLoaded = true;
+    }
+    _receivedFiles = files;
+    _unreadReceivedPaths = {
+      for (final file in files)
+        if (file.modifiedAt.microsecondsSinceEpoch >
+            _receivedSeenBeforeMicros)
+          file.path,
+    };
+    _notify(force: true);
+  }
+
+  Future<void> markReceivedFilesSeen() async {
+    final latest = _latestReceivedMicros(_receivedFiles);
+    if (latest > _receivedSeenBeforeMicros) {
+      _receivedSeenBeforeMicros = latest;
+      await _preferences?.setInt(
+        _fileTransferReceivedSeenBeforePreference,
+        latest,
+      );
+    }
+    if (_unreadReceivedPaths.isEmpty) return;
+    _unreadReceivedPaths = const {};
+    _notify(force: true);
   }
 
   Future<void> setAutoResume(bool enabled) async {
@@ -389,7 +467,65 @@ class FileTransferService extends ChangeNotifier {
 
   Future<void> startQueuedTransfers() => _drainAndScheduleRecovery();
 
-  Future<void> uploadToMac() async {
+  Future<FileTransferRecord?> uploadToMac() async {
+    final identity = _requireUploadIngressReady(rejectIfBusy: true);
+    await _markTransientStorage(identity);
+    final selection = await _picker.pickFile(
+      maxSizeBytes: maxFileTransferBytes,
+    );
+    if (selection == null) return null;
+    final ticket = await _enqueueUploadSelection(selection, identity: identity);
+    return ticket.completion;
+  }
+
+  Future<FileTransferUploadTicket> enqueueDroppedFile({
+    required String filename,
+    required Stream<List<int>> bytes,
+    int? expectedSizeBytes,
+  }) async {
+    final identity = _requireUploadIngressReady(rejectIfBusy: false);
+    _validateIngressMetadata(filename, expectedSizeBytes);
+    await _markTransientStorage(identity);
+    final pickerRoot = await _storage.pickerStagingDirectory();
+    await _requireCapacity(pickerRoot.path, expectedSizeBytes ?? 0);
+    final staged = await _storage.stageExternalFile(
+      filename: filename,
+      bytes: expectedSizeBytes == null
+          ? _capacityCheckedDropStream(bytes, pickerRoot.path)
+          : bytes,
+      maxSizeBytes: maxFileTransferBytes,
+      expectedSizeBytes: expectedSizeBytes,
+    );
+    return _enqueueUploadSelection(
+      FileTransferSelection(
+        path: staged.file.path,
+        filename: staged.filename,
+        sizeBytes: staged.sizeBytes,
+      ),
+      identity: identity,
+    );
+  }
+
+  Stream<List<int>> _capacityCheckedDropStream(
+    Stream<List<int>> source,
+    String targetPath,
+  ) async* {
+    const checkIntervalBytes = 16 * 1024 * 1024;
+    var bytesSinceCheck = 0;
+    await for (final chunk in source) {
+      bytesSinceCheck += chunk.length;
+      if (bytesSinceCheck >= checkIntervalBytes) {
+        await _requireCapacity(
+          targetPath,
+          bytesSinceCheck + checkIntervalBytes,
+        );
+        bytesSinceCheck = 0;
+      }
+      yield chunk;
+    }
+  }
+
+  String _requireUploadIngressReady({required bool rejectIfBusy}) {
     if (!_platformSupported) {
       throw const FileTransferException('platform_unsupported');
     }
@@ -398,18 +534,20 @@ class FileTransferService extends ChangeNotifier {
         isConnected ? 'bridge_unsupported' : 'bridge_disconnected',
       );
     }
-    if (_processing || _pausedWork != null) {
+    if (rejectIfBusy && (_processing || _pausedWork != null)) {
       throw const FileTransferException('transfer_busy');
     }
     final identity = _stableIdentity;
     if (identity == null) {
       throw const FileTransferException('stable_bridge_identity_required');
     }
-    await _markTransientStorage(identity);
-    final selection = await _picker.pickFile(
-      maxSizeBytes: maxFileTransferBytes,
-    );
-    if (selection == null) return;
+    return identity;
+  }
+
+  Future<FileTransferUploadTicket> _enqueueUploadSelection(
+    FileTransferSelection selection, {
+    required String identity,
+  }) async {
     _validateSelection(selection);
     final localId = _requestIdGenerator();
     final requestId = _requestIdGenerator();
@@ -425,8 +563,15 @@ class FileTransferService extends ChangeNotifier {
       sizeBytes: selection.sizeBytes,
       pickerCopy: File(selection.path),
     );
+    final completion = Completer<FileTransferRecord>();
+    _uploadCompletions[localId] = completion;
     _uploadRecoveryQueue.add(checkpoint);
-    await _drainAndScheduleRecovery();
+    _notify(force: true);
+    _launch(_drainAndScheduleRecovery());
+    return FileTransferUploadTicket(
+      id: localId,
+      completion: completion.future,
+    );
   }
 
   void pauseActive() {
@@ -1339,6 +1484,7 @@ class FileTransferService extends ChangeNotifier {
         savedFilename: saved,
       ),
     );
+    _launch(refreshReceivedFiles());
   }
 
   Future<ReceiveTransferCheckpoint> _deliverPendingReceiveNotification(
@@ -1858,6 +2004,7 @@ class FileTransferService extends ChangeNotifier {
         completed,
         FileTransferStatus.succeeded,
         savedFilename: savedFilename,
+        savedPath: result.savedPath,
       ),
     );
   }
@@ -1969,6 +2116,7 @@ class FileTransferService extends ChangeNotifier {
     _resetCompletionRecoveryRetryRound();
     _activeCancellation?.cancel();
     final changed = const FileTransferException('bridge_identity_mismatch');
+    _failUploadCompletions(changed);
     _failPendingUpload(changed);
     _failPendingDownload(changed);
     _failPendingCancel(changed);
@@ -2353,12 +2501,17 @@ class FileTransferService extends ChangeNotifier {
   }
 
   void _validateSelection(FileTransferSelection selection) {
-    if (selection.filename.trim().isEmpty ||
-        selection.filename.length > 1024 ||
-        selection.filename.contains('\u0000') ||
-        path.basename(selection.filename) != selection.filename ||
-        selection.sizeBytes < 0 ||
-        selection.sizeBytes > maxFileTransferBytes) {
+    _validateIngressMetadata(selection.filename, selection.sizeBytes);
+  }
+
+  void _validateIngressMetadata(String filename, int? sizeBytes) {
+    if (filename.trim().isEmpty ||
+        filename.length > 1024 ||
+        filename.contains('\u0000') ||
+        RegExp(r'[\x00-\x1f\x7f]').hasMatch(filename) ||
+        path.basename(filename) != filename ||
+        (sizeBytes != null &&
+            (sizeBytes < 0 || sizeBytes > maxFileTransferBytes))) {
       throw const FileTransferException('invalid_selection');
     }
   }
@@ -2382,7 +2535,27 @@ class FileTransferService extends ChangeNotifier {
     if (_recentResults.length > recentResultLimit) {
       _recentResults.removeRange(recentResultLimit, _recentResults.length);
     }
+    if (record.direction == FileTransferDirection.upload &&
+        const {
+          FileTransferStatus.succeeded,
+          FileTransferStatus.failed,
+          FileTransferStatus.paused,
+          FileTransferStatus.cancelled,
+        }.contains(record.status)) {
+      final completion = _uploadCompletions.remove(record.id);
+      if (completion != null && !completion.isCompleted) {
+        completion.complete(record);
+      }
+    }
     _notify(force: true);
+  }
+
+  void _failUploadCompletions(Object error) {
+    final pending = _uploadCompletions.values.toList(growable: false);
+    _uploadCompletions.clear();
+    for (final completion in pending) {
+      if (!completion.isCompleted) completion.completeError(error);
+    }
   }
 
   String? get _stableIdentity {
@@ -2400,7 +2573,9 @@ class FileTransferService extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     _activeCancellation?.cancel();
-    _failPendingUpload(const FileTransferException('disposed'));
+    const disposed = FileTransferException('disposed');
+    _failUploadCompletions(disposed);
+    _failPendingUpload(disposed);
     _failPendingDownload(const FileTransferException('disposed'));
     _failPendingCancel(const FileTransferException('disposed'));
     unawaited(_messageSubscription.cancel());
@@ -2511,6 +2686,7 @@ FileTransferRecord _recordForUpload(
   UploadTransferCheckpoint checkpoint,
   FileTransferStatus status, {
   String? savedFilename,
+  String? savedPath,
   String? errorCode,
   String? error,
 }) => FileTransferRecord(
@@ -2522,6 +2698,7 @@ FileTransferRecord _recordForUpload(
   totalBytes: checkpoint.sizeBytes,
   updatedAt: checkpoint.updatedAt,
   savedFilename: savedFilename,
+  savedPath: savedPath,
   errorCode: errorCode,
   error: error,
 );
@@ -2616,6 +2793,15 @@ bool _isSafeTransferLeaf(String? value) =>
     !RegExp(r'[\x00-\x1f\x7f]').hasMatch(value) &&
     path.basename(value) == value &&
     !value.contains('\\');
+
+int _latestReceivedMicros(Iterable<ReceivedFileTransfer> files) {
+  var latest = 0;
+  for (final file in files) {
+    final value = file.modifiedAt.microsecondsSinceEpoch;
+    if (value > latest) latest = value;
+  }
+  return latest;
+}
 
 bool _isSafeHttpOrigin(Uri uri) =>
     uri.isAbsolute &&

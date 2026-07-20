@@ -1998,6 +1998,74 @@ void main() {
     );
   });
 
+  test('dropped upload returns the negotiated Mac saved path', () async {
+    final service = createService(
+      client: MockClient((_) async => http.Response('', 500)),
+    );
+    bridge.onSend = (json) {
+      if (json['type'] != 'file_transfer_upload_prepare_v2') return;
+      scheduleMicrotask(() {
+        bridge.emit(
+          FileTransferUploadResultMessage(
+            requestId: json['requestId'] as String,
+            transferId: json['transferId'] as String,
+            success: true,
+            filename: 'notes.txt',
+            sizeBytes: 3,
+            savedPath: '/Users/test/Downloads/notes.txt',
+          ),
+        );
+      });
+    };
+
+    final ticket = await service.enqueueDroppedFile(
+      filename: 'notes.txt',
+      bytes: Stream<List<int>>.fromIterable(const [
+        [1],
+        [2, 3],
+      ]),
+      expectedSizeBytes: 3,
+    );
+    final result = await ticket.completion;
+
+    expect(result.status, FileTransferStatus.succeeded);
+    expect(result.savedFilename, 'notes.txt');
+    expect(result.savedPath, '/Users/test/Downloads/notes.txt');
+    expect(await storage.loadUploads('machine-1'), isEmpty);
+    service.dispose();
+  });
+
+  test('unsupported Bridge rejects a drop before reading its bytes', () async {
+    bridge.setCapabilities(const {});
+    var listened = false;
+    final bytes = StreamController<List<int>>.broadcast(
+      onListen: () => listened = true,
+    );
+    final service = createService(
+      client: MockClient((_) async => http.Response('', 500)),
+    );
+
+    await expectLater(
+      service.enqueueDroppedFile(
+        filename: 'blocked.bin',
+        bytes: bytes.stream,
+        expectedSizeBytes: 1,
+      ),
+      throwsA(
+        isA<FileTransferException>().having(
+          (error) => error.code,
+          'code',
+          'bridge_unsupported',
+        ),
+      ),
+    );
+
+    expect(listened, isFalse);
+    expect(bridge.sentJson, isEmpty);
+    await bytes.close();
+    service.dispose();
+  });
+
   test('lost first ready retries same identity with a new request id', () async {
     final pickerRoot = await storage.pickerStagingDirectory();
     final picked = File('${pickerRoot.path}/picked.bin');
@@ -2369,6 +2437,40 @@ void main() {
       service.dispose();
     },
   );
+
+  test('received-file inbox persists an unread watermark', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final existing = File('${downloads.path}/existing.txt');
+    await existing.writeAsBytes(const [1]);
+    await existing.setLastModified(DateTime.utc(2026, 7, 18, 10));
+    final service = createService(
+      client: MockClient((_) async => http.Response('', 500)),
+      preferences: preferences,
+    );
+
+    await service.initialize();
+    expect(service.receivedFiles.map((file) => file.filename), ['existing.txt']);
+    expect(service.unreadReceivedCount, 0);
+
+    final incoming = File('${downloads.path}/incoming.pdf');
+    await incoming.writeAsBytes(const [2, 3]);
+    await incoming.setLastModified(DateTime.utc(2026, 7, 18, 11));
+    await service.refreshReceivedFiles();
+    expect(service.unreadReceivedCount, 1);
+
+    await service.markReceivedFilesSeen();
+    expect(service.unreadReceivedCount, 0);
+
+    service.dispose();
+    final restored = createService(
+      client: MockClient((_) async => http.Response('', 500)),
+      preferences: preferences,
+    );
+    await restored.initialize();
+    expect(restored.unreadReceivedCount, 0);
+    restored.dispose();
+  });
 
   test('restart truncates crash-only download bytes and resumes', () async {
     final checkpoint = storage

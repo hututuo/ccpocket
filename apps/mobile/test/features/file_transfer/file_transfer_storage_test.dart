@@ -364,6 +364,78 @@ void main() {
     },
   );
 
+  test('external drop is streamed into an owned picker directory', () async {
+    final staged = await storage.stageExternalFile(
+      filename: 'dropped.bin',
+      bytes: Stream<List<int>>.fromIterable(const [
+        [1, 2],
+        [3, 4],
+      ]),
+      maxSizeBytes: 8,
+      expectedSizeBytes: 4,
+    );
+
+    expect(staged.filename, 'dropped.bin');
+    expect(staged.sizeBytes, 4);
+    expect(await staged.file.readAsBytes(), const [1, 2, 3, 4]);
+    expect(staged.file.path, endsWith('/picked.stage'));
+    expect(
+      staged.file.parent.path.split('/').last,
+      matches(
+        r'^ccpocket-picker-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+      ),
+    );
+  });
+
+  test('received inbox lists newest regular files without following links', () async {
+    final older = File('${downloads.path}/older.txt');
+    final newer = File('${downloads.path}/newer.pdf');
+    await older.writeAsBytes(const [1]);
+    await newer.writeAsBytes(const [2, 3]);
+    await older.setLastModified(DateTime.utc(2026, 7, 18, 10));
+    await newer.setLastModified(DateTime.utc(2026, 7, 18, 11));
+    await Directory('${downloads.path}/folder').create();
+    await Link('${downloads.path}/linked.txt').create(older.path);
+
+    final received = await storage.listReceivedFiles();
+
+    expect(received.map((file) => file.filename), ['newer.pdf', 'older.txt']);
+    expect(received.first.sizeBytes, 2);
+    expect(received.first.path, newer.path);
+  });
+
+  test('failed external drop removes its private staging directory', () async {
+    final picker = await storage.pickerStagingDirectory();
+
+    await expectLater(
+      storage.stageExternalFile(
+        filename: 'short.bin',
+        bytes: Stream<List<int>>.value(const [1, 2, 3]),
+        maxSizeBytes: 8,
+        expectedSizeBytes: 4,
+      ),
+      throwsA(
+        isA<FileTransferStorageException>().having(
+          (error) => error.code,
+          'code',
+          'external_size_mismatch',
+        ),
+      ),
+    );
+
+    expect(
+      await picker
+          .list(followLinks: false)
+          .where(
+            (entity) => entity.path.split('/').last.startsWith(
+              'ccpocket-picker-',
+            ),
+          )
+          .toList(),
+      isEmpty,
+    );
+  });
+
   test(
     'startup removes only owned picker orphans without following links',
     () async {
