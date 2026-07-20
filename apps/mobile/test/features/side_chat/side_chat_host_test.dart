@@ -90,7 +90,7 @@ Future<_HostHarness> _pumpHost(WidgetTester tester) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('new host no longer exposes the custom side-chat pane', (
+  testWidgets('host exposes the durable side-chat pane independently', (
     tester,
   ) async {
     final harness = await _pumpHost(tester);
@@ -99,13 +99,13 @@ void main() {
       LocalSessionFeatureHost.overflowActions(
         harness.context,
       ).where((candidate) => candidate.featureId == 'side_chat'),
-      isEmpty,
+      hasLength(1),
     );
-    expect(LocalSessionFeatureHost.paneDescriptor('side_chat'), isNull);
+    expect(LocalSessionFeatureHost.paneDescriptor('side_chat'), isNotNull);
     expect(harness.bridge.sent, isEmpty);
   });
 
-  testWidgets('selected text starts the official fork path without sending', (
+  testWidgets('selected text opens side chat without invoking ordinary fork', (
     tester,
   ) async {
     final harness = await _pumpHost(tester);
@@ -113,13 +113,18 @@ void main() {
     final selectionAction = LocalSessionFeatureHost.selectionActions(
       harness.context,
     ).singleWhere((candidate) => candidate.id == 'side_chat');
-    expect(selectionAction.label, 'Fork with selected text');
+    expect(selectionAction.label, 'Open side chat with selected text');
 
     selectionAction.onSelected('bounded selected text');
     await tester.pump();
 
-    expect(harness.openedPanes, isEmpty);
-    expect(harness.forkedDrafts, ['bounded selected text']);
+    expect(harness.openedPanes, hasLength(1));
+    expect(harness.openedPanes.single.featureId, 'side_chat');
+    expect(
+      harness.openedPanes.single.arguments['initialSelection'],
+      'bounded selected text',
+    );
+    expect(harness.forkedDrafts, isEmpty);
     expect(harness.bridge.sent, isEmpty);
     expect(harness.draftService.getDraft('parent-1'), 'main-session draft');
   });

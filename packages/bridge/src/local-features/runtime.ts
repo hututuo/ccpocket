@@ -24,6 +24,17 @@ export interface LocalFeatureInputMessage {
   clientMessageId?: string;
 }
 
+export interface PersistedCodexChildSession {
+  sessionId: string;
+  projectPath: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
+  permissionMode?: string;
+  sandboxMode?: string;
+  approvalPolicy?: string;
+  approvalsReviewer?: string;
+}
+
 export interface LocalFeatureRuntime {
   /** Stable installation identity; persisted by the Bridge host when available. */
   readonly bridgeInstanceId?: string;
@@ -35,6 +46,11 @@ export interface LocalFeatureRuntime {
     projectPath?: string,
   ): Promise<CodexProcess>;
   createDedicatedCodexProcess?(): CodexProcess;
+  /** Register a persisted official Codex child in the ordinary session runtime. */
+  createPersistedCodexChildSession?(
+    parentSessionId: string,
+    options: { threadSource: string; excludeTurnsOnOpen: boolean },
+  ): Promise<PersistedCodexChildSession>;
   /** Host-owned authorization seam for optional features that accept a cwd. */
   isProjectPathAllowed?(projectPath: string): boolean;
   /** Host-owned identity check between a runtime session and a claimed cwd. */

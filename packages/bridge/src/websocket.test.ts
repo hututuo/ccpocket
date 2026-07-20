@@ -10767,6 +10767,59 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("registers a durable side chat as an ordinary Codex child session", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const parentSessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-codex",
+      undefined,
+      [],
+      undefined,
+      "codex",
+      {
+        threadId: "thread-side-parent",
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+        serviceTier: "fast",
+        approvalPolicy: "never",
+        sandboxMode: "danger-full-access",
+      },
+    );
+    const parent = (bridge as any).sessionManager.get(parentSessionId);
+    // The WebSocket suite uses a deliberately small process double. Give the
+    // parent the production prototype so the runtime's Codex-only type guard
+    // is exercised without replacing the shared test SessionManager.
+    Object.setPrototypeOf(parent.process, CodexProcess.prototype);
+
+    const opened = await (bridge as any).createPersistedCodexChildSession(
+      parentSessionId,
+      {
+        threadSource: "ccpocket_side_chat",
+        excludeTurnsOnOpen: true,
+      },
+    );
+
+    const child = (bridge as any).sessionManager.get(opened.sessionId);
+    expect(child).toBeDefined();
+    expect(child.pastMessages).toEqual([]);
+    expect(child.codexOptions).toMatchObject({
+      forkFromThreadId: "thread-side-parent",
+      excludeTurnsOnOpen: true,
+      threadSource: "ccpocket_side_chat",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
+    expect(opened).toMatchObject({
+      sessionId: child.id,
+      projectPath: "/tmp/project-codex",
+      permissionMode: "bypassPermissions",
+    });
+
+    bridge.close();
+  });
+
   it("rejects codex code rewind modes", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

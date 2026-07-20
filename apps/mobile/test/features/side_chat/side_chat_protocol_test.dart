@@ -7,12 +7,46 @@ Map<String, dynamic> _json(ClientMessage message) =>
     jsonDecode(message.toJson()) as Map<String, dynamic>;
 
 void main() {
-  test('declares only the canonical side chat capability', () {
+  test('declares legacy and durable side chat capabilities', () {
     final capabilities = _json(ClientMessage.clientCapabilities());
     expect(
       capabilities['supportedServerMessages'],
       contains('side_chat_event'),
     );
+    expect(
+      capabilities['supportedServerMessages'],
+      contains('persisted_side_chat_opened'),
+    );
+  });
+
+  test('encodes and decodes the durable side chat handshake', () {
+    final request = requestOpenPersistedSideChat(
+      parentSessionId: 'parent-1',
+      requestId: 'durable-1',
+    );
+    expect(_json(request), {
+      'type': 'open_persisted_side_chat',
+      'parentSessionId': 'parent-1',
+      'requestId': 'durable-1',
+    });
+    expect(LocalFeatureProtocolHost.describeRequest(request)?.metadata, {
+      'featureId': 'persisted_side_chat',
+      'requestType': 'open_persisted_side_chat',
+      'ownerSessionId': 'parent-1',
+      'requestId': 'durable-1',
+    });
+
+    final response =
+        ServerMessage.fromJson({
+              'type': 'persisted_side_chat_opened',
+              'parentSessionId': 'parent-1',
+              'requestId': 'durable-1',
+              'childSessionId': 'child-1',
+              'projectPath': '/tmp/project',
+            })
+            as PersistedSideChatOpenedMessage;
+    expect(response.isSuccess, isTrue);
+    expect(response.childSessionId, 'child-1');
   });
 
   test('describes requests without retaining side chat text', () {

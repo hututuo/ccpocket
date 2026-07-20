@@ -24,6 +24,11 @@ import {
   type SideChatEventMessage,
 } from "./slots/side-chat-protocol.js";
 import {
+  persistedSideChatProtocolContribution,
+  type OpenPersistedSideChatMessage,
+  type PersistedSideChatOpenedMessage,
+} from "./slots/persisted-side-chat-protocol.js";
+import {
   subagentsProtocolContribution,
   type SubagentsClientMessage,
   type SubagentsServerMessage,
@@ -63,6 +68,10 @@ export type {
   SideChatMessagePayload,
   SideChatPermissionDecision,
 } from "./slots/side-chat-protocol.js";
+export type {
+  OpenPersistedSideChatMessage,
+  PersistedSideChatOpenedMessage,
+} from "./slots/persisted-side-chat-protocol.js";
 export type { CodexSubagentInfo } from "./slots/subagents-protocol.js";
 export type {
   ConversationMirrorClientMessage,
@@ -78,7 +87,8 @@ export type LocalFeatureClientMessage =
   | ConversationMirrorClientMessage
   | SessionInsightsClientMessage
   | SubagentsClientMessage
-  | SideChatClientMessage;
+  | SideChatClientMessage
+  | OpenPersistedSideChatMessage;
 
 export type LocalFeatureServerMessage =
   | CodexCoreActionsServerMessage
@@ -86,7 +96,8 @@ export type LocalFeatureServerMessage =
   | ConversationMirrorEventMessage
   | SessionInsightsServerMessage
   | SubagentsServerMessage
-  | SideChatEventMessage;
+  | SideChatEventMessage
+  | PersistedSideChatOpenedMessage;
 
 const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   codexCoreActionsProtocolContribution,
@@ -95,6 +106,7 @@ const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   sessionInsightsProtocolContribution,
   subagentsProtocolContribution,
   sideChatProtocolContribution,
+  persistedSideChatProtocolContribution,
 ];
 
 const LOCAL_CLIENT_TYPES = new Set<string>(

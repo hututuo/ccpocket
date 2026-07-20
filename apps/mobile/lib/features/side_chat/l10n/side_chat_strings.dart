@@ -76,7 +76,7 @@ class SideChatStrings {
 
   static const _en = SideChatStrings(
     title: 'Side chat',
-    selectionAction: 'Fork with selected text',
+    selectionAction: 'Open side chat with selected text',
     isolationNotice:
         'Side chats are not saved; closing or reconnecting starts with an empty transcript. File changes remain shared in the same worktree.',
     placeholder: 'Ask in this side chat…',
@@ -103,7 +103,7 @@ class SideChatStrings {
 
   static const _zh = SideChatStrings(
     title: '侧边聊天',
-    selectionAction: '用选中文本分叉会话',
+    selectionAction: '用选中文本开启侧边聊天',
     isolationNotice: '侧边聊天不会保存；关闭或重连后会从空记录开始。同一 worktree 中的文件改动仍会共享。',
     placeholder: '在侧边聊天中提问…',
     empty: '在不改变主会话记录的情况下开始独立对话。',
@@ -128,7 +128,7 @@ class SideChatStrings {
 
   static const _ja = SideChatStrings(
     title: 'サイドチャット',
-    selectionAction: '選択したテキストで会話を分岐',
+    selectionAction: '選択したテキストでサイドチャットを開く',
     isolationNotice:
         'サイドチャットは保存されず、終了または再接続後は空の履歴から始まります。同じ worktree のファイル変更は共有されます。',
     placeholder: 'サイドチャットで質問…',
@@ -154,7 +154,7 @@ class SideChatStrings {
 
   static const _ko = SideChatStrings(
     title: '사이드 채팅',
-    selectionAction: '선택한 텍스트로 대화 포크',
+    selectionAction: '선택한 텍스트로 사이드 채팅 열기',
     isolationNotice:
         '사이드 채팅은 저장되지 않으며 닫거나 다시 연결하면 빈 기록으로 시작합니다. 같은 worktree의 파일 변경은 계속 공유됩니다.',
     placeholder: '사이드 채팅에서 질문…',
