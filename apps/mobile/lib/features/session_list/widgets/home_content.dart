@@ -23,6 +23,8 @@ import '../../../widgets/session_card.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
 import '../../conversation_mirror/conversation_mirror_resident_section.dart';
 import '../../conversation_mirror/conversation_mirror_service.dart';
+import '../../file_transfer/file_transfer_service.dart';
+import '../../file_transfer/received_file_inbox_banner.dart';
 import '../state/session_list_cubit.dart';
 import '../state/session_list_state.dart';
 import '../workspace_shell_screen.dart';
@@ -454,9 +456,11 @@ class HomeContentState extends State<HomeContent> {
   @override
   Widget build(BuildContext context) {
     final shell = WorkspaceShellScreen.maybeOf(context);
+    final fileTransferService = context.read<FileTransferService?>();
     return ListenableBuilder(
       listenable: Listenable.merge([
         NotificationService.instance,
+        ?fileTransferService,
         if (shell != null) shell.presentationListenable,
       ]),
       builder: (context, _) => _buildContent(context),
@@ -511,6 +515,11 @@ class HomeContentState extends State<HomeContent> {
     final showInlineStopButton =
         widget.showInlineStopButtonOverride ?? shell != null;
     final connectedBridgeBanner = _buildConnectedBridgeBanner(context);
+    final fileTransferService = context.read<FileTransferService?>();
+    final receivedFileBanner =
+        fileTransferService != null && fileTransferService.unreadReceivedCount > 0
+        ? ReceivedFileInboxBanner(service: fileTransferService)
+        : null;
 
     // Compute derived state
     // Exclude running sessions from recent list to avoid duplicates
@@ -603,6 +612,7 @@ class HomeContentState extends State<HomeContent> {
           padding: const EdgeInsets.all(12),
           children: [
             if (isReconnecting) const SessionReconnectBanner(),
+            ?receivedFileBanner,
             ?connectedBridgeBanner,
             ?updateBanner,
             ?supportBanner,
@@ -624,6 +634,7 @@ class HomeContentState extends State<HomeContent> {
         physics: const AlwaysScrollableScrollPhysics(),
         children: [
           if (isReconnecting) const SessionReconnectBanner(),
+          ?receivedFileBanner,
           ?connectedBridgeBanner,
           ?updateBanner,
           ?supportBanner,
@@ -641,6 +652,7 @@ class HomeContentState extends State<HomeContent> {
       padding: const EdgeInsets.all(12),
       children: [
         if (isReconnecting) const SessionReconnectBanner(),
+        ?receivedFileBanner,
         ?connectedBridgeBanner,
         ?updateBanner,
         ?supportBanner,

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:ccpocket/features/file_transfer/file_transfer_service.dart';
 import 'package:ccpocket/features/file_transfer/file_transfer_sheet.dart';
 import 'package:ccpocket/features/file_transfer/file_transfer_storage.dart';
+import 'package:ccpocket/features/file_transfer/received_file_inbox_banner.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -50,6 +51,7 @@ void main() {
     FileTransferDocumentPicker picker = const _Picker(null),
     SharedPreferences? preferences,
     bool platformSupported = true,
+    bool receivedFileExportSupported = false,
   }) => FileTransferService(
     bridge: bridge,
     storage: storage,
@@ -57,6 +59,7 @@ void main() {
     capacity: const _Capacity(),
     commit: const _Commit(),
     platformSupported: platformSupported,
+    receivedFileExportSupported: receivedFileExportSupported,
     httpClient: client,
     preferences: preferences,
     requestIdGenerator: _Ids().next,
@@ -272,6 +275,68 @@ void main() {
 
     service.pauseActive();
     await tester.runAsync(() => upload);
+    service.dispose();
+  });
+
+  testWidgets('received inbox exposes preview share and compatible save', (
+    tester,
+  ) async {
+    late FileTransferService service;
+    await tester.runAsync(() async {
+      await File('${downloads.path}/report.pdf').writeAsBytes(const [1, 2]);
+      service = makeService(
+        receivedFileExportSupported: true,
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+      await service.refreshReceivedFiles();
+    });
+
+    await _pumpSheet(tester, service);
+
+    expect(find.text('Files received from Mac'), findsOneWidget);
+    expect(find.text('report.pdf'), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('preview_received_file_${downloads.path}/report.pdf')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('share_received_file_${downloads.path}/report.pdf')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('save_received_file_${downloads.path}/report.pdf')),
+      findsOneWidget,
+    );
+    service.dispose();
+  });
+
+  testWidgets('newly received file stays visible in the Home inbox banner', (
+    tester,
+  ) async {
+    late FileTransferService service;
+    await tester.runAsync(() async {
+      await File('${downloads.path}/incoming.txt').writeAsBytes(const [1]);
+      service = makeService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+      await service.refreshReceivedFiles();
+    });
+    await tester.pumpWidget(
+      ChangeNotifierProvider<FileTransferService>.value(
+        value: service,
+        child: MaterialApp(
+          home: Scaffold(body: ReceivedFileInboxBanner(service: service)),
+        ),
+      ),
+    );
+
+    expect(find.text('1 file(s) received from Mac'), findsOneWidget);
+    expect(find.text('incoming.txt'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('dismiss_received_file_inbox_banner')),
+    );
+    await tester.pump();
+    expect(service.unreadReceivedCount, 0);
     service.dispose();
   });
 }

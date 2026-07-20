@@ -16,15 +16,21 @@ enum FileTransferNativeError: Error, Equatable {
   case insufficientStorage
 }
 
+private enum FileTransferPickerMode {
+  case importing
+  case exporting
+}
+
 final class FileTransferPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate {
   static let channelName = "ccpocket/file_transfer"
-  static let nativeAPIVersion = 1
+  static let nativeAPIVersion = 2
   static let minimumOSMajorVersion = 15
   static let maximumBytes: Int64 = 15 * 1024 * 1024 * 1024
   static let capacitySafetyMarginBytes: Int64 = 512 * 1024 * 1024
 
   private var pickerResult: FlutterResult?
   private var pickerMaximumBytes: Int64 = maximumBytes
+  private var pickerMode: FileTransferPickerMode?
   private weak var pickerController: UIDocumentPickerViewController?
 
   static func register(with registrar: FlutterPluginRegistrar) {
@@ -52,6 +58,10 @@ final class FileTransferPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
     case "pickFile":
       DispatchQueue.main.async { [weak self] in
         self?.presentPicker(arguments: call.arguments, result: result)
+      }
+    case "exportFile":
+      DispatchQueue.main.async { [weak self] in
+        self?.presentExportPicker(arguments: call.arguments, result: result)
       }
     case "availableCapacity":
       perform(arguments: call.arguments, result: result) { arguments in
@@ -153,6 +163,10 @@ final class FileTransferPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
     _ controller: UIDocumentPickerViewController,
     didPickDocumentsAt urls: [URL]
   ) {
+    if pickerMode == .exporting {
+      finishPicker(!urls.isEmpty)
+      return
+    }
     guard let url = urls.first else {
       finishPicker(nil)
       return
@@ -203,6 +217,41 @@ final class FileTransferPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
     picker.modalPresentationStyle = .formSheet
     pickerResult = result
     pickerMaximumBytes = maximum
+    pickerMode = .importing
+    pickerController = picker
+    presenter.present(picker, animated: true)
+  }
+
+  private func presentExportPicker(arguments: Any?, result: @escaping FlutterResult) {
+    guard pickerResult == nil else {
+      result(FlutterError(code: "busy", message: "A picker is already open", details: nil))
+      return
+    }
+    guard let arguments = arguments as? [String: Any],
+      let path = arguments["path"] as? String
+    else {
+      result(FlutterError(code: "invalid_args", message: "Missing path", details: nil))
+      return
+    }
+    let fileURL: URL
+    do {
+      fileURL = try Self.validatedRegularFile(path: path)
+    } catch {
+      result(Self.flutterError(error))
+      return
+    }
+    guard let presenter = Self.activePresenter() else {
+      result(FlutterError(code: "no_presenter", message: "No active window", details: nil))
+      return
+    }
+    let picker = UIDocumentPickerViewController(
+      forExporting: [fileURL],
+      asCopy: true
+    )
+    picker.delegate = self
+    picker.modalPresentationStyle = .formSheet
+    pickerResult = result
+    pickerMode = .exporting
     pickerController = picker
     presenter.present(picker, animated: true)
   }
@@ -210,6 +259,7 @@ final class FileTransferPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
   private func finishPicker(_ value: Any?) {
     guard let result = pickerResult else { return }
     pickerResult = nil
+    pickerMode = nil
     pickerController = nil
     result(value)
   }

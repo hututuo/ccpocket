@@ -2,8 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
+import '../artifact_preview/artifact_quick_look_service.dart';
+import 'file_transfer_storage.dart';
 import 'file_transfer_service.dart';
+import 'received_file_actions.dart';
 
 class FileTransferSettingsTile extends StatelessWidget {
   const FileTransferSettingsTile({super.key});
@@ -28,6 +32,7 @@ class FileTransferSettingsTile extends StatelessWidget {
 
 Future<void> showFileTransferSheet(BuildContext context) {
   final service = context.read<FileTransferService>();
+  unawaited(_refreshReceivedInbox(service));
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -37,6 +42,15 @@ Future<void> showFileTransferSheet(BuildContext context) {
       child: const FileTransferSheet(),
     ),
   );
+}
+
+Future<void> _refreshReceivedInbox(FileTransferService service) async {
+  try {
+    await service.refreshReceivedFiles();
+    await service.markReceivedFilesSeen();
+  } catch (_) {
+    // The live transfer controls remain usable if the local inbox is busy.
+  }
 }
 
 class FileTransferSheet extends StatelessWidget {
@@ -109,6 +123,21 @@ class FileTransferSheet extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(height: 20),
+                if (service.receivedFiles.isNotEmpty) ...[
+                  Text(
+                    copy.received,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 8),
+                  ...service.receivedFiles.map(
+                    (file) => _ReceivedFileTile(
+                      file: file,
+                      copy: copy,
+                      canSave: service.receivedFileExportSupported,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                ],
                 Text(
                   copy.recent,
                   style: Theme.of(context).textTheme.titleMedium,
@@ -151,6 +180,135 @@ class FileTransferSheet extends StatelessWidget {
       ).showSnackBar(SnackBar(content: Text('${copy.failed}: $error')));
     }
   }
+}
+
+class _ReceivedFileTile extends StatelessWidget {
+  const _ReceivedFileTile({
+    required this.file,
+    required this.copy,
+    required this.canSave,
+  });
+
+  final ReceivedFileTransfer file;
+  final _TransferCopy copy;
+  final bool canSave;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      key: ValueKey('received_file_${file.path}'),
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsetsDirectional.fromSTEB(12, 10, 4, 10),
+        child: Row(
+          children: [
+            Icon(
+              Icons.download_done_rounded,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: InkWell(
+                onTap: () => _preview(context),
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        file.filename,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _bytes(file.sizeBytes),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              key: ValueKey('preview_received_file_${file.path}'),
+              tooltip: copy.preview,
+              onPressed: () => _preview(context),
+              icon: const Icon(Icons.visibility_outlined),
+            ),
+            IconButton(
+              key: ValueKey('share_received_file_${file.path}'),
+              tooltip: copy.share,
+              onPressed: () => _share(context),
+              icon: const Icon(Icons.ios_share_outlined),
+            ),
+            if (canSave)
+              IconButton(
+                key: ValueKey('save_received_file_${file.path}'),
+                tooltip: copy.saveElsewhere,
+                onPressed: () => _save(context),
+                icon: const Icon(Icons.save_alt_outlined),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _preview(BuildContext context) async {
+    try {
+      await const MethodChannelArtifactQuickLookGateway().previewFile(
+        path: file.path,
+        title: file.filename,
+      );
+    } catch (error) {
+      if (context.mounted) _showActionError(context, copy, error);
+    }
+  }
+
+  Future<void> _share(BuildContext context) async {
+    try {
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null || !box.hasSize
+          ? null
+          : box.localToGlobal(Offset.zero) & box.size;
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          title: file.filename,
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (error) {
+      if (context.mounted) _showActionError(context, copy, error);
+    }
+  }
+
+  Future<void> _save(BuildContext context) async {
+    try {
+      final saved = await const MethodChannelReceivedFileExportGateway()
+          .exportFile(path: file.path);
+      if (saved && context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(copy.savedElsewhere)));
+      }
+    } catch (error) {
+      if (context.mounted) _showActionError(context, copy, error);
+    }
+  }
+}
+
+void _showActionError(
+  BuildContext context,
+  _TransferCopy copy,
+  Object error,
+) {
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text('${copy.failed}: $error')));
 }
 
 class _StatusCard extends StatelessWidget {
@@ -385,6 +543,11 @@ class _TransferCopy {
   String get limit =>
       zh ? '单文件上限 15 GiB · 分块流式传输' : '15 GiB per file · streamed in chunks';
   String get recent => zh ? '最近传输' : 'Recent transfers';
+  String get received => zh ? '电脑发来的文件' : 'Files received from Mac';
+  String get preview => zh ? '预览' : 'Preview';
+  String get share => zh ? '分享' : 'Share';
+  String get saveElsewhere => zh ? '另存到文件' : 'Save to Files';
+  String get savedElsewhere => zh ? '文件已另存' : 'File saved';
   String get noRecent => zh ? '还没有传输记录' : 'No recent transfers';
   String get pause => zh ? '暂停' : 'Pause';
   String get resume => zh ? '继续' : 'Resume';

@@ -7,6 +7,7 @@ import 'file_transfer_service.dart';
 const iosFileTransferChannelName = 'ccpocket/file_transfer';
 const minimumIosFileTransferMajorVersion = 15;
 const fileTransferNativeApiVersion = 1;
+const receivedFileExportNativeApiVersion = 2;
 const fileTransferSupportProbeTimeout = Duration(seconds: 2);
 
 class FileTransferPlatformSupport {

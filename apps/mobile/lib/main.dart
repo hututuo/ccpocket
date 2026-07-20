@@ -35,6 +35,7 @@ import 'features/conversation_mirror/conversation_mirror_service.dart';
 import 'features/conversation_mirror/storage/conversation_mirror_storage.dart';
 import 'features/file_browser/file_browser_service.dart';
 import 'features/file_transfer/file_transfer_service.dart';
+import 'features/file_transfer/file_transfer_sheet.dart';
 import 'features/file_transfer/file_transfer_storage.dart';
 import 'features/file_transfer/ios_file_transfer_gateway.dart';
 import 'features/session_list/state/session_list_cubit.dart';
@@ -191,6 +192,9 @@ void main() async {
     capacity: fileTransferPlatform,
     commit: fileTransferPlatform,
     platformSupported: fileTransferPlatformSupport.supported,
+    receivedFileExportSupported:
+        (fileTransferPlatformSupport.nativeApiVersion ?? 0) >=
+        receivedFileExportNativeApiVersion,
     notifications: NotificationServiceFileTransferGateway(
       NotificationService.instance,
     ),
@@ -488,6 +492,10 @@ class _CcpocketAppState extends State<CcpocketApp> {
 
   void _openSessionFromPayload(String? payload) {
     if (payload == null || payload.isEmpty) return;
+    if (payload == fileTransferNotificationPayload) {
+      _openFileTransferInbox();
+      return;
+    }
     try {
       final decoded = jsonDecode(payload);
       if (decoded is Map<String, dynamic>) {
@@ -498,6 +506,14 @@ class _CcpocketAppState extends State<CcpocketApp> {
       // Backward compatibility: payload may be plain sessionId text.
     }
     _openSessionFromData({'sessionId': payload, 'provider': 'claude'});
+  }
+
+  void _openFileTransferInbox() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final context = _appRouter.navigatorKey.currentContext;
+      if (context != null) unawaited(showFileTransferSheet(context));
+    });
   }
 
   void _openSessionFromData(Map<String, dynamic> data) {
