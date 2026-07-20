@@ -7,7 +7,7 @@ import '../../../services/draft_service.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import '../../side_chat/l10n/side_chat_strings.dart';
 import '../../side_chat/side_chat_selection_action.dart';
-import '../../side_chat/widgets/side_chat_panel.dart';
+import '../../side_chat/widgets/persisted_side_chat_pane.dart';
 import '../host/local_session_feature.dart';
 
 final LocalSessionFeatureSlot sideChatUiSlot = _SideChatUiSlot();
@@ -53,7 +53,7 @@ class _SideChatUiSlot extends LocalSessionFeatureSlot {
         featureId: featureId,
         title: (context) => SideChatStrings.of(context).title,
         rememberPerSession: false,
-        builder: (context) => SideChatPanel(
+        builder: (context) => PersistedSideChatPane(
           parentSessionId: context.sessionId,
           bridgeService: context.bridge,
           draftService: context.context.read<DraftService>(),

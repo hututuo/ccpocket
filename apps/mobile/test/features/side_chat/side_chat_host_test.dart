@@ -1,7 +1,7 @@
 import 'package:ccpocket/features/local_session_features/host/local_session_feature.dart';
 import 'package:ccpocket/features/local_session_features/host/local_session_feature_host.dart';
 import 'package:ccpocket/features/side_chat/state/side_chat_controller.dart';
-import 'package:ccpocket/features/side_chat/widgets/side_chat_panel.dart';
+import 'package:ccpocket/features/side_chat/widgets/persisted_side_chat_pane.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/draft_service.dart';
@@ -163,8 +163,8 @@ void main() {
       ),
     );
 
-    expect(pane, isA<SideChatPanel>());
-    final panel = pane as SideChatPanel;
+    expect(pane, isA<PersistedSideChatPane>());
+    final panel = pane as PersistedSideChatPane;
     expect(panel.parentSessionId, 'parent-1');
     expect(panel.bridgeService, same(harness.bridge));
     expect(panel.draftService, same(harness.draftService));

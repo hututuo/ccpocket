@@ -111,6 +111,7 @@ class LocalFeatureProtocolHost {
     subagentsProtocolSlot,
     addToConversationProtocolSlot,
     sideChatProtocolSlot,
+    persistedSideChatProtocolSlot,
     conversationMirrorProtocolSlot,
     codexCoreActionsProtocolSlot,
     codexDesktopContinuityProtocolSlot,
