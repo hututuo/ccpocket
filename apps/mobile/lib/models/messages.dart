@@ -3947,6 +3947,9 @@ class SessionInfo {
   final String? codexWebSearchMode;
   final List<String> codexAdditionalWritableRoots;
   final bool codexPermissionApplyStrategySupported;
+
+  /// True when the official Desktop rollout watcher owns the active turn.
+  final bool externalDesktopTurnActive;
   final bool? codexNativePlanModeSupported;
   final bool? codexGoalControlSupported;
   final PermissionRequestMessage? pendingPermission;
@@ -3983,6 +3986,7 @@ class SessionInfo {
     this.codexWebSearchMode,
     this.codexAdditionalWritableRoots = const [],
     this.codexPermissionApplyStrategySupported = false,
+    this.externalDesktopTurnActive = false,
     this.codexNativePlanModeSupported,
     this.codexGoalControlSupported,
     this.pendingPermission,
@@ -4028,6 +4032,7 @@ class SessionInfo {
     String? codexWebSearchMode,
     List<String>? codexAdditionalWritableRoots,
     bool? codexPermissionApplyStrategySupported,
+    bool? externalDesktopTurnActive,
     bool? codexNativePlanModeSupported,
     bool clearCodexNativePlanModeSupported = false,
     bool? codexGoalControlSupported,
@@ -4074,6 +4079,8 @@ class SessionInfo {
       codexPermissionApplyStrategySupported:
           codexPermissionApplyStrategySupported ??
           this.codexPermissionApplyStrategySupported,
+      externalDesktopTurnActive:
+          externalDesktopTurnActive ?? this.externalDesktopTurnActive,
       codexNativePlanModeSupported: clearCodexNativePlanModeSupported
           ? null
           : (codexNativePlanModeSupported ?? this.codexNativePlanModeSupported),
@@ -4139,6 +4146,8 @@ class SessionInfo {
       ),
       codexPermissionApplyStrategySupported:
           json['codexPermissionApplyStrategySupported'] as bool? ?? false,
+      externalDesktopTurnActive:
+          json['externalDesktopTurnActive'] as bool? ?? false,
       codexNativePlanModeSupported:
           json['codexNativePlanModeSupported'] as bool?,
       codexGoalControlSupported: json['codexGoalControlSupported'] as bool?,

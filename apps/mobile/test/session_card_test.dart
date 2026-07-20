@@ -177,6 +177,32 @@ void main() {
       );
     });
 
+    testWidgets('shows Desktop working state and computer badge', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'desktop-running',
+        provider: Provider.codex.value,
+        projectPath: '/home/user/my-app',
+        status: 'idle',
+        createdAt: '',
+        lastActivityAt: '',
+        externalDesktopTurnActive: true,
+      );
+
+      await tester.pumpWidget(
+        _wrap(RunningSessionCard(session: session, onTap: () {})),
+      );
+
+      expect(find.text('Working'), findsOneWidget);
+      expect(
+        find.byKey(
+          const ValueKey('desktop_active_session_badge_desktop-running'),
+        ),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('keeps the pin at the right edge while waiting approval', (
       tester,
     ) async {

@@ -46,6 +46,7 @@ import 'widgets/home_content.dart';
 import 'widgets/machine_edit_sheet.dart';
 import 'widgets/session_list_app_bar.dart';
 import 'workspace_shell_screen.dart';
+import 'desktop_session_list_continuity_tracker.dart';
 
 const _sessionArchiveRequestUuid = Uuid();
 const _codexResumePreservesSettingsCapability =
@@ -331,6 +332,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   // Unseen session tracking
   final _unseenCubit = UnseenSessionsCubit();
   StreamSubscription<List<SessionInfo>>? _activeSessionsSub;
+  late final DesktopSessionListContinuityTracker _desktopContinuityTracker;
 
   static const _prefKeyUrl = 'bridge_url';
   static const _prefKeyMacOSNativeAppBannerDismissed =
@@ -351,6 +353,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     WidgetsBinding.instance.addObserver(this);
     // session_created navigation (the only manual subscription)
     final bridge = context.read<BridgeService>();
+    _desktopContinuityTracker = DesktopSessionListContinuityTracker(bridge);
     _archivePendingRequests = SessionArchivePendingRequests(
       onResultUnknown: _handleArchiveResultUnknown,
     );
@@ -714,6 +717,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     _archiveConnectionSub?.cancel();
     _archivePendingRequests.dispose();
     _activeSessionsSub?.cancel();
+    _desktopContinuityTracker.close();
     _unseenCubit.close();
     super.dispose();
   }

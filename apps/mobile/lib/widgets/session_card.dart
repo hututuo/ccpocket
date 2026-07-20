@@ -98,7 +98,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
     final session = widget.session;
     final appColors = Theme.of(context).extension<AppColors>()!;
     final visualStatus = sessionVisualStatusFor(
-      rawStatus: session.status,
+      rawStatus: session.externalDesktopTurnActive ? 'running' : session.status,
       permissionMode: session.effectivePermissionMode,
       planMode: session.resolvedPlanMode,
       pendingPermission: session.pendingPermission,
@@ -197,6 +197,18 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                             color: statusColor,
                           ),
                         ),
+                        if (session.externalDesktopTurnActive) ...[
+                          const SizedBox(width: 5),
+                          Icon(
+                            Icons.computer,
+                            key: ValueKey(
+                              'desktop_active_session_badge_${session.id}',
+                            ),
+                            size: 13,
+                            color: statusColor,
+                            semanticLabel: 'Running on Desktop',
+                          ),
+                        ],
                         if (visualStatus.detail != null) ...[
                           const SizedBox(width: 6),
                           Flexible(

@@ -674,6 +674,9 @@ class BridgeService implements BridgeServiceBase {
       return true;
     }
     if (message is! LocalFeatureServerMessage) return false;
+    if (message is CodexDesktopContinuityEventMessage) {
+      _patchExternalDesktopTurn(message);
+    }
     _clearPendingLocalFeatureRequestForTerminal(message);
     final localSessionId = message.sessionId ?? sessionId;
     _localFeatureMessageController.add((message, localSessionId));
@@ -1007,6 +1010,10 @@ class BridgeService implements BridgeServiceBase {
         .map(
           (session) => session.copyWith(
             codexPermissionApplyStrategySupported: false,
+            // Desktop watcher state is owned by this exact WebSocket
+            // generation. Never carry a stale Running badge through a
+            // disconnect or a same-target reconnect.
+            externalDesktopTurnActive: false,
           ),
         )
         .toList(growable: false);
@@ -1221,7 +1228,19 @@ class BridgeService implements BridgeServiceBase {
                 :final bridgeCapabilities,
               ):
                 _authoritativeSessionListGeneration++;
-                _sessions = _applyLocalDeliveryPendingInputs(sessions);
+                final externalBySession = <String, bool>{
+                  for (final session in _sessions)
+                    if (session.externalDesktopTurnActive) session.id: true,
+                };
+                _sessions = _applyLocalDeliveryPendingInputs(
+                  sessions
+                      .map(
+                        (session) => externalBySession[session.id] == true
+                            ? session.copyWith(externalDesktopTurnActive: true)
+                            : session,
+                      )
+                      .toList(growable: false),
+                );
                 _clearPendingStartActionsForSessions(_sessions);
                 _sessionListController.add(_sessions);
                 _allowedDirs = allowedDirs;
@@ -2939,6 +2958,27 @@ class BridgeService implements BridgeServiceBase {
         status: statusStr,
         clearPermission: shouldClear,
       );
+    _sessionListController.add(_sessions);
+  }
+
+  void _patchExternalDesktopTurn(CodexDesktopContinuityEventMessage message) {
+    final active = switch (message.event) {
+      CodexDesktopContinuityEventKind.watching ||
+      CodexDesktopContinuityEventKind.state =>
+        message.state == CodexDesktopContinuityState.running,
+      CodexDesktopContinuityEventKind.unwatched ||
+      CodexDesktopContinuityEventKind.error => false,
+      _ => null,
+    };
+    if (active == null) return;
+    final idx = _sessions.indexWhere(
+      (session) => session.id == message.sessionId,
+    );
+    if (idx < 0) return;
+    final current = _sessions[idx];
+    if (current.externalDesktopTurnActive == active) return;
+    _sessions = List.of(_sessions)
+      ..[idx] = current.copyWith(externalDesktopTurnActive: active);
     _sessionListController.add(_sessions);
   }
 
