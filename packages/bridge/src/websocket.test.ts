@@ -3257,6 +3257,60 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("preserves indexed Codex settings when a direct resume omits overrides", async () => {
+    getCodexSessionIndexMetadataMock.mockResolvedValueOnce(
+      new Map([
+        [
+          "thr_preserve_settings",
+          {
+            codexSettings: {
+              model: "gpt-5.6-sol",
+              modelReasoningEffort: "ultra",
+              serviceTier: "fast",
+              approvalPolicy: "never",
+              approvalsReviewer: "user",
+              sandboxMode: "danger-full-access",
+              networkAccessEnabled: true,
+              webSearchMode: "live",
+              additionalWritableRoots: ["/tmp/shared"],
+            },
+          },
+        ],
+      ]),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "thr_preserve_settings",
+        projectPath: "/tmp/project-a",
+        provider: "codex",
+      },
+      ws,
+    );
+
+    const session = (bridge as any).sessionManager.get("s-1");
+    expect(session.codexOptions).toMatchObject({
+      threadId: "thr_preserve_settings",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+      networkAccessEnabled: true,
+      webSearchMode: "live",
+      additionalWritableRoots: [resolve("/tmp/shared")],
+    });
+
+    bridge.close();
+  });
+
   it("reuses an already running Codex provider thread across clients", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const wsA = {

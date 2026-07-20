@@ -48,6 +48,8 @@ import 'widgets/session_list_app_bar.dart';
 import 'workspace_shell_screen.dart';
 
 const _sessionArchiveRequestUuid = Uuid();
+const _codexResumePreservesSettingsCapability =
+    'codex_resume_preserves_settings_v1';
 
 // ---- Testable helpers (top-level) ----
 
@@ -1677,29 +1679,46 @@ class _SessionListScreenState extends State<SessionListScreen>
             context.read<BridgeService>().codexModels,
           )
         : null;
+    final bridgePreservesCodexSettings =
+        isCodex &&
+        bridge.bridgeCapabilities.contains(
+          _codexResumePreservesSettingsCapability,
+        );
 
     bridge.resumeSession(
       session.sessionId,
       resumeProjectPath,
       permissionMode: isCodex
-          ? codexResumeSettings?.permissionMode
+          ? (bridgePreservesCodexSettings
+                ? null
+                : codexResumeSettings?.permissionMode)
           : permissionMode,
       executionMode: isCodex
-          ? codexResumeSettings?.executionMode
+          ? (bridgePreservesCodexSettings
+                ? null
+                : codexResumeSettings?.executionMode)
           : deriveExecutionMode(
               provider: Provider.claude.value,
               executionMode: sessionSettings?['executionMode'] as String?,
               permissionMode: permissionMode,
             ).value,
-      approvalPolicy: isCodex ? codexResumeSettings?.approvalPolicy : null,
+      approvalPolicy: isCodex && !bridgePreservesCodexSettings
+          ? codexResumeSettings?.approvalPolicy
+          : null,
       approvalsReviewer: isCodex
-          ? codexResumeSettings?.approvalsReviewer
+          ? (bridgePreservesCodexSettings
+                ? null
+                : codexResumeSettings?.approvalsReviewer)
           : null,
       codexPermissionsMode: isCodex
-          ? codexResumeSettings?.codexPermissionsMode
+          ? (bridgePreservesCodexSettings
+                ? null
+                : codexResumeSettings?.codexPermissionsMode)
           : null,
       planMode: isCodex
-          ? (useCodexProfile ? null : session.planMode)
+          ? (bridgePreservesCodexSettings || useCodexProfile
+                ? null
+                : session.planMode)
           : derivePlanMode(
               planMode: sessionSettings?['planMode'] as bool?,
               permissionMode: permissionMode,
@@ -1710,20 +1729,38 @@ class _SessionListScreenState extends State<SessionListScreen>
       fallbackModel: !isCodex ? fallbackModel : null,
       forkSession: !isCodex ? forkSession : null,
       persistSession: !isCodex ? persistSession : null,
-      profile: isCodex ? session.codexProfile : null,
+      profile: isCodex && !bridgePreservesCodexSettings
+          ? session.codexProfile
+          : null,
       provider: session.provider,
-      sandboxMode: isCodex ? codexResumeSettings?.sandboxMode : sandboxMode,
-      model: isCodex ? codexResumeSettings?.model : claudeModel,
+      sandboxMode: isCodex
+          ? (bridgePreservesCodexSettings
+                ? null
+                : codexResumeSettings?.sandboxMode)
+          : sandboxMode,
+      model: isCodex
+          ? (bridgePreservesCodexSettings ? null : codexResumeSettings?.model)
+          : claudeModel,
       modelReasoningEffort: isCodex
-          ? codexResumeSettings?.modelReasoningEffort
+          ? (bridgePreservesCodexSettings
+                ? null
+                : codexResumeSettings?.modelReasoningEffort)
           : null,
-      serviceTier: isCodex ? codexResumeSettings?.serviceTier : null,
+      serviceTier: isCodex && !bridgePreservesCodexSettings
+          ? codexResumeSettings?.serviceTier
+          : null,
       networkAccessEnabled: isCodex
-          ? codexResumeSettings?.networkAccessEnabled
+          ? (bridgePreservesCodexSettings
+                ? null
+                : codexResumeSettings?.networkAccessEnabled)
           : null,
-      webSearchMode: isCodex ? codexResumeSettings?.webSearchMode : null,
+      webSearchMode: isCodex && !bridgePreservesCodexSettings
+          ? codexResumeSettings?.webSearchMode
+          : null,
       additionalWritableRoots: isCodex
-          ? codexResumeSettings?.additionalWritableRoots
+          ? (bridgePreservesCodexSettings
+                ? null
+                : codexResumeSettings?.additionalWritableRoots)
           : null,
     );
     if (!bridge.isConnected) {
