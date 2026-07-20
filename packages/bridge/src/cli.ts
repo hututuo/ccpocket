@@ -61,7 +61,8 @@ Setup options:
       setup persists --port, --host, --api-key, --public-ws-url,
       --artifact-base-url, --no-mdns, Codex app-server options,
       BRIDGE_ALLOWED_DIRS, BRIDGE_AUTO_ARTIFACTS, and
-      BRIDGE_ARTIFACT_REGISTRY_FILE, plus BRIDGE_FILE_TRANSFER_* paths
+      BRIDGE_ARTIFACT_REGISTRY_FILE, BRIDGE_FILE_TRANSFER_* paths, and
+      BRIDGE_CODEX_ASSIST_MODEL / BRIDGE_CODEX_ASSIST_REASONING_EFFORT
 
 Configuration can also be provided with BRIDGE_PORT, BRIDGE_HOST,
 BRIDGE_API_KEY, BRIDGE_ALLOWED_DIRS, BRIDGE_PUBLIC_WS_URL, and
@@ -71,7 +72,9 @@ Phone transfer storage can be configured with
 BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR, BRIDGE_FILE_TRANSFER_PARTIAL_DIR,
 and BRIDGE_FILE_TRANSFER_STATE_FILE.
 Codex app-server configuration can be provided with
-BRIDGE_CODEX_APP_SERVER_MODE and BRIDGE_CODEX_SHARED_APP_SERVER_URL.`);
+BRIDGE_CODEX_APP_SERVER_MODE and BRIDGE_CODEX_SHARED_APP_SERVER_URL.
+Codex assist calls can be configured with BRIDGE_CODEX_ASSIST_MODEL and
+BRIDGE_CODEX_ASSIST_REASONING_EFFORT.`);
 }
 
 if (parsed.helpRequested) {

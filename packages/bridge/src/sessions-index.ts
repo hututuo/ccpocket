@@ -13,7 +13,6 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
 import { isAutoRenamePromptText } from "./auto-rename.js";
-import { CODEX_ASSIST_MODEL } from "./codex-assist.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 
 export interface SessionIndexEntry {
@@ -289,11 +288,8 @@ function isSystemInjectedText(text: string): boolean {
   );
 }
 
-function isCodexAutoRenameSession(
-  firstPrompt: string,
-  model?: string,
-): boolean {
-  return model === CODEX_ASSIST_MODEL && isAutoRenamePromptText(firstPrompt);
+function isCodexAutoRenameSession(firstPrompt: string): boolean {
+  return isAutoRenamePromptText(firstPrompt);
 }
 
 function decodeJsonStringPrefix(fragment: string): string {
@@ -1504,7 +1500,7 @@ function parseCodexSessionJsonl(
   }
 
   if (model === "codex-auto-review") return null;
-  if (isCodexAutoRenameSession(firstPrompt, model)) return null;
+  if (isCodexAutoRenameSession(firstPrompt)) return null;
   if (!projectPath || !hasMessages) return null;
   summary = lastAssistantText || summary;
 

@@ -2,6 +2,14 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.68.0-compat.1] - 2026-07-21
+
+### Changed
+- Merge official Bridge 1.68.0 while preserving the local artifact, file-transfer, file-browser, session-mirror, Side Chat, and Desktop-continuity modules.
+
+### Added
+- Support configuring the Codex model and reasoning effort used for session auto-rename and commit-message assistance, including persisted launchd and systemd service settings.
+
 ## [1.67.4-compat.4] - 2026-07-20
 
 ### Added
@@ -35,7 +43,6 @@ All notable changes to `@ccpocket/bridge` will be documented in this file.
 
 ### Fixed
 - Include the official streamed-response finalization and same-turn history reconciliation fixes without collapsing distinct assistant responses.
-
 ## [1.67.4] - 2026-07-19
 
 ### Fixed
