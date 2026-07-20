@@ -6,6 +6,7 @@ import '../../../widgets/chat_selection_actions.dart';
 
 typedef OpenLocalFeaturePane =
     Future<void> Function(String featureId, {Map<String, Object?> arguments});
+typedef ForkCodexConversation = Future<void> Function({String? initialDraft});
 
 class CodexSessionFeatureContext {
   final BuildContext context;
@@ -14,6 +15,7 @@ class CodexSessionFeatureContext {
   final TextEditingController inputController;
   final DraftService draftService;
   final OpenLocalFeaturePane openPane;
+  final ForkCodexConversation? forkConversation;
 
   const CodexSessionFeatureContext({
     required this.context,
@@ -22,6 +24,7 @@ class CodexSessionFeatureContext {
     required this.inputController,
     required this.draftService,
     required this.openPane,
+    this.forkConversation,
   });
 }
 

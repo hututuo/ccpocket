@@ -11,7 +11,7 @@ ChatSelectionAction createSideChatSelectionAction({
 }) => ChatSelectionAction(
   id: _sideChatSelectionActionId,
   label: SideChatStrings.of(context).selectionAction,
-  // Opening only pre-fills the isolated draft. Sending always requires a
-  // separate explicit tap in SideChatPanel.
+  // The selected text is placed in the composer of an official persisted
+  // thread/fork. Sending remains explicit in the standard conversation view.
   onSelected: onOpen,
 );

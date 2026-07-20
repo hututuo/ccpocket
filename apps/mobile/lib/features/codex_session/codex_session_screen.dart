@@ -54,6 +54,8 @@ import '../git/state/git_view_cache_service.dart';
 import '../../router/app_router.dart';
 import '../claude_session/widgets/rewind_message_list_sheet.dart'
     show UserMessageHistorySheet;
+import '../conversation_fork/conversation_fork_actions.dart';
+import '../conversation_fork/conversation_fork_strings.dart';
 import 'state/codex_session_cubit.dart';
 import 'widgets/codex_goal_card.dart';
 import 'widgets/codex_goal_management.dart';
@@ -586,6 +588,10 @@ class _CodexChatBody extends HookWidget {
             sessionId: sessionId,
             arguments: arguments,
           ),
+      forkConversation: ({initialDraft}) => _forkCodexFromCurrent(
+        context,
+        initialDraft: initialDraft,
+      ),
     );
 
     // --- Draft persistence: restore on mount, auto-save on change ---
@@ -1257,6 +1263,10 @@ class _CodexChatBody extends HookWidget {
                           minHeight: 32,
                         ),
                         onSelected: (value) {
+                          if (value == conversationForkAction) {
+                            unawaited(_forkCodexFromCurrent(context));
+                            return;
+                          }
                           final localFeatureId =
                               LocalSessionFeatureHost.featureIdFromMenuValue(
                                 value,
@@ -1315,6 +1325,12 @@ class _CodexChatBody extends HookWidget {
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
                               ),
+                            ),
+                            conversationForkPopupMenuItem(
+                              context,
+                              enabled:
+                                  sessionState.status == ProcessStatus.idle &&
+                                  sessionState.queuedInput == null,
                             ),
                             PopupMenuItem(
                               key: const ValueKey('menu_goal'),
@@ -2098,6 +2114,76 @@ Future<void> _forkCodexFromAssistant(
   );
   if (confirmed != true || !context.mounted) return;
 
+  _sendCodexFork(context, targetUuid);
+}
+
+Future<void> _forkCodexFromCurrent(
+  BuildContext context, {
+  String? initialDraft,
+}) async {
+  final cubit = context.read<ChatSessionCubit>();
+  final l = AppLocalizations.of(context);
+  if (cubit.state.status != ProcessStatus.idle ||
+      cubit.state.queuedInput != null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ConversationForkStrings.of(context).idleRequired),
+      ),
+    );
+    return;
+  }
+  final userEntries = cubit.state.entries.whereType<UserChatEntry>().toList();
+  if (userEntries.isEmpty) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(l.forkTargetNotFound)));
+    return;
+  }
+  final targetUuid = userEntries.reversed
+      .map((entry) => entry.messageUuid?.trim())
+      .whereType<String>()
+      .where((uuid) => uuid.isNotEmpty)
+      .firstOrNull;
+  final confirmed = await confirmConversationFork(
+    context,
+    includesSelectedText: initialDraft?.isNotEmpty == true,
+  );
+  if (!confirmed || !context.mounted) return;
+  _sendCodexFork(
+    context,
+    targetUuid ?? latestCodexForkTarget,
+    initialDraft: initialDraft,
+  );
+}
+
+void _sendCodexFork(
+  BuildContext context,
+  String targetUuid, {
+  String? initialDraft,
+}) {
+  final cubit = context.read<ChatSessionCubit>();
+  final draft = initialDraft;
+  if (draft != null && draft.isNotEmpty) {
+    final bridge = context.read<BridgeService>();
+    final drafts = context.read<DraftService>();
+    final sourceSessionId = cubit.sessionId;
+    StreamSubscription<ServerMessage>? subscription;
+    Timer? timeout;
+    subscription = bridge.messages.listen((message) {
+      if (message case SystemMessage(
+        subtype: 'session_created',
+        sessionId: final newSessionId?,
+        sourceSessionId: final source?,
+      ) when source == sourceSessionId) {
+        drafts.saveDraft(newSessionId, draft);
+        timeout?.cancel();
+        unawaited(subscription?.cancel());
+      }
+    });
+    timeout = Timer(const Duration(seconds: 20), () {
+      unawaited(subscription?.cancel());
+    });
+  }
   cubit.forkSession(targetUuid);
 }
 

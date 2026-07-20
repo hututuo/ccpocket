@@ -4782,6 +4782,19 @@ class ClientMessage {
         'targetUuid': targetUuid,
       });
 
+  /// Fork a persisted Codex thread that is not currently a Bridge runtime.
+  /// Older apps keep using [forkSession]; a newer Bridge recognizes the
+  /// additional projectPath and creates an ordinary persisted Codex session.
+  factory ClientMessage.forkRecentSession({
+    required String threadId,
+    required String projectPath,
+  }) => ClientMessage._({
+    'type': 'fork',
+    'sessionId': threadId,
+    'targetUuid': 'codex:user-turn:latest',
+    'projectPath': projectPath,
+  });
+
   factory ClientMessage.listWindows() =>
       ClientMessage._({'type': 'list_windows'});
 

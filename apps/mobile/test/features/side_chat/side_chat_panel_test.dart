@@ -81,7 +81,7 @@ void main() {
     );
 
     action!.onSelected('selected text');
-    expect(action!.label, 'Open in side chat');
+    expect(action!.label, 'Fork with selected text');
     expect(openedWith, 'selected text');
   });
 
