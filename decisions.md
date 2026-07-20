@@ -66,8 +66,17 @@
 - Remove the complete extension stack in reverse order: the four feature commits first, then mobile host, selection seam, and Bridge seam. That full reverse chain must reproduce the official baseline tree exactly.
 - A dependency on a documented foundation slot is allowed; cross-feature imports, shared feature state, and a combined hardening commit are not. Fixes discovered during review must be autosquashed into the module that owns the behavior.
 - Optional local RPCs are transient and never enter canonical chat history or the offline chat queue. Errors from an older Bridge are correlated to the exact feature request and remain on the feature-local stream.
-- Side Chat owns an in-memory ephemeral fork only. It is not a persisted or resumable conversation; reconnecting or creating a new child starts with an empty transcript, while filesystem changes still belong to the shared worktree.
+- The earlier custom Side Chat pane remains only as a legacy-client compatibility path. Current mobile UI does not expose that ephemeral pane; selected text now creates an official persisted Codex `thread/fork` and opens it in the standard conversation screen.
 - Context/account fallback reads and subagent history reads must remain bounded and paginated. Do not restore whole-rollout or unbounded `thread/read(includeTurns: true)` fallbacks to simplify compatibility.
+
+## Official mobile conversation fork
+
+- Fork is a first-class persisted Codex conversation, not a locally invented side-runtime. Both the open conversation's More menu and the conversation-list long-press menu create it through official `thread/fork`; the child uses the existing `CodexSessionScreen`, composer, history, tools, queue, and settings pipeline.
+- Forking an inactive durable thread adds only the optional `projectPath` field to the existing `fork` wire message. The old `{type, sessionId, targetUuid}` shape is unchanged, and legacy Side Chat Bridge handlers remain registered for old clients.
+- A current-screen fork keeps `sourceSessionId` so the existing screen switches to the child. A list-originated durable fork omits `sourceSessionId` so the child is treated as a normal newly listed conversation rather than a restart of the source.
+- Do not inject mobile start defaults into a durable fork. The official app-server fork response and subsequent init events own the inherited model, reasoning effort, service tier, permissions, sandbox, and network settings.
+- Complete-record download and subsequent incremental sync remain owned by the removable conversation-mirror module. The two menus only reuse that module's actions; they do not introduce a second history store or download protocol.
+- New mobile against a pre-feature Bridge may receive a visible `fork_failed` response for list-originated or latest-sentinel forks. Old mobile against the new Bridge keeps the previous fork message behavior. No part of this decision authorizes Bridge deployment, iOS packaging, signing, or installation.
 
 ## Mobile auto approval
 
