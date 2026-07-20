@@ -33,6 +33,7 @@ import 'l10n/app_localizations.dart';
 import 'features/auto_approval/auto_approval_service.dart';
 import 'features/conversation_mirror/conversation_mirror_service.dart';
 import 'features/conversation_mirror/storage/conversation_mirror_storage.dart';
+import 'features/file_browser/file_browser_service.dart';
 import 'features/file_transfer/file_transfer_service.dart';
 import 'features/file_transfer/file_transfer_storage.dart';
 import 'features/file_transfer/ios_file_transfer_gateway.dart';
@@ -186,6 +187,10 @@ void main() async {
     preferences: prefs,
   );
   await fileTransferService.initialize();
+  final fileBrowserService = FileBrowserService(
+    bridge: BridgeServiceFileBrowserGateway(bridge),
+    preferences: prefs,
+  );
   final autoApprovalService = AutoApprovalService(
     bridge: bridge,
     preferences: prefs,
@@ -256,6 +261,10 @@ void main() async {
         ),
         ChangeNotifierProvider<FileTransferService>(
           create: (_) => fileTransferService,
+          lazy: false,
+        ),
+        ChangeNotifierProvider<FileBrowserService>(
+          create: (_) => fileBrowserService,
           lazy: false,
         ),
         ChangeNotifierProvider<ConversationMirrorService>(
