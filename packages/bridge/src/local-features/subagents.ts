@@ -2,6 +2,7 @@ import { CodexRpcError, type CodexProcess } from "../codex-process.js";
 import type { AssistantContent, ServerMessage } from "../parser.js";
 import {
   codexThreadToSessionHistory,
+  getCodexSessionIndexMetadataForFiles,
   type SessionHistoryMessage,
 } from "../sessions-index.js";
 import type {
@@ -29,6 +30,8 @@ const MAX_HISTORY_PAGES = 20;
 const MAX_HISTORY_ENTRIES = HISTORY_PAGE_SIZE * MAX_HISTORY_PAGES;
 const DEFAULT_SUBAGENT_DEADLINE_MS = 12_000;
 const MAX_SUBAGENT_DEADLINE_MS = 15_000;
+const MAX_FORK_LINEAGE_DEPTH = 16;
+const MAX_PREVIEW_CHARS_PER_SIDE = 140;
 
 export const MAX_SUBAGENT_HISTORY_MESSAGES = 400;
 export const MAX_SUBAGENT_HISTORY_BYTES = 512 * 1024;
@@ -246,14 +249,24 @@ export class CodexSubagentService {
     parentThreadId: string,
     deadline: OperationDeadline,
   ): Promise<CodexSubagentListResult> {
+    const lineage = await this.readForkLineage(
+      process,
+      parentThreadId,
+      deadline,
+    );
+    const rolloutPaths = new Map<string, string>();
     try {
-      const collected = await this.collectThreads(process, deadline, {
-        ancestorThreadId: parentThreadId,
-      });
-      // A successful official ancestor filter is authoritative. Do not add a
-      // sourceKinds filter or second-guess its descendant set locally.
+      const collected = await this.collectLineageDescendants(
+        process,
+        lineage,
+        deadline,
+        rolloutPaths,
+      );
       return {
-        subagents: collected.entries,
+        subagents: await hydrateLatestPreviews(
+          collected.entries,
+          rolloutPaths,
+        ),
         truncated: collected.truncated,
       };
     } catch (error) {
@@ -261,14 +274,147 @@ export class CodexSubagentService {
       console.warn(
         `[subagents] ancestorThreadId unsupported; using bounded local filter: ${errorMessage(error)}`,
       );
-      const collected = await this.collectThreads(process, deadline, {
-        sourceKinds: SUBAGENT_SOURCE_KINDS,
-      });
+      rolloutPaths.clear();
+      const collected = await this.collectArchivedStates(
+        process,
+        deadline,
+        { sourceKinds: SUBAGENT_SOURCE_KINDS },
+        rolloutPaths,
+      );
       return {
-        subagents: descendantsOf(collected.entries, parentThreadId),
+        subagents: await hydrateLatestPreviews(
+          descendantsOfAny(collected.entries, lineage),
+          rolloutPaths,
+        ),
         truncated: collected.truncated,
       };
     }
+  }
+
+  private async readForkLineage(
+    process: CodexProcess,
+    threadId: string,
+    deadline: OperationDeadline,
+  ): Promise<string[]> {
+    const lineage: string[] = [];
+    const seen = new Set<string>();
+    let current: string | null = threadId;
+
+    while (
+      current &&
+      lineage.length < MAX_FORK_LINEAGE_DEPTH &&
+      !seen.has(current)
+    ) {
+      lineage.push(current);
+      seen.add(current);
+      try {
+        const response: { thread?: unknown } = await process.requestReadOnlyRpc<{
+          thread?: unknown;
+        }>(
+          "thread/read",
+          { threadId: current, includeTurns: false },
+          deadline.rpcOptions(),
+        );
+        const thread: Record<string, unknown> | null = isRecord(response.thread)
+          ? response.thread
+          : null;
+        current = thread ? stringOrNull(thread.forkedFromId) : null;
+      } catch (error) {
+        if (isUnsupportedThreadReadError(error)) break;
+        throw error;
+      }
+    }
+
+    return lineage;
+  }
+
+  private async collectLineageDescendants(
+    process: CodexProcess,
+    lineage: readonly string[],
+    deadline: OperationDeadline,
+    rolloutPaths: Map<string, string>,
+  ): Promise<CollectedPageEntries<CodexSubagentInfo>> {
+    const merged = new Map<string, CodexSubagentInfo>();
+    let truncated = false;
+
+    for (const ancestorThreadId of lineage) {
+      const collected = await this.collectArchivedStates(
+        process,
+        deadline,
+        { ancestorThreadId },
+        rolloutPaths,
+      );
+      truncated ||= collected.truncated;
+      for (const entry of collected.entries) {
+        const previous = merged.get(entry.id);
+        if (!previous || entry.updatedAt >= previous.updatedAt) {
+          merged.set(entry.id, entry);
+        }
+      }
+      if (merged.size >= MAX_THREAD_ENTRIES) {
+        truncated = true;
+        break;
+      }
+    }
+
+    const entries = [...merged.values()]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, MAX_THREAD_ENTRIES);
+    return { entries, truncated: truncated || merged.size > entries.length };
+  }
+
+  private async collectArchivedStates(
+    process: CodexProcess,
+    deadline: OperationDeadline,
+    filters: {
+      ancestorThreadId?: string;
+      sourceKinds?: readonly string[];
+    },
+    rolloutPaths: Map<string, string>,
+  ): Promise<CollectedPageEntries<CodexSubagentInfo>> {
+    const active = await this.collectThreads(
+      process,
+      deadline,
+      filters,
+      false,
+      rolloutPaths,
+    );
+    if (active.truncated || active.entries.length >= MAX_THREAD_ENTRIES) {
+      return active;
+    }
+    let archived: CollectedPageEntries<CodexSubagentInfo> = {
+      entries: [],
+      truncated: false,
+    };
+    try {
+      archived = await this.collectThreads(
+        process,
+        deadline,
+        filters,
+        true,
+        rolloutPaths,
+      );
+    } catch (error) {
+      if (!isUnsupportedArchivedFilterError(error)) throw error;
+    }
+
+    const merged = new Map<string, CodexSubagentInfo>();
+    for (const entry of [...active.entries, ...archived.entries]) {
+      const previous = merged.get(entry.id);
+      if (!previous || entry.updatedAt >= previous.updatedAt) {
+        merged.set(entry.id, entry);
+      }
+    }
+    const entries = [...merged.values()]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, MAX_THREAD_ENTRIES);
+    return {
+      entries,
+      truncated:
+        active.truncated ||
+        archived.truncated ||
+        merged.size > entries.length,
+    };
   }
 
   private async collectThreads(
@@ -278,6 +424,8 @@ export class CodexSubagentService {
       ancestorThreadId?: string;
       sourceKinds?: readonly string[];
     },
+    archived: boolean,
+    rolloutPaths: Map<string, string>,
   ): Promise<CollectedPageEntries<CodexSubagentInfo>> {
     return collectBoundedPages(
       async (cursor) => {
@@ -288,7 +436,7 @@ export class CodexSubagentService {
           "thread/list",
           {
             sortKey: "updated_at",
-            archived: false,
+            archived,
             limit: THREAD_PAGE_SIZE,
             cursor,
             ...(filters.ancestorThreadId
@@ -302,9 +450,16 @@ export class CodexSubagentService {
         );
         return {
           data: Array.isArray(response.data)
-            ? response.data
-                .map(toCodexSubagentInfo)
-                .filter((entry) => entry.id.length > 0)
+            ? response.data.flatMap((value) => {
+                const entry = toCodexSubagentInfo(value);
+                if (!entry.id) return [];
+                const record = isRecord(value) ? value : null;
+                const rolloutPath = record
+                  ? stringOrNull(record.path)
+                  : null;
+                if (rolloutPath) rolloutPaths.set(entry.id, rolloutPath);
+                return [entry];
+              })
             : [],
           nextCursor:
             typeof response.nextCursor === "string"
@@ -416,6 +571,65 @@ export class CodexSubagentService {
       },
     );
   }
+}
+
+async function hydrateLatestPreviews(
+  entries: readonly CodexSubagentInfo[],
+  rolloutPaths: ReadonlyMap<string, string>,
+): Promise<CodexSubagentInfo[]> {
+  if (entries.length === 0 || rolloutPaths.size === 0) return [...entries];
+  try {
+    const metadata = await getCodexSessionIndexMetadataForFiles(rolloutPaths);
+    return entries.map((entry) => {
+      const snapshot = metadata.get(entry.id);
+      if (!snapshot) return entry;
+      const question = snapshot.lastPrompt ?? snapshot.firstPrompt;
+      const answer = snapshot.summary;
+      const preview = latestExchangePreview(question, answer);
+      return preview ? { ...entry, preview } : entry;
+    });
+  } catch (error) {
+    // List visibility must not depend on optional preview enrichment. The
+    // app-server preview remains a safe fallback if a rollout was evicted or
+    // concurrently replaced.
+    console.warn(`[subagents] latest preview hydration skipped: ${errorMessage(error)}`);
+    return [...entries];
+  }
+}
+
+function latestExchangePreview(
+  question: string | undefined,
+  answer: string | undefined,
+): string {
+  const compact = (value: string | undefined): string =>
+    (value ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .slice(0, MAX_PREVIEW_CHARS_PER_SIDE);
+  const latestQuestion = compact(question);
+  const latestAnswer = compact(answer);
+  if (latestQuestion && latestAnswer) {
+    return `${latestQuestion}\n${latestAnswer}`;
+  }
+  return latestAnswer || latestQuestion;
+}
+
+function descendantsOfAny(
+  entries: readonly CodexSubagentInfo[],
+  roots: readonly string[],
+): CodexSubagentInfo[] {
+  const merged = new Map<string, CodexSubagentInfo>();
+  for (const root of roots) {
+    for (const entry of descendantsOf([...entries], root)) {
+      const previous = merged.get(entry.id);
+      if (!previous || entry.updatedAt >= previous.updatedAt) {
+        merged.set(entry.id, entry);
+      }
+    }
+  }
+  return [...merged.values()].sort(
+    (left, right) => right.updatedAt - left.updatedAt,
+  );
 }
 
 async function collectBoundedPages<T>(
@@ -905,6 +1119,34 @@ function isUnsupportedAncestorFilterError(error: unknown): boolean {
     message.includes("ancestor_thread_id") ||
     message.includes("ancestor thread");
   return namesAncestorParameter && unsupportedOrInvalidMessage(message);
+}
+
+function isUnsupportedArchivedFilterError(error: unknown): boolean {
+  if (
+    error instanceof CodexRpcError &&
+    error.method === "thread/list" &&
+    error.code === -32601
+  ) {
+    return true;
+  }
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("archived") && unsupportedOrInvalidMessage(message);
+}
+
+function isUnsupportedThreadReadError(error: unknown): boolean {
+  if (
+    error instanceof CodexRpcError &&
+    error.method === "thread/read" &&
+    error.code === -32601
+  ) {
+    return true;
+  }
+  const message = errorMessage(error).toLowerCase();
+  const namesMethod =
+    message.includes("thread/read") ||
+    message.includes("readthread") ||
+    message.includes("thread read");
+  return namesMethod && unsupportedOrInvalidMessage(message);
 }
 
 function isUnsupportedHistoryPaginationError(

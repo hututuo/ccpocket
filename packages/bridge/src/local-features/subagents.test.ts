@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CodexRpcError, type CodexProcess } from "../codex-process.js";
 import type { ServerMessage } from "../parser.js";
@@ -163,6 +166,117 @@ describe("CodexSubagentService", () => {
     expect(listThreads.mock.calls[0]?.[0]).not.toHaveProperty("sourceKinds");
   });
 
+  it("merges descendants across fork lineage and both archive states", async () => {
+    const currentChild = { ...thread("current-child", "current"), updatedAt: 3 };
+    const archivedChild = {
+      ...thread("archived-child", "previous"),
+      updatedAt: 2,
+    };
+    const previousChild = {
+      ...thread("previous-child", "previous"),
+      updatedAt: 1,
+    };
+    const readThread = vi.fn(async (threadId: string) =>
+      threadId === "current"
+        ? { id: threadId, forkedFromId: "previous" }
+        : { id: threadId, forkedFromId: null },
+    );
+    const listThreads = vi.fn(
+      async (params: { ancestorThreadId?: string; archived?: boolean }) => ({
+        data:
+          params.ancestorThreadId === "current"
+            ? params.archived
+              ? []
+              : [currentChild]
+            : params.archived
+              ? [archivedChild]
+              : [previousChild],
+        nextCursor: null,
+      }),
+    );
+
+    await expect(
+      new CodexSubagentService().list(
+        processWith({ readThread, listThreads }),
+        "current",
+      ),
+    ).resolves.toEqual({
+      subagents: [currentChild, archivedChild, previousChild],
+      truncated: false,
+    });
+    expect(readThread).toHaveBeenCalledTimes(2);
+    expect(listThreads).toHaveBeenCalledTimes(4);
+    expect(listThreads.mock.calls.map(([params]) => params)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ancestorThreadId: "current", archived: false }),
+        expect.objectContaining({ ancestorThreadId: "current", archived: true }),
+        expect.objectContaining({ ancestorThreadId: "previous", archived: false }),
+        expect.objectContaining({ ancestorThreadId: "previous", archived: true }),
+      ]),
+    );
+  });
+
+  it("replaces the first-message preview with the latest bounded exchange", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ccpocket-subagent-preview-"));
+    try {
+      const filePath = join(directory, "child.jsonl");
+      await writeFile(
+        filePath,
+        [
+          JSON.stringify({
+            timestamp: "2026-07-20T00:00:00.000Z",
+            type: "session_meta",
+            payload: {
+              id: "child",
+              cwd: "/tmp",
+              source: { subAgent: "other" },
+            },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-20T00:00:01.000Z",
+            type: "event_msg",
+            payload: { type: "user_message", message: "latest question" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-20T00:00:02.000Z",
+            type: "event_msg",
+            payload: {
+              type: "agent_message",
+              message: "latest answer",
+              phase: "final_answer",
+            },
+          }),
+        ].join("\n"),
+        "utf8",
+      );
+      const rawThread = {
+        ...thread("child", "root"),
+        preview: "shared first prompt",
+        path: filePath,
+      };
+      const listThreads = vi.fn(
+        async (params: { archived?: boolean }) => ({
+          data: params.archived ? [] : [rawThread],
+          nextCursor: null,
+        }),
+      );
+
+      const result = await new CodexSubagentService().list(
+        processWith({
+          readThread: vi.fn(async () => ({ forkedFromId: null })),
+          listThreads,
+        }),
+        "root",
+      );
+
+      expect(result.subagents[0]?.preview).toBe(
+        "latest question\nlatest answer",
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to a bounded local scan only for an explicit unsupported ancestor parameter", async () => {
     const listThreads = vi
       .fn()
@@ -176,6 +290,10 @@ describe("CodexSubagentService", () => {
       .mockResolvedValueOnce({
         data: [thread("child", "root"), thread("other", "foreign")],
         nextCursor: null,
+      })
+      .mockResolvedValueOnce({
+        data: [],
+        nextCursor: null,
       });
     const service = new CodexSubagentService();
 
@@ -185,7 +303,7 @@ describe("CodexSubagentService", () => {
       subagents: [thread("child", "root")],
       truncated: false,
     });
-    expect(listThreads).toHaveBeenCalledTimes(2);
+    expect(listThreads).toHaveBeenCalledTimes(3);
     expect(listThreads.mock.calls[1]?.[0]).not.toHaveProperty(
       "ancestorThreadId",
     );
@@ -203,6 +321,10 @@ describe("CodexSubagentService", () => {
       .mockResolvedValueOnce({
         data: [thread("child", "root")],
         nextCursor: null,
+      })
+      .mockResolvedValueOnce({
+        data: [],
+        nextCursor: null,
       });
 
     await expect(
@@ -211,7 +333,7 @@ describe("CodexSubagentService", () => {
       subagents: [{ id: "child" }],
       truncated: false,
     });
-    expect(listThreads).toHaveBeenCalledTimes(2);
+    expect(listThreads).toHaveBeenCalledTimes(3);
   });
 
   it("does not hide network errors behind the local fallback", async () => {
@@ -275,6 +397,10 @@ describe("CodexSubagentService", () => {
         .mockResolvedValueOnce({
           data: [thread("other", "foreign")],
           nextCursor: null,
+        })
+        .mockResolvedValueOnce({
+          data: [],
+          nextCursor: null,
         }),
       listThreadTurns,
       listThreadItems,
@@ -287,7 +413,12 @@ describe("CodexSubagentService", () => {
     ).rejects.toThrow("not a subagent descendant");
     expect(listThreadTurns).not.toHaveBeenCalled();
     expect(listThreadItems).not.toHaveBeenCalled();
-    expect(readThread).not.toHaveBeenCalled();
+    expect(readThread).toHaveBeenCalledOnce();
+    expect(readThread).toHaveBeenCalledWith(
+      "root",
+      false,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("prefers bounded newest-first item pagination and returns chronological messages", async () => {
@@ -334,7 +465,7 @@ describe("CodexSubagentService", () => {
     expect(result.truncated).toBe(false);
     expect(listThreadItems).toHaveBeenCalledTimes(2);
     expect(listThreadTurns).not.toHaveBeenCalled();
-    expect(readThread).not.toHaveBeenCalled();
+    expect(readThread).toHaveBeenCalledOnce();
   });
 
   it("uses full-turn pagination when item pagination is explicitly unsupported", async () => {
@@ -394,7 +525,7 @@ describe("CodexSubagentService", () => {
     expect(listThreadItems).toHaveBeenCalledOnce();
     expect(listThreadTurns).toHaveBeenCalledOnce();
     expect(listThreadTurns.mock.calls[0]?.[0]).not.toHaveProperty("itemsView");
-    expect(readThread).not.toHaveBeenCalled();
+    expect(readThread).toHaveBeenCalledOnce();
   });
 
   it("refuses an unbounded legacy read when both pagination adapters are unsupported", async () => {
@@ -425,7 +556,7 @@ describe("CodexSubagentService", () => {
     ).rejects.toThrow(
       "Subagent history pagination is not supported by this Codex app-server",
     );
-    expect(readThread).not.toHaveBeenCalled();
+    expect(readThread).toHaveBeenCalledOnce();
   });
 
   it("does not turn paginated-history network failures into legacy reads", async () => {
@@ -449,7 +580,7 @@ describe("CodexSubagentService", () => {
       service.readVerified(process, "root", "child"),
     ).rejects.toThrow("connection reset");
     expect(listThreadTurns).not.toHaveBeenCalled();
-    expect(readThread).not.toHaveBeenCalled();
+    expect(readThread).toHaveBeenCalledOnce();
   });
 
   it("applies one abortable total deadline to the whole list operation", async () => {
