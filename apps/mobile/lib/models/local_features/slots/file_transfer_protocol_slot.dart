@@ -22,6 +22,7 @@ class _FileTransferProtocolSlot implements LocalFeatureProtocolSlot {
     'file_transfer_offer_v2',
     'file_transfer_upload_ready_v2',
     'file_transfer_upload_result_v2',
+    'file_transfer_upload_result_v3',
     'file_transfer_download_resumed_v2',
     'file_transfer_cancel_result_v2',
   ];
@@ -33,6 +34,8 @@ class _FileTransferProtocolSlot implements LocalFeatureProtocolSlot {
       json,
     ),
     'file_transfer_upload_result_v2' =>
+      FileTransferUploadResultMessage.fromJson(json),
+    'file_transfer_upload_result_v3' =>
       FileTransferUploadResultMessage.fromJson(json),
     'file_transfer_download_resumed_v2' =>
       FileTransferDownloadResumedMessage.fromJson(json),
@@ -341,6 +344,7 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
   final bool success;
   final String? filename;
   final int? sizeBytes;
+  final String? savedPath;
   final String? error;
   final String? errorCode;
 
@@ -350,6 +354,7 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
     required this.success,
     this.filename,
     this.sizeBytes,
+    this.savedPath,
     this.error,
     this.errorCode,
   });
@@ -361,13 +366,15 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
   String? get sessionId => null;
 
   factory FileTransferUploadResultMessage.fromJson(Map<String, dynamic> json) {
-    _fileTransferRequireExactKeys(json, const {
+    final includesSavedPath = json['type'] == 'file_transfer_upload_result_v3';
+    _fileTransferRequireExactKeys(json, {
       'type',
       'requestId',
       'transferId',
       'success',
       'filename',
       'sizeBytes',
+      if (includesSavedPath) 'savedPath',
       'error',
       'errorCode',
     });
@@ -391,6 +398,18 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
         'successful file transfer result requires sizeBytes',
       );
     }
+    final savedPath = includesSavedPath
+        ? _fileTransferOptionalText(
+            json['savedPath'],
+            'savedPath',
+            _fileTransferMaxUrlLength,
+          )
+        : null;
+    if (success && includesSavedPath && savedPath == null) {
+      throw const FormatException(
+        'successful v3 file transfer result requires savedPath',
+      );
+    }
     return FileTransferUploadResultMessage(
       requestId: _fileTransferRequiredText(
         json['requestId'],
@@ -401,6 +420,7 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
       success: success,
       filename: filename,
       sizeBytes: sizeBytes,
+      savedPath: savedPath,
       error: _fileTransferOptionalText(
         json['error'],
         'error',

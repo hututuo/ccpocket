@@ -342,6 +342,48 @@ describe("FileTransferManager v2", () => {
     });
   });
 
+  it("negotiates the saved computer path only with a v3-capable phone", async () => {
+    const f = await fixture();
+    const client = {};
+    const phone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v2",
+      "file_transfer_upload_result_v3",
+    ]);
+    f.manager.connect(client, phone.binding);
+    await f.manager.handleClientMessage(client, {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "request-v3",
+      transferId: "upload_path00001",
+      resumeToken,
+      filename: "from phone.txt",
+      sizeBytes: 5,
+    });
+    const ready = phone.messages[0];
+    if (ready.type !== "file_transfer_upload_ready_v2") {
+      throw new Error("expected ready");
+    }
+
+    await f.manager.appendUpload(
+      ready.transferId,
+      ready.uploadToken,
+      0,
+      5,
+      chunks("hello"),
+      new AbortController().signal,
+    );
+
+    expect(phone.messages[1]).toEqual({
+      type: "file_transfer_upload_result_v3",
+      requestId: "request-v3",
+      transferId: "upload_path00001",
+      success: true,
+      filename: "from phone.txt",
+      sizeBytes: 5,
+      savedPath: join(f.root, "downloads", "from phone.txt"),
+    });
+  });
+
   it("replays a completed upload result after ready or result response loss", async () => {
     const f = await fixture();
     const client = {};

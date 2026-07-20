@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { FileTransferDownloadStore, OpenedDownloadTransfer } from "./file-transfer-download-store.js";
 import { FileTransferError } from "./file-transfer-errors.js";
 import type { FileTransferClientMessage, FileTransferServerMessage } from "./file-transfer-protocol.js";
@@ -12,6 +13,7 @@ import {
 const OFFER_MESSAGE = "file_transfer_offer_v2";
 const UPLOAD_READY_MESSAGE = "file_transfer_upload_ready_v2";
 const UPLOAD_RESULT_MESSAGE = "file_transfer_upload_result_v2";
+const UPLOAD_RESULT_WITH_PATH_MESSAGE = "file_transfer_upload_result_v3";
 const CANCEL_RESULT_MESSAGE = "file_transfer_cancel_result_v2";
 
 export interface FileTransferClientBinding {
@@ -325,7 +327,8 @@ export class FileTransferManager {
     if (
       !binding?.isOpen() ||
       !binding.supports(UPLOAD_READY_MESSAGE) ||
-      !binding.supports(UPLOAD_RESULT_MESSAGE)
+      (!binding.supports(UPLOAD_RESULT_MESSAGE) &&
+        !binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE))
     ) {
       return;
     }
@@ -512,15 +515,35 @@ export class FileTransferManager {
     const owner = this.uploadClients.get(entry.transferId);
     if (!owner) return;
     const binding = this.clients.get(owner.client);
-    if (!binding?.isOpen() || !binding.supports(UPLOAD_RESULT_MESSAGE)) return;
-    const sent = binding.send({
-      type: UPLOAD_RESULT_MESSAGE,
-      requestId: requestId ?? owner.requestId,
-      transferId: entry.transferId,
-      success: true,
-      filename: entry.finalFilename,
-      sizeBytes: entry.sizeBytes,
-    });
+    if (!binding?.isOpen()) return;
+    const savedPath = entry.finalFilename
+      ? join(this.uploadStore.directory, entry.finalFilename)
+      : undefined;
+    const canSendPath =
+      savedPath !== undefined &&
+      savedPath.length <= 4096 &&
+      binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE);
+    if (!canSendPath && !binding.supports(UPLOAD_RESULT_MESSAGE)) return;
+    const sent = binding.send(
+      canSendPath
+        ? {
+            type: UPLOAD_RESULT_WITH_PATH_MESSAGE,
+            requestId: requestId ?? owner.requestId,
+            transferId: entry.transferId,
+            success: true,
+            filename: entry.finalFilename,
+            sizeBytes: entry.sizeBytes,
+            savedPath,
+          }
+        : {
+            type: UPLOAD_RESULT_MESSAGE,
+            requestId: requestId ?? owner.requestId,
+            transferId: entry.transferId,
+            success: true,
+            filename: entry.finalFilename,
+            sizeBytes: entry.sizeBytes,
+          },
+    );
     if (sent) this.uploadClients.delete(entry.transferId);
   }
 
@@ -534,8 +557,12 @@ export class FileTransferManager {
     const transferError = error instanceof FileTransferError
       ? error
       : new FileTransferError(500, "upload_prepare_failed", "Unable to prepare upload");
+    const type = binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)
+      ? UPLOAD_RESULT_WITH_PATH_MESSAGE
+      : UPLOAD_RESULT_MESSAGE;
+    if (!binding.supports(type)) return;
     binding.send({
-      type: UPLOAD_RESULT_MESSAGE,
+      type,
       requestId: message.requestId,
       transferId: message.transferId,
       success: false,

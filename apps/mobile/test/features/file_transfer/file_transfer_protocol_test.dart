@@ -8,7 +8,7 @@ const token = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const etag = '"EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"';
 
 void main() {
-  test('v2 slot freezes the resumable server message types', () {
+  test('slot keeps v2 compatibility and advertises path-aware v3 results', () {
     expect(fileTransferCapability, 'file_transfer_v2');
     expect(maxFileTransferBytes, 15 * 1024 * 1024 * 1024);
     expect(fileTransferChunkBytes, 16 * 1024 * 1024);
@@ -16,6 +16,7 @@ void main() {
       'file_transfer_offer_v2',
       'file_transfer_upload_ready_v2',
       'file_transfer_upload_result_v2',
+      'file_transfer_upload_result_v3',
       'file_transfer_download_resumed_v2',
       'file_transfer_cancel_result_v2',
     ]);
@@ -74,6 +75,33 @@ void main() {
             as FileTransferUploadResultMessage;
     expect(result.success, isTrue);
     expect(result.filename, 'report (1).zip');
+  });
+
+  test('decodes a negotiated upload result with the saved Mac path', () {
+    final result =
+        ServerMessage.fromJson({
+              'type': 'file_transfer_upload_result_v3',
+              'requestId': 'request-1',
+              'transferId': transferId,
+              'success': true,
+              'filename': 'report.zip',
+              'sizeBytes': 32,
+              'savedPath': '/Users/test/Downloads/report.zip',
+            })
+            as FileTransferUploadResultMessage;
+
+    expect(result.savedPath, '/Users/test/Downloads/report.zip');
+    expect(
+      () => ServerMessage.fromJson({
+        'type': 'file_transfer_upload_result_v3',
+        'requestId': 'request-1',
+        'transferId': transferId,
+        'success': true,
+        'filename': 'report.zip',
+        'sizeBytes': 32,
+      }),
+      throwsFormatException,
+    );
   });
 
   test('prepare always carries stable mobile-owned identity and secret', () {

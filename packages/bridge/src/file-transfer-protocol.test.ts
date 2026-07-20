@@ -126,6 +126,7 @@ describe("file transfer v2 protocol", () => {
       "file_transfer_offer_v2",
       "file_transfer_upload_ready_v2",
       "file_transfer_upload_result_v2",
+      "file_transfer_upload_result_v3",
       "file_transfer_cancel_result_v2",
       "file_transfer_download_resumed_v2",
     ]) expect(isFileTransferServerMessageType(type)).toBe(true);

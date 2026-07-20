@@ -78,6 +78,17 @@ export type FileTransferServerMessage =
       errorCode?: string;
     }
   | {
+      type: "file_transfer_upload_result_v3";
+      requestId: string;
+      transferId: string;
+      success: boolean;
+      filename?: string;
+      sizeBytes?: number;
+      savedPath?: string;
+      error?: string;
+      errorCode?: string;
+    }
+  | {
       type: "file_transfer_cancel_result_v2";
       requestId: string;
       transferId: string;
@@ -108,6 +119,7 @@ const SERVER_TYPES = new Set<string>([
   "file_transfer_offer_v2",
   "file_transfer_upload_ready_v2",
   "file_transfer_upload_result_v2",
+  "file_transfer_upload_result_v3",
   "file_transfer_cancel_result_v2",
   "file_transfer_download_resumed_v2",
 ]);
