@@ -55,6 +55,8 @@ void main() {
     bool isInMentionContext = false,
     bool showDollarButton = false,
     DiffSelection? attachedDiffSelection,
+    List<ChatFileAttachment> attachedFiles = const [],
+    void Function(String id)? onClearFile,
     Future<bool> Function()? onPasteImage,
     ImagePasteShortcut imagePasteShortcut = ImagePasteShortcut.ctrlV,
     KeyEventResult Function(KeyEvent event)? onCompletionKeyEvent,
@@ -84,6 +86,8 @@ void main() {
           isInMentionContext: isInMentionContext,
           showDollarButton: showDollarButton,
           attachedDiffSelection: attachedDiffSelection,
+          attachedFiles: attachedFiles,
+          onClearFile: onClearFile,
           onPasteImage: onPasteImage,
           imagePasteShortcut: imagePasteShortcut,
           onCompletionKeyEvent: onCompletionKeyEvent,
@@ -145,6 +149,35 @@ void main() {
 
       await tester.tap(find.byKey(const ValueKey('send_button')));
       expect(sent, isTrue);
+    });
+
+    testWidgets('shows dropped file state and clears the selected file', (
+      tester,
+    ) async {
+      String? clearedId;
+      await tester.pumpWidget(
+        buildSubject(
+          attachedFiles: const [
+            ChatFileAttachment(
+              id: 'drop-1',
+              filename: 'report.pdf',
+              status: ChatFileAttachmentStatus.ready,
+              path: '/tmp/report.pdf',
+            ),
+          ],
+          onClearFile: (id) => clearedId = id,
+        ),
+      );
+
+      expect(find.text('report.pdf'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('file_attachment_drop-1')),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('clear_file_attachment_drop-1')),
+      );
+      expect(clearedId, 'drop-1');
     });
 
     testWidgets('interrupt callback fires on stop button tap', (tester) async {

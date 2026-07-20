@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../l10n/app_localizations.dart';
@@ -32,6 +33,8 @@ import '../../widgets/new_session_sheet.dart';
 import '../../widgets/rename_session_dialog.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../file_browser/file_browser_screen.dart';
+import '../file_transfer/file_drop_ingress.dart';
+import '../file_transfer/file_transfer_service.dart';
 import '../session_archive/session_archive_cubit.dart';
 import '../session_archive/session_archive_pending_requests.dart';
 import '../session_archive/session_archive_screen.dart';
@@ -328,6 +331,8 @@ class _SessionListScreenState extends State<SessionListScreen>
   // macOS app update
   AppUpdateInfo? _appUpdateInfo;
   bool _showMacOSNativeAppBanner = false;
+  bool _homeFileDropActive = false;
+  bool _homeFileDropStaging = false;
 
   // Unseen session tracking
   final _unseenCubit = UnseenSessionsCubit();
@@ -757,6 +762,70 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   Future<void> _openArchivedSessions() => openSessionArchive(context);
+
+  Future<void> _handleHomeFileDrop(PerformDropEvent event) async {
+    if (!mounted) return;
+    setState(() {
+      _homeFileDropActive = false;
+      _homeFileDropStaging = true;
+    });
+    final service = context.read<FileTransferService>();
+    final copy = _HomeFileDropCopy.of(context);
+    try {
+      await consumeDroppedFiles(event, (payload) async {
+        try {
+          final ticket = await service.enqueueDroppedFile(
+            filename: payload.filename,
+            bytes: payload.bytes,
+            expectedSizeBytes: payload.sizeBytes,
+          );
+          unawaited(_showHomeTransferResult(ticket, payload.filename));
+        } catch (error) {
+          _showHomeDropMessage(copy.unableToQueue(payload.filename, error));
+        }
+      });
+    } catch (_) {
+      _showHomeDropMessage(copy.unableToRead);
+    } finally {
+      if (mounted) setState(() => _homeFileDropStaging = false);
+    }
+  }
+
+  Future<void> _showHomeTransferResult(
+    FileTransferUploadTicket ticket,
+    String filename,
+  ) async {
+    final copy = _HomeFileDropCopy.of(context);
+    try {
+      final result = await ticket.completion;
+      if (!mounted) return;
+      switch (result.status) {
+        case FileTransferStatus.succeeded:
+          _showHomeDropMessage(copy.sent(filename));
+          break;
+        case FileTransferStatus.paused:
+          _showHomeDropMessage(copy.paused(filename));
+          break;
+        case FileTransferStatus.failed:
+        case FileTransferStatus.cancelled:
+          _showHomeDropMessage(copy.failed(filename));
+          break;
+        case FileTransferStatus.preparing:
+        case FileTransferStatus.queued:
+        case FileTransferStatus.transferring:
+          break;
+      }
+    } catch (error) {
+      _showHomeDropMessage(copy.failedWithError(filename, error));
+    }
+  }
+
+  void _showHomeDropMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
 
   void _refresh() {
     context.read<SessionListCubit>().refresh();
@@ -1880,6 +1949,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     final isConnected = connectionState == BridgeConnectionState.connected;
     final showConnectedUI =
         isConnected || connectionState == BridgeConnectionState.reconnecting;
+    final homeFileDropAvailable = context.select<FileTransferService, bool>(
+      (service) => service.platformSupported && service.uploadAvailable,
+    );
 
     final l = AppLocalizations.of(context);
 
@@ -1925,23 +1997,123 @@ class _SessionListScreenState extends State<SessionListScreen>
                 },
                 child: Focus(
                   autofocus: true,
-                  child: _buildScaffoldBody(
-                    context: context,
-                    l: l,
-                    showConnectedUI: showConnectedUI,
-                    connectionState: connectionState,
-                    sessions: sessions,
-                    recentSessionsList: recentSessionsList,
-                    slState: slState,
-                    unseenSessionIds: unseenSessionIds,
-                    discoveredServers: discoveredServers,
-                    machineState: machineState,
-                    machineManagerCubit: machineManagerCubit,
-                    connectedBridgeLabel: connectedBridgeLabel,
+                  child: _wrapHomeFileDrop(
+                    enabled:
+                        isIOSPlatform &&
+                        showConnectedUI &&
+                        homeFileDropAvailable,
+                    child: _buildScaffoldBody(
+                      context: context,
+                      l: l,
+                      showConnectedUI: showConnectedUI,
+                      connectionState: connectionState,
+                      sessions: sessions,
+                      recentSessionsList: recentSessionsList,
+                      slState: slState,
+                      unseenSessionIds: unseenSessionIds,
+                      discoveredServers: discoveredServers,
+                      machineState: machineState,
+                      machineManagerCubit: machineManagerCubit,
+                      connectedBridgeLabel: connectedBridgeLabel,
+                    ),
                   ),
                 ),
               ),
             ),
+      ),
+    );
+  }
+
+  Widget _wrapHomeFileDrop({
+    required bool enabled,
+    required Widget child,
+  }) {
+    if (!enabled) return child;
+    final visible = _homeFileDropActive || _homeFileDropStaging;
+    final cs = Theme.of(context).colorScheme;
+    final copy = _HomeFileDropCopy.of(context);
+    return DropRegion(
+      formats: droppedFileFormats,
+      hitTestBehavior: HitTestBehavior.opaque,
+      onDropOver: (event) => dropSessionContainsFile(event.session)
+          ? DropOperation.copy
+          : DropOperation.none,
+      onDropEnter: (event) {
+        if (mounted) {
+          setState(
+            () => _homeFileDropActive = dropSessionContainsFile(event.session),
+          );
+        }
+      },
+      onDropLeave: (_) {
+        if (mounted) setState(() => _homeFileDropActive = false);
+      },
+      onDropEnded: (_) {
+        if (mounted) setState(() => _homeFileDropActive = false);
+      },
+      onPerformDrop: _handleHomeFileDrop,
+      child: Stack(
+        fit: StackFit.passthrough,
+        children: [
+          child,
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedOpacity(
+                opacity: visible ? 1 : 0,
+                duration: const Duration(milliseconds: 160),
+                child: AnimatedScale(
+                  scale: visible ? 1 : 0.97,
+                  duration: const Duration(milliseconds: 160),
+                  curve: Curves.easeOutCubic,
+                  child: Container(
+                    margin: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: cs.primaryContainer.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: cs.primary, width: 2),
+                    ),
+                    alignment: Alignment.center,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _homeFileDropStaging
+                              ? Icons.sync_rounded
+                              : Icons.computer_rounded,
+                          size: 44,
+                          color: cs.onPrimaryContainer,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          _homeFileDropStaging
+                              ? copy.staging
+                              : copy.releaseToSend,
+                          style: TextStyle(
+                            color: cs.onPrimaryContainer,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        if (!_homeFileDropStaging) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            copy.transportHint,
+                            style: TextStyle(
+                              color: cs.onPrimaryContainer.withValues(
+                                alpha: 0.72,
+                              ),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2681,6 +2853,36 @@ class _SessionListScreenState extends State<SessionListScreen>
       ),
     );
   }
+}
+
+class _HomeFileDropCopy {
+  const _HomeFileDropCopy(this.zh);
+
+  final bool zh;
+
+  factory _HomeFileDropCopy.of(BuildContext context) => _HomeFileDropCopy(
+    Localizations.localeOf(context).languageCode == 'zh',
+  );
+
+  String get releaseToSend => zh ? '松开发送到电脑' : 'Release to send to Mac';
+  String get staging =>
+      zh ? '正在加入传输队列…' : 'Adding to the transfer queue…';
+  String get transportHint => zh
+      ? '文件将通过当前连接安全传输'
+      : 'The file will use the current secure connection';
+  String get unableToRead =>
+      zh ? '无法读取拖入的文件。' : 'The dropped file could not be read.';
+  String sent(String filename) =>
+      zh ? '$filename 已发送到电脑。' : '$filename was sent to the Mac.';
+  String paused(String filename) =>
+      zh ? '$filename 的传输已暂停。' : 'Transfer of $filename is paused.';
+  String failed(String filename) =>
+      zh ? '$filename 发送失败。' : '$filename could not be sent.';
+  String failedWithError(String filename, Object error) =>
+      '${failed(filename)} $error';
+  String unableToQueue(String filename, Object error) => zh
+      ? '$filename 无法加入传输：$error'
+      : '$filename could not be added to transfer: $error';
 }
 
 class _SetupStep extends StatelessWidget {

@@ -11,6 +11,23 @@ import '../utils/platform_helper.dart';
 import '../utils/diff_parser.dart';
 import 'bubbles/image_preview.dart';
 
+enum ChatFileAttachmentStatus { uploading, ready, failed }
+
+@immutable
+class ChatFileAttachment {
+  const ChatFileAttachment({
+    required this.id,
+    required this.filename,
+    required this.status,
+    this.path,
+  });
+
+  final String id;
+  final String filename;
+  final ChatFileAttachmentStatus status;
+  final String? path;
+}
+
 /// Bottom input bar with slash-command button, text field, and action buttons.
 ///
 /// Pure presentation — all actions are dispatched via callbacks.
@@ -42,6 +59,8 @@ class ChatInputBar extends StatelessWidget {
   final VoidCallback? onAttachImage;
   final List<({Uint8List bytes, String mimeType})> attachedImages;
   final void Function([int? index])? onClearImage;
+  final List<ChatFileAttachment> attachedFiles;
+  final void Function(String id)? onClearFile;
   final DiffSelection? attachedDiffSelection;
   final VoidCallback? onClearDiffSelection;
   final VoidCallback? onTapDiffPreview;
@@ -82,6 +101,8 @@ class ChatInputBar extends StatelessWidget {
     this.onAttachImage,
     this.attachedImages = const [],
     this.onClearImage,
+    this.attachedFiles = const [],
+    this.onClearFile,
     this.attachedDiffSelection,
     this.onClearDiffSelection,
     this.onTapDiffPreview,
@@ -122,6 +143,11 @@ class ChatInputBar extends StatelessWidget {
             ),
           if (attachedImages.isNotEmpty)
             _ImagePreview(images: attachedImages, onClearImage: onClearImage),
+          if (attachedFiles.isNotEmpty)
+            _FileAttachmentPreview(
+              files: attachedFiles,
+              onClearFile: onClearFile,
+            ),
           _InputTextField(
             controller: inputController,
             status: status,
@@ -160,8 +186,7 @@ class ChatInputBar extends StatelessWidget {
               ],
               const SizedBox(width: 8),
               _AttachButton(
-                hasAttachment: attachedImages.isNotEmpty,
-                imageCount: attachedImages.length,
+                attachmentCount: attachedImages.length + attachedFiles.length,
                 onTap: onAttachImage,
               ),
               if (onShowPromptHistory != null) ...[
@@ -370,18 +395,17 @@ class _DollarButton extends StatelessWidget {
 
 class _AttachButton extends StatelessWidget {
   const _AttachButton({
-    required this.hasAttachment,
-    required this.imageCount,
+    required this.attachmentCount,
     required this.onTap,
   });
-  final bool hasAttachment;
-  final int imageCount;
+  final int attachmentCount;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final l = AppLocalizations.of(context);
+    final hasAttachment = attachmentCount > 0;
     return Tooltip(
       message: l.tooltipAttachImage,
       child: Material(
@@ -399,8 +423,12 @@ class _AttachButton extends StatelessWidget {
                 ? Stack(
                     clipBehavior: Clip.none,
                     children: [
-                      Icon(Icons.image, size: 18, color: cs.onPrimaryContainer),
-                      if (imageCount > 1)
+                      Icon(
+                        Icons.attach_file,
+                        size: 18,
+                        color: cs.onPrimaryContainer,
+                      ),
+                      if (attachmentCount > 1)
                         Positioned(
                           top: -6,
                           right: -8,
@@ -414,7 +442,7 @@ class _AttachButton extends StatelessWidget {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Text(
-                              '$imageCount',
+                              '$attachmentCount',
                               style: TextStyle(
                                 fontSize: 9,
                                 fontWeight: FontWeight.bold,
@@ -525,6 +553,101 @@ class _ImagePreview extends StatelessWidget {
             );
           },
         ),
+      ),
+    );
+  }
+}
+
+class _FileAttachmentPreview extends StatelessWidget {
+  const _FileAttachmentPreview({
+    required this.files,
+    required this.onClearFile,
+  });
+
+  final List<ChatFileAttachment> files;
+  final void Function(String id)? onClearFile;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: [
+          for (final file in files)
+            Container(
+              key: ValueKey('file_attachment_${file.id}'),
+              constraints: const BoxConstraints(maxWidth: 240),
+              padding: const EdgeInsetsDirectional.fromSTEB(10, 7, 5, 7),
+              decoration: BoxDecoration(
+                color: file.status == ChatFileAttachmentStatus.failed
+                    ? cs.errorContainer
+                    : cs.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: file.status == ChatFileAttachmentStatus.failed
+                      ? cs.error.withValues(alpha: 0.45)
+                      : cs.outline.withValues(alpha: 0.24),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (file.status == ChatFileAttachmentStatus.uploading)
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: cs.primary,
+                      ),
+                    )
+                  else
+                    Icon(
+                      file.status == ChatFileAttachmentStatus.failed
+                          ? Icons.error_outline
+                          : Icons.insert_drive_file_outlined,
+                      size: 18,
+                      color: file.status == ChatFileAttachmentStatus.failed
+                          ? cs.error
+                          : cs.primary,
+                    ),
+                  const SizedBox(width: 7),
+                  Flexible(
+                    child: Text(
+                      file.filename,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: file.status == ChatFileAttachmentStatus.failed
+                            ? cs.onErrorContainer
+                            : cs.onSurface,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Tooltip(
+                    message: l.remove,
+                    child: InkWell(
+                      key: ValueKey('clear_file_attachment_${file.id}'),
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => onClearFile?.call(file.id),
+                      child: const Padding(
+                        padding: EdgeInsets.all(3),
+                        child: Icon(Icons.close, size: 15),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }

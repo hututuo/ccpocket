@@ -53,8 +53,10 @@ class CodexSessionCubit extends ChatSessionCubit {
     String text, {
     List<({Uint8List bytes, String mimeType})>? images,
     Iterable<String>? mentionablePaths,
+    Iterable<Map<String, String>>? additionalMentions,
   }) {
-    if (images == null || images.isEmpty) {
+    if ((images == null || images.isEmpty) &&
+        (additionalMentions == null || additionalMentions.isEmpty)) {
       switch (text.trim()) {
         case '/goal':
           requestGoal(userInitiated: true);
@@ -96,7 +98,12 @@ class CodexSessionCubit extends ChatSessionCubit {
           return;
       }
     }
-    super.sendMessage(text, images: images, mentionablePaths: mentionablePaths);
+    super.sendMessage(
+      text,
+      images: images,
+      mentionablePaths: mentionablePaths,
+      additionalMentions: additionalMentions,
+    );
   }
 
   @override

@@ -3882,6 +3882,55 @@ void main() {
       },
     );
 
+    test('codex sendMessage merges dropped file mentions once', () async {
+      final cubit = createCubit(
+        's1',
+        provider: Provider.codex,
+        initialProjectPath: '/tmp/project',
+      );
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      cubit.sendMessage(
+        'Review @notes.txt',
+        mentionablePaths: const ['notes.txt'],
+        additionalMentions: const [
+          {'name': 'notes.txt', 'path': '/tmp/project/notes.txt'},
+          {'name': 'report.pdf', 'path': '/Users/test/Downloads/report.pdf'},
+        ],
+      );
+
+      final json =
+          jsonDecode(mockBridge.sentMessages.single.toJson())
+              as Map<String, dynamic>;
+      expect(json['mentions'], [
+        {'name': 'notes.txt', 'path': '/tmp/project/notes.txt'},
+        {'name': 'report.pdf', 'path': '/Users/test/Downloads/report.pdf'},
+      ]);
+    });
+
+    test('codex command-like text with a dropped file remains a message', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      cubit.sendMessage(
+        '/goal',
+        additionalMentions: const [
+          {'name': 'goal.md', 'path': '/Users/test/Downloads/goal.md'},
+        ],
+      );
+
+      expect(mockBridge.sentMessages, hasLength(1));
+      final json =
+          jsonDecode(mockBridge.sentMessages.single.toJson())
+              as Map<String, dynamic>;
+      expect(json['text'], '/goal');
+      expect(json['mentions'], [
+        {'name': 'goal.md', 'path': '/Users/test/Downloads/goal.md'},
+      ]);
+    });
+
     test('approve clears approval state and sends message', () async {
       final cubit = createCubit('s1');
       addTearDown(cubit.close);

@@ -2948,9 +2948,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     String text, {
     List<({Uint8List bytes, String mimeType})>? images,
     Iterable<String>? mentionablePaths,
+    Iterable<Map<String, String>>? additionalMentions,
   }) {
-    if (text.trim().isEmpty && (images == null || images.isEmpty)) return;
-    if (isCodex && (images == null || images.isEmpty)) {
+    final explicitMentions = additionalMentions?.toList(growable: false) ??
+        const <Map<String, String>>[];
+    if (text.trim().isEmpty &&
+        (images == null || images.isEmpty) &&
+        explicitMentions.isEmpty) {
+      return;
+    }
+    if (isCodex &&
+        (images == null || images.isEmpty) &&
+        explicitMentions.isEmpty) {
       final command = text.trim();
       switch (command) {
         case '/goal':
@@ -2986,6 +2995,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ? _extractCodexStructuredInputs(
             text,
             mentionablePaths: mentionablePaths,
+            additionalMentions: explicitMentions,
           )
         : (
             skills: const <Map<String, String>>[],
@@ -4395,6 +4405,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   _extractCodexStructuredInputs(
     String text, {
     Iterable<String>? mentionablePaths,
+    Iterable<Map<String, String>>? additionalMentions,
   }) {
     final skills = <Map<String, String>>[];
     final mentions = <Map<String, String>>[];
@@ -4456,6 +4467,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         final payload = {'name': mentionPath, 'path': payloadPath};
         final key = '${payload['name']}|${payload['path']}';
         if (seenMentions.add(key)) mentions.add(payload);
+      }
+    }
+    for (final additional in
+        additionalMentions ?? const <Map<String, String>>[]) {
+      final name = additional['name']?.trim() ?? '';
+      final mentionPath = additional['path']?.trim() ?? '';
+      if (name.isEmpty || mentionPath.isEmpty) continue;
+      final key = '$name|$mentionPath';
+      if (seenMentions.add(key)) {
+        mentions.add({'name': name, 'path': mentionPath});
       }
     }
     return (skills: skills, mentions: mentions);

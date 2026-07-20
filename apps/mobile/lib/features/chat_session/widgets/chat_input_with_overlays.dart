@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -24,6 +27,8 @@ import '../../../widgets/file_mention_overlay.dart';
 import '../../../widgets/slash_command_overlay.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
 import '../../settings/state/settings_cubit.dart';
+import '../../file_transfer/file_drop_ingress.dart';
+import '../../file_transfer/file_transfer_service.dart';
 import '../../../services/draft_service.dart';
 import '../../prompt_history/widgets/prompt_history_sheet.dart';
 import '../../../widgets/slash_command_sheet.dart'
@@ -119,6 +124,9 @@ class ChatInputWithOverlays extends HookWidget {
     final attachedImages = useState<List<({Uint8List bytes, String mimeType})>>(
       [],
     );
+    final attachedFiles = useState<List<ChatFileAttachment>>([]);
+    final fileDropActive = useState(false);
+    final fileDropSequence = useRef(0);
 
     // Restore image draft on mount
     useEffect(() {
@@ -148,6 +156,7 @@ class ChatInputWithOverlays extends HookWidget {
     // Slash commands from cubit
     final chatCubit = context.read<ChatSessionCubit>();
     final isCodex = chatCubit.isCodex;
+    final dropCopy = _ComposerFileDropCopy.of(context);
     final completionItems = context
         .watch<ChatSessionCubit>()
         .state
@@ -556,36 +565,138 @@ class ChatInputWithOverlays extends HookWidget {
       }
     }
 
-    /// Handle items dropped via OS drag-and-drop (desktop).
-    Future<void> handleDroppedItems(PerformDropEvent event) async {
-      for (final item in event.session.items) {
-        final reader = item.dataReader;
-        if (reader == null) continue;
-        for (final format in [Formats.png, Formats.jpeg]) {
-          if (reader.canProvide(format)) {
-            reader.getFile(format, (file) async {
-              try {
-                final bytes = await file.readAll();
-                final mimeType = format == Formats.png
-                    ? 'image/png'
-                    : 'image/jpeg';
-                addImageBytes(bytes, mimeType);
-              } catch (e) {
-                debugPrint('[drop] Failed to read dropped image: $e');
-              }
-            });
-            break; // Only read one format per item
-          }
+    void updateDroppedFile(
+      String id,
+      ChatFileAttachmentStatus status, {
+      String? savedPath,
+    }) {
+      if (!context.mounted) return;
+      attachedFiles.value = [
+        for (final item in attachedFiles.value)
+          if (item.id == id)
+            ChatFileAttachment(
+              id: item.id,
+              filename: item.filename,
+              status: status,
+              path: savedPath,
+            )
+          else
+            item,
+      ];
+    }
+
+    void showDropMessage(String message) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
+
+    Future<void> awaitDroppedUpload(
+      FileTransferUploadTicket ticket,
+      String attachmentId,
+      String filename,
+    ) async {
+      try {
+        final result = await ticket.completion;
+        final savedPath = result.savedPath?.trim();
+        if (result.status == FileTransferStatus.succeeded &&
+            savedPath != null &&
+            savedPath.isNotEmpty) {
+          updateDroppedFile(
+            attachmentId,
+            ChatFileAttachmentStatus.ready,
+            savedPath: savedPath,
+          );
+          return;
         }
+        updateDroppedFile(attachmentId, ChatFileAttachmentStatus.failed);
+        if (result.status == FileTransferStatus.succeeded) {
+          showDropMessage(
+            dropCopy.sentWithoutPath(filename),
+          );
+        } else if (result.status == FileTransferStatus.paused) {
+          showDropMessage(dropCopy.paused(filename));
+        } else {
+          showDropMessage(dropCopy.uploadFailed(filename));
+        }
+      } catch (error) {
+        updateDroppedFile(attachmentId, ChatFileAttachmentStatus.failed);
+        showDropMessage(dropCopy.uploadFailedWithError(filename, error));
+      }
+    }
+
+    /// Handle files dropped into the composer on desktop or iOS.
+    Future<void> handleDroppedItems(PerformDropEvent event) async {
+      try {
+        await consumeDroppedFiles(event, (payload) async {
+          if (canInlineDroppedImage(payload)) {
+            final bytes = await _readInlineDroppedImage(payload);
+            addImageBytes(
+              bytes,
+              payload.isPng ? 'image/png' : 'image/jpeg',
+            );
+            return;
+          }
+
+          fileDropSequence.value += 1;
+          final attachmentId =
+              '$sessionId-drop-${fileDropSequence.value}';
+          attachedFiles.value = [
+            ...attachedFiles.value,
+            ChatFileAttachment(
+              id: attachmentId,
+              filename: payload.filename,
+              status: ChatFileAttachmentStatus.uploading,
+            ),
+          ];
+          try {
+            final ticket = await context
+                .read<FileTransferService>()
+                .enqueueDroppedFile(
+                  filename: payload.filename,
+                  bytes: payload.bytes,
+                  expectedSizeBytes: payload.sizeBytes,
+                );
+            unawaited(
+              awaitDroppedUpload(ticket, attachmentId, payload.filename),
+            );
+          } catch (error) {
+            updateDroppedFile(
+              attachmentId,
+              ChatFileAttachmentStatus.failed,
+            );
+            showDropMessage(dropCopy.unableToQueue(payload.filename, error));
+          }
+        });
+      } catch (error) {
+        debugPrint('[drop] Failed to consume dropped files: $error');
+        showDropMessage(dropCopy.unableToRead);
+      } finally {
+        fileDropActive.value = false;
       }
     }
 
     void sendMessage() {
       if (inputBlocked) return;
       final text = inputController.text.trim();
+      if (attachedFiles.value.any(
+        (file) => file.status == ChatFileAttachmentStatus.uploading,
+      )) {
+        showDropMessage(dropCopy.waitForUploads);
+        return;
+      }
+      final readyFiles = attachedFiles.value
+          .where(
+            (file) =>
+                file.status == ChatFileAttachmentStatus.ready &&
+                file.path != null,
+          )
+          .toList(growable: false);
       if (text.isEmpty &&
           attachedImages.value.isEmpty &&
-          attachedDiffSelection.value == null) {
+          attachedDiffSelection.value == null &&
+          readyFiles.isEmpty) {
         return;
       }
       HapticFeedback.lightImpact();
@@ -598,6 +709,9 @@ class ChatInputWithOverlays extends HookWidget {
         images = List.of(attachedImages.value);
         attachedImages.value = [];
       }
+      attachedFiles.value = attachedFiles.value
+          .where((file) => !readyFiles.any((ready) => ready.id == file.id))
+          .toList(growable: false);
 
       // Capture and clear diff selection
       DiffSelection? selection;
@@ -616,13 +730,27 @@ class ChatInputWithOverlays extends HookWidget {
         }
       }
 
-      final messageToSend = finalText.isEmpty
-          ? 'What is in this image?'
-          : finalText;
+      if (!isCodex && readyFiles.isNotEmpty) {
+        final filePaths = readyFiles.map((file) => '@${file.path}').join('\n');
+        finalText = finalText.isEmpty
+            ? filePaths
+            : '$filePaths\n\n$finalText';
+      }
+
+      final messageToSend = finalText.isNotEmpty
+          ? finalText
+          : readyFiles.isNotEmpty && images != null && images.isNotEmpty
+          ? 'Please review the attached files and images.'
+          : readyFiles.isNotEmpty
+          ? 'Please review the attached files.'
+          : 'What is in this image?';
       cubit.sendMessage(
         messageToSend,
         images: images,
         mentionablePaths: projectFiles,
+        additionalMentions: readyFiles.map(
+          (file) => {'name': file.filename, 'path': file.path!},
+        ),
       );
       inputController.clear();
       final draftService = context.read<DraftService>();
@@ -901,6 +1029,12 @@ class ChatInputWithOverlays extends HookWidget {
       }
     }
 
+    void clearFileAttachment(String id) {
+      attachedFiles.value = attachedFiles.value
+          .where((file) => file.id != id)
+          .toList(growable: false);
+    }
+
     void clearDiffSelection() {
       attachedDiffSelection.value = null;
       onDiffSelectionCleared?.call();
@@ -1005,7 +1139,10 @@ class ChatInputWithOverlays extends HookWidget {
           child: CompositedTransformTarget(
             link: layerLink,
             child: _wrapWithDropRegion(
-              enabled: isDesktopPlatform,
+              enabled: isDesktopPlatform || isIOSPlatform,
+              active: fileDropActive.value,
+              onActiveChanged: (active) => fileDropActive.value = active,
+              overlayLabel: dropCopy.releaseToAttach,
               onPerformDrop: handleDroppedItems,
               child: ChatInputBar(
                 inputController: inputController,
@@ -1014,6 +1151,10 @@ class ChatInputWithOverlays extends HookWidget {
                     !inputBlocked &&
                     (hasInputText.value ||
                         attachedImages.value.isNotEmpty ||
+                        attachedFiles.value.any(
+                          (file) =>
+                              file.status == ChatFileAttachmentStatus.ready,
+                        ) ||
                         attachedDiffSelection.value != null),
                 isInputEmpty: isInputEmpty.value,
                 isVoiceAvailable:
@@ -1036,6 +1177,8 @@ class ChatInputWithOverlays extends HookWidget {
                 onAttachImage: showAttachOptions,
                 attachedImages: attachedImages.value,
                 onClearImage: clearAttachment,
+                attachedFiles: attachedFiles.value,
+                onClearFile: clearFileAttachment,
                 attachedDiffSelection: attachedDiffSelection.value,
                 onClearDiffSelection: clearDiffSelection,
                 onTapDiffPreview: onOpenGitScreen != null
@@ -1061,23 +1204,115 @@ class ChatInputWithOverlays extends HookWidget {
 /// of images on desktop platforms.
 Widget _wrapWithDropRegion({
   required bool enabled,
+  required bool active,
+  required ValueChanged<bool> onActiveChanged,
+  required String overlayLabel,
   required Future<void> Function(PerformDropEvent) onPerformDrop,
   required Widget child,
 }) {
   if (!enabled) return child;
   return DropRegion(
-    formats: Formats.standardFormats,
+    formats: droppedFileFormats,
     hitTestBehavior: HitTestBehavior.opaque,
     onDropOver: (event) {
-      // Accept copy if any item has an image
-      final hasImage = event.session.items.any(
-        (item) => item.canProvide(Formats.png) || item.canProvide(Formats.jpeg),
-      );
-      return hasImage ? DropOperation.copy : DropOperation.none;
+      return dropSessionContainsFile(event.session)
+          ? DropOperation.copy
+          : DropOperation.none;
     },
+    onDropEnter: (event) =>
+        onActiveChanged(dropSessionContainsFile(event.session)),
+    onDropLeave: (_) => onActiveChanged(false),
+    onDropEnded: (_) => onActiveChanged(false),
     onPerformDrop: onPerformDrop,
-    child: child,
+    child: Stack(
+      fit: StackFit.passthrough,
+      children: [
+        child,
+        Positioned.fill(
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: active ? 1 : 0,
+              duration: const Duration(milliseconds: 140),
+              child: Container(
+                margin: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: Colors.deepPurple.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Colors.deepPurple.withValues(alpha: 0.72),
+                    width: 1.5,
+                  ),
+                ),
+                alignment: Alignment.center,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.file_upload_outlined, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      overlayLabel,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
   );
+}
+
+class _ComposerFileDropCopy {
+  const _ComposerFileDropCopy(this.zh);
+
+  final bool zh;
+
+  factory _ComposerFileDropCopy.of(BuildContext context) =>
+      _ComposerFileDropCopy(
+        Localizations.localeOf(context).languageCode == 'zh',
+      );
+
+  String get releaseToAttach =>
+      zh ? '松手添加到对话' : 'Release to attach to this conversation';
+  String get unableToRead =>
+      zh ? '无法读取拖入的文件。' : 'The dropped file could not be read.';
+  String get waitForUploads => zh
+      ? '请等待文件上传完成后再发送。'
+      : 'Wait for file uploads to finish before sending.';
+  String sentWithoutPath(String filename) => zh
+      ? '$filename 已发送到电脑；更新 Bridge 后可直接附加到会话。'
+      : '$filename was sent to the Mac. Update Bridge to attach it here.';
+  String paused(String filename) =>
+      zh ? '$filename 的传输已暂停。' : 'Transfer of $filename is paused.';
+  String uploadFailed(String filename) =>
+      zh ? '$filename 上传失败。' : '$filename could not be uploaded.';
+  String uploadFailedWithError(String filename, Object error) =>
+      '${uploadFailed(filename)} $error';
+  String unableToQueue(String filename, Object error) => zh
+      ? '$filename 无法加入传输：$error'
+      : '$filename could not be added to transfer: $error';
+}
+
+Future<Uint8List> _readInlineDroppedImage(DroppedFilePayload payload) async {
+  final expectedSize = payload.sizeBytes;
+  if (expectedSize == null || expectedSize > maxInlineDroppedImageBytes) {
+    throw StateError('inline_image_size_unknown');
+  }
+  final builder = BytesBuilder(copy: false);
+  var received = 0;
+  await for (final chunk in payload.bytes) {
+    received += chunk.length;
+    if (received > expectedSize || received > maxInlineDroppedImageBytes) {
+      throw StateError('inline_image_size_mismatch');
+    }
+    builder.add(chunk);
+  }
+  if (received != expectedSize) {
+    throw StateError('inline_image_size_mismatch');
+  }
+  return builder.takeBytes();
 }
 
 bool _isCompletionNextShortcut(KeyEvent event) {
