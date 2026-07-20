@@ -2628,6 +2628,7 @@ describe("CodexProcess (app-server)", () => {
 
   it("clears an acked admission on terminal events, start timeout, and stop", async () => {
     vi.useFakeTimers();
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-core-action-cleanup";
@@ -2636,14 +2637,18 @@ describe("CodexProcess (app-server)", () => {
     try {
       await proc.compactThread({ timeoutMs: 1 });
       expect(proc.hasPendingCoreAction).toBe(true);
+      const completedTimer = (proc as any).pendingCoreAction.startTimeout;
+      expect(completedTimer).toBeDefined();
       (proc as any).handleNotification("turn/completed", {
         threadId: "thread-core-action-cleanup",
         turn: { id: "turn-completed-early", status: "failed" },
       });
       expect(proc.hasPendingCoreAction).toBe(false);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(completedTimer);
 
       await proc.compactThread({ timeoutMs: 1 });
+      const expiredTimer = (proc as any).pendingCoreAction.startTimeout;
+      expect(expiredTimer).toBeDefined();
       await vi.advanceTimersByTimeAsync(14_999);
       expect(proc.hasPendingCoreAction).toBe(true);
       await vi.advanceTimersByTimeAsync(1);
@@ -2652,15 +2657,19 @@ describe("CodexProcess (app-server)", () => {
       expect(warning).toHaveBeenCalledWith(
         expect.stringContaining("within 15000ms"),
       );
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(expiredTimer);
 
       await proc.compactThread();
       expect(proc.hasPendingCoreAction).toBe(true);
+      const stoppedTimer = (proc as any).pendingCoreAction.startTimeout;
+      expect(stoppedTimer).toBeDefined();
       proc.stop();
       expect(proc.hasPendingCoreAction).toBe(false);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(stoppedTimer);
     } finally {
       proc.stop();
       warning.mockRestore();
+      clearTimeoutSpy.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -2809,6 +2818,7 @@ describe("CodexProcess (app-server)", () => {
 
   it("removes timed-out RPCs so late replies cannot poison later requests", async () => {
     vi.useFakeTimers();
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     const proc = new CodexProcess("linux");
     try {
       const child = new FakeChildProcess();
@@ -2822,12 +2832,15 @@ describe("CodexProcess (app-server)", () => {
         { timeoutMs: 25 },
       ) as Promise<unknown>;
       const firstRequest = nextOutgoingRequest(child);
+      const firstTimer = internal.pendingRpc.get(firstRequest.id)?.timeout;
+      expect(firstTimer).toBeDefined();
       const firstRejection = expect(firstPromise).rejects.toThrow(
         "account/rateLimits/read timed out after 25ms",
       );
       await vi.advanceTimersByTimeAsync(25);
       await firstRejection;
       expect(internal.pendingRpc.size).toBe(0);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(firstTimer);
 
       internal.handleRpcResponse({
         id: firstRequest.id,
@@ -2841,15 +2854,18 @@ describe("CodexProcess (app-server)", () => {
         { timeoutMs: 25 },
       ) as Promise<unknown>;
       const secondRequest = nextOutgoingRequest(child);
+      const secondTimer = internal.pendingRpc.get(secondRequest.id)?.timeout;
+      expect(secondTimer).toBeDefined();
       internal.handleRpcResponse({
         id: secondRequest.id,
         result: { data: [] },
       });
       await expect(secondPromise).resolves.toEqual({ data: [] });
       expect(internal.pendingRpc.size).toBe(0);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(secondTimer);
     } finally {
       proc.stop();
+      clearTimeoutSpy.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -2887,6 +2903,7 @@ describe("CodexProcess (app-server)", () => {
 
   it("stops initialize-only runtimes and clears pending RPCs on timeout", async () => {
     vi.useFakeTimers();
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     const proc = new CodexProcess("linux");
     try {
       const initializePromise = proc.initializeOnly(
@@ -2895,7 +2912,12 @@ describe("CodexProcess (app-server)", () => {
       );
       const child = fakeChildren[0];
       await tick();
-      expect(nextOutgoingRequest(child).method).toBe("initialize");
+      const initializeRequest = nextOutgoingRequest(child);
+      expect(initializeRequest.method).toBe("initialize");
+      const initializeTimer = (proc as any).pendingRpc.get(
+        initializeRequest.id,
+      )?.timeout;
+      expect(initializeTimer).toBeDefined();
 
       const rejection = expect(initializePromise).rejects.toThrow(
         "initialize timed out after 25ms",
@@ -2905,9 +2927,10 @@ describe("CodexProcess (app-server)", () => {
 
       expect(child.killed).toBe(true);
       expect((proc as any).pendingRpc.size).toBe(0);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(initializeTimer);
     } finally {
       proc.stop();
+      clearTimeoutSpy.mockRestore();
       vi.useRealTimers();
     }
   });

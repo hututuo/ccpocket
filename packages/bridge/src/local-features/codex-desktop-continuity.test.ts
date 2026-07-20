@@ -1642,7 +1642,12 @@ describe("CodexDesktopContinuityHandler", () => {
       action: "queue",
       reason: "desktop_history_refreshing",
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.waitFor(() =>
+      expect(drainQueuedInput).toHaveBeenCalledWith(
+        "runtime-1",
+        expect.any(Function),
+      ),
+    );
     expect(sent).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1656,10 +1661,6 @@ describe("CodexDesktopContinuityHandler", () => {
     expect(rehydrate).toHaveBeenCalledWith(
       "runtime-1",
       "thread-1",
-      expect.any(Function),
-    );
-    expect(drainQueuedInput).toHaveBeenCalledWith(
-      "runtime-1",
       expect.any(Function),
     );
     expect(
