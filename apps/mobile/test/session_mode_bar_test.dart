@@ -8,6 +8,7 @@ import 'package:ccpocket/features/chat_session/widgets/session_mode_bar.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
+import 'package:ccpocket/widgets/claude_effort_motion_style.dart';
 import 'package:ccpocket/widgets/codex_effort_motion.dart';
 import 'package:ccpocket/widgets/codex_effort_slider.dart';
 import 'package:flutter/material.dart';
@@ -124,6 +125,16 @@ class _MockBridgeService extends BridgeService {
   }
 }
 
+Future<void> _pumpWhileEffortIonsRun(
+  WidgetTester tester, {
+  Duration duration = const Duration(milliseconds: 400),
+}) async {
+  // Build state created by the interaction before advancing its animation.
+  // pumpAndSettle is intentionally invalid while a high-tier ion ticker runs.
+  await tester.pump();
+  await tester.pump(duration);
+}
+
 Widget _wrap(
   ChatSessionCubit cubit, {
   bool showExtendedCodexEfforts = false,
@@ -186,7 +197,10 @@ void main() {
       ),
     );
 
-    expect(find.byKey(const ValueKey('test_context_ring_slot')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('test_context_ring_slot')),
+      findsOneWidget,
+    );
     expect(find.byType(VerticalDivider), findsNWidgets(2));
   });
 
@@ -228,16 +242,13 @@ void main() {
     ];
 
     expect(codexQuickEfforts(available).last, ReasoningEffort.xhigh);
-    expect(
-      codexQuickEfforts(available, current: ReasoningEffort.ultra),
-      [
-        ReasoningEffort.low,
-        ReasoningEffort.medium,
-        ReasoningEffort.high,
-        ReasoningEffort.xhigh,
-        ReasoningEffort.ultra,
-      ],
-    );
+    expect(codexQuickEfforts(available, current: ReasoningEffort.ultra), [
+      ReasoningEffort.low,
+      ReasoningEffort.medium,
+      ReasoningEffort.high,
+      ReasoningEffort.xhigh,
+      ReasoningEffort.ultra,
+    ]);
     expect(
       codexQuickEfforts(available, includeExtended: true),
       containsAllInOrder([ReasoningEffort.max, ReasoningEffort.ultra]),
@@ -258,7 +269,12 @@ void main() {
     final slider = find.byKey(const ValueKey('codex_effort_slider'));
     final sliderRect = tester.getRect(slider);
     await tester.tapAt(Offset(sliderRect.right - 8, sliderRect.center.dy));
-    await tester.pumpAndSettle();
+    await _pumpWhileEffortIonsRun(
+      tester,
+      duration:
+          ClaudeEffortMotionTokens.ultraRevealDuration +
+          const Duration(milliseconds: 20),
+    );
 
     expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
     expect(
@@ -419,7 +435,14 @@ void main() {
     final slider = tester.widget<CodexEffortMotionSlider>(
       find.byType(CodexEffortMotionSlider),
     );
-    expect(slider.labels, ['light', 'medium', 'high', 'x-high', 'max', 'ultra']);
+    expect(slider.labels, [
+      'light',
+      'medium',
+      'high',
+      'x-high',
+      'max',
+      'ultra',
+    ]);
     expect(slider.selectedIndex, 2);
     expect(slider.maxIndex, 4);
     expect(slider.ultraIndex, 5);
@@ -462,7 +485,12 @@ void main() {
     );
 
     slider.onSelected(5);
-    await tester.pumpAndSettle();
+    await _pumpWhileEffortIonsRun(
+      tester,
+      duration:
+          ClaudeEffortMotionTokens.ultraRevealDuration +
+          const Duration(milliseconds: 20),
+    );
     expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
     expect(
       _decode(bridge.sentMessages.last),
@@ -525,7 +553,8 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const ValueKey('codex_settings_advanced')));
-    await tester.pumpAndSettle();
+    // Returning to the Ultra quick panel restarts its persistent ion ticker.
+    await _pumpWhileEffortIonsRun(tester);
     expect(
       find.byKey(const ValueKey('codex_settings_quick_panel')),
       findsOneWidget,
@@ -639,9 +668,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('flex (read-only)'), findsOneWidget);
 
-    Navigator.of(
-      tester.element(find.text('flex (read-only)')),
-    ).pop();
+    Navigator.of(tester.element(find.text('flex (read-only)'))).pop();
     await tester.pumpAndSettle();
     bridge.emitServiceTier(null);
     await tester.pumpAndSettle();
@@ -662,8 +689,15 @@ void main() {
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.tap(find.text('5.6 Sol x-high'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('codex_settings_advanced')));
+    // The selected high tier intentionally keeps its pixel-ion ticker alive.
+    // Pump only through the panel transition instead of waiting for quiescence.
+    await _pumpWhileEffortIonsRun(tester);
+    final advancedButton = find.byKey(
+      const ValueKey('codex_settings_advanced'),
+    );
+    await tester.ensureVisible(advancedButton);
+    await tester.pump();
+    await tester.tap(advancedButton);
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('codex_model_advanced')));
     await tester.pumpAndSettle();

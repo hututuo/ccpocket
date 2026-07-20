@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import 'claude_effort_motion_style.dart';
@@ -79,6 +80,18 @@ bool _selectsSemanticIndex(CodexEffortMotionSlider widget, int? semanticIndex) {
       semanticIndex;
 }
 
+ClaudeEffortAccent _accentForWidget(CodexEffortMotionSlider widget) {
+  final selected = widget.labels.isEmpty
+      ? 0
+      : widget.selectedIndex.clamp(0, widget.labels.length - 1);
+  return ClaudeEffortMotionTokens.accentForIndex(
+    selectedIndex: selected,
+    xHighIndex: widget.xHighIndex,
+    maxIndex: widget.maxIndex,
+    ultraIndex: widget.ultraIndex,
+  );
+}
+
 enum _EffortMotion {
   idle,
   move,
@@ -91,8 +104,370 @@ enum _EffortMotion {
   thumb,
 }
 
+@visibleForTesting
+int get codexEffortPixelCellCapacity =>
+    ClaudeEffortMotionTokens.pixelColumns *
+    ClaudeEffortMotionTokens.maxPixelRows;
+
+class _EffortPixelFieldState {
+  static const int _columns = ClaudeEffortMotionTokens.pixelColumns;
+  static const int _rows = ClaudeEffortMotionTokens.maxPixelRows;
+
+  ClaudeEffortAccent accent = ClaudeEffortAccent.standard;
+  double elapsed = 0;
+  double opacity = 0;
+  double anchorX = 0;
+  double reach = 0;
+  double _reachFrom = 0;
+  double _reachTo = 0;
+  double _reachTransitionElapsed = 0;
+  double _reachTransitionDuration = 0.01;
+  double _reachCellDelay = 0;
+  List<double> _energy = List<double>.filled(
+    codexEffortPixelCellCapacity,
+    0,
+    growable: false,
+  );
+  List<double> _nextEnergy = List<double>.filled(
+    codexEffortPixelCellCapacity,
+    0,
+    growable: false,
+  );
+
+  List<double> get energy => _energy;
+
+  int get litCellCount => _energy.where((value) => value > 0.045).length;
+
+  double columnEnergy(int column) {
+    assert(column >= 0 && column < _columns);
+    var total = 0.0;
+    for (var row = 0; row < _rows; row++) {
+      total += _energy[column * _rows + row];
+    }
+    return total / _rows;
+  }
+
+  int farthestColumnAbove(double threshold) {
+    for (var column = _columns - 1; column >= 0; column--) {
+      for (var row = 0; row < _rows; row++) {
+        if (_energy[column * _rows + row] > threshold) return column;
+      }
+    }
+    return -1;
+  }
+
+  int columnCountAbove(double threshold) {
+    var result = 0;
+    for (var column = 0; column < _columns; column++) {
+      var strong = false;
+      for (var row = 0; row < _rows; row++) {
+        if (_energy[column * _rows + row] > threshold) {
+          strong = true;
+          break;
+        }
+      }
+      if (strong) result += 1;
+    }
+    return result;
+  }
+
+  int get litRowCount {
+    var result = 0;
+    for (var row = 0; row < _rows; row++) {
+      var lit = false;
+      for (var column = 0; column < _columns; column++) {
+        if (_energy[column * _rows + row] > 0.045) {
+          lit = true;
+          break;
+        }
+      }
+      if (lit) result += 1;
+    }
+    return result;
+  }
+
+  double get energyChecksum {
+    var result = 0.0;
+    for (var index = 0; index < _energy.length; index++) {
+      result += _energy[index] * (index + 1);
+    }
+    return result;
+  }
+
+  double energyAt(int column, int row) {
+    assert(column >= 0 && column < _columns);
+    assert(row >= 0 && row < _rows);
+    return _energy[column * _rows + row];
+  }
+
+  void activate(ClaudeEffortAccent nextAccent, {required bool restart}) {
+    if (accent == nextAccent && !restart) return;
+    final wasVisible = accent != ClaudeEffortAccent.standard && opacity > 0.001;
+    if (!wasVisible) {
+      elapsed = 0;
+      reach = 0;
+    }
+    _reachFrom = reach;
+    _reachTo = ClaudeEffortMotionTokens.pixelReach(nextAccent);
+    _reachTransitionElapsed = 0;
+    _reachTransitionDuration = wasVisible
+        ? 0.36
+        : ClaudeEffortMotionTokens.pixelGrowthSeconds(nextAccent);
+    _reachCellDelay = wasVisible
+        ? 0.18
+        : ClaudeEffortMotionTokens.pixelCellDelaySeconds(nextAccent);
+    accent = nextAccent;
+  }
+
+  void settleInitial(ClaudeEffortAccent initialAccent) {
+    accent = initialAccent;
+    elapsed = ClaudeEffortMotionTokens.pixelGrowthSeconds(initialAccent);
+    opacity = 1;
+    reach = ClaudeEffortMotionTokens.pixelReach(initialAccent);
+    _reachFrom = reach;
+    _reachTo = reach;
+    _reachCellDelay = ClaudeEffortMotionTokens.pixelCellDelaySeconds(
+      initialAccent,
+    );
+    _reachTransitionElapsed = _reachTransitionDuration + _reachCellDelay;
+    _primeSettledField();
+  }
+
+  void advanceReach(double deltaSeconds) {
+    _reachTransitionElapsed = math.min(
+      _reachTransitionDuration + _reachCellDelay,
+      _reachTransitionElapsed + deltaSeconds,
+    );
+    final progress = _reachTransitionDuration <= 0
+        ? 1.0
+        : _clampUnit(_reachTransitionElapsed / _reachTransitionDuration);
+    final eased = math.pow(progress, 0.72).toDouble();
+    reach = lerpDouble(_reachFrom, _reachTo, eased)!;
+  }
+
+  void advanceEnergy(double deltaSeconds) {
+    final activeRows = ClaudeEffortMotionTokens.pixelRows(accent);
+    final density = ClaudeEffortMotionTokens.pixelDensity(accent);
+    final flow = ClaudeEffortMotionTokens.pixelFlowSpeed(accent);
+    // Retain enough of the previous frame to resemble the reference's
+    // feedback texture, but always blend back toward the current target. The
+    // old max(previous, target) rule latched bright pixels indefinitely and
+    // made the trail look like a static bitmap.
+    final feedbackRetention = math.pow(0.88, deltaSeconds * 30).toDouble();
+    final targetResponse = 1 - feedbackRetention;
+    final safeReach = math.max(0.001, reach);
+    final frontIsMoving =
+        _reachTransitionElapsed < _reachTransitionDuration + _reachCellDelay;
+
+    for (var column = 0; column < _columns; column++) {
+      final distance = (column + 0.5) / _columns;
+      for (var row = 0; row < _rows; row++) {
+        final index = column * _rows + row;
+        final previous = _energy[index];
+        final seedA = ClaudeEffortMotionTokens.pixelSeed(column, row);
+        final seedB = ClaudeEffortMotionTokens.pixelSeed(column + 97, row + 43);
+        final seedC = ClaudeEffortMotionTokens.pixelSeed(
+          column + 211,
+          row + 131,
+        );
+        final cellDelay = seedA * _reachCellDelay;
+        final cellElapsed = math.max(0.0, _reachTransitionElapsed - cellDelay);
+        final cellProgress = _reachTransitionDuration <= 0
+            ? 1.0
+            : _clampUnit(cellElapsed / _reachTransitionDuration);
+        final cellEasingPower = 0.64 + seedB * 0.20;
+        final cellReach = lerpDouble(
+          _reachFrom,
+          _reachTo,
+          math.pow(cellProgress, cellEasingPower).toDouble(),
+        )!;
+        if (row >= activeRows || distance > cellReach) {
+          final faded = previous * feedbackRetention;
+          _nextEnergy[index] = faded < 0.004 ? 0 : faded;
+          continue;
+        }
+
+        final proximity = _clampUnit(1 - distance / safeReach);
+        final frequencySeed = ClaudeEffortMotionTokens.pixelSeed(row + 17, 257);
+        final speedSeed = ClaudeEffortMotionTokens.pixelSeed(row + 41, 409);
+        final phaseSeed = ClaudeEffortMotionTokens.pixelRowPhase(row);
+        final phaseA =
+            elapsed * (0.58 + seedA * 0.66) +
+            seedB * math.pi * 2 +
+            seedC * 1.73;
+        final phaseB =
+            elapsed * (0.23 + seedB * 0.43) +
+            seedC * math.pi * 2 +
+            seedA * 4.31;
+        final pulseA = 0.5 + math.sin(phaseA) * 0.5;
+        final pulseB = 0.5 + math.sin(phaseB) * 0.5;
+        final independentFlicker = _clampUnit(pulseA * 0.64 + pulseB * 0.36);
+
+        // Per-row phase and per-cell jitter keep this outward-moving front
+        // from collapsing into one diagonal bright line.
+        final travelWave = ClaudeEffortMotionTokens.pixelTravelWave(
+          distance: distance,
+          elapsed: elapsed,
+          flow: flow,
+          frequencySeed: frequencySeed,
+          speedSeed: speedSeed,
+          phaseSeed: phaseSeed,
+          cellSeed: seedA,
+        );
+        final secondaryFrequencySeed = ClaudeEffortMotionTokens.pixelSeed(
+          row + 61,
+          613,
+        );
+        final secondarySpeedSeed = ClaudeEffortMotionTokens.pixelSeed(
+          row + 113,
+          821,
+        );
+        final secondaryWave = ClaudeEffortMotionTokens.pixelTravelWave(
+          distance: _clampUnit(distance * 0.86 + 0.06),
+          elapsed: elapsed * 0.73,
+          flow: flow * 0.86,
+          frequencySeed: secondaryFrequencySeed,
+          speedSeed: secondarySpeedSeed,
+          phaseSeed: ClaudeEffortMotionTokens.pixelRowPhase(
+            row,
+            secondary: true,
+          ),
+          cellSeed: seedC,
+        );
+        final flowWave = math.max(travelWave, secondaryWave * 0.42);
+        final turbulence = _clampUnit(
+          0.46 +
+              math.sin(phaseA) * 0.22 +
+              math.sin(phaseB) * 0.16 +
+              (flowWave - 0.35) * 0.24,
+        );
+
+        final gatePulse =
+            0.5 +
+            math.sin(elapsed * (0.31 + seedA * 0.49) + seedC * math.pi * 2) *
+                0.5;
+        final animatedGate = seedB * 0.56 + gatePulse * 0.44;
+        final visibility =
+            density * (0.34 + proximity * 0.68) +
+            (independentFlicker - 0.5) * 0.24 +
+            flowWave * 0.15;
+        final visible = animatedGate < visibility;
+
+        final frontGap = (cellReach - distance).abs();
+        final frontFlash = frontIsMoving
+            ? math.exp(-math.pow(frontGap / 0.046, 2)) * (0.32 + seedA * 0.48)
+            : 0.0;
+        final sparkCycle =
+            (elapsed * (0.080 + seedA * 0.052) + seedC * 13.7) % 1.0;
+        final spark = sparkCycle < 0.028 && seedA > 0.57
+            ? math.pow(1 - sparkCycle / 0.028, 2).toDouble() * 0.72
+            : 0.0;
+        final core =
+            math.exp(-distance * 24) * (0.70 + independentFlicker * 0.38);
+        final randomTarget = visible
+            ? _clampUnit(
+                (0.05 + proximity * 0.34 + turbulence * 0.20 + core) *
+                    (0.48 + independentFlicker * 0.62) *
+                    (0.35 + proximity * 0.65),
+              )
+            : 0.0;
+        // The traveling structure must remain visible across the whole active
+        // reach. Random per-cell flicker modulates it, but no longer decides
+        // whether the flow exists at all.
+        final flowTarget = _clampUnit(
+          flowWave *
+              (0.44 + density * 0.44) *
+              (0.80 + proximity * 0.20) *
+              (0.88 + independentFlicker * 0.18),
+        );
+        final localTarget = _clampUnit(
+          math.max(randomTarget, flowTarget) + frontFlash + spark,
+        );
+
+        // Feed a bounded amount of the previous column into this one. Columns
+        // increase away from the thumb, so this is a real outward advection
+        // path rather than a globally synchronized alpha pulse.
+        var advected = 0.0;
+        if (column > 0) {
+          final upstream = _energy[(column - 1) * _rows + row];
+          final neighbourRow = seedC < 0.5
+              ? math.max(0, row - 1)
+              : math.min(activeRows - 1, row + 1);
+          final neighbour = _energy[(column - 1) * _rows + neighbourRow];
+          final upstreamEnergy = math.max(upstream, neighbour * 0.58);
+          advected =
+              upstreamEnergy * (0.55 + flowWave * 0.28) * (0.80 + flow * 0.22);
+        }
+        final target = math.max(localTarget, advected);
+        final smoothed = previous * feedbackRetention + target * targetResponse;
+        // Front/spark impulses may appear immediately, but the next frame goes
+        // back through feedback decay so they cannot latch permanently.
+        final impulse = math.max(frontFlash * 0.82, spark);
+        final next = _clampUnit(math.max(smoothed, impulse));
+        _nextEnergy[index] = next < 0.004 ? 0 : next;
+      }
+    }
+
+    final oldEnergy = _energy;
+    _energy = _nextEnergy;
+    _nextEnergy = oldEnergy;
+  }
+
+  void decayEnergy(double deltaSeconds) {
+    final decay = math.pow(0.78, deltaSeconds * 30).toDouble();
+    for (var index = 0; index < _energy.length; index++) {
+      final value = _energy[index] * decay;
+      _energy[index] = value < 0.004 ? 0 : value;
+    }
+  }
+
+  void _primeSettledField() {
+    final activeRows = ClaudeEffortMotionTokens.pixelRows(accent);
+    final density = ClaudeEffortMotionTokens.pixelDensity(accent);
+    for (var column = 0; column < _columns; column++) {
+      final distance = (column + 0.5) / _columns;
+      final proximity = _clampUnit(1 - distance / math.max(0.001, reach));
+      for (var row = 0; row < _rows; row++) {
+        final index = column * _rows + row;
+        final seed = ClaudeEffortMotionTokens.pixelSeed(column, row);
+        final secondary = ClaudeEffortMotionTokens.pixelSeed(
+          column + 97,
+          row + 43,
+        );
+        final visible =
+            row < activeRows &&
+            distance <= reach + (seed - 0.5) * 0.035 &&
+            secondary < density * (0.42 + proximity * 0.70);
+        _energy[index] = visible
+            ? _clampUnit(0.16 + proximity * 0.63 + seed * 0.21)
+            : 0;
+      }
+    }
+  }
+
+  void clear() {
+    accent = ClaudeEffortAccent.standard;
+    elapsed = 0;
+    opacity = 0;
+    reach = 0;
+    _reachFrom = 0;
+    _reachTo = 0;
+    _reachTransitionElapsed = 0;
+    _reachTransitionDuration = 0.01;
+    _reachCellDelay = 0;
+    _energy.fillRange(0, _energy.length, 0);
+    _nextEnergy.fillRange(0, _nextEnergy.length, 0);
+  }
+}
+
+class _PixelFieldRepaint extends ChangeNotifier {
+  void markNeedsPaint() => notifyListeners();
+}
+
 /// A discrete, self-painted effort slider modelled after the Codex Desktop
-/// control. It owns one finite [AnimationController]; no animation repeats.
+/// control. Tier transitions use one finite [AnimationController]. A separate
+/// 30 fps ticker drives a deterministic fixed-grid pixel fire only while a
+/// high tier is visible; it never allocates particle state per frame.
 class CodexEffortMotionSlider extends StatefulWidget {
   final List<String> labels;
   final int selectedIndex;
@@ -121,9 +496,12 @@ class CodexEffortMotionSlider extends StatefulWidget {
 }
 
 class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _controller;
+  late final Ticker _pixelTicker;
   late final FocusNode _focusNode;
+  final _PixelFieldRepaint _pixelRepaint = _PixelFieldRepaint();
+  final _EffortPixelFieldState _pixelField = _EffortPixelFieldState();
   _EffortMotion _motion = _EffortMotion.idle;
   double _fromPosition = 0;
   double _toPosition = 0;
@@ -137,10 +515,15 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   bool _hovered = false;
   bool _showFocus = false;
   bool _reduceMotion = false;
+  bool _tickerModeEnabled = true;
+  bool? _pendingFastAfterTierReveal;
+  int _animationGeneration = 0;
   int? _locallyRequestedIndex;
   int? _dragStartedIndex;
   int? _dragLastEmittedIndex;
-  bool _didScheduleInitialTierReveal = false;
+  Duration? _lastPixelTick;
+  double _sliderWidth = 0;
+  TextDirection _sliderDirection = TextDirection.ltr;
 
   int get _count => widget.labels.length;
 
@@ -163,41 +546,54 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     _toPosition = initial;
     _fromFast = widget.fastModeEnabled ? 1 : 0;
     _toFast = _fromFast;
+    final initialAccent = _accentForWidget(widget);
+    if (initialAccent != ClaudeEffortAccent.standard) {
+      _pixelField.settleInitial(initialAccent);
+    }
     _controller = AnimationController(
       vsync: this,
       value: 1,
       duration: const Duration(milliseconds: 300),
     );
+    _pixelTicker = createTicker(_onPixelTick);
     _focusNode = FocusNode(debugLabel: '${widget.sliderKey}.focus');
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final nextTickerModeEnabled = TickerMode.valuesOf(context).enabled;
+    if (nextTickerModeEnabled != _tickerModeEnabled) {
+      _tickerModeEnabled = nextTickerModeEnabled;
+      _lastPixelTick = null;
+    }
     final next = codexMotionDisabled(context);
     final changed = next != _reduceMotion;
     _reduceMotion = next;
     if (changed && next && _controller.isAnimating) {
+      _pendingFastAfterTierReveal = null;
+      _animationGeneration += 1;
       _controller.stop();
       _controller.value = 1;
       _motion = _EffortMotion.idle;
     }
-    if (_didScheduleInitialTierReveal) return;
-    _didScheduleInitialTierReveal = true;
-    final accent = _accentForIndex(_selectedIndex);
-    if (next || accent == ClaudeEffortAccent.standard) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _controller.isAnimating) return;
-      _animateTo(
-        _normalizedIndex(_selectedIndex, _count),
-        revealAccent: accent,
-      );
-    });
+    if (next) {
+      _clearPixelField();
+    } else {
+      _syncPixelTicker();
+    }
   }
 
   @override
   void didUpdateWidget(CodexEffortMotionSlider oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final previousAccent = _accentForWidget(oldWidget);
+    final currentAccent = _accentForWidget(widget);
+    _syncPixelTicker(
+      restart:
+          currentAccent != ClaudeEffortAccent.standard &&
+          currentAccent != previousAccent,
+    );
     final next = _normalizedIndex(_selectedIndex, _count);
     final enteringXHigh =
         _selectsSemanticIndex(widget, widget.xHighIndex) &&
@@ -215,13 +611,14 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
       _toFast = widget.fastModeEnabled ? 1 : 0;
       return;
     }
-    final preservesLocalTierReveal =
-        acknowledged &&
-        (_toPosition - next).abs() < 0.0001 &&
-        ((enteringXHigh && _motion == _EffortMotion.xHighReveal) ||
-            (enteringMax && _motion == _EffortMotion.maxReveal) ||
-            (enteringUltra && _motion == _EffortMotion.ultraReveal));
-    if (preservesLocalTierReveal) return;
+    final acknowledgesLocalPosition =
+        acknowledged && (_toPosition - next).abs() < 0.0001;
+    if (acknowledgesLocalPosition) {
+      if (oldWidget.fastModeEnabled != widget.fastModeEnabled) {
+        _applyFastModeChange(widget.fastModeEnabled);
+      }
+      return;
+    }
     if (enteringXHigh || enteringMax || enteringUltra) {
       _animateTo(
         next,
@@ -235,12 +632,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     }
     if (oldWidget.fastModeEnabled != widget.fastModeEnabled &&
         (next - _toPosition).abs() < 0.0001) {
-      _animateFastTo(widget.fastModeEnabled);
-      return;
-    }
-    if (acknowledged &&
-        (_toPosition - next).abs() < 0.0001 &&
-        oldWidget.fastModeEnabled == widget.fastModeEnabled) {
+      _applyFastModeChange(widget.fastModeEnabled);
       return;
     }
     if ((next - _toPosition).abs() < 0.0001 &&
@@ -252,9 +644,105 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
 
   @override
   void dispose() {
+    _pixelTicker.dispose();
+    _pixelRepaint.dispose();
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  bool get _shouldAnimatePixelField =>
+      !_reduceMotion &&
+      _sliderWidth > 0 &&
+      _accentForIndex(_selectedIndex) != ClaudeEffortAccent.standard;
+
+  void _syncPixelTicker({bool restart = false}) {
+    if (_reduceMotion) {
+      _clearPixelField();
+      return;
+    }
+    if (!_shouldAnimatePixelField && _pixelField.opacity <= 0.001) {
+      if (_pixelTicker.isActive) _pixelTicker.stop();
+      _lastPixelTick = null;
+      return;
+    }
+    if (_shouldAnimatePixelField) {
+      final accent = _accentForIndex(_selectedIndex);
+      final shouldRestart = restart || _pixelField.accent != accent;
+      _pixelField.activate(accent, restart: shouldRestart);
+      _updatePixelAnchor();
+      if (_pixelField.opacity <= 0.001) _pixelField.opacity = 0.14;
+      _pixelRepaint.markNeedsPaint();
+    }
+    if (!_pixelTicker.isActive) {
+      _lastPixelTick = Duration.zero;
+      _pixelTicker.start();
+    }
+  }
+
+  void _clearPixelField() {
+    final changed = _pixelField.opacity > 0.001;
+    _pixelField.clear();
+    _lastPixelTick = null;
+    if (_pixelTicker.isActive) _pixelTicker.stop();
+    if (changed) _pixelRepaint.markNeedsPaint();
+  }
+
+  void _onPixelTick(Duration elapsed) {
+    final previous = _lastPixelTick;
+    if (previous == null) {
+      _lastPixelTick = elapsed;
+      return;
+    }
+    final micros = (elapsed - previous).inMicroseconds;
+    if (micros < ClaudeEffortMotionTokens.pixelFrameInterval.inMicroseconds) {
+      return;
+    }
+    _lastPixelTick = elapsed;
+    final elapsedSeconds = (micros / Duration.microsecondsPerSecond)
+        .clamp(0.0, 1.0)
+        .toDouble();
+    if (_shouldAnimatePixelField) {
+      final accent = _accentForIndex(_selectedIndex);
+      if (_pixelField.accent != accent) {
+        _pixelField.activate(accent, restart: true);
+      }
+      _updatePixelAnchor();
+      _pixelField.elapsed += elapsedSeconds;
+      _pixelField.advanceReach(elapsedSeconds);
+      _pixelField.advanceEnergy(elapsedSeconds);
+      _pixelField.opacity = math.min(
+        1,
+        _pixelField.opacity + elapsedSeconds / 0.22,
+      );
+    } else {
+      _pixelField.elapsed += elapsedSeconds.clamp(0.0, 0.05).toDouble();
+      _pixelField.decayEnergy(elapsedSeconds);
+      final fadeSeconds =
+          ClaudeEffortMotionTokens.pixelFadeOutDuration.inMicroseconds /
+          Duration.microsecondsPerSecond;
+      _pixelField.opacity = math.max(
+        0,
+        _pixelField.opacity - elapsedSeconds / fadeSeconds,
+      );
+    }
+
+    _pixelRepaint.markNeedsPaint();
+    if (!_shouldAnimatePixelField && _pixelField.opacity <= 0.001) {
+      _pixelField.clear();
+      _pixelTicker.stop();
+      _lastPixelTick = null;
+    }
+  }
+
+  void _updatePixelAnchor() {
+    if (_sliderWidth <= 0) return;
+    final position = _positionAt(_controller.value);
+    final thumbX = _positionX(position, _sliderWidth, _sliderDirection);
+    final innerThumbEdge = CodexEffortMotionMetrics.thumbDiameter / 2 - 2;
+    _pixelField.anchorX = _sliderDirection == TextDirection.rtl
+        ? thumbX + innerThumbEdge
+        : thumbX - innerThumbEdge;
   }
 
   double _positionAt(double phase) {
@@ -309,6 +797,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     ClaudeEffortAccent? revealAccent,
     bool fromDrag = false,
   }) {
+    _pendingFastAfterTierReveal = null;
+    final generation = ++_animationGeneration;
     final currentPosition = _positionAt(_controller.value);
     final currentThumb = _thumbAt(_controller.value);
     final currentFast = _fastAt(_controller.value);
@@ -345,12 +835,38 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     );
     setState(() {});
     _controller.forward(from: 0).whenCompleteOrCancel(() {
-      if (!mounted || _controller.isAnimating) return;
+      if (!mounted ||
+          generation != _animationGeneration ||
+          _controller.isAnimating) {
+        return;
+      }
+      final pendingFast = _pendingFastAfterTierReveal;
+      _pendingFastAfterTierReveal = null;
+      if (pendingFast != null && (_toFast >= 0.5) != pendingFast) {
+        _animateFastTo(pendingFast);
+        return;
+      }
       setState(() => _motion = _EffortMotion.idle);
     });
   }
 
+  bool get _tierRevealInFlight =>
+      _controller.isAnimating &&
+      (_motion == _EffortMotion.xHighReveal ||
+          _motion == _EffortMotion.maxReveal ||
+          _motion == _EffortMotion.ultraReveal);
+
+  void _applyFastModeChange(bool enabled) {
+    if (_tierRevealInFlight) {
+      _pendingFastAfterTierReveal = enabled;
+      return;
+    }
+    _animateFastTo(enabled);
+  }
+
   void _animateFastTo(bool enabled) {
+    _pendingFastAfterTierReveal = null;
+    final generation = ++_animationGeneration;
     final currentPosition = _positionAt(_controller.value);
     final targetPosition = _toPosition;
     final currentThumb = _thumbAt(_controller.value);
@@ -374,7 +890,11 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
         : const Duration(milliseconds: 350);
     setState(() {});
     _controller.forward(from: 0).whenCompleteOrCancel(() {
-      if (!mounted || _controller.isAnimating) return;
+      if (!mounted ||
+          generation != _animationGeneration ||
+          _controller.isAnimating) {
+        return;
+      }
       setState(() => _motion = _EffortMotion.idle);
     });
   }
@@ -390,6 +910,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
       setState(() => _toThumb = target);
       return;
     }
+    final generation = ++_animationGeneration;
     final currentPosition = _positionAt(_controller.value);
     final currentThumb = _thumbAt(_controller.value);
     final currentFast = _fastAt(_controller.value);
@@ -409,7 +930,11 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     _controller.duration = duration;
     setState(() {});
     _controller.forward(from: 0).whenCompleteOrCancel(() {
-      if (!mounted || _controller.isAnimating) return;
+      if (!mounted ||
+          generation != _animationGeneration ||
+          _controller.isAnimating) {
+        return;
+      }
       setState(() => _motion = _EffortMotion.idle);
     });
   }
@@ -465,6 +990,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   }
 
   void _startDrag(double position) {
+    _animationGeneration += 1;
+    _pendingFastAfterTierReveal = null;
     _controller.stop();
     _motion = _EffortMotion.drag;
     _pressed = true;
@@ -625,6 +1152,13 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
             final width = constraints.maxWidth.isFinite
                 ? constraints.maxWidth
                 : 240.0;
+            _sliderWidth = width;
+            _sliderDirection = direction;
+            if (_shouldAnimatePixelField && !_pixelTicker.isActive) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _syncPixelTicker();
+              });
+            }
             return GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTapDown: enabled ? (_) => _beginPress() : null,
@@ -686,6 +1220,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
                       toFast: _toFast,
                       maxPositionInterval: _maxPositionInterval,
                       maxThumbInterval: _maxThumbInterval,
+                      pixelField: _pixelField,
+                      pixelRepaint: _pixelRepaint,
                       divisions: math.max(0, _count - 1),
                       direction: direction,
                       focused: _showFocus,
@@ -741,6 +1277,8 @@ class _CodexEffortTrackPainter extends CustomPainter {
   final double toFast;
   final double maxPositionInterval;
   final double maxThumbInterval;
+  final _EffortPixelFieldState pixelField;
+  final Listenable pixelRepaint;
   final int divisions;
   final TextDirection direction;
   final bool focused;
@@ -767,6 +1305,8 @@ class _CodexEffortTrackPainter extends CustomPainter {
     required this.toFast,
     required this.maxPositionInterval,
     required this.maxThumbInterval,
+    required this.pixelField,
+    required this.pixelRepaint,
     required this.divisions,
     required this.direction,
     required this.focused,
@@ -781,7 +1321,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
     required this.tick,
     required this.outline,
     required this.purple,
-  }) : super(repaint: animation);
+  }) : super(repaint: Listenable.merge(<Listenable>[animation, pixelRepaint]));
 
   @visibleForTesting
   bool get debugUsesSolidActivePaint =>
@@ -895,33 +1435,90 @@ class _CodexEffortTrackPainter extends CustomPainter {
       motion == _EffortMotion.maxReveal ||
       motion == _EffortMotion.ultraReveal;
 
-  double _movePhase(double phase) {
-    if (motion == _EffortMotion.drag ||
-        motion == _EffortMotion.idle ||
-        motion == _EffortMotion.thumb) {
-      return 1;
+  @visibleForTesting
+  int get debugPixelCellCapacity => codexEffortPixelCellCapacity;
+
+  @visibleForTesting
+  double get debugPixelFieldOpacity => pixelField.opacity;
+
+  @visibleForTesting
+  double get debugPixelFieldReach => pixelField.reach;
+
+  @visibleForTesting
+  double get debugPixelFieldElapsed => pixelField.elapsed;
+
+  @visibleForTesting
+  int get debugLitPixelCellCount => pixelField.litCellCount;
+
+  @visibleForTesting
+  int get debugLitPixelRowCount => pixelField.litRowCount;
+
+  @visibleForTesting
+  double get debugPixelEnergyChecksum => pixelField.energyChecksum;
+
+  @visibleForTesting
+  double debugPixelEnergyAt(int column, int row) =>
+      pixelField.energyAt(column, row);
+
+  @visibleForTesting
+  double debugPixelColumnEnergy(int column) => pixelField.columnEnergy(column);
+
+  @visibleForTesting
+  int get debugFarthestStrongPixelColumn =>
+      pixelField.farthestColumnAbove(0.08);
+
+  @visibleForTesting
+  int get debugStrongPixelColumnCount => pixelField.columnCountAbove(0.08);
+
+  @visibleForTesting
+  Rect debugPixelFieldBounds(Size size) {
+    final track = _trackRectForSize(size);
+    final anchor = pixelField.anchorX.clamp(track.left, track.right);
+    if (direction == TextDirection.rtl) {
+      final right = anchor + (track.right - anchor) * pixelField.reach;
+      return Rect.fromLTRB(
+        math.max(track.left, anchor),
+        track.top,
+        math.min(track.right, right),
+        track.bottom,
+      );
     }
-    if (_isTierReveal ||
-        motion == _EffortMotion.fastEnter ||
-        motion == _EffortMotion.fastExit) {
-      return _clampUnit(phase / maxPositionInterval);
-    }
-    return _clampUnit(phase);
+    final left = anchor - (anchor - track.left) * pixelField.reach;
+    return Rect.fromLTRB(
+      math.max(track.left, left),
+      track.top,
+      math.min(track.right, anchor),
+      track.bottom,
+    );
   }
 
   @visibleForTesting
-  double get debugThumbTravelEnvelope =>
-      ClaudeEffortMotionTokens.thumbTravelEnvelope(
-        movePhase: _movePhase(reduceMotion ? 1 : animation.value),
-        travel: (toPosition - fromPosition).abs(),
-      );
+  bool get debugPixelFieldFlowsToPhysicalLeft =>
+      direction == TextDirection.ltr &&
+      ClaudeEffortMotionTokens.pixelFlowSpeed(pixelField.accent) >= 0;
 
   @visibleForTesting
-  double debugParticleProgress(int index) =>
-      ClaudeEffortMotionTokens.particleProgress(
-        _targetAccent,
-        reduceMotion ? 1 : animation.value,
-        ClaudeEffortMotionTokens.particles[index],
+  bool get debugPixelFieldFlowsToPhysicalRight =>
+      direction == TextDirection.rtl &&
+      ClaudeEffortMotionTokens.pixelFlowSpeed(pixelField.accent) >= 0;
+
+  @visibleForTesting
+  bool get debugIsTierReveal => _isTierReveal;
+
+  @visibleForTesting
+  bool get debugIsDragging => motion == _EffortMotion.drag;
+
+  @visibleForTesting
+  int get debugBurstParticleCount =>
+      ClaudeEffortMotionTokens.burstParticleCount(_targetAccent);
+
+  @visibleForTesting
+  double debugBurstProgress(int index) =>
+      ClaudeEffortMotionTokens.burstProgress(
+        accent: _targetAccent,
+        phase: reduceMotion ? 1 : animation.value,
+        positionInterval: maxPositionInterval,
+        particle: ClaudeEffortMotionTokens.burstParticles[index],
       );
 
   @override
@@ -1001,6 +1598,10 @@ class _CodexEffortTrackPainter extends CustomPainter {
     if (useSolidActivePaint) {
       activePaint.color = primary;
     } else {
+      final trackBlend = ClaudeEffortMotionTokens.pixelTrackBlend(targetAccent);
+      final trackColours = activeColours
+          .map((color) => Color.lerp(inactive, color, trackBlend)!)
+          .toList(growable: false);
       activePaint.shader = LinearGradient(
         begin: direction == TextDirection.rtl
             ? Alignment.centerRight
@@ -1008,7 +1609,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
         end: direction == TextDirection.rtl
             ? Alignment.centerLeft
             : Alignment.centerRight,
-        colors: activeColours,
+        colors: trackColours,
       ).createShader(trackRect);
     }
 
@@ -1035,7 +1636,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
           (divisions == 0 ? 0.001 : 0.5 / divisions);
       var tickRadius = CodexEffortMotionMetrics.tickDiameter / 2;
       var tickY = centerY;
-      var tickAlphaMultiplier = 1.0;
+      var tickAlphaMultiplier = 1 - _clampUnit(pixelField.opacity) * 0.72;
       if (selectedTick && _isTierReveal && !reduceMotion) {
         final tierPulse = math.sin(math.pi * _clampUnit(phase));
         tickRadius *= 1 + tierPulse * 0.24;
@@ -1065,14 +1666,19 @@ class _CodexEffortTrackPainter extends CustomPainter {
       );
     }
 
-    if (_isTierReveal && !reduceMotion) {
-      _paintClaudeParticles(
-        canvas,
-        size,
-        Offset(thumbX, centerY),
-        phase,
-        targetAccent,
-      );
+    if (!reduceMotion) {
+      canvas.save();
+      canvas.clipRRect(trackRRect);
+      _paintPixelFire(canvas, trackRect);
+      canvas.restore();
+      if (_isTierReveal) {
+        _paintArrivalBurst(
+          canvas,
+          Offset(thumbX, centerY),
+          phase,
+          targetAccent,
+        );
+      }
     }
 
     final thumbExpansion = _thumb(phase).clamp(0.0, 1.16).toDouble();
@@ -1089,31 +1695,10 @@ class _CodexEffortTrackPainter extends CustomPainter {
     }
     thumbRadius = math.min(thumbRadius, _safeThumbRadius(size.width));
     final thumbCenter = Offset(thumbX, thumbY);
-    final movePhase = _movePhase(phase);
-    final travelEnvelope = reduceMotion
-        ? 0.0
-        : ClaudeEffortMotionTokens.thumbTravelEnvelope(
-            movePhase: movePhase,
-            travel: (toPosition - fromPosition).abs(),
-          );
-    final landingPulse = reduceMotion
-        ? 0.0
-        : ClaudeEffortMotionTokens.landingPulse(movePhase);
-    final halfWidth = math.min(
-      _safeThumbRadius(size.width),
-      thumbRadius * (1 + travelEnvelope * 0.08),
-    );
-    final halfHeight = math.min(
-      _safeThumbRadius(size.width),
-      thumbRadius * (1 - travelEnvelope * 0.03 + landingPulse),
-    );
-    final thumbRect = Rect.fromCenter(
-      center: thumbCenter,
-      width: halfWidth * 2,
-      height: halfHeight * 2,
-    );
-    canvas.drawOval(
-      thumbRect,
+    final thumbRect = Rect.fromCircle(center: thumbCenter, radius: thumbRadius);
+    canvas.drawCircle(
+      thumbCenter,
+      thumbRadius,
       Paint()
         ..shader = LinearGradient(
           begin: Alignment.topLeft,
@@ -1121,8 +1706,9 @@ class _CodexEffortTrackPainter extends CustomPainter {
           colors: [activeColours.first, activeColours.last],
         ).createShader(thumbRect),
     );
-    canvas.drawOval(
-      thumbRect.deflate(0.75),
+    canvas.drawCircle(
+      thumbCenter,
+      math.max(0, thumbRadius - 0.75),
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5
@@ -1155,90 +1741,96 @@ class _CodexEffortTrackPainter extends CustomPainter {
     }
   }
 
-  void _paintClaudeParticles(
+  void _paintPixelFire(Canvas canvas, Rect trackRect) {
+    final fieldOpacity = _clampUnit(pixelField.opacity);
+    if (fieldOpacity <= 0.001 || trackRect.isEmpty) return;
+
+    final anchorX = pixelField.anchorX.clamp(trackRect.left, trackRect.right);
+    final availableTrail = direction == TextDirection.rtl
+        ? math.max(0.0, trackRect.right - anchorX)
+        : math.max(0.0, anchorX - trackRect.left);
+    final columns = ClaudeEffortMotionTokens.pixelColumns;
+    final rows = ClaudeEffortMotionTokens.maxPixelRows;
+    if (availableTrail <= 1 || columns <= 0 || rows <= 0) return;
+
+    final columnStep = availableTrail / columns;
+    final top = trackRect.top + 3;
+    final bottom = trackRect.bottom - 3;
+    final rowStep = (bottom - top) / math.max(1, rows - 1);
+    final energy = pixelField.energy;
+    final pixelPaint = Paint()..isAntiAlias = false;
+    final glowPaint = Paint()..isAntiAlias = false;
+    for (var column = 0; column < columns; column++) {
+      final normalizedDistance = (column + 0.5) / columns;
+      final columnOffset = (column + 0.5) * columnStep;
+      final x = direction == TextDirection.rtl
+          ? anchorX + columnOffset
+          : anchorX - columnOffset;
+      final proximity = _clampUnit(
+        1 - normalizedDistance / math.max(0.001, pixelField.reach),
+      );
+      for (var row = 0; row < rows; row++) {
+        final value = energy[column * rows + row];
+        if (value <= 0.016) continue;
+        final heat = _clampUnit(value * 0.72 + proximity * 0.42);
+        final alpha = fieldOpacity * math.pow(value, 0.70).toDouble();
+        final basePixelSize = columnStep >= 2.6 ? 2.0 : 1.0;
+        final pixelSize = value > 0.78
+            ? math.min(3.0, basePixelSize + 1)
+            : basePixelSize;
+        final y = top + row * rowStep;
+        final rect = Rect.fromLTWH(
+          (x - pixelSize / 2).roundToDouble(),
+          (y - pixelSize / 2).roundToDouble(),
+          pixelSize,
+          pixelSize,
+        );
+        final color = ClaudeEffortMotionTokens.pixelColor(
+          purple: purple,
+          heat: heat,
+        );
+        if (value > 0.58) {
+          glowPaint.color = color.withValues(alpha: _clampUnit(alpha * 0.12));
+          canvas.drawRect(rect.inflate(1.2), glowPaint);
+        }
+        pixelPaint.color = color.withValues(alpha: _clampUnit(alpha));
+        canvas.drawRect(rect, pixelPaint);
+      }
+    }
+  }
+
+  void _paintArrivalBurst(
     Canvas canvas,
-    Size size,
-    Offset movingThumb,
+    Offset origin,
     double phase,
     ClaudeEffortAccent accent,
   ) {
-    final movePhase = _movePhase(phase);
-    final originX = _positionX(fromPosition, size.width, direction);
-    final destinationX = _positionX(toPosition, size.width, direction);
-    final travel = destinationX - originX;
-    final trailCount = ClaudeEffortMotionTokens.trailParticleCount(accent);
-    final trailEnvelope = math.sin(math.pi * movePhase.clamp(0.0, 1.0));
-    final glowPaint = Paint();
+    final count = ClaudeEffortMotionTokens.burstParticleCount(accent);
     final particlePaint = Paint();
-
-    if (travel.abs() > 1 && trailEnvelope > 0.001) {
-      for (var index = 0; index < trailCount; index++) {
-        final lag = index * 0.045;
-        final local = (movePhase - lag).clamp(0.0, 1.0);
-        final x = lerpDouble(
-          originX,
-          destinationX,
-          ClaudeEffortMotionTokens.glideCurve.transform(local),
-        )!;
-        final wave = math.sin(index * 1.84 + movePhase * math.pi * 2);
-        final alpha =
-            trailEnvelope * (1 - index / math.max(1, trailCount)) * 0.70;
-        final radius = 1.05 + (index % 3) * 0.22;
-        final color = ClaudeEffortMotionTokens.particleColor(index, purple);
-        canvas.drawCircle(
-          Offset(x, movingThumb.dy + wave * (1.2 + index * 0.16)),
-          radius + 1.5,
-          glowPaint..color = color.withValues(alpha: alpha * 0.16),
-        );
-        canvas.drawCircle(
-          Offset(x, movingThumb.dy + wave * (1.2 + index * 0.16)),
-          radius,
-          particlePaint..color = color.withValues(alpha: alpha),
-        );
-      }
-    }
-
-    final origin = Offset(destinationX, movingThumb.dy);
-    final count = ClaudeEffortMotionTokens.particleCount(accent);
-    final horizontalRoom = math.max(
-      1.0,
-      math.min(origin.dx, size.width - origin.dx) - 1.5,
-    );
     for (var index = 0; index < count; index++) {
-      final particle = ClaudeEffortMotionTokens.particles[index];
-      final progress = ClaudeEffortMotionTokens.particleProgress(
-        accent,
-        phase,
-        particle,
+      final particle = ClaudeEffortMotionTokens.burstParticles[index];
+      final progress = ClaudeEffortMotionTokens.burstProgress(
+        accent: accent,
+        phase: phase,
+        positionInterval: maxPositionInterval,
+        particle: particle,
       );
       if (progress < 0) continue;
-      final opacity = ClaudeEffortMotionTokens.particleOpacity(progress);
+      final opacity = ClaudeEffortMotionTokens.burstOpacity(progress);
       if (opacity <= 0.001) continue;
       final eased = Curves.easeOutCubic.transform(progress);
-      final angle =
-          particle.angle + particle.arc * math.sin(math.pi * progress);
-      final distance = 10 + particle.distance * eased * 0.76;
-      final horizontalScale = math.min(
-        1.0,
-        horizontalRoom / math.max(1.0, 10 + particle.distance * 0.76),
-      );
+      final distance = particle.distance * eased;
       final point =
-          origin +
-          Offset(
-            math.cos(angle) * distance * horizontalScale,
-            math.sin(angle) * distance * 0.86,
-          );
-      final color = ClaudeEffortMotionTokens.particleColor(index, purple);
-      final radius = particle.radius * 1.32 * (1 - progress * 0.18);
+          origin + Offset(particle.unitX * distance, particle.unitY * distance);
+      particlePaint.color = ClaudeEffortMotionTokens.burstColor(
+        primary: primary,
+        purple: purple,
+        progress: progress,
+      ).withValues(alpha: opacity);
       canvas.drawCircle(
         point,
-        radius + 1.85,
-        glowPaint..color = color.withValues(alpha: opacity * 0.18),
-      );
-      canvas.drawCircle(
-        point,
-        radius,
-        particlePaint..color = color.withValues(alpha: opacity),
+        particle.radius * (1 - progress * 0.35),
+        particlePaint,
       );
     }
   }

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/services/bridge_service.dart';
+import 'package:ccpocket/widgets/claude_effort_motion_style.dart';
 import 'package:ccpocket/widgets/codex_effort_motion.dart';
 import 'package:ccpocket/widgets/new_session_sheet.dart';
 import 'package:ccpocket/theme/app_theme.dart';
@@ -62,6 +63,16 @@ void _enlargeViewport(WidgetTester tester) {
     tester.view.resetPhysicalSize();
     tester.view.resetDevicePixelRatio();
   });
+}
+
+Future<void> _pumpWhileEffortIonsRun(
+  WidgetTester tester, {
+  Duration duration = const Duration(milliseconds: 400),
+}) async {
+  // Build state created by the interaction before advancing its animation.
+  // pumpAndSettle is intentionally invalid while a high-tier ion ticker runs.
+  await tester.pump();
+  await tester.pump(duration);
 }
 
 void main() {
@@ -1080,10 +1091,14 @@ void main() {
       );
 
       await tester.tap(find.text('Open'));
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const ValueKey('dialog_codex_settings_mode')),
+      // x-high keeps a persistent ion ticker alive while the sheet is open.
+      await _pumpWhileEffortIonsRun(tester);
+      final settingsMode = find.byKey(
+        const ValueKey('dialog_codex_settings_mode'),
       );
+      await tester.ensureVisible(settingsMode);
+      await tester.pump();
+      await tester.tap(settingsMode);
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('dialog_codex_model')));
       await tester.pumpAndSettle();
@@ -1144,7 +1159,8 @@ void main() {
       );
 
       await tester.tap(find.text('Open'));
-      await tester.pumpAndSettle();
+      // Ultra keeps a persistent ion ticker alive while the sheet is open.
+      await _pumpWhileEffortIonsRun(tester);
 
       final effortLabel = find.byKey(
         const ValueKey('dialog_codex_effort_label'),
@@ -1195,12 +1211,18 @@ void main() {
       );
 
       await tester.tap(find.text('Open'));
-      await tester.pumpAndSettle();
+      // x-high keeps a persistent ion ticker alive while the sheet is open.
+      await _pumpWhileEffortIonsRun(tester);
 
-      final slider = find.byKey(const ValueKey('dialog_codex_effort_slider'));
-      final sliderRect = tester.getRect(slider);
-      await tester.tapAt(Offset(sliderRect.right - 8, sliderRect.center.dy));
-      await tester.pumpAndSettle();
+      tester
+          .widget<CodexEffortMotionSlider>(find.byType(CodexEffortMotionSlider))
+          .onSelected(5);
+      await _pumpWhileEffortIonsRun(
+        tester,
+        duration:
+            ClaudeEffortMotionTokens.ultraRevealDuration +
+            const Duration(milliseconds: 20),
+      );
 
       expect(
         tester
