@@ -5,6 +5,7 @@ import '../../../l10n/app_localizations.dart';
 import '../../../router/app_router.dart';
 import '../../../services/app_update_service.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
+import '../../file_browser/file_browser_strings.dart';
 import '../../session_archive/session_archive_strings.dart';
 
 /// Floating SliverAppBar for the session list screen.
@@ -15,6 +16,7 @@ class SessionListSliverAppBar extends StatelessWidget {
   final VoidCallback onTitleTap;
   final VoidCallback onDisconnect;
   final VoidCallback? onOpenArchivedSessions;
+  final VoidCallback? onOpenFileBrowser;
   final bool forceElevated;
   final double? toolbarHeight;
   final String? bridgeLabel;
@@ -24,6 +26,7 @@ class SessionListSliverAppBar extends StatelessWidget {
     required this.onTitleTap,
     required this.onDisconnect,
     this.onOpenArchivedSessions,
+    this.onOpenFileBrowser,
     this.forceElevated = false,
     this.toolbarHeight,
     this.bridgeLabel,
@@ -32,6 +35,8 @@ class SessionListSliverAppBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
+    final compactActions = MediaQuery.sizeOf(context).width <= 375;
+    void openGallery() => context.router.navigate(GalleryRoute());
 
     return SliverAppBar(
       floating: true,
@@ -43,7 +48,7 @@ class SessionListSliverAppBar extends StatelessWidget {
         child: _SessionListTitle(title: l.appTitle, subtitle: bridgeLabel),
       ),
       actions: [
-        if (onOpenArchivedSessions != null)
+        if (!compactActions && onOpenArchivedSessions != null)
           IconButton(
             key: const ValueKey('archived_sessions_button'),
             icon: const Icon(Icons.archive_outlined),
@@ -60,18 +65,39 @@ class SessionListSliverAppBar extends StatelessWidget {
           onPressed: () => context.router.navigate(SettingsRoute()),
           tooltip: l.settings,
         ),
-        IconButton(
-          key: const ValueKey('gallery_button'),
-          icon: const Icon(Icons.collections),
-          onPressed: () => context.router.navigate(GalleryRoute()),
-          tooltip: l.gallery,
-        ),
-        IconButton(
-          key: const ValueKey('disconnect_button'),
-          icon: const Icon(Icons.link_off),
-          onPressed: onDisconnect,
-          tooltip: l.disconnect,
-        ),
+        if (onOpenFileBrowser != null)
+          IconButton(
+            key: const ValueKey('file_browser_button'),
+            icon: const Icon(Icons.folder_open_outlined),
+            onPressed: onOpenFileBrowser,
+            tooltip: FileBrowserStrings.of(context).title,
+          ),
+        if (compactActions)
+          _PaneHeaderOverflowButton(
+            compact: false,
+            archiveLabel: onOpenArchivedSessions == null
+                ? null
+                : SessionArchiveStrings.of(context).title,
+            galleryLabel: l.gallery,
+            disconnectLabel: l.disconnect,
+            onOpenArchivedSessions: onOpenArchivedSessions,
+            onOpenGallery: openGallery,
+            onDisconnect: onDisconnect,
+          )
+        else ...[
+          IconButton(
+            key: const ValueKey('gallery_button'),
+            icon: const Icon(Icons.collections),
+            onPressed: openGallery,
+            tooltip: l.gallery,
+          ),
+          IconButton(
+            key: const ValueKey('disconnect_button'),
+            icon: const Icon(Icons.link_off),
+            onPressed: onDisconnect,
+            tooltip: l.disconnect,
+          ),
+        ],
       ],
     );
   }
@@ -81,6 +107,7 @@ class SessionListPaneHeader extends StatelessWidget {
   final VoidCallback onTitleTap;
   final VoidCallback onOpenSettings;
   final VoidCallback? onOpenGallery;
+  final VoidCallback? onOpenFileBrowser;
   final VoidCallback? onOpenArchivedSessions;
   final VoidCallback? onDisconnect;
   final VoidCallback? onTogglePaneVisibility;
@@ -91,6 +118,7 @@ class SessionListPaneHeader extends StatelessWidget {
     required this.onTitleTap,
     required this.onOpenSettings,
     this.onOpenGallery,
+    this.onOpenFileBrowser,
     this.onOpenArchivedSessions,
     this.onDisconnect,
     this.onTogglePaneVisibility,
@@ -101,6 +129,7 @@ class SessionListPaneHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final openGallery = onOpenGallery;
+    final openFileBrowser = onOpenFileBrowser;
     final disconnect = onDisconnect;
     final togglePaneVisibility = onTogglePaneVisibility;
     final chrome = resolveWorkspacePaneChrome(
@@ -113,6 +142,12 @@ class SessionListPaneHeader extends StatelessWidget {
       context,
     ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700);
     final actionGap = chrome.useMacOSAdaptiveChrome ? 8.0 : 0.0;
+    final collapseSecondaryActions =
+        chrome.useMacOSAdaptiveChrome &&
+        openFileBrowser != null &&
+        (onOpenArchivedSessions != null ||
+            openGallery != null ||
+            disconnect != null);
 
     return SizedBox(
       height: chrome.toolbarHeight,
@@ -147,7 +182,7 @@ class SessionListPaneHeader extends StatelessWidget {
               ),
               compact: chrome.useMacOSAdaptiveChrome,
             ),
-            if (onOpenArchivedSessions != null)
+            if (onOpenArchivedSessions != null && !collapseSecondaryActions)
               _PaneHeaderActionButton(
                 key: const ValueKey('archived_sessions_button'),
                 tooltip: SessionArchiveStrings.of(context).title,
@@ -155,11 +190,25 @@ class SessionListPaneHeader extends StatelessWidget {
                 icon: const Icon(Icons.archive_outlined),
                 compact: chrome.useMacOSAdaptiveChrome,
               ),
-            if (openGallery != null ||
+            if (openFileBrowser != null ||
+                openGallery != null ||
                 disconnect != null ||
                 togglePaneVisibility != null)
               SizedBox(width: actionGap),
-            if (openGallery != null)
+            if (openFileBrowser != null)
+              _PaneHeaderActionButton(
+                key: const ValueKey('file_browser_button'),
+                tooltip: FileBrowserStrings.of(context).title,
+                onPressed: openFileBrowser,
+                icon: const Icon(Icons.folder_open_outlined),
+                compact: chrome.useMacOSAdaptiveChrome,
+              ),
+            if (openFileBrowser != null &&
+                (openGallery != null ||
+                    disconnect != null ||
+                    togglePaneVisibility != null))
+              SizedBox(width: actionGap),
+            if (openGallery != null && !collapseSecondaryActions)
               _PaneHeaderActionButton(
                 key: const ValueKey('gallery_button'),
                 tooltip: l.gallery,
@@ -167,10 +216,11 @@ class SessionListPaneHeader extends StatelessWidget {
                 icon: const Icon(Icons.collections_outlined),
                 compact: chrome.useMacOSAdaptiveChrome,
               ),
-            if (openGallery != null &&
+            if (!collapseSecondaryActions &&
+                openGallery != null &&
                 (disconnect != null || togglePaneVisibility != null))
               SizedBox(width: actionGap),
-            if (disconnect != null)
+            if (disconnect != null && !collapseSecondaryActions)
               _PaneHeaderActionButton(
                 key: const ValueKey('disconnect_button'),
                 tooltip: l.disconnect,
@@ -178,7 +228,23 @@ class SessionListPaneHeader extends StatelessWidget {
                 icon: const Icon(Icons.link_off),
                 compact: chrome.useMacOSAdaptiveChrome,
               ),
-            if (disconnect != null && togglePaneVisibility != null)
+            if (collapseSecondaryActions) ...[
+              _PaneHeaderOverflowButton(
+                compact: chrome.useMacOSAdaptiveChrome,
+                archiveLabel: onOpenArchivedSessions == null
+                    ? null
+                    : SessionArchiveStrings.of(context).title,
+                galleryLabel: openGallery == null ? null : l.gallery,
+                disconnectLabel: disconnect == null ? null : l.disconnect,
+                onOpenArchivedSessions: onOpenArchivedSessions,
+                onOpenGallery: openGallery,
+                onDisconnect: disconnect,
+              ),
+              if (togglePaneVisibility != null) SizedBox(width: actionGap),
+            ],
+            if (!collapseSecondaryActions &&
+                disconnect != null &&
+                togglePaneVisibility != null)
               SizedBox(width: actionGap),
             if (togglePaneVisibility != null)
               _PaneHeaderActionButton(
@@ -191,6 +257,83 @@ class SessionListPaneHeader extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+enum _PaneHeaderOverflowAction { archive, gallery, disconnect }
+
+class _PaneHeaderOverflowButton extends StatelessWidget {
+  final bool compact;
+  final String? archiveLabel;
+  final String? galleryLabel;
+  final String? disconnectLabel;
+  final VoidCallback? onOpenArchivedSessions;
+  final VoidCallback? onOpenGallery;
+  final VoidCallback? onDisconnect;
+
+  const _PaneHeaderOverflowButton({
+    required this.compact,
+    this.archiveLabel,
+    this.galleryLabel,
+    this.disconnectLabel,
+    this.onOpenArchivedSessions,
+    this.onOpenGallery,
+    this.onDisconnect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final chrome = resolveWorkspacePaneChrome(
+      platform: Theme.of(context).platform,
+      isAdaptiveWorkspace: true,
+      isLeftPaneVisible: true,
+      slot: WorkspacePaneSlot.left,
+    );
+    return PopupMenuButton<_PaneHeaderOverflowAction>(
+      key: const ValueKey('session_list_more_button'),
+      style: compact ? chrome.compactButtonStyle() : null,
+      tooltip: MaterialLocalizations.of(context).moreButtonTooltip,
+      icon: const Icon(Icons.more_horiz),
+      onSelected: (action) {
+        switch (action) {
+          case _PaneHeaderOverflowAction.archive:
+            onOpenArchivedSessions?.call();
+          case _PaneHeaderOverflowAction.gallery:
+            onOpenGallery?.call();
+          case _PaneHeaderOverflowAction.disconnect:
+            onDisconnect?.call();
+        }
+      },
+      itemBuilder: (context) => [
+        if (onOpenArchivedSessions != null)
+          PopupMenuItem(
+            value: _PaneHeaderOverflowAction.archive,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.archive_outlined),
+              title: Text(archiveLabel!),
+            ),
+          ),
+        if (onOpenGallery != null)
+          PopupMenuItem(
+            value: _PaneHeaderOverflowAction.gallery,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.collections_outlined),
+              title: Text(galleryLabel!),
+            ),
+          ),
+        if (onDisconnect != null)
+          PopupMenuItem(
+            value: _PaneHeaderOverflowAction.disconnect,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.link_off),
+              title: Text(disconnectLabel!),
+            ),
+          ),
+      ],
     );
   }
 }

@@ -8,6 +8,7 @@ import '../../features/claude_session/claude_session_screen.dart';
 import '../../features/codex_session/codex_session_screen.dart';
 import '../../features/explore/explore_screen.dart';
 import '../../features/explore/state/explore_state.dart';
+import '../../features/file_browser/file_browser_screen.dart';
 import '../../features/gallery/gallery_screen.dart';
 import '../../features/git/git_screen.dart';
 import '../../features/local_session_features/host/local_session_feature.dart';
@@ -38,7 +39,13 @@ enum _WorkspaceLayoutMode { single, doublePane, triplePane }
 
 enum _WorkspaceCenterRoot { session, offline }
 
-enum _WorkspaceCenterOverlay { none, settings, globalGallery, setupGuide }
+enum _WorkspaceCenterOverlay {
+  none,
+  settings,
+  globalGallery,
+  fileBrowser,
+  setupGuide,
+}
 
 double _leftPaneWidth(double width, _WorkspaceLayoutMode mode) {
   if (mode == _WorkspaceLayoutMode.triplePane) {
@@ -470,6 +477,17 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
         _centerOverlay = _WorkspaceCenterOverlay.none;
       } else {
         _centerOverlay = _WorkspaceCenterOverlay.globalGallery;
+      }
+    });
+    _notifyPresentationChanged();
+  }
+
+  void openFileBrowserCenter() {
+    setState(() {
+      if (_centerOverlay == _WorkspaceCenterOverlay.fileBrowser) {
+        _centerOverlay = _WorkspaceCenterOverlay.none;
+      } else {
+        _centerOverlay = _WorkspaceCenterOverlay.fileBrowser;
       }
     });
     _notifyPresentationChanged();
@@ -1126,6 +1144,11 @@ class _WorkspaceContentHost extends StatelessWidget {
         );
       case _WorkspaceCenterOverlay.globalGallery:
         return GalleryScreen(embedded: true, onBack: shell?.popCenterOverlay);
+      case _WorkspaceCenterOverlay.fileBrowser:
+        return FileBrowserScreen(
+          embedded: true,
+          onBack: shell?.popCenterOverlay,
+        );
       case _WorkspaceCenterOverlay.setupGuide:
         return SetupGuideScreen(
           embedded: true,

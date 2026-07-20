@@ -31,6 +31,7 @@ import '../../widgets/adaptive_context_menu.dart';
 import '../../widgets/new_session_sheet.dart';
 import '../../widgets/rename_session_dialog.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
+import '../file_browser/file_browser_screen.dart';
 import '../session_archive/session_archive_cubit.dart';
 import '../session_archive/session_archive_pending_requests.dart';
 import '../session_archive/session_archive_screen.dart';
@@ -733,6 +734,17 @@ class _SessionListScreenState extends State<SessionListScreen>
       return;
     }
     await context.router.push(GalleryRoute());
+  }
+
+  Future<void> _openFileBrowser() async {
+    final shell = WorkspaceShellScreen.maybeOf(context);
+    if (widget.embedded && shell != null) {
+      shell.openFileBrowserCenter();
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const FileBrowserScreen()),
+    );
   }
 
   Future<void> _openArchivedSessions() => openSessionArchive(context);
@@ -1961,6 +1973,9 @@ class _SessionListScreenState extends State<SessionListScreen>
                   SessionListPaneHeader(
                     onTitleTap: _onTitleTap,
                     onOpenSettings: _openSettings,
+                    onOpenFileBrowser: showConnectedUI
+                        ? _openFileBrowser
+                        : null,
                     onOpenGallery: showConnectedUI ? _openGallery : null,
                     onOpenArchivedSessions:
                         context.read<BridgeService>().bridgeCapabilities.contains(
@@ -2222,6 +2237,7 @@ class _SessionListScreenState extends State<SessionListScreen>
           SessionListSliverAppBar(
             onTitleTap: _onTitleTap,
             onDisconnect: _disconnect,
+            onOpenFileBrowser: _openFileBrowser,
             onOpenArchivedSessions: bridge.bridgeCapabilities.contains(
               codexSessionLifecycleCapability,
             )
