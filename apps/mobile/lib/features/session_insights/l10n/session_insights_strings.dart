@@ -9,6 +9,7 @@ class SessionInsightsStrings {
     required this.title,
     required this.context,
     required this.contextUnavailable,
+    required this.compactContext,
     required this.quota,
     required this.quotaUnavailable,
     required this.source,
@@ -25,6 +26,7 @@ class SessionInsightsStrings {
   final String title;
   final String context;
   final String contextUnavailable;
+  final String compactContext;
   final String quota;
   final String quotaUnavailable;
   final String source;
@@ -52,6 +54,7 @@ class SessionInsightsStrings {
     title: 'Session insights',
     context: 'Context window',
     contextUnavailable: 'Context usage is not available from this Bridge yet.',
+    compactContext: 'Compact context',
     quota: 'Account quota',
     quotaUnavailable: 'Quota data is not available.',
     source: 'Source',
@@ -69,6 +72,7 @@ class SessionInsightsStrings {
     title: '会话详情',
     context: '上下文窗口',
     contextUnavailable: '当前 Bridge 暂未提供上下文占用。',
+    compactContext: '压缩上下文',
     quota: '账户额度',
     quotaUnavailable: '暂无额度数据。',
     source: '数据来源',
@@ -86,6 +90,7 @@ class SessionInsightsStrings {
     title: 'セッション情報',
     context: 'コンテキストウィンドウ',
     contextUnavailable: 'この Bridge ではコンテキスト使用量をまだ取得できません。',
+    compactContext: 'コンテキストを圧縮',
     quota: 'アカウント上限',
     quotaUnavailable: '上限データを取得できません。',
     source: 'データソース',
@@ -103,6 +108,7 @@ class SessionInsightsStrings {
     title: '세션 정보',
     context: '컨텍스트 창',
     contextUnavailable: '이 Bridge에서는 아직 컨텍스트 사용량을 확인할 수 없습니다.',
+    compactContext: '컨텍스트 압축',
     quota: '계정 한도',
     quotaUnavailable: '한도 데이터를 사용할 수 없습니다.',
     source: '데이터 출처',

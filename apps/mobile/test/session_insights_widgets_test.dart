@@ -84,6 +84,7 @@ void main() {
   testWidgets('context bar opens quota cards and reset-credit details', (
     tester,
   ) async {
+    var compactRequests = 0;
     final bridge = _Bridge()
       ..quotaProviders = const [
         SessionUsageInfo(
@@ -125,6 +126,7 @@ void main() {
             sessionId: 's1',
             bridgeService: bridge,
             controller: controller,
+            onCompact: () => compactRequests += 1,
           ),
         ),
       ),
@@ -156,11 +158,20 @@ void main() {
     expect(find.text('Session insights'), findsOneWidget);
     expect(find.text('Pro'), findsOneWidget);
     expect(find.text('Free reset'), findsOneWidget);
+    expect(find.text('Compact context'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('session_insights_compact')));
+    await tester.pumpAndSettle();
+    expect(compactRequests, 1);
+    expect(find.text('Session insights'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('session_insights_bar')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
     expect(
       bridge.sent
           .where((message) => message.type == 'get_session_usage')
           .length,
-      2,
+      3,
     );
 
     bridge.emit(

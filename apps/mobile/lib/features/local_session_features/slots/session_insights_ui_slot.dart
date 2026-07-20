@@ -18,6 +18,10 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
       bridgeService: context.bridge,
       compact: true,
       showLeadingDivider: true,
+      onCompact: () => context.openPane(
+        'codex_core_actions',
+        arguments: const {'section': 'compact'},
+      ),
     ),
   ];
 
