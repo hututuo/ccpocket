@@ -2,6 +2,7 @@ import type { FileTransferDownloadStore, OpenedDownloadTransfer } from "./file-t
 import { FileTransferError } from "./file-transfer-errors.js";
 import type { FileTransferClientMessage, FileTransferServerMessage } from "./file-transfer-protocol.js";
 import type { PersistedUploadTransfer } from "./file-transfer-state-store.js";
+import type { TransferFileIdentity } from "./file-transfer-state-store.js";
 import type { FileTransferUploadStore, UploadAppendResult } from "./file-transfer-upload-store.js";
 import {
   validateFileTransferBaseUrl,
@@ -37,6 +38,10 @@ export interface OfferFileInput {
   ttlSeconds?: number;
   baseUrl?: string;
   signal?: AbortSignal;
+  /** Optional descriptor-bound identity supplied by the secure file browser. */
+  expectedIdentity?: TransferFileIdentity;
+  /** Optional immutable root boundary supplied by the secure file browser. */
+  canonicalRoot?: string;
 }
 
 export interface OfferedFile {
@@ -65,6 +70,7 @@ export class FileTransferManager {
   private readonly downloadClients = new Map<string, BoundDownloadClient>();
   private accepting = true;
   private readonly activeControlOperations = new Set<Promise<void>>();
+  private readonly activeOfferOperations = new Set<Promise<unknown>>();
   private closeBarrier?: Promise<void>;
 
   constructor(options: FileTransferManagerOptions) {
@@ -103,8 +109,14 @@ export class FileTransferManager {
     // Reject new WS control work first, then wait every prepare/resume/cancel
     // already admitted before releasing the persistent state lock.
     this.accepting = false;
-    while (this.activeControlOperations.size > 0) {
-      await Promise.allSettled([...this.activeControlOperations]);
+    while (
+      this.activeControlOperations.size > 0 ||
+      this.activeOfferOperations.size > 0
+    ) {
+      await Promise.allSettled([
+        ...this.activeControlOperations,
+        ...this.activeOfferOperations,
+      ]);
     }
     this.clients.clear();
     this.uploadClients.clear();
@@ -112,24 +124,76 @@ export class FileTransferManager {
     await this.uploadStore.close();
   }
 
-  async offerFile(input: OfferFileInput): Promise<OfferedFile> {
+  offerFile(input: OfferFileInput): Promise<OfferedFile> {
+    return this.trackOffer(() => this.offerFileInternal(input));
+  }
+
+  private async offerFileInternal(input: OfferFileInput): Promise<OfferedFile> {
     throwIfOfferCancelled(input.signal);
     const selected = this.singleOfferRecipient();
+    return this.offerFileToBinding(
+      selected.client,
+      selected.binding,
+      input,
+      () => {
+        const current = this.singleOfferRecipient();
+        if (current.client !== selected.client) {
+          throw new FileTransferError(409, "recipient_changed", "Compatible phone set changed while preparing the file");
+        }
+        return current.binding;
+      },
+    );
+  }
+
+  /** Offer a file only to the live client that requested it. */
+  offerFileToClient(
+    client: object,
+    input: OfferFileInput,
+  ): Promise<OfferedFile> {
+    return this.trackOffer(() => this.offerFileToClientInternal(client, input));
+  }
+
+  private async offerFileToClientInternal(
+    client: object,
+    input: OfferFileInput,
+  ): Promise<OfferedFile> {
+    throwIfOfferCancelled(input.signal);
+    const selected = this.targetedOfferRecipient(client);
+    return this.offerFileToBinding(
+      client,
+      selected,
+      input,
+      () => {
+        const current = this.targetedOfferRecipient(client);
+        if (current !== selected) {
+          throw new FileTransferError(409, "recipient_changed", "The requesting phone changed while preparing the file");
+        }
+        return current;
+      },
+    );
+  }
+
+  private async offerFileToBinding(
+    client: object,
+    selectedBinding: FileTransferClientBinding,
+    input: OfferFileInput,
+    currentBinding: () => FileTransferClientBinding,
+  ): Promise<OfferedFile> {
     const baseUrl = this.resolveBaseUrl(
       input.baseUrl,
-      selected.binding.httpBaseUrl,
+      selectedBinding.httpBaseUrl,
     );
     const issued = await this.downloadStore.issue(input.filePath, {
       projectPath: input.projectPath,
       ttlSeconds: input.ttlSeconds,
+      expectedIdentity: input.expectedIdentity,
+      canonicalRoot: input.canonicalRoot,
     });
     try {
       throwIfOfferCancelled(input.signal);
-      const current = this.singleOfferRecipient();
-      if (current.client !== selected.client) {
-        throw new FileTransferError(409, "recipient_changed", "Compatible phone set changed while preparing the file");
-      }
-      if (current.binding.httpBaseUrl !== selected.binding.httpBaseUrl) {
+      this.requireAcceptingOffers();
+      const current = currentBinding();
+      if (current.httpBaseUrl !== selectedBinding.httpBaseUrl) {
         throw new FileTransferError(
           409,
           "recipient_origin_changed",
@@ -149,11 +213,12 @@ export class FileTransferManager {
         expiresAt: new Date(entry.expiresAt).toISOString(),
       };
       throwIfOfferCancelled(input.signal);
-      if (!current.binding.isOpen() || !current.binding.send(offer)) {
+      this.requireAcceptingOffers();
+      if (!current.isOpen() || !current.send(offer)) {
         throw new FileTransferError(409, "recipient_disconnected", "The compatible phone disconnected before delivery");
       }
       this.downloadClients.set(entry.transferId, {
-        client: current.client,
+        client,
         sizeBytes: entry.sizeBytes,
       });
       return {
@@ -169,6 +234,25 @@ export class FileTransferManager {
       await this.downloadStore.remove(issued.entry.transferId).catch(() => undefined);
       throw error;
     }
+  }
+
+  private trackOffer<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.accepting) return Promise.reject(offersClosedError());
+    let tracked!: Promise<T>;
+    tracked = Promise.resolve()
+      .then(() => {
+        this.requireAcceptingOffers();
+        return operation();
+      })
+      .finally(() => {
+        this.activeOfferOperations.delete(tracked);
+      });
+    this.activeOfferOperations.add(tracked);
+    return tracked;
+  }
+
+  private requireAcceptingOffers(): void {
+    if (!this.accepting) throw offersClosedError();
   }
 
   handleClientMessage(client: object, message: FileTransferClientMessage): Promise<void> {
@@ -473,6 +557,17 @@ export class FileTransferManager {
     return { client: compatible[0][0], binding: compatible[0][1] };
   }
 
+  private targetedOfferRecipient(client: object): FileTransferClientBinding {
+    const binding = this.clients.get(client);
+    if (!binding?.isOpen()) {
+      throw new FileTransferError(409, "recipient_disconnected", "The requesting phone is no longer connected");
+    }
+    if (!binding.supports(OFFER_MESSAGE)) {
+      throw new FileTransferError(409, "recipient_incompatible", "The requesting phone does not support resumable downloads");
+    }
+    return binding;
+  }
+
   private resolveBaseUrl(explicit?: string, peerBaseUrl?: string): string {
     const configured = validateFileTransferBaseUrl(this.baseUrl);
     const peer = validateFileTransferPeerBaseUrl(peerBaseUrl);
@@ -509,4 +604,12 @@ function throwIfOfferCancelled(signal?: AbortSignal): void {
       "The local send request was cancelled before the phone offer",
     );
   }
+}
+
+function offersClosedError(): FileTransferError {
+  return new FileTransferError(
+    503,
+    "transfer_shutting_down",
+    "The file transfer service is shutting down",
+  );
 }

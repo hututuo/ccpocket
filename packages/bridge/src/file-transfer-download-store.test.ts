@@ -1,9 +1,23 @@
-import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  truncate,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FILE_TRANSFER_MAX_FILE_SIZE_BYTES } from "./file-transfer-constants.js";
-import { FileTransferDownloadStore } from "./file-transfer-download-store.js";
+import {
+  FileTransferDownloadStore,
+  identityOf,
+} from "./file-transfer-download-store.js";
 import { FileTransferStateStore } from "./file-transfer-state-store.js";
 
 const roots: string[] = [];
@@ -139,4 +153,63 @@ describe("FileTransferDownloadStore", () => {
     expect((await readFile(f.statePath, "utf8"))).not.toContain("e".repeat(43));
     await state.close();
   });
+
+  it("rejects a source replaced after the browser captured its identity", async () => {
+    const f = await fixture();
+    const source = join(f.root, "source.txt");
+    await writeFile(source, "original");
+    const expectedIdentity = identityOf(await stat(source));
+    await unlink(source);
+    await writeFile(source, "replacement");
+    const state = new FileTransferStateStore({ filePath: f.statePath });
+    const store = new FileTransferDownloadStore({
+      stateStore: state,
+      // An unrestricted CLI configuration must not weaken the browser's
+      // descriptor-bound identity handoff.
+      allowedDirs: [],
+    });
+
+    await expect(
+      store.issue(source, {
+        projectPath: f.root,
+        expectedIdentity,
+        canonicalRoot: f.root,
+      }),
+    ).rejects.toMatchObject({ code: "source_changed" });
+    expect(await state.listDownloads()).toEqual([]);
+    await state.close();
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects an outside hard link even when its identity matches",
+    async () => {
+      const f = await fixture();
+      const safeRoot = join(f.root, "safe");
+      const outside = join(f.root, "outside");
+      const source = join(safeRoot, "source.txt");
+      const outsideAlias = join(outside, "same-inode.txt");
+      await mkdir(safeRoot);
+      await mkdir(outside);
+      await writeFile(source, "same inode");
+      await link(source, outsideAlias);
+      await unlink(source);
+      await symlink(outsideAlias, source);
+      const expectedIdentity = identityOf(await stat(outsideAlias));
+      const state = new FileTransferStateStore({ filePath: f.statePath });
+      const store = new FileTransferDownloadStore({
+        stateStore: state,
+        allowedDirs: [],
+      });
+
+      await expect(
+        store.issue(source, {
+          projectPath: safeRoot,
+          expectedIdentity,
+          canonicalRoot: safeRoot,
+        }),
+      ).rejects.toMatchObject({ code: "source_changed" });
+      expect(await state.listDownloads()).toEqual([]);
+      await state.close();
+    },
+  );
 });

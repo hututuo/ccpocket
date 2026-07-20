@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -138,6 +138,45 @@ describe("FileTransferManager v2", () => {
     })]);
   });
 
+  it("offers a browser download only to the phone that requested it", async () => {
+    const f = await fixture();
+    const firstClient = {};
+    const secondClient = {};
+    const firstPhone = binding(["file_transfer_offer_v2"]);
+    const secondPhone = binding(["file_transfer_offer_v2"]);
+    f.manager.connect(firstClient, firstPhone.binding);
+    f.manager.connect(secondClient, secondPhone.binding);
+
+    await expect(f.manager.offerFileToClient(secondClient, {
+      filePath: f.source,
+      projectPath: f.root,
+      ttlSeconds: 600,
+    })).resolves.toMatchObject({
+      status: "offered",
+      transferId: "download_00000001",
+      recipientCount: 1,
+    });
+    expect(firstPhone.messages).toEqual([]);
+    expect(secondPhone.messages).toEqual([
+      expect.objectContaining({
+        type: "file_transfer_offer_v2",
+        transferId: "download_00000001",
+      }),
+    ]);
+  });
+
+  it("rejects a targeted offer when that phone is incompatible", async () => {
+    const f = await fixture();
+    const client = {};
+    f.manager.connect(client, binding([]).binding);
+
+    await expect(f.manager.offerFileToClient(client, {
+      filePath: f.source,
+      projectPath: f.root,
+    })).rejects.toMatchObject({ code: "recipient_incompatible" });
+    expect(await f.state.listDownloads()).toEqual([]);
+  });
+
   it("rejects a CLI base-url override that differs from the current WS HTTP origin", async () => {
     const f = await fixture();
     f.manager.connect({}, binding(["file_transfer_offer_v2"]).binding);
@@ -204,6 +243,58 @@ describe("FileTransferManager v2", () => {
     expect(first.messages).toEqual([]);
     expect(second.messages).toEqual([]);
     expect(await f.state.getDownload(issued.entry.transferId)).toBeUndefined();
+  });
+
+  it("drains a targeted offer before close releases persistent transfer state", async () => {
+    const f = await fixture();
+    const client = {};
+    f.manager.connect(client, binding(["file_transfer_offer_v2"]).binding);
+    const originalIssue = f.downloadStore.issue.bind(f.downloadStore);
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(f.downloadStore, "issue").mockImplementation(
+      async (filePath, options) => {
+        entered();
+        await gate;
+        return originalIssue(filePath, options);
+      },
+    );
+
+    const pending = f.manager.offerFileToClient(client, {
+      filePath: f.source,
+      projectPath: f.root,
+    });
+    const outcome = pending.catch((error: unknown) => error);
+    await started;
+    let closeResolved = false;
+    const closing = f.manager.close().then(() => {
+      closeResolved = true;
+    });
+    await Promise.resolve();
+    expect(closeResolved).toBe(false);
+
+    release();
+    await expect(outcome).resolves.toMatchObject({
+      code: "transfer_shutting_down",
+    });
+    await closing;
+    expect(
+      (JSON.parse(await readFile(join(f.root, "state.json"), "utf8")) as {
+        downloads: unknown[];
+      }).downloads,
+    ).toEqual([]);
+    await expect(
+      f.manager.offerFileToClient(client, {
+        filePath: f.source,
+        projectPath: f.root,
+      }),
+    ).rejects.toMatchObject({ code: "transfer_shutting_down" });
   });
 
   it("prepares a mobile-owned upload identity and advertises the actual store chunk limit", async () => {

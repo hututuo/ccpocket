@@ -42,6 +42,15 @@ export interface OpenedDownloadTransfer {
   handle: FileHandle;
 }
 
+export interface IssueDownloadTransferOptions {
+  projectPath: string;
+  ttlSeconds?: number;
+  /** Exact source identity authorized by a descriptor-bound browser lookup. */
+  expectedIdentity?: TransferFileIdentity;
+  /** Fixed canonical root; never re-resolved while validating this transfer. */
+  canonicalRoot?: string;
+}
+
 /** Persistent transfer-only source capabilities, independent of preview limits. */
 export class FileTransferDownloadStore {
   readonly maxFileSizeBytes: number;
@@ -68,9 +77,14 @@ export class FileTransferDownloadStore {
 
   async issue(
     filePath: string,
-    options: { projectPath: string; ttlSeconds?: number },
+    options: IssueDownloadTransferOptions,
   ): Promise<IssuedDownloadTransfer> {
-    const inspected = await this.inspect(filePath, options.projectPath);
+    const inspected = await this.inspect(
+      filePath,
+      options.projectPath,
+      options.expectedIdentity,
+      options.canonicalRoot,
+    );
     const now = this.now();
     const existing = await this.stateStore.listDownloads();
     const downloadToken = this.createToken(existing);
@@ -79,6 +93,9 @@ export class FileTransferDownloadStore {
       tokenHash: hashTransferSecret(downloadToken),
       etag: this.createEtag(existing),
       canonicalPath: inspected.canonicalPath,
+      ...(options.canonicalRoot === undefined
+        ? {}
+        : { canonicalRoot: options.canonicalRoot }),
       filename: inspected.filename,
       mimeType: inspected.mimeType,
       sizeBytes: inspected.identity.size,
@@ -163,6 +180,12 @@ export class FileTransferDownloadStore {
       if (
         canonicalPath !== entry.canonicalPath ||
         !identityMatches(entry.identity, identityOf(canonicalStats)) ||
+        (entry.canonicalRoot !== undefined &&
+          !isPathWithinAllowedDirectory(
+            canonicalPath,
+            entry.canonicalRoot,
+            this.platform,
+          )) ||
         !(await this.isAllowedCanonicalPath(canonicalPath))
       ) {
         throw new FileTransferError(409, "source_changed", "Source file changed after transfer creation");
@@ -196,6 +219,8 @@ export class FileTransferDownloadStore {
   private async inspect(
     filePath: string,
     projectPath: string,
+    expectedIdentity?: TransferFileIdentity,
+    canonicalRoot?: string,
   ): Promise<{ canonicalPath: string; filename: string; mimeType: string; identity: TransferFileIdentity }> {
     if (!filePath.trim() || !projectPath.trim()) {
       throw new FileTransferError(400, "invalid_path", "filePath and projectPath are required");
@@ -216,13 +241,22 @@ export class FileTransferDownloadStore {
       if (!openedStats.isFile()) {
         throw new FileTransferError(400, "not_regular_file", "Only regular files can be transferred");
       }
+      const identity = identityOf(openedStats);
+      if (expectedIdentity && !identityMatches(expectedIdentity, identity)) {
+        throw new FileTransferError(409, "source_changed", "Source file changed during inspection");
+      }
       if (openedStats.size > this.maxFileSizeBytes) {
         throw new FileTransferError(413, "file_too_large", "File exceeds the 15 GiB transfer limit");
       }
       const canonicalPath = await realpath(resolved);
       const canonicalStats = await stat(canonicalPath);
-      const identity = identityOf(openedStats);
       if (!identityMatches(identity, identityOf(canonicalStats))) {
+        throw new FileTransferError(409, "source_changed", "Source file changed during inspection");
+      }
+      if (
+        canonicalRoot !== undefined &&
+        !isPathWithinAllowedDirectory(canonicalPath, canonicalRoot, this.platform)
+      ) {
         throw new FileTransferError(409, "source_changed", "Source file changed during inspection");
       }
       if (!(await this.isAllowedCanonicalPath(canonicalPath))) {

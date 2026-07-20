@@ -24,6 +24,8 @@ export interface PersistedDownloadTransfer {
   tokenHash: string;
   etag: string;
   canonicalPath: string;
+  /** Optional immutable browser-root boundary captured when the offer was issued. */
+  canonicalRoot?: string;
   filename: string;
   mimeType: string;
   sizeBytes: number;
@@ -869,6 +871,8 @@ function isDownload(value: unknown): value is PersistedDownloadTransfer {
     typeof entry.tokenHash === "string" && HASH_PATTERN.test(entry.tokenHash) &&
     typeof entry.etag === "string" && FILE_TRANSFER_ETAG_PATTERN.test(entry.etag) &&
     validText(entry.canonicalPath, FILE_TRANSFER_MAX_PATH_LENGTH) &&
+    (entry.canonicalRoot === undefined ||
+      validText(entry.canonicalRoot, FILE_TRANSFER_MAX_PATH_LENGTH)) &&
     validLeafName(entry.filename) &&
     validText(entry.mimeType, FILE_TRANSFER_MAX_MIME_TYPE_LENGTH) &&
     isSafeByteCount(entry.sizeBytes) &&
