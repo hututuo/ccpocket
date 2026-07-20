@@ -54,6 +54,8 @@ import '../git/state/git_view_cache_service.dart';
 import '../../router/app_router.dart';
 import '../claude_session/widgets/rewind_message_list_sheet.dart'
     show UserMessageHistorySheet;
+import '../conversation_fork/conversation_fork_actions.dart';
+import '../conversation_fork/conversation_fork_strings.dart';
 import 'state/codex_session_cubit.dart';
 import 'widgets/codex_goal_card.dart';
 import 'widgets/codex_goal_management.dart';
@@ -1257,6 +1259,10 @@ class _CodexChatBody extends HookWidget {
                           minHeight: 32,
                         ),
                         onSelected: (value) {
+                          if (value == conversationForkAction) {
+                            unawaited(_forkCodexFromCurrent(context));
+                            return;
+                          }
                           final localFeatureId =
                               LocalSessionFeatureHost.featureIdFromMenuValue(
                                 value,
@@ -1315,6 +1321,12 @@ class _CodexChatBody extends HookWidget {
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
                               ),
+                            ),
+                            conversationForkPopupMenuItem(
+                              context,
+                              enabled:
+                                  sessionState.status == ProcessStatus.idle &&
+                                  sessionState.queuedInput == null,
                             ),
                             PopupMenuItem(
                               key: const ValueKey('menu_goal'),
@@ -2103,6 +2115,39 @@ Future<void> _forkCodexFromAssistant(
   if (confirmed != true || !context.mounted) return;
 
   cubit.forkSession(targetUuid);
+}
+
+Future<void> _forkCodexFromCurrent(BuildContext context) async {
+  final cubit = context.read<ChatSessionCubit>();
+  final l = AppLocalizations.of(context);
+  if (cubit.state.status != ProcessStatus.idle ||
+      cubit.state.queuedInput != null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ConversationForkStrings.of(context).idleRequired)),
+    );
+    return;
+  }
+
+  String? targetUuid;
+  var hasUserEntry = false;
+  for (final entry in cubit.state.entries.reversed) {
+    if (entry case UserChatEntry(:final messageUuid)) {
+      hasUserEntry = true;
+      final candidate = messageUuid?.trim();
+      if (candidate != null && candidate.isNotEmpty) {
+        targetUuid = candidate;
+        break;
+      }
+    }
+  }
+  if (!hasUserEntry) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(l.forkTargetNotFound)));
+    return;
+  }
+  if (!await confirmConversationFork(context) || !context.mounted) return;
+  cubit.forkSession(targetUuid ?? latestCodexForkTarget);
 }
 
 String? _previousUserUuidForAssistant(

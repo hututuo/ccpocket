@@ -3,6 +3,21 @@ import 'package:ccpocket/models/messages.dart';
 import 'dart:convert';
 
 void main() {
+  test('serializes persisted Codex fork requests for the session list', () {
+    final json = jsonDecode(
+      ClientMessage.forkRecentSession(
+        threadId: 'thread-1',
+        projectPath: '/tmp/project',
+      ).toJson(),
+    );
+    expect(json, {
+      'type': 'fork',
+      'sessionId': 'thread-1',
+      'targetUuid': 'codex:user-turn:latest',
+      'projectPath': '/tmp/project',
+    });
+  });
+
   test('serializes tool suggestion installation action', () {
     expect(
       jsonDecode(
