@@ -239,4 +239,69 @@ void main() {
     expect(find.text('Retry'), findsOneWidget);
     expect(find.text('Preview'), findsNothing);
   });
+
+  testWidgets('file browser preview delegates Download to resumable transfer', (
+    tester,
+  ) async {
+    final quickLook = _BlockingQuickLookPreviewer();
+    var downloadRequests = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: ArtifactPreviewScreen(
+          previewUrl: preview,
+          filename: 'report.xlsx',
+          mimeType:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          sizeBytes: 120557,
+          quickLookPreviewer: quickLook,
+          onDownloadRequested: () async => downloadRequests += 1,
+        ),
+      ),
+    );
+    await tester.pump();
+    quickLook.dismissed.complete();
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.download_outlined));
+    await tester.pump();
+    expect(downloadRequests, 1);
+  });
+
+  testWidgets(
+    'file browser preview explains when resumable download is unavailable',
+    (tester) async {
+      final quickLook = _BlockingQuickLookPreviewer();
+      var downloadRequests = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: ArtifactPreviewScreen(
+            previewUrl: preview,
+            filename: 'report.xlsx',
+            mimeType:
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            sizeBytes: 120557,
+            quickLookPreviewer: quickLook,
+            onDownloadRequested: () async => downloadRequests += 1,
+            downloadUnavailableMessage: () =>
+                'Save this Mac connection before downloading files',
+          ),
+        ),
+      );
+      await tester.pump();
+      quickLook.dismissed.complete();
+      await tester.pump();
+
+      await tester.tap(find.byIcon(Icons.download_outlined));
+      await tester.pump();
+      expect(downloadRequests, 0);
+      expect(
+        find.text('Save this Mac connection before downloading files'),
+        findsOneWidget,
+      );
+    },
+  );
 }

@@ -12,6 +12,8 @@ class ArtifactPreviewScreen extends StatelessWidget {
   final String mimeType;
   final int sizeBytes;
   final String? expiresAt;
+  final Future<void> Function()? onDownloadRequested;
+  final String? Function()? downloadUnavailableMessage;
 
   const ArtifactPreviewScreen({
     super.key,
@@ -20,6 +22,8 @@ class ArtifactPreviewScreen extends StatelessWidget {
     required this.mimeType,
     required this.sizeBytes,
     this.expiresAt,
+    this.onDownloadRequested,
+    this.downloadUnavailableMessage,
   });
 
   @override

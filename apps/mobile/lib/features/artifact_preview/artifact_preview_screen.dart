@@ -74,6 +74,8 @@ class ArtifactPreviewScreen extends StatefulWidget {
   final int sizeBytes;
   final String? expiresAt;
   final ArtifactQuickLookPreviewer quickLookPreviewer;
+  final Future<void> Function()? onDownloadRequested;
+  final String? Function()? downloadUnavailableMessage;
 
   const ArtifactPreviewScreen({
     super.key,
@@ -83,6 +85,8 @@ class ArtifactPreviewScreen extends StatefulWidget {
     required this.sizeBytes,
     this.expiresAt,
     this.quickLookPreviewer = const ArtifactQuickLookService(),
+    this.onDownloadRequested,
+    this.downloadUnavailableMessage,
   });
 
   @override
@@ -325,6 +329,43 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
 
   Future<void> _downloadArtifact() async {
     if (_transferAction != null || _quickLookBusy) return;
+    final unavailableMessage = widget.downloadUnavailableMessage?.call();
+    if (unavailableMessage != null) {
+      _showError(unavailableMessage);
+      return;
+    }
+    final externalDownload = widget.onDownloadRequested;
+    if (externalDownload != null) {
+      setState(() {
+        _transferAction = _ArtifactTransferAction.download;
+        _transferProgress = null;
+      });
+      try {
+        await externalDownload();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '${AppLocalizations.of(context).download}: ${widget.filename}',
+              ),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      } catch (_) {
+        if (mounted) {
+          _showError(AppLocalizations.of(context).artifactOpenFailed);
+        }
+      } finally {
+        if (mounted) {
+          setState(() {
+            _transferAction = null;
+            _transferProgress = null;
+          });
+        }
+      }
+      return;
+    }
     final transfer = _ArtifactTransferSession();
     _activeTransfer = transfer;
     setState(() {
