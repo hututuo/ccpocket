@@ -48,6 +48,27 @@ void main() {
       final info = SessionInfo.fromJson(json);
       expect(info.gitBranch, '');
       expect(info.lastMessage, '');
+      expect(info.externalDesktopTurnActive, isFalse);
+    });
+
+    test('parses and clears the transient Desktop activity flag', () {
+      final info = SessionInfo.fromJson({
+        'id': 'desktop-active',
+        'provider': 'codex',
+        'projectPath': '/home/user/my-app',
+        'status': 'idle',
+        'createdAt': '',
+        'lastActivityAt': '',
+        'externalDesktopTurnActive': true,
+      });
+
+      expect(info.externalDesktopTurnActive, isTrue);
+      expect(
+        info
+            .copyWith(externalDesktopTurnActive: false)
+            .externalDesktopTurnActive,
+        isFalse,
+      );
     });
 
     test('parses codex settings from codexSettings object', () {
@@ -173,6 +194,32 @@ void main() {
       );
       expect(
         find.descendant(of: pinButton, matching: find.byIcon(Icons.push_pin)),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('shows Desktop working state and computer badge', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'desktop-running',
+        provider: Provider.codex.value,
+        projectPath: '/home/user/my-app',
+        status: 'idle',
+        createdAt: '',
+        lastActivityAt: '',
+        externalDesktopTurnActive: true,
+      );
+
+      await tester.pumpWidget(
+        _wrap(RunningSessionCard(session: session, onTap: () {})),
+      );
+
+      expect(find.text('Working'), findsOneWidget);
+      expect(
+        find.byKey(
+          const ValueKey('desktop_active_session_badge_desktop-running'),
+        ),
         findsOneWidget,
       );
     });

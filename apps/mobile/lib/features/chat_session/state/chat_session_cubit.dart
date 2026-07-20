@@ -50,7 +50,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const codexPermissionApplyStrategyCapability =
       'codex_permission_apply_strategy_v1';
   static const codexDesktopContinuityCapability =
-      'codex_desktop_continuity_v1';
+      codexDesktopContinuityBridgeCapability;
   static const _uuid = Uuid();
   static const offlineQueuedInputPrefix = 'offline:';
   static const deliveryPendingQueuedInputPrefix = 'pending:';

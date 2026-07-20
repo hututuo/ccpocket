@@ -40,6 +40,7 @@ import '../session_archive/session_archive_screen.dart';
 import '../session_archive/session_archive_strings.dart';
 import '../settings/state/settings_cubit.dart';
 import '../settings/state/settings_state.dart';
+import 'desktop_session_list_continuity_tracker.dart';
 import 'state/session_list_cubit.dart';
 import 'state/session_list_state.dart';
 import 'widgets/connect_form.dart';
@@ -335,6 +336,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   // Unseen session tracking
   final _unseenCubit = UnseenSessionsCubit();
   StreamSubscription<List<SessionInfo>>? _activeSessionsSub;
+  late final DesktopSessionListContinuityTracker _desktopContinuityTracker;
 
   static const _prefKeyUrl = 'bridge_url';
   static const _prefKeyMacOSNativeAppBannerDismissed =
@@ -355,6 +357,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     WidgetsBinding.instance.addObserver(this);
     // session_created navigation (the only manual subscription)
     final bridge = context.read<BridgeService>();
+    _desktopContinuityTracker = DesktopSessionListContinuityTracker(bridge);
     _archivePendingRequests = SessionArchivePendingRequests(
       onResultUnknown: _handleArchiveResultUnknown,
     );
@@ -717,6 +720,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     _archiveConnectionSub?.cancel();
     _archivePendingRequests.dispose();
     _activeSessionsSub?.cancel();
+    _desktopContinuityTracker.close();
     _unseenCubit.close();
     super.dispose();
   }

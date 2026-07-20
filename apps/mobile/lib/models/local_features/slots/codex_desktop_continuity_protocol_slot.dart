@@ -1,5 +1,7 @@
 part of '../../messages.dart';
 
+const codexDesktopContinuityBridgeCapability = 'codex_desktop_continuity_v1';
+
 const LocalFeatureProtocolSlot codexDesktopContinuityProtocolSlot =
     _CodexDesktopContinuityProtocolSlot();
 
