@@ -115,6 +115,7 @@ class LocalFeatureProtocolHost {
     codexCoreActionsProtocolSlot,
     codexDesktopContinuityProtocolSlot,
     fileTransferProtocolSlot,
+    fileBrowserProtocolSlot,
   ];
 
   static List<String> get supportedServerMessageTypes => List.unmodifiable(
