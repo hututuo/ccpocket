@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../utils/request_user_input.dart';
-import '../utils/platform_helper.dart';
 
 part 'local_features/protocol_host.dart';
 part 'local_features/slots/session_insights_models_slot.dart';
@@ -4201,6 +4200,7 @@ class ClientMessage {
   factory ClientMessage.clientCapabilities({
     String? appVersion,
     int protocolVersion = 1,
+    bool fileTransferSupported = false,
     List<String>? supportedServerMessages,
   }) {
     final advertisedMessages =
@@ -4222,7 +4222,7 @@ class ClientMessage {
                 !fileTransferProtocolSlot.supportedServerMessageTypes.contains(
                   type,
                 ) ||
-                isIOSPlatform,
+                fileTransferSupported,
           ),
         ];
     return ClientMessage._(<String, dynamic>{

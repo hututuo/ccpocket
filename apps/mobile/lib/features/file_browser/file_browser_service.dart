@@ -198,6 +198,7 @@ class FileBrowserService extends ChangeNotifier {
   factory FileBrowserService({
     required FileBrowserBridgeGateway bridge,
     required SharedPreferences preferences,
+    bool fileTransferClientSupported = true,
     DateTime Function()? clock,
     String Function()? requestIdGenerator,
     Duration requestTimeout = _fileBrowserRequestTimeout,
@@ -208,6 +209,7 @@ class FileBrowserService extends ChangeNotifier {
     requestIdGenerator ?? _newRequestId,
     requestTimeout,
     _readPins(preferences),
+    fileTransferClientSupported,
   );
 
   FileBrowserService._(
@@ -217,6 +219,7 @@ class FileBrowserService extends ChangeNotifier {
     this._requestIdGenerator,
     this._requestTimeout,
     this._pins,
+    this._fileTransferClientSupported,
   ) {
     _lastConnectionIdentity = _stableLogicalIdentity;
     _lastCapabilitySupported = supportedByBridge;
@@ -240,6 +243,7 @@ class FileBrowserService extends ChangeNotifier {
   final String Function() _requestIdGenerator;
   final Duration _requestTimeout;
   final List<FileBrowserPin> _pins;
+  final bool _fileTransferClientSupported;
   final Map<String, _PendingFileBrowserRequest> _pending = {};
   final LinkedHashMap<String, FileBrowserDirectorySnapshot> _directoryCache =
       LinkedHashMap();
@@ -278,10 +282,11 @@ class FileBrowserService extends ChangeNotifier {
   String? get rootSetRevision => _rootSetRevision;
   int get previewMaxBytes => _previewMaxBytes;
   int get downloadMaxBytes => _downloadMaxBytes;
-  bool get downloadAvailable => _downloadAvailable;
+  bool get downloadAvailable =>
+      _fileTransferClientSupported && _downloadAvailable;
   bool get hasStableConnectionIdentity => _stableLogicalIdentity != null;
   bool get canReceiveDownloads =>
-      _downloadAvailable && hasStableConnectionIdentity;
+      downloadAvailable && hasStableConnectionIdentity;
   bool get canPersistPins =>
       hasStableConnectionIdentity && _bridgeInstanceId != null;
   String? get lastErrorCode => _lastErrorCode;
@@ -592,7 +597,7 @@ class FileBrowserService extends ChangeNotifier {
 
   Future<String> download(FileBrowserNode node, String rootId) async {
     _requireReady();
-    if (!_downloadAvailable || !node.canDownload) {
+    if (!downloadAvailable || !node.canDownload) {
       throw const FileBrowserException('download_unavailable');
     }
     if (!hasStableConnectionIdentity) {

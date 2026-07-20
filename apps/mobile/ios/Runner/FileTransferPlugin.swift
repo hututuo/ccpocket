@@ -18,6 +18,8 @@ enum FileTransferNativeError: Error, Equatable {
 
 final class FileTransferPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate {
   static let channelName = "ccpocket/file_transfer"
+  static let nativeAPIVersion = 1
+  static let minimumOSMajorVersion = 15
   static let maximumBytes: Int64 = 15 * 1024 * 1024 * 1024
   static let capacitySafetyMarginBytes: Int64 = 512 * 1024 * 1024
 
@@ -35,6 +37,18 @@ final class FileTransferPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
+    case "getSupportInfo":
+      result(
+        Self.supportInfo(
+          osVersion: ProcessInfo.processInfo.operatingSystemVersion,
+          appVersion: Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+          ) as? String,
+          buildNumber: Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+          ) as? String
+        )
+      )
     case "pickFile":
       DispatchQueue.main.async { [weak self] in
         self?.presentPicker(arguments: call.arguments, result: result)
@@ -116,6 +130,23 @@ final class FileTransferPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  static func supportInfo(
+    osVersion: OperatingSystemVersion,
+    appVersion: String? = nil,
+    buildNumber: String? = nil
+  ) -> [String: Any] {
+    var value: [String: Any] = [
+      "supported": osVersion.majorVersion >= minimumOSMajorVersion,
+      "iosMajor": osVersion.majorVersion,
+      "iosMinor": osVersion.minorVersion,
+      "iosPatch": osVersion.patchVersion,
+      "nativeApiVersion": nativeAPIVersion,
+    ]
+    if let appVersion { value["appVersion"] = appVersion }
+    if let buildNumber { value["buildNumber"] = buildNumber }
+    return value
   }
 
   func documentPicker(

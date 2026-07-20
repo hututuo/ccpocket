@@ -199,6 +199,37 @@ void main() {
     },
   );
 
+  test(
+    'unsupported iPhone build blocks file-browser download before request',
+    () async {
+      service.dispose();
+      service = FileBrowserService(
+        bridge: bridge,
+        preferences: preferences,
+        fileTransferClientSupported: false,
+        clock: () => now,
+        requestIdGenerator: () => 'request-${++requestSequence}',
+        requestTimeout: const Duration(seconds: 2),
+      );
+      await _loadRoots(service, bridge);
+      final sentBeforeDownload = bridge.sent.length;
+
+      expect(service.downloadAvailable, isFalse);
+      expect(service.canReceiveDownloads, isFalse);
+      await expectLater(
+        service.download(_fileNode('report.pdf'), 'root-one'),
+        throwsA(
+          isA<FileBrowserException>().having(
+            (error) => error.code,
+            'code',
+            'download_unavailable',
+          ),
+        ),
+      );
+      expect(bridge.sent, hasLength(sentBeforeDownload));
+    },
+  );
+
   test('rejects preview URL authority changes before opening the WebView', () {
     expect(
       () => resolveFileBrowserPreviewUri(

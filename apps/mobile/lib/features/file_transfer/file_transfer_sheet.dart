@@ -171,7 +171,7 @@ class _StatusCard extends StatelessWidget {
               available ? Icons.link : Icons.link_off,
               color: available ? colorScheme.primary : colorScheme.error,
             ),
-            title: Text(available ? copy.ready : copy.unavailable),
+            title: Text(available ? copy.ready : copy.unavailable(service)),
             subtitle: Text(copy.filesLocation),
           ),
           const Divider(height: 1, indent: 16, endIndent: 16),
@@ -363,8 +363,18 @@ class _TransferCopy {
       zh ? 'Mac 与 iPhone 双向续传' : 'Resumable Mac ↔ iPhone transfer';
   String get uploadToMac => zh ? '上传到 Mac' : 'Upload to Mac';
   String get ready => zh ? '已连接，可双向传输' : 'Connected and ready';
-  String get unavailable =>
-      zh ? '当前 Bridge 不支持文件互传 V2' : 'File Transfer V2 unavailable';
+  String unavailable(FileTransferService service) {
+    if (!service.platformSupported) {
+      return zh
+          ? '当前 iPhone 系统或 APP 构建不支持文件互传'
+          : 'This iPhone system or app build does not support File Transfer';
+    }
+    if (!service.isConnected) {
+      return zh ? '连接 Mac 后才可文件互传' : 'Connect to the Mac for File Transfer';
+    }
+    return zh ? '当前 Bridge 不支持文件互传 V2' : 'File Transfer V2 unavailable';
+  }
+
   String get filesLocation => zh
       ? '接收文件：文件 App > CC Pocket > Downloads'
       : 'Received files: Files > CC Pocket > Downloads';

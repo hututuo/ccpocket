@@ -227,4 +227,21 @@ class RunnerTests: XCTestCase {
     XCTAssertGreaterThan(capacity ?? 0, 0)
   }
 
+  func testFileTransferSupportInfoGatesOSAndFreezesNativeAPI() {
+    let supported = FileTransferPlugin.supportInfo(
+      osVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 1, patchVersion: 0),
+      appVersion: "1.72.1",
+      buildNumber: "42"
+    )
+    XCTAssertEqual(supported["supported"] as? Bool, true)
+    XCTAssertEqual(supported["iosMajor"] as? Int, 26)
+    XCTAssertEqual(supported["nativeApiVersion"] as? Int, 1)
+    XCTAssertEqual(supported["appVersion"] as? String, "1.72.1")
+
+    let unsupported = FileTransferPlugin.supportInfo(
+      osVersion: OperatingSystemVersion(majorVersion: 14, minorVersion: 8, patchVersion: 1)
+    )
+    XCTAssertEqual(unsupported["supported"] as? Bool, false)
+  }
+
 }

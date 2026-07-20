@@ -49,13 +49,14 @@ void main() {
     required http.Client client,
     FileTransferDocumentPicker picker = const _Picker(null),
     SharedPreferences? preferences,
+    bool platformSupported = true,
   }) => FileTransferService(
     bridge: bridge,
     storage: storage,
     picker: picker,
     capacity: const _Capacity(),
     commit: const _Commit(),
-    platformSupported: true,
+    platformSupported: platformSupported,
     httpClient: client,
     preferences: preferences,
     requestIdGenerator: _Ids().next,
@@ -80,6 +81,32 @@ void main() {
     );
     expect(upload.onPressed, isNull);
     expect(tester.takeException(), isNull);
+    service.dispose();
+  });
+
+  testWidgets('unsupported iPhone build is detected before upload is offered', (
+    tester,
+  ) async {
+    final service = makeService(
+      platformSupported: false,
+      client: MockClient((_) async => http.Response('', 500)),
+    );
+    await _pumpTile(tester, service);
+
+    await tester.tap(find.byKey(const ValueKey('file_transfer_settings_tile')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'This iPhone system or app build does not support File Transfer',
+      ),
+      findsOneWidget,
+    );
+    final upload = tester.widget<FilledButton>(
+      find.byKey(const ValueKey('file_transfer_upload_button')),
+    );
+    expect(upload.onPressed, isNull);
+    expect(bridge.sent, isEmpty);
     service.dispose();
   });
 

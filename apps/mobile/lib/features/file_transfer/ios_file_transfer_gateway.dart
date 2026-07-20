@@ -1,14 +1,43 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 
 import 'file_transfer_service.dart';
 
 const iosFileTransferChannelName = 'ccpocket/file_transfer';
+const minimumIosFileTransferMajorVersion = 15;
+const fileTransferNativeApiVersion = 1;
+const fileTransferSupportProbeTimeout = Duration(seconds: 2);
+
+class FileTransferPlatformSupport {
+  const FileTransferPlatformSupport({
+    required this.supported,
+    required this.reason,
+    this.iosMajor,
+    this.iosMinor,
+    this.iosPatch,
+    this.nativeApiVersion,
+    this.appVersion,
+    this.buildNumber,
+  });
+
+  final bool supported;
+  final String reason;
+  final int? iosMajor;
+  final int? iosMinor;
+  final int? iosPatch;
+  final int? nativeApiVersion;
+  final String? appVersion;
+  final String? buildNumber;
+}
 
 abstract interface class FileTransferPlatformGateway
     implements
         FileTransferDocumentPicker,
         FileTransferCapacityGateway,
-        FileTransferCommitGateway {}
+        FileTransferCommitGateway {
+  Future<FileTransferPlatformSupport> probeSupport();
+}
 
 class IosFileTransferGateway implements FileTransferPlatformGateway {
   const IosFileTransferGateway([
@@ -16,6 +45,71 @@ class IosFileTransferGateway implements FileTransferPlatformGateway {
   ]);
 
   final MethodChannel _channel;
+
+  @override
+  Future<FileTransferPlatformSupport> probeSupport() async {
+    try {
+      final value = await _channel
+          .invokeMapMethod<Object?, Object?>('getSupportInfo')
+          .timeout(fileTransferSupportProbeTimeout);
+      if (value == null) {
+        return const FileTransferPlatformSupport(
+          supported: false,
+          reason: 'invalid_support_response',
+        );
+      }
+      final nativeSupported = value['supported'];
+      final iosMajor = value['iosMajor'];
+      final iosMinor = value['iosMinor'];
+      final iosPatch = value['iosPatch'];
+      final nativeApi = value['nativeApiVersion'];
+      final appVersion = value['appVersion'];
+      final buildNumber = value['buildNumber'];
+      if (nativeSupported is! bool ||
+          iosMajor is! int ||
+          iosMinor is! int ||
+          iosPatch is! int ||
+          nativeApi is! int ||
+          (appVersion != null && appVersion is! String) ||
+          (buildNumber != null && buildNumber is! String)) {
+        return const FileTransferPlatformSupport(
+          supported: false,
+          reason: 'invalid_support_response',
+        );
+      }
+      final reason =
+          !nativeSupported || iosMajor < minimumIosFileTransferMajorVersion
+          ? 'ios_version_unsupported'
+          : nativeApi < fileTransferNativeApiVersion
+          ? 'native_api_unsupported'
+          : 'supported';
+      return FileTransferPlatformSupport(
+        supported: reason == 'supported',
+        reason: reason,
+        iosMajor: iosMajor,
+        iosMinor: iosMinor,
+        iosPatch: iosPatch,
+        nativeApiVersion: nativeApi,
+        appVersion: appVersion as String?,
+        buildNumber: buildNumber as String?,
+      );
+    } on MissingPluginException {
+      return const FileTransferPlatformSupport(
+        supported: false,
+        reason: 'native_plugin_missing',
+      );
+    } on PlatformException catch (error) {
+      return FileTransferPlatformSupport(
+        supported: false,
+        reason: 'platform_error:${error.code}',
+      );
+    } on TimeoutException {
+      return const FileTransferPlatformSupport(
+        supported: false,
+        reason: 'support_probe_timeout',
+      );
+    }
+  }
 
   @override
   Future<FileTransferSelection?> pickFile({required int maxSizeBytes}) async {
@@ -128,6 +222,8 @@ class IosFileTransferGateway implements FileTransferPlatformGateway {
       return await _channel.invokeMethod<T>(method, arguments);
     } on PlatformException catch (error) {
       throw FileTransferException(error.code, error.message);
+    } on MissingPluginException {
+      throw const FileTransferException('native_plugin_unavailable');
     }
   }
 
@@ -142,12 +238,21 @@ class IosFileTransferGateway implements FileTransferPlatformGateway {
       );
     } on PlatformException catch (error) {
       throw FileTransferException(error.code, error.message);
+    } on MissingPluginException {
+      throw const FileTransferException('native_plugin_unavailable');
     }
   }
 }
 
 class UnsupportedFileTransferGateway implements FileTransferPlatformGateway {
   const UnsupportedFileTransferGateway();
+
+  @override
+  Future<FileTransferPlatformSupport> probeSupport() async =>
+      const FileTransferPlatformSupport(
+        supported: false,
+        reason: 'platform_unsupported',
+      );
 
   @override
   Future<void> markTransient(String path) =>

@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ccpocket/models/messages.dart';
-import 'package:ccpocket/utils/platform_helper.dart';
 import 'dart:convert';
 
 void main() {
@@ -487,13 +486,22 @@ void main() {
         'unarchive_result',
         'delete_session_result',
         ...LocalFeatureProtocolHost.supportedServerMessageTypes.where(
-          (type) =>
-              !fileTransferProtocolSlot.supportedServerMessageTypes.contains(
-                type,
-              ) ||
-              isIOSPlatform,
+          (type) => !fileTransferProtocolSlot.supportedServerMessageTypes
+              .contains(type),
         ),
       ]);
+
+      final nativeSupported =
+          jsonDecode(
+                ClientMessage.clientCapabilities(
+                  fileTransferSupported: true,
+                ).toJson(),
+              )
+              as Map<String, dynamic>;
+      expect(
+        nativeSupported['supportedServerMessages'],
+        containsAll(fileTransferProtocolSlot.supportedServerMessageTypes),
+      );
     });
 
     test('ClientMessage.getHistoryDelta serializes sinceSeq', () {

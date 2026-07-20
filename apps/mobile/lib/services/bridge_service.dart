@@ -173,6 +173,8 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, _PendingPermissionChange> _pendingPermissionChanges = {};
   final CodexGoalRequestRouter _goalRequestRouter = CodexGoalRequestRouter();
   final Duration permissionChangeTimeout;
+  final bool fileTransferClientSupported;
+  final String? clientAppVersion;
   String? _promptHistoryBridgeId;
   UsageResultMessage? _lastUsageResult;
   final SessionRuntimeStore _runtimeStore = SessionRuntimeStore();
@@ -337,6 +339,8 @@ class BridgeService implements BridgeServiceBase {
 
   BridgeService({
     this.permissionChangeTimeout = const Duration(seconds: 30),
+    this.fileTransferClientSupported = false,
+    this.clientAppVersion,
   }) {
     unawaited(_ensureOfflineQueueRestored());
   }
@@ -1184,7 +1188,12 @@ class BridgeService implements BridgeServiceBase {
       _channel = WebSocketChannel.connect(Uri.parse(url));
       _setBridgeConnectionState(BridgeConnectionState.connected);
       _reconnectAttempt = 0;
-      send(ClientMessage.clientCapabilities());
+      send(
+        ClientMessage.clientCapabilities(
+          appVersion: clientAppVersion,
+          fileTransferSupported: fileTransferClientSupported,
+        ),
+      );
       _flushMessageQueue();
 
       _channelSub = _channel!.stream.listen(

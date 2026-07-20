@@ -156,8 +156,6 @@ void main() async {
     unawaited(_checkShorebirdUpdate(prefs));
   }
 
-  final bridge = BridgeService();
-  bridge.onDisconnect = sshBridgeTunnelService?.closeAll;
   const fileTransferSecureStorage = FlutterSecureStorage(
     iOptions: IOSOptions(
       accountName: 'ccpocket_file_transfer_v2',
@@ -168,6 +166,18 @@ void main() async {
   final FileTransferPlatformGateway fileTransferPlatform = isIOSPlatform
       ? const IosFileTransferGateway()
       : const UnsupportedFileTransferGateway();
+  final fileTransferPlatformSupport = await fileTransferPlatform.probeSupport();
+  if (isIOSPlatform && !fileTransferPlatformSupport.supported) {
+    logger.warning(
+      '[main] File transfer native capability disabled: '
+      '${fileTransferPlatformSupport.reason}',
+    );
+  }
+  final bridge = BridgeService(
+    fileTransferClientSupported: fileTransferPlatformSupport.supported,
+    clientAppVersion: fileTransferPlatformSupport.appVersion,
+  );
+  bridge.onDisconnect = sshBridgeTunnelService?.closeAll;
   final fileTransferService = FileTransferService(
     bridge: BridgeServiceFileTransferGateway(bridge),
     storage: FileTransferStorage(
@@ -180,7 +190,7 @@ void main() async {
     picker: fileTransferPlatform,
     capacity: fileTransferPlatform,
     commit: fileTransferPlatform,
-    platformSupported: isIOSPlatform,
+    platformSupported: fileTransferPlatformSupport.supported,
     notifications: NotificationServiceFileTransferGateway(
       NotificationService.instance,
     ),
@@ -190,6 +200,7 @@ void main() async {
   final fileBrowserService = FileBrowserService(
     bridge: BridgeServiceFileBrowserGateway(bridge),
     preferences: prefs,
+    fileTransferClientSupported: fileTransferPlatformSupport.supported,
   );
   final autoApprovalService = AutoApprovalService(
     bridge: bridge,
