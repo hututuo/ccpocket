@@ -2170,21 +2170,18 @@ export class BridgeWebSocketServer {
     const process =
       session.process instanceof CodexProcess ? session.process : undefined;
     const settings = session.codexSettings;
+    const model = settings?.model ?? process?.knownModel;
+    const effort =
+      settings?.modelReasoningEffort ?? process?.modelReasoningEffort;
+    const serviceTier = settings?.serviceTier ?? process?.knownServiceTier;
     this.send(ws, {
       type: "system",
       subtype: "codex_settings",
       sessionId,
       provider: "codex",
-      ...((settings?.model ?? process?.model)
-        ? { model: settings?.model ?? process?.model }
-        : {}),
-      ...((settings?.modelReasoningEffort ?? process?.modelReasoningEffort)
-        ? {
-            modelReasoningEffort:
-              settings?.modelReasoningEffort ?? process?.modelReasoningEffort,
-          }
-        : {}),
-      serviceTier: settings?.serviceTier ?? process?.serviceTier ?? "standard",
+      ...(model ? { model } : {}),
+      ...(effort ? { modelReasoningEffort: effort } : {}),
+      ...(serviceTier ? { serviceTier } : {}),
     });
   }
 

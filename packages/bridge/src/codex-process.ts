@@ -667,6 +667,21 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
   }
 
+  /**
+   * Model confirmed by an explicit start option or the app-server response.
+   *
+   * Unlike [model], this never returns the new-session fallback while a
+   * resumed thread is still bootstrapping. Session snapshots must use this
+   * getter so opening an existing 5.6 thread cannot transiently publish 5.5
+   * as if it were authoritative configuration.
+   */
+  get knownModel(): string | undefined {
+    return (
+      sanitizeCodexModel(this._runtimeModel) ??
+      sanitizeCodexModel(this.startModel)
+    );
+  }
+
   get modelReasoningEffort():
     CodexStartOptions["modelReasoningEffort"] | undefined {
     return this._runtimeModelReasoningEffort;
@@ -674,6 +689,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   get serviceTier(): string {
     return this._runtimeServiceTier ?? "standard";
+  }
+
+  /** Confirmed service tier, excluding the standard new-session fallback. */
+  get knownServiceTier(): string | undefined {
+    if (this._runtimeServiceTier == null) return undefined;
+    return normalizeServiceTier(this._runtimeServiceTier) ?? undefined;
   }
 
   /**

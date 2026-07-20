@@ -4164,6 +4164,63 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("does not publish the 5.5 fallback while a resumed model is unresolved", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-unresolved",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    const unresolvedProcess = Object.create(CodexProcess.prototype) as any;
+    unresolvedProcess.readThread = vi.fn(async () => ({
+      id: "thread-unresolved",
+      turns: [],
+    }));
+    session.process = unresolvedProcess;
+    session.claudeSessionId = "thread-unresolved";
+    session.codexSettings = {};
+    codexThreadToSessionHistoryMock.mockReturnValue([]);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+
+    const settings = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "codex_settings",
+      );
+    expect(unresolvedProcess.model).toBe("gpt-5.5");
+    expect(unresolvedProcess.knownModel).toBeUndefined();
+    expect(settings).not.toHaveProperty("model");
+    expect(settings).not.toHaveProperty("modelReasoningEffort");
+    expect(settings).not.toHaveProperty("serviceTier");
+
+    bridge.close();
+  });
+
   it("replays cached Codex goal state with history responses", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
