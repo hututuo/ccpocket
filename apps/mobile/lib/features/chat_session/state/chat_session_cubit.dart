@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -12,6 +13,33 @@ import '../../../services/bridge_service.dart';
 import '../../../services/chat_message_handler.dart';
 import 'chat_session_state.dart';
 import 'streaming_state_cubit.dart';
+
+class LocalHistoryPagingState {
+  const LocalHistoryPagingState({
+    this.enabled = false,
+    this.hasMore = false,
+    this.loading = false,
+    this.error,
+  });
+
+  final bool enabled;
+  final bool hasMore;
+  final bool loading;
+  final Object? error;
+
+  LocalHistoryPagingState copyWith({
+    bool? enabled,
+    bool? hasMore,
+    bool? loading,
+    Object? error,
+    bool clearError = false,
+  }) => LocalHistoryPagingState(
+    enabled: enabled ?? this.enabled,
+    hasMore: hasMore ?? this.hasMore,
+    loading: loading ?? this.loading,
+    error: clearError ? null : (error ?? this.error),
+  );
+}
 
 /// Manages the state of a single chat session.
 ///
@@ -70,6 +98,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Number of entries prepended from past_history, so that [replaceEntries]
   /// can preserve them while replacing in-memory history entries.
   int _pastEntryCount = 0;
+
+  int _localHistoryPagingGeneration = 0;
+  int _localMirrorEntryCount = 0;
+  bool _discardLocalMirrorOnNextCanonicalHistory = false;
+  final ValueNotifier<LocalHistoryPagingState> localHistoryPaging =
+      ValueNotifier(const LocalHistoryPagingState());
 
   /// Tool use IDs that have already been answered locally.
   static const _maxRespondedToolUseIds = 512;
@@ -869,6 +903,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Future<void> _requestInitialHistory() async {
+    final pagingGeneration = ++_localHistoryPagingGeneration;
     var handled = false;
     try {
       handled = await _bridge.tryBootstrapSessionHistory(
@@ -884,10 +919,113 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
     }
     if (isClosed) return;
+    if (pagingGeneration != _localHistoryPagingGeneration) return;
     _historyBootstrapSucceeded = handled;
     if (!handled) {
+      localHistoryPaging.value = const LocalHistoryPagingState();
       _historyFallbackRequested = true;
       _bridge.requestSessionHistory(sessionId);
+      return;
+    }
+    _historyFallbackRequested = false;
+    localHistoryPaging.value = LocalHistoryPagingState(
+      enabled: _bridge.hasSessionHistoryPaging,
+      hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
+    );
+    _settleStatusFromRuntimeAfterLocalBootstrap();
+  }
+
+  void _settleStatusFromRuntimeAfterLocalBootstrap() {
+    if (state.status != ProcessStatus.starting) return;
+    final runtime = _runtimeSessionFrom(_bridge.sessions);
+    if (runtime == null) return;
+    final status = ProcessStatus.fromString(runtime.status);
+    if (status == ProcessStatus.starting) return;
+    _restoreRuntimeInteractions(runtime);
+    _statusRefreshTimer?.cancel();
+    _statusRefreshTimer = null;
+    emit(state.copyWith(status: status));
+    final needsCanonicalRuntimeReconciliation =
+        status == ProcessStatus.running ||
+        status == ProcessStatus.waitingApproval ||
+        status == ProcessStatus.compacting;
+    if (needsCanonicalRuntimeReconciliation && !_historyFallbackRequested) {
+      // The durable mirror intentionally excludes transient approvals, queues,
+      // partial tool activity, and active streaming state. SessionInfo restores
+      // the actionable controls immediately; one canonical history read then
+      // reconciles the remaining live runtime details.
+      _historyFallbackRequested = true;
+      _bridge.requestSessionHistory(sessionId);
+    }
+  }
+
+  void _disableLocalHistoryPaging({bool expectCanonicalHistory = false}) {
+    if (expectCanonicalHistory && _localMirrorEntryCount > 0) {
+      _discardLocalMirrorOnNextCanonicalHistory = true;
+    }
+    _localHistoryPagingGeneration += 1;
+    localHistoryPaging.value = const LocalHistoryPagingState();
+    _bridge.invalidateLocalSessionHistoryPaging(sessionId);
+  }
+
+  Future<void> loadOlderLocalHistory() async {
+    final currentPaging = localHistoryPaging.value;
+    if (isClosed ||
+        !currentPaging.enabled ||
+        !currentPaging.hasMore ||
+        currentPaging.loading) {
+      return;
+    }
+    final generation = _localHistoryPagingGeneration;
+    localHistoryPaging.value = currentPaging.copyWith(
+      loading: true,
+      clearError: true,
+    );
+    try {
+      final page = await _bridge.tryLoadOlderLocalSessionHistory(
+        runtimeSessionId: sessionId,
+      );
+      if (isClosed || generation != _localHistoryPagingGeneration) return;
+      if (page == null) {
+        localHistoryPaging.value = LocalHistoryPagingState(
+          enabled: _bridge.hasSessionHistoryPaging,
+          hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
+        );
+        return;
+      }
+      if (page.messages.isNotEmpty) {
+        final history = HistoryMessage(messages: page.messages);
+        final decoded = _handler.handle(
+          history,
+          isBackground: true,
+          isCodex: isCodex,
+          ignoredToolUseIds: _respondedToolUseIds,
+          historyTimestampAnchor: page.timestampAnchor,
+        );
+        _applyUpdate(
+          ChatStateUpdate(
+            entriesToPrepend: decoded.entriesToAdd,
+            toolUseIdsToHide: decoded.toolUseIdsToHide,
+            localHistoryPage: true,
+          ),
+          history,
+        );
+      }
+      localHistoryPaging.value = LocalHistoryPagingState(
+        enabled: true,
+        hasMore: page.hasMore,
+      );
+    } catch (error, stackTrace) {
+      if (isClosed || generation != _localHistoryPagingGeneration) return;
+      logger.warning(
+        '[session:$sessionId] Failed to load older local history',
+        error,
+        stackTrace,
+      );
+      localHistoryPaging.value = localHistoryPaging.value.copyWith(
+        loading: false,
+        error: error,
+      );
     }
   }
 
@@ -933,6 +1071,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _onMessage(ServerMessage msg) {
+    var isLocalMirrorSnapshot = false;
+    var discardLocalMirrorEntries = false;
     if (state.externalDesktopTurnActive &&
         msg is StatusMessage &&
         (msg.status == ProcessStatus.idle ||
@@ -988,7 +1128,28 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     if (msg is HistoryMessage) {
+      isLocalMirrorSnapshot = _bridge.isExternalSessionHistory(msg);
+      if (localHistoryPaging.value.enabled) {
+        if (isLocalMirrorSnapshot) {
+          _localHistoryPagingGeneration += 1;
+          localHistoryPaging.value = LocalHistoryPagingState(
+            enabled: _bridge.hasSessionHistoryPaging,
+            hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
+          );
+        } else {
+          discardLocalMirrorEntries = _localMirrorEntryCount > 0;
+          _disableLocalHistoryPaging();
+        }
+      }
+      if (!isLocalMirrorSnapshot && _discardLocalMirrorOnNextCanonicalHistory) {
+        discardLocalMirrorEntries = true;
+        _discardLocalMirrorOnNextCanonicalHistory = false;
+      }
       _replacePendingPermissionsFromHistory(msg.messages);
+      if (isLocalMirrorSnapshot) {
+        final runtime = _runtimeSessionFrom(_bridge.sessions);
+        if (runtime != null) _restoreRuntimeInteractions(runtime);
+      }
     } else if (msg is PermissionRequestMessage &&
         !_respondedToolUseIds.contains(msg.toolUseId)) {
       _pendingPermissionRequests[msg.toolUseId] = msg;
@@ -1020,8 +1181,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         isBackground: true,
         isCodex: isCodex,
         ignoredToolUseIds: _respondedToolUseIds,
+        historyTimestampAnchor: msg is HistoryMessage
+            ? _bridge.externalSessionHistoryTimestampAnchor(msg)
+            : null,
       );
-      _applyUpdate(update, msg);
+      _applyUpdate(
+        update,
+        msg,
+        isLocalMirrorSnapshot: isLocalMirrorSnapshot,
+        discardLocalMirrorEntries: discardLocalMirrorEntries,
+      );
       if (msg is ToolResultMessage && resolvesPermission) {
         _pendingPermissionRequests.remove(msg.toolUseId);
         _markToolUseResponded(msg.toolUseId);
@@ -1242,6 +1411,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool allowUserDelivery = true,
     ChatMessageHandler? sourceHandler,
     bool affectVisibleStreaming = true,
+    bool isLocalMirrorSnapshot = false,
+    bool discardLocalMirrorEntries = false,
   }) {
     final messageHandler = sourceHandler ?? _handler;
     final current = state;
@@ -1287,7 +1458,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     // Prepend entries (past history)
     if (update.entriesToPrepend.isNotEmpty) {
-      _pastEntryCount += update.entriesToPrepend.length;
+      if (update.localHistoryPage) {
+        _localMirrorEntryCount += update.entriesToPrepend.length;
+      } else {
+        _pastEntryCount += update.entriesToPrepend.length;
+      }
       entries = [...update.entriesToPrepend, ...entries];
       didModifyEntries = true;
     }
@@ -1427,7 +1602,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       // History is a full snapshot — replace all non-past-history entries
       // to prevent duplicates when get_history is received multiple times.
       final pastEntries = entries.take(_pastEntryCount).toList();
-      final existingNonPast = entries.skip(_pastEntryCount).toList();
+      final allExistingNonPast = entries.skip(_pastEntryCount).toList();
+      final localMirrorPrefix = _localMirrorEntryCount.clamp(
+        0,
+        allExistingNonPast.length,
+      );
+      final existingNonPast =
+          (isLocalMirrorSnapshot || discardLocalMirrorEntries) &&
+              localMirrorPrefix > 0
+          ? allExistingNonPast.skip(localMirrorPrefix).toList()
+          : allExistingNonPast;
       final mergedHistoryEntries = _mergeRicherLiveAssistantEntries(
         existingEntries: existingNonPast,
         historyEntries: nonStreamingEntries,
@@ -1439,6 +1623,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
 
       entries = [...pastEntries, ...mergedHistoryEntries, ...extraLiveEntries];
+      if (isLocalMirrorSnapshot) {
+        _localMirrorEntryCount = mergedHistoryEntries.length;
+      } else if (discardLocalMirrorEntries) {
+        _localMirrorEntryCount = 0;
+      }
 
       // Preserve local data (image bytes, timestamps) from existing entries
       // that the server history does not contain.
@@ -3743,6 +3932,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void refreshHistory() {
     _pastHistoryLoaded = false;
     _pastEntryCount = 0;
+    _disableLocalHistoryPaging(expectCanonicalHistory: true);
     if (!_bridge.hasSessionHistoryBootstrap) {
       _bridge.requestSessionHistory(sessionId);
       return;
@@ -3751,6 +3941,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Future<void> _refreshMirroredHistory() async {
+    final pagingGeneration = ++_localHistoryPagingGeneration;
     var handled = false;
     try {
       handled = await _bridge.tryBootstrapSessionHistory(
@@ -3766,9 +3957,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         stackTrace,
       );
     }
-    if (!handled && !isClosed) {
+    if (isClosed || pagingGeneration != _localHistoryPagingGeneration) return;
+    if (!handled) {
+      localHistoryPaging.value = const LocalHistoryPagingState();
+      _historyFallbackRequested = true;
       _bridge.requestSessionHistory(sessionId);
+      return;
     }
+    _historyFallbackRequested = false;
+    localHistoryPaging.value = LocalHistoryPagingState(
+      enabled: _bridge.hasSessionHistoryPaging,
+      hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
+    );
   }
 
   /// Retry a failed user message.
@@ -3932,6 +4132,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _deliveryPendingInputs.clear();
     _subscription?.cancel();
     _sideEffectsController.close();
+    _bridge.invalidateLocalSessionHistoryPaging(sessionId);
+    localHistoryPaging.dispose();
     return super.close();
   }
 }

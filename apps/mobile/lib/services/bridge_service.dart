@@ -41,6 +41,33 @@ typedef SessionHistoryBootstrapHandler =
       required bool force,
     });
 
+class LocalSessionHistoryPage {
+  const LocalSessionHistoryPage({
+    required this.messages,
+    required this.hasMore,
+    this.timestampAnchor,
+  });
+
+  final List<ServerMessage> messages;
+  final bool hasMore;
+  final DateTime? timestampAnchor;
+}
+
+typedef SessionHistoryPageLoader =
+    Future<LocalSessionHistoryPage?> Function({
+      required String runtimeSessionId,
+      required int limit,
+    });
+
+typedef SessionHistoryHasMore = bool Function(String runtimeSessionId);
+typedef SessionHistoryPageInvalidator = void Function(String runtimeSessionId);
+
+class _ExternalSessionHistoryMetadata {
+  const _ExternalSessionHistoryMetadata({this.timestampAnchor});
+
+  final DateTime? timestampAnchor;
+}
+
 class BridgeService implements BridgeServiceBase {
   void Function(ClientMessage message)? onOutgoingMessage;
   FutureOr<void> Function()? onDisconnect;
@@ -151,6 +178,11 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, ({String provider, String providerSessionId})>
   _providerSessionBindingByRuntime = {};
   SessionHistoryBootstrapHandler? _sessionHistoryBootstrapHandler;
+  SessionHistoryPageLoader? _sessionHistoryPageLoader;
+  SessionHistoryHasMore? _sessionHistoryHasMore;
+  SessionHistoryPageInvalidator? _sessionHistoryPageInvalidator;
+  final Expando<_ExternalSessionHistoryMetadata> _externalSessionHistories =
+      Expando<_ExternalSessionHistoryMetadata>('externalSessionHistory');
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
   final Map<String, ClientMessage> _inFlightPendingMessages = {};
   final Map<String, ClientMessage> _inFlightInputMessages = {};
@@ -2684,6 +2716,37 @@ class BridgeService implements BridgeServiceBase {
   bool get hasSessionHistoryBootstrap =>
       _sessionHistoryBootstrapHandler != null;
 
+  void configureSessionHistoryPaging({
+    SessionHistoryPageLoader? loader,
+    SessionHistoryHasMore? hasMore,
+    SessionHistoryPageInvalidator? invalidate,
+  }) {
+    _sessionHistoryPageLoader = loader;
+    _sessionHistoryHasMore = hasMore;
+    _sessionHistoryPageInvalidator = invalidate;
+  }
+
+  bool get hasSessionHistoryPaging => _sessionHistoryPageLoader != null;
+
+  bool hasOlderLocalSessionHistory(String runtimeSessionId) =>
+      _sessionHistoryHasMore?.call(runtimeSessionId) ?? false;
+
+  void invalidateLocalSessionHistoryPaging(String runtimeSessionId) {
+    _sessionHistoryPageInvalidator?.call(runtimeSessionId);
+  }
+
+  Future<LocalSessionHistoryPage?> tryLoadOlderLocalSessionHistory({
+    required String runtimeSessionId,
+    int limit = 200,
+  }) {
+    final loader = _sessionHistoryPageLoader;
+    if (loader == null) return Future.value();
+    return loader(
+      runtimeSessionId: runtimeSessionId,
+      limit: limit.clamp(1, 200),
+    );
+  }
+
   String? providerSessionIdForRuntime(
     String runtimeSessionId, {
     String? provider,
@@ -2742,15 +2805,36 @@ class BridgeService implements BridgeServiceBase {
   /// pipeline without assigning Bridge runtime history sequence semantics.
   void publishExternalSessionHistory(
     String runtimeSessionId,
-    List<ServerMessage> messages,
-  ) {
-    final history = HistoryMessage(messages: List.unmodifiable(messages));
+    List<ServerMessage> messages, {
+    DateTime? timestampAnchor,
+  }) {
+    final history = buildExternalSessionHistory(
+      messages,
+      timestampAnchor: timestampAnchor,
+    );
     // A mirror revision is not a Bridge history sequence. Keep this snapshot
     // transient so it cannot reset or falsely advance the canonical runtime
     // cursor used by history_delta/history_snapshot reconciliation.
     _taggedMessageController.add((history, runtimeSessionId));
     _messageController.add(history);
   }
+
+  HistoryMessage buildExternalSessionHistory(
+    List<ServerMessage> messages, {
+    DateTime? timestampAnchor,
+  }) {
+    final history = HistoryMessage(messages: List.unmodifiable(messages));
+    _externalSessionHistories[history] = _ExternalSessionHistoryMetadata(
+      timestampAnchor: timestampAnchor,
+    );
+    return history;
+  }
+
+  bool isExternalSessionHistory(HistoryMessage message) =>
+      _externalSessionHistories[message] != null;
+
+  DateTime? externalSessionHistoryTimestampAnchor(HistoryMessage message) =>
+      _externalSessionHistories[message]?.timestampAnchor;
 
   void _rememberProviderSessionBinding(
     String runtimeSessionId,

@@ -1061,6 +1061,28 @@ void main() {
       );
       expect(update.replaceEntries, isTrue);
     });
+
+    test('paged history inherits its preceding user timestamp anchor', () {
+      final anchor = DateTime.parse('2026-01-02T03:04:05.000Z').toLocal();
+      final update = handler.handle(
+        const HistoryMessage(
+          messages: [
+            AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'assistant-page-start',
+                role: 'assistant',
+                content: [TextContent(text: 'continued turn')],
+                model: 'codex',
+              ),
+            ),
+          ],
+        ),
+        isBackground: false,
+        historyTimestampAnchor: anchor,
+      );
+
+      expect(update.entriesToAdd.single.timestamp, anchor);
+    });
   });
 
   group('SystemMessage slash command handling', () {

@@ -3,6 +3,7 @@
 // ignore_for_file: prefer_initializing_formals
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
@@ -47,6 +48,9 @@ class ConversationMirrorService extends ChangeNotifier {
   static const _requestIdleTimeout = Duration(minutes: 30);
   static const _bootstrapWatchTimeout = Duration(milliseconds: 2500);
   static const _maxAutoWatches = 8;
+  static const _initialRenderEntryCount = 200;
+  static const _timestampAnchorScanLimit = 1000;
+  static const _timestampAnchorBatchSize = 200;
 
   final BridgeService _bridge;
   final ConversationMirrorStore _store;
@@ -58,6 +62,7 @@ class ConversationMirrorService extends ChangeNotifier {
   final Map<String, String> _watchRequestIdsByConversation = {};
   final Map<ConversationMirrorKey, String> _resetRequestIds = {};
   final Map<String, int> _bootstrapGenerationByRuntime = {};
+  final Map<String, _RuntimeMirrorPageCursor> _pageCursorsByRuntime = {};
   final Map<String, _MirrorTransferGuard> _transferGuardsByRequestId = {};
   final Set<String> _acceptedRequestIds = {};
   final Set<ConversationMirrorKey> _syncing = {};
@@ -115,6 +120,12 @@ class ConversationMirrorService extends ChangeNotifier {
       }
     });
     _bridge.configureSessionHistoryBootstrap(_bootstrapRuntimeSession);
+    _bridge.configureSessionHistoryPaging(
+      loader: _loadOlderRuntimeHistory,
+      hasMore: (runtimeSessionId) =>
+          (_pageCursorsByRuntime[runtimeSessionId]?.nextOffset ?? 0) > 0,
+      invalidate: _pageCursorsByRuntime.remove,
+    );
     if (kIsWeb) return;
     try {
       // Opening also removes interrupted shadow generations while preserving
@@ -294,6 +305,7 @@ class ConversationMirrorService extends ChangeNotifier {
       await _store.deleteLocalCopy(key);
       _metadata.remove(key);
       _syncing.remove(key);
+      _pageCursorsByRuntime.removeWhere((_, cursor) => cursor.key == key);
     });
     _notifyListeners();
   }
@@ -445,6 +457,8 @@ class ConversationMirrorService extends ChangeNotifier {
       if (publishGuard == null) return false;
       final published = await _publishKeyToRuntime(key, publishGuard);
       if (published != _MirrorPublishResult.published) return false;
+    } else {
+      _pageCursorsByRuntime.remove(runtimeSessionId);
     }
 
     if (!_bridge.isConnected) return true;
@@ -1088,15 +1102,62 @@ class ConversationMirrorService extends ChangeNotifier {
   ) async {
     final initialFailure = _publishGuardFailure(key, guard);
     if (initialFailure != null) return initialFailure;
+    _pageCursorsByRuntime.remove(guard.runtimeSessionId);
+    final metadataBefore = await _store.readMetadata(key);
+    if (metadataBefore == null || !metadataBefore.hasLocalCopy) {
+      return _MirrorPublishResult.invalidated;
+    }
+    final startOffset = math.max(
+      0,
+      metadataBefore.entryCount - _initialRenderEntryCount,
+    );
     late final List<ConversationMirrorEntry> entries;
     try {
-      entries = await _store.readEntries(key);
+      entries = await _store.readEntries(
+        key,
+        offset: startOffset,
+        limit: _initialRenderEntryCount,
+      );
     } catch (_) {
       if (_closed) return _MirrorPublishResult.invalidated;
       rethrow;
     }
+    final timestampAnchor = await _timestampAnchorBeforePage(
+      key,
+      startOffset,
+      entries,
+    );
     final postReadFailure = _publishGuardFailure(key, guard);
     if (postReadFailure != null) return postReadFailure;
+    final metadataAfter = await _store.readMetadata(key);
+    if (metadataAfter == null ||
+        metadataAfter.activeGeneration != metadataBefore.activeGeneration ||
+        metadataAfter.revision != metadataBefore.revision ||
+        metadataAfter.entryCount != metadataBefore.entryCount) {
+      return _MirrorPublishResult.invalidated;
+    }
+    final messages = _decodeRenderableEntries(entries);
+    final postDecodeFailure = _publishGuardFailure(key, guard);
+    if (postDecodeFailure != null) return postDecodeFailure;
+    _pageCursorsByRuntime[guard.runtimeSessionId] = _RuntimeMirrorPageCursor(
+      key: key,
+      revision: metadataBefore.revision,
+      activeGeneration: metadataBefore.activeGeneration,
+      entryCount: metadataBefore.entryCount,
+      bootstrapGeneration: guard.bootstrapGeneration,
+      nextOffset: startOffset,
+    );
+    _bridge.publishExternalSessionHistory(
+      guard.runtimeSessionId,
+      messages,
+      timestampAnchor: timestampAnchor,
+    );
+    return _MirrorPublishResult.published;
+  }
+
+  List<ServerMessage> _decodeRenderableEntries(
+    List<ConversationMirrorEntry> entries,
+  ) {
     final messages = <ServerMessage>[];
     for (final entry in entries) {
       if (!const {
@@ -1119,11 +1180,144 @@ class ConversationMirrorService extends ChangeNotifier {
         );
       }
     }
-    final postDecodeFailure = _publishGuardFailure(key, guard);
-    if (postDecodeFailure != null) return postDecodeFailure;
-    _bridge.publishExternalSessionHistory(guard.runtimeSessionId, messages);
-    return _MirrorPublishResult.published;
+    return messages;
   }
+
+  Future<LocalSessionHistoryPage?> _loadOlderRuntimeHistory({
+    required String runtimeSessionId,
+    required int limit,
+  }) async {
+    final cursor = _pageCursorsByRuntime[runtimeSessionId];
+    if (cursor == null || cursor.nextOffset <= 0) {
+      return const LocalSessionHistoryPage(messages: [], hasMore: false);
+    }
+    if (cursor.loading) return null;
+    if (!_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
+      _pageCursorsByRuntime.remove(runtimeSessionId);
+      return const LocalSessionHistoryPage(messages: [], hasMore: false);
+    }
+    cursor.loading = true;
+    try {
+      final endOffset = cursor.nextOffset;
+      final startOffset = math.max(0, endOffset - limit);
+      final metadataBefore = await _store.readMetadata(cursor.key);
+      if (!_pageCursorMetadataMatches(cursor, metadataBefore)) {
+        if (identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+          _pageCursorsByRuntime.remove(runtimeSessionId);
+        }
+        return null;
+      }
+      final entries = await _store.readEntries(
+        cursor.key,
+        offset: startOffset,
+        limit: endOffset - startOffset,
+      );
+      final timestampAnchor = await _timestampAnchorBeforePage(
+        cursor.key,
+        startOffset,
+        entries,
+      );
+      final metadataAfter = await _store.readMetadata(cursor.key);
+      if (!_pageCursorMetadataMatches(cursor, metadataAfter) ||
+          !_pageCursorIdentityMatches(runtimeSessionId, cursor) ||
+          !identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+        if (identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+          _pageCursorsByRuntime.remove(runtimeSessionId);
+        }
+        return null;
+      }
+      cursor.nextOffset = startOffset;
+      return LocalSessionHistoryPage(
+        messages: List.unmodifiable(_decodeRenderableEntries(entries)),
+        hasMore: startOffset > 0,
+        timestampAnchor: timestampAnchor,
+      );
+    } finally {
+      cursor.loading = false;
+    }
+  }
+
+  bool _pageCursorMetadataMatches(
+    _RuntimeMirrorPageCursor cursor,
+    ConversationMirrorMetadata? metadata,
+  ) =>
+      metadata != null &&
+      metadata.activeGeneration == cursor.activeGeneration &&
+      metadata.revision == cursor.revision &&
+      metadata.entryCount == cursor.entryCount;
+
+  Future<DateTime?> _timestampAnchorBeforePage(
+    ConversationMirrorKey key,
+    int startOffset,
+    List<ConversationMirrorEntry> pageEntries,
+  ) async {
+    if (startOffset <= 0 || _startsWithUserInput(pageEntries)) return null;
+    var endOffset = startOffset;
+    var remaining = _timestampAnchorScanLimit;
+    while (endOffset > 0 && remaining > 0) {
+      final batchSize = math.min(
+        math.min(_timestampAnchorBatchSize, remaining),
+        endOffset,
+      );
+      final batchStart = endOffset - batchSize;
+      final entries = await _store.readEntries(
+        key,
+        offset: batchStart,
+        limit: batchSize,
+      );
+      for (final entry in entries.reversed) {
+        final message = entry.message;
+        if (message['type'] != 'user_input' ||
+            message['isSynthetic'] == true ||
+            message['isMeta'] == true) {
+          continue;
+        }
+        final rawTimestamp = message['timestamp'];
+        if (rawTimestamp is String) {
+          return DateTime.tryParse(rawTimestamp)?.toLocal();
+        }
+        return null;
+      }
+      endOffset = batchStart;
+      remaining -= batchSize;
+    }
+    return null;
+  }
+
+  bool _startsWithUserInput(List<ConversationMirrorEntry> entries) {
+    for (final entry in entries) {
+      final message = entry.message;
+      if (!const {
+        'system',
+        'user_input',
+        'assistant',
+        'tool_result',
+        'status',
+        'result',
+        'permission_request',
+        'permission_resolved',
+        'conversation_queue',
+      }.contains(message['type'])) {
+        continue;
+      }
+      return message['type'] == 'user_input';
+    }
+    return false;
+  }
+
+  bool _pageCursorIdentityMatches(
+    String runtimeSessionId,
+    _RuntimeMirrorPageCursor cursor,
+  ) =>
+      !_closed &&
+      currentBridgeInstanceId == cursor.key.bridgeInstanceId &&
+      _bootstrapGenerationByRuntime[runtimeSessionId] ==
+          cursor.bootstrapGeneration &&
+      _bridge.providerSessionIdForRuntime(
+            runtimeSessionId,
+            provider: cursor.key.provider,
+          ) ==
+          cursor.key.providerSessionId;
 
   _MirrorTransferGuard _captureTransferGuard(
     ConversationMirrorEventMessage event, {
@@ -1284,6 +1478,7 @@ class ConversationMirrorService extends ChangeNotifier {
       _transferGuardsByRequestId.clear();
       _watchRequestIds.clear();
       _watchRequestIdsByConversation.clear();
+      _pageCursorsByRuntime.clear();
       for (final requestId in staleRequestIds) {
         _finishPending(
           requestId,
@@ -1422,6 +1617,7 @@ class ConversationMirrorService extends ChangeNotifier {
     if (_closed) return;
     _closed = true;
     _bridge.configureSessionHistoryBootstrap(null);
+    _bridge.configureSessionHistoryPaging();
     await _localFeatureSub?.cancel();
     await _bridgeIdentitySub?.cancel();
     await _connectionSub?.cancel();
@@ -1456,6 +1652,7 @@ class ConversationMirrorService extends ChangeNotifier {
     _watchRequestIdsByConversation.clear();
     _resetRequestIds.clear();
     _bootstrapGenerationByRuntime.clear();
+    _pageCursorsByRuntime.clear();
     _transferGuardsByRequestId.clear();
     await _storageSerial;
     await _database.close();
@@ -1469,6 +1666,25 @@ class ConversationMirrorService extends ChangeNotifier {
 }
 
 enum _MirrorPublishResult { published, contentChanged, invalidated }
+
+class _RuntimeMirrorPageCursor {
+  _RuntimeMirrorPageCursor({
+    required this.key,
+    required this.revision,
+    required this.activeGeneration,
+    required this.entryCount,
+    required this.bootstrapGeneration,
+    required this.nextOffset,
+  });
+
+  final ConversationMirrorKey key;
+  final String? revision;
+  final String? activeGeneration;
+  final int entryCount;
+  final int? bootstrapGeneration;
+  int nextOffset;
+  bool loading = false;
+}
 
 class _MirrorTransferGuard {
   const _MirrorTransferGuard({

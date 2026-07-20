@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -45,6 +47,14 @@ bool shouldShowForkForAssistant(List<ChatEntry> entries, int entryIndex) {
   }
   return false;
 }
+
+@visibleForTesting
+bool shouldLoadOlderLocalHistory(
+  ScrollMetrics metrics, {
+  double threshold = 480,
+}) =>
+    metrics.maxScrollExtent > 0 &&
+    metrics.pixels >= metrics.maxScrollExtent - threshold;
 
 /// Displays the chat message list with [ListView.builder] (reverse: true).
 ///
@@ -94,10 +104,22 @@ class ChatMessageList extends StatefulWidget {
 }
 
 class _ChatMessageListState extends State<ChatMessageList> {
+  ChatSessionCubit? _pagingCubit;
+
   @override
   void initState() {
     super.initState();
     widget.scrollToUserEntry?.addListener(_onScrollToUserEntry);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final nextCubit = context.read<ChatSessionCubit>();
+    if (identical(nextCubit, _pagingCubit)) return;
+    _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
+    _pagingCubit = nextCubit;
+    nextCubit.localHistoryPaging.addListener(_onPagingChanged);
   }
 
   @override
@@ -112,7 +134,12 @@ class _ChatMessageListState extends State<ChatMessageList> {
   @override
   void dispose() {
     widget.scrollToUserEntry?.removeListener(_onScrollToUserEntry);
+    _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
     super.dispose();
+  }
+
+  void _onPagingChanged() {
+    if (mounted) setState(() {});
   }
 
   void _onScrollToUserEntry() {
@@ -323,7 +350,8 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
   @override
   Widget build(BuildContext context) {
-    final chatState = context.watch<ChatSessionCubit>().state;
+    final chatCubit = context.watch<ChatSessionCubit>();
+    final chatState = chatCubit.state;
     final hiddenToolUseIds = chatState.hiddenToolUseIds;
     final allEntries = chatState.entries;
 
@@ -334,9 +362,10 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final hasStreaming = context.select<StreamingStateCubit, bool>(
       (cubit) => cubit.state.isStreaming,
     );
-    final totalCount = allEntries.length + (hasStreaming ? 1 : 0);
+    final messageCount = allEntries.length + (hasStreaming ? 1 : 0);
     final streamingCubit = context.read<StreamingStateCubit>();
 
+    final paging = chatCubit.localHistoryPaging.value;
     final content = NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         // Only unfocus when user drags the list (not programmatic scroll).
@@ -345,6 +374,11 @@ class _ChatMessageListState extends State<ChatMessageList> {
         if (notification is UserScrollNotification &&
             notification.direction != ScrollDirection.idle) {
           FocusScope.of(context).unfocus();
+        }
+        if (paging.enabled &&
+            paging.hasMore &&
+            shouldLoadOlderLocalHistory(notification.metrics)) {
+          unawaited(chatCubit.loadOlderLocalHistory());
         }
         return false;
       },
@@ -355,13 +389,29 @@ class _ChatMessageListState extends State<ChatMessageList> {
           shouldMaintain: () => streamingCubit.state.isStreaming,
         ),
         padding: EdgeInsets.only(top: 36, bottom: widget.bottomPadding),
-        itemCount: totalCount,
+        itemCount:
+            messageCount +
+            ((paging.enabled &&
+                    (paging.hasMore || paging.loading || paging.error != null))
+                ? 1
+                : 0),
         itemBuilder: (context, index) {
+          if (index == messageCount) {
+            if (paging.hasMore && !paging.loading && paging.error == null) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) unawaited(chatCubit.loadOlderLocalHistory());
+              });
+            }
+            return _LocalHistoryPageIndicator(
+              paging: paging,
+              onRetry: chatCubit.loadOlderLocalHistory,
+            );
+          }
           // index 0 = newest entry (bottom of chat)
           // Map to actual entry index:
-          final entryIndex = totalCount - 1 - index;
+          final entryIndex = messageCount - 1 - index;
 
-          // Streaming entry is at totalCount - 1 (index 0 in reverse)
+          // Streaming entry is at messageCount - 1 (index 0 in reverse)
           if (hasStreaming && entryIndex == allEntries.length) {
             // Scoped BlocBuilder: only this widget rebuilds on streaming deltas
             return BlocBuilder<StreamingStateCubit, StreamingState>(
@@ -486,5 +536,39 @@ class _ChatMessageListState extends State<ChatMessageList> {
             : 'user_ts:${entry.timestamp.microsecondsSinceEpoch}:${text.hashCode}:$index',
       StreamingChatEntry() => 'streaming',
     };
+  }
+}
+
+class _LocalHistoryPageIndicator extends StatelessWidget {
+  const _LocalHistoryPageIndicator({
+    required this.paging,
+    required this.onRetry,
+  });
+
+  final LocalHistoryPagingState paging;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    if (paging.error != null) {
+      return Center(
+        child: TextButton.icon(
+          key: const ValueKey('local_history_retry'),
+          onPressed: () => unawaited(onRetry()),
+          icon: const Icon(Icons.refresh, size: 18),
+          label: Text(AppLocalizations.of(context).retry),
+        ),
+      );
+    }
+    return const Padding(
+      key: ValueKey('local_history_loading'),
+      padding: EdgeInsets.symmetric(vertical: 12),
+      child: Center(
+        child: SizedBox.square(
+          dimension: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    );
   }
 }

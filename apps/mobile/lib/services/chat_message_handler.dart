@@ -73,6 +73,7 @@ class ChatStateUpdate {
   /// appending. Used by [_handleHistory] so that repeated history loads do not
   /// duplicate messages.
   final bool replaceEntries;
+  final bool localHistoryPage;
 
   /// UUID update for an existing user entry. When the SDK echoes back a
   /// user_input with a UUID, we update the locally-added UserChatEntry rather
@@ -122,6 +123,7 @@ class ChatStateUpdate {
     this.claudeSessionId,
     this.toolUseIdsToHide = const {},
     this.replaceEntries = false,
+    this.localHistoryPage = false,
     this.userUuidUpdate,
   });
 }
@@ -188,6 +190,7 @@ class ChatMessageHandler {
     required bool isBackground,
     bool isCodex = false,
     Set<String> ignoredToolUseIds = const {},
+    DateTime? historyTimestampAnchor,
   }) {
     switch (msg) {
       case StatusMessage(:final status):
@@ -207,7 +210,11 @@ class ChatMessageHandler {
       case PastHistoryMessage(:final claudeSessionId, :final messages):
         return _handlePastHistory(messages, claudeSessionId: claudeSessionId);
       case HistoryMessage(:final messages):
-        return _handleHistory(messages, ignoredToolUseIds: ignoredToolUseIds);
+        return _handleHistory(
+          messages,
+          ignoredToolUseIds: ignoredToolUseIds,
+          timestampAnchor: historyTimestampAnchor,
+        );
       case ConversationQueueMessage(:final items):
         return ChatStateUpdate(
           queuedInput: items.isNotEmpty ? items.first : null,
@@ -580,6 +587,7 @@ class ChatMessageHandler {
   ChatStateUpdate _handleHistory(
     List<ServerMessage> messages, {
     Set<String> ignoredToolUseIds = const {},
+    DateTime? timestampAnchor,
   }) {
     final entries = <ChatEntry>[];
     ProcessStatus? lastStatus;
@@ -612,7 +620,7 @@ class ChatMessageHandler {
     // DateTime.now(). Without this, the time gap between a user entry
     // (original timestamp) and a server entry (DateTime.now()) triggers
     // spurious timestamp labels in the chat UI.
-    DateTime? lastKnownTs;
+    DateTime? lastKnownTs = timestampAnchor;
 
     for (final m in messages) {
       if (m is StatusMessage) {

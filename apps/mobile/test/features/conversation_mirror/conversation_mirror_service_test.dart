@@ -46,6 +46,7 @@ class _MirrorTestBridge extends BridgeService {
   String? runtimeProviderSessionId = 'provider-session-1';
   List<ServerMessage> canonicalMessages = const [];
   final externallyPublishedHistories = <List<ServerMessage>>[];
+  final externallyPublishedTimestampAnchors = <DateTime?>[];
 
   @override
   Stream<LocalFeatureServerMessage> get localFeatureMessages =>
@@ -100,10 +101,16 @@ class _MirrorTestBridge extends BridgeService {
   @override
   void publishExternalSessionHistory(
     String runtimeSessionId,
-    List<ServerMessage> messages,
-  ) {
+    List<ServerMessage> messages, {
+    DateTime? timestampAnchor,
+  }) {
     externallyPublishedHistories.add(List.unmodifiable(messages));
-    super.publishExternalSessionHistory(runtimeSessionId, messages);
+    externallyPublishedTimestampAnchors.add(timestampAnchor);
+    super.publishExternalSessionHistory(
+      runtimeSessionId,
+      messages,
+      timestampAnchor: timestampAnchor,
+    );
   }
 
   @override
@@ -593,6 +600,164 @@ void main() {
 
       expect(await bootstrap, isFalse);
       expect(bridge.sent, isEmpty);
+    },
+  );
+
+  test(
+    'a 3000-entry local copy publishes only the recent window and pages older entries',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 3000,
+        revision: _hashText('paged-3000-entry-history'),
+      );
+      bridge.connected = false;
+
+      final handled = await bridge.tryBootstrapSessionHistory(
+        runtimeSessionId: 'runtime-1',
+        provider: 'codex',
+        projectPath: '/tmp/project',
+      );
+
+      expect(handled, isTrue);
+      expect(bridge.externallyPublishedHistories, hasLength(1));
+      final initial = bridge.externallyPublishedHistories.single;
+      expect(initial, hasLength(200));
+      expect((initial.first as UserInputMessage).text, 'message-2800');
+      expect((initial.last as UserInputMessage).text, 'message-2999');
+      expect(bridge.hasOlderLocalSessionHistory('runtime-1'), isTrue);
+
+      final loaded = <ServerMessage>[...initial];
+      while (bridge.hasOlderLocalSessionHistory('runtime-1')) {
+        final page = await bridge.tryLoadOlderLocalSessionHistory(
+          runtimeSessionId: 'runtime-1',
+        );
+        expect(page, isNotNull);
+        loaded.insertAll(0, page!.messages);
+      }
+
+      expect(loaded, hasLength(3000));
+      expect((loaded.first as UserInputMessage).text, 'message-0');
+      expect((loaded.last as UserInputMessage).text, 'message-2999');
+      expect(
+        loaded.whereType<UserInputMessage>().map((message) => message.text),
+        orderedEquals(List.generate(3000, (index) => 'message-$index')),
+      );
+    },
+  );
+
+  test(
+    'a superseded page read cannot remove the replacement mirror cursor',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 600,
+        revision: _hashText('paged-revision-one'),
+      );
+      bridge.connected = false;
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        ),
+        isTrue,
+      );
+
+      final staleReadGate = Completer<void>();
+      store
+        ..readStarted = Completer<void>()
+        ..readGate = staleReadGate;
+      final stalePage = bridge.tryLoadOlderLocalSessionHistory(
+        runtimeSessionId: 'runtime-1',
+      );
+      await store.readStarted!.future;
+
+      // The old read has already captured this gate. New snapshot reads can
+      // now proceed and install a replacement cursor for the same runtime.
+      store.readGate = null;
+      await _seedLocalConversation(
+        store,
+        entryCount: 600,
+        revision: _hashText('paged-revision-two'),
+      );
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+          force: true,
+        ),
+        isTrue,
+      );
+
+      staleReadGate.complete();
+      expect(await stalePage, isNull);
+      expect(bridge.hasOlderLocalSessionHistory('runtime-1'), isTrue);
+
+      final replacementPage = await bridge.tryLoadOlderLocalSessionHistory(
+        runtimeSessionId: 'runtime-1',
+      );
+      expect(replacementPage, isNotNull);
+      expect(replacementPage!.messages, hasLength(200));
+      expect(
+        (replacementPage.messages.first as UserInputMessage).text,
+        'message-200',
+      );
+    },
+  );
+
+  test(
+    'a page that starts mid-turn carries the preceding user timestamp',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 401,
+        revision: _hashText('paged-timestamp-anchor'),
+        messageBuilder: (index) {
+          if (index == 200) {
+            return {
+              'type': 'user_input',
+              'text': 'turn anchor',
+              'timestamp': '2026-01-02T03:04:05.000Z',
+              'userMessageUuid': 'codex:user-turn:$index',
+            };
+          }
+          if (index > 200) {
+            return {
+              'type': 'assistant',
+              'messageUuid': 'assistant-$index',
+              'message': {
+                'id': 'assistant-$index',
+                'role': 'assistant',
+                'model': 'codex',
+                'content': [
+                  {'type': 'text', 'text': 'assistant-$index'},
+                ],
+              },
+            };
+          }
+          return {
+            'type': 'user_input',
+            'text': 'message-$index',
+            'userMessageUuid': 'codex:user-turn:$index',
+          };
+        },
+      );
+      bridge.connected = false;
+
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        ),
+        isTrue,
+      );
+      expect(
+        bridge.externallyPublishedTimestampAnchors.single,
+        DateTime.parse('2026-01-02T03:04:05.000Z').toLocal(),
+      );
     },
   );
 
@@ -1787,6 +1952,72 @@ Future<void> _seedLocalCopy(
     generation: 'cached-generation',
     revision: revision,
     entryCount: 1,
+  );
+}
+
+Future<void> _seedLocalConversation(
+  ConversationMirrorStore store, {
+  required int entryCount,
+  required String revision,
+  Map<String, dynamic> Function(int index)? messageBuilder,
+}) async {
+  const key = ConversationMirrorKey(
+    bridgeInstanceId: 'bridge-test',
+    provider: 'codex',
+    providerSessionId: 'provider-session-1',
+  );
+  final messages = List<Map<String, dynamic>>.generate(
+    entryCount,
+    (index) =>
+        messageBuilder?.call(index) ??
+        {
+          'type': 'user_input',
+          'text': 'message-$index',
+          'userMessageUuid': 'codex:user-turn:$index',
+        },
+    growable: false,
+  );
+  final totalBytes = messages.fold<int>(
+    0,
+    (total, message) => total + utf8.encode(jsonEncode(message)).length,
+  );
+  final generation = 'cached-generation-${revision.substring(0, 12)}';
+  final pageSize = store.limits.maxEntriesPerPage;
+  final pageCount = (entryCount / pageSize).ceil();
+  await store.beginShadowGeneration(
+    key: key,
+    generation: generation,
+    revision: revision,
+    entryCount: entryCount,
+    pageCount: pageCount,
+    totalBytes: totalBytes,
+    autoSync: true,
+    projectPath: '/tmp/project',
+  );
+  for (var pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+    final start = pageIndex * pageSize;
+    final end = (start + pageSize).clamp(0, entryCount);
+    await store.appendShadowPage(
+      key: key,
+      generation: generation,
+      pageIndex: pageIndex,
+      pageCount: pageCount,
+      entries: [
+        for (var index = start; index < end; index++)
+          ConversationMirrorEntryInput(
+            entryId: 'entry-$index',
+            ordinal: index,
+            contentHash: _hashJson(messages[index]),
+            message: messages[index],
+          ),
+      ],
+    );
+  }
+  await store.completeShadowGeneration(
+    key: key,
+    generation: generation,
+    revision: revision,
+    entryCount: entryCount,
   );
 }
 
