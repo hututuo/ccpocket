@@ -20,6 +20,7 @@ class _Bridge extends BridgeService {
   final _features = StreamController<LocalFeatureServerMessage>.broadcast();
   List<SessionInfo> snapshot = const [];
   bool connected = true;
+  int historyRequests = 0;
 
   @override
   bool get isConnected => connected;
@@ -42,6 +43,11 @@ class _Bridge extends BridgeService {
 
   @override
   void send(ClientMessage message) => sent.add(message);
+
+  @override
+  void requestSessionHistory(String sessionId) {
+    historyRequests++;
+  }
 
   void emitFeature(LocalFeatureServerMessage message) => _features.add(message);
 
@@ -166,6 +172,102 @@ void main() {
       await _flush();
 
       expect(bridge.sent, hasLength(2));
+    },
+  );
+
+  test(
+    'list watch caches completed payloads and hands off live deltas',
+    () async {
+      final bridge = _Bridge()..snapshot = const [_session];
+      final tracker = DesktopSessionListContinuityTracker(bridge);
+      addTearDown(() async {
+        tracker.close();
+        await bridge.closeFake();
+      });
+      final requestId = _json(bridge.sent.single)['requestId'] as String;
+
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.watching,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.running,
+          turnId: 'turn-1',
+        ),
+      );
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.message,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          turnId: 'turn-1',
+          itemKey: 'assistant-1',
+          payload: const AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-1',
+              role: 'assistant',
+              content: [TextContent(text: 'Desktop reply')],
+              model: 'codex',
+            ),
+          ),
+        ),
+      );
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.message,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          turnId: 'turn-1',
+          itemKey: 'thinking-1',
+          payload: const ThinkingDeltaMessage(text: 'Still working'),
+        ),
+      );
+      await _flush();
+
+      expect(
+        bridge
+            .cachedSessionMessages('session-1')
+            .whereType<AssistantServerMessage>()
+            .single
+            .message
+            .id,
+        'assistant-1',
+      );
+      final handoff = bridge.takeBackgroundDesktopContinuity(
+        'session-1',
+        threadId: 'thread-1',
+      );
+      expect(handoff!.state, CodexDesktopContinuityState.running);
+      expect(handoff.itemKeys, containsAll({'assistant-1', 'thinking-1'}));
+      expect(
+        (handoff.transientPayloads.single.payload as ThinkingDeltaMessage).text,
+        'Still working',
+      );
+
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.state,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.idle,
+          turnId: 'turn-1',
+        ),
+      );
+      await _flush();
+
+      expect(bridge.historyRequests, 1);
     },
   );
 }

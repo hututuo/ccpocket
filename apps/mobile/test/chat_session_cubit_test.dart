@@ -812,6 +812,133 @@ void main() {
       },
     );
 
+    test(
+      'Codex conversation restores Home-screen continuity before taking over',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'running',
+            createdAt: '',
+            lastActivityAt: '',
+            externalDesktopTurnActive: true,
+          ),
+        ];
+        mockBridge.cachedMessagesBySession['s1'] = const [
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'desktop-cached',
+              role: 'assistant',
+              content: [TextContent(text: 'Cached Desktop progress')],
+              model: 'codex',
+            ),
+          ),
+        ];
+        mockBridge.recordBackgroundDesktopContinuity(
+          const CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.watching,
+            requestId: 'list-watch',
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+            turnId: 'desktop-turn',
+          ),
+        );
+        mockBridge.recordBackgroundDesktopContinuity(
+          const CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.message,
+            requestId: 'list-watch',
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            turnId: 'desktop-turn',
+            itemKey: 'thinking-home-1',
+            payload: ThinkingDeltaMessage(text: 'Background reasoning'),
+          ),
+        );
+
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+        expect(streamingCubit.state.thinking, 'Background reasoning');
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().any(
+            (entry) =>
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.id ==
+                    'desktop-cached',
+          ),
+          isTrue,
+        );
+
+        final watch = mockBridge.sentMessages.lastWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final requestId =
+            (jsonDecode(watch.toJson()) as Map<String, dynamic>)['requestId']
+                as String;
+        mockBridge.recordBackgroundDesktopContinuity(
+          const CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.message,
+            requestId: 'list-watch',
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            turnId: 'desktop-turn',
+            itemKey: 'thinking-home-2',
+            payload: ThinkingDeltaMessage(text: ' tail'),
+          ),
+        );
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.watching,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+            turnId: 'desktop-turn',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(
+          streamingCubit.state.thinking,
+          'Background reasoning tail',
+        );
+
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.message,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            turnId: 'desktop-turn',
+            itemKey: 'thinking-home-1',
+            payload: const ThinkingDeltaMessage(text: ' duplicate'),
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(streamingCubit.state.thinking, 'Background reasoning tail');
+      },
+    );
+
     test('Codex Desktop continuity stays disabled on an older Bridge', () async {
       mockBridge.advertisedBridgeCapabilities = const {};
       final cubit = createCubit(

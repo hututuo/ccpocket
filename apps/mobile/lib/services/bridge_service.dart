@@ -16,6 +16,7 @@ import '../utils/codex_plan_update.dart';
 import '../utils/network_endpoint.dart';
 import 'bridge_service_base.dart';
 import 'codex_goal_request_router.dart';
+import 'desktop_continuity_backlog.dart';
 import 'session_runtime_store.dart';
 
 /// A mobile-owned hook that may observe one live session permission request
@@ -178,6 +179,8 @@ class BridgeService implements BridgeServiceBase {
   String? _promptHistoryBridgeId;
   UsageResultMessage? _lastUsageResult;
   final SessionRuntimeStore _runtimeStore = SessionRuntimeStore();
+  final DesktopContinuityBacklog _desktopContinuityBacklog =
+      DesktopContinuityBacklog();
   final Map<String, ({String provider, String providerSessionId})>
   _providerSessionBindingByRuntime = {};
   SessionHistoryBootstrapHandler? _sessionHistoryBootstrapHandler;
@@ -1635,6 +1638,7 @@ class BridgeService implements BridgeServiceBase {
     }
     _deliveryPendingVisibilityTimers.clear();
     _runtimeStore.clearAll();
+    _desktopContinuityBacklog.clear();
     clearDiffImageCache();
 
     _sessionListController.add(_sessions);
@@ -2681,6 +2685,31 @@ class BridgeService implements BridgeServiceBase {
     return _runtimeStore.messages(sessionId);
   }
 
+  /// Stores list-level Desktop continuity until a conversation screen takes
+  /// over the exact watch. Only the list tracker calls this method, so an open
+  /// conversation never processes the same live payload through two paths.
+  void recordBackgroundDesktopContinuity(
+    CodexDesktopContinuityEventMessage message,
+  ) {
+    final acceptedPayload = _desktopContinuityBacklog.record(message);
+    _patchExternalDesktopTurn(message);
+    final payload = message.payload;
+    if (!acceptedPayload || payload == null) return;
+    _runtimeStore.applyServerMessage(message.sessionId, payload);
+    _patchExternalDesktopPreview(message.sessionId, payload);
+  }
+
+  DesktopContinuityBacklogSnapshot? takeBackgroundDesktopContinuity(
+    String sessionId, {
+    String? threadId,
+  }) {
+    return _desktopContinuityBacklog.take(sessionId, threadId: threadId);
+  }
+
+  void clearBackgroundDesktopContinuity(String sessionId) {
+    _desktopContinuityBacklog.clearSession(sessionId);
+  }
+
   Set<String> respondedToolUseIds(String sessionId) =>
       Set.unmodifiable(_respondedToolUseIds[sessionId] ?? const {});
 
@@ -2737,6 +2766,7 @@ class BridgeService implements BridgeServiceBase {
 
   void clearExplorerHistory(String sessionId) {
     _runtimeStore.clearSession(sessionId);
+    _desktopContinuityBacklog.clearSession(sessionId);
     _providerSessionBindingByRuntime.remove(sessionId);
     _respondedToolUseIds.remove(sessionId);
   }
@@ -3078,6 +3108,26 @@ class BridgeService implements BridgeServiceBase {
     if (current.externalDesktopTurnActive == active) return;
     _sessions = List.of(_sessions)
       ..[idx] = current.copyWith(externalDesktopTurnActive: active);
+    _sessionListController.add(_sessions);
+  }
+
+  void _patchExternalDesktopPreview(String sessionId, ServerMessage payload) {
+    if (payload is! AssistantServerMessage) return;
+    final text = payload.message.content
+        .whereType<TextContent>()
+        .map((content) => content.text.trim())
+        .where((content) => content.isNotEmpty)
+        .join('\n')
+        .trim();
+    if (text.isEmpty) return;
+    final runes = text.runes.toList(growable: false);
+    final preview = runes.length <= 500
+        ? text
+        : String.fromCharCodes(runes.skip(runes.length - 500));
+    final idx = _sessions.indexWhere((session) => session.id == sessionId);
+    if (idx < 0 || _sessions[idx].lastMessage == preview) return;
+    _sessions = List.of(_sessions)
+      ..[idx] = _sessions[idx].copyWith(lastMessage: preview);
     _sessionListController.add(_sessions);
   }
 

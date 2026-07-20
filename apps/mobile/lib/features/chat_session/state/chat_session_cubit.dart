@@ -11,6 +11,7 @@ import '../../../core/logger.dart';
 import '../../../models/messages.dart';
 import '../../../services/bridge_service.dart';
 import '../../../services/chat_message_handler.dart';
+import '../../../services/desktop_continuity_backlog.dart';
 import 'chat_session_state.dart';
 import 'streaming_state_cubit.dart';
 
@@ -104,7 +105,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final Map<String, Timer> _deliveryPendingTimers = {};
   final Map<String, QueuedInputItem> _deliveryPendingInputs = {};
   final Set<String> _desktopContinuityItemKeys = {};
+  final Set<String> _restoredDesktopContinuityItemKeys = {};
   final Map<String, ChatMessageHandler> _desktopContinuityHandlers = {};
+  String? _restoredDesktopContinuityThreadId;
   String? _desktopContinuityStreamingTurnKey;
   String? _desktopContinuityRequestId;
   String? _desktopContinuityThreadId;
@@ -297,7 +300,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           .listen(_onDesktopContinuityConnectionState);
     }
 
+    final backgroundContinuity = isCodex
+        ? _bridge.takeBackgroundDesktopContinuity(
+            sessionId,
+            threadId: state.claudeSessionId,
+          )
+        : null;
     _restoreCachedRuntimeMessages();
+    if (backgroundContinuity != null) {
+      _restoreBackgroundDesktopContinuity(backgroundContinuity);
+    }
     _restoreDeliveryPendingInput();
     if (isCodex &&
         _bridge
@@ -451,6 +463,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityThreadId = nextThreadId;
     _desktopContinuityProjectPath = nextProjectPath;
     _desktopContinuityItemKeys.clear();
+    if (_restoredDesktopContinuityThreadId == nextThreadId) {
+      _desktopContinuityItemKeys.addAll(_restoredDesktopContinuityItemKeys);
+    }
     _desktopContinuityHandlers.clear();
     _desktopContinuityStreamingTurnKey = null;
     _bridge.send(
@@ -561,6 +576,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     if (rawMessage.event != CodexDesktopContinuityEventKind.error) {
       _acknowledgeDesktopContinuityWatch();
+    }
+    final trailingBackgroundContinuity = _bridge
+        .takeBackgroundDesktopContinuity(
+          sessionId,
+          threadId: rawMessage.threadId,
+        );
+    if (trailingBackgroundContinuity != null) {
+      _restoreBackgroundDesktopContinuity(trailingBackgroundContinuity);
     }
     switch (rawMessage.event) {
       case CodexDesktopContinuityEventKind.watching:
@@ -1280,6 +1303,50 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   // ---------------------------------------------------------------------------
   // Message processing
   // ---------------------------------------------------------------------------
+
+  void _restoreBackgroundDesktopContinuity(
+    DesktopContinuityBacklogSnapshot snapshot,
+  ) {
+    final boundThreadId = state.claudeSessionId?.trim();
+    if (boundThreadId != null &&
+        boundThreadId.isNotEmpty &&
+        boundThreadId != snapshot.threadId) {
+      return;
+    }
+    if (_restoredDesktopContinuityThreadId != snapshot.threadId) {
+      _restoredDesktopContinuityItemKeys.clear();
+    }
+    _restoredDesktopContinuityThreadId = snapshot.threadId;
+    _restoredDesktopContinuityItemKeys.addAll(snapshot.itemKeys);
+    _desktopContinuityItemKeys.addAll(snapshot.itemKeys);
+
+    if (snapshot.state == CodexDesktopContinuityState.running) {
+      _setExternalDesktopRunning(snapshot.turnId);
+    } else if (snapshot.state == CodexDesktopContinuityState.idle) {
+      _statusFromHistoryFallback = false;
+      _statusFromSessionSnapshot = false;
+      emit(
+        state.copyWith(
+          status: snapshot.handoffQueued
+              ? ProcessStatus.running
+              : ProcessStatus.idle,
+          externalDesktopTurnActive: false,
+          externalDesktopTurnId: null,
+          approval: const ApprovalState.none(),
+        ),
+      );
+    }
+
+    for (final buffered in snapshot.transientPayloads) {
+      _applyExternalDesktopPayload(buffered.payload, turnId: buffered.turnId);
+    }
+    if (snapshot.truncated) {
+      logger.info(
+        '[session:$sessionId] Desktop continuity buffer was bounded; '
+        'canonical history refresh will reconcile the omitted prefix',
+      );
+    }
+  }
 
   void _restoreCachedRuntimeMessages() {
     final cachedMessages = _bridge.cachedSessionMessages(sessionId);

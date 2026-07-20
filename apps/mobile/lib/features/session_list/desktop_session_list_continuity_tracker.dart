@@ -46,6 +46,7 @@ class DesktopSessionListContinuityTracker {
       _trackedSessionIds.remove(sessionId);
       _ownedRequestIds.remove(sessionId);
       _displacedByConversation.remove(sessionId);
+      _bridge.clearBackgroundDesktopContinuity(sessionId);
     }
     _trackedSessionIds.addAll(codex.keys);
     for (final session in codex.values) {
@@ -116,6 +117,11 @@ class DesktopSessionListContinuityTracker {
     if (message is! CodexDesktopContinuityEventMessage) return;
     final ownRequest = _ownedRequestIds[message.sessionId];
     if (message.requestId == ownRequest) {
+      _bridge.recordBackgroundDesktopContinuity(message);
+      if (message.event == CodexDesktopContinuityEventKind.state &&
+          message.state == CodexDesktopContinuityState.idle) {
+        _bridge.requestSessionHistory(message.sessionId);
+      }
       if (message.event == CodexDesktopContinuityEventKind.error ||
           message.event == CodexDesktopContinuityEventKind.unwatched) {
         _ownedRequestIds.remove(message.sessionId);
