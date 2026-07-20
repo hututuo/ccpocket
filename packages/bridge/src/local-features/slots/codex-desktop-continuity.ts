@@ -29,11 +29,13 @@ const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_TOOL_INPUT_BYTES = 256 * 1024;
 const MAX_DEDUPE_KEYS = 4096;
 const MAX_ACTIVE_TURNS = 32;
+const MAX_RETIRED_STALE_TURN_IDS = 128;
 const MAX_PENDING_ASSISTANT_MESSAGES = 128;
 const MAX_RECENT_RESPONSE_ASSISTANTS = 128;
 const ASSISTANT_PAIR_TOMBSTONE_MS = 5000;
 const POLL_MS = 750;
 const START_CLASSIFICATION_MS = 100;
+const STALE_DESKTOP_PREDECESSOR_MS = 5 * 60 * 1000;
 const ASSISTANT_MESSAGE_PAIR_MS = 40;
 const REHYDRATE_SETTLE_MS = 350;
 const REHYDRATE_RETRY_MS = 750;
@@ -1024,6 +1026,7 @@ export class CodexRolloutMonitor {
   private discardingLongLine = false;
   private state: CodexDesktopContinuityState = "unknown";
   private readonly activeTurns = new Map<string, ActiveTurn>();
+  private readonly retiredStaleDesktopTurnIds = new Set<string>();
   private turnSequence = 0;
   private lastObservedTurnId: string | undefined;
   private readonly pendingAssistantMessages = new Map<
@@ -1263,10 +1266,16 @@ export class CodexRolloutMonitor {
               turn.origin = "desktop";
             }
           }
+          if (turn.origin === "desktop") {
+            this.retireStaleDesktopPredecessors(turn, timestampMs);
+          }
         }
       } else if (type === "task_complete" || type === "turn_aborted") {
         sawLifecycle = true;
         const turnId = optionalString(payload.turn_id);
+        if (turnId && this.retiredStaleDesktopTurnIds.delete(turnId)) {
+          continue;
+        }
         const candidate = this.turnForCompletion(turnId);
         const completed = candidate ? this.takeActiveTurn(candidate) : undefined;
         const origin = completed?.origin ?? "desktop";
@@ -1493,8 +1502,14 @@ export class CodexRolloutMonitor {
     const wasDesktop = turn.origin === "desktop";
     this.clearPendingStart(turn);
     turn.origin = "desktop";
-    if (!wasDesktop) {
+    const retiredPredecessor = this.retireStaleDesktopPredecessors(
+      turn,
+      parseTimestampMs(timestamp),
+    );
+    if (!wasDesktop || retiredPredecessor) {
       this.bumpActivityEpoch();
+    }
+    if (!wasDesktop) {
       this.options.onEvent({
         kind: "state",
         state: "running",
@@ -1554,6 +1569,7 @@ export class CodexRolloutMonitor {
     outcome: "completed" | "interrupted",
     timestamp?: string,
   ): void {
+    if (turnId && this.retiredStaleDesktopTurnIds.delete(turnId)) return;
     const candidate = this.turnForCompletion(turnId);
     // A terminal without a matching id cannot select one of several active
     // turns safely. Keep them active until their exact terminal arrives.
@@ -2212,6 +2228,67 @@ export class CodexRolloutMonitor {
       : undefined;
   }
 
+  /**
+   * A real Desktop turn can briefly overlap another attributed turn, so
+   * unscoped payloads must continue to fail closed during that interval.
+   * However, Codex rollouts can also retain an orphan task_started forever
+   * after an interrupted Desktop host. Once a much newer user_message proves
+   * Desktop ownership, an older proven-Desktop predecessor is no longer a
+   * credible peer turn on the same serial thread. Retire only that bounded
+   * case; local, unclassified, timestamp-less and recent overlaps stay active.
+   */
+  private retireStaleDesktopPredecessors(
+    current: ActiveTurn,
+    evidenceTimestampMs?: number,
+  ): boolean {
+    const currentTimestampMs =
+      parseTimestampMs(current.timestamp) ?? evidenceTimestampMs;
+    if (currentTimestampMs === undefined) return false;
+    let retired = false;
+    for (const [key, candidate] of this.activeTurns) {
+      if (
+        candidate === current ||
+        candidate.origin !== "desktop" ||
+        candidate.turnId === undefined ||
+        candidate.sequence >= current.sequence
+      ) {
+        continue;
+      }
+      const candidateTimestampMs = parseTimestampMs(candidate.timestamp);
+      if (
+        candidateTimestampMs === undefined ||
+        currentTimestampMs - candidateTimestampMs <
+          STALE_DESKTOP_PREDECESSOR_MS
+      ) {
+        continue;
+      }
+      this.clearPendingStart(candidate);
+      this.clearPendingOutput(candidate);
+      this.activeTurns.delete(key);
+      remember(
+        this.retiredStaleDesktopTurnIds,
+        candidate.turnId,
+        MAX_RETIRED_STALE_TURN_IDS,
+      );
+      retired = true;
+    }
+    return retired;
+  }
+
+  private clearPendingOutput(turn: ActiveTurn): void {
+    for (const [key, pending] of this.pendingAssistantMessages) {
+      if (pending.turnKey !== turn.key) continue;
+      if (pending.timer) clearTimeout(pending.timer);
+      this.pendingAssistantMessages.delete(key);
+    }
+    if (!turn.turnId) return;
+    for (const [key, pending] of this.pendingCompletedTools) {
+      if (pending.turnId === turn.turnId) {
+        this.pendingCompletedTools.delete(key);
+      }
+    }
+  }
+
   private takeActiveTurn(turn: ActiveTurn): ActiveTurn {
     this.clearPendingStart(turn);
     this.activeTurns.delete(turn.key);
@@ -2274,6 +2351,7 @@ export class CodexRolloutMonitor {
     this.state = "unknown";
     this.lastObservedTurnId = undefined;
     this.lastExternalTerminalTimestampMs = undefined;
+    this.retiredStaleDesktopTurnIds.clear();
     this.emittedKeys.clear();
     this.reasoningKeys.clear();
     this.toolNames.clear();

@@ -726,6 +726,309 @@ describe("CodexRolloutMonitor", () => {
     monitor.close();
   });
 
+  it("retires a stale Desktop predecessor before streaming a newer turn", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-stale-desktop",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+      assistantMessagePairMs: 1,
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-orphan" },
+        "2026-07-19T12:00:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-orphan-user",
+          message: "orphaned work",
+        },
+        "2026-07-19T12:00:01Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "agent_message",
+          turn_id: "desktop-orphan",
+          phase: "commentary",
+          message: "late orphan assistant",
+        },
+        "2026-07-19T12:09:58Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "web_search_end",
+          turn_id: "desktop-orphan",
+          call_id: "late-orphan-tool",
+          query: "late orphan search",
+        },
+        "2026-07-19T12:09:59Z",
+      ),
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-current" },
+        "2026-07-19T12:10:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-current-user",
+          message: "current work",
+        },
+        "2026-07-19T12:10:01Z",
+      ),
+      event(
+        "event_msg",
+        { type: "agent_reasoning", text: "current reasoning" },
+        "2026-07-19T12:10:02Z",
+      ),
+      event(
+        "response_item",
+        {
+          type: "message",
+          id: "current-answer",
+          role: "assistant",
+          content: [{ type: "output_text", text: "current answer" }],
+        },
+        "2026-07-19T12:10:03Z",
+      ),
+      event(
+        "response_item",
+        {
+          type: "function_call",
+          call_id: "current-tool",
+          name: "exec_command",
+          arguments: "{}",
+        },
+        "2026-07-19T12:10:04Z",
+      ),
+    ]);
+
+    await monitor.refreshNow();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(monitor.snapshot).toEqual({
+      state: "running",
+      turnId: "desktop-current",
+    });
+    expect(monitor.externalTurnIdForSteering).toBe("desktop-current");
+    expect(JSON.stringify(events)).toContain("current reasoning");
+    expect(JSON.stringify(events)).toContain("current answer");
+    expect(JSON.stringify(events)).toContain("current-tool");
+    expect(JSON.stringify(events)).not.toContain("late orphan assistant");
+    expect(JSON.stringify(events)).not.toContain("late-orphan-tool");
+
+    await appendEntries(path, [
+      event("event_msg", {
+        type: "task_complete",
+        turn_id: "desktop-orphan",
+      }),
+    ]);
+    await monitor.refreshNow();
+    expect(monitor.snapshot).toEqual({
+      state: "running",
+      turnId: "desktop-current",
+    });
+    monitor.close();
+  });
+
+  it("repairs a stale Desktop predecessor while seeding history", async () => {
+    const path = await rollout([
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-seed-orphan" },
+        "2026-07-19T12:00:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-seed-orphan-user",
+          message: "old work",
+        },
+        "2026-07-19T12:00:01Z",
+      ),
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-seed-current" },
+        "2026-07-19T12:10:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-seed-current-user",
+          message: "new work",
+        },
+        "2026-07-19T12:10:01Z",
+      ),
+    ]);
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-seed-stale-desktop",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+
+    await monitor.start();
+
+    expect(monitor.snapshot).toEqual({
+      state: "running",
+      turnId: "desktop-seed-current",
+    });
+    expect(monitor.externalTurnIdForSteering).toBe("desktop-seed-current");
+    expect(events).toEqual([]);
+
+    await appendEntries(path, [
+      event("event_msg", {
+        type: "agent_reasoning",
+        text: "seed repaired",
+      }),
+    ]);
+    await monitor.refreshNow();
+    expect(JSON.stringify(events)).toContain("seed repaired");
+    monitor.close();
+  });
+
+  it("ignores a late stale terminal instead of completing an anonymous current turn", async () => {
+    const path = await rollout();
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-stale-late-terminal",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: () => {},
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-stale-id" },
+        "2026-07-19T12:00:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-stale-user",
+          message: "old work",
+        },
+        "2026-07-19T12:00:01Z",
+      ),
+      event(
+        "event_msg",
+        { type: "task_started" },
+        "2026-07-19T12:10:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-anonymous-current-user",
+          message: "new anonymous work",
+        },
+        "2026-07-19T12:10:01Z",
+      ),
+    ]);
+    await monitor.refreshNow();
+    expect(monitor.snapshot).toEqual({ state: "running" });
+    expect((monitor as any).activeTurns.size).toBe(1);
+
+    await appendEntries(path, [
+      event("event_msg", {
+        type: "task_complete",
+        turn_id: "desktop-stale-id",
+      }),
+    ]);
+    await monitor.refreshNow();
+
+    expect(monitor.snapshot).toEqual({ state: "running" });
+    expect((monitor as any).activeTurns.size).toBe(1);
+    monitor.close();
+  });
+
+  it("keeps an exact local overlap while retiring only the stale Desktop turn", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-stale-plus-local",
+      path,
+      getLocalActiveTurnId: () => "local-active",
+      consumeLocalClientMessageId: (id) => id === "local-user",
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-old" },
+        "2026-07-19T12:00:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-old-user",
+          message: "old Desktop work",
+        },
+        "2026-07-19T12:00:01Z",
+      ),
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "local-active" },
+        "2026-07-19T12:09:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "local-user",
+          message: "phone work",
+        },
+        "2026-07-19T12:09:01Z",
+      ),
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-new" },
+        "2026-07-19T12:10:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-new-user",
+          message: "new Desktop work",
+        },
+        "2026-07-19T12:10:01Z",
+      ),
+      event("event_msg", {
+        type: "agent_reasoning",
+        text: "still ambiguous with phone",
+      }),
+    ]);
+
+    await monitor.refreshNow();
+
+    expect(monitor.externalTurnIdForSteering).toBe("desktop-new");
+    expect((monitor as any).activeTurns.has("turn:desktop-old")).toBe(false);
+    expect((monitor as any).activeTurns.has("turn:local-active")).toBe(true);
+    expect((monitor as any).activeTurns.has("turn:desktop-new")).toBe(true);
+    expect(JSON.stringify(events)).not.toContain("still ambiguous with phone");
+    monitor.close();
+  });
+
   it("does not let a local guide id rewrite a Desktop-owned turn", async () => {
     const path = await rollout();
     const events: CodexDesktopContinuityMonitorEvent[] = [];
