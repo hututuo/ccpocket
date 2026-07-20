@@ -1306,12 +1306,15 @@ class _SessionListScreenState extends State<SessionListScreen>
     Offset? position,
   ]) async {
     final l = AppLocalizations.of(context);
+    final mirrorSession = conversationMirrorSessionFromRunning(session);
     final action = await showAdaptiveActionMenu<String>(
       context: context,
       position: position,
       items: [
         if (session.provider == Provider.codex.value)
           conversationForkActionItem(context),
+        if (mirrorSession != null)
+          ...conversationMirrorActionItems(context, mirrorSession),
         AdaptiveActionMenuItem(
           value: 'rename',
           icon: Icons.label_outline,
@@ -1331,6 +1334,12 @@ class _SessionListScreenState extends State<SessionListScreen>
       await _forkRunningSession(session);
       return;
     }
+    if (mirrorSession != null &&
+        await handleConversationMirrorAction(context, mirrorSession, action)) {
+      return;
+    }
+    if (!mounted) return;
+
     if (action == 'rename') {
       final newName = await showRenameSessionDialog(
         context,

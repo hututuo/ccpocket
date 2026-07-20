@@ -10,6 +10,54 @@ const conversationMirrorDownloadAction = 'conversation_mirror_download';
 const conversationMirrorSyncAction = 'conversation_mirror_sync';
 const conversationMirrorRemoveAction = 'conversation_mirror_remove';
 
+bool isConversationMirrorAction(String action) => const {
+  conversationMirrorDownloadAction,
+  conversationMirrorSyncAction,
+  conversationMirrorRemoveAction,
+}.contains(action);
+
+/// Adapts a live Bridge runtime to the durable provider identity used by the
+/// conversation mirror. The mirror never keys data by the short runtime id.
+RecentSession? conversationMirrorSessionFromRunning(SessionInfo session) {
+  final providerSessionId = session.claudeSessionId?.trim();
+  if (session.provider != Provider.codex.value ||
+      providerSessionId == null ||
+      providerSessionId.isEmpty) {
+    return null;
+  }
+  return conversationMirrorSessionReference(
+    providerSessionId: providerSessionId,
+    projectPath: session.worktreePath ?? session.projectPath,
+    created: session.createdAt,
+    modified: session.lastActivityAt,
+    gitBranch: session.worktreeBranch ?? session.gitBranch,
+  );
+}
+
+RecentSession? conversationMirrorSessionReference({
+  required String? providerSessionId,
+  required String? projectPath,
+  String created = '',
+  String modified = '',
+  String gitBranch = '',
+}) {
+  final threadId = providerSessionId?.trim();
+  final cwd = projectPath?.trim();
+  if (threadId == null || threadId.isEmpty || cwd == null || cwd.isEmpty) {
+    return null;
+  }
+  return RecentSession(
+    sessionId: threadId,
+    provider: Provider.codex.value,
+    firstPrompt: '',
+    created: created,
+    modified: modified,
+    gitBranch: gitBranch,
+    projectPath: cwd,
+    isSidechain: false,
+  );
+}
+
 /// Optional action-menu contribution for the removable conversation mirror.
 ///
 /// Returning an empty list leaves the upstream recent-session menu unchanged.
@@ -54,17 +102,32 @@ List<AdaptiveActionMenuItem<String>> conversationMirrorActionItems(
   ];
 }
 
+List<PopupMenuEntry<String>> conversationMirrorPopupMenuItems(
+  BuildContext context,
+  RecentSession session,
+) => conversationMirrorActionItems(context, session)
+    .map(
+      (item) => PopupMenuItem<String>(
+        key: item.key,
+        value: item.value,
+        child: ListTile(
+          leading: Icon(item.icon, size: 20),
+          title: Text(item.label),
+          subtitle: item.subtitle == null ? null : Text(item.subtitle!),
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+        ),
+      ),
+    )
+    .toList(growable: false);
+
 /// Handles only mirror-owned action values. Returns false for upstream items.
 Future<bool> handleConversationMirrorAction(
   BuildContext context,
   RecentSession session,
   String action,
 ) async {
-  if (!const {
-    conversationMirrorDownloadAction,
-    conversationMirrorSyncAction,
-    conversationMirrorRemoveAction,
-  }.contains(action)) {
+  if (!isConversationMirrorAction(action)) {
     return false;
   }
   final service = context.read<ConversationMirrorService?>();

@@ -56,6 +56,7 @@ import '../claude_session/widgets/rewind_message_list_sheet.dart'
     show UserMessageHistorySheet;
 import '../conversation_fork/conversation_fork_actions.dart';
 import '../conversation_fork/conversation_fork_strings.dart';
+import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import 'state/codex_session_cubit.dart';
 import 'widgets/codex_goal_card.dart';
 import 'widgets/codex_goal_management.dart';
@@ -647,6 +648,10 @@ class _CodexChatBody extends HookWidget {
     final chatFileRoot = resolveChatFileRoot(
       worktreePath: worktreePath,
       projectPath: effectiveProjectPath,
+    );
+    final conversationMirrorSession = conversationMirrorSessionReference(
+      providerSessionId: sessionState.claudeSessionId,
+      projectPath: chatFileRoot,
     );
     final gitProjectPath = chatFileRoot;
     final gitBadgeTone = _gitBadgeToneOf(
@@ -1267,6 +1272,17 @@ class _CodexChatBody extends HookWidget {
                             unawaited(_forkCodexFromCurrent(context));
                             return;
                           }
+                          if (conversationMirrorSession != null &&
+                              isConversationMirrorAction(value)) {
+                            unawaited(
+                              handleConversationMirrorAction(
+                                context,
+                                conversationMirrorSession,
+                                value,
+                              ),
+                            );
+                            return;
+                          }
                           final localFeatureId =
                               LocalSessionFeatureHost.featureIdFromMenuValue(
                                 value,
@@ -1332,6 +1348,11 @@ class _CodexChatBody extends HookWidget {
                                   sessionState.status == ProcessStatus.idle &&
                                   sessionState.queuedInput == null,
                             ),
+                            if (conversationMirrorSession != null)
+                              ...conversationMirrorPopupMenuItems(
+                                context,
+                                conversationMirrorSession,
+                              ),
                             PopupMenuItem(
                               key: const ValueKey('menu_goal'),
                               value: 'goal',

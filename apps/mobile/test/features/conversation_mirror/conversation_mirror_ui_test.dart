@@ -62,6 +62,51 @@ Widget _wrap(ConversationMirrorService service, Widget child) =>
     );
 
 void main() {
+  test('live sessions use the durable Codex thread id for mirror actions', () {
+    final target = conversationMirrorSessionFromRunning(
+      const SessionInfo(
+        id: 'runtime-1',
+        provider: 'codex',
+        projectPath: '/tmp/project',
+        claudeSessionId: 'thread-1',
+        status: 'idle',
+        createdAt: '2026-07-18T00:00:00Z',
+        lastActivityAt: '2026-07-18T00:01:00Z',
+        worktreePath: '/tmp/project-worktree',
+      ),
+    );
+
+    expect(target?.sessionId, 'thread-1');
+    expect(target?.projectPath, '/tmp/project-worktree');
+  });
+
+  testWidgets('overflow menu reuses the full-download mirror action', (
+    tester,
+  ) async {
+    final service = _FakeConversationMirrorService(
+      unsupported: false,
+      localCopy: false,
+    );
+    late List<PopupMenuEntry<String>> items;
+    await tester.pumpWidget(
+      _wrap(
+        service,
+        Builder(
+          builder: (context) {
+            items = conversationMirrorPopupMenuItems(context, _session);
+            return const SizedBox.shrink();
+          },
+        ),
+      ),
+    );
+
+    expect(items, hasLength(1));
+    expect(
+      items.single.key,
+      const ValueKey('conversation_mirror_download_action'),
+    );
+  });
+
   testWidgets('old Bridge hides download when there is no local copy', (
     tester,
   ) async {
