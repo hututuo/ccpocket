@@ -592,6 +592,23 @@ void main() {
     );
   });
 
+  testWidgets('codex permissions sheet labels the active preset On Request', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_wrap(cubit));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('On Request'));
+    await tester.pumpAndSettle();
+
+    final activeTile = tester.widget<ListTile>(
+      find.widgetWithText(ListTile, 'On Request'),
+    );
+    expect(activeTile.trailing, isA<Icon>());
+    expect((activeTile.trailing! as Icon).icon, Icons.check);
+    expect(find.text('Default permissions'), findsNothing);
+  });
+
   testWidgets('unknown runtime service tier stays visible and read-only', (
     tester,
   ) async {

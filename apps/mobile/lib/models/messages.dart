@@ -316,7 +316,7 @@ enum CodexApprovalPolicy {
 }
 
 enum CodexPermissionsMode {
-  defaultPermissions('default', 'Default permissions'),
+  defaultPermissions('default', 'On Request'),
   autoReview('autoReview', 'Auto-review'),
   fullAccess('fullAccess', 'Full access'),
   custom('custom', 'Custom (config.toml)');
