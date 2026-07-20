@@ -538,6 +538,53 @@ void main() {
   });
 
   group('History handling — pending state restoration', () {
+    test('history never treats Bridge runtime ids as Codex thread ids', () {
+      final update = handler.handle(
+        const HistoryMessage(
+          messages: [
+            SystemMessage(
+              subtype: 'init',
+              provider: 'codex',
+              sessionId: 'thread-1',
+            ),
+            SystemMessage(
+              subtype: 'session_created',
+              provider: 'codex',
+              sessionId: 'bridge-runtime-id',
+            ),
+            SystemMessage(
+              subtype: 'supported_commands',
+              provider: 'codex',
+              sessionId: 'another-runtime-id',
+            ),
+          ],
+        ),
+        isBackground: false,
+        isCodex: true,
+      );
+
+      expect(update.claudeSessionId, 'thread-1');
+    });
+
+    test('explicit provider thread id remains valid on session_created', () {
+      final update = handler.handle(
+        const HistoryMessage(
+          messages: [
+            SystemMessage(
+              subtype: 'session_created',
+              provider: 'codex',
+              sessionId: 'bridge-runtime-id',
+              claudeSessionId: 'thread-explicit',
+            ),
+          ],
+        ),
+        isBackground: false,
+        isCodex: true,
+      );
+
+      expect(update.claudeSessionId, 'thread-explicit');
+    });
+
     test('restores project path from session metadata in history', () {
       final update = handler.handle(
         const HistoryMessage(
@@ -1005,6 +1052,24 @@ void main() {
   });
 
   group('SystemMessage slash command handling', () {
+    test('Codex approval policy updates without a legacy permission mode', () {
+      final update = handler.handle(
+        const SystemMessage(
+          subtype: 'codex_settings',
+          provider: 'codex',
+          executionMode: 'fullAccess',
+          approvalPolicy: 'never',
+          codexPermissionsMode: 'fullAccess',
+        ),
+        isBackground: false,
+        isCodex: true,
+      );
+
+      expect(update.executionMode, ExecutionMode.fullAccess);
+      expect(update.codexApprovalPolicy, CodexApprovalPolicy.never);
+      expect(update.codexPermissionsMode, CodexPermissionsMode.fullAccess);
+    });
+
     test('init with slashCommands populates commands and adds entry', () {
       final update = handler.handle(
         const SystemMessage(

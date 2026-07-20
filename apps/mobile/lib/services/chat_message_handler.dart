@@ -670,12 +670,14 @@ class ChatMessageHandler {
               includeDollarEntities: isCodexSession,
             );
           }
-          // Extract claudeSessionId for image loading etc.
-          // Prefer full Claude CLI UUID over Bridge's 8-char ID.
-          if (m.claudeSessionId != null) {
-            claudeSessionId = m.claudeSessionId;
-          } else if (m.sessionId != null) {
-            claudeSessionId = m.sessionId;
+          // Keep history restoration identical to the live system-message
+          // path: session_created/supported_commands use sessionId for the
+          // Bridge runtime, not for the durable provider thread. Only init
+          // may use sessionId as a legacy provider-id fallback.
+          final providerSessionId =
+              m.claudeSessionId ?? (m.subtype == 'init' ? m.sessionId : null);
+          if (providerSessionId != null) {
+            claudeSessionId = providerSessionId;
           }
         }
         if (m is SystemMessage && m.projectPath?.trim().isNotEmpty == true) {
@@ -865,6 +867,14 @@ class ChatMessageHandler {
           permissionMode: msg.permissionMode,
           approvalPolicy: msg.approvalPolicy,
         );
+        codexApprovalPolicy =
+            codexApprovalPolicyFromRaw(
+              resolveCodexApprovalPolicy(
+                approvalPolicy: msg.approvalPolicy,
+                executionMode: msg.executionMode,
+              ),
+            ) ??
+            codexApprovalPolicyFromLegacyExecutionMode(msg.executionMode);
       }
       if (hasPlanSignals(msg)) {
         planMode = derivePlanMode(
