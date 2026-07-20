@@ -126,7 +126,7 @@ describe("CodexSubagentService", () => {
     ).toEqual(["child", "grandchild"]);
   });
 
-  it("trusts and paginates the official ancestor-filtered result without sourceKinds", async () => {
+  it("uses the official DB-backed descendant filter with explicit subagent sources", async () => {
     const listThreads = vi.fn(async (params: { cursor?: string | null }) =>
       params.cursor === null
         ? {
@@ -155,6 +155,8 @@ describe("CodexSubagentService", () => {
         ancestorThreadId: "root",
         cursor: null,
         limit: 100,
+        sourceKinds: expect.arrayContaining(["subAgentThreadSpawn"]),
+        useStateDbOnly: true,
       }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
@@ -163,7 +165,41 @@ describe("CodexSubagentService", () => {
       expect.objectContaining({ ancestorThreadId: "root", cursor: "page-2" }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(listThreads.mock.calls[0]?.[0]).not.toHaveProperty("sourceKinds");
+  });
+
+  it("retries without useStateDbOnly on older app-server versions", async () => {
+    const listThreads = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new CodexRpcError(
+          "thread/list",
+          "Invalid parameter useStateDbOnly: unknown field",
+          -32602,
+        ),
+      )
+      .mockResolvedValueOnce({
+        data: [thread("child", "root")],
+        nextCursor: null,
+      })
+      .mockResolvedValueOnce({ data: [], nextCursor: null });
+
+    await expect(
+      new CodexSubagentService().list(processWith({ listThreads }), "root"),
+    ).resolves.toMatchObject({
+      subagents: [{ id: "child" }],
+      truncated: false,
+    });
+    expect(listThreads).toHaveBeenCalledTimes(3);
+    expect(listThreads.mock.calls[0]?.[0]).toMatchObject({
+      useStateDbOnly: true,
+    });
+    expect(listThreads.mock.calls[1]?.[0]).not.toHaveProperty(
+      "useStateDbOnly",
+    );
+    expect(listThreads.mock.calls[1]?.[0]).toMatchObject({
+      ancestorThreadId: "root",
+      sourceKinds: expect.arrayContaining(["subAgentThreadSpawn"]),
+    });
   });
 
   it("merges descendants across fork lineage and both archive states", async () => {
@@ -235,10 +271,15 @@ describe("CodexSubagentService", () => {
           JSON.stringify({
             timestamp: "2026-07-20T00:00:01.000Z",
             type: "event_msg",
-            payload: { type: "user_message", message: "latest question" },
+            payload: { type: "user_message", message: "shared first prompt" },
           }),
           JSON.stringify({
             timestamp: "2026-07-20T00:00:02.000Z",
+            type: "event_msg",
+            payload: { type: "user_message", message: "latest question" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-20T00:00:03.000Z",
             type: "event_msg",
             payload: {
               type: "agent_message",
@@ -272,6 +313,65 @@ describe("CodexSubagentService", () => {
       expect(result.subagents[0]?.preview).toBe(
         "latest question\nlatest answer",
       );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not pair an inherited first prompt with a later answer", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ccpocket-subagent-answer-"));
+    try {
+      const filePath = join(directory, "child.jsonl");
+      await writeFile(
+        filePath,
+        [
+          JSON.stringify({
+            timestamp: "2026-07-20T00:00:00.000Z",
+            type: "session_meta",
+            payload: {
+              id: "child",
+              cwd: "/tmp",
+              source: { subAgent: "other" },
+            },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-20T00:00:01.000Z",
+            type: "event_msg",
+            payload: { type: "user_message", message: "shared first prompt" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-20T00:00:02.000Z",
+            type: "event_msg",
+            payload: {
+              type: "agent_message",
+              message: "latest child answer",
+              phase: "final_answer",
+            },
+          }),
+        ].join("\n"),
+        "utf8",
+      );
+      const rawThread = {
+        ...thread("child", "root"),
+        preview: "shared first prompt",
+        path: filePath,
+      };
+      const listThreads = vi.fn(
+        async (params: { archived?: boolean }) => ({
+          data: params.archived ? [] : [rawThread],
+          nextCursor: null,
+        }),
+      );
+
+      const result = await new CodexSubagentService().list(
+        processWith({
+          readThread: vi.fn(async () => ({ forkedFromId: null })),
+          listThreads,
+        }),
+        "root",
+      );
+
+      expect(result.subagents[0]?.preview).toBe("latest child answer");
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
