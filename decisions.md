@@ -102,3 +102,35 @@
 - Disconnecting the final watcher aborts its provider read and releases the shared semaphore. Local bootstrap must yield to preexisting canonical content, content-epoch changes, newer bootstrap generations, and service disposal.
 - Keep stable provider identity and disabled registrations in neutral foundation commits. Bridge Mirror and Mobile Mirror each own one top-level, directly revertible behavior commit and must not edit the frozen composition roots. Do not merge this branch into the stable runtime or deploy it without an explicit user decision after verification.
 - Freeze the compatibility matrix as follows: old iOS never opts into a new Bridge mirror; new iOS falls back from an old Bridge after a correlated refusal or bounded first-frame timeout; transitional v1 Bridge data is store-only without a transfer guard; current iOS and Bridge use guarded snapshot/patch reconciliation; old app-server history falls through items, full turns, validated legacy turns, then whole-thread read. Every unsupported path preserves canonical history and the existing WebSocket session.
+
+## Purple particle motion, resident conversations, and native transfer gating
+
+- The high-tier Effort animation's product motif is purple particles, not a
+  generic gradient or glossy thumb. Keep particle count deterministic and
+  bounded, paint only during the finite selection transition, clip it to the
+  control, isolate repaints, and suppress it under Reduce Motion. The six wire
+  values and model-advertised availability remain unchanged.
+- A resident conversation is a policy over the existing rebuildable Mobile
+  mirror, not a new Codex session type. Its identity is Bridge plus provider
+  plus durable provider thread id; never persist a runtime session id. Enabling
+  residency requests complete history and a watch, while disabling it stops the
+  watch but keeps the phone copy unless the user separately deletes that copy.
+- Resident metadata may appear on Home and in running/recent rows, but thousands
+  of envelopes must not be instantiated there. Opening a complete mirror still
+  publishes only the newest 200 renderable envelopes and prepends older pages
+  in 200-envelope chunks. Restore only `autoSync` watches after reconnect and
+  retain the Bridge's existing maximum of eight active watches.
+- Both the outer running/recent list and the conversation's top-right More menu
+  are first-class residency controls. An in-progress conversation is eligible;
+  lack of a durable provider id may delay the operation but must not hide the
+  control or persist a guessed identity.
+- File transfer is advertised and requested only after the native iPhone shell
+  reports iOS 15 or later and native file-transfer API v1. Missing/old native
+  plugin, timeout, malformed response, exception, or unsupported iOS all fail
+  closed. This protects Shorebird-style new Dart on an old native shell. Any
+  auxiliary WebSocket must default file-transfer capability to false so it
+  cannot impersonate a compatible phone.
+- Keep the three behavior commits independently removable: `c9b472a` owns
+  motion, `2ebd169` owns residency, and `5c29481` owns the native capability
+  gate. Remove the documentation commit first, then those commits in reverse
+  order to reproduce `d52001d^{tree}` exactly.
