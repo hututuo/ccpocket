@@ -228,7 +228,9 @@ class _CodexSettingsHeader extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final reduceMotion = codexMotionDisabled(context);
     final highTier =
-        effort == ReasoningEffort.max || effort == ReasoningEffort.ultra;
+        effort == ReasoningEffort.xhigh ||
+        effort == ReasoningEffort.max ||
+        effort == ReasoningEffort.ultra;
     final highTierColor = Theme.of(context).brightness == Brightness.dark
         ? const Color(0xFFB59CFF)
         : const Color(0xFF7957E8);
@@ -360,16 +362,18 @@ class CodexEffortSlider extends StatelessWidget {
     final sliderIndex = selectedIndex < 0
         ? quickEfforts.length - 1
         : selectedIndex;
+    final xHighIndex = quickEfforts.indexOf(ReasoningEffort.xhigh);
     final maxIndex = quickEfforts.indexOf(ReasoningEffort.max);
     final ultraIndex = quickEfforts.indexOf(ReasoningEffort.ultra);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
       child: CodexEffortMotionSlider(
-        labels: quickEfforts.map((effort) => effort.label).toList(
-          growable: false,
-        ),
+        labels: quickEfforts
+            .map((effort) => effort.label)
+            .toList(growable: false),
         selectedIndex: sliderIndex,
+        xHighIndex: xHighIndex < 0 ? null : xHighIndex,
         maxIndex: maxIndex < 0 ? null : maxIndex,
         ultraIndex: ultraIndex < 0 ? null : ultraIndex,
         fastModeEnabled: speed == CodexSpeed.fast,

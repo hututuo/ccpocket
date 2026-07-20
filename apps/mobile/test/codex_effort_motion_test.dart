@@ -1,6 +1,7 @@
 import 'dart:ui' show SemanticsAction;
 
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/widgets/claude_effort_motion_style.dart';
 import 'package:ccpocket/widgets/codex_effort_motion.dart';
 import 'package:ccpocket/widgets/codex_effort_slider.dart';
 import 'package:flutter/material.dart';
@@ -10,7 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('uses the Desktop geometry and preserves effort wire mapping', (
+  testWidgets('keeps mobile geometry and preserves effort wire mapping', (
     tester,
   ) async {
     final key = GlobalKey<_EffortHarnessState>();
@@ -29,7 +30,17 @@ void main() {
     expect(CodexEffortMotionMetrics.thumbDiameter, 28);
     expect(CodexEffortMotionMetrics.activeThumbDiameter, 32);
     expect(CodexEffortMotionMetrics.tickDiameter, 4);
-    expect(codexMaxParticleCount, 16);
+    expect(ClaudeEffortMotionTokens.particles, hasLength(24));
+    expect(
+      ClaudeEffortMotionTokens.particleCount(ClaudeEffortAccent.xHigh),
+      lessThan(ClaudeEffortMotionTokens.particleCount(ClaudeEffortAccent.max)),
+    );
+    expect(
+      ClaudeEffortMotionTokens.particleCount(ClaudeEffortAccent.max),
+      lessThan(
+        ClaudeEffortMotionTokens.particleCount(ClaudeEffortAccent.ultra),
+      ),
+    );
     expect(codexFastParticleCount, 14);
 
     final bounds = tester.getRect(find.byKey(const ValueKey('motion_slider')));
@@ -39,6 +50,85 @@ void main() {
     expect(key.currentState!.effort, ReasoningEffort.ultra);
     expect(key.currentState!.effort.value, 'ultra');
     expect(find.text('ultra'), findsOneWidget);
+  });
+
+  test('Claude accent mapping is semantic rather than position-based', () {
+    expect(
+      ClaudeEffortMotionTokens.accentForIndex(
+        selectedIndex: 0,
+        xHighIndex: 0,
+        maxIndex: 1,
+        ultraIndex: 2,
+      ),
+      ClaudeEffortAccent.xHigh,
+    );
+    expect(
+      ClaudeEffortMotionTokens.accentForIndex(
+        selectedIndex: 1,
+        xHighIndex: 0,
+        maxIndex: 1,
+        ultraIndex: 2,
+      ),
+      ClaudeEffortAccent.max,
+    );
+    expect(
+      ClaudeEffortMotionTokens.accentForIndex(
+        selectedIndex: 2,
+        xHighIndex: 0,
+        maxIndex: 1,
+        ultraIndex: 2,
+      ),
+      ClaudeEffortAccent.ultra,
+    );
+    expect(
+      ClaudeEffortMotionTokens.accentForIndex(
+        selectedIndex: 3,
+        xHighIndex: 0,
+        maxIndex: 1,
+        ultraIndex: 2,
+      ),
+      ClaudeEffortAccent.standard,
+    );
+  });
+
+  test('purple particles and thumb deformation have finite endpoints', () {
+    final particle = ClaudeEffortMotionTokens.particles.first;
+    expect(
+      ClaudeEffortMotionTokens.particleProgress(
+        ClaudeEffortAccent.xHigh,
+        0,
+        particle,
+      ),
+      -1,
+    );
+    expect(
+      ClaudeEffortMotionTokens.particleProgress(
+        ClaudeEffortAccent.xHigh,
+        0.5,
+        particle,
+      ),
+      inInclusiveRange(0.0, 1.0),
+    );
+    expect(
+      ClaudeEffortMotionTokens.particleProgress(
+        ClaudeEffortAccent.xHigh,
+        1,
+        particle,
+      ),
+      -1,
+    );
+    expect(
+      ClaudeEffortMotionTokens.thumbTravelEnvelope(movePhase: 0, travel: 1),
+      closeTo(0, 0.0001),
+    );
+    expect(
+      ClaudeEffortMotionTokens.thumbTravelEnvelope(movePhase: 0.5, travel: 1),
+      greaterThan(0.95),
+    );
+    expect(
+      ClaudeEffortMotionTokens.thumbTravelEnvelope(movePhase: 1, travel: 1),
+      closeTo(0, 0.0001),
+    );
   });
 
   testWidgets(
@@ -154,6 +244,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 120));
     expect(painter().debugLogicalPosition, greaterThan(0.4));
     expect(painter().debugLogicalPosition, lessThan(0.6));
+    expect(painter().debugThumbTravelEnvelope, greaterThan(0));
     await tester.pump(const Duration(milliseconds: 190));
     expect(painter().debugLogicalPosition, closeTo(0.6, 0.001));
   });
@@ -173,6 +264,15 @@ void main() {
 
     expect(firstX - tickRadius, greaterThanOrEqualTo(track.left));
     expect(lastX + tickRadius, lessThanOrEqualTo(track.right));
+
+    key.currentState!.setEffort(ReasoningEffort.ultra);
+    await tester.pump();
+    await tester.pumpAndSettle();
+    final dynamic ultraPainter = tester
+        .widget<CustomPaint>(paintFinder)
+        .painter;
+    final Rect ultraActive = ultraPainter.debugActiveBounds(size) as Rect;
+    expect(ultraActive.right, closeTo(track.right, 0.001));
 
     await tester.pumpWidget(
       MaterialApp(
@@ -228,22 +328,37 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('same index enters Max and Ultra when semantic tiers change', (
+  testWidgets('same index enters X-high, Max and Ultra as semantics change', (
     tester,
   ) async {
     final key = GlobalKey<_SemanticTierHarnessState>();
     await tester.pumpWidget(_SemanticTierHarness(key: key));
 
+    key.currentState!.showXHighAtSameIndex();
+    await tester.pump();
+    expect(tester.hasRunningAnimations, isTrue);
+    await tester.pump(
+      ClaudeEffortMotionTokens.xHighRevealDuration +
+          const Duration(milliseconds: 10),
+    );
+    expect(tester.hasRunningAnimations, isFalse);
+
     key.currentState!.showMaxAtSameIndex();
     await tester.pump();
     expect(tester.hasRunningAnimations, isTrue);
-    await tester.pump(const Duration(milliseconds: 2010));
+    await tester.pump(
+      ClaudeEffortMotionTokens.maxRevealDuration +
+          const Duration(milliseconds: 10),
+    );
     expect(tester.hasRunningAnimations, isFalse);
 
     key.currentState!.showUltraAtSameIndex();
     await tester.pump();
     expect(tester.hasRunningAnimations, isTrue);
-    await tester.pump(const Duration(milliseconds: 1110));
+    await tester.pump(
+      ClaudeEffortMotionTokens.ultraRevealDuration +
+          const Duration(milliseconds: 10),
+    );
     expect(tester.hasRunningAnimations, isFalse);
   });
 
@@ -279,13 +394,19 @@ void main() {
       key.currentState!.setEffort(ReasoningEffort.max);
       await tester.pump();
       expect(tester.hasRunningAnimations, isTrue);
-      await tester.pump(const Duration(milliseconds: 2010));
+      await tester.pump(
+        ClaudeEffortMotionTokens.maxRevealDuration +
+            const Duration(milliseconds: 10),
+      );
       expect(tester.hasRunningAnimations, isFalse);
 
       key.currentState!.setEffort(ReasoningEffort.ultra);
       await tester.pump();
       expect(tester.hasRunningAnimations, isTrue);
-      await tester.pump(const Duration(milliseconds: 1090));
+      await tester.pump(
+        ClaudeEffortMotionTokens.ultraRevealDuration -
+            const Duration(milliseconds: 10),
+      );
       expect(tester.hasRunningAnimations, isTrue);
       await tester.pump(const Duration(milliseconds: 20));
       expect(tester.hasRunningAnimations, isFalse);
@@ -329,11 +450,44 @@ void main() {
     },
   );
 
+  testWidgets('opening on Ultra performs one finite Claude-style reveal', (
+    tester,
+  ) async {
+    final key = GlobalKey<_EffortHarnessState>();
+    await tester.pumpWidget(
+      _EffortHarness(key: key, initialEffort: ReasoningEffort.ultra),
+    );
+    await tester.pump();
+
+    dynamic painter() => tester
+        .widget<CustomPaint>(find.byKey(const ValueKey('motion_slider_paint')))
+        .painter;
+
+    expect(painter().debugAccent, ClaudeEffortAccent.ultra);
+    expect(tester.hasRunningAnimations, isTrue);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(painter().debugParticleProgress(0), inInclusiveRange(0.0, 1.0));
+    await tester.pump(
+      ClaudeEffortMotionTokens.ultraRevealDuration -
+          const Duration(milliseconds: 690),
+    );
+    expect(tester.hasRunningAnimations, isFalse);
+    expect(painter().animation.isAnimating, isFalse);
+  });
+
   testWidgets('reduce motion jumps effort, Fast, Max and Ultra to rest', (
     tester,
   ) async {
     final key = GlobalKey<_EffortHarnessState>();
-    await tester.pumpWidget(_EffortHarness(key: key, disableAnimations: true));
+    await tester.pumpWidget(
+      _EffortHarness(
+        key: key,
+        disableAnimations: true,
+        initialEffort: ReasoningEffort.ultra,
+      ),
+    );
+    await tester.pump();
+    expect(tester.hasRunningAnimations, isFalse);
 
     key.currentState!.setFast(true);
     await tester.pump();
@@ -398,12 +552,14 @@ class _EffortHarness extends StatefulWidget {
   final bool disableAnimations;
   final bool rtl;
   final bool deferAck;
+  final ReasoningEffort initialEffort;
 
   const _EffortHarness({
     super.key,
     this.disableAnimations = false,
     this.rtl = false,
     this.deferAck = false,
+    this.initialEffort = ReasoningEffort.high,
   });
 
   @override
@@ -411,7 +567,7 @@ class _EffortHarness extends StatefulWidget {
 }
 
 class _EffortHarnessState extends State<_EffortHarness> {
-  ReasoningEffort effort = ReasoningEffort.high;
+  late ReasoningEffort effort;
   CodexSpeed speed = CodexSpeed.standard;
   final wireEfforts = <ReasoningEffort>[];
   late bool reduceMotion;
@@ -420,6 +576,7 @@ class _EffortHarnessState extends State<_EffortHarness> {
   @override
   void initState() {
     super.initState();
+    effort = widget.initialEffort;
     reduceMotion = widget.disableAnimations;
   }
 
@@ -507,17 +664,27 @@ class _SemanticTierHarness extends StatefulWidget {
 
 class _SemanticTierHarnessState extends State<_SemanticTierHarness> {
   List<String> labels = const ['light', 'medium', 'high'];
+  int? xHighIndex;
   int? maxIndex;
   int? ultraIndex;
 
+  void showXHighAtSameIndex() => setState(() {
+    labels = const ['light', 'medium', 'x-high'];
+    xHighIndex = 2;
+    maxIndex = null;
+    ultraIndex = null;
+  });
+
   void showMaxAtSameIndex() => setState(() {
     labels = const ['light', 'medium', 'max'];
+    xHighIndex = null;
     maxIndex = 2;
     ultraIndex = null;
   });
 
   void showUltraAtSameIndex() => setState(() {
     labels = const ['light', 'medium', 'ultra'];
+    xHighIndex = null;
     maxIndex = null;
     ultraIndex = 2;
   });
@@ -531,6 +698,7 @@ class _SemanticTierHarnessState extends State<_SemanticTierHarness> {
           child: CodexEffortMotionSlider(
             labels: labels,
             selectedIndex: 2,
+            xHighIndex: xHighIndex,
             maxIndex: maxIndex,
             ultraIndex: ultraIndex,
             onSelected: (_) {},

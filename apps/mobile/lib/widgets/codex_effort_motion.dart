@@ -4,6 +4,8 @@ import 'dart:ui' show lerpDouble;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'claude_effort_motion_style.dart';
+
 /// The easing used by the Codex Desktop effort and speed controls.
 const Curve codexDesktopMotionCurve = Cubic(0.23, 1, 0.32, 1);
 
@@ -80,6 +82,7 @@ bool _selectsSemanticIndex(CodexEffortMotionSlider widget, int? semanticIndex) {
 enum _EffortMotion {
   idle,
   move,
+  xHighReveal,
   maxReveal,
   ultraReveal,
   fastEnter,
@@ -88,46 +91,6 @@ enum _EffortMotion {
   thumb,
 }
 
-class _EffortParticleSpec {
-  final double unitX;
-  final double unitY;
-  final double distance;
-  final double radius;
-  final double delay;
-
-  const _EffortParticleSpec(
-    this.unitX,
-    this.unitY,
-    this.distance,
-    this.radius,
-    this.delay,
-  );
-}
-
-// Precomputed so the painter never allocates random particle geometry per
-// frame. Values intentionally have a little asymmetry like the Desktop burst.
-const _maxParticles = <_EffortParticleSpec>[
-  _EffortParticleSpec(-0.98356, -0.18060, 25, 1.35, 0.00),
-  _EffortParticleSpec(-0.84641, -0.53253, 21, 1.10, 0.08),
-  _EffortParticleSpec(-0.58850, -0.80850, 28, 1.45, 0.02),
-  _EffortParticleSpec(-0.24663, -0.96911, 24, 1.05, 0.12),
-  _EffortParticleSpec(0.12050, -0.99271, 29, 1.40, 0.04),
-  _EffortParticleSpec(0.49757, -0.86742, 22, 1.15, 0.15),
-  _EffortParticleSpec(0.78999, -0.61312, 27, 1.35, 0.07),
-  _EffortParticleSpec(0.96891, -0.24740, 23, 1.00, 0.18),
-  _EffortParticleSpec(0.98384, 0.17903, 26, 1.40, 0.01),
-  _EffortParticleSpec(0.83646, 0.54802, 21, 1.05, 0.11),
-  _EffortParticleSpec(0.57352, 0.81919, 29, 1.30, 0.05),
-  _EffortParticleSpec(0.19945, 0.97991, 24, 1.10, 0.16),
-  _EffortParticleSpec(-0.18808, 0.98215, 27, 1.45, 0.03),
-  _EffortParticleSpec(-0.52201, 0.85294, 22, 1.00, 0.13),
-  _EffortParticleSpec(-0.78901, 0.61437, 28, 1.35, 0.06),
-  _EffortParticleSpec(-0.94873, 0.31608, 23, 1.10, 0.17),
-];
-
-@visibleForTesting
-int get codexMaxParticleCount => _maxParticles.length;
-
 /// A discrete, self-painted effort slider modelled after the Codex Desktop
 /// control. It owns one finite [AnimationController]; no animation repeats.
 class CodexEffortMotionSlider extends StatefulWidget {
@@ -135,6 +98,7 @@ class CodexEffortMotionSlider extends StatefulWidget {
   final int selectedIndex;
   final ValueChanged<int> onSelected;
   final String sliderKey;
+  final int? xHighIndex;
   final int? maxIndex;
   final int? ultraIndex;
   final bool fastModeEnabled;
@@ -145,6 +109,7 @@ class CodexEffortMotionSlider extends StatefulWidget {
     required this.selectedIndex,
     required this.onSelected,
     required this.sliderKey,
+    this.xHighIndex,
     this.maxIndex,
     this.ultraIndex,
     this.fastModeEnabled = false,
@@ -175,11 +140,20 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   int? _locallyRequestedIndex;
   int? _dragStartedIndex;
   int? _dragLastEmittedIndex;
+  bool _didScheduleInitialTierReveal = false;
 
   int get _count => widget.labels.length;
 
   int get _selectedIndex =>
       _count == 0 ? 0 : widget.selectedIndex.clamp(0, _count - 1);
+
+  ClaudeEffortAccent _accentForIndex(int index) =>
+      ClaudeEffortMotionTokens.accentForIndex(
+        selectedIndex: index,
+        xHighIndex: widget.xHighIndex,
+        maxIndex: widget.maxIndex,
+        ultraIndex: widget.ultraIndex,
+      );
 
   @override
   void initState() {
@@ -201,19 +175,33 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   void didChangeDependencies() {
     super.didChangeDependencies();
     final next = codexMotionDisabled(context);
-    if (next == _reduceMotion) return;
+    final changed = next != _reduceMotion;
     _reduceMotion = next;
-    if (next && _controller.isAnimating) {
+    if (changed && next && _controller.isAnimating) {
       _controller.stop();
       _controller.value = 1;
       _motion = _EffortMotion.idle;
     }
+    if (_didScheduleInitialTierReveal) return;
+    _didScheduleInitialTierReveal = true;
+    final accent = _accentForIndex(_selectedIndex);
+    if (next || accent == ClaudeEffortAccent.standard) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _controller.isAnimating) return;
+      _animateTo(
+        _normalizedIndex(_selectedIndex, _count),
+        revealAccent: accent,
+      );
+    });
   }
 
   @override
   void didUpdateWidget(CodexEffortMotionSlider oldWidget) {
     super.didUpdateWidget(oldWidget);
     final next = _normalizedIndex(_selectedIndex, _count);
+    final enteringXHigh =
+        _selectsSemanticIndex(widget, widget.xHighIndex) &&
+        !_selectsSemanticIndex(oldWidget, oldWidget.xHighIndex);
     final enteringMax =
         _selectsSemanticIndex(widget, widget.maxIndex) &&
         !_selectsSemanticIndex(oldWidget, oldWidget.maxIndex);
@@ -230,11 +218,19 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     final preservesLocalTierReveal =
         acknowledged &&
         (_toPosition - next).abs() < 0.0001 &&
-        ((enteringMax && _motion == _EffortMotion.maxReveal) ||
+        ((enteringXHigh && _motion == _EffortMotion.xHighReveal) ||
+            (enteringMax && _motion == _EffortMotion.maxReveal) ||
             (enteringUltra && _motion == _EffortMotion.ultraReveal));
     if (preservesLocalTierReveal) return;
-    if (enteringMax || enteringUltra) {
-      _animateTo(next, enteringMax: enteringMax, enteringUltra: enteringUltra);
+    if (enteringXHigh || enteringMax || enteringUltra) {
+      _animateTo(
+        next,
+        revealAccent: enteringUltra
+            ? ClaudeEffortAccent.ultra
+            : enteringMax
+            ? ClaudeEffortAccent.max
+            : ClaudeEffortAccent.xHigh,
+      );
       return;
     }
     if (oldWidget.fastModeEnabled != widget.fastModeEnabled &&
@@ -267,17 +263,18 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
       return _toPosition;
     }
     var positionPhase = _clampUnit(phase);
-    if (_motion == _EffortMotion.maxReveal ||
+    if (_motion == _EffortMotion.xHighReveal ||
+        _motion == _EffortMotion.maxReveal ||
         _motion == _EffortMotion.ultraReveal ||
         _motion == _EffortMotion.fastEnter ||
         _motion == _EffortMotion.fastExit) {
-      // The position settles in 300 ms while the gradient reveal continues.
+      // The thumb settles first while the finite purple particle reveal runs.
       positionPhase = _clampUnit(positionPhase / _maxPositionInterval);
     }
     return lerpDouble(
           _fromPosition,
           _toPosition,
-          codexDesktopMotionCurve.transform(positionPhase),
+          ClaudeEffortMotionTokens.glideCurve.transform(positionPhase),
         ) ??
         _toPosition;
   }
@@ -286,7 +283,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     if (_motion == _EffortMotion.drag) return 1;
     if (_motion == _EffortMotion.idle) return _toThumb;
     var thumbPhase = _clampUnit(phase);
-    if (_motion == _EffortMotion.maxReveal ||
+    if (_motion == _EffortMotion.xHighReveal ||
+        _motion == _EffortMotion.maxReveal ||
         _motion == _EffortMotion.ultraReveal) {
       thumbPhase = _clampUnit(thumbPhase / _maxThumbInterval);
     }
@@ -308,8 +306,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
 
   void _animateTo(
     double position, {
-    bool enteringMax = false,
-    bool enteringUltra = false,
+    ClaudeEffortAccent? revealAccent,
     bool fromDrag = false,
   }) {
     final currentPosition = _positionAt(_controller.value);
@@ -322,37 +319,30 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     _toThumb = _pressed || _hovered ? 1 : 0;
     _fromFast = currentFast;
     _toFast = widget.fastModeEnabled ? 1 : 0;
-    _maxPositionInterval = enteringUltra
-        ? fromDrag
-              ? 150 / 1100
-              : 300 / 1100
-        : fromDrag
-        ? 0.075
-        : 0.15;
-    _maxThumbInterval = enteringUltra
-        ? fromDrag
-              ? 150 / 1100
-              : 220 / 1100
-        : fromDrag
-        ? 0.075
-        : 0.11;
-    _motion = enteringMax
-        ? _EffortMotion.maxReveal
-        : enteringUltra
-        ? _EffortMotion.ultraReveal
-        : _EffortMotion.move;
+    final accent = revealAccent ?? ClaudeEffortAccent.standard;
+    _maxPositionInterval = ClaudeEffortMotionTokens.positionInterval(
+      accent,
+      fromDrag: fromDrag,
+    );
+    _maxThumbInterval = ClaudeEffortMotionTokens.thumbInterval(
+      accent,
+      fromDrag: fromDrag,
+    );
+    _motion = switch (accent) {
+      ClaudeEffortAccent.standard => _EffortMotion.move,
+      ClaudeEffortAccent.xHigh => _EffortMotion.xHighReveal,
+      ClaudeEffortAccent.max => _EffortMotion.maxReveal,
+      ClaudeEffortAccent.ultra => _EffortMotion.ultraReveal,
+    };
     if (_reduceMotion) {
       _controller.value = 1;
       _motion = _EffortMotion.idle;
       return;
     }
-    _controller.duration = enteringMax
-        ? const Duration(milliseconds: 2000)
-        : enteringUltra
-        ? const Duration(milliseconds: 1100)
-        : fromDrag
-        ? const Duration(milliseconds: 150)
-        : const Duration(milliseconds: 300);
+    _controller.duration = ClaudeEffortMotionTokens.revealDuration(
+      accent,
+      fromDrag: fromDrag,
+    );
     setState(() {});
     _controller.forward(from: 0).whenCompleteOrCancel(() {
       if (!mounted || _controller.isAnimating) return;
@@ -429,14 +419,21 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     final next = index.clamp(0, _count - 1);
     if (next == _selectedIndex && !fromDrag) return;
     _locallyRequestedIndex = next;
+    final enteringXHigh =
+        next == widget.xHighIndex && _selectedIndex != widget.xHighIndex;
     final enteringMax =
         next == widget.maxIndex && _selectedIndex != widget.maxIndex;
     final enteringUltra =
         next == widget.ultraIndex && _selectedIndex != widget.ultraIndex;
     _animateTo(
       _normalizedIndex(next, _count),
-      enteringMax: enteringMax,
-      enteringUltra: enteringUltra,
+      revealAccent: enteringUltra
+          ? ClaudeEffortAccent.ultra
+          : enteringMax
+          ? ClaudeEffortAccent.max
+          : enteringXHigh
+          ? ClaudeEffortAccent.xHigh
+          : null,
       fromDrag: fromDrag,
     );
     if (next != _selectedIndex) {
@@ -500,6 +497,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     if (_motion != _EffortMotion.drag) return;
     final next = _indexFromPosition(_controller.value);
     _pressed = false;
+    final enteringXHigh =
+        next == widget.xHighIndex && _dragStartedIndex != widget.xHighIndex;
     final enteringMax =
         next == widget.maxIndex && _dragStartedIndex != widget.maxIndex;
     final enteringUltra =
@@ -509,8 +508,13 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     _dragLastEmittedIndex = null;
     _animateTo(
       _normalizedIndex(next, _count),
-      enteringMax: enteringMax,
-      enteringUltra: enteringUltra,
+      revealAccent: enteringUltra
+          ? ClaudeEffortAccent.ultra
+          : enteringMax
+          ? ClaudeEffortAccent.max
+          : enteringXHigh
+          ? ClaudeEffortAccent.xHigh
+          : null,
       fromDrag: true,
     );
   }
@@ -531,8 +535,6 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     final next = _selectedIndex + 1 < _count
         ? widget.labels[_selectedIndex + 1]
         : null;
-    final maxSelected = widget.maxIndex == _selectedIndex;
-    final ultraSelected = widget.ultraIndex == _selectedIndex;
     final purple = Theme.of(context).brightness == Brightness.dark
         ? const Color(0xFFB59CFF)
         : const Color(0xFF7957E8);
@@ -688,8 +690,9 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
                       direction: direction,
                       focused: _showFocus,
                       enabled: enabled,
-                      maxSelected: maxSelected,
-                      ultraSelected: ultraSelected,
+                      xHighIndex: widget.xHighIndex,
+                      maxIndex: widget.maxIndex,
+                      ultraIndex: widget.ultraIndex,
                       reduceMotion: _reduceMotion,
                       primary: cs.primary,
                       onPrimary: cs.onPrimary,
@@ -742,8 +745,9 @@ class _CodexEffortTrackPainter extends CustomPainter {
   final TextDirection direction;
   final bool focused;
   final bool enabled;
-  final bool maxSelected;
-  final bool ultraSelected;
+  final int? xHighIndex;
+  final int? maxIndex;
+  final int? ultraIndex;
   final bool reduceMotion;
   final Color primary;
   final Color onPrimary;
@@ -767,8 +771,9 @@ class _CodexEffortTrackPainter extends CustomPainter {
     required this.direction,
     required this.focused,
     required this.enabled,
-    required this.maxSelected,
-    required this.ultraSelected,
+    required this.xHighIndex,
+    required this.maxIndex,
+    required this.ultraIndex,
     required this.reduceMotion,
     required this.primary,
     required this.onPrimary,
@@ -780,9 +785,11 @@ class _CodexEffortTrackPainter extends CustomPainter {
 
   @visibleForTesting
   bool get debugUsesSolidActivePaint =>
-      !maxSelected &&
-      !ultraSelected &&
+      _targetAccent == ClaudeEffortAccent.standard &&
       _fast(reduceMotion ? 1 : animation.value) <= 0.0001;
+
+  @visibleForTesting
+  ClaudeEffortAccent get debugAccent => _targetAccent;
 
   @visibleForTesting
   double get debugLogicalPosition =>
@@ -795,13 +802,52 @@ class _CodexEffortTrackPainter extends CustomPainter {
   @visibleForTesting
   Rect debugTrackBounds(Size size) => _trackRectForSize(size);
 
+  @visibleForTesting
+  Rect debugActiveBounds(Size size) => _activeRect(
+    _trackRectForSize(size),
+    _position(reduceMotion ? 1 : animation.value),
+    size.width,
+  );
+
+  Rect _activeRect(Rect trackRect, double logicalPosition, double width) {
+    final thumbX = _positionX(logicalPosition, width, direction);
+    final fillThumbRadius = _safeThumbRadius(width);
+    return direction == TextDirection.rtl
+        ? Rect.fromLTRB(
+            math.max(trackRect.left, thumbX - fillThumbRadius),
+            trackRect.top,
+            trackRect.right,
+            trackRect.bottom,
+          )
+        : Rect.fromLTRB(
+            trackRect.left,
+            trackRect.top,
+            math.min(trackRect.right, thumbX + fillThumbRadius),
+            trackRect.bottom,
+          );
+  }
+
+  int _indexForPosition(double position) =>
+      (_clampUnit(position) * math.max(0, divisions)).round();
+
+  ClaudeEffortAccent _accentForPosition(double position) =>
+      ClaudeEffortMotionTokens.accentForIndex(
+        selectedIndex: _indexForPosition(position),
+        xHighIndex: xHighIndex,
+        maxIndex: maxIndex,
+        ultraIndex: ultraIndex,
+      );
+
+  ClaudeEffortAccent get _targetAccent => _accentForPosition(toPosition);
+
   double _position(double phase) {
     if (motion == _EffortMotion.drag) return _clampUnit(phase);
     if (motion == _EffortMotion.idle || motion == _EffortMotion.thumb) {
       return toPosition;
     }
     var value = _clampUnit(phase);
-    if (motion == _EffortMotion.maxReveal ||
+    if (motion == _EffortMotion.xHighReveal ||
+        motion == _EffortMotion.maxReveal ||
         motion == _EffortMotion.ultraReveal ||
         motion == _EffortMotion.fastEnter ||
         motion == _EffortMotion.fastExit) {
@@ -810,7 +856,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
     return lerpDouble(
           fromPosition,
           toPosition,
-          codexDesktopMotionCurve.transform(value),
+          ClaudeEffortMotionTokens.glideCurve.transform(value),
         ) ??
         toPosition;
   }
@@ -819,7 +865,8 @@ class _CodexEffortTrackPainter extends CustomPainter {
     if (motion == _EffortMotion.drag) return 1;
     if (motion == _EffortMotion.idle) return toThumb;
     var value = _clampUnit(phase);
-    if (motion == _EffortMotion.maxReveal ||
+    if (motion == _EffortMotion.xHighReveal ||
+        motion == _EffortMotion.maxReveal ||
         motion == _EffortMotion.ultraReveal) {
       value = _clampUnit(value / maxThumbInterval);
     }
@@ -842,6 +889,40 @@ class _CodexEffortTrackPainter extends CustomPainter {
         ) ??
         toFast;
   }
+
+  bool get _isTierReveal =>
+      motion == _EffortMotion.xHighReveal ||
+      motion == _EffortMotion.maxReveal ||
+      motion == _EffortMotion.ultraReveal;
+
+  double _movePhase(double phase) {
+    if (motion == _EffortMotion.drag ||
+        motion == _EffortMotion.idle ||
+        motion == _EffortMotion.thumb) {
+      return 1;
+    }
+    if (_isTierReveal ||
+        motion == _EffortMotion.fastEnter ||
+        motion == _EffortMotion.fastExit) {
+      return _clampUnit(phase / maxPositionInterval);
+    }
+    return _clampUnit(phase);
+  }
+
+  @visibleForTesting
+  double get debugThumbTravelEnvelope =>
+      ClaudeEffortMotionTokens.thumbTravelEnvelope(
+        movePhase: _movePhase(reduceMotion ? 1 : animation.value),
+        travel: (toPosition - fromPosition).abs(),
+      );
+
+  @visibleForTesting
+  double debugParticleProgress(int index) =>
+      ClaudeEffortMotionTokens.particleProgress(
+        _targetAccent,
+        reduceMotion ? 1 : animation.value,
+        ClaudeEffortMotionTokens.particles[index],
+      );
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -878,37 +959,44 @@ class _CodexEffortTrackPainter extends CustomPainter {
       );
     }
 
-    final highTier = maxSelected || ultraSelected;
-    final reveal =
-        motion == _EffortMotion.maxReveal || motion == _EffortMotion.ultraReveal
-        ? codexDesktopMotionCurve.transform(_clampUnit(phase))
+    final fromAccent = _accentForPosition(fromPosition);
+    final targetAccent = _targetAccent;
+    final colourInterval = _isTierReveal
+        ? math.min(1.0, maxPositionInterval * 1.8)
         : 1.0;
-    final purpleMix = highTier ? reveal : 0.0;
-    final fastHighlight = Color.lerp(primary, onPrimary, 0.18)!;
-    final activeStart = Color.lerp(
-      Color.lerp(primary, fastHighlight, fastProgress * 0.24)!,
-      purple,
-      purpleMix * 0.45,
-    )!;
-    final activeEnd = Color.lerp(
-      Color.lerp(primary, fastHighlight, fastProgress * 0.52)!,
-      purple,
-      purpleMix,
-    )!;
-    final activeRect = direction == TextDirection.rtl
-        ? Rect.fromLTRB(
-            thumbX,
-            trackRect.top,
-            trackRect.right,
-            trackRect.bottom,
-          )
-        : Rect.fromLTRB(
-            trackRect.left,
-            trackRect.top,
-            thumbX,
-            trackRect.bottom,
+    final colourMix =
+        motion == _EffortMotion.idle ||
+            motion == _EffortMotion.drag ||
+            motion == _EffortMotion.thumb ||
+            motion == _EffortMotion.fastEnter ||
+            motion == _EffortMotion.fastExit
+        ? 1.0
+        : ClaudeEffortMotionTokens.colourCurve.transform(
+            _clampUnit(phase / math.max(0.0001, colourInterval)),
           );
-    final useSolidActivePaint = !highTier && fastProgress <= 0.0001;
+    final fromColours = ClaudeEffortMotionTokens.gradientColors(
+      accent: fromAccent,
+      primary: primary,
+      purple: purple,
+      fastProgress: fastProgress,
+    );
+    final targetColours = ClaudeEffortMotionTokens.gradientColors(
+      accent: targetAccent,
+      primary: primary,
+      purple: purple,
+      fastProgress: fastProgress,
+    );
+    final activeColours = List<Color>.generate(
+      targetColours.length,
+      (index) =>
+          Color.lerp(fromColours[index], targetColours[index], colourMix)!,
+      growable: false,
+    );
+    final activeRect = _activeRect(trackRect, logicalPosition, size.width);
+    final useSolidActivePaint =
+        fromAccent == ClaudeEffortAccent.standard &&
+        targetAccent == ClaudeEffortAccent.standard &&
+        fastProgress <= 0.0001;
     final activePaint = Paint();
     if (useSolidActivePaint) {
       activePaint.color = primary;
@@ -920,7 +1008,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
         end: direction == TextDirection.rtl
             ? Alignment.centerLeft
             : Alignment.centerRight,
-        colors: [activeStart, activeEnd],
+        colors: activeColours,
       ).createShader(trackRect);
     }
 
@@ -930,9 +1018,6 @@ class _CodexEffortTrackPainter extends CustomPainter {
 
     if (motion == _EffortMotion.fastEnter && !reduceMotion) {
       _paintFastBurst(canvas, Offset(thumbX, centerY), phase, trackRect);
-    }
-    if (motion == _EffortMotion.ultraReveal && !reduceMotion) {
-      _paintUltraSweep(canvas, activeRect, trackRect, phase);
     }
     canvas.restore();
 
@@ -951,6 +1036,11 @@ class _CodexEffortTrackPainter extends CustomPainter {
       var tickRadius = CodexEffortMotionMetrics.tickDiameter / 2;
       var tickY = centerY;
       var tickAlphaMultiplier = 1.0;
+      if (selectedTick && _isTierReveal && !reduceMotion) {
+        final tierPulse = math.sin(math.pi * _clampUnit(phase));
+        tickRadius *= 1 + tierPulse * 0.24;
+        tickAlphaMultiplier *= 0.78 + tierPulse * 0.22;
+      }
       if (selectedTick && fastProgress > 0) {
         var scale = 1.0;
         var translate = 0.0;
@@ -975,8 +1065,14 @@ class _CodexEffortTrackPainter extends CustomPainter {
       );
     }
 
-    if (motion == _EffortMotion.maxReveal && !reduceMotion) {
-      _paintMaxBurst(canvas, Offset(thumbX, centerY), phase);
+    if (_isTierReveal && !reduceMotion) {
+      _paintClaudeParticles(
+        canvas,
+        size,
+        Offset(thumbX, centerY),
+        phase,
+        targetAccent,
+      );
     }
 
     final thumbExpansion = _thumb(phase).clamp(0.0, 1.16).toDouble();
@@ -993,46 +1089,45 @@ class _CodexEffortTrackPainter extends CustomPainter {
     }
     thumbRadius = math.min(thumbRadius, _safeThumbRadius(size.width));
     final thumbCenter = Offset(thumbX, thumbY);
-    final thumbPaint = Paint();
-    if (useSolidActivePaint) {
-      thumbPaint.color = primary;
-    } else {
-      thumbPaint.shader = LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [activeStart, activeEnd],
-      ).createShader(Rect.fromCircle(center: thumbCenter, radius: thumbRadius));
-    }
-    canvas.drawCircle(thumbCenter, thumbRadius, thumbPaint);
-    canvas.drawCircle(
-      thumbCenter,
-      thumbRadius - 0.75,
+    final movePhase = _movePhase(phase);
+    final travelEnvelope = reduceMotion
+        ? 0.0
+        : ClaudeEffortMotionTokens.thumbTravelEnvelope(
+            movePhase: movePhase,
+            travel: (toPosition - fromPosition).abs(),
+          );
+    final landingPulse = reduceMotion
+        ? 0.0
+        : ClaudeEffortMotionTokens.landingPulse(movePhase);
+    final halfWidth = math.min(
+      _safeThumbRadius(size.width),
+      thumbRadius * (1 + travelEnvelope * 0.08),
+    );
+    final halfHeight = math.min(
+      _safeThumbRadius(size.width),
+      thumbRadius * (1 - travelEnvelope * 0.03 + landingPulse),
+    );
+    final thumbRect = Rect.fromCenter(
+      center: thumbCenter,
+      width: halfWidth * 2,
+      height: halfHeight * 2,
+    );
+    canvas.drawOval(
+      thumbRect,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [activeColours.first, activeColours.last],
+        ).createShader(thumbRect),
+    );
+    canvas.drawOval(
+      thumbRect.deflate(0.75),
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5
         ..color = onPrimary.withValues(alpha: enabled ? 0.42 : 0.22),
     );
-  }
-
-  void _paintMaxBurst(Canvas canvas, Offset origin, double phase) {
-    final burst = _clampUnit(phase / 0.31);
-    final particlePaint = Paint();
-    for (final particle in _maxParticles) {
-      final local = _clampUnit((burst - particle.delay) / (1 - particle.delay));
-      if (local <= 0 || local >= 1) continue;
-      final eased = Curves.easeOutCubic.transform(local);
-      final distance = particle.distance * eased;
-      particlePaint.color = Color.lerp(
-        primary,
-        purple,
-        eased,
-      )!.withValues(alpha: math.pow(1 - local, 1.7).toDouble());
-      canvas.drawCircle(
-        origin + Offset(particle.unitX * distance, particle.unitY * distance),
-        particle.radius * (1 - local * 0.35),
-        particlePaint,
-      );
-    }
   }
 
   void _paintFastBurst(
@@ -1060,40 +1155,92 @@ class _CodexEffortTrackPainter extends CustomPainter {
     }
   }
 
-  void _paintUltraSweep(
+  void _paintClaudeParticles(
     Canvas canvas,
-    Rect activeRect,
-    Rect trackRect,
+    Size size,
+    Offset movingThumb,
     double phase,
+    ClaudeEffortAccent accent,
   ) {
-    if (activeRect.width <= 0) return;
-    final progress = codexDesktopMotionCurve.transform(_clampUnit(phase));
-    final sweepWidth = math.max(22.0, trackRect.width * 0.34);
-    final travel = trackRect.width + sweepWidth * 2;
-    final leading = direction == TextDirection.rtl
-        ? trackRect.right + sweepWidth - travel * progress
-        : trackRect.left - sweepWidth + travel * progress;
-    final sweepRect = Rect.fromCenter(
-      center: Offset(leading, trackRect.center.dy),
-      width: sweepWidth,
-      height: trackRect.height,
+    final movePhase = _movePhase(phase);
+    final originX = _positionX(fromPosition, size.width, direction);
+    final destinationX = _positionX(toPosition, size.width, direction);
+    final travel = destinationX - originX;
+    final trailCount = ClaudeEffortMotionTokens.trailParticleCount(accent);
+    final trailEnvelope = math.sin(math.pi * movePhase.clamp(0.0, 1.0));
+    final glowPaint = Paint();
+    final particlePaint = Paint();
+
+    if (travel.abs() > 1 && trailEnvelope > 0.001) {
+      for (var index = 0; index < trailCount; index++) {
+        final lag = index * 0.045;
+        final local = (movePhase - lag).clamp(0.0, 1.0);
+        final x = lerpDouble(
+          originX,
+          destinationX,
+          ClaudeEffortMotionTokens.glideCurve.transform(local),
+        )!;
+        final wave = math.sin(index * 1.84 + movePhase * math.pi * 2);
+        final alpha =
+            trailEnvelope * (1 - index / math.max(1, trailCount)) * 0.70;
+        final radius = 1.05 + (index % 3) * 0.22;
+        final color = ClaudeEffortMotionTokens.particleColor(index, purple);
+        canvas.drawCircle(
+          Offset(x, movingThumb.dy + wave * (1.2 + index * 0.16)),
+          radius + 1.5,
+          glowPaint..color = color.withValues(alpha: alpha * 0.16),
+        );
+        canvas.drawCircle(
+          Offset(x, movingThumb.dy + wave * (1.2 + index * 0.16)),
+          radius,
+          particlePaint..color = color.withValues(alpha: alpha),
+        );
+      }
+    }
+
+    final origin = Offset(destinationX, movingThumb.dy);
+    final count = ClaudeEffortMotionTokens.particleCount(accent);
+    final horizontalRoom = math.max(
+      1.0,
+      math.min(origin.dx, size.width - origin.dx) - 1.5,
     );
-    final visibleSweep = sweepRect.intersect(activeRect);
-    if (visibleSweep.isEmpty) return;
-    canvas.drawRect(
-      visibleSweep,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-          colors: [
-            Colors.white.withValues(alpha: 0),
-            Colors.white.withValues(alpha: 0.34),
-            Colors.white.withValues(alpha: 0),
-          ],
-          stops: const [0, 0.5, 1],
-        ).createShader(sweepRect),
-    );
+    for (var index = 0; index < count; index++) {
+      final particle = ClaudeEffortMotionTokens.particles[index];
+      final progress = ClaudeEffortMotionTokens.particleProgress(
+        accent,
+        phase,
+        particle,
+      );
+      if (progress < 0) continue;
+      final opacity = ClaudeEffortMotionTokens.particleOpacity(progress);
+      if (opacity <= 0.001) continue;
+      final eased = Curves.easeOutCubic.transform(progress);
+      final angle =
+          particle.angle + particle.arc * math.sin(math.pi * progress);
+      final distance = 10 + particle.distance * eased * 0.76;
+      final horizontalScale = math.min(
+        1.0,
+        horizontalRoom / math.max(1.0, 10 + particle.distance * 0.76),
+      );
+      final point =
+          origin +
+          Offset(
+            math.cos(angle) * distance * horizontalScale,
+            math.sin(angle) * distance * 0.86,
+          );
+      final color = ClaudeEffortMotionTokens.particleColor(index, purple);
+      final radius = particle.radius * 1.32 * (1 - progress * 0.18);
+      canvas.drawCircle(
+        point,
+        radius + 1.85,
+        glowPaint..color = color.withValues(alpha: opacity * 0.18),
+      );
+      canvas.drawCircle(
+        point,
+        radius,
+        particlePaint..color = color.withValues(alpha: opacity),
+      );
+    }
   }
 
   @override
@@ -1112,8 +1259,9 @@ class _CodexEffortTrackPainter extends CustomPainter {
       direction != oldDelegate.direction ||
       focused != oldDelegate.focused ||
       enabled != oldDelegate.enabled ||
-      maxSelected != oldDelegate.maxSelected ||
-      ultraSelected != oldDelegate.ultraSelected ||
+      xHighIndex != oldDelegate.xHighIndex ||
+      maxIndex != oldDelegate.maxIndex ||
+      ultraIndex != oldDelegate.ultraIndex ||
       reduceMotion != oldDelegate.reduceMotion ||
       primary != oldDelegate.primary ||
       onPrimary != oldDelegate.onPrimary ||
