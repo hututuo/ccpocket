@@ -1279,6 +1279,7 @@ async function listCodexSessionFiles(): Promise<string[]> {
 function parseCodexSessionJsonl(
   raw: string,
   fallbackSessionId: string,
+  includeInternal = false,
 ): CodexSessionParseResult | null {
   const lines = raw.split("\n");
   let threadId = fallbackSessionId;
@@ -1336,7 +1337,7 @@ function parseCodexSessionJsonl(
     if (entry.type === "session_meta") {
       const payload = entry.payload as Record<string, unknown> | undefined;
       if (payload) {
-        if (isCodexInternalSessionSource(payload.source)) {
+        if (!includeInternal && isCodexInternalSessionSource(payload.source)) {
           return null;
         }
         if (typeof payload.id === "string" && payload.id.length > 0) {
@@ -1546,6 +1547,7 @@ function parseCodexSessionJsonl(
 async function parseCodexSessionJsonlFast(
   filePath: string,
   fallbackSessionId: string,
+  includeInternal = false,
 ): Promise<CodexSessionParseResult | null> {
   let fh;
   try {
@@ -1562,7 +1564,11 @@ async function parseCodexSessionJsonlFast(
     if (fileSize <= CODEX_HEAD_BYTES + CODEX_TAIL_BYTES) {
       const buf = Buffer.alloc(fileSize);
       await fh.read(buf, 0, fileSize, 0);
-      return parseCodexSessionJsonl(buf.toString("utf-8"), fallbackSessionId);
+      return parseCodexSessionJsonl(
+        buf.toString("utf-8"),
+        fallbackSessionId,
+        includeInternal,
+      );
     }
 
     const headBuf = Buffer.alloc(CODEX_HEAD_BYTES);
@@ -1575,7 +1581,11 @@ async function parseCodexSessionJsonlFast(
     const cleanTail = firstNewline >= 0 ? tailRaw.slice(firstNewline + 1) : "";
 
     const partialRaw = `${headBuf.toString("utf-8")}\n${cleanTail}`;
-    return parseCodexSessionJsonl(partialRaw, fallbackSessionId);
+    return parseCodexSessionJsonl(
+      partialRaw,
+      fallbackSessionId,
+      includeInternal,
+    );
   } finally {
     await fh.close();
   }
@@ -2018,6 +2028,52 @@ export async function getCodexSessionIndexMetadata(
   for (const parsed of parsedResults) {
     if (!parsed || !wantedThreadIds.has(parsed.threadId)) continue;
     result.set(parsed.threadId, {
+      ...(parsed.entry.codexSettings
+        ? { codexSettings: parsed.entry.codexSettings }
+        : {}),
+      ...(parsed.entry.resumeCwd ? { resumeCwd: parsed.entry.resumeCwd } : {}),
+      ...(parsed.entry.firstPrompt
+        ? { firstPrompt: parsed.entry.firstPrompt }
+        : {}),
+      ...(parsed.entry.lastPrompt
+        ? { lastPrompt: parsed.entry.lastPrompt }
+        : {}),
+      ...(parsed.entry.summary ? { summary: parsed.entry.summary } : {}),
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Read the same bounded Codex metadata from app-server supplied rollout paths.
+ *
+ * Callers that already received authoritative paths from `thread/list` should
+ * use this helper instead of rescanning the whole sessions tree. The parser is
+ * still the existing head+tail parser, so a very large rollout is never loaded
+ * in full merely to render a list preview.
+ */
+export async function getCodexSessionIndexMetadataForFiles(
+  files: ReadonlyMap<string, string>,
+): Promise<Map<string, CodexSessionIndexMetadata>> {
+  const targets = [...files.entries()].filter(
+    ([threadId, filePath]) => threadId.length > 0 && filePath.length > 0,
+  );
+  const result = new Map<string, CodexSessionIndexMetadata>();
+  if (targets.length === 0) return result;
+
+  const parsedResults = await parallelMap(
+    targets,
+    PARALLEL_FILE_READ_LIMIT,
+    async ([threadId, filePath]) => ({
+      expectedThreadId: threadId,
+      parsed: await parseCodexSessionJsonlFast(filePath, threadId, true),
+    }),
+  );
+
+  for (const { expectedThreadId, parsed } of parsedResults) {
+    if (!parsed || parsed.threadId !== expectedThreadId) continue;
+    result.set(expectedThreadId, {
       ...(parsed.entry.codexSettings
         ? { codexSettings: parsed.entry.codexSettings }
         : {}),
