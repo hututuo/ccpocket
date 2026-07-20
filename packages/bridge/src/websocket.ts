@@ -164,6 +164,8 @@ const CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY =
 const CODEX_SESSION_LIFECYCLE_CAPABILITY = "codex_session_lifecycle_v1";
 const CODEX_DESKTOP_CONTINUITY_CAPABILITY =
   "codex_desktop_continuity_v1";
+const CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY =
+  "codex_resume_preserves_settings_v1";
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
 const KNOWN_CODEX_GOAL_STATUSES = new Set([
@@ -2376,21 +2378,18 @@ export class BridgeWebSocketServer {
     const process =
       session.process instanceof CodexProcess ? session.process : undefined;
     const settings = session.codexSettings;
+    const model = settings?.model ?? process?.knownModel;
+    const effort =
+      settings?.modelReasoningEffort ?? process?.modelReasoningEffort;
+    const serviceTier = settings?.serviceTier ?? process?.knownServiceTier;
     this.send(ws, {
       type: "system",
       subtype: "codex_settings",
       sessionId,
       provider: "codex",
-      ...((settings?.model ?? process?.model)
-        ? { model: settings?.model ?? process?.model }
-        : {}),
-      ...((settings?.modelReasoningEffort ?? process?.modelReasoningEffort)
-        ? {
-            modelReasoningEffort:
-              settings?.modelReasoningEffort ?? process?.modelReasoningEffort,
-          }
-        : {}),
-      serviceTier: settings?.serviceTier ?? process?.serviceTier ?? "standard",
+      ...(model ? { model } : {}),
+      ...(effort ? { modelReasoningEffort: effort } : {}),
+      ...(serviceTier ? { serviceTier } : {}),
     });
   }
 
@@ -5990,18 +5989,20 @@ export class BridgeWebSocketServer {
         const codexPermissionSettings = requestedCodexPermissionsMode
           ? codexSettingsFromPermissionsMode(requestedCodexPermissionsMode)
           : undefined;
+        const requestedApprovalPolicy =
+          msg.approvalPolicy ??
+          (msg.executionMode == null
+            ? undefined
+            : msg.executionMode === "fullAccess"
+              ? "never"
+              : "on-request");
         const codexApprovalPolicy =
           provider === "codex"
             ? requestedCodexPermissionsMode
               ? codexPermissionSettings?.approvalPolicy
-              : normalizeCodexApprovalPolicy(
-                  msg.approvalPolicy ??
-                    (msg.executionMode == null
-                      ? undefined
-                      : msg.executionMode === "fullAccess"
-                        ? "never"
-                        : "on-request"),
-                )
+              : requestedApprovalPolicy === undefined
+                ? undefined
+                : normalizeCodexApprovalPolicy(requestedApprovalPolicy)
             : undefined;
         const executionMode = deriveExecutionMode({
           provider,
@@ -6069,16 +6070,21 @@ export class BridgeWebSocketServer {
               wtMapping?.projectPath ?? resumeProjectPath,
               this.platform,
             );
-            const effectiveProfile = msg.profile
+            const indexedSettings = (
+              await getCodexSessionIndexMetadata([sessionRefId])
+            ).get(sessionRefId)?.codexSettings;
+            const requestedProfile = msg.profile ?? indexedSettings?.profile;
+            const effectiveProfile = requestedProfile
               ? await this.resolveCodexResumeProfile(
-                  msg.profile,
+                  requestedProfile,
                   sessionRefId,
                   effectiveProjectPath,
                 )
               : undefined;
             const additionalWritableRoots =
               this.normalizeAdditionalWritableRoots(
-              msg.additionalWritableRoots,
+              msg.additionalWritableRoots ??
+                indexedSettings?.additionalWritableRoots,
               effectiveProjectPath,
             );
             if (additionalWritableRoots.deniedRoot) {
@@ -6117,6 +6123,18 @@ export class BridgeWebSocketServer {
               sessionRefId,
               effectiveProjectPath,
             );
+            const savedApprovalPolicy = indexedSettings?.approvalPolicy
+              ? normalizeCodexApprovalPolicy(indexedSettings.approvalPolicy)
+              : undefined;
+            const savedApprovalsReviewer =
+              indexedSettings?.approvalsReviewer === "auto_review" ||
+              indexedSettings?.approvalsReviewer === "guardian_subagent" ||
+              indexedSettings?.approvalsReviewer === "user"
+                ? indexedSettings.approvalsReviewer
+                : undefined;
+            const savedSandboxMode = indexedSettings?.sandboxMode
+              ? sandboxModeToInternal(indexedSettings.sandboxMode)
+              : undefined;
             const sessionId = this.sessionManager.create(
               effectiveProjectPath,
               undefined,
@@ -6129,26 +6147,37 @@ export class BridgeWebSocketServer {
                 approvalPolicy: codexPermissionSettings
                   ? codexPermissionSettings.approvalPolicy
                   : (codexApprovalPolicy ??
+                    savedApprovalPolicy ??
                     normalizeCodexApprovalPolicy(
                       executionMode === "fullAccess" ? "never" : "on-request",
                     )),
                 approvalsReviewer: codexPermissionSettings
                   ? codexPermissionSettings.approvalsReviewer
-                  : msg.approvalsReviewer,
+                  : ((msg.approvalsReviewer ??
+                      savedApprovalsReviewer) as CodexStartOptions["approvalsReviewer"]),
                 codexPermissionsMode:
                   codexPermissionSettings?.codexPermissionsMode,
                 sandboxMode: codexPermissionSettings
                   ? codexPermissionSettings.sandboxMode
-                  : sandboxModeToInternal(msg.sandboxMode),
-                model: msg.model,
+                  : msg.sandboxMode !== undefined
+                    ? sandboxModeToInternal(msg.sandboxMode)
+                    : (savedSandboxMode ?? sandboxModeToInternal(undefined)),
+                model: msg.model ?? indexedSettings?.model,
                 modelReasoningEffort:
                   (msg.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]) ??
-                  undefined,
-                serviceTier: msg.serviceTier,
-                networkAccessEnabled: msg.networkAccessEnabled,
+                  (indexedSettings?.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]),
+                serviceTier:
+                  msg.serviceTier ?? indexedSettings?.serviceTier,
+                networkAccessEnabled:
+                  msg.networkAccessEnabled ??
+                  indexedSettings?.networkAccessEnabled,
                 webSearchMode:
                   (msg.webSearchMode as "disabled" | "cached" | "live") ??
-                  undefined,
+                  (indexedSettings?.webSearchMode as
+                    | "disabled"
+                    | "cached"
+                    | "live"
+                    | undefined),
                 additionalWritableRoots: additionalWritableRoots.roots,
                 collaborationMode: planMode
                   ? ("plan" as const)
@@ -8066,6 +8095,7 @@ export class BridgeWebSocketServer {
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
+        CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -8110,6 +8140,7 @@ export class BridgeWebSocketServer {
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
+        CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
