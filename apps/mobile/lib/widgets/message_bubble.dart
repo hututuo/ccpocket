@@ -31,6 +31,7 @@ class ChatEntryWidget extends StatelessWidget {
   final void Function(UserChatEntry)? onRetryMessage;
   final void Function(UserChatEntry)? onRewindMessage;
   final void Function(AssistantServerMessage)? onForkMessage;
+  final void Function(ErrorMessage)? onDismissCodexWarning;
   final ValueNotifier<int>? collapseToolResults;
   final String? resolvedPlanText;
 
@@ -55,6 +56,7 @@ class ChatEntryWidget extends StatelessWidget {
     this.onRetryMessage,
     this.onRewindMessage,
     this.onForkMessage,
+    this.onDismissCodexWarning,
     this.collapseToolResults,
     this.resolvedPlanText,
     this.hiddenToolUseIds = const {},
@@ -82,6 +84,7 @@ class ChatEntryWidget extends StatelessWidget {
             onFileTap: onFileTap,
             onArtifactOpen: onArtifactOpen,
             onForkMessage: onForkMessage,
+            onDismissCodexWarning: onDismissCodexWarning,
             isCodex: isCodex,
           ),
           final UserChatEntry user => UserBubble(
@@ -172,6 +175,7 @@ class ServerMessageWidget extends StatelessWidget {
   final FilePathTapCallback? onFileTap;
   final MessageArtifactOpenCallback? onArtifactOpen;
   final void Function(AssistantServerMessage)? onForkMessage;
+  final void Function(ErrorMessage)? onDismissCodexWarning;
   final bool isCodex;
 
   const ServerMessageWidget({
@@ -186,6 +190,7 @@ class ServerMessageWidget extends StatelessWidget {
     this.onFileTap,
     this.onArtifactOpen,
     this.onForkMessage,
+    this.onDismissCodexWarning,
     this.isCodex = false,
   });
 
@@ -224,7 +229,13 @@ class ServerMessageWidget extends StatelessWidget {
                 collapseNotifier: collapseToolResults,
               ),
       final ResultMessage msg => ResultChip(message: msg, onFileTap: onFileTap),
-      final ErrorMessage msg => ErrorBubble(message: msg),
+      final ErrorMessage msg => ErrorBubble(
+        message: msg,
+        onDismiss:
+            msg.errorCode == 'codex_warning' && onDismissCodexWarning != null
+            ? () => onDismissCodexWarning!(msg)
+            : null,
+      ),
       final StatusMessage msg => StatusChip(message: msg),
       HistoryMessage() => const SizedBox.shrink(),
       HistoryDeltaMessage() => const SizedBox.shrink(),

@@ -216,6 +216,47 @@ void main() {
   }
 
   group('ChatSessionCubit', () {
+    test(
+      'dismissed Codex warning stays hidden across canonical history replay',
+      () async {
+        const warning = ErrorMessage(
+          message: 'thread/rollback is deprecated',
+          errorCode: 'codex_warning',
+        );
+        const otherWarning = ErrorMessage(
+          message: 'A different warning',
+          errorCode: 'codex_warning',
+        );
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(warning, sessionId: 's1');
+        await pumpEventQueue();
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().map(
+            (entry) => entry.message,
+          ),
+          contains(warning),
+        );
+
+        cubit.dismissCodexWarning(warning);
+        expect(cubit.state.entries, isEmpty);
+
+        mockBridge.emitMessage(
+          const HistoryMessage(messages: [warning, otherWarning]),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final messages = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .toList();
+        expect(messages, isNot(contains(warning)));
+        expect(messages, contains(otherWarning));
+      },
+    );
+
     test('initial state is default ChatSessionState', () {
       final cubit = createCubit('test-session');
       addTearDown(cubit.close);

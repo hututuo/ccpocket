@@ -130,7 +130,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Tool use IDs that have already been answered locally.
   static const _maxRespondedToolUseIds = 512;
+  static const _maxDismissedCodexWarnings = 64;
   final _respondedToolUseIds = <String>{};
+  final _dismissedCodexWarningKeys = <String>{};
   final Map<String, PermissionRequestMessage> _pendingPermissionRequests = {};
 
   void _markToolUseResponded(String toolUseId) {
@@ -1984,6 +1986,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
 
     var nextEntries = didModifyEntries ? entries : current.entries;
+    if (_dismissedCodexWarningKeys.isNotEmpty) {
+      nextEntries = nextEntries
+          .where((entry) => !_isDismissedCodexWarningEntry(entry))
+          .toList(growable: false);
+    }
 
     // --- Apply state update ---
     final historyUsesSessionSnapshotAuthority =
@@ -4189,6 +4196,36 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void forkSession(String targetUuid) {
     _bridge.send(ClientMessage.forkSession(sessionId, targetUuid));
+  }
+
+  /// Hides one warning text for the lifetime of this open session screen.
+  /// Canonical history refreshes can replay transient Codex warnings, so keep
+  /// a bounded fingerprint set and filter matching replays until the Cubit is
+  /// disposed. A newly opened screen may show a newly relevant warning again.
+  void dismissCodexWarning(ErrorMessage warning) {
+    if (warning.errorCode != 'codex_warning') return;
+    final key = _codexWarningKey(warning);
+    if (!_dismissedCodexWarningKeys.add(key)) return;
+    while (_dismissedCodexWarningKeys.length > _maxDismissedCodexWarnings) {
+      _dismissedCodexWarningKeys.remove(_dismissedCodexWarningKeys.first);
+    }
+    final entries = state.entries
+        .where((entry) => !_isDismissedCodexWarningEntry(entry))
+        .toList(growable: false);
+    if (entries.length != state.entries.length) {
+      emit(state.copyWith(entries: entries));
+    }
+  }
+
+  String _codexWarningKey(ErrorMessage warning) =>
+      '${warning.errorCode}\u0000${warning.message}';
+
+  bool _isDismissedCodexWarningEntry(ChatEntry entry) {
+    return entry is ServerChatEntry &&
+        entry.message is ErrorMessage &&
+        _dismissedCodexWarningKeys.contains(
+          _codexWarningKey(entry.message as ErrorMessage),
+        );
   }
 
   /// All user messages with a UUID (rewindable via the SDK).

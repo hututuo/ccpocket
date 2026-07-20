@@ -74,7 +74,9 @@ bool _isWarning(String? errorCode) {
 
 class ErrorBubble extends StatelessWidget {
   final ErrorMessage message;
-  const ErrorBubble({super.key, required this.message});
+  final VoidCallback? onDismiss;
+
+  const ErrorBubble({super.key, required this.message, this.onDismiss});
 
   @override
   Widget build(BuildContext context) {
@@ -88,6 +90,8 @@ class ErrorBubble extends StatelessWidget {
     final hint = _errorHint(resolvedErrorCode, l);
     final hasStructured = title != null;
     final isWarn = _isWarning(resolvedErrorCode);
+    final canDismiss =
+        resolvedErrorCode == 'codex_warning' && onDismiss != null;
 
     final bubbleColor = isWarn
         ? appColors.warningBubble
@@ -124,7 +128,14 @@ class ErrorBubble extends StatelessWidget {
                   )
                 : _isApiKeyRequired(resolvedErrorCode)
                 ? _ApiKeyRequiredCard(textColor: textColor)
-                : _buildStructured(context, title, hint, textColor, isWarn)
+                : _buildStructured(
+                    context,
+                    title,
+                    hint,
+                    textColor,
+                    isWarn,
+                    canDismiss ? onDismiss : null,
+                  )
           : _buildSimple(textColor),
     );
   }
@@ -152,6 +163,7 @@ class ErrorBubble extends StatelessWidget {
     String? hint,
     Color textColor,
     bool isWarn,
+    VoidCallback? onDismiss,
   ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -171,6 +183,18 @@ class ErrorBubble extends StatelessWidget {
                 ),
               ),
             ),
+            if (onDismiss != null)
+              IconButton(
+                key: const ValueKey('codex_warning_dismiss'),
+                tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
+                onPressed: onDismiss,
+                visualDensity: VisualDensity.compact,
+                icon: Icon(
+                  Icons.close_rounded,
+                  size: 18,
+                  color: textColor.withValues(alpha: 0.75),
+                ),
+              ),
           ],
         ),
         const SizedBox(height: 8),

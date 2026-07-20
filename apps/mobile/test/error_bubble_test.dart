@@ -32,6 +32,29 @@ void main() {
 
     expect(find.text('Codex Warning'), findsOneWidget);
     expect(find.text('Check your Codex configuration.'), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex_warning_dismiss')), findsNothing);
+  });
+
+  testWidgets('dismisses a Codex warning from its close button', (
+    tester,
+  ) async {
+    var dismissed = false;
+    await tester.pumpWidget(
+      _wrapErrorBubble(
+        locale: const Locale('en'),
+        child: ErrorBubble(
+          message: const ErrorMessage(
+            message: 'thread/rollback is deprecated',
+            errorCode: 'codex_warning',
+          ),
+          onDismiss: () => dismissed = true,
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('codex_warning_dismiss')));
+
+    expect(dismissed, isTrue);
   });
 
   group('ErrorBubble auth UI', () {

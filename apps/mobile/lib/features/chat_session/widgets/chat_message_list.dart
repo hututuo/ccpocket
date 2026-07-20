@@ -467,6 +467,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
             onRetryMessage: widget.onRetryMessage,
             onRewindMessage: widget.onRewindMessage,
             onForkMessage: onForkMessage,
+            onDismissCodexWarning: chatCubit.dismissCodexWarning,
             collapseToolResults: widget.collapseToolResults,
             resolvedPlanText: _resolvePlanText(entry),
             hiddenToolUseIds: hiddenToolUseIds,
