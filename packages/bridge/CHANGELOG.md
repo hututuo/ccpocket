@@ -2,6 +2,19 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.67.4-compat.4] - 2026-07-20
+
+### Added
+- Expose the capability-gated, descriptor-confined Mac file browser used by the Mobile Files entry without changing the existing transfer protocol.
+- Mirror additional durable Codex Desktop tool events, including command execution, MCP, file changes, web search, and bounded image-generation metadata.
+
+### Fixed
+- Bind Mobile session identity, status, model, effort, speed, and permission presets to the current WebSocket session list before accepting history fallbacks.
+- Re-register Desktop continuity watches safely after reconnect and preserve canonical history reconciliation when a local mirror opens an active session.
+
+### Compatibility
+- Keep all additions capability-gated; older Mobile clients continue using chat and transfer, while newer clients fall back to session list/history on older Bridges.
+
 ## [1.67.4-compat.3] - 2026-07-20
 
 ### Added
