@@ -31,6 +31,8 @@
   "main": "dist/index.js",
   "files": [
     "dist",
+    "scripts/build-file-browser-helper.mjs",
+    "src/file-browser-posix-helper.c",
     "LICENSE"
   ],
   "engines": {
@@ -41,12 +43,16 @@
   },
   "scripts": {
     "dev": "env -u CLAUDECODE tsx src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node scripts/build-file-browser-helper.mjs",
     "start": "node dist/index.js",
-    "prepublishOnly": "tsc",
+    "install": "node scripts/build-file-browser-helper.mjs",
+    "prepublishOnly": "npm run build",
+    "pretest": "npm run build",
     "test": "vitest run",
     "test:windows-smoke": "vitest run src/path-utils.test.ts src/websocket.test.ts src/codex-process.test.ts",
+    "pretest:watch": "npm run build",
     "test:watch": "vitest",
+    "pretest:coverage": "npm run build",
     "test:coverage": "vitest run --coverage",
     "doctor": "tsx src/cli.ts doctor"
   },
