@@ -1162,19 +1162,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _settleStatusFromRuntimeAfterLocalBootstrap() {
-    if (state.status != ProcessStatus.starting) return;
     final runtime = _runtimeSessionFrom(_bridge.sessions);
     if (runtime == null) return;
-    final status = ProcessStatus.fromString(runtime.status);
-    if (status == ProcessStatus.starting) return;
-    _restoreRuntimeInteractions(runtime);
-    _statusRefreshTimer?.cancel();
-    _statusRefreshTimer = null;
-    emit(state.copyWith(status: status));
+
+    // A current-connection SessionInfo can settle the visible status before
+    // the local mirror finishes loading. Preserve that authority, but still
+    // perform the one canonical history read required to reconcile transient
+    // approvals, queues, tool activity, and active streaming state.
+    if (state.status == ProcessStatus.starting) {
+      final runtimeStatus = ProcessStatus.fromString(runtime.status);
+      if (runtimeStatus != ProcessStatus.starting) {
+        _restoreRuntimeInteractions(runtime);
+        _statusRefreshTimer?.cancel();
+        _statusRefreshTimer = null;
+        emit(state.copyWith(status: runtimeStatus));
+      }
+    }
     final needsCanonicalRuntimeReconciliation =
-        status == ProcessStatus.running ||
-        status == ProcessStatus.waitingApproval ||
-        status == ProcessStatus.compacting;
+        state.status == ProcessStatus.running ||
+        state.status == ProcessStatus.waitingApproval ||
+        state.status == ProcessStatus.compacting;
     if (needsCanonicalRuntimeReconciliation && !_historyFallbackRequested) {
       // The durable mirror intentionally excludes transient approvals, queues,
       // partial tool activity, and active streaming state. SessionInfo restores

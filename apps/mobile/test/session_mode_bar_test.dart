@@ -32,6 +32,12 @@ class _MockBridgeService extends BridgeService {
   String? runtimeServiceTier;
 
   @override
+  bool get isConnected => true;
+
+  @override
+  bool get hasAuthoritativeSessionListForCurrentConnection => true;
+
+  @override
   List<String> get codexModels => availableCodexModels;
 
   @override
