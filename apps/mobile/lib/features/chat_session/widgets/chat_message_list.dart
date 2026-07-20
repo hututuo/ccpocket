@@ -29,7 +29,11 @@ String? resolveChatFileRoot({String? worktreePath, String? projectPath}) {
 }
 
 @visibleForTesting
-bool shouldShowForkForAssistant(List<ChatEntry> entries, int entryIndex) {
+bool shouldShowForkForAssistant(
+  List<ChatEntry> entries,
+  int entryIndex, {
+  bool transcriptTailComplete = false,
+}) {
   if (entryIndex < 0 || entryIndex >= entries.length) return false;
   final entry = entries[entryIndex];
   if (entry is! ServerChatEntry || entry.message is! AssistantServerMessage) {
@@ -38,14 +42,17 @@ bool shouldShowForkForAssistant(List<ChatEntry> entries, int entryIndex) {
 
   for (var i = entryIndex + 1; i < entries.length; i++) {
     final next = entries[i];
-    if (next is UserChatEntry) return false;
+    // Desktop/app-server history may omit the synthetic ResultMessage that the
+    // live Bridge stream emits. A following user turn still proves that this
+    // was the final assistant reply for the preceding completed turn.
+    if (next is UserChatEntry) return true;
     if (next is ServerChatEntry) {
       final message = next.message;
       if (message is AssistantServerMessage) return false;
       if (message is ResultMessage) return true;
     }
   }
-  return false;
+  return transcriptTailComplete;
 }
 
 @visibleForTesting
@@ -436,9 +443,17 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
           final entry = allEntries[entryIndex];
           final previous = entryIndex > 0 ? allEntries[entryIndex - 1] : null;
+          final transcriptTailComplete =
+              chatState.status == ProcessStatus.idle &&
+              chatState.queuedInput == null &&
+              !hasStreaming;
           final onForkMessage =
               widget.isCodex &&
-                  shouldShowForkForAssistant(allEntries, entryIndex)
+                  shouldShowForkForAssistant(
+                    allEntries,
+                    entryIndex,
+                    transcriptTailComplete: transcriptTailComplete,
+                  )
               ? widget.onForkMessage
               : null;
           final fileRoot = widget.projectPath;

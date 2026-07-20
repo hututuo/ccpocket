@@ -175,6 +175,12 @@
   it in the session-list context menu or the conversation-level overflow menu.
   Keep the additive persisted-fork wire contract for old/new peer compatibility
   even though Mobile no longer presents a session-level entry.
+- Completion detection must cover both transcript shapes: a live Bridge turn
+  normally ends with `ResultMessage`, while Desktop/app-server history may omit
+  that synthetic marker. In the latter shape, the next user turn closes the
+  preceding reply; a result-less transcript tail is forkable only while the
+  session is idle, has no queued input, and is not streaming. Intermediate
+  assistant/tool blocks remain ineligible.
 - The context-window ring remains in the compact session mode toolbar through
   the `session_insights` slot. It is absent from the old status/top-right slot;
   tapping it keeps the full insights detail view, and that view retains the

@@ -20,7 +20,7 @@ void main() {
       expect(shouldShowForkForAssistant(entries, 3), isTrue);
     });
 
-    test('does not show fork before the next user turn', () {
+    test('uses the next user turn as a completed Desktop-history boundary', () {
       final entries = <ChatEntry>[
         UserChatEntry('first'),
         ServerChatEntry(_assistant('a1')),
@@ -28,8 +28,51 @@ void main() {
         ServerChatEntry(_assistant('a2')),
       ];
 
-      expect(shouldShowForkForAssistant(entries, 1), isFalse);
+      expect(shouldShowForkForAssistant(entries, 1), isTrue);
       expect(shouldShowForkForAssistant(entries, 3), isFalse);
+    });
+
+    test('only exposes a result-less transcript tail when the turn is idle', () {
+      final entries = <ChatEntry>[
+        UserChatEntry('first'),
+        ServerChatEntry(_assistant('a1')),
+      ];
+
+      expect(shouldShowForkForAssistant(entries, 1), isFalse);
+      expect(
+        shouldShowForkForAssistant(
+          entries,
+          1,
+          transcriptTailComplete: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('never treats an intermediate assistant block as the final reply', () {
+      final entries = <ChatEntry>[
+        UserChatEntry('first'),
+        ServerChatEntry(_assistant('tool-preface')),
+        ServerChatEntry(_toolResult('tool')),
+        ServerChatEntry(_assistant('final-reply')),
+      ];
+
+      expect(
+        shouldShowForkForAssistant(
+          entries,
+          1,
+          transcriptTailComplete: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldShowForkForAssistant(
+          entries,
+          3,
+          transcriptTailComplete: true,
+        ),
+        isTrue,
+      );
     });
 
     test('shows one fork action under every completed assistant reply', () {
