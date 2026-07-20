@@ -77,6 +77,7 @@
 - Do not inject mobile start defaults into a durable fork. The official app-server fork response and subsequent init events own the inherited model, reasoning effort, service tier, permissions, sandbox, and network settings.
 - Complete-record download and subsequent incremental sync remain owned by the removable conversation-mirror module. The two menus only reuse that module's actions; they do not introduce a second history store or download protocol.
 - New mobile against a pre-feature Bridge may receive a visible `fork_failed` response for list-originated or latest-sentinel forks. Old mobile against the new Bridge keeps the previous fork message behavior. No part of this decision authorizes Bridge deployment, iOS packaging, signing, or installation.
+- The completed-branch reverse-removal gate reverted documentation, menu exposure, mobile Fork, and Bridge Fork in that order. Each remaining layer passed its relevant build/tests, and the final source tree hash exactly matched pre-task `39c1e8d7` (`a940a3a912660f736e55593a1a0727f99663dc9a`).
 
 ## Mobile auto approval
 
