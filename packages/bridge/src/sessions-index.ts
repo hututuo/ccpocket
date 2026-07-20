@@ -1340,6 +1340,17 @@ function parseCodexSessionJsonl(
         if (!includeInternal && isCodexInternalSessionSource(payload.source)) {
           return null;
         }
+        // Persisted forks can replay inherited session_meta records. When a
+        // caller supplied the authoritative child id, ignore metadata owned
+        // by an ancestor instead of returning the parent under the child path.
+        if (
+          includeInternal &&
+          typeof payload.id === "string" &&
+          payload.id.length > 0 &&
+          payload.id !== fallbackSessionId
+        ) {
+          continue;
+        }
         if (typeof payload.id === "string" && payload.id.length > 0) {
           threadId = payload.id;
         }

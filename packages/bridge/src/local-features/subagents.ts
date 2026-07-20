@@ -1,7 +1,9 @@
 import { CodexRpcError, type CodexProcess } from "../codex-process.js";
 import type { AssistantContent, ServerMessage } from "../parser.js";
 import {
+  getCodexSessionIndexMetadata,
   getCodexSessionIndexMetadataForFiles,
+  type CodexSessionIndexMetadata,
 } from "../sessions-index.js";
 import { codexThreadToServerMessages } from "./codex-thread-history.js";
 import type {
@@ -274,7 +276,7 @@ export class CodexSubagentService {
         `[subagents] ancestorThreadId unsupported; using bounded local filter: ${errorMessage(error)}`,
       );
       rolloutPaths.clear();
-      const collected = await this.collectArchivedStates(
+      const collected = await this.collectArchivedStatesWithStateDbFallback(
         process,
         deadline,
         { sourceKinds: SUBAGENT_SOURCE_KINDS },
@@ -337,10 +339,15 @@ export class CodexSubagentService {
     let truncated = false;
 
     for (const ancestorThreadId of lineage) {
-      const collected = await this.collectArchivedStates(
+      const collected = await this.collectArchivedStatesWithStateDbFallback(
         process,
         deadline,
-        { ancestorThreadId },
+        {
+          ancestorThreadId,
+          // Omitted/empty sourceKinds means interactive threads in the
+          // official protocol. Explicitly request spawned descendants.
+          sourceKinds: SUBAGENT_SOURCE_KINDS,
+        },
         rolloutPaths,
       );
       truncated ||= collected.truncated;
@@ -368,6 +375,7 @@ export class CodexSubagentService {
     filters: {
       ancestorThreadId?: string;
       sourceKinds?: readonly string[];
+      useStateDbOnly?: boolean;
     },
     rolloutPaths: Map<string, string>,
   ): Promise<CollectedPageEntries<CodexSubagentInfo>> {
@@ -416,12 +424,40 @@ export class CodexSubagentService {
     };
   }
 
+  private async collectArchivedStatesWithStateDbFallback(
+    process: CodexProcess,
+    deadline: OperationDeadline,
+    filters: {
+      ancestorThreadId?: string;
+      sourceKinds?: readonly string[];
+    },
+    rolloutPaths: Map<string, string>,
+  ): Promise<CollectedPageEntries<CodexSubagentInfo>> {
+    try {
+      return await this.collectArchivedStates(
+        process,
+        deadline,
+        { ...filters, useStateDbOnly: true },
+        rolloutPaths,
+      );
+    } catch (error) {
+      if (!isUnsupportedStateDbOnlyError(error)) throw error;
+      return this.collectArchivedStates(
+        process,
+        deadline,
+        filters,
+        rolloutPaths,
+      );
+    }
+  }
+
   private async collectThreads(
     process: CodexProcess,
     deadline: OperationDeadline,
     filters: {
       ancestorThreadId?: string;
       sourceKinds?: readonly string[];
+      useStateDbOnly?: boolean;
     },
     archived: boolean,
     rolloutPaths: Map<string, string>,
@@ -444,6 +480,7 @@ export class CodexSubagentService {
             ...(filters.sourceKinds
               ? { sourceKinds: [...filters.sourceKinds] }
               : {}),
+            ...(filters.useStateDbOnly ? { useStateDbOnly: true } : {}),
           },
           deadline.rpcOptions(),
         );
@@ -576,24 +613,43 @@ async function hydrateLatestPreviews(
   entries: readonly CodexSubagentInfo[],
   rolloutPaths: ReadonlyMap<string, string>,
 ): Promise<CodexSubagentInfo[]> {
-  if (entries.length === 0 || rolloutPaths.size === 0) return [...entries];
+  if (entries.length === 0) return [];
+  const metadata = new Map<string, CodexSessionIndexMetadata>();
   try {
-    const metadata = await getCodexSessionIndexMetadataForFiles(rolloutPaths);
-    return entries.map((entry) => {
-      const snapshot = metadata.get(entry.id);
-      if (!snapshot) return entry;
-      const question = snapshot.lastPrompt ?? snapshot.firstPrompt;
-      const answer = snapshot.summary;
-      const preview = latestExchangePreview(question, answer);
-      return preview ? { ...entry, preview } : entry;
-    });
+    const byPath = await getCodexSessionIndexMetadataForFiles(rolloutPaths);
+    for (const [id, value] of byPath) metadata.set(id, value);
   } catch (error) {
-    // List visibility must not depend on optional preview enrichment. The
-    // app-server preview remains a safe fallback if a rollout was evicted or
-    // concurrently replaced.
-    console.warn(`[subagents] latest preview hydration skipped: ${errorMessage(error)}`);
-    return [...entries];
+    console.warn(
+      `[subagents] rollout-path preview hydration skipped: ${errorMessage(error)}`,
+    );
   }
+  const unresolved = entries
+    .map((entry) => entry.id)
+    .filter((id) => !metadata.has(id));
+  if (unresolved.length > 0) {
+    try {
+      const indexed = await getCodexSessionIndexMetadata(unresolved);
+      for (const [id, value] of indexed) metadata.set(id, value);
+    } catch (error) {
+      // List visibility must never depend on optional preview enrichment.
+      console.warn(
+        `[subagents] indexed preview hydration skipped: ${errorMessage(error)}`,
+      );
+    }
+  }
+  return entries.map((entry) => {
+    const snapshot = metadata.get(entry.id);
+    if (!snapshot) return entry;
+    // A persisted subagent rollout may begin with the ancestor's replayed
+    // transcript. In that shape `firstPrompt` belongs to the parent, not to
+    // the child's latest exchange. Only pair an answer with a prompt proven
+    // to be later than that inherited head; otherwise render the latest
+    // answer alone instead of showing the same root prompt on every card.
+    const question = snapshot.lastPrompt;
+    const answer = snapshot.summary;
+    const preview = latestExchangePreview(question, answer);
+    return preview ? { ...entry, preview } : entry;
+  });
 }
 
 function latestExchangePreview(
@@ -1031,6 +1087,16 @@ function isUnsupportedArchivedFilterError(error: unknown): boolean {
   }
   const message = errorMessage(error).toLowerCase();
   return message.includes("archived") && unsupportedOrInvalidMessage(message);
+}
+
+function isUnsupportedStateDbOnlyError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return (
+    (message.includes("usestatedbonly") ||
+      message.includes("use_state_db_only") ||
+      message.includes("state db only")) &&
+    unsupportedOrInvalidMessage(message)
+  );
 }
 
 function isUnsupportedThreadReadError(error: unknown): boolean {
