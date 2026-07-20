@@ -31,6 +31,26 @@ void main() {
       expect(shouldShowForkForAssistant(entries, 1), isFalse);
       expect(shouldShowForkForAssistant(entries, 3), isFalse);
     });
+
+    test('shows one fork action under every completed assistant reply', () {
+      final firstReply = _assistant('first-reply');
+      final intermediate = _assistant('tool-preface');
+      final secondReply = _assistant('second-reply');
+      final entries = <ChatEntry>[
+        UserChatEntry('first'),
+        ServerChatEntry(firstReply),
+        ServerChatEntry(_result()),
+        UserChatEntry('second'),
+        ServerChatEntry(intermediate),
+        ServerChatEntry(_toolResult('tool')),
+        ServerChatEntry(secondReply),
+        ServerChatEntry(_result()),
+      ];
+
+      expect(shouldShowForkForAssistant(entries, 1), isTrue);
+      expect(shouldShowForkForAssistant(entries, 4), isFalse);
+      expect(shouldShowForkForAssistant(entries, 6), isTrue);
+    });
   });
 }
 

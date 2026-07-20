@@ -30,8 +30,6 @@ import '../../widgets/workspace_pane_chrome.dart';
 import '../../widgets/adaptive_context_menu.dart';
 import '../../widgets/new_session_sheet.dart';
 import '../../widgets/rename_session_dialog.dart';
-import '../conversation_fork/conversation_fork_actions.dart';
-import '../conversation_fork/conversation_fork_strings.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../file_browser/file_browser_screen.dart';
 import '../session_archive/session_archive_cubit.dart';
@@ -312,8 +310,6 @@ class _SessionListScreenState extends State<SessionListScreen>
   // Cache for resume navigation
   String? _pendingResumeProjectPath;
   String? _pendingResumeGitBranch;
-  String? _pendingForkSourceSessionId;
-  String? _pendingRecentForkThreadId;
   NewSessionParams? _pendingClaudeDefaultsCorrection;
 
   // Flag: already navigated to chat for pending session creation
@@ -370,28 +366,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       if (msg is SystemMessage && msg.subtype == 'session_created') {
         unawaited(_syncPendingClaudeDefaultsWithSessionCreated(msg));
         bridge.requestSessionList();
-        if (msg.sourceSessionId case final sourceSessionId?
-            when sourceSessionId == _pendingForkSourceSessionId &&
-                msg.sessionId != null) {
-          _pendingForkSourceSessionId = null;
-          _unseenCubit.markSeen(msg.sessionId!);
-          _navigateToChat(
-            msg.sessionId!,
-            projectPath: msg.projectPath,
-            worktreePath: msg.worktreePath,
-            provider: Provider.values
-                .where((provider) => provider.value == msg.provider)
-                .firstOrNull,
-            permissionMode: msg.permissionMode,
-            sandboxMode: msg.sandboxMode,
-            approvalPolicy: msg.approvalPolicy,
-            approvalsReviewer: msg.approvalsReviewer,
-          );
-          return;
-        }
-        if (msg.sourceSessionId == null && _pendingRecentForkThreadId != null) {
-          _pendingRecentForkThreadId = null;
-        }
         // Clear-context recreation and session restarts (permission mode /
         // sandbox mode / rewind) are handled inside the active chat screen.
         // Navigating from the hidden session list stacks a second chat route.
@@ -423,20 +397,6 @@ class _SessionListScreenState extends State<SessionListScreen>
           }
           _pendingResumeProjectPath = null;
           _pendingResumeGitBranch = null;
-        }
-        return;
-      }
-
-      if (msg is ErrorMessage &&
-          msg.errorCode == 'fork_failed' &&
-          (_pendingForkSourceSessionId != null ||
-              _pendingRecentForkThreadId != null)) {
-        _pendingForkSourceSessionId = null;
-        _pendingRecentForkThreadId = null;
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text(msg.message)));
         }
         return;
       }
@@ -1274,53 +1234,6 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
   }
 
-  Future<void> _forkRunningSession(SessionInfo session) async {
-    if (session.status != 'idle' || session.queuedInput != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(ConversationForkStrings.of(context).idleRequired),
-        ),
-      );
-      return;
-    }
-    if (!await confirmConversationFork(context) || !mounted) return;
-
-    final bridge = context.read<BridgeService>();
-    final targetUuid =
-        latestCodexUserTurnUuid(bridge.cachedSessionMessages(session.id)) ??
-        latestCodexForkTarget;
-    _pendingForkSourceSessionId = session.id;
-    try {
-      bridge.send(ClientMessage.forkSession(session.id, targetUuid));
-    } catch (error) {
-      _pendingForkSourceSessionId = null;
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$error')));
-    }
-  }
-
-  Future<void> _forkRecentSession(RecentSession session) async {
-    if (session.provider != Provider.codex.value) return;
-    if (!await confirmConversationFork(context) || !mounted) return;
-    _pendingRecentForkThreadId = session.sessionId;
-    try {
-      context.read<BridgeService>().send(
-        ClientMessage.forkRecentSession(
-          threadId: session.sessionId,
-          projectPath: session.resumeCwd ?? session.projectPath,
-        ),
-      );
-    } catch (error) {
-      _pendingRecentForkThreadId = null;
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$error')));
-    }
-  }
-
   void _showRunningSessionActions(
     SessionInfo session, [
     Offset? position,
@@ -1331,8 +1244,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       position: position,
       items: [
         ...conversationMirrorRunningActionItems(context, session),
-        if (session.provider == Provider.codex.value)
-          conversationForkActionItem(context),
         AdaptiveActionMenuItem(
           value: 'rename',
           icon: Icons.label_outline,
@@ -1348,10 +1259,6 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
     if (action == null || !mounted) return;
 
-    if (action == conversationForkAction) {
-      await _forkRunningSession(session);
-      return;
-    }
     if (await handleConversationMirrorRunningAction(context, session, action)) {
       return;
     }
@@ -1386,8 +1293,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       position: position,
       items: [
         ...conversationMirrorActionItems(context, session),
-        if (session.provider == Provider.codex.value)
-          conversationForkActionItem(context),
         AdaptiveActionMenuItem(
           value: 'rename',
           icon: Icons.label_outline,
@@ -1419,10 +1324,6 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
     if (action == null || !mounted) return;
 
-    if (action == conversationForkAction) {
-      await _forkRecentSession(session);
-      return;
-    }
     if (await handleConversationMirrorAction(context, session, action)) return;
     if (!mounted) return;
 

@@ -72,6 +72,46 @@ void main() {
       expect(find.byIcon(Icons.content_copy), findsOneWidget);
       expect(find.byIcon(Icons.text_fields), findsOneWidget);
       expect(find.byIcon(Icons.share), findsOneWidget);
+      expect(find.byKey(const ValueKey('fork_button')), findsNothing);
+    });
+
+    testWidgets('places fork beside the reply copy and share actions', (
+      tester,
+    ) async {
+      var forked = false;
+      await tester.pumpWidget(
+        _wrap(
+          MessageActionBar(
+            textToCopy: 'hello',
+            onTogglePlainText: () {},
+            onFork: () => forked = true,
+          ),
+        ),
+      );
+
+      final actionRow = find.ancestor(
+        of: find.byKey(const ValueKey('fork_button')),
+        matching: find.byType(Row),
+      );
+      expect(actionRow, findsOneWidget);
+      expect(
+        find.descendant(
+          of: actionRow,
+          matching: find.byKey(const ValueKey('copy_button')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: actionRow,
+          matching: find.byKey(const ValueKey('share_button')),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('fork_button')));
+      await tester.pump();
+      expect(forked, isTrue);
     });
 
     testWidgets('copy button copies text and shows snackbar', (tester) async {

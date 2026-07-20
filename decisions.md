@@ -169,6 +169,12 @@
   Mobile falls back to the prior isolated in-memory Side Chat only when the
   connected Bridge lacks `persisted_side_chat_v1`. This supersedes the earlier
   decision that Side Chat must always be ephemeral.
+- Ordinary Fork is a message-owned action, matching the official Mobile action
+  row: expose it only under each completed assistant reply beside Copy and
+  Share, and fork from that reply's preceding Codex user turn. Do not duplicate
+  it in the session-list context menu or the conversation-level overflow menu.
+  Keep the additive persisted-fork wire contract for old/new peer compatibility
+  even though Mobile no longer presents a session-level entry.
 - The context-window ring remains in the compact session mode toolbar through
   the `session_insights` slot. It is absent from the old status/top-right slot;
   tapping it keeps the full insights detail view, and that view retains the
