@@ -1,10 +1,9 @@
 import { CodexRpcError, type CodexProcess } from "../codex-process.js";
 import type { AssistantContent, ServerMessage } from "../parser.js";
 import {
-  codexThreadToSessionHistory,
   getCodexSessionIndexMetadataForFiles,
-  type SessionHistoryMessage,
 } from "../sessions-index.js";
+import { codexThreadToServerMessages } from "./codex-thread-history.js";
 import type {
   CodexSubagentInfo,
   LocalFeatureClientMessage,
@@ -754,12 +753,9 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 export function childThreadToServerMessages(
   threadOrTurns: unknown,
 ): ServerMessage[] {
-  const thread = Array.isArray(threadOrTurns)
-    ? { turns: threadOrTurns }
-    : threadOrTurns;
-  return codexThreadToSessionHistory(thread).flatMap((message, index) =>
-    sessionHistoryMessageToServerMessages(message, index),
-  );
+  return codexThreadToServerMessages(threadOrTurns, {
+    idPrefix: "child-history",
+  });
 }
 
 export function toCodexSubagentInfo(value: unknown): CodexSubagentInfo {
@@ -830,102 +826,6 @@ function extractCodexSubagentMetadata(source: unknown): {
     agentRole: stringOrNull(spawn.agent_role ?? spawn.agentRole),
     agentPath: stringOrNull(spawn.agent_path ?? spawn.agentPath),
   };
-}
-
-function sessionHistoryMessageToServerMessages(
-  history: SessionHistoryMessage,
-  index: number,
-): ServerMessage[] {
-  if (history.role === "user") {
-    const text = historyContentText(history.content);
-    if (!text) return [];
-    return [
-      {
-        type: "user_input",
-        text,
-        ...(history.uuid ? { userMessageUuid: history.uuid } : {}),
-        ...(history.isMeta ? { isMeta: true } : {}),
-        ...(history.imageCount ? { imageCount: history.imageCount } : {}),
-        ...(history.timestamp ? { timestamp: history.timestamp } : {}),
-      },
-    ];
-  }
-
-  if (history.role === "tool_result") {
-    const content = historyContentText(history.content);
-    if (!content) return [];
-    return [
-      {
-        type: "tool_result",
-        toolUseId:
-          history.toolUseId ?? history.uuid ?? `child-history-tool-${index}`,
-        content,
-        ...(history.toolName ? { toolName: history.toolName } : {}),
-      },
-    ];
-  }
-
-  const content = historyAssistantContent(history.content);
-  if (content.length === 0) return [];
-  const id = history.uuid ?? history.rawItemId ?? `child-history-${index}`;
-  return [
-    {
-      type: "assistant",
-      message: { id, role: "assistant", content, model: "" },
-      ...(history.uuid ? { messageUuid: history.uuid } : {}),
-    },
-  ];
-}
-
-function historyContentText(
-  content: SessionHistoryMessage["content"],
-): string {
-  if (typeof content === "string") return content;
-  return content
-    .flatMap((item) => {
-      if (item.type === "text" && typeof item.text === "string") {
-        return [item.text];
-      }
-      if (item.type === "thinking" && typeof item.thinking === "string") {
-        return [item.thinking];
-      }
-      return [];
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function historyAssistantContent(
-  content: SessionHistoryMessage["content"],
-): AssistantContent[] {
-  if (typeof content === "string") {
-    return content ? [{ type: "text", text: content }] : [];
-  }
-
-  const converted: AssistantContent[] = [];
-  for (const item of content) {
-    if (item.type === "text" && typeof item.text === "string" && item.text) {
-      converted.push({ type: "text", text: item.text });
-    } else if (
-      item.type === "thinking" &&
-      typeof item.thinking === "string" &&
-      item.thinking
-    ) {
-      converted.push({ type: "thinking", thinking: item.thinking });
-    } else if (
-      item.type === "tool_use" &&
-      typeof item.id === "string" &&
-      typeof item.name === "string"
-    ) {
-      converted.push({
-        type: "tool_use",
-        id: item.id,
-        name: item.name,
-        input: isRecord(item.input) ? item.input : {},
-      });
-    }
-  }
-  return converted;
 }
 
 export function limitSubagentHistoryResponse(
