@@ -17,6 +17,10 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
       child: SessionInsightsBar(
         sessionId: context.sessionId,
         bridgeService: context.bridge,
+        onCompact: () => context.openPane(
+          'codex_core_actions',
+          arguments: const {'section': 'compact'},
+        ),
       ),
     ),
   ];

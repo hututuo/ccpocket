@@ -20,11 +20,13 @@ class SessionInsightsBar extends StatefulWidget {
     required this.sessionId,
     required this.bridgeService,
     this.controller,
+    this.onCompact,
   });
 
   final String sessionId;
   final BridgeService bridgeService;
   final SessionInsightsController? controller;
+  final VoidCallback? onCompact;
 
   @override
   State<SessionInsightsBar> createState() => _SessionInsightsBarState();
@@ -152,6 +154,12 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
             usageInfo: _controller.codexUsage,
             loading: _controller.isLoading,
             onRefresh: () => _controller.refresh(force: true),
+            onCompact: widget.onCompact == null
+                ? null
+                : () {
+                    Navigator.of(context).pop();
+                    widget.onCompact!();
+                  },
           ),
         ),
       ),
@@ -211,6 +219,7 @@ class _SessionInsightsPanelState extends State<SessionInsightsPanel> {
     usageInfo: _controller.codexUsage,
     loading: _controller.isLoading,
     onRefresh: () => _controller.refresh(force: true),
+    onCompact: null,
   );
 }
 
@@ -220,12 +229,14 @@ class _InsightsDetails extends StatelessWidget {
     required this.usageInfo,
     required this.loading,
     required this.onRefresh,
+    required this.onCompact,
   });
 
   final ContextUsage? contextUsage;
   final SessionUsageInfo? usageInfo;
   final bool loading;
   final VoidCallback onRefresh;
+  final VoidCallback? onCompact;
 
   @override
   Widget build(BuildContext context) {
@@ -263,7 +274,7 @@ class _InsightsDetails extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
             children: [
-              _ContextCard(usage: contextUsage),
+              _ContextCard(usage: contextUsage, onCompact: onCompact),
               const SizedBox(height: 12),
               Text(
                 strings.quota,
@@ -307,8 +318,9 @@ class _InsightsDetails extends StatelessWidget {
 }
 
 class _ContextCard extends StatelessWidget {
-  const _ContextCard({required this.usage});
+  const _ContextCard({required this.usage, required this.onCompact});
   final ContextUsage? usage;
+  final VoidCallback? onCompact;
 
   @override
   Widget build(BuildContext context) {
@@ -345,6 +357,18 @@ class _ContextCard extends StatelessWidget {
               '${strings.output}: ${_formatTokens(value.last.outputTokens)}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
+            if (onCompact != null) ...[
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerRight,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('session_insights_compact'),
+                  onPressed: onCompact,
+                  icon: const Icon(Icons.compress, size: 18),
+                  label: Text(strings.compactContext),
+                ),
+              ),
+            ],
           ],
         ),
       ),
