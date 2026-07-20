@@ -53,11 +53,51 @@ describe("LocalFeaturesController", () => {
     });
     await vi.waitFor(() => expect(signal).toBeDefined());
 
-    controller.close();
+    await controller.close();
     await request;
 
     expect(signal?.aborted).toBe(true);
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a reconnected client's new operation tracked after the old one settles", async () => {
+    const signals: AbortSignal[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let releaseSecond!: () => void;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage"],
+      handle: async (_message, context) => {
+        signals.push(context.signal);
+        await (signals.length === 1 ? firstGate : secondGate);
+      },
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+    const client = {};
+    const first = controller.handle(client, {
+      type: "get_context_usage",
+      sessionId: "session-1",
+    })!;
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    controller.disconnect(client);
+    const second = controller.handle(client, {
+      type: "get_context_usage",
+      sessionId: "session-1",
+    })!;
+    await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+    releaseFirst();
+    await first;
+    controller.disconnect(client);
+    expect(signals[1].aborted).toBe(true);
+    releaseSecond();
+    await second;
+    await controller.close();
   });
 
   it("notifies each registered handler once when capabilities change", () => {

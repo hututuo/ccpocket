@@ -130,8 +130,12 @@ import { validateFileTransferPeerBaseUrl } from "./file-transfer-utils.js";
 import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
-import { isLocalFeatureServerMessageType } from "./local-features/protocol.js";
+import {
+  FILE_BROWSER_CAPABILITY,
+  isLocalFeatureServerMessageType,
+} from "./local-features/protocol.js";
 import type { FileTransferManager } from "./file-transfer-manager.js";
+import type { FileBrowserManager } from "./file-browser-manager.js";
 import {
   FILE_TRANSFER_CAPABILITY,
   isFileTransferClientMessage,
@@ -1006,6 +1010,7 @@ export interface BridgeServerOptions {
   deltaBatchMaxChars?: number;
   artifactManager?: ArtifactManager;
   fileTransfer?: FileTransferManager;
+  fileBrowser?: FileBrowserManager;
 }
 
 type DeltaServerMessage = Extract<
@@ -1103,6 +1108,7 @@ export class BridgeWebSocketServer {
   private readonly localFeatures: LocalFeaturesController;
   private readonly codexGoals: CodexGoalController;
   private readonly fileTransfer: FileTransferManager | null;
+  private readonly fileBrowser: FileBrowserManager | null;
 
   constructor(options: BridgeServerOptions) {
     const {
@@ -1124,6 +1130,7 @@ export class BridgeWebSocketServer {
       deltaBatchMaxChars,
       artifactManager,
       fileTransfer,
+      fileBrowser,
     } = options;
     this.apiKey = apiKey ?? null;
     this.allowedDirs = allowedDirs ?? [];
@@ -1143,6 +1150,7 @@ export class BridgeWebSocketServer {
     this.bridgeInstanceId = promptHistoryStore?.bridgeInstanceId;
     this.artifactManager = artifactManager ?? null;
     this.fileTransfer = fileTransfer ?? null;
+    this.fileBrowser = fileBrowser ?? null;
     this.platform = platform ?? process.platform;
     this.fileListMaxEntries = normalizePositiveLimit(
       fileListMaxEntries,
@@ -1224,6 +1232,7 @@ export class BridgeWebSocketServer {
     });
     this.localFeatures = createLocalFeaturesController({
       bridgeInstanceId: this.bridgeInstanceId,
+      fileBrowser: this.fileBrowser ?? undefined,
       getSession: (sessionId) => this.sessionManager.get(sessionId),
       getCodexThreadId: (session) =>
         this.codexThreadIdForSession(session as SessionInfo),
@@ -1301,6 +1310,8 @@ export class BridgeWebSocketServer {
         ),
       send: (client, message) =>
         this.send(client as WebSocket, message as ServerMessage),
+      isClientOpen: (client) =>
+        (client as WebSocket).readyState === WebSocket.OPEN,
       supports: (client, messageType) =>
         this.clientSupportedServerMessages
           .get(client as WebSocket)
@@ -2729,7 +2740,10 @@ export class BridgeWebSocketServer {
 
   async close(): Promise<void> {
     console.log("[ws] Shutting down...");
-    this.localFeatures.close();
+    // Abort local operations synchronously so the existing shutdown flush
+    // contract remains observable before callers await this method. Drain the
+    // async handlers before releasing shared file-transfer state below.
+    const localFeaturesClosing = this.localFeatures.close();
     this.flushAllDeltaBatches();
     this.sessionManager.destroyAll();
     this.flushAllDeltaBatches();
@@ -2737,6 +2751,7 @@ export class BridgeWebSocketServer {
     this.debugEvents.clear();
     this.restoringManagedGalleryPaths.clear();
     this.wss.close();
+    await localFeaturesClosing;
     await this.fileTransfer?.close();
   }
 
@@ -7851,6 +7866,7 @@ export class BridgeWebSocketServer {
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
+        ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
     });
@@ -7893,6 +7909,7 @@ export class BridgeWebSocketServer {
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
+        ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
     });

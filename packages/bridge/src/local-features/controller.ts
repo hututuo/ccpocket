@@ -121,7 +121,12 @@ export class LocalFeaturesController {
       });
     } finally {
       active.delete(controller);
-      if (active.size === 0) this.operations.delete(client);
+      if (
+        active.size === 0 &&
+        this.operations.get(client) === active
+      ) {
+        this.operations.delete(client);
+      }
     }
   }
 
@@ -144,16 +149,18 @@ export class LocalFeaturesController {
     }
   }
 
-  close(): void {
+  async close(): Promise<void> {
     for (const active of this.operations.values()) {
       for (const controller of active) {
         controller.abort(new Error("Bridge shutting down"));
       }
     }
     this.operations.clear();
-    for (const handler of new Set(this.handlers.values())) {
-      handler.close?.();
-    }
+    await Promise.allSettled(
+      [...new Set(this.handlers.values())].map(async (handler) => {
+        await handler.close?.();
+      }),
+    );
   }
 
   private register(handler: LocalFeatureHandler): void {

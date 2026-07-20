@@ -29,6 +29,7 @@ import { ArtifactRegistry } from "./artifact-registry.js";
 import { ArtifactManager } from "./artifact-manager.js";
 import { GeneratedArtifactStore } from "./generated-artifact-store.js";
 import { initializeFileTransferRuntime } from "./file-transfer-runtime.js";
+import { FileBrowserManager } from "./file-browser-manager.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -233,6 +234,24 @@ export async function startServer() {
     console.log("[bridge] Resumable phone file transfer enabled");
   }
 
+  let fileBrowser: FileBrowserManager | undefined;
+  try {
+    fileBrowser = new FileBrowserManager({
+      bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+      allowedDirs: ALLOWED_DIRS,
+      artifactStore,
+      fileTransferManager: fileTransfer,
+    });
+    await fileBrowser.init();
+    console.log("[bridge] Root-scoped phone file browser enabled");
+  } catch (error) {
+    await fileBrowser?.close();
+    fileBrowser = undefined;
+    console.warn(
+      `[bridge] Phone file browser disabled; chat remains available: ${startupErrorMessage(error)}`,
+    );
+  }
+
   const startedAt = Date.now();
   let wsServer: BridgeWebSocketServer | null = null;
 
@@ -339,8 +358,10 @@ export async function startServer() {
       promptHistoryStore,
       artifactManager,
       fileTransfer,
+      fileBrowser,
     });
   } catch (error) {
+    await fileBrowser?.close();
     artifactStore.close();
     await fileTransferHttp?.close();
     await fileTransfer?.close();

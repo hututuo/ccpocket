@@ -1,4 +1,5 @@
 import type { CodexProcess } from "../codex-process.js";
+import type { FileBrowserManager } from "../file-browser-manager.js";
 import type { ClientMessage } from "../parser.js";
 import type {
   LocalFeatureClientMessage,
@@ -27,6 +28,8 @@ export interface LocalFeatureInputMessage {
 export interface LocalFeatureRuntime {
   /** Stable installation identity; persisted by the Bridge host when available. */
   readonly bridgeInstanceId?: string;
+  /** Optional host-owned, root-scoped file-browser authority. */
+  readonly fileBrowser?: FileBrowserManager;
   getSession(sessionId: string): LocalFeatureSession | undefined;
   getCodexThreadId(session: LocalFeatureSession): string | undefined;
   getActiveCodexProcess(): CodexProcess | null;
@@ -63,6 +66,7 @@ export interface LocalFeatureRuntime {
     message: string;
     errorCode?: string;
   }): void;
+  isClientOpen?(client: object): boolean;
   supports(client: object, serverMessageType: string): boolean;
 }
 
@@ -101,7 +105,7 @@ export interface LocalFeatureHandler {
   externalCodexTurnId?(session: LocalFeatureSession): string | undefined;
   capabilitiesChanged?(client: object): void;
   disconnect?(client: object): void;
-  close?(): void;
+  close?(): void | Promise<void>;
 }
 
 export function asLocalFeatureMessage(
