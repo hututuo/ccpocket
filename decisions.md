@@ -134,3 +134,46 @@
   motion, `2ebd169` owns residency, and `5c29481` owns the native capability
   gate. Remove the documentation commit first, then those commits in reverse
   order to reproduce `d52001d^{tree}` exactly.
+
+## Upstream mergeability and session-continuity integration
+
+- This section supersedes the blanket interpretation of “independent” as
+  “every local feature must be directly removable and the whole tree must
+  reverse exactly to an official baseline.” The actual product requirement is
+  that official code and local extensions keep clear ownership boundaries so a
+  later official update can be merged and reviewed without the two becoming an
+  indistinguishable patch. Earlier direct-revert and reverse-tree results remain
+  useful historical verification, but they are not a universal acceptance gate.
+- Prefer cohesive feature commits, typed extension seams, narrow edits to
+  official hotspots, feature-owned tests, and a documented dependency order.
+  Shared official files may still change when the behavior genuinely belongs
+  there; avoid scattered feature flags, cross-feature private state, unrelated
+  formatting churn, and catch-all hardening commits. During an official update,
+  merge the official baseline first and then reconcile local behavior
+  semantically at these bounded seams instead of replaying the local branch as
+  one opaque patch.
+- Direct revert is optional evidence for a feature intentionally designed to be
+  removable. Do not split a coherent implementation or add adapter layers only
+  to satisfy an artificial removal test. The primary update gate is that
+  official changes, local ownership, conflicts, compatibility fallbacks, and
+  regression tests remain separately understandable.
+- Task `019f7ca9-f4bb-7983-8127-fb0ce7b92379` was integrated semantically rather
+  than byte-cherry-picked because this branch already had newer file-manager,
+  mirror, Fork, toolbar, and continuity work. Persisted Side Chat maps to
+  `91485fe0` plus `50ac07d8`; subagent discovery/latest preview to `67fe3b15`;
+  resume configuration ownership to `5770ac32` plus `5c25ff1f`; Desktop list
+  activity to `f51fc32e`; and the quick-reconnect generation fence to
+  `31db336e`.
+- Side Chat and ordinary Fork remain separate. Side Chat now creates an
+  official persisted child and reuses the complete Codex session screen; a new
+  Mobile falls back to the prior isolated in-memory Side Chat only when the
+  connected Bridge lacks `persisted_side_chat_v1`. This supersedes the earlier
+  decision that Side Chat must always be ephemeral.
+- The context-window ring remains in the compact session mode toolbar through
+  the `session_insights` slot. It is absent from the old status/top-right slot;
+  tapping it keeps the full insights detail view, and that view retains the
+  `Compact context` action routed to the existing `codex_core_actions` compact
+  request. Future upstream merges must preserve all three invariants together.
+- No item in this integration authorizes a live Bridge replacement, physical
+  iPhone installation, stable-branch merge, or remote push. Those remain
+  separate decisions after code and compatibility verification.
