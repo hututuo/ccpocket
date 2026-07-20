@@ -669,6 +669,42 @@ void main() {
       expect(update.codexSpeed, CodexSpeed.fast);
     });
 
+    test('restores system metadata without replaying noisy chips', () {
+      final update = handler.handle(
+        const HistoryMessage(
+          messages: [
+            SystemMessage(
+              subtype: 'init',
+              provider: 'codex',
+              model: 'gpt-5.6-sol',
+            ),
+            SystemMessage(
+              subtype: 'set_codex_model',
+              provider: 'codex',
+              model: 'gpt-5.6-terra',
+              modelReasoningEffort: 'ultra',
+            ),
+            SystemMessage(subtype: 'runtime_capabilities', provider: 'codex'),
+            SystemMessage(subtype: 'continue', provider: 'codex'),
+          ],
+        ),
+        isBackground: false,
+        isCodex: true,
+      );
+
+      expect(update.entriesToAdd, hasLength(1));
+      expect(
+        (update.entriesToAdd.single as ServerChatEntry).message,
+        isA<SystemMessage>().having(
+          (message) => message.subtype,
+          'subtype',
+          'init',
+        ),
+      );
+      expect(update.codexModel, 'gpt-5.6-terra');
+      expect(update.codexModelReasoningEffort, ReasoningEffort.ultra);
+    });
+
     test('derives the complete Codex permission preset from init metadata', () {
       final update = handler.handle(
         const SystemMessage(

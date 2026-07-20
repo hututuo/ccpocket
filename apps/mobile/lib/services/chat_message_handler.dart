@@ -2,6 +2,7 @@ import '../core/logger.dart';
 import '../models/messages.dart';
 import '../utils/codex_plan_update.dart';
 import '../utils/request_user_input.dart';
+import '../utils/system_message_visibility.dart';
 import '../widgets/slash_command_sheet.dart'
     show
         SlashCommand,
@@ -654,10 +655,7 @@ class ChatMessageHandler {
       } else {
         // Don't add internal metadata messages as visible entries.
         // codex_settings is re-sent after every history sync.
-        if (m is! SystemMessage ||
-            (m.subtype != 'supported_commands' &&
-                m.subtype != 'session_created' &&
-                m.subtype != 'codex_settings')) {
+        if (m is! SystemMessage || shouldDisplaySystemMessage(m)) {
           entries.add(ServerChatEntry(m, timestamp: lastKnownTs));
         }
         // Restore slash commands from history (init, supported_commands, or
@@ -973,7 +971,7 @@ class ChatMessageHandler {
     }
     // Add init and tip as visible chat entries; session_created and
     // supported_commands are internal metadata messages.
-    final addEntry = subtype == 'init' || subtype == 'tip';
+    final addEntry = msg is SystemMessage && shouldDisplaySystemMessage(msg);
     return ChatStateUpdate(
       entriesToAdd: addEntry ? [ServerChatEntry(msg)] : [],
       permissionMode: permissionMode,

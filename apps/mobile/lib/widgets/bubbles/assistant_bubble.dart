@@ -47,6 +47,7 @@ class AssistantBubble extends StatefulWidget {
   final String? sessionId;
   final String? projectPath;
   final VoidCallback? onFork;
+  final bool showProcessDetails;
 
   const AssistantBubble({
     super.key,
@@ -57,6 +58,7 @@ class AssistantBubble extends StatefulWidget {
     this.sessionId,
     this.projectPath,
     this.onFork,
+    this.showProcessDetails = true,
   });
 
   @override
@@ -111,6 +113,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
         onArtifactOpen: widget.onArtifactOpen,
         onFileTap: widget.onFileTap,
         artifactContentIndexOffset: widget.message.artifactContentIndexOffset,
+        showProcessDetails: widget.showProcessDetails,
         onTogglePlainText: () {
           setState(() => _plainTextMode = !_plainTextMode);
         },
@@ -127,6 +130,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
       onArtifactOpen: widget.onArtifactOpen,
       artifactContentIndexOffset: widget.message.artifactContentIndexOffset,
       onFork: widget.onFork,
+      showProcessDetails: widget.showProcessDetails,
       onTogglePlainText: () {
         setState(() => _plainTextMode = !_plainTextMode);
       },
@@ -145,6 +149,7 @@ class _PlanLayout extends StatelessWidget {
   final ArtifactOpenCallback? onArtifactOpen;
   final FilePathTapCallback? onFileTap;
   final int artifactContentIndexOffset;
+  final bool showProcessDetails;
   final VoidCallback onTogglePlainText;
 
   const _PlanLayout({
@@ -158,6 +163,7 @@ class _PlanLayout extends StatelessWidget {
     this.onArtifactOpen,
     this.onFileTap,
     this.artifactContentIndexOffset = 0,
+    this.showProcessDetails = true,
     required this.onTogglePlainText,
   });
 
@@ -200,17 +206,18 @@ class _PlanLayout extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         // Render thinking blocks and non-ExitPlanMode tool uses
-        for (final content in contents)
-          switch (content) {
-            ThinkingContent(:final thinking) => ThinkingBubble(
-              thinking: thinking,
-            ),
-            ToolUseContent(:final id, :final name, :final input) =>
-              name == 'ExitPlanMode'
-                  ? const SizedBox.shrink()
-                  : ToolUseTile(toolUseId: id, name: name, input: input),
-            TextContent() => const SizedBox.shrink(),
-          },
+        if (showProcessDetails)
+          for (final content in contents)
+            switch (content) {
+              ThinkingContent(:final thinking) => ThinkingBubble(
+                thinking: thinking,
+              ),
+              ToolUseContent(:final id, :final name, :final input) =>
+                name == 'ExitPlanMode'
+                    ? const SizedBox.shrink()
+                    : ToolUseTile(toolUseId: id, name: name, input: input),
+              TextContent() => const SizedBox.shrink(),
+            },
         PlanCard(
           planText: originalPlanText,
           onTapLink: handlePlanLink,
@@ -356,6 +363,7 @@ class _DefaultLayout extends StatelessWidget {
   final ArtifactOpenCallback? onArtifactOpen;
   final int artifactContentIndexOffset;
   final VoidCallback? onFork;
+  final bool showProcessDetails;
   final VoidCallback onTogglePlainText;
 
   const _DefaultLayout({
@@ -368,6 +376,7 @@ class _DefaultLayout extends StatelessWidget {
     this.onArtifactOpen,
     this.artifactContentIndexOffset = 0,
     this.onFork,
+    this.showProcessDetails = true,
     required this.onTogglePlainText,
   });
 
@@ -392,12 +401,15 @@ class _DefaultLayout extends StatelessWidget {
               contentIndex - artifactContentIndexOffset,
             ),
             ToolUseContent(:final id, :final name, :final input) =>
-              name == 'TodoWrite' || isCodexUpdatePlanTool(name)
+              !showProcessDetails
+                  ? const SizedBox.shrink()
+                  : name == 'TodoWrite' || isCodexUpdatePlanTool(name)
                   ? TodoWriteWidget(input: input)
                   : ToolUseTile(toolUseId: id, name: name, input: input),
-            ThinkingContent(:final thinking) => ThinkingBubble(
-              thinking: thinking,
-            ),
+            ThinkingContent(:final thinking) =>
+              showProcessDetails
+                  ? ThinkingBubble(thinking: thinking)
+                  : const SizedBox.shrink(),
           },
         ArtifactAttachmentGroup(
           artifacts: artifacts

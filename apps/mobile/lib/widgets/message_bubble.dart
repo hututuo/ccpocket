@@ -4,6 +4,7 @@ import '../l10n/app_localizations.dart';
 import '../models/messages.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_theme.dart';
+import '../utils/system_message_visibility.dart';
 import '../features/file_peek/file_path_syntax.dart';
 import 'bubbles/assistant_bubble.dart';
 import 'bubbles/error_bubble.dart';
@@ -45,6 +46,7 @@ class ChatEntryWidget extends StatelessWidget {
   final FilePathTapCallback? onFileTap;
   final MessageArtifactOpenCallback? onArtifactOpen;
   final bool isCodex;
+  final bool showAssistantProcessDetails;
 
   const ChatEntryWidget({
     super.key,
@@ -64,6 +66,7 @@ class ChatEntryWidget extends StatelessWidget {
     this.onFileTap,
     this.onArtifactOpen,
     this.isCodex = false,
+    this.showAssistantProcessDetails = true,
   });
 
   @override
@@ -86,6 +89,7 @@ class ChatEntryWidget extends StatelessWidget {
             onForkMessage: onForkMessage,
             onDismissCodexWarning: onDismissCodexWarning,
             isCodex: isCodex,
+            showAssistantProcessDetails: showAssistantProcessDetails,
           ),
           final UserChatEntry user => UserBubble(
             text: user.text,
@@ -177,6 +181,7 @@ class ServerMessageWidget extends StatelessWidget {
   final void Function(AssistantServerMessage)? onForkMessage;
   final void Function(ErrorMessage)? onDismissCodexWarning;
   final bool isCodex;
+  final bool showAssistantProcessDetails;
 
   const ServerMessageWidget({
     super.key,
@@ -192,25 +197,30 @@ class ServerMessageWidget extends StatelessWidget {
     this.onForkMessage,
     this.onDismissCodexWarning,
     this.isCodex = false,
+    this.showAssistantProcessDetails = true,
   });
 
   @override
   Widget build(BuildContext context) {
     return switch (message) {
       final SystemMessage msg =>
-        msg.subtype == 'tip' ? TipChip(message: msg) : SystemChip(message: msg),
+        !shouldDisplaySystemMessage(msg)
+            ? const SizedBox.shrink()
+            : msg.subtype == 'tip'
+            ? TipChip(message: msg)
+            : SystemChip(message: msg),
       final AssistantServerMessage msg => AssistantBubble(
         message: msg,
         resolvedPlanText: resolvedPlanText,
         onFileTap: onFileTap,
         sessionId: sessionId,
         projectPath: projectPath,
-        onArtifactOpen: onArtifactOpen != null &&
-                msg.artifactMessageId.isNotEmpty
-            ? (artifact) =>
-                onArtifactOpen!(msg.artifactMessageId, artifact)
+        onArtifactOpen:
+            onArtifactOpen != null && msg.artifactMessageId.isNotEmpty
+            ? (artifact) => onArtifactOpen!(msg.artifactMessageId, artifact)
             : null,
         onFork: onForkMessage != null ? () => onForkMessage!(msg) : null,
+        showProcessDetails: showAssistantProcessDetails,
       ),
       // Hide tool results that are summarized by a tool_use_summary
       final ToolResultMessage msg =>
@@ -222,8 +232,8 @@ class ServerMessageWidget extends StatelessWidget {
                 sessionId: sessionId,
                 projectPath: projectPath,
                 onFileTap: onFileTap,
-                onArtifactOpen: onArtifactOpen != null &&
-                        msg.toolUseId.isNotEmpty
+                onArtifactOpen:
+                    onArtifactOpen != null && msg.toolUseId.isNotEmpty
                     ? (artifact) => onArtifactOpen!(msg.toolUseId, artifact)
                     : null,
                 collapseNotifier: collapseToolResults,

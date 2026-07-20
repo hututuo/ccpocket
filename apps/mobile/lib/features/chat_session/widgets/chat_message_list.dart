@@ -20,6 +20,8 @@ import '../state/chat_session_cubit.dart';
 import '../state/streaming_state.dart';
 import '../state/streaming_state_cubit.dart';
 import 'maintain_reading_position_physics.dart';
+import 'chat_process_disclosure.dart';
+import 'chat_process_layout.dart';
 
 String? resolveChatFileRoot({String? worktreePath, String? projectPath}) {
   final worktree = worktreePath?.trim();
@@ -120,6 +122,7 @@ class ChatMessageList extends StatefulWidget {
 
 class _ChatMessageListState extends State<ChatMessageList> {
   ChatSessionCubit? _pagingCubit;
+  final Set<String> _expandedProcessTurns = {};
 
   @override
   void initState() {
@@ -165,10 +168,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     _scrollToUserEntry(entry);
   }
 
-  Future<void> _openArtifact(
-    String messageId,
-    ArtifactRef artifact,
-  ) async {
+  Future<void> _openArtifact(String messageId, ArtifactRef artifact) async {
     final requestSessionId = widget.sessionId;
     final requestProjectPath = widget.projectPath;
     final sourcePath = artifact.projectRelativePath;
@@ -289,18 +289,16 @@ class _ChatMessageListState extends State<ChatMessageList> {
       'unsupported_message' => localizations.artifactBridgeUpdateRequired,
       'artifact_resolve_timeout' ||
       'artifact_source_read_timeout' => localizations.artifactTimeout,
-      _ => sourceRead
-          ? localizations.artifactOpenFailed
-          : localizations.artifactPrepareFailed,
+      _ =>
+        sourceRead
+            ? localizations.artifactOpenFailed
+            : localizations.artifactPrepareFailed,
     };
   }
 
   void _showArtifactError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 2),
-      ),
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
     );
   }
 
@@ -369,6 +367,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final chatState = chatCubit.state;
     final hiddenToolUseIds = chatState.hiddenToolUseIds;
     final allEntries = chatState.entries;
+    final processLayout = buildChatProcessLayout(allEntries);
 
     // Watch only the isStreaming flag (not the full streaming text) so the
     // list rebuilds when streaming starts/stops (to adjust itemCount) but NOT
@@ -434,16 +433,45 @@ class _ChatMessageListState extends State<ChatMessageList> {
                 if (!streamingState.isStreaming) {
                   return const SizedBox.shrink();
                 }
-                return ChatEntryWidget(
-                  entry: StreamingChatEntry(text: streamingState.text),
-                  previous: null,
-                  httpBaseUrl: widget.httpBaseUrl,
-                  sessionId: widget.sessionId,
-                  projectPath: widget.projectPath,
-                  onRetryMessage: null,
-                  collapseToolResults: null,
-                  hiddenToolUseIds: const {},
-                  isCodex: widget.isCodex,
+                final thinking = streamingState.thinking.trim();
+                final turnKey =
+                    processLayout.latestTurnKey ??
+                    'session:${widget.sessionId}';
+                final expanded = _expandedProcessTurns.contains(turnKey);
+                final liveTurn = ChatProcessTurnLayout(
+                  key: turnKey,
+                  processEntryIndices: const <int>{},
+                  summaryEntryIndex: -1,
+                  finalAssistantEntryIndex: null,
+                  thinkingBlocks: thinking.isEmpty ? 0 : 1,
+                  toolCalls: 0,
+                  toolResults: 0,
+                );
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (thinking.isNotEmpty)
+                      ChatProcessDisclosure(
+                        turn: liveTurn,
+                        expanded: expanded,
+                        running: true,
+                        onToggle: () => _toggleProcessTurn(turnKey),
+                      ),
+                    if (thinking.isNotEmpty && expanded)
+                      ChatLiveThinkingDetails(text: thinking),
+                    if (streamingState.text.isNotEmpty)
+                      ChatEntryWidget(
+                        entry: StreamingChatEntry(text: streamingState.text),
+                        previous: null,
+                        httpBaseUrl: widget.httpBaseUrl,
+                        sessionId: widget.sessionId,
+                        projectPath: widget.projectPath,
+                        onRetryMessage: null,
+                        collapseToolResults: null,
+                        hiddenToolUseIds: const {},
+                        isCodex: widget.isCodex,
+                      ),
+                  ],
                 );
               },
             );
@@ -451,6 +479,27 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
           final entry = allEntries[entryIndex];
           final previous = entryIndex > 0 ? allEntries[entryIndex - 1] : null;
+          final processTurn = processLayout.turnForEntry(entryIndex);
+          final processExpanded =
+              processTurn != null &&
+              _expandedProcessTurns.contains(processTurn.key);
+          if (processTurn != null &&
+              processTurn.isProcessEntry(entryIndex) &&
+              !processExpanded) {
+            if (!processTurn.showsSummaryAt(entryIndex)) {
+              return const SizedBox.shrink();
+            }
+            return AutoScrollTag(
+              key: ValueKey('process:${processTurn.key}'),
+              controller: widget.scrollController,
+              index: entryIndex,
+              child: ChatProcessDisclosure(
+                turn: processTurn,
+                expanded: false,
+                onToggle: () => _toggleProcessTurn(processTurn.key),
+              ),
+            );
+          }
           final transcriptTailComplete =
               chatState.status == ProcessStatus.idle &&
               chatState.queuedInput == null &&
@@ -477,6 +526,9 @@ class _ChatMessageListState extends State<ChatMessageList> {
             onForkMessage: onForkMessage,
             onDismissCodexWarning: chatCubit.dismissCodexWarning,
             collapseToolResults: widget.collapseToolResults,
+            showAssistantProcessDetails:
+                processTurn?.hasInlineProcessAt(entryIndex) != true ||
+                processExpanded,
             resolvedPlanText: _resolvePlanText(entry),
             hiddenToolUseIds: hiddenToolUseIds,
             onArtifactOpen: _openArtifact,
@@ -517,6 +569,19 @@ class _ChatMessageListState extends State<ChatMessageList> {
             },
             isCodex: widget.isCodex,
           );
+          if (processTurn != null && processTurn.showsSummaryAt(entryIndex)) {
+            child = Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ChatProcessDisclosure(
+                  turn: processTurn,
+                  expanded: processExpanded,
+                  onToggle: () => _toggleProcessTurn(processTurn.key),
+                ),
+                child,
+              ],
+            );
+          }
           // Wrap with AutoScrollTag for scroll-to-index support.
           // Use entryIndex (not reverse index) as the AutoScrollTag index.
           child = AutoScrollTag(
@@ -534,6 +599,14 @@ class _ChatMessageListState extends State<ChatMessageList> {
       actions: widget.selectionActions,
       child: content,
     );
+  }
+
+  void _toggleProcessTurn(String turnKey) {
+    setState(() {
+      if (!_expandedProcessTurns.add(turnKey)) {
+        _expandedProcessTurns.remove(turnKey);
+      }
+    });
   }
 
   String _entryKey(ChatEntry entry, int index) {

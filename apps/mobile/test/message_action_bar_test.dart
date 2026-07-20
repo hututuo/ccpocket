@@ -209,6 +209,38 @@ void main() {
       expect(find.byType(MessageActionBar), findsNothing);
     });
 
+    testWidgets('can hide process content while preserving the final reply', (
+      tester,
+    ) async {
+      const message = AssistantServerMessage(
+        message: AssistantMessage(
+          id: 'msg-process',
+          role: 'assistant',
+          content: [
+            ThinkingContent(thinking: 'private reasoning'),
+            ToolUseContent(
+              id: 'tool-process',
+              name: 'Read',
+              input: {'file_path': 'lib/main.dart'},
+            ),
+            TextContent(text: 'Final answer'),
+          ],
+          model: 'codex',
+        ),
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          const AssistantBubble(message: message, showProcessDetails: false),
+        ),
+      );
+
+      expect(find.text('Final answer'), findsOneWidget);
+      expect(find.textContaining('private reasoning'), findsNothing);
+      expect(find.text('Read'), findsNothing);
+      expect(find.byType(MessageActionBar), findsOneWidget);
+    });
+
     testWidgets('plain text toggle switches to SelectableText', (tester) async {
       await tester.pumpWidget(
         _wrap(AssistantBubble(message: _textMessage('# Hello'))),

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/bubbles/system_chip.dart';
+import 'package:ccpocket/widgets/message_bubble.dart';
 
 Widget _wrap(Widget child) {
   return MaterialApp(
@@ -47,4 +48,21 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('chat transcript hides runtime metadata system messages', (
+    tester,
+  ) async {
+    const message = SystemMessage(
+      subtype: 'set_codex_model',
+      provider: 'codex',
+      model: 'gpt-5.6-sol',
+      modelReasoningEffort: 'ultra',
+    );
+
+    await tester.pumpWidget(_wrap(const ServerMessageWidget(message: message)));
+
+    expect(find.textContaining('System:'), findsNothing);
+    expect(find.byType(Chip), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }
