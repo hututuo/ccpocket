@@ -27,6 +27,25 @@
 - One live Bridge owns at most one running app-server for a durable Codex
   thread. Replayed or cross-socket resumes attach to the existing runtime;
   concurrent resumes are coalesced, and a stopped runtime is never reused.
+- Mobile Desktop-continuity state is scoped to one Bridge connection
+  generation. Live continuity events outrank a matching `SessionInfo`, and a
+  matching `SessionInfo` outranks rebuildable `HistoryMessage` state. Thread
+  id, project path, model, reasoning effort, and service tier use field-level
+  ownership so an older Bridge may fill omitted fields without letting stale
+  history rebind fields already supplied by the current session list.
+- Disconnect clears the current session-list ownership and continuity watch.
+  A same-target reconnect must receive a newly generated authoritative
+  `session_list` before cached sessions or cached capabilities can reclaim
+  ownership or start a watch. Until then, history remains the old-Bridge
+  fallback. Watch acknowledgement timeouts use bounded retry; a
+  `path_not_allowed` identity stays suppressed until the connection or
+  identity changes.
+- Desktop tool continuity covers the currently recognized common Codex
+  schemas (`function_call`, `custom_tool_call`, command execution, file
+  changes, MCP, web search, and image-generation metadata), but it is not a
+  promise to stream every future response item or private agent event. Image
+  bytes and unrecognized future schemas converge through terminal canonical
+  history rehydration rather than being advertised as fully live.
 
 ## Official 1.67.4 integration and rollback manifest
 
