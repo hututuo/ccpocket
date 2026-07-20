@@ -752,6 +752,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       bridgeCapabilities: expect.arrayContaining([
         "file_transfer_v2",
         "codex_desktop_continuity_v1",
+        "persisted_side_chat_v1",
       ]),
     }));
 
@@ -10706,6 +10707,56 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       forkFromThreadId: "thread-persisted",
     });
     expect(forked.pastMessages).toHaveLength(2);
+
+    bridge.close();
+  });
+
+  it("registers a durable side chat as an ordinary Codex child session", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const parentSessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-codex",
+      undefined,
+      [],
+      undefined,
+      "codex",
+      {
+        threadId: "thread-side-parent",
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+        serviceTier: "fast",
+        approvalPolicy: "never",
+        sandboxMode: "danger-full-access",
+      },
+    );
+    const parent = (bridge as any).sessionManager.get(parentSessionId);
+    Object.setPrototypeOf(parent.process, CodexProcess.prototype);
+
+    const opened = await (bridge as any).createPersistedCodexChildSession(
+      parentSessionId,
+      {
+        threadSource: "ccpocket_side_chat",
+        excludeTurnsOnOpen: true,
+      },
+    );
+
+    const child = (bridge as any).sessionManager.get(opened.sessionId);
+    expect(child).toBeDefined();
+    expect(child.pastMessages).toEqual([]);
+    expect(child.codexOptions).toMatchObject({
+      forkFromThreadId: "thread-side-parent",
+      excludeTurnsOnOpen: true,
+      threadSource: "ccpocket_side_chat",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
+    expect(opened).toMatchObject({
+      sessionId: child.id,
+      projectPath: "/tmp/project-codex",
+      permissionMode: "bypassPermissions",
+    });
 
     bridge.close();
   });

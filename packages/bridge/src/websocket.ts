@@ -132,6 +132,7 @@ import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import {
   FILE_BROWSER_CAPABILITY,
+  PERSISTED_SIDE_CHAT_CAPABILITY,
   isLocalFeatureServerMessageType,
 } from "./local-features/protocol.js";
 import type { FileTransferManager } from "./file-transfer-manager.js";
@@ -1245,6 +1246,8 @@ export class BridgeWebSocketServer {
           requestTimeoutMs,
         ),
       createDedicatedCodexProcess: () => new CodexProcess(this.platform),
+      createPersistedCodexChildSession: (parentSessionId, childOptions) =>
+        this.createPersistedCodexChildSession(parentSessionId, childOptions),
       isProjectPathAllowed: (projectPath) =>
         this.isPathAllowed(resolvePlatformPath(projectPath, this.platform)),
       isSessionProjectPath: (rawSession, projectPath) => {
@@ -1951,6 +1954,94 @@ export class BridgeWebSocketServer {
     } finally {
       releaseThreadOperation?.();
     }
+  }
+
+  private async createPersistedCodexChildSession(
+    parentSessionId: string,
+    childOptions: { threadSource: string; excludeTurnsOnOpen: boolean },
+  ): Promise<{
+    sessionId: string;
+    projectPath: string;
+    worktreePath?: string;
+    worktreeBranch?: string;
+    permissionMode?: string;
+    sandboxMode?: string;
+    approvalPolicy?: string;
+    approvalsReviewer?: string;
+  }> {
+    const parent = this.sessionManager.get(parentSessionId);
+    if (
+      !parent ||
+      parent.provider !== "codex" ||
+      !(parent.process instanceof CodexProcess)
+    ) {
+      throw new Error("The parent Codex session is no longer active");
+    }
+    const parentThreadId = this.codexThreadIdForSession(parent);
+    if (!parentThreadId) {
+      throw new Error("The parent Codex thread is not ready yet");
+    }
+
+    const settings = parent.codexSettings ?? {};
+    const process = parent.process;
+    const worktreeOptions: WorktreeOptions | undefined = parent.worktreePath
+      ? {
+          existingWorktreePath: parent.worktreePath,
+          worktreeBranch: parent.worktreeBranch,
+        }
+      : undefined;
+    const sessionId = this.sessionManager.create(
+      parent.projectPath,
+      undefined,
+      [],
+      worktreeOptions,
+      "codex",
+      {
+        forkFromThreadId: parentThreadId,
+        excludeTurnsOnOpen: childOptions.excludeTurnsOnOpen,
+        threadSource: childOptions.threadSource,
+        profile: settings.profile,
+        approvalPolicy:
+          settings.approvalPolicy as CodexStartOptions["approvalPolicy"],
+        approvalsReviewer:
+          settings.approvalsReviewer as CodexStartOptions["approvalsReviewer"],
+        codexPermissionsMode:
+          settings.codexPermissionsMode as CodexStartOptions["codexPermissionsMode"],
+        sandboxMode:
+          settings.sandboxMode as CodexStartOptions["sandboxMode"],
+        model: settings.model ?? process.knownModel,
+        modelReasoningEffort:
+          settings.modelReasoningEffort ?? process.modelReasoningEffort,
+        serviceTier: settings.serviceTier ?? process.knownServiceTier,
+        networkAccessEnabled: settings.networkAccessEnabled,
+        webSearchMode:
+          settings.webSearchMode as CodexStartOptions["webSearchMode"],
+        additionalWritableRoots: settings.additionalWritableRoots,
+        collaborationMode: process.collaborationMode,
+      },
+    );
+    const child = this.sessionManager.get(sessionId);
+    if (!child) throw new Error("The durable side chat was not registered");
+    this.broadcastSessionList();
+    return {
+      sessionId,
+      projectPath: child.projectPath,
+      ...(child.worktreePath ? { worktreePath: child.worktreePath } : {}),
+      ...(child.worktreeBranch
+        ? { worktreeBranch: child.worktreeBranch }
+        : {}),
+      permissionMode:
+        settings.approvalPolicy === "never"
+          ? "bypassPermissions"
+          : "acceptEdits",
+      ...(settings.sandboxMode ? { sandboxMode: settings.sandboxMode } : {}),
+      ...(settings.approvalPolicy
+        ? { approvalPolicy: settings.approvalPolicy }
+        : {}),
+      ...(settings.approvalsReviewer
+        ? { approvalsReviewer: settings.approvalsReviewer }
+        : {}),
+    };
   }
 
   private sendTip(
@@ -7975,6 +8066,7 @@ export class BridgeWebSocketServer {
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
+        PERSISTED_SIDE_CHAT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -8018,6 +8110,7 @@ export class BridgeWebSocketServer {
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
+        PERSISTED_SIDE_CHAT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
