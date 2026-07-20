@@ -189,3 +189,50 @@
 - No item in this integration authorizes a live Bridge replacement, physical
   iPhone installation, stable-branch merge, or remote push. Those remain
   separate decisions after code and compatibility verification.
+
+## Official 1.68 session experience and iOS file ingress
+
+- Official Bridge 1.68.0 is integrated by explicit merge commit `a4999bce`.
+  Preserve its configurable Codex-assist model and reasoning effort together
+  with the existing artifact, transfer, mirror, Side Chat and Desktop
+  continuity modules; future upstream work starts from this semantic merge,
+  not from replaying one opaque local patch.
+- While a Codex turn is running, only the unresolved newest assistant tail is
+  ineligible for ordinary Fork. Earlier assistant replies remain branch points
+  once a later user turn or explicit result proves their completion. Runtime
+  metadata such as model, effort and continuation still hydrates session state
+  but does not require a visible `System:` timeline chip.
+- Historical reasoning and tool execution share one collapsible presentation
+  group; collapsing changes only rendering. It must not discard canonical
+  envelopes, stop live accumulation or change runtime ownership. Persisted Side
+  Chat reuses the same complete Codex session screen and suppresses unsupported
+  actions through explicit capability parameters rather than a second chat UI.
+- Home owns one bounded list-level continuity watcher for already activated
+  running Desktop conversations. It stores completed user/assistant/tool
+  payloads in the normal runtime cache and aggregates only bounded transient
+  deltas. Opening the exact conversation transfers ownership to its watcher,
+  drains the backlog and performs canonical reconciliation; old Bridges keep
+  session-list/history fallback and never receive an unknown request.
+- iOS drops reuse existing authorities. A known PNG/JPEG no larger than 20 MiB
+  may remain an inline image; every other composer drop and every Home drop is
+  streamed through the authenticated 15 GiB resumable transfer. Stage multiple
+  drops serially, recheck free capacity for unknown sizes, sanitize by UTF-8
+  byte length and never load a large file into one Dart byte array.
+- A composer attachment becomes a Codex file mention only after protocol v3
+  returns the Mac's saved absolute path. Old Bridge versions can still complete
+  plain file transfer but cannot fabricate a chat mention; Mobile reports that
+  limitation instead. Home drops are pure transport and never enter canonical
+  chat or its offline queue.
+- The received-file inbox is a bounded, symlink-safe view of completed files in
+  the app-owned Downloads directory. First upgrade baselines existing files as
+  seen; later completions persist an unread watermark. Preview reuses Quick
+  Look, Share uses the platform sheet and Save to Files is native API v2, so a
+  new Dart bundle on an API-v1 shell hides only Save while retaining transfer.
+- Do not promise remote push for the current free/self-signed AltStore build.
+  Without a paid provisioning profile carrying the APNs entitlement and a real
+  Firebase/APNs project, local notification plus the durable in-app inbox is
+  the supported behavior. Remote push remains a separate deployment feature.
+- Keep the post-merge implementation order `0cd71b21`, `2e2fc0a7`,
+  `e70bdf7e`, `705baa8c`, `eea8584a`, `4568c539`, `85d33c59`, and
+  `586a6a78`. The final three commits deliberately separate transfer/storage
+  foundations, drag/drop UI and received-file UI for future official updates.
