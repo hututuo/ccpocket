@@ -39,6 +39,11 @@ bool shouldShowForkForAssistant(
   if (entry is! ServerChatEntry || entry.message is! AssistantServerMessage) {
     return false;
   }
+  final assistant = entry.message as AssistantServerMessage;
+  final hasVisibleReply = assistant.message.content.any(
+    (content) => content is TextContent && content.text.trim().isNotEmpty,
+  );
+  if (!hasVisibleReply) return false;
 
   for (var i = entryIndex + 1; i < entries.length; i++) {
     final next = entries[i];
@@ -48,7 +53,10 @@ bool shouldShowForkForAssistant(
     if (next is UserChatEntry) return true;
     if (next is ServerChatEntry) {
       final message = next.message;
-      if (message is AssistantServerMessage) return false;
+      // A later assistant block proves that this is no longer the newest
+      // reply, even while the current turn is still running. Forking still
+      // targets the user turn immediately preceding this reply.
+      if (message is AssistantServerMessage) return true;
       if (message is ResultMessage) return true;
     }
   }

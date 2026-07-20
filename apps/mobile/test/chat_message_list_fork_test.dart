@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('shouldShowForkForAssistant', () {
-    test('only returns true for the assistant message before result', () {
+    test('keeps an earlier text reply forkable while a newer reply runs', () {
       final first = _assistant('a1');
       final second = _assistant('a2');
       final entries = <ChatEntry>[
@@ -16,7 +16,7 @@ void main() {
         ServerChatEntry(_result()),
       ];
 
-      expect(shouldShowForkForAssistant(entries, 1), isFalse);
+      expect(shouldShowForkForAssistant(entries, 1), isTrue);
       expect(shouldShowForkForAssistant(entries, 3), isTrue);
     });
 
@@ -49,7 +49,7 @@ void main() {
       );
     });
 
-    test('never treats an intermediate assistant block as the final reply', () {
+    test('keeps a prior visible assistant block forkable', () {
       final entries = <ChatEntry>[
         UserChatEntry('first'),
         ServerChatEntry(_assistant('tool-preface')),
@@ -63,7 +63,7 @@ void main() {
           1,
           transcriptTailComplete: true,
         ),
-        isFalse,
+        isTrue,
       );
       expect(
         shouldShowForkForAssistant(
@@ -91,8 +91,18 @@ void main() {
       ];
 
       expect(shouldShowForkForAssistant(entries, 1), isTrue);
-      expect(shouldShowForkForAssistant(entries, 4), isFalse);
+      expect(shouldShowForkForAssistant(entries, 4), isTrue);
       expect(shouldShowForkForAssistant(entries, 6), isTrue);
+    });
+
+    test('does not expose fork for assistant blocks without visible text', () {
+      final entries = <ChatEntry>[
+        UserChatEntry('first'),
+        ServerChatEntry(_toolOnlyAssistant('tool-only')),
+        ServerChatEntry(_result()),
+      ];
+
+      expect(shouldShowForkForAssistant(entries, 1), isFalse);
     });
   });
 }
@@ -102,6 +112,17 @@ AssistantServerMessage _assistant(String id) => AssistantServerMessage(
     id: id,
     role: 'assistant',
     content: [TextContent(text: id)],
+    model: 'codex',
+  ),
+);
+
+AssistantServerMessage _toolOnlyAssistant(String id) => AssistantServerMessage(
+  message: AssistantMessage(
+    id: id,
+    role: 'assistant',
+    content: [
+      ToolUseContent(id: id, name: 'Read', input: const {'path': 'a.txt'}),
+    ],
     model: 'codex',
   ),
 );
