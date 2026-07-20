@@ -1738,6 +1738,64 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("creates a distinct persisted fork for a durable side runtime", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    proc.start("/tmp/project-durable", {
+      forkFromThreadId: "parent-thread",
+      excludeTurnsOnOpen: true,
+      threadSource: "ccpocket_side_chat",
+      sandboxMode: "read-only",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+
+    const forkReq = nextOutgoingRequest(child);
+    expect(forkReq.method).toBe("thread/fork");
+    expect(forkReq.params).toMatchObject({
+      threadId: "parent-thread",
+      ephemeral: false,
+      excludeTurns: true,
+      threadSource: "ccpocket_side_chat",
+      cwd: "/tmp/project-durable",
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: forkReq.id,
+        result: {
+          thread: {
+            id: "durable-side-thread",
+            ephemeral: false,
+            path: "/tmp/durable-side-thread.jsonl",
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(proc.sessionId).toBe("durable-side-thread");
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        sessionId: "durable-side-thread",
+      }),
+    );
+    proc.stop();
+  });
+
   it("rejects a persisted fork without deleting the untrusted returned id", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const proc = new CodexProcess("linux");

@@ -35,8 +35,14 @@ const CODEX_CLI_NOT_FOUND_MESSAGE =
 
 export interface CodexStartOptions {
   threadId?: string;
+  /** Start this process by forking a persisted thread into another persisted thread. */
+  forkFromThreadId?: string;
   /** Start this process by forking a persisted thread into memory only. */
   ephemeralForkFromThreadId?: string;
+  /** Avoid returning the full inherited transcript in start/resume/fork responses. */
+  excludeTurnsOnOpen?: boolean;
+  /** Optional app-server analytics source for a newly started or forked thread. */
+  threadSource?: string;
   profile?: string;
   additionalWritableRoots?: string[];
   approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted";
@@ -2564,23 +2570,34 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         threadParams.webSearchMode = options.webSearchMode;
       }
 
-      if (options?.threadId && options.ephemeralForkFromThreadId) {
+      const threadBindings = [
+        options?.threadId,
+        options?.forkFromThreadId,
+        options?.ephemeralForkFromThreadId,
+      ].filter((value) => value !== undefined);
+      if (threadBindings.length > 1) {
         throw new Error(
-          "Codex start cannot resume and create an ephemeral fork together",
+          "Codex start must choose exactly one resume or fork binding",
         );
       }
-      const method = options?.ephemeralForkFromThreadId
+      const forkFromThreadId =
+        options?.forkFromThreadId ?? options?.ephemeralForkFromThreadId;
+      const method = forkFromThreadId
         ? "thread/fork"
         : options?.threadId
           ? "thread/resume"
           : "thread/start";
-      if (options?.ephemeralForkFromThreadId) {
-        threadParams.threadId = options.ephemeralForkFromThreadId;
-        threadParams.ephemeral = true;
+      if (forkFromThreadId) {
+        threadParams.threadId = forkFromThreadId;
+        threadParams.ephemeral = options?.ephemeralForkFromThreadId != null;
       } else if (options?.threadId) {
         threadParams.threadId = options.threadId;
       } else {
         threadParams.experimentalRawEvents = false;
+      }
+      if (options?.excludeTurnsOnOpen) threadParams.excludeTurns = true;
+      if (options?.threadSource && method !== "thread/resume") {
+        threadParams.threadSource = options.threadSource;
       }
       threadParams.persistExtendedHistory = true;
       if (options?.profile) {
@@ -2627,6 +2644,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         throw new Error(
           "thread/fork did not return an in-memory ephemeral thread; " +
             "automatic cleanup skipped for safety",
+        );
+      }
+      if (
+        options?.forkFromThreadId &&
+        (threadId === options.forkFromThreadId || thread?.ephemeral === true)
+      ) {
+        throw new Error(
+          "thread/fork did not return a distinct persisted thread",
         );
       }
 
