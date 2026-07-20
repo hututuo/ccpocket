@@ -10643,6 +10643,130 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("forks the complete active Codex conversation at its latest turn", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) =>
+        message.type === "system" && message.subtype === "session_created"
+      );
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.process.sessionId = "thread-source-latest";
+    session.history = [
+      {
+        type: "user_input",
+        text: "first",
+        userMessageUuid: "codex:user-turn:1",
+      },
+      {
+        type: "assistant",
+        message: { id: "a1", role: "assistant", content: [], model: "" },
+      },
+      {
+        type: "user_input",
+        text: "second",
+        userMessageUuid: "codex:user-turn:2",
+      },
+    ];
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "fork",
+        sessionId: created.sessionId,
+        targetUuid: "codex:user-turn:latest",
+      },
+      ws,
+    );
+
+    expect(session.process.forkThread).toHaveBeenCalledTimes(1);
+    expect(session.process.rollbackThreadById).not.toHaveBeenCalled();
+    const forkCreated = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) =>
+        message.type === "system" && message.subtype === "session_created"
+      );
+    expect(forkCreated).toMatchObject({
+      provider: "codex",
+      sourceSessionId: created.sessionId,
+    });
+    const forked = (bridge as any).sessionManager.get(forkCreated.sessionId);
+    expect(forked.pastMessages).toHaveLength(3);
+
+    bridge.close();
+  });
+
+  it("forks a persisted Codex thread into a normal listed session", async () => {
+    getCodexSessionHistoryMock.mockResolvedValueOnce([
+      {
+        role: "user",
+        uuid: "codex:user-turn:1",
+        content: [{ type: "text", text: "persisted prompt" }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "persisted answer" }],
+      },
+    ]);
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "fork",
+        sessionId: "thread-persisted",
+        targetUuid: "codex:user-turn:latest",
+        projectPath: "/tmp/project-codex",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .some(
+            (message: any) =>
+              message.type === "system" &&
+              message.subtype === "session_created",
+          ),
+      ).toBe(true);
+    });
+    const forkCreated = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) =>
+        message.type === "system" && message.subtype === "session_created"
+      );
+    expect(forkCreated).toMatchObject({
+      provider: "codex",
+      projectPath: resolve("/tmp/project-codex"),
+    });
+    expect(forkCreated).not.toHaveProperty("sourceSessionId");
+    const forked = (bridge as any).sessionManager.get(forkCreated.sessionId);
+    expect(forked.codexOptions).toMatchObject({
+      forkFromThreadId: "thread-persisted",
+    });
+    expect(forked.pastMessages).toHaveLength(2);
+
+    bridge.close();
+  });
+
   it("rejects codex code rewind modes", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

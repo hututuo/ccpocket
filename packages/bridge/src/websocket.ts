@@ -1732,8 +1732,22 @@ export class BridgeWebSocketServer {
     ws: WebSocket,
     sessionId: string,
     targetUuid: string,
+    persistedProjectPath?: string,
   ): Promise<void> {
-    const session = this.sessionManager.get(sessionId);
+    const requestedPersistedFork = persistedProjectPath !== undefined;
+    const session =
+      this.sessionManager.get(sessionId) ??
+      (requestedPersistedFork
+        ? this.findRunningCodexSession(sessionId)
+        : undefined);
+    if (!session && requestedPersistedFork) {
+      await this.forkPersistedCodexSession(
+        ws,
+        sessionId,
+        persistedProjectPath,
+      );
+      return;
+    }
     if (!session) {
       this.send(ws, {
         type: "error",
@@ -1774,8 +1788,11 @@ export class BridgeWebSocketServer {
       return;
     }
 
-    const targetOrdinal = parseCodexUserTurnOrdinal(targetUuid);
     const totalUserTurns = countCodexUserTurnsInSession(session);
+    const targetOrdinal =
+      targetUuid === "codex:user-turn:latest"
+        ? totalUserTurns
+        : parseCodexUserTurnOrdinal(targetUuid);
     if (targetOrdinal === null || targetOrdinal > totalUserTurns) {
       this.send(ws, {
         type: "error",
@@ -1832,10 +1849,97 @@ export class BridgeWebSocketServer {
         session: newSession,
         approvalsReviewer: codexSettings?.approvalsReviewer,
         sandboxMode: codexSettings?.sandboxMode,
-        sourceSessionId: sessionId,
+        sourceSessionId: requestedPersistedFork ? undefined : session.id,
       }),
     );
     this.sendSessionList(ws);
+  }
+
+  /**
+   * Fork a durable Codex thread that is not currently owned by SessionManager.
+   * The child is registered as an ordinary Bridge session and uses the normal
+   * CodexSessionScreen/history pipeline; no side-chat runtime is introduced.
+   */
+  private async forkPersistedCodexSession(
+    ws: WebSocket,
+    threadId: string,
+    rawProjectPath: string,
+  ): Promise<void> {
+    let releaseThreadOperation: (() => void) | undefined;
+    try {
+      releaseThreadOperation = await this.acquireCodexThreadOperation(threadId);
+      const runningSession = this.findRunningCodexSession(threadId);
+      if (runningSession) {
+        await this.forkCodexSession(
+          ws,
+          runningSession.id,
+          "codex:user-turn:latest",
+          rawProjectPath,
+        );
+        return;
+      }
+
+      await this.requireArchiveStoreReady();
+      if (this.archiveStore.isArchived(threadId, "codex")) {
+        throw new Error(
+          "The Codex thread is archived. Restore it before forking.",
+        );
+      }
+
+      const requestedProjectPath = resolvePlatformPath(
+        rawProjectPath,
+        this.platform,
+      );
+      const worktreeMapping = this.worktreeStore.get(threadId);
+      const projectPath = resolvePlatformPath(
+        worktreeMapping?.projectPath ?? requestedProjectPath,
+        this.platform,
+      );
+      if (!this.isPathAllowed(projectPath)) {
+        this.send(ws, this.buildPathNotAllowedError(rawProjectPath));
+        return;
+      }
+
+      let worktreeOpts: WorktreeOptions | undefined;
+      if (worktreeMapping) {
+        worktreeOpts = worktreeExists(worktreeMapping.worktreePath)
+          ? {
+              existingWorktreePath: worktreeMapping.worktreePath,
+              worktreeBranch: worktreeMapping.worktreeBranch,
+            }
+          : {
+              useWorktree: true,
+              worktreeBranch: worktreeMapping.worktreeBranch,
+            };
+      }
+
+      const pastMessages = await this.getCodexThreadHistory(
+        threadId,
+        projectPath,
+      );
+      const newSessionId = this.sessionManager.create(
+        projectPath,
+        undefined,
+        pastMessages,
+        worktreeOpts,
+        "codex",
+        { forkFromThreadId: threadId },
+      );
+      const newSession = this.sessionManager.get(newSessionId);
+      this.send(
+        ws,
+        this.buildSessionCreatedMessage({
+          sessionId: newSessionId,
+          provider: "codex",
+          projectPath,
+          session: newSession,
+        }),
+      );
+      this.sendSessionList(ws);
+      this.projectHistory?.addProject(projectPath);
+    } finally {
+      releaseThreadOperation?.();
+    }
   }
 
   private sendTip(
@@ -7373,14 +7477,19 @@ export class BridgeWebSocketServer {
       }
 
       case "fork": {
-        this.forkCodexSession(ws, msg.sessionId, msg.targetUuid).catch(
+        this.forkCodexSession(
+          ws,
+          msg.sessionId,
+          msg.targetUuid,
+          msg.projectPath,
+        ).catch(
           (err) => {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          this.send(ws, {
-            type: "error",
-            message: errMsg,
-            errorCode: "fork_failed",
-          });
+            const errMsg = err instanceof Error ? err.message : String(err);
+            this.send(ws, {
+              type: "error",
+              message: errMsg,
+              errorCode: "fork_failed",
+            });
           },
         );
         break;

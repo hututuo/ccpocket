@@ -326,7 +326,14 @@ export type ClientMessage =
       mode: "conversation" | "code" | "both";
     }
   | { type: "rewind_dry_run"; sessionId: string; targetUuid: string }
-  | { type: "fork"; sessionId: string; targetUuid: string }
+  | {
+      type: "fork";
+      /** Bridge runtime id, or a durable Codex thread id with projectPath. */
+      sessionId: string;
+      targetUuid: string;
+      /** Present only when forking a persisted conversation from the list. */
+      projectPath?: string;
+    }
   | { type: "list_windows" }
   | {
       type: "take_screenshot";
@@ -1683,7 +1690,9 @@ export function parseClientMessage(data: string): ClientMessage | null {
       case "fork":
         if (
           typeof msg.sessionId !== "string" ||
-          typeof msg.targetUuid !== "string"
+          typeof msg.targetUuid !== "string" ||
+          (msg.projectPath !== undefined &&
+            typeof msg.projectPath !== "string")
         )
           return null;
         break;

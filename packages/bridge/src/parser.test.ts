@@ -1000,6 +1000,27 @@ describe("parseClientMessage", () => {
     });
   });
 
+  it("parses a persisted Codex fork request from the session list", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"fork","sessionId":"thread-1","targetUuid":"codex:user-turn:latest","projectPath":"/tmp/project"}',
+      ),
+    ).toEqual({
+      type: "fork",
+      sessionId: "thread-1",
+      targetUuid: "codex:user-turn:latest",
+      projectPath: "/tmp/project",
+    });
+  });
+
+  it("rejects a persisted fork with a non-string project path", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"fork","sessionId":"thread-1","targetUuid":"codex:user-turn:latest","projectPath":42}',
+      ),
+    ).toBeNull();
+  });
+
   // ---- Git Operations (Phase 1-3) ----
 
   // git_stage
