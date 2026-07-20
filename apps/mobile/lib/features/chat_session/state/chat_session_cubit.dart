@@ -90,6 +90,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _statusFromHistoryFallback = false;
   bool _statusFromSessionSnapshot = false;
   bool _awaitingFreshSessionListAfterReconnect = false;
+  int _sessionListGenerationAtDisconnect = 0;
+  int _lastConsumedSessionListGeneration = 0;
   Timer? _statusRefreshTimer;
   Timer? _goalMutationTimer;
   Timer? _goalReadTimer;
@@ -731,11 +733,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void _updateCodexRuntimeSupportFromSessions(List<SessionInfo> sessions) {
     if (!isCodex || isClosed || !_bridge.isConnected) return;
+    final incomingGeneration = _bridge.authoritativeSessionListGeneration;
     if (_awaitingFreshSessionListAfterReconnect) {
-      if (!_bridge.hasAuthoritativeSessionListForCurrentConnection) {
+      if (!_bridge.hasAuthoritativeSessionListForCurrentConnection ||
+          incomingGeneration <= _sessionListGenerationAtDisconnect) {
         return;
       }
       _awaitingFreshSessionListAfterReconnect = false;
+    }
+    if (incomingGeneration > _lastConsumedSessionListGeneration) {
+      _lastConsumedSessionListGeneration = incomingGeneration;
     }
     _syncCodexContinuityBindingFromSessions(sessions);
     _updateNativePlanModeSupportFromSessions(sessions);
@@ -797,6 +804,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _sessionSnapshotOwnsModel = false;
     _sessionSnapshotOwnsEffort = false;
     _sessionSnapshotOwnsSpeed = false;
+    // Connection and session-list notifications use separate broadcast
+    // streams. A very fast reconnect can increment BridgeService's global
+    // generation before this queued disconnect callback runs. Fence against
+    // the last generation this cubit actually consumed, otherwise the first
+    // genuinely fresh list is mistaken for stale data and ignored.
+    _sessionListGenerationAtDisconnect = _lastConsumedSessionListGeneration;
     _awaitingFreshSessionListAfterReconnect = true;
   }
 

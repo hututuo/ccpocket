@@ -1250,6 +1250,60 @@ void main() {
     );
 
     test(
+      'rapid reconnect consumes the first authoritative session snapshot',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {};
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project-old',
+            claudeSessionId: 'thread-old',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            codexModel: 'gpt-5.4',
+          ),
+        ]);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+        expect(cubit.state.claudeSessionId, 'thread-old');
+
+        // These broadcasts intentionally cross separate controllers without
+        // yielding. BridgeService's global generation has already advanced by
+        // the time the queued disconnect callback runs.
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project-new',
+            claudeSessionId: 'thread-new',
+            status: 'running',
+            createdAt: '',
+            lastActivityAt: '',
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'fast',
+          ),
+        ]);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.claudeSessionId, 'thread-new');
+        expect(cubit.state.projectPath, '/project-new');
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+      },
+    );
+
+    test(
       'Codex session snapshot hydrates the complete toolbar config',
       () async {
         mockBridge.sessionSnapshot = const [
