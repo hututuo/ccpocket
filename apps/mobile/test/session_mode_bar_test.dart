@@ -31,6 +31,9 @@ class _MockBridgeService extends BridgeService {
   bool? runtimeNativePlanModeSupported;
 
   @override
+  bool get isConnected => true;
+
+  @override
   List<String> get codexModels => availableCodexModels;
 
   @override
