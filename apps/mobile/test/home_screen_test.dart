@@ -471,6 +471,16 @@ void main() {
       expect(settings.model, isNull);
     });
 
+    test('new Bridge owns Codex settings restoration during resume', () {
+      expect(
+        bridgePreservesCodexResumeSettings(const {
+          codexResumePreservesSettingsCapability,
+        }),
+        isTrue,
+      );
+      expect(bridgePreservesCodexResumeSettings(const {}), isFalse);
+    });
+
     test('Codex resume settings preserve factual metadata', () {
       final session = _session(
         projectPath: '/tmp/project-codex',

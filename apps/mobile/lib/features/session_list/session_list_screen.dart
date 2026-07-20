@@ -49,6 +49,8 @@ import 'widgets/session_list_app_bar.dart';
 import 'workspace_shell_screen.dart';
 
 const _sessionArchiveRequestUuid = Uuid();
+const codexResumePreservesSettingsCapability =
+    'codex_resume_preserves_settings_v1';
 
 // ---- Testable helpers (top-level) ----
 
@@ -250,6 +252,9 @@ CodexRecentResumeSettings factualCodexResumeSettings(
         : session.codexAdditionalWritableRoots,
   );
 }
+
+bool bridgePreservesCodexResumeSettings(Iterable<String> capabilities) =>
+    capabilities.contains(codexResumePreservesSettingsCapability);
 
 NewSessionParams? mergeCodexDefaultsIntoInitialSessionDefaults(
   NewSessionParams? defaults,
@@ -1678,11 +1683,11 @@ class _SessionListScreenState extends State<SessionListScreen>
     final persistSession =
         sessionSettings?['claudePersistSession'] as bool? ??
         claudeDefaults?.claudePersistSession;
-    final codexResumeSettings = isCodex
-        ? factualCodexResumeSettings(
-            session,
-            context.read<BridgeService>().codexModels,
-          )
+    final bridgePreservesCodexSettings =
+        isCodex &&
+        bridgePreservesCodexResumeSettings(bridge.bridgeCapabilities);
+    final codexResumeSettings = isCodex && !bridgePreservesCodexSettings
+        ? factualCodexResumeSettings(session, bridge.codexModels)
         : null;
 
     bridge.resumeSession(
@@ -1706,7 +1711,9 @@ class _SessionListScreenState extends State<SessionListScreen>
           ? codexResumeSettings?.codexPermissionsMode
           : null,
       planMode: isCodex
-          ? (useCodexProfile ? null : session.planMode)
+          ? (bridgePreservesCodexSettings || useCodexProfile
+                ? null
+                : session.planMode)
           : derivePlanMode(
               planMode: sessionSettings?['planMode'] as bool?,
               permissionMode: permissionMode,
@@ -1717,7 +1724,9 @@ class _SessionListScreenState extends State<SessionListScreen>
       fallbackModel: !isCodex ? fallbackModel : null,
       forkSession: !isCodex ? forkSession : null,
       persistSession: !isCodex ? persistSession : null,
-      profile: isCodex ? session.codexProfile : null,
+      profile: isCodex && !bridgePreservesCodexSettings
+          ? session.codexProfile
+          : null,
       provider: session.provider,
       sandboxMode: isCodex ? codexResumeSettings?.sandboxMode : sandboxMode,
       model: isCodex ? codexResumeSettings?.model : claudeModel,
