@@ -572,6 +572,21 @@ describe("CodexProcess (app-server)", () => {
     }
   });
 
+  it("distinguishes confirmed settings from new-session fallbacks", () => {
+    const proc = new CodexProcess("linux");
+
+    expect(proc.model).toBe("gpt-5.5");
+    expect(proc.knownModel).toBeUndefined();
+    expect(proc.serviceTier).toBe("standard");
+    expect(proc.knownServiceTier).toBeUndefined();
+
+    proc.setModel("gpt-5.6-sol", "ultra");
+    proc.setServiceTier("fast");
+
+    expect(proc.knownModel).toBe("gpt-5.6-sol");
+    expect(proc.knownServiceTier).toBe("fast");
+  });
+
   it("probes next-turn permission support on the exact runtime", async () => {
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-probe";
