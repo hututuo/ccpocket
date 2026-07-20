@@ -40,6 +40,7 @@
   fallback. Watch acknowledgement timeouts use bounded retry; a
   `path_not_allowed` identity stays suppressed until the connection or
   identity changes.
+- Connection-state and session-list notifications are independent asynchronous streams. A disconnect fence therefore records the latest session-list generation actually consumed by Mobile, never the Bridge service's already-advanced global generation. The first authoritative snapshot from a fast reconnect must remain eligible for consumption.
 - Desktop tool continuity covers the currently recognized common Codex
   schemas (`function_call`, `custom_tool_call`, command execution, file
   changes, MCP, web search, and image-generation metadata), but it is not a
@@ -66,8 +67,19 @@
 - Remove the complete extension stack in reverse order: the four feature commits first, then mobile host, selection seam, and Bridge seam. That full reverse chain must reproduce the official baseline tree exactly.
 - A dependency on a documented foundation slot is allowed; cross-feature imports, shared feature state, and a combined hardening commit are not. Fixes discovered during review must be autosquashed into the module that owns the behavior.
 - Optional local RPCs are transient and never enter canonical chat history or the offline chat queue. Errors from an older Bridge are correlated to the exact feature request and remain on the feature-local stream.
-- The earlier custom Side Chat pane remains only as a legacy-client compatibility path. Current mobile UI does not expose that ephemeral pane; selected text now creates an official persisted Codex `thread/fork` and opens it in the standard conversation screen.
+- Side Chat and ordinary Fork are distinct user features and must never replace one another. Side Chat owns its own menu and selected-text action; Fork keeps its own More-menu and long-press actions.
+- Current Side Chat creates an official persisted Codex child through its typed `open_persisted_side_chat` slot and renders that child with the ordinary `CodexSessionScreen`. The earlier custom ephemeral pane and wire protocol remain only as an old-Bridge fallback. Selected text is placed in the child's ordinary draft and is not retained in compatibility request metadata.
 - Context/account fallback reads and subagent history reads must remain bounded and paginated. Do not restore whole-rollout or unbounded `thread/read(includeTurns: true)` fallbacks to simplify compatibility.
+
+## Side Chat, subagent history, and resume ownership
+
+- A Side Chat runtime may be evicted, but its official child thread is persisted and can return through ordinary recent-session discovery. Closing the pane does not delete the child. Do not add a second mobile transcript store or rebuild a reduced chat composer for this feature.
+- Subagent enumeration uses official `thread/list` ancestry, explicit subagent source kinds, both active and archived states, and fork lineage. Prefer `useStateDbOnly: true`; retry without only that optional field on older app-server versions, then retain the existing bounded legacy ancestry fallback.
+- A subagent card preview may combine only a proven later user prompt with the latest answer. Persisted child rollouts can replay the ancestor transcript, so the inherited `firstPrompt` must never be presented as the child's latest question. If the latest inter-agent request is encrypted and unavailable to the bounded parser, show the latest answer alone rather than inventing a pair.
+- New Mobile advertises and consumes `codex_resume_preserves_settings_v1`. On a direct open it omits phone defaults; explicit edit-before-start values still override. New Bridge restores the thread's indexed model, effort, service tier, permissions, sandbox, network, web-search mode, profile, and writable roots. Old Mobile and old Bridge retain their earlier wire behavior.
+- List-level Desktop activity is a presentation overlay, not a replacement for Bridge `SessionInfo.status`. One watcher per active Codex session reuses the existing continuity protocol, yields to the open conversation's watcher, and reclaims ownership after unwatch. It is scoped to one WebSocket generation and is cleared on disconnect. Queue, guidance, and takeover behavior remain owned by the existing conversation runtime.
+- The five implementation commits in this correction stack are independently reversible from the completed tree. Detached direct-revert gates proved conflict-free removal and relevant remaining Bridge/Mobile build, analysis, and test behavior; every gate returned to the same tree and left no `REVERT_HEAD`.
+- Flutter full-suite, build, and simulator-validation jobs share generated output and must run serially. A tool session id is part of the verification state: retain it and poll to a final exit code before starting another runner or inspecting generated artifacts.
 
 ## Official mobile conversation fork
 
