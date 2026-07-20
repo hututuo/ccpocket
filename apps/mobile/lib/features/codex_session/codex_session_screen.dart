@@ -98,6 +98,11 @@ class CodexSessionScreen extends StatefulWidget {
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
 
+  /// Persisted child conversations reuse the full Codex screen, but can
+  /// selectively hide operations that the child-session workflow does not
+  /// support. All ordinary session screens keep Fork enabled by default.
+  final bool allowMessageFork;
+
   /// Notifier from the parent that may already hold a [SystemMessage]
   /// with subtype `session_created` (race condition fix).
   final ValueNotifier<SystemMessage?>? pendingSessionCreated;
@@ -116,6 +121,7 @@ class CodexSessionScreen extends StatefulWidget {
     this.pendingSessionCreated,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.allowMessageFork = true,
   });
 
   @override
@@ -450,6 +456,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       codexPermissionsMode: _codexPermissionsMode,
       onBackToSessions: widget.onBackToSessions,
       hideSessionBackButton: widget.hideSessionBackButton,
+      allowMessageFork: widget.allowMessageFork,
     );
   }
 }
@@ -472,6 +479,7 @@ class _CodexProviders extends StatelessWidget {
   final CodexPermissionsMode? codexPermissionsMode;
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
+  final bool allowMessageFork;
 
   const _CodexProviders({
     super.key,
@@ -488,6 +496,7 @@ class _CodexProviders extends StatelessWidget {
     this.codexPermissionsMode,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.allowMessageFork = true,
   });
 
   @override
@@ -520,6 +529,7 @@ class _CodexProviders extends StatelessWidget {
         worktreePath: worktreePath,
         onBackToSessions: onBackToSessions,
         hideSessionBackButton: hideSessionBackButton,
+        allowMessageFork: allowMessageFork,
       ),
     );
   }
@@ -536,6 +546,7 @@ class _CodexChatBody extends HookWidget {
   final String? worktreePath;
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
+  final bool allowMessageFork;
 
   const _CodexChatBody({
     required this.sessionId,
@@ -544,6 +555,7 @@ class _CodexChatBody extends HookWidget {
     this.worktreePath,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.allowMessageFork = true,
   });
 
   @override
@@ -1552,9 +1564,13 @@ class _CodexChatBody extends HookWidget {
                           draftService: draftService,
                         );
                       },
-                      onForkMessage: (message) {
-                        unawaited(_forkCodexFromAssistant(context, message));
-                      },
+                      onForkMessage: allowMessageFork
+                          ? (message) {
+                              unawaited(
+                                _forkCodexFromAssistant(context, message),
+                              );
+                            }
+                          : null,
                       selectionActions:
                           LocalSessionFeatureHost.selectionActions(
                             localFeatureContext,

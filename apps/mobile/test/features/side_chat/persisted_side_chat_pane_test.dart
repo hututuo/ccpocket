@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:ccpocket/features/side_chat/widgets/persisted_side_chat_pane.dart';
+import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
@@ -103,6 +104,12 @@ void main() {
 
     _completeLegacyOpen(bridge);
     await tester.pump();
+  });
+
+  test('ordinary Codex screens keep message Fork enabled by default', () {
+    const screen = CodexSessionScreen(sessionId: 'ordinary-session');
+
+    expect(screen.allowMessageFork, isTrue);
   });
 
   testWidgets('new Bridge creates a persisted child and keeps selected draft', (

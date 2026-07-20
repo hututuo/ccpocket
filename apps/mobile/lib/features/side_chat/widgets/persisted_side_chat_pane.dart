@@ -186,6 +186,7 @@ class _PersistedSideChatPaneState extends State<PersistedSideChatPane> {
         initialApprovalPolicy: opened.approvalPolicy,
         initialApprovalsReviewer: opened.approvalsReviewer,
         onBackToSessions: widget.onClose,
+        allowMessageFork: false,
       );
     }
 
