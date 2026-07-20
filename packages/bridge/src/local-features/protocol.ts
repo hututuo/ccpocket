@@ -14,6 +14,11 @@ import {
   type ConversationMirrorEventMessage,
 } from "./slots/conversation-mirror-protocol.js";
 import {
+  fileBrowserProtocolContribution,
+  type FileBrowserClientMessage,
+  type FileBrowserServerMessage,
+} from "./slots/file-browser-protocol.js";
+import {
   sessionInsightsProtocolContribution,
   type SessionInsightsClientMessage,
   type SessionInsightsServerMessage,
@@ -71,11 +76,47 @@ export type {
   ConversationMirrorProvider,
   ConversationMirrorThreadStatus,
 } from "./slots/conversation-mirror-protocol.js";
+export {
+  FILE_BROWSER_CAPABILITY,
+  FILE_BROWSER_DEFAULT_PAGE_SIZE,
+  FILE_BROWSER_MAX_PAGE_SIZE,
+  FILE_BROWSER_MAX_RELATIVE_PATH_LENGTH,
+  FILE_BROWSER_MAX_ROOTS,
+  FILE_BROWSER_MAX_STAT_ITEMS,
+  validFileBrowserRelativePath,
+} from "./slots/file-browser-protocol.js";
+export type {
+  FileBrowserClientMessage,
+  FileBrowserDownloadRequest,
+  FileBrowserDownloadResult,
+  FileBrowserDownloadSuccessResult,
+  FileBrowserEntry,
+  FileBrowserFailureResult,
+  FileBrowserListRequest,
+  FileBrowserListResult,
+  FileBrowserListSuccessResult,
+  FileBrowserNode,
+  FileBrowserNodeKind,
+  FileBrowserPreviewRequest,
+  FileBrowserPreviewResult,
+  FileBrowserPreviewSuccessResult,
+  FileBrowserRoot,
+  FileBrowserRootsRequest,
+  FileBrowserRootsResult,
+  FileBrowserRootsSuccessResult,
+  FileBrowserServerMessage,
+  FileBrowserStatRequest,
+  FileBrowserStatRequestItem,
+  FileBrowserStatResult,
+  FileBrowserStatResultItem,
+  FileBrowserStatSuccessResult,
+} from "./slots/file-browser-protocol.js";
 
 export type LocalFeatureClientMessage =
   | CodexCoreActionsClientMessage
   | CodexDesktopContinuityClientMessage
   | ConversationMirrorClientMessage
+  | FileBrowserClientMessage
   | SessionInsightsClientMessage
   | SubagentsClientMessage
   | SideChatClientMessage;
@@ -84,6 +125,7 @@ export type LocalFeatureServerMessage =
   | CodexCoreActionsServerMessage
   | CodexDesktopContinuityEventMessage
   | ConversationMirrorEventMessage
+  | FileBrowserServerMessage
   | SessionInsightsServerMessage
   | SubagentsServerMessage
   | SideChatEventMessage;
@@ -92,6 +134,7 @@ const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   codexCoreActionsProtocolContribution,
   codexDesktopContinuityProtocolContribution,
   conversationMirrorProtocolContribution,
+  fileBrowserProtocolContribution,
   sessionInsightsProtocolContribution,
   subagentsProtocolContribution,
   sideChatProtocolContribution,
