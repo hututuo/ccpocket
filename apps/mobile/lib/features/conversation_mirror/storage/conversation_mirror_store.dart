@@ -710,6 +710,18 @@ class ConversationMirrorStore {
     return rows.map(_metadataFromRow).toList(growable: false);
   }
 
+  /// Lists every complete phone copy, including copies whose automatic watch
+  /// has been paused. The Home resident section filters [autoSync] itself,
+  /// while keeping paused-copy badges available after an app restart.
+  Future<List<ConversationMirrorMetadata>> listLocalCopies() async {
+    final rows = await (await _database.database).query(
+      ConversationMirrorDatabase.metadataTable,
+      where: 'active_generation IS NOT NULL',
+      orderBy: 'last_synced_at DESC, provider_session_id ASC',
+    );
+    return rows.map(_metadataFromRow).toList(growable: false);
+  }
+
   /// Finds an unambiguous offline copy before the current Bridge identity is
   /// known. This deliberately does not choose between copies from two Bridge
   /// installations, even if only one happens to match [projectPath].

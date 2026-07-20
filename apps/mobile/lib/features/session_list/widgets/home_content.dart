@@ -2,6 +2,7 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
+import 'package:provider/provider.dart' hide Provider;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:skeletonizer/skeletonizer.dart';
 
@@ -20,6 +21,8 @@ import '../../../router/app_router.dart';
 import '../../../widgets/pin_toggle_button.dart';
 import '../../../widgets/session_card.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
+import '../../conversation_mirror/conversation_mirror_resident_section.dart';
+import '../../conversation_mirror/conversation_mirror_service.dart';
 import '../state/session_list_cubit.dart';
 import '../state/session_list_state.dart';
 import '../workspace_shell_screen.dart';
@@ -460,12 +463,36 @@ class HomeContentState extends State<HomeContent> {
     );
   }
 
+  void _openRunningSession(SessionInfo session) {
+    widget.onTapRunning(
+      session.id,
+      projectPath: session.projectPath,
+      gitBranch: session.worktreePath != null
+          ? session.worktreeBranch
+          : session.gitBranch,
+      worktreePath: session.worktreePath,
+      provider: session.provider,
+      permissionMode: session.permissionMode,
+      sandboxMode: session.codexSandboxMode,
+      approvalPolicy: session.codexApprovalPolicy,
+      approvalsReviewer: session.codexApprovalsReviewer,
+    );
+  }
+
   Widget _buildContent(BuildContext context) {
     final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final hasPendingActions = widget.offlinePendingActions.isNotEmpty;
+    final mirrorService = context.watch<ConversationMirrorService?>();
+    final mirrorBridgeId = mirrorService?.currentBridgeInstanceId;
+    final hasResidentConversations =
+        mirrorService?.residentMetadata.any(
+          (metadata) =>
+              mirrorBridgeId == null ||
+              metadata.key.bridgeInstanceId == mirrorBridgeId,
+        ) ==
+        true;
     final hasRunningSessions = widget.sessions.isNotEmpty || hasPendingActions;
-    final hasRecentSessions = widget.recentSessions.isNotEmpty;
     final hasKnownProjects = widget.accumulatedProjectPaths.isNotEmpty;
     final isReconnecting =
         widget.connectionState == BridgeConnectionState.reconnecting;
@@ -515,12 +542,16 @@ class HomeContentState extends State<HomeContent> {
     // All filtering (project, provider, namedOnly, searchQuery) is applied
     // server-side. Only deduplicate running sessions here.
     final filteredSessions = prioritizePinned(
-      widget.recentSessions.where((session) => !isDuplicate(session)),
+      widget.recentSessions.where(
+        (session) =>
+            !isDuplicate(session) && mirrorService?.isResident(session) != true,
+      ),
       isPinned: (session) =>
           widget.pinnedSessionKeys.contains(recentSessionPinKey(session)),
       isProjectPinned: (session) =>
           widget.pinnedProjectPaths.contains(session.projectPath),
     );
+    final hasRecentSessions = filteredSessions.isNotEmpty;
     final projectPathsWithPinnedSessions = filteredSessions
         .where(
           (session) =>
@@ -561,6 +592,7 @@ class HomeContentState extends State<HomeContent> {
 
     if (!hasRunningSessions &&
         !hasRecentSessions &&
+        !hasResidentConversations &&
         !hasKnownProjects &&
         !hasActiveFilter) {
       // Show skeleton while initial data is loading
@@ -613,6 +645,12 @@ class HomeContentState extends State<HomeContent> {
         ?updateBanner,
         ?supportBanner,
         ?macOSNativeAppBanner,
+        ConversationMirrorResidentSection(
+          runningSessions: runningSessions,
+          recentSessions: widget.recentSessions,
+          onOpenRunning: _openRunningSession,
+          onOpenRecent: widget.onResumeSession,
+        ),
         if (hasRunningSessions) ...[
           SectionHeader(
             icon: Icons.play_circle_filled,
@@ -679,19 +717,7 @@ class HomeContentState extends State<HomeContent> {
                 onStop: showInlineStopButton
                     ? () => widget.onStopSession(session.id)
                     : null,
-                onTap: () => widget.onTapRunning(
-                  session.id,
-                  projectPath: session.projectPath,
-                  gitBranch: session.worktreePath != null
-                      ? session.worktreeBranch
-                      : session.gitBranch,
-                  worktreePath: session.worktreePath,
-                  provider: session.provider,
-                  permissionMode: session.permissionMode,
-                  sandboxMode: session.codexSandboxMode,
-                  approvalPolicy: session.codexApprovalPolicy,
-                  approvalsReviewer: session.codexApprovalsReviewer,
-                ),
+                onTap: () => _openRunningSession(session),
                 onApprove: (toolUseId, {bool clearContext = false}) => widget
                     .onApprovePermission
                     ?.call(session.id, toolUseId, clearContext: clearContext),

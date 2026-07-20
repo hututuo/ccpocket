@@ -214,6 +214,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                       ],
                     ),
                   ),
+                  ConversationMirrorRunningBadge(session: session),
                   PinToggleButton(
                     key: ValueKey('running_session_pin_${session.id}_button'),
                     isPinned: widget.isPinned,

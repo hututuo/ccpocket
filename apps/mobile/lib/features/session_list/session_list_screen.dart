@@ -1234,6 +1234,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       context: context,
       position: position,
       items: [
+        ...conversationMirrorRunningActionItems(context, session),
         AdaptiveActionMenuItem(
           value: 'rename',
           icon: Icons.label_outline,
@@ -1248,6 +1249,11 @@ class _SessionListScreenState extends State<SessionListScreen>
       ],
     );
     if (action == null || !mounted) return;
+
+    if (await handleConversationMirrorRunningAction(context, session, action)) {
+      return;
+    }
+    if (!mounted) return;
 
     if (action == 'rename') {
       final newName = await showRenameSessionDialog(

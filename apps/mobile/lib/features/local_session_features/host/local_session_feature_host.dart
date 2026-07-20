@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import '../../auto_approval/auto_approval_ui_slot.dart';
 import '../../codex_core_actions/codex_core_actions_ui_slot.dart';
+import '../../conversation_mirror/conversation_mirror_ui_slot.dart';
 import '../slots/add_to_conversation_ui_slot.dart';
 import '../slots/session_insights_ui_slot.dart';
 import '../slots/side_chat_ui_slot.dart';
@@ -14,6 +15,7 @@ class LocalSessionFeatureHost {
 
   static final List<LocalSessionFeatureSlot> _slots = [
     codexCoreActionsUiSlot,
+    conversationMirrorUiSlot,
     sessionInsightsUiSlot,
     subagentsUiSlot,
     addToConversationUiSlot,

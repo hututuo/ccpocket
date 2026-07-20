@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
+import 'conversation_mirror_target.dart';
 import 'storage/conversation_mirror_storage.dart';
 
 class ConversationMirrorSyncResult {
@@ -47,7 +48,7 @@ class ConversationMirrorService extends ChangeNotifier {
   // frame; socket disconnects still fail immediately.
   static const _requestIdleTimeout = Duration(minutes: 30);
   static const _bootstrapWatchTimeout = Duration(milliseconds: 2500);
-  static const _maxAutoWatches = 8;
+  static const maxResidentConversations = 8;
   static const _initialRenderEntryCount = 200;
   static const _timestampAnchorScanLimit = 1000;
   static const _timestampAnchorBatchSize = 200;
@@ -82,6 +83,21 @@ class ConversationMirrorService extends ChangeNotifier {
 
   bool get featureUnsupported => _featureUnsupported;
   bool get isAvailable => !_closed && !kIsWeb && _storageAvailable;
+
+  List<ConversationMirrorMetadata> get residentMetadata {
+    final result =
+        _metadata.values
+            .where((metadata) => metadata.autoSync && metadata.hasLocalCopy)
+            .toList(growable: false)
+          ..sort((a, b) {
+            final aTime =
+                a.lastSyncedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bTime =
+                b.lastSyncedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            return bTime.compareTo(aTime);
+          });
+    return List.unmodifiable(result);
+  }
 
   Future<void> initialize() async {
     if (_initialized || _closed) return;
@@ -136,7 +152,7 @@ class ConversationMirrorService extends ChangeNotifier {
         return;
       }
       _storageAvailable = true;
-      final localRecords = await _store.listAutoSync();
+      final localRecords = await _store.listLocalCopies();
       if (_closed) {
         await _database.close();
         return;
@@ -159,53 +175,81 @@ class ConversationMirrorService extends ChangeNotifier {
   ConversationMirrorMetadata? cachedMetadataFor(
     RecentSession session, {
     String? bridgeInstanceId,
+  }) => cachedMetadataForTarget(
+    ConversationMirrorTarget.fromRecent(session),
+    bridgeInstanceId: bridgeInstanceId,
+  );
+
+  ConversationMirrorMetadata? cachedMetadataForTarget(
+    ConversationMirrorTarget target, {
+    String? bridgeInstanceId,
   }) {
     final bridgeId = bridgeInstanceId ?? currentBridgeInstanceId;
     if (!isAvailable) return null;
-    if (bridgeId == null) return _uniqueCachedMetadata(session);
+    if (bridgeId == null) return _uniqueCachedMetadata(target);
     return _metadata[ConversationMirrorKey(
       bridgeInstanceId: bridgeId,
-      provider: session.provider ?? Provider.claude.value,
-      providerSessionId: session.sessionId,
+      provider: target.provider,
+      providerSessionId: target.providerSessionId,
     )];
   }
 
   bool hasLocalCopy(RecentSession session) =>
       cachedMetadataFor(session)?.hasLocalCopy ?? false;
 
-  bool isSyncing(RecentSession session) {
+  bool hasLocalCopyTarget(ConversationMirrorTarget target) =>
+      hasLocalCopy(target.toRecentSession());
+
+  bool isResident(RecentSession session) =>
+      cachedMetadataFor(session)?.autoSync == true;
+
+  bool isResidentTarget(ConversationMirrorTarget target) =>
+      isResident(target.toRecentSession());
+
+  bool isSyncing(RecentSession session) =>
+      _isSyncingTarget(ConversationMirrorTarget.fromRecent(session));
+
+  bool isSyncingTarget(ConversationMirrorTarget target) =>
+      isSyncing(target.toRecentSession());
+
+  bool _isSyncingTarget(ConversationMirrorTarget target) {
     final bridgeId = currentBridgeInstanceId;
     if (bridgeId == null) {
-      final metadata = _uniqueCachedMetadata(session);
+      final metadata = _uniqueCachedMetadata(target);
       return metadata != null && _syncing.contains(metadata.key);
     }
     return _syncing.contains(
       ConversationMirrorKey(
         bridgeInstanceId: bridgeId,
-        provider: session.provider ?? Provider.claude.value,
-        providerSessionId: session.sessionId,
+        provider: target.provider,
+        providerSessionId: target.providerSessionId,
       ),
     );
   }
 
-  Future<ConversationMirrorMetadata?> metadataFor(RecentSession session) async {
+  Future<ConversationMirrorMetadata?> metadataFor(RecentSession session) =>
+      metadataForTarget(ConversationMirrorTarget.fromRecent(session));
+
+  Future<ConversationMirrorMetadata?> metadataForTarget(
+    ConversationMirrorTarget target,
+  ) async {
     final bridgeId = currentBridgeInstanceId;
     if (!isAvailable) return null;
     if (bridgeId == null) {
-      final cached = _uniqueCachedMetadata(session);
+      final cached = _uniqueCachedMetadata(target);
       if (cached != null) return cached;
       final unique = await _store.findUniqueLocalCopy(
-        session.provider ?? Provider.claude.value,
-        session.sessionId,
-        projectPath: _sessionProjectPath(session),
+        target.provider,
+        target.providerSessionId,
+        projectPath: target.effectiveProjectPath,
       );
       if (unique != null) _metadata[unique.key] = unique;
       return unique;
     }
     final key = ConversationMirrorKey(
       bridgeInstanceId: bridgeId,
-      provider: session.provider ?? Provider.claude.value,
-      providerSessionId: session.sessionId,
+      provider: target.provider,
+      providerSessionId: target.providerSessionId,
     );
     final cached = _metadata[key];
     if (cached != null) return cached;
@@ -214,20 +258,21 @@ class ConversationMirrorService extends ChangeNotifier {
     return loaded;
   }
 
-  ConversationMirrorMetadata? _uniqueCachedMetadata(RecentSession session) {
+  ConversationMirrorMetadata? _uniqueCachedMetadata(
+    ConversationMirrorTarget target,
+  ) {
     final candidates = _metadata.values
         .where(
           (metadata) =>
               metadata.hasLocalCopy &&
-              metadata.key.provider ==
-                  (session.provider ?? Provider.claude.value) &&
-              metadata.key.providerSessionId == session.sessionId,
+              metadata.key.provider == target.provider &&
+              metadata.key.providerSessionId == target.providerSessionId,
         )
         .take(2)
         .toList(growable: false);
     if (candidates.length != 1) return null;
     final unique = candidates.single;
-    final sessionProjectPath = _sessionProjectPath(session);
+    final sessionProjectPath = target.effectiveProjectPath;
     if (sessionProjectPath.isNotEmpty &&
         unique.projectPath != sessionProjectPath) {
       return null;
@@ -237,8 +282,16 @@ class ConversationMirrorService extends ChangeNotifier {
 
   Future<ConversationMirrorSyncResult> downloadAndWatch(
     RecentSession session,
+  ) => _makeResidentTarget(ConversationMirrorTarget.fromRecent(session));
+
+  Future<ConversationMirrorSyncResult> makeResidentTarget(
+    ConversationMirrorTarget target,
+  ) => downloadAndWatch(target.toRecentSession());
+
+  Future<ConversationMirrorSyncResult> _makeResidentTarget(
+    ConversationMirrorTarget target,
   ) async {
-    if (session.provider != Provider.codex.value) {
+    if (target.provider != Provider.codex.value) {
       return const ConversationMirrorSyncResult(
         success: false,
         changed: false,
@@ -246,15 +299,91 @@ class ConversationMirrorService extends ChangeNotifier {
         error: 'Only Codex conversations are supported.',
       );
     }
-    return _requestSessionSync(session, watch: true, force: true);
+    final existing = await metadataForTarget(target);
+    if (existing?.autoSync != true) {
+      final bridgeId = currentBridgeInstanceId;
+      final activeResidents = residentMetadata.where(
+        (metadata) =>
+            bridgeId == null || metadata.key.bridgeInstanceId == bridgeId,
+      );
+      if (activeResidents.length >= maxResidentConversations) {
+        return const ConversationMirrorSyncResult(
+          success: false,
+          changed: false,
+          errorCode: 'resident_limit_reached',
+          error: 'At most 8 conversations can stay resident at once.',
+        );
+      }
+    }
+    if (existing?.hasLocalCopy == true && !_bridge.isConnected) {
+      await _enqueueStorage(() async {
+        await _store.setAutoSync(
+          existing!.key,
+          true,
+          projectPath: target.effectiveProjectPath,
+        );
+        await _refreshMetadata(existing.key);
+      });
+      _notifyListeners();
+      return ConversationMirrorSyncResult(
+        success: true,
+        changed: false,
+        entryCount: existing!.entryCount,
+      );
+    }
+    return _requestTargetSync(
+      target,
+      watch: true,
+      force: existing?.hasLocalCopy != true,
+    );
   }
 
   Future<ConversationMirrorSyncResult> syncNow(RecentSession session) =>
-      _requestSessionSync(session, watch: false, force: false);
+      _syncTargetNow(ConversationMirrorTarget.fromRecent(session));
 
-  Future<void> removeLocalCopy(RecentSession session) async {
+  Future<ConversationMirrorSyncResult> syncTargetNow(
+    ConversationMirrorTarget target,
+  ) => syncNow(target.toRecentSession());
+
+  Future<ConversationMirrorSyncResult> _syncTargetNow(
+    ConversationMirrorTarget target,
+  ) => _requestTargetSync(target, watch: false, force: false);
+
+  Future<void> stopBeingResident(RecentSession session) =>
+      _stopBeingResidentTarget(ConversationMirrorTarget.fromRecent(session));
+
+  Future<void> stopBeingResidentTarget(ConversationMirrorTarget target) =>
+      stopBeingResident(target.toRecentSession());
+
+  Future<void> _stopBeingResidentTarget(ConversationMirrorTarget target) async {
     if (!isAvailable) return;
-    final metadata = await metadataFor(session);
+    final metadata = await metadataForTarget(target);
+    if (metadata == null || !metadata.autoSync) return;
+    _cancelTargetRequests(
+      metadata.key,
+      errorCode: 'residency_disabled',
+      error: 'Conversation residency was disabled.',
+    );
+    await _enqueueStorage(() async {
+      await _store.setAutoSync(
+        metadata.key,
+        false,
+        projectPath: target.effectiveProjectPath,
+      );
+      await _refreshMetadata(metadata.key);
+    });
+    _notifyListeners();
+  }
+
+  Future<void> removeLocalCopy(RecentSession session) =>
+      _removeLocalCopyTarget(ConversationMirrorTarget.fromRecent(session));
+
+  Future<void> removeLocalCopyTarget(ConversationMirrorTarget target) =>
+      removeLocalCopy(target.toRecentSession());
+
+  Future<void> _removeLocalCopyTarget(ConversationMirrorTarget target) async {
+    if (!isAvailable) return;
+    final metadata = await metadataForTarget(target);
     final bridgeId = currentBridgeInstanceId;
     final key =
         metadata?.key ??
@@ -262,10 +391,29 @@ class ConversationMirrorService extends ChangeNotifier {
             ? null
             : ConversationMirrorKey(
                 bridgeInstanceId: bridgeId,
-                provider: session.provider ?? Provider.claude.value,
-                providerSessionId: session.sessionId,
+                provider: target.provider,
+                providerSessionId: target.providerSessionId,
               ));
     if (key == null) return;
+    _cancelTargetRequests(
+      key,
+      errorCode: 'local_copy_removed',
+      error: 'The local conversation copy was removed.',
+    );
+    await _enqueueStorage(() async {
+      await _store.deleteLocalCopy(key);
+      _metadata.remove(key);
+      _syncing.remove(key);
+      _pageCursorsByRuntime.removeWhere((_, cursor) => cursor.key == key);
+    });
+    _notifyListeners();
+  }
+
+  void _cancelTargetRequests(
+    ConversationMirrorKey key, {
+    required String errorCode,
+    required String error,
+  }) {
     final watchRequestId =
         _watchRequestIdsByConversation[_logicalWatchKey(
           key.provider,
@@ -285,11 +433,11 @@ class ConversationMirrorService extends ChangeNotifier {
     for (final request in pendingToCancel) {
       _finishPending(
         request.requestId,
-        const ConversationMirrorSyncResult(
+        ConversationMirrorSyncResult(
           success: false,
           changed: false,
-          errorCode: 'local_copy_removed',
-          error: 'The local conversation copy was removed.',
+          errorCode: errorCode,
+          error: error,
         ),
       );
     }
@@ -301,17 +449,10 @@ class ConversationMirrorService extends ChangeNotifier {
         providerSessionId: key.providerSessionId,
       );
     }
-    await _enqueueStorage(() async {
-      await _store.deleteLocalCopy(key);
-      _metadata.remove(key);
-      _syncing.remove(key);
-      _pageCursorsByRuntime.removeWhere((_, cursor) => cursor.key == key);
-    });
-    _notifyListeners();
   }
 
-  Future<ConversationMirrorSyncResult> _requestSessionSync(
-    RecentSession session, {
+  Future<ConversationMirrorSyncResult> _requestTargetSync(
+    ConversationMirrorTarget target, {
     required bool watch,
     required bool force,
   }) async {
@@ -339,7 +480,7 @@ class ConversationMirrorService extends ChangeNotifier {
         error: 'Bridge is disconnected.',
       );
     }
-    final existing = await metadataFor(session);
+    final existing = await metadataForTarget(target);
     final currentBridgeId = currentBridgeInstanceId;
     final pendingKey =
         existing?.key ??
@@ -347,18 +488,18 @@ class ConversationMirrorService extends ChangeNotifier {
             ? null
             : ConversationMirrorKey(
                 bridgeInstanceId: currentBridgeId,
-                provider: session.provider ?? Provider.claude.value,
-                providerSessionId: session.sessionId,
+                provider: target.provider,
+                providerSessionId: target.providerSessionId,
               ));
     final requestId = _uuid.v4();
     final logicalWatchKey = _logicalWatchKey(
-      session.provider ?? Provider.claude.value,
-      session.sessionId,
+      target.provider,
+      target.providerSessionId,
     );
     if (watch) {
       final existingWatch = _existingWatch(
-        provider: session.provider ?? Provider.claude.value,
-        providerSessionId: session.sessionId,
+        provider: target.provider,
+        providerSessionId: target.providerSessionId,
         key: pendingKey,
         entryCount: existing?.entryCount ?? 0,
       );
@@ -366,9 +507,9 @@ class ConversationMirrorService extends ChangeNotifier {
     }
     final pending = _PendingMirrorRequest(
       requestId: requestId,
-      provider: session.provider ?? Provider.claude.value,
-      providerSessionId: session.sessionId,
-      projectPath: _sessionProjectPath(session),
+      provider: target.provider,
+      providerSessionId: target.providerSessionId,
+      projectPath: target.effectiveProjectPath,
       key: pendingKey,
       autoSync: watch || (existing?.autoSync ?? false),
       createsWatch: watch,
@@ -1048,11 +1189,6 @@ class ConversationMirrorService extends ChangeNotifier {
   String _logicalWatchKey(String provider, String providerSessionId) =>
       '$provider\u0000$providerSessionId';
 
-  String _sessionProjectPath(RecentSession session) =>
-      session.resumeCwd?.isNotEmpty == true
-      ? session.resumeCwd!
-      : session.projectPath;
-
   String _generation(ConversationMirrorEventMessage event) =>
       '${event.requestId}:${event.revision}';
 
@@ -1463,7 +1599,7 @@ class ConversationMirrorService extends ChangeNotifier {
     if (_closed || !_storageAvailable || bridgeInstanceId.isEmpty) return;
     final changed = _currentBridgeInstanceId != bridgeInstanceId;
     _currentBridgeInstanceId = bridgeInstanceId;
-    final records = await _store.listAutoSync();
+    final records = await _store.listLocalCopies();
     if (_closed) return;
     _metadata
       ..removeWhere((key, _) => key.bridgeInstanceId == bridgeInstanceId)
@@ -1506,9 +1642,10 @@ class ConversationMirrorService extends ChangeNotifier {
         .where(
           (record) =>
               record.key.bridgeInstanceId == bridgeInstanceId &&
+              record.autoSync &&
               record.hasLocalCopy,
         )
-        .take(_maxAutoWatches);
+        .take(maxResidentConversations);
     for (final record in records) {
       if (!_bridge.isConnected || _closed) return;
       unawaited(

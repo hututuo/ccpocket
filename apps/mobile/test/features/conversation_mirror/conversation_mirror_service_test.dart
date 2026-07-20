@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ccpocket/features/conversation_mirror/conversation_mirror_service.dart';
+import 'package:ccpocket/features/conversation_mirror/conversation_mirror_target.dart';
 import 'package:ccpocket/features/conversation_mirror/storage/conversation_mirror_storage.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
@@ -423,6 +424,134 @@ void main() {
       ),
       isEmpty,
     );
+  });
+
+  test('running targets keep durable identity and worktree resume path', () {
+    const running = SessionInfo(
+      id: 'runtime-only-id',
+      provider: 'codex',
+      projectPath: '/tmp/base-project',
+      claudeSessionId: 'durable-thread-id',
+      status: 'running',
+      createdAt: '2026-07-20T00:00:00Z',
+      lastActivityAt: '2026-07-20T00:01:00Z',
+      worktreePath: '/tmp/base-project-worktrees/feature',
+      worktreeBranch: 'feature/resident',
+      lastMessage: 'keep this running chat resident',
+      codexModel: 'gpt-5.6',
+      codexModelReasoningEffort: 'ultra',
+    );
+
+    final target = ConversationMirrorTarget.fromRunning(running)!;
+    final recent = target.toRecentSession();
+
+    expect(target.providerSessionId, 'durable-thread-id');
+    expect(target.runtimeSessionId, 'runtime-only-id');
+    expect(target.effectiveProjectPath, '/tmp/base-project-worktrees/feature');
+    expect(recent.sessionId, 'durable-thread-id');
+    expect(recent.resumeCwd, '/tmp/base-project-worktrees/feature');
+    expect(recent.codexModelReasoningEffort, 'ultra');
+  });
+
+  test(
+    'paused phone copy can become resident while Bridge is offline',
+    () async {
+      const key = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-test',
+        provider: 'codex',
+        providerSessionId: 'provider-session-1',
+      );
+      await _seedLocalCopy(
+        store,
+        message: const {
+          'type': 'user_input',
+          'text': 'kept offline',
+          'userMessageUuid': 'offline-resident-1',
+        },
+        revision: _hashText('offline-resident'),
+      );
+      await store.setAutoSync(key, false, projectPath: '/tmp/project');
+      expect((await service.metadataFor(_recentSession))?.autoSync, isFalse);
+      bridge.connected = false;
+
+      final result = await service.makeResidentTarget(
+        ConversationMirrorTarget.fromRecent(_recentSession),
+      );
+
+      expect(result.success, isTrue);
+      expect(result.changed, isFalse);
+      expect(bridge.sent, isEmpty);
+      final metadata = await store.readMetadata(key);
+      expect(metadata?.autoSync, isTrue);
+      expect(metadata?.hasLocalCopy, isTrue);
+      expect(await store.readEntries(key), hasLength(1));
+      expect(service.residentMetadata.map((item) => item.key), contains(key));
+    },
+  );
+
+  test('stopping residency keeps the full phone copy and unwatches', () async {
+    final download = service.downloadAndWatch(_recentSession);
+    await _waitUntil(() async => bridge.sent.isNotEmpty);
+    final requestId = bridge.sent.single['requestId'] as String;
+    _emitSnapshot(
+      bridge,
+      requestId: requestId,
+      revision: _hashText('resident-stop'),
+      messages: const [
+        {
+          'type': 'user_input',
+          'text': 'keep the copy',
+          'userMessageUuid': 'resident-stop-1',
+        },
+      ],
+    );
+    expect((await download).success, isTrue);
+
+    await service.stopBeingResident(_recentSession);
+
+    final metadata = await service.metadataFor(_recentSession);
+    expect(metadata?.autoSync, isFalse);
+    expect(metadata?.hasLocalCopy, isTrue);
+    expect(await store.readEntries(metadata!.key), hasLength(1));
+    expect(
+      bridge.sent.map((message) => message['type']),
+      contains('conversation_mirror_unwatch'),
+    );
+  });
+
+  test('resident watch count is bounded to the Bridge limit', () async {
+    for (
+      var index = 0;
+      index < ConversationMirrorService.maxResidentConversations;
+      index++
+    ) {
+      final id = 'resident-$index';
+      final key = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-test',
+        provider: 'codex',
+        providerSessionId: id,
+      );
+      final session = _recentSessionWithId(id);
+      await _seedLocalCopy(
+        store,
+        key: key,
+        message: {
+          'type': 'user_input',
+          'text': id,
+          'userMessageUuid': 'resident-limit-$index',
+        },
+        revision: _hashText('resident-limit-$index'),
+      );
+      await service.metadataFor(session);
+    }
+
+    final result = await service.downloadAndWatch(
+      _recentSessionWithId('resident-ninth'),
+    );
+
+    expect(result.success, isFalse);
+    expect(result.errorCode, 'resident_limit_reached');
+    expect(bridge.sent, isEmpty);
   });
 
   test(
@@ -1866,6 +1995,17 @@ const _recentSession = RecentSession(
   sessionId: 'provider-session-1',
   provider: 'codex',
   firstPrompt: 'hello',
+  created: '2026-07-18T00:00:00Z',
+  modified: '2026-07-18T00:00:00Z',
+  gitBranch: 'main',
+  projectPath: '/tmp/project',
+  isSidechain: false,
+);
+
+RecentSession _recentSessionWithId(String id) => RecentSession(
+  sessionId: id,
+  provider: 'codex',
+  firstPrompt: id,
   created: '2026-07-18T00:00:00Z',
   modified: '2026-07-18T00:00:00Z',
   gitBranch: 'main',

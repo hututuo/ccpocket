@@ -763,6 +763,10 @@ void main() {
       );
 
       expect((await store.listAutoSync()).map((item) => item.key), [key]);
+      expect((await store.listLocalCopies()).map((item) => item.key), [key]);
+      await store.setAutoSync(key, false);
+      expect(await store.listAutoSync(), isEmpty);
+      expect((await store.listLocalCopies()).map((item) => item.key), [key]);
       await store.deleteLocalCopy(key);
       expect(await store.readMetadata(key), isNull);
       expect(await store.readEntries(key), isEmpty);
