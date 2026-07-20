@@ -155,6 +155,7 @@ class BridgeService implements BridgeServiceBase {
   final List<ClientMessage> _messageQueue = [];
   List<SessionInfo> _sessions = [];
   int _authoritativeSessionListGeneration = 0;
+  bool _hasAuthoritativeSessionListForCurrentConnection = false;
   List<RecentSession> _recentSessions = [];
   RecentSessionsMessage? _lastRecentSessionsMessage;
   List<GalleryImage> _galleryImages = [];
@@ -233,6 +234,8 @@ class BridgeService implements BridgeServiceBase {
   Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
   int get authoritativeSessionListGeneration =>
       _authoritativeSessionListGeneration;
+  bool get hasAuthoritativeSessionListForCurrentConnection =>
+      isConnected && _hasAuthoritativeSessionListForCurrentConnection;
   @override
   Stream<String> get stoppedSessions => _sessionStoppedController.stream;
   Stream<List<RecentSession>> get recentSessionsStream =>
@@ -1029,11 +1032,15 @@ class BridgeService implements BridgeServiceBase {
   int _offlineQueueGeneration = 0;
 
   void _setBridgeConnectionState(BridgeConnectionState state) {
+    if (state != BridgeConnectionState.connected) {
+      _hasAuthoritativeSessionListForCurrentConnection = false;
+    }
     _connectionState = state;
     _connectionController.add(state);
   }
 
   void _invalidatePermissionApplyCapabilities({bool notifySessions = true}) {
+    _hasAuthoritativeSessionListForCurrentConnection = false;
     _bridgeCapabilities = const {};
     _sessions = _sessions
         .map(
@@ -1252,6 +1259,7 @@ class BridgeService implements BridgeServiceBase {
                 :final bridgeVersion,
                 :final bridgeCapabilities,
               ):
+                _hasAuthoritativeSessionListForCurrentConnection = true;
                 _authoritativeSessionListGeneration++;
                 _sessions = _applyLocalDeliveryPendingInputs(sessions);
                 _clearPendingStartActionsForSessions(_sessions);

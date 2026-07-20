@@ -104,6 +104,7 @@ void main() {
 
       final url = 'ws://127.0.0.1:${server.port}';
       bridge.connect(url, logicalConnectionIdentity: 'machine:machine-a');
+      expect(bridge.hasAuthoritativeSessionListForCurrentConnection, isFalse);
       final oldSocket = await firstSocket.future;
       oldSocket.add(
         jsonEncode({
@@ -134,6 +135,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
       expect(bridge.sessions.single.id, 'runtime-old');
+      expect(bridge.hasAuthoritativeSessionListForCurrentConnection, isTrue);
       expect(
         bridge.sessions.single.codexPermissionApplyStrategySupported,
         isTrue,
@@ -141,6 +143,7 @@ void main() {
       publishedSessions.clear();
 
       bridge.connect(url, logicalConnectionIdentity: 'machine:machine-a');
+      expect(bridge.hasAuthoritativeSessionListForCurrentConnection, isFalse);
       final newSocket = await secondSocket.future;
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
@@ -175,6 +178,7 @@ void main() {
 
       expect(publishedSessions, hasLength(1));
       expect(publishedSessions.single.single.id, 'runtime-new');
+      expect(bridge.hasAuthoritativeSessionListForCurrentConnection, isTrue);
     },
   );
 }

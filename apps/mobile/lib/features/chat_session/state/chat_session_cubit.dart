@@ -57,6 +57,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const _deliveryPendingDelay = Duration(milliseconds: 600);
   static const _goalMutationTimeout = Duration(seconds: 20);
   static const _goalReadTimeout = Duration(seconds: 12);
+  static const _desktopContinuityWatchAckTimeout = Duration(seconds: 4);
+  static const _desktopContinuityRetryBase = Duration(milliseconds: 750);
+  static const _desktopContinuityRetryMax = Duration(seconds: 8);
 
   final String sessionId;
   final Provider? provider;
@@ -74,10 +77,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _pastHistoryLoaded = false;
   bool _historyBootstrapSucceeded = false;
   bool _historyFallbackRequested = false;
+  // SessionInfo is the live session-list authority, while HistoryMessage is a
+  // rebuildable transcript. Track authority per optional field so an older
+  // Bridge can still fill omissions without letting stale init rows rebind a
+  // newer Codex thread or toolbar configuration.
+  bool _hasAuthoritativeSessionSnapshot = false;
+  bool _sessionSnapshotOwnsThreadId = false;
+  bool _sessionSnapshotOwnsProjectPath = false;
+  bool _sessionSnapshotOwnsModel = false;
+  bool _sessionSnapshotOwnsEffort = false;
+  bool _sessionSnapshotOwnsSpeed = false;
+  bool _statusFromHistoryFallback = false;
+  bool _statusFromSessionSnapshot = false;
+  bool _awaitingFreshSessionListAfterReconnect = false;
   Timer? _statusRefreshTimer;
   Timer? _goalMutationTimer;
   Timer? _goalReadTimer;
   Timer? _desktopContinuityReconcileTimer;
+  Timer? _desktopContinuityWatchAckTimer;
+  Timer? _desktopContinuityRetryTimer;
+  int _desktopContinuityRetryAttempt = 0;
   bool _goalReadPending = false;
   bool _goalUserRefreshPending = false;
   final Map<String, Timer> _deliveryPendingTimers = {};
@@ -88,6 +107,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _desktopContinuityRequestId;
   String? _desktopContinuityThreadId;
   String? _desktopContinuityProjectPath;
+  String? _desktopContinuitySuppressedThreadId;
+  String? _desktopContinuitySuppressedProjectPath;
   bool _desktopContinuityWasExternalBeforeDisconnect = false;
 
   /// Exact service tier reported by the active runtime. Unknown future values
@@ -351,7 +372,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   ) {
     if (!isCodex || isClosed) return;
     if (connectionState == BridgeConnectionState.connected) {
-      _ensureDesktopContinuityWatch(force: true);
+      _ensureDesktopContinuityWatch();
       return;
     }
     _desktopContinuityReconcileTimer?.cancel();
@@ -361,9 +382,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // flag has cleared. Keep the binding itself as the downgrade/reconnect
     // fence so an older Bridge can replace that synthetic status with its
     // authoritative session-list value.
-    if (_desktopContinuityRequestId != null) {
+    final hadContinuityBinding = _desktopContinuityRequestId != null;
+    if (hadContinuityBinding) {
       _desktopContinuityWasExternalBeforeDisconnect = true;
     }
+    // The server-side registration belongs to the disconnected socket. Retire
+    // it locally so a reconnect creates exactly one fresh watch; repeated
+    // connected notifications then remain idempotent.
+    _retireDesktopContinuityBinding();
+    _desktopContinuityRetryAttempt = 0;
+    _desktopContinuitySuppressedThreadId = null;
+    _desktopContinuitySuppressedProjectPath = null;
+    _resetSessionSnapshotAuthorityForConnection();
     if (state.externalDesktopTurnActive) {
       emit(
         state.copyWith(
@@ -382,6 +412,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!isCodex ||
         !_bridge.isConnected ||
         isClosed ||
+        _awaitingFreshSessionListAfterReconnect ||
         !_bridge.bridgeCapabilities.contains(
           codexDesktopContinuityCapability,
         )) {
@@ -395,6 +426,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         nextProjectPath.isEmpty) {
       return;
     }
+    final sameSuppressedIdentity =
+        _desktopContinuitySuppressedThreadId == nextThreadId &&
+        _desktopContinuitySuppressedProjectPath == nextProjectPath;
+    if (sameSuppressedIdentity) return;
+    _desktopContinuitySuppressedThreadId = null;
+    _desktopContinuitySuppressedProjectPath = null;
+    if (!force && _desktopContinuityRetryTimer != null) return;
     if (!force &&
         _desktopContinuityThreadId == nextThreadId &&
         _desktopContinuityProjectPath == nextProjectPath &&
@@ -402,6 +440,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     _unwatchDesktopContinuity();
+    _desktopContinuityRetryTimer?.cancel();
+    _desktopContinuityRetryTimer = null;
     final requestId = _uuid.v4();
     _desktopContinuityRequestId = requestId;
     _desktopContinuityThreadId = nextThreadId;
@@ -416,6 +456,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         threadId: nextThreadId,
         projectPath: nextProjectPath,
       ),
+    );
+    _desktopContinuityWatchAckTimer?.cancel();
+    _desktopContinuityWatchAckTimer = Timer(
+      _desktopContinuityWatchAckTimeout,
+      () {
+        if (isClosed || _desktopContinuityRequestId != requestId) return;
+        logger.warning(
+          '[session:$sessionId] Desktop continuity watch timed out; retrying',
+        );
+        _retireDesktopContinuityBinding(cancelRetry: false);
+        _scheduleDesktopContinuityRetry();
+      },
     );
   }
 
@@ -434,12 +486,50 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ),
       );
     }
+    _retireDesktopContinuityBinding();
+  }
+
+  void _retireDesktopContinuityBinding({bool cancelRetry = true}) {
+    _desktopContinuityWatchAckTimer?.cancel();
+    _desktopContinuityWatchAckTimer = null;
+    if (cancelRetry) {
+      _desktopContinuityRetryTimer?.cancel();
+      _desktopContinuityRetryTimer = null;
+    }
     _desktopContinuityRequestId = null;
     _desktopContinuityThreadId = null;
     _desktopContinuityProjectPath = null;
     _desktopContinuityItemKeys.clear();
     _desktopContinuityHandlers.clear();
     _desktopContinuityStreamingTurnKey = null;
+  }
+
+  void _acknowledgeDesktopContinuityWatch() {
+    _desktopContinuityWatchAckTimer?.cancel();
+    _desktopContinuityWatchAckTimer = null;
+    _desktopContinuityRetryTimer?.cancel();
+    _desktopContinuityRetryTimer = null;
+    _desktopContinuityRetryAttempt = 0;
+  }
+
+  void _scheduleDesktopContinuityRetry() {
+    if (isClosed ||
+        !_bridge.isConnected ||
+        _desktopContinuityRetryTimer != null) {
+      return;
+    }
+    final multiplier = 1 << _desktopContinuityRetryAttempt.clamp(0, 4);
+    final delayMs = (_desktopContinuityRetryBase.inMilliseconds * multiplier)
+        .clamp(
+          _desktopContinuityRetryBase.inMilliseconds,
+          _desktopContinuityRetryMax.inMilliseconds,
+        )
+        .toInt();
+    _desktopContinuityRetryAttempt += 1;
+    _desktopContinuityRetryTimer = Timer(Duration(milliseconds: delayMs), () {
+      _desktopContinuityRetryTimer = null;
+      _ensureDesktopContinuityWatch();
+    });
   }
 
   void _onDesktopContinuityMessage(LocalFeatureServerMessage rawMessage) {
@@ -450,6 +540,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         '[session:$sessionId] Desktop continuity unavailable: '
         '${rawMessage.message}',
       );
+      if (rawMessage.requestId == null ||
+          rawMessage.requestId == _desktopContinuityRequestId) {
+        _desktopContinuitySuppressedThreadId = _desktopContinuityThreadId;
+        _desktopContinuitySuppressedProjectPath =
+            _desktopContinuityProjectPath;
+        _retireDesktopContinuityBinding();
+      }
       return;
     }
     if (rawMessage is! CodexDesktopContinuityEventMessage ||
@@ -458,15 +555,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         rawMessage.threadId != _desktopContinuityThreadId) {
       return;
     }
+    if (rawMessage.event != CodexDesktopContinuityEventKind.error) {
+      _acknowledgeDesktopContinuityWatch();
+    }
     switch (rawMessage.event) {
       case CodexDesktopContinuityEventKind.watching:
         if (rawMessage.state == CodexDesktopContinuityState.running) {
           _desktopContinuityWasExternalBeforeDisconnect = false;
           _setExternalDesktopRunning(rawMessage.turnId);
-        } else if (rawMessage.state == CodexDesktopContinuityState.idle &&
-            _desktopContinuityWasExternalBeforeDisconnect) {
+        } else if (rawMessage.state == CodexDesktopContinuityState.idle) {
+          final shouldSettleBaseline =
+              _desktopContinuityWasExternalBeforeDisconnect ||
+              state.externalDesktopTurnActive ||
+              state.status == ProcessStatus.starting ||
+              (_statusFromSessionSnapshot &&
+                  state.status == ProcessStatus.running);
           _desktopContinuityWasExternalBeforeDisconnect = false;
-          _finishExternalDesktopTurn(rawMessage);
+          if (shouldSettleBaseline) _finishExternalDesktopTurn(rawMessage);
         }
         return;
       case CodexDesktopContinuityEventKind.state:
@@ -497,6 +602,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           '${rawMessage.errorCode}: ${rawMessage.error}',
         );
         if (rawMessage.errorCode == 'runtime_rehydrate_failed') {
+          _statusFromHistoryFallback = false;
+          _statusFromSessionSnapshot = false;
           emit(
             state.copyWith(
               status: ProcessStatus.idle,
@@ -513,7 +620,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               errorCode: rawMessage.errorCode,
             ),
           );
+          return;
         }
+        final shouldRetry = rawMessage.errorCode != 'path_not_allowed';
+        if (!shouldRetry) {
+          _desktopContinuitySuppressedThreadId = rawMessage.threadId;
+          _desktopContinuitySuppressedProjectPath =
+              _desktopContinuityProjectPath;
+        }
+        _retireDesktopContinuityBinding(cancelRetry: false);
+        _bridge.requestSessionList();
+        _bridge.requestSessionHistory(sessionId);
+        if (shouldRetry) _scheduleDesktopContinuityRetry();
         return;
       case CodexDesktopContinuityEventKind.unwatched:
       case CodexDesktopContinuityEventKind.unknown:
@@ -524,6 +642,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void _setExternalDesktopRunning(String? turnId) {
     _desktopContinuityReconcileTimer?.cancel();
     _desktopContinuityReconcileTimer = null;
+    _statusFromHistoryFallback = false;
+    _statusFromSessionSnapshot = false;
     if (state.externalDesktopTurnActive &&
         state.externalDesktopTurnId == turnId &&
         state.status == ProcessStatus.running) {
@@ -539,6 +659,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _finishExternalDesktopTurn(CodexDesktopContinuityEventMessage message) {
+    _statusFromHistoryFallback = false;
+    _statusFromSessionSnapshot = false;
     emit(
       state.copyWith(
         status: message.handoffQueued
@@ -608,7 +730,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _updateCodexRuntimeSupportFromSessions(List<SessionInfo> sessions) {
-    _synchronizeCodexRuntimeSettingsFromSessions(sessions);
+    if (!isCodex || isClosed || !_bridge.isConnected) return;
+    if (_awaitingFreshSessionListAfterReconnect) {
+      if (!_bridge.hasAuthoritativeSessionListForCurrentConnection) {
+        return;
+      }
+      _awaitingFreshSessionListAfterReconnect = false;
+    }
     _syncCodexContinuityBindingFromSessions(sessions);
     _updateNativePlanModeSupportFromSessions(sessions);
     _updateGoalSupportFromSessions(sessions);
@@ -657,109 +785,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     });
   }
 
-  void _synchronizeCodexRuntimeSettingsFromSessions(
-    List<SessionInfo> sessions,
-  ) {
-    if (!isCodex || isClosed) return;
-    SessionInfo? runtime;
-    for (final session in sessions) {
-      if (session.id == sessionId) {
-        runtime = session;
-        break;
-      }
-    }
-    if (runtime == null) return;
-
-    final current = state;
-    final incomingModel = sanitizeCodexModelName(runtime.codexModel);
-    final incomingEffort = reasoningEffortByValue(
-      runtime.codexModelReasoningEffort,
-    );
-    final incomingSpeed = runtime.codexServiceTier == null
-        ? null
-        : codexSpeedFromRaw(runtime.codexServiceTier);
-
-    var permissionMode = current.permissionMode;
-    var executionMode = current.executionMode;
-    var approvalPolicy = current.codexApprovalPolicy;
-    var approvalsReviewer = current.codexApprovalsReviewer;
-    var permissionsMode = current.codexPermissionsMode;
-    var sandboxMode = current.sandboxMode;
-    var planMode = current.planMode;
-    var inPlanMode = current.inPlanMode;
-
-    // A next-turn or restart-now mutation is already represented optimistically
-    // in state. Older init/session-list snapshots must not overwrite it before
-    // the correlated set_permission_mode acknowledgement or rollback arrives.
-    if (!isPermissionChangePending) {
-      for (final mode in PermissionMode.values) {
-        if (mode.value == runtime.effectivePermissionMode) {
-          permissionMode = mode;
-          break;
-        }
-      }
-      executionMode = runtime.resolvedExecutionMode;
-      planMode = runtime.resolvedPlanMode;
-      inPlanMode = runtime.resolvedPlanMode;
-      approvalPolicy =
-          codexApprovalPolicyFromRaw(runtime.codexApprovalPolicy) ??
-          approvalPolicy;
-      final reviewer = runtime.codexApprovalsReviewer?.trim();
-      if (reviewer != null && reviewer.isNotEmpty) {
-        approvalsReviewer = reviewer;
-      }
-      permissionsMode =
-          codexPermissionsModeFromRaw(runtime.codexPermissionsMode) ??
-          (runtime.codexApprovalPolicy != null &&
-                  runtime.codexSandboxMode != null
-              ? codexPermissionsModeFromSettings(
-                  approvalPolicy: runtime.codexApprovalPolicy,
-                  approvalsReviewer: runtime.codexApprovalsReviewer,
-                  sandboxMode: runtime.codexSandboxMode,
-                )
-              : permissionsMode);
-      sandboxMode = switch (runtime.codexSandboxMode) {
-        'danger-full-access' || 'off' => SandboxMode.off,
-        'workspace-write' || 'read-only' || 'on' => SandboxMode.on,
-        _ => sandboxMode,
-      };
-    }
-
-    final nextModel = incomingModel ?? current.codexModel;
-    final nextEffort = incomingEffort ?? current.codexModelReasoningEffort;
-    final nextSpeed = incomingSpeed ?? current.codexSpeed;
-    if (permissionMode == current.permissionMode &&
-        executionMode == current.executionMode &&
-        approvalPolicy == current.codexApprovalPolicy &&
-        approvalsReviewer == current.codexApprovalsReviewer &&
-        permissionsMode == current.codexPermissionsMode &&
-        sandboxMode == current.sandboxMode &&
-        planMode == current.planMode &&
-        inPlanMode == current.inPlanMode &&
-        nextModel == current.codexModel &&
-        nextEffort == current.codexModelReasoningEffort &&
-        nextSpeed == current.codexSpeed) {
-      return;
-    }
-    emit(
-      current.copyWith(
-        permissionMode: permissionMode,
-        executionMode: executionMode,
-        codexApprovalPolicy: approvalPolicy,
-        codexApprovalsReviewer: approvalsReviewer,
-        codexPermissionsMode: permissionsMode,
-        sandboxMode: sandboxMode,
-        planMode: planMode,
-        inPlanMode: inPlanMode,
-        codexModel: nextModel,
-        codexModelReasoningEffort: nextEffort,
-        codexSpeed: nextSpeed,
-      ),
-    );
+  void _resetSessionSnapshotAuthorityForConnection() {
+    // A snapshot can only outrank HistoryMessage while it belongs to the
+    // current Bridge socket. After reconnect, the visible state is merely a
+    // fallback until the new peer supplies either SessionInfo or history.
+    _statusFromHistoryFallback = true;
+    _statusFromSessionSnapshot = false;
+    _hasAuthoritativeSessionSnapshot = false;
+    _sessionSnapshotOwnsThreadId = false;
+    _sessionSnapshotOwnsProjectPath = false;
+    _sessionSnapshotOwnsModel = false;
+    _sessionSnapshotOwnsEffort = false;
+    _sessionSnapshotOwnsSpeed = false;
+    _awaitingFreshSessionListAfterReconnect = true;
   }
 
   void _syncCodexContinuityBindingFromSessions(List<SessionInfo> sessions) {
-    if (!isCodex || isClosed) return;
+    if (!isCodex || isClosed || !_bridge.isConnected) return;
     SessionInfo? snapshot;
     for (final session in sessions) {
       if (session.id == sessionId && session.provider == Provider.codex.value) {
@@ -769,22 +811,174 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     if (snapshot == null) return;
 
+    final hadAuthoritativeSessionSnapshot =
+        _hasAuthoritativeSessionSnapshot;
+    _hasAuthoritativeSessionSnapshot = true;
+    final snapshotStatus = ProcessStatus.fromString(snapshot.status);
     final threadId = snapshot.claudeSessionId?.trim();
     final projectPath = snapshot.projectPath.trim();
+    _sessionSnapshotOwnsThreadId |= threadId?.isNotEmpty == true;
+    _sessionSnapshotOwnsProjectPath |= projectPath.isNotEmpty;
     final nextThreadId = threadId == null || threadId.isEmpty
         ? state.claudeSessionId
         : threadId;
     final nextProjectPath = projectPath.isEmpty
         ? state.projectPath
         : projectPath;
+    final shouldApplySnapshotStatus =
+        !state.externalDesktopTurnActive &&
+        (state.status == ProcessStatus.starting ||
+            state.status == ProcessStatus.idle ||
+            _statusFromSessionSnapshot ||
+            (!hadAuthoritativeSessionSnapshot &&
+                _statusFromHistoryFallback));
+    final nextStatus = shouldApplySnapshotStatus
+        ? snapshotStatus
+        : state.status;
+    if (shouldApplySnapshotStatus) {
+      _statusFromSessionSnapshot = true;
+      _statusFromHistoryFallback = false;
+    }
+
+    var nextPermissionMode = state.permissionMode;
+    var nextExecutionMode = state.executionMode;
+    var nextApprovalPolicy = state.codexApprovalPolicy;
+    var nextApprovalsReviewer = state.codexApprovalsReviewer;
+    var nextPermissionsMode = state.codexPermissionsMode;
+    var nextSandboxMode = state.sandboxMode;
+    var nextPlanMode = state.planMode;
+    var nextInPlanMode = state.inPlanMode;
+    final hasPermissionSignals =
+        snapshot.permissionMode?.trim().isNotEmpty == true ||
+        snapshot.codexApprovalPolicy?.trim().isNotEmpty == true ||
+        snapshot.codexApprovalsReviewer?.trim().isNotEmpty == true ||
+        snapshot.codexPermissionsMode?.trim().isNotEmpty == true ||
+        snapshot.codexSandboxMode?.trim().isNotEmpty == true;
+    // A next-turn permission mutation is optimistic until its correlated ACK.
+    // A stale session_list snapshot must not roll that group back meanwhile.
+    if (_pendingPermissionChangeId == null && hasPermissionSignals) {
+      final rawPermissionMode = snapshot.permissionMode?.trim();
+      var hasExplicitPermissionMode = false;
+      for (final mode in PermissionMode.values) {
+        if (mode.value == rawPermissionMode) {
+          nextPermissionMode = mode;
+          hasExplicitPermissionMode = true;
+        }
+      }
+      final hasExecutionSignals =
+          rawPermissionMode?.isNotEmpty == true ||
+          snapshot.codexApprovalPolicy?.trim().isNotEmpty == true;
+      if (hasExecutionSignals) {
+        nextExecutionMode =
+            executionModeFromRaw(snapshot.executionMode) ??
+            deriveExecutionMode(
+              provider: Provider.codex.value,
+              executionMode: snapshot.executionMode,
+              permissionMode: snapshot.permissionMode,
+              approvalPolicy: snapshot.codexApprovalPolicy,
+            );
+        final explicitApprovalPolicy = codexApprovalPolicyFromRaw(
+          snapshot.codexApprovalPolicy,
+        );
+        nextApprovalPolicy =
+            explicitApprovalPolicy ??
+            (rawPermissionMode?.isNotEmpty == true
+                ? codexApprovalPolicyFromLegacyExecutionMode(
+                    nextExecutionMode.value,
+                  )
+                : nextApprovalPolicy);
+      }
+      if (snapshot.codexApprovalsReviewer?.trim().isNotEmpty == true) {
+        nextApprovalsReviewer =
+            isCodexAutoReviewApprovalsReviewer(snapshot.codexApprovalsReviewer)
+            ? 'auto_review'
+            : 'user';
+      }
+      final explicitPermissionsMode = codexPermissionsModeFromRaw(
+        snapshot.codexPermissionsMode,
+      );
+      nextSandboxMode = switch (snapshot.codexSandboxMode) {
+        'danger-full-access' || 'off' => SandboxMode.off,
+        'workspace-write' || 'read-only' || 'on' => SandboxMode.on,
+        _ => nextSandboxMode,
+      };
+      if (explicitPermissionsMode != null) {
+        nextPermissionsMode = explicitPermissionsMode;
+      } else if (snapshot.codexApprovalPolicy?.trim().isNotEmpty == true ||
+          snapshot.codexApprovalsReviewer?.trim().isNotEmpty == true ||
+          snapshot.codexSandboxMode?.trim().isNotEmpty == true) {
+        nextPermissionsMode = codexPermissionsModeFromSettings(
+          approvalPolicy:
+              snapshot.codexApprovalPolicy ?? nextApprovalPolicy.value,
+          approvalsReviewer:
+              snapshot.codexApprovalsReviewer ?? nextApprovalsReviewer,
+          sandboxMode:
+              snapshot.codexSandboxMode ??
+              (nextSandboxMode == SandboxMode.off
+                  ? 'danger-full-access'
+                  : 'workspace-write'),
+        );
+      }
+      if (rawPermissionMode?.isNotEmpty == true || snapshot.planMode) {
+        nextPlanMode = snapshot.resolvedPlanMode;
+        nextInPlanMode = nextPlanMode;
+      }
+      if (!hasExplicitPermissionMode && hasExecutionSignals) {
+        nextPermissionMode = legacyPermissionModeFromModes(
+          Provider.codex,
+          executionMode: nextExecutionMode,
+          planMode: nextPlanMode,
+        );
+      }
+    }
+
+    final nextModel =
+        sanitizeCodexModelName(snapshot.codexModel ?? snapshot.model) ??
+        state.codexModel;
+    final nextEffort =
+        reasoningEffortByValue(snapshot.codexModelReasoningEffort) ??
+        state.codexModelReasoningEffort;
+    final nextSpeed = snapshot.codexServiceTier?.trim().isNotEmpty == true
+        ? codexSpeedFromRaw(snapshot.codexServiceTier)
+        : state.codexSpeed;
+    _sessionSnapshotOwnsModel |=
+        sanitizeCodexModelName(snapshot.codexModel ?? snapshot.model) != null;
+    _sessionSnapshotOwnsEffort |=
+        reasoningEffortByValue(snapshot.codexModelReasoningEffort) != null;
+    _sessionSnapshotOwnsSpeed |=
+        snapshot.codexServiceTier?.trim().isNotEmpty == true;
     if (nextThreadId == state.claudeSessionId &&
-        nextProjectPath == state.projectPath) {
+        nextProjectPath == state.projectPath &&
+        nextStatus == state.status &&
+        nextPermissionMode == state.permissionMode &&
+        nextExecutionMode == state.executionMode &&
+        nextApprovalPolicy == state.codexApprovalPolicy &&
+        nextApprovalsReviewer == state.codexApprovalsReviewer &&
+        nextPermissionsMode == state.codexPermissionsMode &&
+        nextSandboxMode == state.sandboxMode &&
+        nextPlanMode == state.planMode &&
+        nextInPlanMode == state.inPlanMode &&
+        nextModel == state.codexModel &&
+        nextEffort == state.codexModelReasoningEffort &&
+        nextSpeed == state.codexSpeed) {
       return;
     }
     emit(
       state.copyWith(
         claudeSessionId: nextThreadId,
         projectPath: nextProjectPath,
+        status: nextStatus,
+        permissionMode: nextPermissionMode,
+        executionMode: nextExecutionMode,
+        codexApprovalPolicy: nextApprovalPolicy,
+        codexApprovalsReviewer: nextApprovalsReviewer,
+        codexPermissionsMode: nextPermissionsMode,
+        sandboxMode: nextSandboxMode,
+        planMode: nextPlanMode,
+        inPlanMode: nextInPlanMode,
+        codexModel: nextModel,
+        codexModelReasoningEffort: nextEffort,
+        codexSpeed: nextSpeed,
       ),
     );
   }
@@ -1223,6 +1417,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         isLocalMirrorSnapshot: isLocalMirrorSnapshot,
         discardLocalMirrorEntries: discardLocalMirrorEntries,
       );
+      if (msg is StatusMessage) {
+        _statusFromHistoryFallback = false;
+        _statusFromSessionSnapshot = false;
+      }
       if (msg is ToolResultMessage && resolvesPermission) {
         _pendingPermissionRequests.remove(msg.toolUseId);
         _markToolUseResponded(msg.toolUseId);
@@ -1454,6 +1652,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         (originalMsg is HistoryMessage ||
             (originalMsg is SystemMessage &&
                 originalMsg.subtype != 'set_permission_mode'));
+    final historyStatusIsFallbackOnly =
+        originalMsg is HistoryMessage &&
+        isCodex &&
+        _hasAuthoritativeSessionSnapshot;
+    final effectiveStatus = historyStatusIsFallbackOnly
+        ? current.status
+        : update.status;
     final markUserMessagesSent =
         update.markUserMessagesSent && allowUserDelivery;
 
@@ -1747,7 +1952,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
 
     // Stop status refresh timer when status changes from starting
-    if (update.status != null && update.status != ProcessStatus.starting) {
+    if (effectiveStatus != null && effectiveStatus != ProcessStatus.starting) {
       _statusRefreshTimer?.cancel();
       _statusRefreshTimer = null;
     }
@@ -1761,11 +1966,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     var nextEntries = didModifyEntries ? entries : current.entries;
 
     // --- Apply state update ---
+    final historyUsesSessionSnapshotAuthority =
+        originalMsg is HistoryMessage && isCodex;
     final newClaudeSessionId =
-        update.claudeSessionId ?? current.claudeSessionId;
-    final newProjectPath = update.projectPath?.trim().isNotEmpty == true
-        ? update.projectPath
-        : current.projectPath;
+        historyUsesSessionSnapshotAuthority && _sessionSnapshotOwnsThreadId
+        ? current.claudeSessionId
+        : (update.claudeSessionId ?? current.claudeSessionId);
+    final newProjectPath =
+        historyUsesSessionSnapshotAuthority && _sessionSnapshotOwnsProjectPath
+        ? current.projectPath
+        : (update.projectPath?.trim().isNotEmpty == true
+              ? update.projectPath
+              : current.projectPath);
     if (originalMsg
         case InputAckMessage(:final clientMessageId) ||
             InputRejectedMessage(:final clientMessageId)
@@ -1866,7 +2078,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       current.copyWith(
         status: current.externalDesktopTurnActive
             ? ProcessStatus.running
-            : (update.status ?? current.status),
+            : (effectiveStatus ?? current.status),
         entries: nextEntries,
         approval: approval,
         totalCost: usage.totalCost,
@@ -1892,11 +2104,19 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         sandboxMode: preservePendingCodexPermissions
             ? current.sandboxMode
             : (update.sandboxMode ?? current.sandboxMode),
-        codexModel: update.codexModel ?? current.codexModel,
+        codexModel:
+            historyUsesSessionSnapshotAuthority && _sessionSnapshotOwnsModel
+            ? current.codexModel
+            : (update.codexModel ?? current.codexModel),
         codexModelReasoningEffort:
-            update.codexModelReasoningEffort ??
-            current.codexModelReasoningEffort,
-        codexSpeed: update.codexSpeed ?? current.codexSpeed,
+            historyUsesSessionSnapshotAuthority && _sessionSnapshotOwnsEffort
+            ? current.codexModelReasoningEffort
+            : (update.codexModelReasoningEffort ??
+                  current.codexModelReasoningEffort),
+        codexSpeed:
+            historyUsesSessionSnapshotAuthority && _sessionSnapshotOwnsSpeed
+            ? current.codexSpeed
+            : (update.codexSpeed ?? current.codexSpeed),
         planMode: preservePendingCodexPermissions
             ? current.planMode
             : (update.planMode ?? current.planMode),
@@ -1907,6 +2127,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         hiddenToolUseIds: hiddenToolUseIds,
       ),
     );
+    if (originalMsg is HistoryMessage &&
+        effectiveStatus != null &&
+        effectiveStatus != current.status) {
+      _statusFromHistoryFallback =
+          isCodex && !_hasAuthoritativeSessionSnapshot;
+      _statusFromSessionSnapshot = false;
+    }
 
     if (isCodex &&
         (newClaudeSessionId != _desktopContinuityThreadId ||

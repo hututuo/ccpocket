@@ -25,6 +25,8 @@ class MockBridgeService extends BridgeService {
   final cachedMessagesBySession = <String, List<ServerMessage>>{};
   final historySeqBySession = <String, int>{};
   bool connected = true;
+  int authoritativeGeneration = 0;
+  bool authoritativeForCurrentConnection = true;
   List<SessionInfo> sessionSnapshot = const [];
   Set<String> advertisedBridgeCapabilities = const {
     ChatSessionCubit.codexDesktopContinuityCapability,
@@ -37,6 +39,7 @@ class MockBridgeService extends BridgeService {
 
   void emitConnection(BridgeConnectionState state) {
     connected = state == BridgeConnectionState.connected;
+    if (!connected) authoritativeForCurrentConnection = false;
     _connectionController.add(state);
   }
 
@@ -48,6 +51,8 @@ class MockBridgeService extends BridgeService {
   }
 
   void emitSessions(List<SessionInfo> sessions) {
+    authoritativeGeneration++;
+    authoritativeForCurrentConnection = true;
     sessionSnapshot = sessions;
     _sessionListController.add(sessions);
   }
@@ -67,6 +72,13 @@ class MockBridgeService extends BridgeService {
 
   @override
   List<SessionInfo> get sessions => sessionSnapshot;
+
+  @override
+  int get authoritativeSessionListGeneration => authoritativeGeneration;
+
+  @override
+  bool get hasAuthoritativeSessionListForCurrentConnection =>
+      connected && authoritativeForCurrentConnection;
 
   @override
   Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
@@ -849,6 +861,832 @@ void main() {
     );
 
     test(
+      'Codex session snapshot survives stale cached history on first open',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'running',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+        mockBridge.cachedMessagesBySession['s1'] = const [
+          SystemMessage(
+            subtype: 'session_created',
+            provider: 'codex',
+            sessionId: 'bridge-runtime-id',
+            projectPath: '/project',
+          ),
+          StatusMessage(status: ProcessStatus.idle),
+        ];
+
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        final watches = mockBridge.sentMessages
+            .where(
+              (message) => message.type == 'codex_desktop_continuity_watch',
+            )
+            .toList();
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.claudeSessionId, 'thread-1');
+        expect(watches, hasLength(1));
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'codex_desktop_continuity_unwatch',
+          ),
+          isEmpty,
+        );
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [StatusMessage(status: ProcessStatus.idle)],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
+      },
+    );
+
+    test(
+      'Codex session snapshot remains status authority over cached and live history',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+        mockBridge.cachedMessagesBySession['s1'] = const [
+          StatusMessage(status: ProcessStatus.running),
+        ];
+
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.idle);
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [StatusMessage(status: ProcessStatus.running)],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.idle);
+
+        final watch = mockBridge.sentMessages.singleWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final requestId =
+            (jsonDecode(watch.toJson())
+                    as Map<String, dynamic>)['requestId']
+                as String;
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.running,
+            turnId: 'turn-1',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+      },
+    );
+
+    test(
+      'Codex session snapshot keeps identity and config above stale history',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project-new',
+            claudeSessionId: 'thread-new',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'fast',
+          ),
+        ];
+        mockBridge.cachedMessagesBySession['s1'] = const [
+          SystemMessage(
+            subtype: 'init',
+            provider: 'codex',
+            sessionId: 'thread-old',
+            projectPath: '/project-old',
+            model: 'gpt-5.4',
+            modelReasoningEffort: 'high',
+            serviceTier: 'standard',
+          ),
+        ];
+
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        expect(cubit.state.claudeSessionId, 'thread-new');
+        expect(cubit.state.projectPath, '/project-new');
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              SystemMessage(
+                subtype: 'init',
+                provider: 'codex',
+                sessionId: 'thread-older',
+                projectPath: '/project-older',
+                model: 'gpt-5.3-codex',
+                modelReasoningEffort: 'medium',
+                serviceTier: 'standard',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.claudeSessionId, 'thread-new');
+        expect(cubit.state.projectPath, '/project-new');
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'codex_desktop_continuity_watch',
+          ),
+          hasLength(1),
+        );
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'codex_desktop_continuity_unwatch',
+          ),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'first Codex snapshot takes status authority from history fallback',
+      () async {
+        mockBridge.cachedMessagesBySession['s1'] = const [
+          StatusMessage(status: ProcessStatus.running),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
+
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.idle);
+      },
+    );
+
+    test(
+      'first Codex snapshot does not overwrite a live running status',
+      () async {
+        mockBridge.cachedMessagesBySession['s1'] = const [
+          StatusMessage(status: ProcessStatus.running),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.running),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.running);
+      },
+    );
+
+    test('Claude history can still settle a running status', () async {
+      final cubit = createCubit('s1', provider: Provider.claude);
+      addTearDown(cubit.close);
+
+      mockBridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.running),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.status, ProcessStatus.running);
+
+      mockBridge.emitMessage(
+        const HistoryMessage(
+          messages: [StatusMessage(status: ProcessStatus.idle)],
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.status, ProcessStatus.idle);
+    });
+
+    test('Codex history remains status fallback without SessionInfo', () async {
+      mockBridge.cachedMessagesBySession['s1'] = const [
+        StatusMessage(status: ProcessStatus.running),
+      ];
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+      expect(cubit.state.status, ProcessStatus.running);
+
+      mockBridge.emitMessage(
+        const HistoryMessage(
+          messages: [StatusMessage(status: ProcessStatus.idle)],
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.status, ProcessStatus.idle);
+    });
+
+    test(
+      'old Bridge session snapshots can settle their own running baseline',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {};
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'running',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
+
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.idle);
+      },
+    );
+
+    test(
+      'snapshot authority resets when reconnecting to an older Bridge',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project-new',
+            claudeSessionId: 'thread-new',
+            status: 'running',
+            createdAt: '',
+            lastActivityAt: '',
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'fast',
+          ),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        await Future.microtask(() {});
+        mockBridge.advertisedBridgeCapabilities = const {};
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              SystemMessage(
+                subtype: 'init',
+                provider: 'codex',
+                sessionId: 'thread-old',
+                projectPath: '/project-old',
+                model: 'gpt-5.4',
+                modelReasoningEffort: 'medium',
+                serviceTier: 'standard',
+              ),
+              StatusMessage(status: ProcessStatus.idle),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.idle);
+        expect(cubit.state.claudeSessionId, 'thread-old');
+        expect(cubit.state.projectPath, '/project-old');
+        expect(cubit.state.codexModel, 'gpt-5.4');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.medium);
+        expect(cubit.state.codexSpeed, CodexSpeed.standard);
+      },
+    );
+
+    test(
+      'Codex session snapshot hydrates the complete toolbar config',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            permissionMode: 'bypassPermissions',
+            executionMode: 'fullAccess',
+            planMode: false,
+            codexApprovalPolicy: 'never',
+            codexApprovalsReviewer: 'user',
+            codexPermissionsMode: 'fullAccess',
+            codexSandboxMode: 'danger-full-access',
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'fast',
+          ),
+        ];
+
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+        expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+        expect(cubit.state.codexApprovalsReviewer, 'user');
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.fullAccess,
+        );
+        expect(cubit.state.sandboxMode, SandboxMode.off);
+        expect(cubit.state.planMode, isFalse);
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+      },
+    );
+
+    test(
+      'legacy-only full access snapshot also restores never approval',
+      () async {
+        mockBridge.sessionSnapshot = [
+          SessionInfo.fromJson(const {
+            'id': 's1',
+            'provider': 'codex',
+            'projectPath': '/project',
+            'claudeSessionId': 'thread-1',
+            'status': 'idle',
+            'permissionMode': 'bypassPermissions',
+          }),
+        ];
+
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+        expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+      },
+    );
+
+    test('sparse old-Bridge snapshots preserve known Codex config', () async {
+      mockBridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          claudeSessionId: 'thread-1',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+          permissionMode: 'bypassPermissions',
+          executionMode: 'fullAccess',
+          codexApprovalPolicy: 'never',
+          codexApprovalsReviewer: 'user',
+          codexPermissionsMode: 'fullAccess',
+          codexSandboxMode: 'danger-full-access',
+          codexModel: 'gpt-5.6-terra',
+          codexModelReasoningEffort: 'xhigh',
+          codexServiceTier: 'fast',
+        ),
+      ];
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      mockBridge.emitSessions(const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          claudeSessionId: 'thread-1',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ]);
+      await Future.microtask(() {});
+
+      expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+      expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+      expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.fullAccess);
+      expect(cubit.state.codexApprovalsReviewer, 'user');
+      expect(cubit.state.sandboxMode, SandboxMode.off);
+      expect(cubit.state.codexModel, 'gpt-5.6-terra');
+      expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.xhigh);
+      expect(cubit.state.codexSpeed, CodexSpeed.fast);
+
+      mockBridge.emitSessions(const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          claudeSessionId: 'thread-1',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+          executionMode: 'default',
+          codexApprovalsReviewer: 'auto_review',
+          codexSandboxMode: 'workspace-write',
+        ),
+      ]);
+      await Future.microtask(() {});
+
+      expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+      expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+      expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.custom);
+      expect(cubit.state.codexApprovalsReviewer, 'auto_review');
+      expect(cubit.state.sandboxMode, SandboxMode.on);
+    });
+
+    test(
+      'pending next-turn permissions fence stale session snapshots',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            permissionMode: 'acceptEdits',
+            executionMode: 'default',
+            codexApprovalPolicy: 'on-request',
+            codexApprovalsReviewer: 'user',
+            codexPermissionsMode: 'default',
+            codexSandboxMode: 'workspace-write',
+          ),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.setCodexPermissionsMode(
+          CodexPermissionsMode.fullAccess,
+          applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+        );
+        final permissionChangeId =
+            (jsonDecode(mockBridge.sentMessages.last.toJson())
+                    as Map<String, dynamic>)['permissionChangeId']
+                as String;
+        mockBridge.emitSessions(mockBridge.sessionSnapshot);
+        await Future.microtask(() {});
+
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.fullAccess,
+        );
+        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+        expect(cubit.state.sandboxMode, SandboxMode.off);
+
+        mockBridge.emitMessage(
+          SystemMessage(
+            subtype: 'set_permission_mode',
+            provider: 'codex',
+            permissionMode: 'bypassPermissions',
+            executionMode: 'fullAccess',
+            approvalPolicy: 'never',
+            approvalsReviewer: 'user',
+            codexPermissionsMode: 'fullAccess',
+            sandboxMode: 'danger-full-access',
+            planMode: false,
+            permissionChangeId: permissionChangeId,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.isPermissionChangePending, isFalse);
+
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            permissionMode: 'acceptEdits',
+            executionMode: 'default',
+            codexApprovalPolicy: 'on-request',
+            codexApprovalsReviewer: 'auto_review',
+            codexPermissionsMode: 'autoReview',
+            codexSandboxMode: 'workspace-write',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.autoReview,
+        );
+        expect(cubit.state.codexApprovalsReviewer, 'auto_review');
+        expect(cubit.state.sandboxMode, SandboxMode.on);
+      },
+    );
+
+    test(
+      'duplicate connected notifications do not churn continuity watches',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        int sentCount(String type) => mockBridge.sentMessages
+            .where((message) => message.type == type)
+            .length;
+        expect(sentCount('codex_desktop_continuity_watch'), 1);
+
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(sentCount('codex_desktop_continuity_watch'), 1);
+        expect(sentCount('codex_desktop_continuity_unwatch'), 0);
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitSessions(mockBridge.sessionSnapshot);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(sentCount('codex_desktop_continuity_watch'), 2);
+        expect(sentCount('codex_desktop_continuity_unwatch'), 0);
+      },
+    );
+
+    test(
+      'failed continuity watch can bind again from the same snapshot',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        final firstWatch = mockBridge.sentMessages.singleWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final firstRequestId =
+            (jsonDecode(firstWatch.toJson())
+                    as Map<String, dynamic>)['requestId']
+                as String;
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.error,
+            requestId: firstRequestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            errorCode: 'rollout_unavailable',
+            error: 'rollout is not visible yet',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'codex_desktop_continuity_watch',
+          ),
+          hasLength(1),
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+
+        final watches = mockBridge.sentMessages
+            .where(
+              (message) => message.type == 'codex_desktop_continuity_watch',
+            )
+            .toList();
+        expect(watches, hasLength(2));
+        final retryRequestId =
+            (jsonDecode(watches.last.toJson())
+                    as Map<String, dynamic>)['requestId']
+                as String;
+        expect(retryRequestId, isNot(firstRequestId));
+      },
+    );
+
+    test('path rejection stays suppressed until the connection changes', () async {
+      mockBridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/blocked',
+          claudeSessionId: 'thread-1',
+          status: 'running',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ];
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+      final firstWatch = mockBridge.sentMessages.singleWhere(
+        (message) => message.type == 'codex_desktop_continuity_watch',
+      );
+      final requestId =
+          (jsonDecode(firstWatch.toJson()) as Map<String, dynamic>)['requestId']
+              as String;
+
+      mockBridge.emitLocalFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.error,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 's1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          errorCode: 'path_not_allowed',
+          error: 'blocked path',
+        ),
+        sessionId: 's1',
+      );
+      mockBridge.emitSessions(const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/blocked',
+          claudeSessionId: 'thread-1',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ]);
+      await Future.microtask(() {});
+      await Future.microtask(() {});
+
+      int watchCount() => mockBridge.sentMessages
+          .where(
+            (message) => message.type == 'codex_desktop_continuity_watch',
+          )
+          .length;
+      expect(watchCount(), 1);
+      expect(cubit.state.status, ProcessStatus.idle);
+
+      mockBridge.emitConnection(BridgeConnectionState.disconnected);
+      mockBridge.emitConnection(BridgeConnectionState.connected);
+      mockBridge.emitSessions(mockBridge.sessionSnapshot);
+      await Future.microtask(() {});
+      await Future.microtask(() {});
+      expect(watchCount(), 2);
+    });
+
+    test('watching idle settles a stale running session snapshot', () async {
+      mockBridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          claudeSessionId: 'thread-1',
+          status: 'running',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ];
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+      final watch = mockBridge.sentMessages.singleWhere(
+        (message) => message.type == 'codex_desktop_continuity_watch',
+      );
+      final requestId =
+          (jsonDecode(watch.toJson()) as Map<String, dynamic>)['requestId']
+              as String;
+
+      mockBridge.emitLocalFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.watching,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 's1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.idle,
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.status, ProcessStatus.idle);
+      expect(cubit.state.externalDesktopTurnActive, isFalse);
+    });
+
+    test(
       'Codex Desktop continuity settles running state when reconnecting to an older Bridge',
       () async {
         final cubit = createCubit(
@@ -1204,6 +2042,7 @@ void main() {
         expect(cubit.state.status, ProcessStatus.running);
 
         mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitSessions(mockBridge.sessionSnapshot);
         await Future.microtask(() {});
         final reconnectWatch = mockBridge.sentMessages.lastWhere(
           (message) => message.type == 'codex_desktop_continuity_watch',
