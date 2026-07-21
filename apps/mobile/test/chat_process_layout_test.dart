@@ -28,15 +28,15 @@ void main() {
     ];
 
     final layout = buildChatProcessLayout(entries);
-    final turn = layout.turnForEntry(1)!;
+    final segment = layout.segmentForEntry(1)!;
 
-    expect(turn.key, 'client:turn-1');
-    expect(turn.processEntryIndices, {1, 2});
-    expect(turn.summaryEntryIndex, 1);
-    expect(turn.thinkingBlocks, 1);
-    expect(turn.toolCalls, 1);
-    expect(turn.toolResults, 1);
-    expect(layout.turnForEntry(3), isNull);
+    expect(segment.turnKey, 'client:turn-1');
+    expect(segment.processEntryIndices, {1, 2});
+    expect(segment.summaryEntryIndex, 1);
+    expect(segment.thinkingBlocks, 1);
+    expect(segment.toolCalls, 1);
+    expect(segment.toolResults, 1);
+    expect(layout.segmentForEntry(3), isNull);
   });
 
   test('keeps image and artifact results outside the collapsed process', () {
@@ -57,8 +57,8 @@ void main() {
 
     final layout = buildChatProcessLayout(entries);
 
-    expect(layout.turnForEntry(1), isNull);
-    expect(layout.turnForEntry(2), isNull);
+    expect(layout.segmentForEntry(1), isNull);
+    expect(layout.segmentForEntry(2), isNull);
   });
 
   test('attaches inline reasoning disclosure to the final answer', () {
@@ -72,11 +72,78 @@ void main() {
       ),
     ];
 
-    final turn = buildChatProcessLayout(entries).turnForEntry(1)!;
+    final segment = buildChatProcessLayout(entries).segmentForEntry(1)!;
 
-    expect(turn.summaryEntryIndex, 1);
-    expect(turn.hasInlineProcessAt(1), isTrue);
-    expect(turn.processEntryIndices, isEmpty);
+    expect(segment.summaryEntryIndex, 1);
+    expect(segment.hasInlineProcessAt(1), isTrue);
+    expect(segment.processEntryIndices, isEmpty);
+  });
+
+  test('keeps tools in per-output segments under a second-level turn fold', () {
+    final entries = <ChatEntry>[
+      UserChatEntry('investigate', clientMessageId: 'turn-phases'),
+      ServerChatEntry(
+        _assistant('update-1', const [
+          ThinkingContent(thinking: 'first thought'),
+          TextContent(text: 'I will inspect the first file.'),
+          ToolUseContent(
+            id: 'tool-1',
+            name: 'Read',
+            input: {'file_path': 'first.txt'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'tool-1',
+          toolName: 'Read',
+          content: 'first result',
+        ),
+      ),
+      ServerChatEntry(
+        _assistant('hidden-work', const [
+          ToolUseContent(
+            id: 'tool-2',
+            name: 'Read',
+            input: {'file_path': 'second.txt'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'tool-2',
+          toolName: 'Read',
+          content: 'second result',
+        ),
+      ),
+      ServerChatEntry(
+        _assistant('update-2', const [
+          TextContent(text: 'The second file confirms the issue.'),
+        ]),
+      ),
+      ServerChatEntry(
+        _assistant('final', const [TextContent(text: 'Final answer')]),
+      ),
+    ];
+
+    final layout = buildChatProcessLayout(entries);
+    final firstSegment = layout.segmentForEntry(1)!;
+    final secondSegment = layout.segmentForEntry(3)!;
+    final turn = layout.turnForEntry(1)!;
+
+    expect(firstSegment.processEntryIndices, {2});
+    expect(firstSegment.thinkingBlocks, 1);
+    expect(firstSegment.toolCalls, 1);
+    expect(firstSegment.toolResults, 1);
+    expect(secondSegment.processEntryIndices, {3, 4});
+    expect(secondSegment.toolCalls, 1);
+    expect(secondSegment.toolResults, 1);
+    expect(secondSegment.key, isNot(firstSegment.key));
+    expect(turn.intermediateAssistantEntryIndices, {1, 5});
+    expect(turn.intermediateEntryIndices, {1, 2, 3, 4, 5});
+    expect(turn.intermediateSummaryEntryIndex, 1);
+    expect(turn.finalAssistantEntryIndex, 6);
+    expect(layout.segmentForEntry(6), isNull);
   });
 }
 

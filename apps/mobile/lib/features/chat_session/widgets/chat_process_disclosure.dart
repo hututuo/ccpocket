@@ -8,13 +8,13 @@ import 'chat_process_layout.dart';
 class ChatProcessDisclosure extends StatelessWidget {
   const ChatProcessDisclosure({
     super.key,
-    required this.turn,
+    required this.segment,
     required this.expanded,
     required this.onToggle,
     this.running = false,
   });
 
-  final ChatProcessTurnLayout turn;
+  final ChatProcessSegmentLayout segment;
   final bool expanded;
   final VoidCallback onToggle;
   final bool running;
@@ -28,7 +28,7 @@ class ChatProcessDisclosure extends StatelessWidget {
     final title = running
         ? (zh ? '正在思考与执行' : 'Thinking & acting')
         : (zh ? '思考与执行' : 'Thinking & actions');
-    final count = turn.detailCount;
+    final count = segment.detailCount;
     final detail = count > 0 ? (zh ? '$count 项' : '$count items') : null;
 
     return Padding(
@@ -39,7 +39,7 @@ class ChatProcessDisclosure extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          key: ValueKey('chat_process_disclosure_${turn.key}'),
+          key: ValueKey('chat_process_disclosure_${segment.key}'),
           borderRadius: BorderRadius.circular(10),
           onTap: onToggle,
           child: Padding(
@@ -67,6 +67,69 @@ class ChatProcessDisclosure extends StatelessWidget {
                     style: TextStyle(fontSize: 11, color: appColors.subtleText),
                   ),
                 ],
+                const Spacer(),
+                Icon(
+                  expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 17,
+                  color: appColors.subtleText,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ChatIntermediateOutputsDisclosure extends StatelessWidget {
+  const ChatIntermediateOutputsDisclosure({
+    super.key,
+    required this.turn,
+    required this.expanded,
+    required this.onToggle,
+  });
+
+  final ChatProcessTurnLayout turn;
+  final bool expanded;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final color = Theme.of(context).colorScheme.secondary;
+    final count = turn.intermediateOutputCount;
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.bubbleMarginH,
+        vertical: 3,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: ValueKey('chat_intermediate_disclosure_${turn.key}'),
+          borderRadius: BorderRadius.circular(10),
+          onTap: onToggle,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+            child: Row(
+              children: [
+                Icon(Icons.layers_outlined, size: 15, color: color),
+                const SizedBox(width: 7),
+                Text(
+                  zh ? '中间过程' : 'Intermediate updates',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
+                ),
+                const SizedBox(width: 7),
+                Text(
+                  zh ? '$count 条输出' : '$count outputs',
+                  style: TextStyle(fontSize: 11, color: appColors.subtleText),
+                ),
                 const Spacer(),
                 Icon(
                   expanded ? Icons.expand_less : Icons.expand_more,

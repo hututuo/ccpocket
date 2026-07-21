@@ -122,7 +122,8 @@ class ChatMessageList extends StatefulWidget {
 
 class _ChatMessageListState extends State<ChatMessageList> {
   ChatSessionCubit? _pagingCubit;
-  final Set<String> _expandedProcessTurns = {};
+  final Set<String> _expandedProcessSegments = {};
+  final Set<String> _expandedIntermediateTurns = {};
 
   @override
   void initState() {
@@ -439,25 +440,27 @@ class _ChatMessageListState extends State<ChatMessageList> {
                 final turnKey =
                     processLayout.latestTurnKey ??
                     'session:${widget.sessionId}';
-                final expanded = _expandedProcessTurns.contains(turnKey);
-                final liveTurn = ChatProcessTurnLayout(
+                final expanded = _expandedProcessSegments.contains(turnKey);
+                final liveSegment = ChatProcessSegmentLayout(
                   key: turnKey,
+                  turnKey: turnKey,
                   processEntryIndices: const <int>{},
                   summaryEntryIndex: -1,
-                  finalAssistantEntryIndex: null,
+                  assistantEntryIndex: null,
                   thinkingBlocks: thinking.isEmpty ? 0 : 1,
                   toolCalls: 0,
                   toolResults: 0,
+                  hasInlineAssistantProcess: false,
                 );
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     if (thinking.isNotEmpty)
                       ChatProcessDisclosure(
-                        turn: liveTurn,
+                        segment: liveSegment,
                         expanded: expanded,
                         running: true,
-                        onToggle: () => _toggleProcessTurn(turnKey),
+                        onToggle: () => _toggleProcessSegment(turnKey),
                       ),
                     if (thinking.isNotEmpty && expanded)
                       ChatLiveThinkingDetails(text: thinking),
@@ -481,25 +484,62 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
           final entry = allEntries[entryIndex];
           final previous = entryIndex > 0 ? allEntries[entryIndex - 1] : null;
-          final processTurn = processLayout.turnForEntry(entryIndex);
-          final processExpanded =
-              processTurn != null &&
-              _expandedProcessTurns.contains(processTurn.key);
-          if (processTurn != null &&
-              processTurn.isProcessEntry(entryIndex) &&
-              !processExpanded) {
-            if (!processTurn.showsSummaryAt(entryIndex)) {
-              return const SizedBox.shrink();
-            }
+          final processSegment = processLayout.segmentForEntry(entryIndex);
+          final intermediateTurn = processLayout.turnForEntry(entryIndex);
+          final intermediateExpanded =
+              intermediateTurn != null &&
+              _expandedIntermediateTurns.contains(intermediateTurn.key);
+          final showIntermediateHeader =
+              intermediateTurn?.showsIntermediateSummaryAt(entryIndex) == true;
+          if (intermediateTurn != null && !intermediateExpanded) {
+            if (!showIntermediateHeader) return const SizedBox.shrink();
             return AutoScrollTag(
-              key: ValueKey('process:${processTurn.key}'),
+              key: ValueKey('intermediate:${intermediateTurn.key}'),
               controller: widget.scrollController,
               index: entryIndex,
-              child: ChatProcessDisclosure(
-                turn: processTurn,
+              child: ChatIntermediateOutputsDisclosure(
+                turn: intermediateTurn,
                 expanded: false,
-                onToggle: () => _toggleProcessTurn(processTurn.key),
+                onToggle: () => _toggleIntermediateTurn(
+                  intermediateTurn.key,
+                ),
               ),
+            );
+          }
+          final processExpanded =
+              processSegment != null &&
+              _expandedProcessSegments.contains(processSegment.key);
+          if (processSegment != null &&
+              processSegment.isProcessEntry(entryIndex) &&
+              !processExpanded) {
+            if (!processSegment.showsSummaryAt(entryIndex)) {
+              return const SizedBox.shrink();
+            }
+            Widget disclosure = ChatProcessDisclosure(
+              segment: processSegment,
+              expanded: false,
+              onToggle: () => _toggleProcessSegment(processSegment.key),
+            );
+            if (showIntermediateHeader && intermediateTurn != null) {
+              disclosure = Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ChatIntermediateOutputsDisclosure(
+                    turn: intermediateTurn,
+                    expanded: true,
+                    onToggle: () => _toggleIntermediateTurn(
+                      intermediateTurn.key,
+                    ),
+                  ),
+                  disclosure,
+                ],
+              );
+            }
+            return AutoScrollTag(
+              key: ValueKey('process:${processSegment.key}'),
+              controller: widget.scrollController,
+              index: entryIndex,
+              child: disclosure,
             );
           }
           final transcriptTailComplete =
@@ -529,7 +569,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
             onDismissCodexWarning: chatCubit.dismissCodexWarning,
             collapseToolResults: widget.collapseToolResults,
             showAssistantProcessDetails:
-                processTurn?.hasInlineProcessAt(entryIndex) != true ||
+                processSegment?.hasInlineProcessAt(entryIndex) != true ||
                 processExpanded,
             resolvedPlanText: _resolvePlanText(entry),
             hiddenToolUseIds: hiddenToolUseIds,
@@ -571,14 +611,30 @@ class _ChatMessageListState extends State<ChatMessageList> {
             },
             isCodex: widget.isCodex,
           );
-          if (processTurn != null && processTurn.showsSummaryAt(entryIndex)) {
+          if (processSegment != null &&
+              processSegment.showsSummaryAt(entryIndex)) {
             child = Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 ChatProcessDisclosure(
-                  turn: processTurn,
+                  segment: processSegment,
                   expanded: processExpanded,
-                  onToggle: () => _toggleProcessTurn(processTurn.key),
+                  onToggle: () => _toggleProcessSegment(processSegment.key),
+                ),
+                child,
+              ],
+            );
+          }
+          if (showIntermediateHeader && intermediateTurn != null) {
+            child = Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ChatIntermediateOutputsDisclosure(
+                  turn: intermediateTurn,
+                  expanded: true,
+                  onToggle: () => _toggleIntermediateTurn(
+                    intermediateTurn.key,
+                  ),
                 ),
                 child,
               ],
@@ -603,10 +659,18 @@ class _ChatMessageListState extends State<ChatMessageList> {
     );
   }
 
-  void _toggleProcessTurn(String turnKey) {
+  void _toggleProcessSegment(String segmentKey) {
     setState(() {
-      if (!_expandedProcessTurns.add(turnKey)) {
-        _expandedProcessTurns.remove(turnKey);
+      if (!_expandedProcessSegments.add(segmentKey)) {
+        _expandedProcessSegments.remove(segmentKey);
+      }
+    });
+  }
+
+  void _toggleIntermediateTurn(String turnKey) {
+    setState(() {
+      if (!_expandedIntermediateTurns.add(turnKey)) {
+        _expandedIntermediateTurns.remove(turnKey);
       }
     });
   }

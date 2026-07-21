@@ -245,10 +245,15 @@
   once a later user turn or explicit result proves their completion. Runtime
   metadata such as model, effort and continuation still hydrates session state
   but does not require a visible `System:` timeline chip.
-- Historical reasoning and tool execution share one collapsible presentation
-  group; collapsing changes only rendering. It must not discard canonical
-  envelopes, stop live accumulation or change runtime ownership. Persisted Side
-  Chat reuses the same complete Codex session screen and suppresses unsupported
+- Historical process presentation has two independent render-only folds.
+  Reasoning/tool calls/results are first grouped by the visible assistant
+  update that owns them, so one long turn no longer concentrates every tool at
+  a single point. Intermediate visible assistant updates and their own process
+  segments then sit under a turn-level fold, while the final result stays
+  visible. Expanding the turn reveals each still-collapsed process segment.
+  Neither fold may discard canonical envelopes, hide image/artifact results,
+  stop live accumulation or change runtime ownership. Persisted Side Chat
+  reuses the same complete Codex session screen and suppresses unsupported
   actions through explicit capability parameters rather than a second chat UI.
 - The Codex app-server `model/list` result carried by each authoritative
   `session_list` is the Mobile model/effort/service-tier catalog. BridgeService
