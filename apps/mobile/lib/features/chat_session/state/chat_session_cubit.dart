@@ -72,6 +72,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
   StreamSubscription<List<SessionInfo>>? _codexRuntimeSnapshotSubscription;
+  StreamSubscription<int>? _codexModelCatalogSubscription;
   StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
   StreamSubscription<BridgeConnectionState>?
       _desktopContinuityConnectionSubscription;
@@ -113,6 +114,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _desktopContinuityThreadId;
   String? _desktopContinuityProjectPath;
   String? _desktopContinuitySuppressedThreadId;
+  final ValueNotifier<int> codexModelCatalogRevision = ValueNotifier(0);
   String? _desktopContinuitySuppressedProjectPath;
   bool _desktopContinuityWasExternalBeforeDisconnect = false;
 
@@ -291,6 +293,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _updateCodexRuntimeSupportFromSessions(_bridge.sessions);
       _codexRuntimeSnapshotSubscription = _bridge.sessionList.listen(
         _synchronizeCodexRuntimeSnapshot,
+      );
+      codexModelCatalogRevision.value = _bridge.codexModelCatalogRevision;
+      _codexModelCatalogSubscription = _bridge.codexModelCatalogChanges.listen(
+        (revision) => codexModelCatalogRevision.value = revision,
       );
       _synchronizeCodexRuntimeSnapshot(_bridge.sessions);
       _desktopContinuitySubscription = _bridge
@@ -4526,6 +4532,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _goalConnectionSubscription?.cancel();
     _goalSessionListSubscription?.cancel();
     _codexRuntimeSnapshotSubscription?.cancel();
+    _codexModelCatalogSubscription?.cancel();
+    codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
     _desktopContinuitySubscription?.cancel();
     _desktopContinuityConnectionSubscription?.cancel();

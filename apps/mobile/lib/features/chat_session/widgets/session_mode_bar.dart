@@ -39,14 +39,6 @@ class SessionModeBar extends StatelessWidget {
     final permissionMode = chatCubit.state.permissionMode;
     final isCodex = chatCubit.provider == Provider.codex;
     final permissionChangePending = chatCubit.isPermissionChangePending;
-    final codexModel = isCodex ? _currentCodexModel(chatCubit) : null;
-    final codexReasoningEffort = codexModel == null
-        ? null
-        : _effectiveCodexReasoningEffort(
-            chatCubit.state.codexModelReasoningEffort,
-            _codexReasoningEffortsForModel(context, codexModel),
-          );
-
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bar = ClipRRect(
@@ -71,19 +63,30 @@ class SessionModeBar extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (isCodex) ...[
-                  ValueListenableBuilder<String?>(
-                    valueListenable: chatCubit.codexServiceTierRaw,
-                    builder: (context, serviceTierRaw, _) => CodexModelChip(
-                      model: codexModel!,
-                      reasoningEffort: codexReasoningEffort,
-                      speed: chatCubit.state.codexSpeed,
-                      serviceTierRaw: serviceTierRaw,
-                      onTap: () => showCodexModelMenu(
-                        context,
-                        chatCubit,
-                        showExtendedEfforts: showExtendedCodexEfforts,
-                      ),
-                    ),
+                  ValueListenableBuilder<int>(
+                    valueListenable: chatCubit.codexModelCatalogRevision,
+                    builder: (context, _, __) {
+                      final codexModel = _currentCodexModel(chatCubit);
+                      final codexReasoningEffort =
+                          _effectiveCodexReasoningEffort(
+                            chatCubit.state.codexModelReasoningEffort,
+                            _codexReasoningEffortsForModel(context, codexModel),
+                          );
+                      return ValueListenableBuilder<String?>(
+                        valueListenable: chatCubit.codexServiceTierRaw,
+                        builder: (context, serviceTierRaw, _) => CodexModelChip(
+                          model: codexModel,
+                          reasoningEffort: codexReasoningEffort,
+                          speed: chatCubit.state.codexSpeed,
+                          serviceTierRaw: serviceTierRaw,
+                          onTap: () => showCodexModelMenu(
+                            context,
+                            chatCubit,
+                            showExtendedEfforts: showExtendedCodexEfforts,
+                          ),
+                        ),
+                      );
+                    },
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),

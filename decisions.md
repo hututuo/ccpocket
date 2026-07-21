@@ -250,6 +250,12 @@
   envelopes, stop live accumulation or change runtime ownership. Persisted Side
   Chat reuses the same complete Codex session screen and suppresses unsupported
   actions through explicit capability parameters rather than a second chat UI.
+- The Codex app-server `model/list` result carried by each authoritative
+  `session_list` is the Mobile model/effort/service-tier catalog. BridgeService
+  must install that metadata before publishing the matching session snapshot,
+  and an already-open conversation observes catalog revisions without restart.
+  The built-in model list remains only a compatibility fallback when an older
+  Bridge or app-server cannot advertise a catalog.
 - Home owns one bounded list-level continuity watcher for already activated
   running Desktop conversations. It stores completed user/assistant/tool
   payloads in the normal runtime cache and aggregates only bounded transient

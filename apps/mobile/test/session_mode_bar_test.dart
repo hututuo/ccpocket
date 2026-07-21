@@ -21,7 +21,9 @@ class _MockBridgeService extends BridgeService {
       StreamController<(ServerMessage, String?)>.broadcast();
   final _sessionListController =
       StreamController<List<SessionInfo>>.broadcast();
+  final _modelCatalogController = StreamController<int>.broadcast();
   final sentMessages = <ClientMessage>[];
+  int _modelCatalogRevision = 0;
   List<String> availableCodexModels = const [];
   Map<String, List<String>> availableCodexReasoningEfforts = const {};
   Map<String, List<String>> availableCodexServiceTiers = const {};
@@ -48,6 +50,12 @@ class _MockBridgeService extends BridgeService {
   @override
   Map<String, List<String>> get codexModelServiceTiers =>
       availableCodexServiceTiers;
+
+  @override
+  int get codexModelCatalogRevision => _modelCatalogRevision;
+
+  @override
+  Stream<int> get codexModelCatalogChanges => _modelCatalogController.stream;
 
   @override
   Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
@@ -79,6 +87,11 @@ class _MockBridgeService extends BridgeService {
   void emitServiceTier(String? serviceTier) {
     runtimeServiceTier = serviceTier;
     _sessionListController.add(sessions);
+  }
+
+  void emitModelCatalog() {
+    _modelCatalogRevision++;
+    _modelCatalogController.add(_modelCatalogRevision);
   }
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
@@ -121,6 +134,7 @@ class _MockBridgeService extends BridgeService {
     _messageController.close();
     _taggedController.close();
     _sessionListController.close();
+    _modelCatalogController.close();
     super.dispose();
   }
 }
@@ -399,6 +413,31 @@ void main() {
 
     expect(cubit.state.codexModelReasoningEffort, isNull);
     expect(find.text('5.5 high'), findsOneWidget);
+  });
+
+  testWidgets('open chat adopts a later Bridge model catalog', (tester) async {
+    await tester.pumpWidget(_wrap(cubit));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('5.5 high'), findsOneWidget);
+
+    bridge.availableCodexModels = const ['gpt-5.5', 'gpt-5.7-sol'];
+    bridge.availableCodexReasoningEfforts = const {
+      'gpt-5.5': ['ultra'],
+      'gpt-5.7-sol': ['medium', 'high', 'ultra'],
+    };
+    bridge.emitModelCatalog();
+    await tester.pump();
+    await tester.pump();
+    expect(cubit.codexModelCatalogRevision.value, 1);
+
+    // Keep the running session's current model, but immediately adopt the
+    // newly advertised capabilities for that model.
+    final updatedChip = tester.widget<CodexModelChip>(
+      find.byType(CodexModelChip),
+    );
+    expect(updatedChip.model, 'gpt-5.5');
+    expect(updatedChip.reasoningEffort?.value, 'ultra');
+    expect(find.text('5.5 high'), findsNothing);
   });
 
   testWidgets('codex model menu supports GPT-5.6 max and ultra efforts', (

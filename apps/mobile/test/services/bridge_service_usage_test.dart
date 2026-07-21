@@ -113,6 +113,84 @@ void main() {
     });
 
     test(
+      'session listeners observe the matching dynamic Codex model catalog',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final bridge = BridgeService();
+        final observedCatalogs = <List<String>>[];
+        final observedEfforts = <Map<String, List<String>>>[];
+        final revisions = <int>[];
+        final sessionSubscription = bridge.sessionList.listen((_) {
+          observedCatalogs.add(List<String>.from(bridge.codexModels));
+          observedEfforts.add(
+            bridge.codexModelReasoningEfforts.map(
+              (model, efforts) => MapEntry(model, List<String>.from(efforts)),
+            ),
+          );
+        });
+        final catalogSubscription = bridge.codexModelCatalogChanges.listen(
+          revisions.add,
+        );
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': const [],
+            'codexModels': ['gpt-5.6'],
+            'codexModelReasoningEfforts': {
+              'gpt-5.6': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+            },
+          }),
+        );
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': const [],
+            'codexModels': ['gpt-5.7', 'gpt-5.6'],
+            'codexModelReasoningEfforts': {
+              'gpt-5.7': ['medium', 'high', 'ultra'],
+              'gpt-5.6': ['low', 'medium', 'high'],
+            },
+            'codexModelServiceTiers': {
+              'gpt-5.7': ['default', 'fast'],
+            },
+          }),
+        );
+
+        for (
+          var attempt = 0;
+          attempt < 30 && observedCatalogs.length < 2;
+          attempt++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+
+        expect(observedCatalogs, [
+          ['gpt-5.6'],
+          ['gpt-5.7', 'gpt-5.6'],
+        ]);
+        expect(observedEfforts.last['gpt-5.7'], ['medium', 'high', 'ultra']);
+        expect(bridge.codexModelServiceTiers['gpt-5.7'], ['default', 'fast']);
+        expect(revisions, hasLength(2));
+        expect(revisions[1], greaterThan(revisions[0]));
+
+        bridge.disconnect();
+        await sessionSubscription.cancel();
+        await catalogSubscription.cancel();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'switching bridge drops pending starts from previous target',
       () async {
         final oldServer = await HttpServer.bind(

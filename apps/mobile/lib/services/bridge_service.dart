@@ -84,6 +84,7 @@ class BridgeService implements BridgeServiceBase {
       StreamController<BridgeConnectionState>.broadcast();
   final _sessionListController =
       StreamController<List<SessionInfo>>.broadcast();
+  final _codexModelCatalogController = StreamController<int>.broadcast();
   final _sessionStoppedController = StreamController<String>.broadcast();
   final _recentSessionsController =
       StreamController<List<RecentSession>>.broadcast();
@@ -167,6 +168,7 @@ class BridgeService implements BridgeServiceBase {
   List<String> _codexModels = [];
   Map<String, List<String>> _codexModelReasoningEfforts = {};
   Map<String, List<String>> _codexModelServiceTiers = {};
+  int _codexModelCatalogRevision = 0;
   List<String> _codexProfiles = [];
   String? _defaultCodexProfile;
   String? _bridgeVersion;
@@ -237,6 +239,8 @@ class BridgeService implements BridgeServiceBase {
       _connectionController.stream;
   @override
   Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
+  Stream<int> get codexModelCatalogChanges =>
+      _codexModelCatalogController.stream;
   int get authoritativeSessionListGeneration =>
       _authoritativeSessionListGeneration;
   bool get hasAuthoritativeSessionListForCurrentConnection =>
@@ -331,6 +335,7 @@ class BridgeService implements BridgeServiceBase {
       _codexModelReasoningEfforts;
   Map<String, List<String>> get codexModelServiceTiers =>
       _codexModelServiceTiers;
+  int get codexModelCatalogRevision => _codexModelCatalogRevision;
   List<String> get codexProfiles => _codexProfiles;
   String? get defaultCodexProfile => _defaultCodexProfile;
   String? get bridgeVersion => _bridgeVersion;
@@ -1291,8 +1296,6 @@ class BridgeService implements BridgeServiceBase {
                       )
                       .toList(growable: false),
                 );
-                _clearPendingStartActionsForSessions(_sessions);
-                _sessionListController.add(_sessions);
                 _allowedDirs = allowedDirs;
                 _claudeModels = claudeModels;
                 _claudeModelEfforts = claudeModelEfforts;
@@ -1303,6 +1306,14 @@ class BridgeService implements BridgeServiceBase {
                 _defaultCodexProfile = defaultCodexProfile;
                 _bridgeVersion = bridgeVersion;
                 _bridgeCapabilities = bridgeCapabilities.toSet();
+                // Catalog metadata belongs to the same authoritative
+                // session-list snapshot. Publish it before notifying session
+                // listeners so already-open chats never observe the previous
+                // model/effort/tier catalog for a new snapshot.
+                _codexModelCatalogRevision++;
+                _codexModelCatalogController.add(_codexModelCatalogRevision);
+                _clearPendingStartActionsForSessions(_sessions);
+                _sessionListController.add(_sessions);
               case RecentSessionsMessage(:final sessions, :final hasMore):
                 _lastRecentSessionsMessage = msg;
                 final isProjectMerge =
@@ -1623,6 +1634,8 @@ class BridgeService implements BridgeServiceBase {
     _codexModels = const [];
     _codexModelReasoningEfforts = const {};
     _codexModelServiceTiers = const {};
+    _codexModelCatalogRevision++;
+    _codexModelCatalogController.add(_codexModelCatalogRevision);
     _codexProfiles = const [];
     _defaultCodexProfile = null;
     _bridgeVersion = null;
@@ -3683,6 +3696,7 @@ class BridgeService implements BridgeServiceBase {
     _localFeatureMessageController.close();
     _connectionController.close();
     _sessionListController.close();
+    _codexModelCatalogController.close();
     _sessionStoppedController.close();
     _recentSessionsController.close();
     _galleryController.close();
