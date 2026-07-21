@@ -6,6 +6,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import 'claude_effort_motion_style.dart';
+import 'third_party/astraeus/claude_range_slider_fire.dart';
 
 /// The easing used by the Codex Desktop effort and speed controls.
 const Curve codexDesktopMotionCurve = Cubic(0.23, 1, 0.32, 1);
@@ -92,6 +93,14 @@ ClaudeEffortAccent _accentForWidget(CodexEffortMotionSlider widget) {
   );
 }
 
+bool _accentUsesPersistentFire(ClaudeEffortAccent accent) =>
+    accent == ClaudeEffortAccent.max || accent == ClaudeEffortAccent.ultra;
+
+ClaudeRangeSliderFireTier _fireTierForAccent(ClaudeEffortAccent accent) =>
+    accent == ClaudeEffortAccent.max
+    ? ClaudeRangeSliderFireTier.max
+    : ClaudeRangeSliderFireTier.ultra;
+
 enum _EffortMotion {
   idle,
   move,
@@ -110,353 +119,113 @@ int get codexEffortPixelCellCapacity =>
     ClaudeEffortMotionTokens.maxPixelRows;
 
 class _EffortPixelFieldState {
-  static const int _columns = ClaudeEffortMotionTokens.pixelColumns;
-  static const int _rows = ClaudeEffortMotionTokens.maxPixelRows;
+  static const int _columns = ClaudeRangeSliderFireSimulation.columns;
+  static const int _rows = ClaudeRangeSliderFireSimulation.rows;
+
+  final ClaudeRangeSliderFireSimulation _simulation =
+      ClaudeRangeSliderFireSimulation();
 
   ClaudeEffortAccent accent = ClaudeEffortAccent.standard;
-  double elapsed = 0;
   double opacity = 0;
-  double anchorX = 0;
-  double reach = 0;
-  double _reachFrom = 0;
-  double _reachTo = 0;
-  double _reachTransitionElapsed = 0;
-  double _reachTransitionDuration = 0.01;
-  double _reachCellDelay = 0;
-  List<double> _energy = List<double>.filled(
-    codexEffortPixelCellCapacity,
-    0,
-    growable: false,
-  );
-  List<double> _nextEnergy = List<double>.filled(
-    codexEffortPixelCellCapacity,
-    0,
-    growable: false,
-  );
+  bool _extinguishing = false;
 
-  List<double> get energy => _energy;
-
-  int get litCellCount => _energy.where((value) => value > 0.045).length;
+  double get elapsed => _simulation.elapsed;
+  double get reach => _simulation.reach;
+  double get slider => _simulation.slider;
+  int get litCellCount => _simulation.litCellCount;
+  int get litRowCount => _simulation.litRowCount;
+  double get energyChecksum => _simulation.energyChecksum;
 
   double columnEnergy(int column) {
     assert(column >= 0 && column < _columns);
-    var total = 0.0;
-    for (var row = 0; row < _rows; row++) {
-      total += _energy[column * _rows + row];
-    }
-    return total / _rows;
+    return _simulation.columnEnergy(column);
   }
 
-  int farthestColumnAbove(double threshold) {
-    for (var column = _columns - 1; column >= 0; column--) {
-      for (var row = 0; row < _rows; row++) {
-        if (_energy[column * _rows + row] > threshold) return column;
-      }
-    }
-    return -1;
-  }
+  int farthestColumnAbove(double threshold) =>
+      _simulation.highestColumnAbove(threshold);
 
-  int columnCountAbove(double threshold) {
-    var result = 0;
-    for (var column = 0; column < _columns; column++) {
-      var strong = false;
-      for (var row = 0; row < _rows; row++) {
-        if (_energy[column * _rows + row] > threshold) {
-          strong = true;
-          break;
-        }
-      }
-      if (strong) result += 1;
-    }
-    return result;
-  }
+  int lowestColumnAbove(double threshold) =>
+      _simulation.lowestColumnAbove(threshold);
 
-  int get litRowCount {
-    var result = 0;
-    for (var row = 0; row < _rows; row++) {
-      var lit = false;
-      for (var column = 0; column < _columns; column++) {
-        if (_energy[column * _rows + row] > 0.045) {
-          lit = true;
-          break;
-        }
-      }
-      if (lit) result += 1;
-    }
-    return result;
-  }
-
-  double get energyChecksum {
-    var result = 0.0;
-    for (var index = 0; index < _energy.length; index++) {
-      result += _energy[index] * (index + 1);
-    }
-    return result;
-  }
+  int columnCountAbove(double threshold) =>
+      _simulation.columnCountAbove(threshold);
 
   double energyAt(int column, int row) {
     assert(column >= 0 && column < _columns);
     assert(row >= 0 && row < _rows);
-    return _energy[column * _rows + row];
+    return _simulation.luminanceAt(column, row);
   }
 
-  void activate(ClaudeEffortAccent nextAccent, {required bool restart}) {
-    if (accent == nextAccent && !restart) return;
-    final wasVisible = accent != ClaudeEffortAccent.standard && opacity > 0.001;
-    if (!wasVisible) {
-      elapsed = 0;
-      reach = 0;
-    }
-    _reachFrom = reach;
-    _reachTo = ClaudeEffortMotionTokens.pixelReach(nextAccent);
-    _reachTransitionElapsed = 0;
-    _reachTransitionDuration = wasVisible
-        ? 0.36
-        : ClaudeEffortMotionTokens.pixelGrowthSeconds(nextAccent);
-    _reachCellDelay = wasVisible
-        ? 0.18
-        : ClaudeEffortMotionTokens.pixelCellDelaySeconds(nextAccent);
+  double redAt(int column, int row) => _simulation.redAt(column, row);
+  double greenAt(int column, int row) => _simulation.greenAt(column, row);
+  double blueAt(int column, int row) => _simulation.blueAt(column, row);
+  double glowRedAt(int column, int row) => _simulation.glowRedAt(column, row);
+  double glowGreenAt(int column, int row) =>
+      _simulation.glowGreenAt(column, row);
+  double glowBlueAt(int column, int row) => _simulation.glowBlueAt(column, row);
+
+  void setSliderPosition(double position) {
+    _simulation.setSlider(position);
+  }
+
+  void setFramebufferMetrics({
+    required Size size,
+    required double devicePixelRatio,
+  }) {
+    final track = _trackRectForSize(size);
+    _simulation.setFramebufferMetrics(
+      width: track.width,
+      height: track.height,
+      devicePixelRatio: devicePixelRatio,
+    );
+  }
+
+  void activate(
+    ClaudeEffortAccent nextAccent, {
+    required bool restart,
+    required double sliderPosition,
+  }) {
+    assert(_accentUsesPersistentFire(nextAccent));
     accent = nextAccent;
+    _extinguishing = false;
+    _simulation.ignite(
+      slider: sliderPosition,
+      tier: _fireTierForAccent(nextAccent),
+      restart: restart,
+    );
   }
 
-  void settleInitial(ClaudeEffortAccent initialAccent) {
+  void settleInitial(
+    ClaudeEffortAccent initialAccent, {
+    required double sliderPosition,
+  }) {
+    assert(_accentUsesPersistentFire(initialAccent));
     accent = initialAccent;
-    elapsed = ClaudeEffortMotionTokens.pixelGrowthSeconds(initialAccent);
     opacity = 1;
-    reach = ClaudeEffortMotionTokens.pixelReach(initialAccent);
-    _reachFrom = reach;
-    _reachTo = reach;
-    _reachCellDelay = ClaudeEffortMotionTokens.pixelCellDelaySeconds(
-      initialAccent,
+    _extinguishing = false;
+    _simulation.settle(
+      slider: sliderPosition,
+      tier: _fireTierForAccent(initialAccent),
     );
-    _reachTransitionElapsed = _reachTransitionDuration + _reachCellDelay;
-    _primeSettledField();
-  }
-
-  void advanceReach(double deltaSeconds) {
-    _reachTransitionElapsed = math.min(
-      _reachTransitionDuration + _reachCellDelay,
-      _reachTransitionElapsed + deltaSeconds,
-    );
-    final progress = _reachTransitionDuration <= 0
-        ? 1.0
-        : _clampUnit(_reachTransitionElapsed / _reachTransitionDuration);
-    final eased = math.pow(progress, 0.72).toDouble();
-    reach = lerpDouble(_reachFrom, _reachTo, eased)!;
   }
 
   void advanceEnergy(double deltaSeconds) {
-    final activeRows = ClaudeEffortMotionTokens.pixelRows(accent);
-    final density = ClaudeEffortMotionTokens.pixelDensity(accent);
-    final flow = ClaudeEffortMotionTokens.pixelFlowSpeed(accent);
-    // Retain enough of the previous frame to resemble the reference's
-    // feedback texture, but always blend back toward the current target. The
-    // old max(previous, target) rule latched bright pixels indefinitely and
-    // made the trail look like a static bitmap.
-    final feedbackRetention = math.pow(0.88, deltaSeconds * 30).toDouble();
-    final targetResponse = 1 - feedbackRetention;
-    final safeReach = math.max(0.001, reach);
-    final frontIsMoving =
-        _reachTransitionElapsed < _reachTransitionDuration + _reachCellDelay;
-
-    for (var column = 0; column < _columns; column++) {
-      final distance = (column + 0.5) / _columns;
-      for (var row = 0; row < _rows; row++) {
-        final index = column * _rows + row;
-        final previous = _energy[index];
-        final seedA = ClaudeEffortMotionTokens.pixelSeed(column, row);
-        final seedB = ClaudeEffortMotionTokens.pixelSeed(column + 97, row + 43);
-        final seedC = ClaudeEffortMotionTokens.pixelSeed(
-          column + 211,
-          row + 131,
-        );
-        final cellDelay = seedA * _reachCellDelay;
-        final cellElapsed = math.max(0.0, _reachTransitionElapsed - cellDelay);
-        final cellProgress = _reachTransitionDuration <= 0
-            ? 1.0
-            : _clampUnit(cellElapsed / _reachTransitionDuration);
-        final cellEasingPower = 0.64 + seedB * 0.20;
-        final cellReach = lerpDouble(
-          _reachFrom,
-          _reachTo,
-          math.pow(cellProgress, cellEasingPower).toDouble(),
-        )!;
-        if (row >= activeRows || distance > cellReach) {
-          final faded = previous * feedbackRetention;
-          _nextEnergy[index] = faded < 0.004 ? 0 : faded;
-          continue;
-        }
-
-        final proximity = _clampUnit(1 - distance / safeReach);
-        final frequencySeed = ClaudeEffortMotionTokens.pixelSeed(row + 17, 257);
-        final speedSeed = ClaudeEffortMotionTokens.pixelSeed(row + 41, 409);
-        final phaseSeed = ClaudeEffortMotionTokens.pixelRowPhase(row);
-        final phaseA =
-            elapsed * (0.58 + seedA * 0.66) +
-            seedB * math.pi * 2 +
-            seedC * 1.73;
-        final phaseB =
-            elapsed * (0.23 + seedB * 0.43) +
-            seedC * math.pi * 2 +
-            seedA * 4.31;
-        final pulseA = 0.5 + math.sin(phaseA) * 0.5;
-        final pulseB = 0.5 + math.sin(phaseB) * 0.5;
-        final independentFlicker = _clampUnit(pulseA * 0.64 + pulseB * 0.36);
-
-        // Per-row phase and per-cell jitter keep this outward-moving front
-        // from collapsing into one diagonal bright line.
-        final travelWave = ClaudeEffortMotionTokens.pixelTravelWave(
-          distance: distance,
-          elapsed: elapsed,
-          flow: flow,
-          frequencySeed: frequencySeed,
-          speedSeed: speedSeed,
-          phaseSeed: phaseSeed,
-          cellSeed: seedA,
-        );
-        final secondaryFrequencySeed = ClaudeEffortMotionTokens.pixelSeed(
-          row + 61,
-          613,
-        );
-        final secondarySpeedSeed = ClaudeEffortMotionTokens.pixelSeed(
-          row + 113,
-          821,
-        );
-        final secondaryWave = ClaudeEffortMotionTokens.pixelTravelWave(
-          distance: _clampUnit(distance * 0.86 + 0.06),
-          elapsed: elapsed * 0.73,
-          flow: flow * 0.86,
-          frequencySeed: secondaryFrequencySeed,
-          speedSeed: secondarySpeedSeed,
-          phaseSeed: ClaudeEffortMotionTokens.pixelRowPhase(
-            row,
-            secondary: true,
-          ),
-          cellSeed: seedC,
-        );
-        final flowWave = math.max(travelWave, secondaryWave * 0.42);
-        final turbulence = _clampUnit(
-          0.46 +
-              math.sin(phaseA) * 0.22 +
-              math.sin(phaseB) * 0.16 +
-              (flowWave - 0.35) * 0.24,
-        );
-
-        final gatePulse =
-            0.5 +
-            math.sin(elapsed * (0.31 + seedA * 0.49) + seedC * math.pi * 2) *
-                0.5;
-        final animatedGate = seedB * 0.56 + gatePulse * 0.44;
-        final visibility =
-            density * (0.34 + proximity * 0.68) +
-            (independentFlicker - 0.5) * 0.24 +
-            flowWave * 0.15;
-        final visible = animatedGate < visibility;
-
-        final frontGap = (cellReach - distance).abs();
-        final frontFlash = frontIsMoving
-            ? math.exp(-math.pow(frontGap / 0.046, 2)) * (0.32 + seedA * 0.48)
-            : 0.0;
-        final sparkCycle =
-            (elapsed * (0.080 + seedA * 0.052) + seedC * 13.7) % 1.0;
-        final spark = sparkCycle < 0.028 && seedA > 0.57
-            ? math.pow(1 - sparkCycle / 0.028, 2).toDouble() * 0.72
-            : 0.0;
-        final core =
-            math.exp(-distance * 24) * (0.70 + independentFlicker * 0.38);
-        final randomTarget = visible
-            ? _clampUnit(
-                (0.05 + proximity * 0.34 + turbulence * 0.20 + core) *
-                    (0.48 + independentFlicker * 0.62) *
-                    (0.35 + proximity * 0.65),
-              )
-            : 0.0;
-        // The traveling structure must remain visible across the whole active
-        // reach. Random per-cell flicker modulates it, but no longer decides
-        // whether the flow exists at all.
-        final flowTarget = _clampUnit(
-          flowWave *
-              (0.44 + density * 0.44) *
-              (0.80 + proximity * 0.20) *
-              (0.88 + independentFlicker * 0.18),
-        );
-        final localTarget = _clampUnit(
-          math.max(randomTarget, flowTarget) + frontFlash + spark,
-        );
-
-        // Feed a bounded amount of the previous column into this one. Columns
-        // increase away from the thumb, so this is a real outward advection
-        // path rather than a globally synchronized alpha pulse.
-        var advected = 0.0;
-        if (column > 0) {
-          final upstream = _energy[(column - 1) * _rows + row];
-          final neighbourRow = seedC < 0.5
-              ? math.max(0, row - 1)
-              : math.min(activeRows - 1, row + 1);
-          final neighbour = _energy[(column - 1) * _rows + neighbourRow];
-          final upstreamEnergy = math.max(upstream, neighbour * 0.58);
-          advected =
-              upstreamEnergy * (0.55 + flowWave * 0.28) * (0.80 + flow * 0.22);
-        }
-        final target = math.max(localTarget, advected);
-        final smoothed = previous * feedbackRetention + target * targetResponse;
-        // Front/spark impulses may appear immediately, but the next frame goes
-        // back through feedback decay so they cannot latch permanently.
-        final impulse = math.max(frontFlash * 0.82, spark);
-        final next = _clampUnit(math.max(smoothed, impulse));
-        _nextEnergy[index] = next < 0.004 ? 0 : next;
-      }
-    }
-
-    final oldEnergy = _energy;
-    _energy = _nextEnergy;
-    _nextEnergy = oldEnergy;
+    _simulation.advance(deltaSeconds);
   }
 
   void decayEnergy(double deltaSeconds) {
-    final decay = math.pow(0.78, deltaSeconds * 30).toDouble();
-    for (var index = 0; index < _energy.length; index++) {
-      final value = _energy[index] * decay;
-      _energy[index] = value < 0.004 ? 0 : value;
+    if (!_extinguishing) {
+      _simulation.extinguish(slider: slider);
+      _extinguishing = true;
     }
-  }
-
-  void _primeSettledField() {
-    final activeRows = ClaudeEffortMotionTokens.pixelRows(accent);
-    final density = ClaudeEffortMotionTokens.pixelDensity(accent);
-    for (var column = 0; column < _columns; column++) {
-      final distance = (column + 0.5) / _columns;
-      final proximity = _clampUnit(1 - distance / math.max(0.001, reach));
-      for (var row = 0; row < _rows; row++) {
-        final index = column * _rows + row;
-        final seed = ClaudeEffortMotionTokens.pixelSeed(column, row);
-        final secondary = ClaudeEffortMotionTokens.pixelSeed(
-          column + 97,
-          row + 43,
-        );
-        final visible =
-            row < activeRows &&
-            distance <= reach + (seed - 0.5) * 0.035 &&
-            secondary < density * (0.42 + proximity * 0.70);
-        _energy[index] = visible
-            ? _clampUnit(0.16 + proximity * 0.63 + seed * 0.21)
-            : 0;
-      }
-    }
+    _simulation.advance(deltaSeconds);
   }
 
   void clear() {
     accent = ClaudeEffortAccent.standard;
-    elapsed = 0;
     opacity = 0;
-    reach = 0;
-    _reachFrom = 0;
-    _reachTo = 0;
-    _reachTransitionElapsed = 0;
-    _reachTransitionDuration = 0.01;
-    _reachCellDelay = 0;
-    _energy.fillRange(0, _energy.length, 0);
-    _nextEnergy.fillRange(0, _nextEnergy.length, 0);
+    _extinguishing = false;
+    _simulation.clear();
   }
 }
 
@@ -466,8 +235,8 @@ class _PixelFieldRepaint extends ChangeNotifier {
 
 /// A discrete, self-painted effort slider modelled after the Codex Desktop
 /// control. Tier transitions use one finite [AnimationController]. A separate
-/// 30 fps ticker drives a deterministic fixed-grid pixel fire only while a
-/// high tier is visible; it never allocates particle state per frame.
+/// 60 fps ticker drives a deterministic fixed-grid pixel fire only while Max
+/// or Ultra is visible; it never allocates particle state per frame.
 class CodexEffortMotionSlider extends StatefulWidget {
   final List<String> labels;
   final int selectedIndex;
@@ -522,8 +291,6 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   int? _dragStartedIndex;
   int? _dragLastEmittedIndex;
   Duration? _lastPixelTick;
-  double _sliderWidth = 0;
-  TextDirection _sliderDirection = TextDirection.ltr;
 
   int get _count => widget.labels.length;
 
@@ -547,8 +314,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     _fromFast = widget.fastModeEnabled ? 1 : 0;
     _toFast = _fromFast;
     final initialAccent = _accentForWidget(widget);
-    if (initialAccent != ClaudeEffortAccent.standard) {
-      _pixelField.settleInitial(initialAccent);
+    if (_accentUsesPersistentFire(initialAccent)) {
+      _pixelField.settleInitial(initialAccent, sliderPosition: initial);
     }
     _controller = AnimationController(
       vsync: this,
@@ -591,8 +358,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     final currentAccent = _accentForWidget(widget);
     _syncPixelTicker(
       restart:
-          currentAccent != ClaudeEffortAccent.standard &&
-          currentAccent != previousAccent,
+          _accentUsesPersistentFire(currentAccent) &&
+          !_accentUsesPersistentFire(previousAccent),
     );
     final next = _normalizedIndex(_selectedIndex, _count);
     final enteringXHigh =
@@ -653,8 +420,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
 
   bool get _shouldAnimatePixelField =>
       !_reduceMotion &&
-      _sliderWidth > 0 &&
-      _accentForIndex(_selectedIndex) != ClaudeEffortAccent.standard;
+      _accentUsesPersistentFire(_accentForIndex(_selectedIndex));
 
   void _syncPixelTicker({bool restart = false}) {
     if (_reduceMotion) {
@@ -668,9 +434,14 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     }
     if (_shouldAnimatePixelField) {
       final accent = _accentForIndex(_selectedIndex);
-      final shouldRestart = restart || _pixelField.accent != accent;
-      _pixelField.activate(accent, restart: shouldRestart);
-      _updatePixelAnchor();
+      final shouldRestart =
+          restart || !_accentUsesPersistentFire(_pixelField.accent);
+      final sliderPosition = _positionAt(_controller.value);
+      _pixelField.activate(
+        accent,
+        restart: shouldRestart,
+        sliderPosition: sliderPosition,
+      );
       if (_pixelField.opacity <= 0.001) _pixelField.opacity = 0.14;
       _pixelRepaint.markNeedsPaint();
     }
@@ -705,18 +476,19 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     if (_shouldAnimatePixelField) {
       final accent = _accentForIndex(_selectedIndex);
       if (_pixelField.accent != accent) {
-        _pixelField.activate(accent, restart: true);
+        _pixelField.activate(
+          accent,
+          restart: !_accentUsesPersistentFire(_pixelField.accent),
+          sliderPosition: _positionAt(_controller.value),
+        );
       }
-      _updatePixelAnchor();
-      _pixelField.elapsed += elapsedSeconds;
-      _pixelField.advanceReach(elapsedSeconds);
+      _updatePixelSliderPosition();
       _pixelField.advanceEnergy(elapsedSeconds);
       _pixelField.opacity = math.min(
         1,
         _pixelField.opacity + elapsedSeconds / 0.22,
       );
     } else {
-      _pixelField.elapsed += elapsedSeconds.clamp(0.0, 0.05).toDouble();
       _pixelField.decayEnergy(elapsedSeconds);
       final fadeSeconds =
           ClaudeEffortMotionTokens.pixelFadeOutDuration.inMicroseconds /
@@ -735,14 +507,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     }
   }
 
-  void _updatePixelAnchor() {
-    if (_sliderWidth <= 0) return;
-    final position = _positionAt(_controller.value);
-    final thumbX = _positionX(position, _sliderWidth, _sliderDirection);
-    final innerThumbEdge = CodexEffortMotionMetrics.thumbDiameter / 2 - 2;
-    _pixelField.anchorX = _sliderDirection == TextDirection.rtl
-        ? thumbX + innerThumbEdge
-        : thumbX - innerThumbEdge;
+  void _updatePixelSliderPosition() {
+    _pixelField.setSliderPosition(_positionAt(_controller.value));
   }
 
   double _positionAt(double phase) {
@@ -1152,8 +918,10 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
             final width = constraints.maxWidth.isFinite
                 ? constraints.maxWidth
                 : 240.0;
-            _sliderWidth = width;
-            _sliderDirection = direction;
+            _pixelField.setFramebufferMetrics(
+              size: Size(width, CodexEffortMotionMetrics.interactionHeight),
+              devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+            );
             if (_shouldAnimatePixelField && !_pixelTicker.isActive) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (mounted) _syncPixelTicker();
@@ -1468,39 +1236,44 @@ class _CodexEffortTrackPainter extends CustomPainter {
       pixelField.farthestColumnAbove(0.08);
 
   @visibleForTesting
+  int get debugLowestStrongPixelColumn => pixelField.lowestColumnAbove(0.08);
+
+  @visibleForTesting
+  int get debugLowestVisiblePixelColumn => pixelField.lowestColumnAbove(0.012);
+
+  @visibleForTesting
   int get debugStrongPixelColumnCount => pixelField.columnCountAbove(0.08);
 
   @visibleForTesting
-  Rect debugPixelFieldBounds(Size size) {
+  Rect debugPixelFieldBounds(Size size) => _trackRectForSize(size);
+
+  @visibleForTesting
+  double debugPixelColumnCenterX(Size size, int column) {
     final track = _trackRectForSize(size);
-    final anchor = pixelField.anchorX.clamp(track.left, track.right);
-    if (direction == TextDirection.rtl) {
-      final right = anchor + (track.right - anchor) * pixelField.reach;
-      return Rect.fromLTRB(
-        math.max(track.left, anchor),
-        track.top,
-        math.min(track.right, right),
-        track.bottom,
-      );
-    }
-    final left = anchor - (anchor - track.left) * pixelField.reach;
-    return Rect.fromLTRB(
-      math.max(track.left, left),
-      track.top,
-      math.min(track.right, anchor),
-      track.bottom,
+    final logical = ClaudeRangeSliderFireSimulation.columnCenter(column);
+    return direction == TextDirection.rtl
+        ? track.right - logical * track.width
+        : track.left + logical * track.width;
+  }
+
+  @visibleForTesting
+  Size debugPixelCellSize(Size size) {
+    final track = _trackRectForSize(size);
+    return Size(
+      track.width / ClaudeRangeSliderFireSimulation.columns,
+      track.height / ClaudeRangeSliderFireSimulation.rows,
     );
   }
 
   @visibleForTesting
   bool get debugPixelFieldFlowsToPhysicalLeft =>
       direction == TextDirection.ltr &&
-      ClaudeEffortMotionTokens.pixelFlowSpeed(pixelField.accent) >= 0;
+      _accentUsesPersistentFire(pixelField.accent);
 
   @visibleForTesting
   bool get debugPixelFieldFlowsToPhysicalRight =>
       direction == TextDirection.rtl &&
-      ClaudeEffortMotionTokens.pixelFlowSpeed(pixelField.accent) >= 0;
+      _accentUsesPersistentFire(pixelField.accent);
 
   @visibleForTesting
   bool get debugIsTierReveal => _isTierReveal;
@@ -1745,59 +1518,95 @@ class _CodexEffortTrackPainter extends CustomPainter {
     final fieldOpacity = _clampUnit(pixelField.opacity);
     if (fieldOpacity <= 0.001 || trackRect.isEmpty) return;
 
-    final anchorX = pixelField.anchorX.clamp(trackRect.left, trackRect.right);
-    final availableTrail = direction == TextDirection.rtl
-        ? math.max(0.0, trackRect.right - anchorX)
-        : math.max(0.0, anchorX - trackRect.left);
-    final columns = ClaudeEffortMotionTokens.pixelColumns;
-    final rows = ClaudeEffortMotionTokens.maxPixelRows;
-    if (availableTrail <= 1 || columns <= 0 || rows <= 0) return;
+    const columns = ClaudeRangeSliderFireSimulation.columns;
+    const rows = ClaudeRangeSliderFireSimulation.rows;
+    final cellStepX = trackRect.width / columns;
+    final cellStepY = trackRect.height / rows;
+    final cellSize = math.min(cellStepX, cellStepY);
+    final maskEnd = math.min(1.0, pixelField.slider + 0.02);
 
-    final columnStep = availableTrail / columns;
-    final top = trackRect.top + 3;
-    final bottom = trackRect.bottom - 3;
-    final rowStep = (bottom - top) / math.max(1, rows - 1);
-    final energy = pixelField.energy;
-    final pixelPaint = Paint()..isAntiAlias = false;
-    final glowPaint = Paint()..isAntiAlias = false;
+    // The source shader's per-cell mask is smoothstep(0.34, 0.22, ...).
+    // Two fixed rectangles preserve its soft fringe and bright core without
+    // letting the grid geometry depend on the moving thumb.
+    final outerCellSize = Size(cellStepX * 0.756, cellStepY * 0.68);
+    final coreCellSize = Size(cellStepX * 0.489, cellStepY * 0.44);
+    final glowPaint = Paint()
+      ..isAntiAlias = false
+      ..blendMode = BlendMode.screen;
+    final fringePaint = Paint()
+      ..isAntiAlias = false
+      ..blendMode = BlendMode.screen;
+    final corePaint = Paint()
+      ..isAntiAlias = false
+      ..blendMode = BlendMode.screen;
+
     for (var column = 0; column < columns; column++) {
-      final normalizedDistance = (column + 0.5) / columns;
-      final columnOffset = (column + 0.5) * columnStep;
+      final logicalX = ClaudeRangeSliderFireSimulation.columnCenter(column);
+      if (logicalX > maskEnd) continue;
       final x = direction == TextDirection.rtl
-          ? anchorX + columnOffset
-          : anchorX - columnOffset;
-      final proximity = _clampUnit(
-        1 - normalizedDistance / math.max(0.001, pixelField.reach),
-      );
+          ? trackRect.right - logicalX * trackRect.width
+          : trackRect.left + logicalX * trackRect.width;
       for (var row = 0; row < rows; row++) {
-        final value = energy[column * rows + row];
-        if (value <= 0.016) continue;
-        final heat = _clampUnit(value * 0.72 + proximity * 0.42);
-        final alpha = fieldOpacity * math.pow(value, 0.70).toDouble();
-        final basePixelSize = columnStep >= 2.6 ? 2.0 : 1.0;
-        final pixelSize = value > 0.78
-            ? math.min(3.0, basePixelSize + 1)
-            : basePixelSize;
-        final y = top + row * rowStep;
-        final rect = Rect.fromLTWH(
-          (x - pixelSize / 2).roundToDouble(),
-          (y - pixelSize / 2).roundToDouble(),
-          pixelSize,
-          pixelSize,
+        final value = pixelField.energyAt(column, row);
+        final glowLuminance =
+            pixelField.glowRedAt(column, row) * 0.2126 +
+            pixelField.glowGreenAt(column, row) * 0.7152 +
+            pixelField.glowBlueAt(column, row) * 0.0722;
+        if (value <= 0.008 && glowLuminance <= 0.008) continue;
+
+        final logicalY = ClaudeRangeSliderFireSimulation.rowCenter(row);
+        final centre = Offset(x, trackRect.top + logicalY * trackRect.height);
+        final outerRect = Rect.fromCenter(
+          center: centre,
+          width: outerCellSize.width,
+          height: outerCellSize.height,
         );
-        final color = ClaudeEffortMotionTokens.pixelColor(
-          purple: purple,
-          heat: heat,
+        final coreRect = Rect.fromCenter(
+          center: centre,
+          width: coreCellSize.width,
+          height: coreCellSize.height,
         );
-        if (value > 0.58) {
-          glowPaint.color = color.withValues(alpha: _clampUnit(alpha * 0.12));
-          canvas.drawRect(rect.inflate(1.2), glowPaint);
+
+        if (glowLuminance > 0.008) {
+          glowPaint.color = _pixelRgbColor(
+            pixelField.glowRedAt(column, row),
+            pixelField.glowGreenAt(column, row),
+            pixelField.glowBlueAt(column, row),
+            fieldOpacity * math.min(0.32, glowLuminance * 0.22),
+          );
+          canvas.drawRect(outerRect.inflate(cellSize * 0.72), glowPaint);
         }
-        pixelPaint.color = color.withValues(alpha: _clampUnit(alpha));
-        canvas.drawRect(rect, pixelPaint);
+
+        if (value > 0.008) {
+          final red = pixelField.redAt(column, row);
+          final green = pixelField.greenAt(column, row);
+          final blue = pixelField.blueAt(column, row);
+          fringePaint.color = _pixelRgbColor(
+            red,
+            green,
+            blue,
+            fieldOpacity * math.min(0.58, value * 0.72),
+          );
+          canvas.drawRect(outerRect, fringePaint);
+          corePaint.color = _pixelRgbColor(
+            red,
+            green,
+            blue,
+            fieldOpacity * math.min(1.0, value * 1.34),
+          );
+          canvas.drawRect(coreRect, corePaint);
+        }
       }
     }
   }
+
+  Color _pixelRgbColor(double red, double green, double blue, double opacity) =>
+      Color.fromRGBO(
+        (_clampUnit(red) * 255).round(),
+        (_clampUnit(green) * 255).round(),
+        (_clampUnit(blue) * 255).round(),
+        _clampUnit(opacity),
+      );
 
   void _paintArrivalBurst(
     Canvas canvas,

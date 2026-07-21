@@ -105,11 +105,35 @@
 
 ## Purple particle motion, resident conversations, and native transfer gating
 
-- The high-tier Effort animation's product motif is purple particles, not a
-  generic gradient or glossy thumb. Keep particle count deterministic and
-  bounded, paint only during the finite selection transition, clip it to the
-  control, isolate repaints, and suppress it under Reduce Motion. The six wire
-  values and model-advertised availability remain unchanged.
+- High-tier Effort motion has two independent layers. Entering x-high, Max or
+  Ultra plays one deterministic, finite radial arrival burst. Remaining on Max
+  or Ultra runs the persistent fire; x-high does not. Max uses a restrained
+  cool blue-violet palette, while Ultra keeps the hotter purple-to-white
+  reference palette. Switching Max <-> Ultra updates front, intensity and
+  palette without clearing the simulation. The six wire values and
+  model-advertised availability remain unchanged.
+- The persistent fire owns one immutable, full-track 72-by-6 UV grid. Cell
+  centres and dimensions derive only from track bounds. Slider movement changes
+  only the simulation front and the `slider + 2%` visibility mask; it must never
+  translate, stretch, compress or regenerate the grid. LTR maps increasing
+  logical columns left-to-right, and RTL mirrors only the paint coordinate.
+- Fire equations, delayed per-cell hash, decaying feedback, separable blur and
+  tone-map constants are adapted in an isolated GPL module from Astraeus's
+  `claude-range-slider` reference. The former locally invented reach/density/
+  phase/advection model is retired. Max activation and its cooler palette are
+  the explicit CC Pocket extension; Ultra retains the reference activation
+  threshold and palette.
+- Because field columns now use absolute logical UV coordinates instead of
+  "distance from thumb", motion toward lower logical effort produces a negative
+  cross-frame shift in LTR tests. Regression coverage locks grid invariance
+  during dragging, long visible tail coverage, per-cell brighten/dim changes,
+  RTL mirroring, Max/Ultra palette separation and bounded lifecycle cleanup.
+  TickerMode and Reduce Motion suspend the fire without a hidden time jump.
+- The combined local fork is GPL-2.0-only. The original CC Pocket MIT notice is
+  retained verbatim in `LICENSES/MIT.txt`, and the adapted reference keeps its
+  attribution in `THIRD_PARTY_NOTICES.md` plus its module header. License
+  metadata and animation behavior remain separate commits for future upstream
+  reconciliation.
 - A resident conversation is a policy over the existing rebuildable Mobile
   mirror, not a new Codex session type. Its identity is Bridge plus provider
   plus durable provider thread id; never persist a runtime session id. Enabling

@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'third_party/astraeus/claude_range_slider_fire.dart';
+
 /// Visual tiers for the Claude-inspired treatment of the Codex effort slider.
 ///
 /// This module deliberately knows nothing about Codex wire values. The caller
@@ -30,10 +32,10 @@ class ClaudeEffortBurstSpec {
 /// Motion, colour and density tokens for the two-layer high-effort treatment.
 ///
 /// Entering x-high, Max or Ultra produces one bounded arrival burst. While the
-/// selected tier remains active, a deterministic fixed-grid field carries
-/// crisp purple pixels from the thumb toward lower logical effort (physical
-/// screen-left in LTR and screen-right in RTL). The field is disabled entirely
-/// by Reduce Motion.
+/// selected Max or Ultra tier remains active, a deterministic fixed-grid field
+/// carries cool blue-violet or white-hot purple pixels toward lower logical
+/// effort (physical screen-left in LTR and screen-right in RTL). The field is
+/// disabled entirely by Reduce Motion.
 abstract final class ClaudeEffortMotionTokens {
   static const Curve glideCurve = Cubic(0.23, 1, 0.32, 1);
   static const Curve colourCurve = Cubic(0.16, 1, 0.3, 1);
@@ -55,12 +57,12 @@ abstract final class ClaudeEffortMotionTokens {
   static const Color violet = Color(0xFFA78BFA);
   static const Color deepViolet = Color(0xFF7957E8);
 
-  /// The field is intentionally bounded and deterministic: it reuses two fixed
-  /// energy buffers and never allocates particles or random geometry per frame.
-  static const int pixelColumns = 72;
-  static const int maxPixelRows = 6;
-  static const Duration pixelFrameInterval = Duration(milliseconds: 28);
-  static const Duration pixelFadeOutDuration = Duration(milliseconds: 480);
+  /// The GPL reference renderer uses one immutable 72-by-6 UV grid. The thumb
+  /// changes only the fire mask/front; it never moves or rescales these cells.
+  static const int pixelColumns = ClaudeRangeSliderFireSimulation.columns;
+  static const int maxPixelRows = ClaudeRangeSliderFireSimulation.rows;
+  static const Duration pixelFrameInterval = Duration(milliseconds: 16);
+  static const Duration pixelFadeOutDuration = Duration(milliseconds: 300);
 
   /// The restrained radial burst used before the exhaust trail was added.
   /// Lower tiers use a prefix so the arrival cue scales without changing its
@@ -199,96 +201,12 @@ abstract final class ClaudeEffortMotionTokens {
     ClaudeEffortAccent.ultra => 16,
   };
 
-  static int pixelRows(ClaudeEffortAccent accent) => switch (accent) {
-    ClaudeEffortAccent.standard => 0,
-    ClaudeEffortAccent.xHigh => 4,
-    ClaudeEffortAccent.max => 5,
-    ClaudeEffortAccent.ultra => 6,
-  };
-
-  /// Maximum outward reach once the ignition front has fully expanded.
-  static double pixelReach(ClaudeEffortAccent accent) => switch (accent) {
-    ClaudeEffortAccent.standard => 0,
-    ClaudeEffortAccent.xHigh => 0.46,
-    ClaudeEffortAccent.max => 0.78,
-    ClaudeEffortAccent.ultra => 1,
-  };
-
-  static double pixelDensity(ClaudeEffortAccent accent) => switch (accent) {
-    ClaudeEffortAccent.standard => 0,
-    ClaudeEffortAccent.xHigh => 0.44,
-    ClaudeEffortAccent.max => 0.62,
-    ClaudeEffortAccent.ultra => 0.82,
-  };
-
-  static double pixelGrowthSeconds(ClaudeEffortAccent accent) =>
-      switch (accent) {
-        ClaudeEffortAccent.standard => 0.01,
-        ClaudeEffortAccent.xHigh => 0.68,
-        ClaudeEffortAccent.max => 1.02,
-        ClaudeEffortAccent.ultra => 1.55,
-      };
-
-  static double pixelCellDelaySeconds(ClaudeEffortAccent accent) =>
-      switch (accent) {
-        ClaudeEffortAccent.standard => 0,
-        ClaudeEffortAccent.xHigh => 0.24,
-        ClaudeEffortAccent.max => 0.42,
-        ClaudeEffortAccent.ultra => 0.58,
-      };
-
-  /// A positive normalized-distance velocity means energy travels farther from
-  /// the thumb toward lower logical effort.
-  static double pixelFlowSpeed(ClaudeEffortAccent accent) => switch (accent) {
-    ClaudeEffortAccent.standard => 0,
-    ClaudeEffortAccent.xHigh => 0.40,
-    ClaudeEffortAccent.max => 0.52,
-    ClaudeEffortAccent.ultra => 0.64,
-  };
-
-  /// One crest of the persistent field. Normalized distance grows away from
-  /// the thumb, so the negative time term makes crests travel outward.
-  static double pixelTravelWave({
-    required double distance,
-    required double elapsed,
-    required double flow,
-    required double frequencySeed,
-    required double speedSeed,
-    required double phaseSeed,
-    required double cellSeed,
-  }) {
-    final phase =
-        distance * math.pi * (4.55 + frequencySeed * 0.75) -
-        elapsed * (1.85 + flow * 1.55 + speedSeed * 0.35) +
-        phaseSeed * math.pi * 2 +
-        (cellSeed - 0.5) * 0.20;
-    return math.pow(math.max(0.0, math.sin(phase)), 2.2).toDouble();
-  }
-
-  /// Evenly spaced but visually permuted row phases prevent the six rows from
-  /// clustering into a persistent diagonal or synchronized bright band.
-  static double pixelRowPhase(int row, {bool secondary = false}) {
-    const primary = <double>[0.037, 0.537, 0.204, 0.870, 0.370, 0.704];
-    const secondaryPhases = <double>[0.424, 0.924, 0.091, 0.591, 0.258, 0.758];
-    final normalizedRow = row % maxPixelRows;
-    return secondary ? secondaryPhases[normalizedRow] : primary[normalizedRow];
-  }
-
   static double pixelTrackBlend(ClaudeEffortAccent accent) => switch (accent) {
     ClaudeEffortAccent.standard => 1,
     ClaudeEffortAccent.xHigh => 0.42,
     ClaudeEffortAccent.max => 0.34,
     ClaudeEffortAccent.ultra => 0.27,
   };
-
-  /// Stable cell variation used by the clean-room Canvas implementation.
-  static double pixelSeed(int column, int row) {
-    var mixed =
-        (column * 374761393 + row * 668265263 + 0x1E35A7BD) & 0x7fffffff;
-    mixed = ((mixed ^ (mixed >> 13)) * 1274126177) & 0x7fffffff;
-    mixed ^= mixed >> 16;
-    return (mixed & 0x7fffffff) / 0x7fffffff;
-  }
 
   static Duration revealDuration(
     ClaudeEffortAccent accent, {
@@ -381,11 +299,4 @@ abstract final class ClaudeEffortMotionTokens {
     required Color purple,
     required double progress,
   }) => Color.lerp(primary, purple, Curves.easeOutCubic.transform(progress))!;
-
-  static Color pixelColor({required Color purple, required double heat}) {
-    final warm = Color.lerp(deepViolet, purple, _clampUnit(heat * 1.28))!;
-    return Color.lerp(warm, Colors.white, math.pow(heat, 4).toDouble() * 0.82)!;
-  }
-
-  static double _clampUnit(double value) => value.clamp(0.0, 1.0).toDouble();
 }

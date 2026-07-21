@@ -5,6 +5,7 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/widgets/claude_effort_motion_style.dart';
 import 'package:ccpocket/widgets/codex_effort_motion.dart';
 import 'package:ccpocket/widgets/codex_effort_slider.dart';
+import 'package:ccpocket/widgets/third_party/astraeus/claude_range_slider_fire.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -97,7 +98,7 @@ void main() {
     );
   });
 
-  test('arrival burst is finite and pixel-fire tiers stay bounded', () {
+  test('arrival burst stays finite and reference grid is immutable', () {
     final particle = ClaudeEffortMotionTokens.burstParticles.first;
     expect(
       ClaudeEffortMotionTokens.burstProgress(
@@ -126,110 +127,84 @@ void main() {
       ),
       -1,
     );
-    expect(ClaudeEffortMotionTokens.pixelRows(ClaudeEffortAccent.xHigh), 4);
-    expect(ClaudeEffortMotionTokens.pixelRows(ClaudeEffortAccent.max), 5);
-    expect(ClaudeEffortMotionTokens.pixelRows(ClaudeEffortAccent.ultra), 6);
+
+    expect(ClaudeRangeSliderFireSimulation.columns, 72);
+    expect(ClaudeRangeSliderFireSimulation.rows, 6);
+    expect(ClaudeEffortMotionTokens.pixelColumns, 72);
+    expect(ClaudeEffortMotionTokens.maxPixelRows, 6);
     expect(
-      ClaudeEffortMotionTokens.pixelReach(ClaudeEffortAccent.xHigh),
-      lessThan(ClaudeEffortMotionTokens.pixelReach(ClaudeEffortAccent.max)),
+      ClaudeRangeSliderFireSimulation.columnCenter(0),
+      closeTo(0.5 / 72, 0.000001),
     );
     expect(
-      ClaudeEffortMotionTokens.pixelReach(ClaudeEffortAccent.max),
-      lessThan(ClaudeEffortMotionTokens.pixelReach(ClaudeEffortAccent.ultra)),
+      ClaudeRangeSliderFireSimulation.columnCenter(71),
+      closeTo(71.5 / 72, 0.000001),
     );
     expect(
-      ClaudeEffortMotionTokens.pixelDensity(ClaudeEffortAccent.xHigh),
-      lessThan(ClaudeEffortMotionTokens.pixelDensity(ClaudeEffortAccent.max)),
+      ClaudeRangeSliderFireSimulation.rowCenter(0),
+      closeTo(0.5 / 6, 0.000001),
     );
     expect(
-      ClaudeEffortMotionTokens.pixelDensity(ClaudeEffortAccent.max),
-      lessThan(ClaudeEffortMotionTokens.pixelDensity(ClaudeEffortAccent.ultra)),
+      ClaudeRangeSliderFireSimulation.rowCenter(5),
+      closeTo(5.5 / 6, 0.000001),
+    );
+  });
+
+  test('Max and Ultra share flow but keep distinct fire palettes', () {
+    final maxFire = ClaudeRangeSliderFireSimulation()
+      ..settle(slider: 0.8, tier: ClaudeRangeSliderFireTier.max);
+    final ultraFire = ClaudeRangeSliderFireSimulation()
+      ..settle(slider: 1, tier: ClaudeRangeSliderFireTier.ultra);
+
+    expect(maxFire.litRowCount, 6);
+    expect(maxFire.litCellCount, greaterThan(60));
+    expect(
+      ClaudeRangeSliderFireSimulation.columnCenter(58),
+      lessThanOrEqualTo(maxFire.slider + 0.02),
     );
     expect(
-      ClaudeEffortMotionTokens.pixelSeed(7, 3),
-      ClaudeEffortMotionTokens.pixelSeed(7, 3),
+      ClaudeRangeSliderFireSimulation.columnCenter(59),
+      greaterThan(maxFire.slider + 0.02),
     );
-    final seeds = <double>[
+    expect(maxFire.lowestColumnAbove(0.012), lessThan(12));
+    expect(ultraFire.litCellCount, greaterThan(maxFire.litCellCount));
+    expect(ultraFire.energyChecksum, greaterThan(maxFire.energyChecksum));
+
+    double channelTotal(
+      ClaudeRangeSliderFireSimulation simulation,
+      double Function(int column, int row) sample,
+    ) {
+      var total = 0.0;
       for (
         var column = 0;
-        column < ClaudeEffortMotionTokens.pixelColumns;
+        column < ClaudeRangeSliderFireSimulation.columns;
         column++
-      )
-        for (var row = 0; row < ClaudeEffortMotionTokens.maxPixelRows; row++)
-          ClaudeEffortMotionTokens.pixelSeed(column, row),
-    ];
-    expect(seeds.toSet().length, greaterThan(420));
-    expect(seeds.any((value) => value < 0.04), isTrue);
-    expect(seeds.any((value) => value > 0.96), isTrue);
-  });
-
-  test('pixel wave crest travels outward instead of reversing direction', () {
-    const flow = 0.64;
-    const frequencySeed = 0.30;
-    const speedSeed = 0.70;
-    const phaseSeed = 0.30;
-    const cellSeed = 0.50;
-    const laterElapsed = 0.40;
-    final waveNumber = math.pi * (4.55 + frequencySeed * 0.75);
-    final angularSpeed = 1.85 + flow * 1.55 + speedSeed * 0.35;
-    final phaseOffset = phaseSeed * math.pi * 2 + (cellSeed - 0.5) * 0.20;
-    final crestPhase = math.pi / 2 + math.pi * 2;
-    final initialDistance = (crestPhase - phaseOffset) / waveNumber;
-    final laterDistance =
-        (crestPhase + laterElapsed * angularSpeed - phaseOffset) / waveNumber;
-
-    final initialCrest = ClaudeEffortMotionTokens.pixelTravelWave(
-      distance: initialDistance,
-      elapsed: 0,
-      flow: flow,
-      frequencySeed: frequencySeed,
-      speedSeed: speedSeed,
-      phaseSeed: phaseSeed,
-      cellSeed: cellSeed,
-    );
-    final laterAtOldPosition = ClaudeEffortMotionTokens.pixelTravelWave(
-      distance: initialDistance,
-      elapsed: laterElapsed,
-      flow: flow,
-      frequencySeed: frequencySeed,
-      speedSeed: speedSeed,
-      phaseSeed: phaseSeed,
-      cellSeed: cellSeed,
-    );
-    final laterCrest = ClaudeEffortMotionTokens.pixelTravelWave(
-      distance: laterDistance,
-      elapsed: laterElapsed,
-      flow: flow,
-      frequencySeed: frequencySeed,
-      speedSeed: speedSeed,
-      phaseSeed: phaseSeed,
-      cellSeed: cellSeed,
-    );
-
-    expect(initialDistance, inInclusiveRange(0.38, 0.42));
-    expect(laterDistance, greaterThan(initialDistance));
-    expect(initialCrest, greaterThan(0.99));
-    expect(laterCrest, greaterThan(0.99));
-    expect(laterCrest, greaterThan(laterAtOldPosition + 0.5));
-  });
-
-  test('pixel rows use separated primary and secondary phases', () {
-    for (final secondary in <bool>[false, true]) {
-      final phases = <double>[
-        for (var row = 0; row < 6; row++)
-          ClaudeEffortMotionTokens.pixelRowPhase(row, secondary: secondary),
-      ];
-      expect(phases.toSet(), hasLength(6));
-      for (var first = 0; first < phases.length; first++) {
-        for (var second = first + 1; second < phases.length; second++) {
-          final rawDistance = (phases[first] - phases[second]).abs();
-          final circularDistance = math.min(rawDistance, 1 - rawDistance);
-          expect(circularDistance, greaterThan(0.15));
+      ) {
+        for (var row = 0; row < ClaudeRangeSliderFireSimulation.rows; row++) {
+          total += sample(column, row);
         }
       }
+      return total;
     }
-  });
 
+    final maxRed = channelTotal(maxFire, maxFire.redAt);
+    final maxBlue = channelTotal(maxFire, maxFire.blueAt);
+    final ultraRed = channelTotal(ultraFire, ultraFire.redAt);
+    final ultraBlue = channelTotal(ultraFire, ultraFire.blueAt);
+    expect(maxBlue / maxRed, greaterThan(ultraBlue / ultraRed));
+
+    final checksum = maxFire.energyChecksum;
+    for (var frame = 0; frame < 18; frame++) {
+      maxFire.advance(ClaudeRangeSliderFireSimulation.fixedStepSeconds);
+    }
+    expect(maxFire.energyChecksum, isNot(closeTo(checksum, 0.001)));
+
+    maxFire.extinguish(slider: 0.6);
+    for (var frame = 0; frame < 60; frame++) {
+      maxFire.advance(ClaudeRangeSliderFireSimulation.fixedStepSeconds);
+    }
+    expect(maxFire.energyChecksum, lessThan(checksum));
+  });
   testWidgets(
     'drag start/end emits its tier and same-frame return is not lost',
     (tester) async {
@@ -303,7 +278,7 @@ void main() {
     },
   );
 
-  testWidgets('late local Max acknowledgement does not replay its burst', (
+  testWidgets('late Max acknowledgement starts fire without replaying burst', (
     tester,
   ) async {
     final key = GlobalKey<_EffortHarnessState>();
@@ -340,16 +315,14 @@ void main() {
     expect(painter.debugPixelFieldOpacity, greaterThan(0));
     expect(painter.debugPixelFieldReach, greaterThan(0));
     expect(painter.debugPixelFieldFlowsToPhysicalLeft, isTrue);
-    final reachBeforeRebuild = painter.debugPixelFieldReach as double;
+    final checksum = painter.debugPixelEnergyChecksum as double;
     key.currentState!.rebuildOnly();
     await tester.pump(const Duration(milliseconds: 120));
     final dynamic rebuilt = tester
         .widget<CustomPaint>(find.byKey(const ValueKey('motion_slider_paint')))
         .painter;
-    expect(
-      rebuilt.debugPixelFieldReach,
-      greaterThanOrEqualTo(reachBeforeRebuild),
-    );
+    expect(rebuilt.debugPixelFieldOpacity, greaterThan(0));
+    expect(rebuilt.debugPixelEnergyChecksum, isNot(closeTo(checksum, 0.001)));
   });
 
   testWidgets('Fast acknowledgement does not interrupt a tier arrival burst', (
@@ -480,12 +453,13 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    expect(painter().debugPixelFieldReach, inInclusiveRange(0.20, 0.45));
-    expect(painter().debugLitPixelCellCount, inInclusiveRange(4, 240));
-    expect(painter().debugLitPixelRowCount, greaterThan(1));
+    expect(painter().debugPixelFieldReach, inInclusiveRange(0.08, 0.25));
+    expect(painter().debugLitPixelCellCount, inInclusiveRange(0, 80));
     final checksum = painter().debugPixelEnergyChecksum as double;
     await tester.pump(const Duration(milliseconds: 120));
     expect(painter().debugPixelEnergyChecksum, isNot(closeTo(checksum, 0.001)));
+    expect(painter().debugLitPixelCellCount, greaterThan(0));
+    expect(painter().debugLitPixelRowCount, greaterThan(1));
 
     for (var frame = 0; frame < 18; frame++) {
       await tester.pump(const Duration(milliseconds: 100));
@@ -493,6 +467,72 @@ void main() {
     expect(painter().debugPixelFieldReach, greaterThan(0.95));
     expect(painter().debugFarthestStrongPixelColumn, greaterThanOrEqualTo(66));
     expect(painter().debugStrongPixelColumnCount, greaterThan(48));
+  });
+
+  testWidgets('dragging changes the thumb but never translates the fire grid', (
+    tester,
+  ) async {
+    final key = GlobalKey<_EffortHarnessState>();
+    await tester.pumpWidget(
+      _EffortHarness(key: key, initialEffort: ReasoningEffort.ultra),
+    );
+    await tester.pump();
+
+    final slider = find.byKey(const ValueKey('motion_slider'));
+    final paint = find.byKey(const ValueKey('motion_slider_paint'));
+    final size = tester.getSize(paint);
+    dynamic painter() => tester.widget<CustomPaint>(paint).painter;
+    GestureDetector detector() => tester.widget<GestureDetector>(
+      find.descendant(of: slider, matching: find.byType(GestureDetector)),
+    );
+    double xFor(double position) {
+      final inset = CodexEffortMotionMetrics.maxVisualThumbRadius;
+      return inset + (size.width - inset * 2) * position;
+    }
+
+    final Rect initialTrack = painter().debugTrackBounds(size) as Rect;
+    final Rect initialGrid = painter().debugPixelFieldBounds(size) as Rect;
+    final Size initialCell = painter().debugPixelCellSize(size) as Size;
+    final initialCentres = <double>[
+      for (final column in <int>[0, 18, 35, 54, 71])
+        painter().debugPixelColumnCenterX(size, column) as double,
+    ];
+    final initialThumb = painter().debugThumbCenterX(size.width) as double;
+    expect(initialGrid, initialTrack);
+
+    detector().onHorizontalDragStart!(
+      DragStartDetails(localPosition: Offset(xFor(1), 24)),
+    );
+    detector().onHorizontalDragUpdate!(
+      DragUpdateDetails(
+        globalPosition: Offset(xFor(0.4), 24),
+        localPosition: Offset(xFor(0.4), 24),
+      ),
+    );
+    await tester.pump();
+
+    expect(painter().debugThumbCenterX(size.width), isNot(initialThumb));
+    expect(painter().debugPixelFieldBounds(size), initialGrid);
+    expect(painter().debugPixelCellSize(size), initialCell);
+    for (var index = 0; index < initialCentres.length; index++) {
+      final column = <int>[0, 18, 35, 54, 71][index];
+      expect(
+        painter().debugPixelColumnCenterX(size, column),
+        initialCentres[index],
+      );
+    }
+
+    detector().onHorizontalDragUpdate!(
+      DragUpdateDetails(
+        globalPosition: Offset(xFor(0.8), 24),
+        localPosition: Offset(xFor(0.8), 24),
+      ),
+    );
+    await tester.pump();
+    expect(painter().debugPixelFieldBounds(size), initialGrid);
+    expect(painter().debugPixelCellSize(size), initialCell);
+    detector().onHorizontalDragEnd!(DragEndDetails());
+    await tester.pump();
   });
 
   testWidgets('endpoint dots and overshooting thumb stay inside the control', (
@@ -597,27 +637,26 @@ void main() {
           const Duration(milliseconds: 10),
     );
     expect(painter().animation.isAnimating, isFalse);
-    expect(painter().debugPixelFieldOpacity, greaterThan(0));
-    final xHighReach = painter().debugPixelFieldReach as double;
+    expect(painter().debugPixelFieldOpacity, 0);
+    expect(painter().debugPixelFieldReach, 0);
 
     key.currentState!.showMaxAtSameIndex();
     await tester.pump();
     expect(painter().animation.isAnimating, isTrue);
     expect(painter().debugPixelFieldOpacity, greaterThan(0));
-    expect(painter().debugPixelFieldReach, greaterThanOrEqualTo(xHighReach));
     await tester.pump(
       ClaudeEffortMotionTokens.maxRevealDuration +
           const Duration(milliseconds: 10),
     );
     expect(painter().animation.isAnimating, isFalse);
-    final maxReach = painter().debugPixelFieldReach as double;
-    expect(maxReach, greaterThan(xHighReach));
+    expect(painter().debugPixelFieldReach, greaterThan(0));
+    final maxElapsed = painter().debugPixelFieldElapsed as double;
 
     key.currentState!.showUltraAtSameIndex();
     await tester.pump();
     expect(painter().animation.isAnimating, isTrue);
     expect(painter().debugPixelFieldOpacity, greaterThan(0));
-    expect(painter().debugPixelFieldReach, greaterThanOrEqualTo(maxReach));
+    expect(painter().debugPixelFieldElapsed, greaterThanOrEqualTo(maxElapsed));
     await tester.pump(
       ClaudeEffortMotionTokens.ultraRevealDuration +
           const Duration(milliseconds: 10),
@@ -777,7 +816,9 @@ void main() {
         painter().debugFarthestStrongPixelColumn,
         greaterThanOrEqualTo(66),
       );
-      expect(painter().debugStrongPixelColumnCount, greaterThan(48));
+      expect(painter().debugLowestStrongPixelColumn, lessThan(30));
+      expect(painter().debugLowestVisiblePixelColumn, lessThan(12));
+      expect(painter().debugStrongPixelColumnCount, greaterThanOrEqualTo(48));
       final checksum = painter().debugPixelEnergyChecksum as double;
       expect(painter().debugBurstProgress(0), -1);
       await tester.pump(const Duration(milliseconds: 240));
@@ -887,10 +928,11 @@ void main() {
         bestShifts.add(bestShift);
       }
       expect(
-        bestShifts.where((shift) => shift >= 2).length,
+        bestShifts.where((shift) => shift < 0).length,
         greaterThanOrEqualTo(3),
-        reason: 'Expected outward column motion, got shifts $bestShifts',
+        reason: 'Expected leftward reference flow, got shifts $bestShifts',
       );
+      expect(bestShifts.reduce(math.min), lessThanOrEqualTo(-2));
       final rowPairCorrelations = <double>[];
       for (var first = 0; first < 6; first++) {
         for (var second = first + 1; second < 6; second++) {
@@ -901,8 +943,8 @@ void main() {
       }
       expect(
         rowPairCorrelations.reduce(math.max),
-        lessThan(0.92),
-        reason: 'Rows must not collapse into a synchronized bright band',
+        lessThan(0.99),
+        reason: 'Rows must retain per-cell variation from the source hash',
       );
       expect(tester.hasRunningAnimations, isTrue);
       expect(painter().animation.isAnimating, isFalse);
@@ -1094,6 +1136,7 @@ class _EffortHarnessState extends State<_EffortHarness> {
     home: MediaQuery(
       data: MediaQueryData(
         size: const Size(390, 844),
+        devicePixelRatio: 3,
         disableAnimations: reduceMotion,
         accessibleNavigation: reduceMotion,
       ),
