@@ -32,6 +32,7 @@ void main() {
     expect(CodexEffortMotionMetrics.thumbDiameter, 28);
     expect(CodexEffortMotionMetrics.activeThumbDiameter, 32);
     expect(CodexEffortMotionMetrics.tickDiameter, 4);
+    expect(CodexEffortMotionMetrics.activeFillThumbUnderlap, 8);
     expect(ClaudeEffortMotionTokens.burstParticles, hasLength(16));
     expect(ClaudeEffortMotionTokens.pixelColumns, 72);
     expect(ClaudeEffortMotionTokens.maxPixelRows, 6);
@@ -235,8 +236,8 @@ void main() {
     final maxBlue = channelTotal(maxFire, maxFire.blueAt);
     final ultraRed = channelTotal(ultraFire, ultraFire.redAt);
     final ultraBlue = channelTotal(ultraFire, ultraFire.blueAt);
-    expect(maxRed, greaterThan(maxBlue * 1.15));
-    expect(maxRed / maxBlue, greaterThan((ultraRed / ultraBlue) * 1.25));
+    expect(maxRed, greaterThan(maxBlue * 1.5));
+    expect(maxRed / maxBlue, greaterThan((ultraRed / ultraBlue) * 1.5));
 
     final checksum = maxFire.energyChecksum;
     for (var frame = 0; frame < 18; frame++) {
@@ -487,7 +488,7 @@ void main() {
     expect(painter().animation.isAnimating, isFalse);
   });
 
-  testWidgets('tap starts moving next frame and settles without click lag', (
+  testWidgets('primary pointer-down snaps position before pointer-up', (
     tester,
   ) async {
     final key = GlobalKey<_EffortHarnessState>();
@@ -505,13 +506,17 @@ void main() {
         .painter;
 
     expect(painter().debugLogicalPosition, closeTo(0.4, 0.001));
-    await tester.tapAt(Offset(targetX, bounds.center.dy));
+    final gesture = await tester.startGesture(
+      Offset(targetX, bounds.center.dy),
+    );
     await tester.pump();
-    expect(painter().debugLogicalPosition, closeTo(0.4, 0.001));
+    expect(key.currentState!.effort, ReasoningEffort.xhigh);
+    expect(key.currentState!.wireEfforts.last, ReasoningEffort.xhigh);
+    expect(painter().debugLogicalPosition, closeTo(0.6, 0.001));
     await tester.pump(const Duration(milliseconds: 16));
-    expect(painter().debugLogicalPosition, greaterThan(0.4));
-    expect(painter().debugLogicalPosition, lessThan(0.6));
+    expect(painter().debugLogicalPosition, closeTo(0.6, 0.001));
     expect(painter().debugBurstParticleCount, 8);
+    await gesture.up();
     await tester.pump(
       ClaudeEffortMotionTokens.selectionDuration +
           const Duration(milliseconds: 4),
@@ -595,7 +600,14 @@ void main() {
     expect(draggedThumb, isNot(initialThumb));
     expect(
       (painter().debugActiveBounds(size) as Rect).right,
-      closeTo(draggedThumb, 0.001),
+      closeTo(
+        draggedThumb - CodexEffortMotionMetrics.activeFillThumbUnderlap,
+        0.001,
+      ),
+    );
+    expect(
+      painter().debugPixelPaintClipBounds(size),
+      painter().debugActiveBounds(size),
     );
     expect(painter().debugPixelFieldBounds(size), initialGrid);
     expect(painter().debugPixelCellSize(size), initialCell);
@@ -618,7 +630,10 @@ void main() {
         painter().debugThumbCenterX(size.width) as double;
     expect(
       (painter().debugActiveBounds(size) as Rect).right,
-      closeTo(secondDraggedThumb, 0.001),
+      closeTo(
+        secondDraggedThumb - CodexEffortMotionMetrics.activeFillThumbUnderlap,
+        0.001,
+      ),
     );
     expect(painter().debugPixelFieldBounds(size), initialGrid);
     expect(painter().debugPixelCellSize(size), initialCell);
@@ -653,7 +668,14 @@ void main() {
         .painter;
     final Rect ultraActive = ultraPainter.debugActiveBounds(size) as Rect;
     final ultraThumb = ultraPainter.debugThumbCenterX(size.width) as double;
-    expect(ultraActive.right, closeTo(ultraThumb, 0.001));
+    expect(
+      ultraActive.right,
+      closeTo(
+        ultraThumb - CodexEffortMotionMetrics.activeFillThumbUnderlap,
+        0.001,
+      ),
+    );
+    expect(ultraPainter.debugPixelPaintClipBounds(size), ultraActive);
     expect(ultraActive.right, lessThan(track.right));
 
     await tester.pumpWidget(
@@ -790,7 +812,11 @@ void main() {
     expect(painter.debugPixelFieldFlowsToPhysicalLeft, isFalse);
     expect(painter.debugPixelFieldFlowsToPhysicalRight, isTrue);
     expect(field.width, greaterThan(track.width * 0.5));
-    expect(active.left, closeTo(thumb, 0.001));
+    expect(
+      active.left,
+      closeTo(thumb + CodexEffortMotionMetrics.activeFillThumbUnderlap, 0.001),
+    );
+    expect(painter.debugPixelPaintClipBounds(paintSize), active);
     expect(active.left, greaterThan(track.left));
 
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);

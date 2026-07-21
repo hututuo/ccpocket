@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui show VertexMode, Vertices;
 import 'dart:ui' show lerpDouble;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -28,6 +29,7 @@ abstract final class CodexEffortMotionMetrics {
   static const double thumbDiameter = 28;
   static const double activeThumbDiameter = 32;
   static const double tickDiameter = 4;
+  static const double activeFillThumbUnderlap = 8;
   static const double maxVisualThumbRadius =
       activeThumbDiameter / 2 * 1.16 * 1.15;
 }
@@ -302,6 +304,9 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   int? _locallyRequestedIndex;
   int? _dragStartedIndex;
   int? _dragLastEmittedIndex;
+  int? _activePointer;
+  int? _pointerOriginIndex;
+  int? _pointerDownIndex;
   Duration? _lastPixelTick;
 
   int get _count => widget.labels.length;
@@ -574,6 +579,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     double position, {
     ClaudeEffortAccent? revealAccent,
     bool fromDrag = false,
+    bool snapPosition = false,
   }) {
     _pendingFastAfterTierReveal = null;
     final generation = ++_animationGeneration;
@@ -581,8 +587,9 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     final currentThumb = _thumbAt(_controller.value);
     final currentFast = _fastAt(_controller.value);
     _controller.stop();
-    _fromPosition = currentPosition;
-    _toPosition = _clampUnit(position);
+    final targetPosition = _clampUnit(position);
+    _fromPosition = snapPosition ? targetPosition : currentPosition;
+    _toPosition = targetPosition;
     _fromThumb = currentThumb;
     _toThumb = _pressed || _hovered ? 1 : 0;
     _fromFast = currentFast;
@@ -717,7 +724,11 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     });
   }
 
-  void _notifyIndex(int index, {bool fromDrag = false}) {
+  void _notifyIndex(
+    int index, {
+    bool fromDrag = false,
+    bool snapPosition = false,
+  }) {
     if (_count < 2) return;
     final next = index.clamp(0, _count - 1);
     if (next == _selectedIndex && !fromDrag) return;
@@ -738,6 +749,7 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
           ? ClaudeEffortAccent.xHigh
           : null,
       fromDrag: fromDrag,
+      snapPosition: snapPosition,
     );
     if (next != _selectedIndex) {
       HapticFeedback.selectionClick();
@@ -756,13 +768,27 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
   int _indexFromPosition(double position) =>
       (_clampUnit(position) * math.max(0, _count - 1)).round();
 
-  void _beginPress() {
+  void _beginPressAt(PointerDownEvent event, double position) {
+    if (_activePointer != null || (event.buttons & kPrimaryButton) == 0) return;
+    _activePointer = event.pointer;
+    _pointerOriginIndex = _selectedIndex;
+    final next = _indexFromPosition(position).clamp(0, _count - 1);
+    _pointerDownIndex = next;
     _pressed = true;
     _focusNode.requestFocus();
-    _animateThumbTo(1, const Duration(milliseconds: 150));
+    if (next == _selectedIndex) {
+      _animateThumbTo(1, const Duration(milliseconds: 120));
+    } else {
+      _notifyIndex(next, snapPosition: true);
+    }
   }
 
-  void _endPress() {
+  void _endPointer(int pointer) {
+    if (_activePointer != pointer) return;
+    _activePointer = null;
+    _pointerOriginIndex = null;
+    _pointerDownIndex = null;
+    if (_motion == _EffortMotion.drag) return;
     _pressed = false;
     _animateThumbTo(_hovered ? 1 : 0, const Duration(milliseconds: 220));
   }
@@ -773,8 +799,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     _controller.stop();
     _motion = _EffortMotion.drag;
     _pressed = true;
-    _dragStartedIndex = _selectedIndex;
-    _dragLastEmittedIndex = _selectedIndex;
+    _dragStartedIndex = _pointerOriginIndex ?? _selectedIndex;
+    _dragLastEmittedIndex = _pointerDownIndex ?? _selectedIndex;
     setState(() {});
     final normalized = _clampUnit(position);
     _controller.value = normalized;
@@ -811,6 +837,8 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
     _emitDragIndex(next);
     _dragStartedIndex = null;
     _dragLastEmittedIndex = null;
+    _pointerOriginIndex = null;
+    _pointerDownIndex = null;
     _animateTo(
       _normalizedIndex(next, _count),
       revealAccent: enteringUltra
@@ -939,83 +967,81 @@ class _CodexEffortMotionSliderState extends State<CodexEffortMotionSlider>
                 if (mounted) _syncPixelTicker();
               });
             }
-            return GestureDetector(
+            return Listener(
               behavior: HitTestBehavior.opaque,
-              onTapDown: enabled ? (_) => _beginPress() : null,
-              onTapCancel: enabled ? _endPress : null,
-              onTapUp: enabled
-                  ? (details) {
-                      final position = _positionFromLocal(
-                        details.localPosition.dx,
-                        width,
-                        direction,
-                      );
-                      _pressed = false;
-                      final index = _indexFromPosition(position);
-                      if (index == _selectedIndex) {
-                        _animateThumbTo(
-                          _hovered ? 1 : 0,
-                          const Duration(milliseconds: 220),
-                        );
-                      } else {
-                        _notifyIndex(index);
-                      }
-                    }
-                  : null,
-              onHorizontalDragStart: enabled
-                  ? (details) => _startDrag(
+              onPointerDown: enabled
+                  ? (event) => _beginPressAt(
+                      event,
                       _positionFromLocal(
-                        details.localPosition.dx,
+                        event.localPosition.dx,
                         width,
                         direction,
                       ),
                     )
                   : null,
-              onHorizontalDragUpdate: enabled
-                  ? (details) => _updateDrag(
-                      _positionFromLocal(
-                        details.localPosition.dx,
-                        width,
-                        direction,
-                      ),
-                    )
+              onPointerUp: enabled
+                  ? (event) => _endPointer(event.pointer)
                   : null,
-              onHorizontalDragEnd: enabled ? (_) => _finishDrag() : null,
-              onHorizontalDragCancel: enabled ? _finishDrag : null,
-              child: RepaintBoundary(
-                key: ValueKey('${widget.sliderKey}_repaint_boundary'),
-                child: SizedBox(
-                  height: CodexEffortMotionMetrics.interactionHeight,
-                  width: double.infinity,
-                  child: CustomPaint(
-                    key: ValueKey('${widget.sliderKey}_paint'),
-                    painter: _CodexEffortTrackPainter(
-                      animation: _controller,
-                      motion: _motion,
-                      fromPosition: _fromPosition,
-                      toPosition: _toPosition,
-                      fromThumb: _fromThumb,
-                      toThumb: _toThumb,
-                      fromFast: _fromFast,
-                      toFast: _toFast,
-                      maxPositionInterval: _maxPositionInterval,
-                      maxThumbInterval: _maxThumbInterval,
-                      pixelField: _pixelField,
-                      pixelRepaint: _pixelRepaint,
-                      divisions: math.max(0, _count - 1),
-                      direction: direction,
-                      focused: _showFocus,
-                      enabled: enabled,
-                      xHighIndex: widget.xHighIndex,
-                      maxIndex: widget.maxIndex,
-                      ultraIndex: widget.ultraIndex,
-                      reduceMotion: _reduceMotion,
-                      primary: cs.primary,
-                      onPrimary: cs.onPrimary,
-                      inactive: cs.surfaceContainerHighest,
-                      tick: cs.onSurfaceVariant,
-                      outline: cs.outlineVariant,
-                      purple: purple,
+              onPointerCancel: enabled
+                  ? (event) => _endPointer(event.pointer)
+                  : null,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragStart: enabled
+                    ? (details) => _startDrag(
+                        _positionFromLocal(
+                          details.localPosition.dx,
+                          width,
+                          direction,
+                        ),
+                      )
+                    : null,
+                onHorizontalDragUpdate: enabled
+                    ? (details) => _updateDrag(
+                        _positionFromLocal(
+                          details.localPosition.dx,
+                          width,
+                          direction,
+                        ),
+                      )
+                    : null,
+                onHorizontalDragEnd: enabled ? (_) => _finishDrag() : null,
+                onHorizontalDragCancel: enabled ? _finishDrag : null,
+                child: RepaintBoundary(
+                  key: ValueKey('${widget.sliderKey}_repaint_boundary'),
+                  child: SizedBox(
+                    height: CodexEffortMotionMetrics.interactionHeight,
+                    width: double.infinity,
+                    child: CustomPaint(
+                      key: ValueKey('${widget.sliderKey}_paint'),
+                      painter: _CodexEffortTrackPainter(
+                        animation: _controller,
+                        motion: _motion,
+                        fromPosition: _fromPosition,
+                        toPosition: _toPosition,
+                        fromThumb: _fromThumb,
+                        toThumb: _toThumb,
+                        fromFast: _fromFast,
+                        toFast: _toFast,
+                        maxPositionInterval: _maxPositionInterval,
+                        maxThumbInterval: _maxThumbInterval,
+                        pixelField: _pixelField,
+                        pixelRepaint: _pixelRepaint,
+                        divisions: math.max(0, _count - 1),
+                        direction: direction,
+                        focused: _showFocus,
+                        enabled: enabled,
+                        xHighIndex: widget.xHighIndex,
+                        maxIndex: widget.maxIndex,
+                        ultraIndex: widget.ultraIndex,
+                        reduceMotion: _reduceMotion,
+                        primary: cs.primary,
+                        onPrimary: cs.onPrimary,
+                        inactive: cs.surfaceContainerHighest,
+                        tick: cs.onSurfaceVariant,
+                        outline: cs.outlineVariant,
+                        purple: purple,
+                      ),
                     ),
                   ),
                 ),
@@ -1238,21 +1264,19 @@ class _CodexEffortTrackPainter extends CustomPainter {
     size.width,
   );
 
+  @visibleForTesting
+  Rect debugPixelPaintClipBounds(Size size) => debugActiveBounds(size);
+
   Rect _activeRect(Rect trackRect, double logicalPosition, double width) {
     final thumbX = _positionX(logicalPosition, width, direction);
+    final underlap = CodexEffortMotionMetrics.activeFillThumbUnderlap;
+    final edge =
+        (direction == TextDirection.rtl ? thumbX + underlap : thumbX - underlap)
+            .clamp(trackRect.left, trackRect.right)
+            .toDouble();
     return direction == TextDirection.rtl
-        ? Rect.fromLTRB(
-            math.max(trackRect.left, thumbX),
-            trackRect.top,
-            trackRect.right,
-            trackRect.bottom,
-          )
-        : Rect.fromLTRB(
-            trackRect.left,
-            trackRect.top,
-            math.min(trackRect.right, thumbX),
-            trackRect.bottom,
-          );
+        ? Rect.fromLTRB(edge, trackRect.top, trackRect.right, trackRect.bottom)
+        : Rect.fromLTRB(trackRect.left, trackRect.top, edge, trackRect.bottom);
   }
 
   int _indexForPosition(double position) =>
@@ -1562,6 +1586,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
     if (!reduceMotion) {
       canvas.save();
       canvas.clipRRect(trackRRect);
+      canvas.clipRect(activeRect);
       _paintPixelFire(canvas, trackRect);
       canvas.restore();
       if (_isTierReveal) {

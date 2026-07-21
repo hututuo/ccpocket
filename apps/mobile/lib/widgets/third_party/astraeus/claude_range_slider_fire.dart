@@ -426,15 +426,15 @@ final class ClaudeRangeSliderFireSimulation {
     final timeScale = _mix(0.85, 1.0, math.min(_elapsed / 1.5, 1.0));
     final pulse = math.sin(_motionTime * 2.8) * 0.15 + 1;
     final isMax = _tier == ClaudeRangeSliderFireTier.max;
-    final emberR = isMax ? 0.52 : 0.28;
-    final emberG = isMax ? 0.05 : 0.10;
-    final emberB = isMax ? 0.20 : 0.58;
-    final purpleR = isMax ? 0.98 : 0.62;
-    final purpleG = isMax ? 0.18 : 0.32;
-    final purpleB = isMax ? 0.50 : 1.0;
+    final emberR = isMax ? 0.66 : 0.28;
+    final emberG = isMax ? 0.035 : 0.10;
+    final emberB = isMax ? 0.06 : 0.58;
+    final purpleR = isMax ? 1.0 : 0.62;
+    final purpleG = isMax ? 0.12 : 0.32;
+    final purpleB = isMax ? 0.18 : 1.0;
     const whiteR = 1.0;
-    final whiteG = isMax ? 0.72 : 0.94;
-    final whiteB = isMax ? 0.80 : 0.98;
+    final whiteG = isMax ? 0.55 : 0.94;
+    final whiteB = isMax ? 0.52 : 0.98;
     final tierIntensity = isMax ? 0.74 : 1.0;
     for (var column = 0; column < columns; column++) {
       final uvX = _columnCenters[column];

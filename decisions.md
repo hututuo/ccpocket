@@ -108,7 +108,7 @@
 - High-tier Effort motion has two independent layers. Entering x-high, Max or
   Ultra plays one deterministic, finite radial arrival burst. Remaining on Max
   or Ultra runs the persistent fire; x-high does not. Max uses a distinct
-  red-leaning magenta palette at 35% of the original motion rate, while Ultra
+  red-forward crimson palette at 35% of the original motion rate, while Ultra
   keeps the hotter purple-to-white reference palette at 70% of the original
   rate. Switching Max <-> Ultra updates front, intensity, palette and future
   phase rate without clearing the simulation or jumping its accumulated phase.
@@ -121,7 +121,7 @@
 - Fire equations, delayed per-cell hash, decaying feedback, separable blur and
   tone-map constants are adapted in an isolated GPL module from Astraeus's
   `claude-range-slider` reference. The former locally invented reach/density/
-  phase/advection model is retired. Max activation and its red-magenta palette
+  phase/advection model is retired. Max activation and its crimson-red palette
   are the explicit CC Pocket extension; Ultra retains the reference activation
   threshold and purple-white palette.
 - Because field columns now use absolute logical UV coordinates instead of
@@ -138,14 +138,16 @@
   three glow/fringe/core layers share one cached indexed mesh and one
   `drawVertices` submission per frame; dispose each native `Vertices` object
   immediately after recording the draw.
-- The active track ends at the thumb centre in both LTR and RTL, and the thumb
-  is painted above that seam. Do not extend the active track by the thumb's
-  maximum animated radius: that makes the fill protrude beyond the resting
-  circle. This fill correction is independent of the immutable fire grid.
-- A tap starts the position glide on the next rendered frame and reaches the
-  selected effort in 120 ms. The one-shot reveal and persistent fire keep their
-  own longer lifetimes, and drag release retains its independent 150 ms settle;
-  do not make click responsiveness depend on those decorative durations.
+- The active track ends 8 logical points before the thumb centre in LTR and 8
+  points after it in RTL, leaving about 24 physical pixels of underlap on a 3x
+  iPhone display. The persistent fire is clipped to that same active rectangle
+  while its immutable 72-by-6 grid remains full-track. The thumb paints above
+  the seam, so neither the fill nor glow may protrude beyond the resting circle.
+- Primary-pointer down commits the selected tier and snaps the position in the
+  same rendered frame; do not wait for pointer-up or Tap gesture-arena
+  resolution. The one-shot reveal, colour transition and persistent fire still
+  animate independently. Keyboard selection keeps the 120 ms glide, while drag
+  release retains its independent 150 ms settle.
 - The combined local fork is GPL-2.0-only. The original CC Pocket MIT notice is
   retained verbatim in `LICENSES/MIT.txt`, and the adapted reference keeps its
   attribution in `THIRD_PARTY_NOTICES.md` plus its module header. License
