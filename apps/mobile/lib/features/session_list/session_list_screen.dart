@@ -1949,8 +1949,11 @@ class _SessionListScreenState extends State<SessionListScreen>
     final isConnected = connectionState == BridgeConnectionState.connected;
     final showConnectedUI =
         isConnected || connectionState == BridgeConnectionState.reconnecting;
-    final homeFileDropAvailable = context.select<FileTransferService, bool>(
-      (service) => service.platformSupported && service.uploadAvailable,
+    final homeFileDropAvailable = context.select<FileTransferService?, bool>(
+      (service) =>
+          service != null &&
+          service.platformSupported &&
+          service.uploadAvailable,
     );
 
     final l = AppLocalizations.of(context);
