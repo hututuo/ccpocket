@@ -8301,6 +8301,59 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("continues a non-goal turn after an explicit permission restart", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-restart-continue",
+        provider: "codex",
+      },
+      ws,
+    );
+    const oldSessionId = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created")
+      .sessionId as string;
+    const oldSession = (bridge as any).sessionManager.get(oldSessionId);
+    oldSession.status = "running";
+    oldSession.claudeSessionId = "thread-restart-continue";
+    oldSession.history.push({
+      type: "user_input",
+      text: "finish the interrupted task",
+    });
+    oldSession.process.interruptCurrentTurnAndWait.mockResolvedValueOnce(true);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: oldSessionId,
+        mode: "acceptEdits",
+        codexPermissionsMode: "autoReview",
+        applyStrategy: "restart_now",
+      },
+      ws,
+    );
+
+    const replacementSummary = (bridge as any).sessionManager.list()[0];
+    const replacement = (bridge as any).sessionManager.get(
+      replacementSummary.id,
+    );
+    expect(replacement.codexOptions).toMatchObject({
+      threadId: "thread-restart-continue",
+      continueInterruptedTurnAfterStart: true,
+      continuationFallbackText: "继续",
+    });
+    expect(replacement.codexOptions.resumeGoalAfterStart).toBeUndefined();
+    bridge.close();
+  });
+
   it("blocks input and approval while an explicit permission restart settles", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -8494,6 +8547,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         pausedUpdatedAt: 3,
       },
     });
+    expect(
+      replacement.codexOptions.continueInterruptedTurnAfterStart,
+    ).toBeUndefined();
     bridge.close();
   });
 

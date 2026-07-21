@@ -890,8 +890,9 @@ describe("CodexProcess (app-server)", () => {
       .mockResolvedValueOnce({});
     let settled = false;
 
-    const interrupt = proc.interruptCurrentTurnAndWait(500).then(() => {
+    const interrupt = proc.interruptCurrentTurnAndWait(500).then((result) => {
       settled = true;
+      return result;
     });
     await tick();
     expect(request).toHaveBeenCalledWith("turn/interrupt", {
@@ -904,8 +905,120 @@ describe("CodexProcess (app-server)", () => {
       threadId: "thread-interrupt",
       turn: { id: "turn-interrupt", status: "interrupted" },
     });
-    await interrupt;
+    await expect(interrupt).resolves.toBe(true);
     expect(settled).toBe(true);
+  });
+
+  it("does not continue when the turn completed before interrupt won", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-interrupt-race";
+    (proc as any).pendingTurnId = "turn-interrupt-race";
+    (proc as any)._status = "running";
+    let rejectInterrupt!: (error: Error) => void;
+    vi.spyOn(proc as any, "request").mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectInterrupt = reject;
+        }),
+    );
+
+    const interrupt = proc.interruptCurrentTurnAndWait(500);
+    await tick();
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-interrupt-race",
+      turn: { id: "turn-interrupt-race", status: "completed" },
+    });
+    rejectInterrupt(new Error("turn already completed"));
+
+    await expect(interrupt).resolves.toBe(false);
+  });
+
+  it("continues a restarted ordinary turn with empty app-server input", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-empty-continuation";
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockImplementation(async (method: string, params: any) => {
+        expect(method).toBe("turn/start");
+        expect(params).toEqual({
+          threadId: "thread-empty-continuation",
+          input: [],
+        });
+        setTimeout(() => {
+          (proc as any).handleNotification("turn/started", {
+            threadId: "thread-empty-continuation",
+            turn: { id: "turn-empty" },
+          });
+          (proc as any).handleNotification("turn/completed", {
+            threadId: "thread-empty-continuation",
+            turn: { id: "turn-empty", status: "completed" },
+          });
+        }, 0);
+        return { turn: { id: "turn-empty" } };
+      });
+
+    await (proc as any).continueInterruptedTurnAfterBootstrap({
+      continueInterruptedTurnAfterStart: true,
+    });
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(proc.status).toBe("idle");
+  });
+
+  it("falls back to a visible continue prompt when empty input is rejected", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-text-continuation";
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockRejectedValueOnce(new Error("input must not be empty"))
+      .mockImplementationOnce(async (_method: string, params: any) => {
+        expect(params).toEqual({
+          threadId: "thread-text-continuation",
+          input: [{ type: "text", text: "继续" }],
+        });
+        setTimeout(() => {
+          (proc as any).handleNotification("turn/started", {
+            threadId: "thread-text-continuation",
+            turn: { id: "turn-fallback" },
+          });
+          (proc as any).handleNotification("turn/completed", {
+            threadId: "thread-text-continuation",
+            turn: { id: "turn-fallback", status: "completed" },
+          });
+        }, 0);
+        return { turn: { id: "turn-fallback" } };
+      });
+
+    await (proc as any).continueInterruptedTurnAfterBootstrap({
+      continueInterruptedTurnAfterStart: true,
+      continuationFallbackText: "继续",
+    });
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(proc.status).toBe("idle");
+  });
+
+  it("does not resurrect a continuation completed before turn/start replies", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-fast-continuation";
+    vi.spyOn(proc as any, "request").mockImplementation(async () => {
+      (proc as any).handleNotification("turn/started", {
+        threadId: "thread-fast-continuation",
+        turn: { id: "turn-fast" },
+      });
+      (proc as any).handleNotification("turn/completed", {
+        threadId: "thread-fast-continuation",
+        turn: { id: "turn-fast", status: "completed" },
+      });
+      return { turn: { id: "turn-fast" } };
+    });
+
+    await (proc as any).continueInterruptedTurnAfterBootstrap({
+      continueInterruptedTurnAfterStart: true,
+    });
+
+    expect((proc as any).pendingTurnId).toBeNull();
+    expect(proc.status).toBe("idle");
   });
 
   it("validates goal payloads received from app-server", () => {

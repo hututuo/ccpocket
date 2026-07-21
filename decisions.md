@@ -337,3 +337,21 @@
   unreachable computer was already changed. Multi-client updates are broadcast
   from Bridge, and Mobile waits for correlated state before treating a setting
   write as durable.
+
+## Permission restart continuation
+
+- `restart_now` remains the explicit immediate option; next-turn permission
+  updates keep using the existing in-place admission path. Bridge interrupts a
+  running turn only when it must recreate that runtime, and records whether the
+  interrupt actually won the race with natural completion.
+- An active Goal is paused and resumed only through its strict restart lease.
+  Goal continuation and ordinary-turn continuation are mutually exclusive, so
+  a replacement or externally cleared Goal is never revived as a plain turn.
+- For an ordinary turn that Bridge itself interrupted, the replacement runtime
+  first issues the schema-valid `turn/start` with `input: []` so continuation
+  does not invent a visible user message. Only an app-server that rejects that
+  request gets one compatibility fallback using the visible text `继续`.
+- A naturally completed turn is not continued. If both continuation attempts
+  fail, Bridge reports `permission_restart_continuation_failed` and leaves the
+  replacement runtime idle and usable instead of destroying it or retrying an
+  unbounded number of times.

@@ -4329,6 +4329,8 @@ export class BridgeWebSocketServer {
           const sessionName = session.name;
           let goalResumeLease: CodexGoalResumeLease | undefined;
           let restartGoal: CodexGoal | null | undefined = session.codexGoal;
+          let restartOwnedActiveGoal = false;
+          let continueInterruptedTurnAfterStart = false;
 
           {
             // Every path that actually recreates a session uses the same gate,
@@ -4347,6 +4349,7 @@ export class BridgeWebSocketServer {
               }
               if (restartGoal) threadId = restartGoal.threadId;
               if (threadId && restartGoal?.status === "active") {
+                restartOwnedActiveGoal = true;
                 const pausedGoal = await this.codexGoals.set(
                   session.id,
                   { status: "paused" },
@@ -4364,7 +4367,9 @@ export class BridgeWebSocketServer {
                 session.status !== "idle" &&
                 session.status !== "starting"
               ) {
-                await process.interruptCurrentTurnAndWait();
+                const interrupted = await process.interruptCurrentTurnAndWait();
+                continueInterruptedTurnAfterStart =
+                  interrupted === true && !restartOwnedActiveGoal;
               }
             } catch (err) {
               if (goalResumeLease) {
@@ -4542,6 +4547,12 @@ export class BridgeWebSocketServer {
                       resumeGoalLease: goalResumeLease,
                     }
                   : {}),
+                ...(threadId && continueInterruptedTurnAfterStart
+                  ? {
+                      continueInterruptedTurnAfterStart: true,
+                      continuationFallbackText: "继续",
+                    }
+                  : {}),
               },
             );
             const newSession = this.sessionManager.get(newId);
@@ -4652,6 +4663,12 @@ export class BridgeWebSocketServer {
                     resumeGoalLease: goalResumeLease,
                   }
                 : {}),
+              ...(continueInterruptedTurnAfterStart
+                ? {
+                    continueInterruptedTurnAfterStart: true,
+                    continuationFallbackText: "继续",
+                  }
+                : {}),
             },
           );
 
@@ -4704,7 +4721,7 @@ export class BridgeWebSocketServer {
             direction: "internal" as const,
             channel: "bridge" as const,
             type: "permission_mode_changed",
-            detail: `mode=${msg.mode} approval=${newApproval} reviewer=${newReviewer} collaboration=${newCollaboration} thread=${threadId} oldSession=${oldSessionId}`,
+            detail: `mode=${msg.mode} approval=${newApproval} reviewer=${newReviewer} collaboration=${newCollaboration} thread=${threadId} oldSession=${oldSessionId} continued=${continueInterruptedTurnAfterStart}`,
           });
           console.log(
             `[ws] Permission mode change: created new session ${newId} (thread=${threadId}, mode=${msg.mode})`,

@@ -62,6 +62,10 @@ export interface CodexStartOptions {
    * Legacy callers may continue to use resumeGoalAfterStart without a lease.
    */
   resumeGoalLease?: CodexGoalResumeLease;
+  /** Continue one ordinary turn that Bridge interrupted only for a restart. */
+  continueInterruptedTurnAfterStart?: boolean;
+  /** Compatibility fallback when this app-server rejects an empty turn. */
+  continuationFallbackText?: string;
 }
 
 /** Stable identity and pause watermark for a restart-owned Goal pause. */
@@ -476,6 +480,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private inputResolve: ((input: PendingInput) => void) | null = null;
   private pendingTurnId: string | null = null;
+  private lastCompletedTurn:
+    | { turnId: string; status: string }
+    | null = null;
   private pendingTurnCompletion: PendingTurnCompletion | null = null;
   private pendingCoreAction: PendingCoreAction | null = null;
   private activeCoreActionTurnId: string | null = null;
@@ -1940,9 +1947,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   /** Interrupt the active turn and wait for its terminal notification. */
-  async interruptCurrentTurnAndWait(timeoutMs = 5000): Promise<void> {
+  async interruptCurrentTurnAndWait(timeoutMs = 5000): Promise<boolean> {
     const threadId = this._threadId;
-    if (!threadId) return;
+    if (!threadId) return false;
     const deadline = Date.now() + timeoutMs;
     while (!this.stopped && !this.pendingTurnId && this._status === "running") {
       if (Date.now() >= deadline) {
@@ -1951,12 +1958,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
     }
     const turnId = this.pendingTurnId;
-    if (!turnId) return;
+    if (!turnId) return false;
     try {
       await this.request("turn/interrupt", { threadId, turnId });
     } catch (err) {
       // Completion can win the race with the interrupt response.
-      if (this.pendingTurnId !== turnId) return;
+      if (this.pendingTurnId !== turnId) return false;
       throw err;
     }
 
@@ -1966,6 +1973,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
     }
+    return (
+      this.lastCompletedTurn?.turnId === turnId &&
+      this.lastCompletedTurn.status === "interrupted"
+    );
   }
 
   sendInput(text: string, clientMessageId?: string): void {
@@ -2780,6 +2791,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.setStatus("idle");
 
       await this.resumeGoalAfterBootstrap(options);
+      if (
+        options?.continueInterruptedTurnAfterStart &&
+        !options.resumeGoalAfterStart
+      ) {
+        await this.continueInterruptedTurnAfterBootstrap(options);
+      }
 
       // Fetch skills/apps in background (non-blocking)
       this._projectPath = projectPath;
@@ -2866,6 +2883,79 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       );
       return;
     }
+  }
+
+  private async continueInterruptedTurnAfterBootstrap(
+    options: CodexStartOptions,
+  ): Promise<void> {
+    try {
+      // Current app-server schemas allow an empty input list. This resumes the
+      // interrupted model-visible thread without fabricating a user message.
+      await this.runBootstrapContinuation([]);
+      return;
+    } catch (error) {
+      console.warn(
+        `[codex-process] Empty restart continuation was rejected; falling back to text: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    const fallback = options.continuationFallbackText?.trim() || "继续";
+    try {
+      await this.runBootstrapContinuation([
+        { type: "text", text: fallback },
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[codex-process] Restart continuation failed: ${message}`,
+      );
+      this.emitMessage({
+        type: "error",
+        errorCode: "permission_restart_continuation_failed",
+        message:
+          "Permissions were restarted, but automatic continuation failed. " +
+          `Send ${fallback} to resume: ${message}`,
+      });
+      this.setStatus("idle");
+    }
+  }
+
+  private async runBootstrapContinuation(
+    input: Array<Record<string, unknown>>,
+  ): Promise<void> {
+    if (!this._threadId) {
+      throw new Error("No thread ID available for restart continuation");
+    }
+    await this.waitForPendingThreadSettingsUpdates();
+    this.lastTokenUsage = null;
+    this.setStatus("running");
+
+    await new Promise<void>((resolve, reject) => {
+      this.pendingTurnCompletion = { resolve, reject };
+      void this.request("turn/start", {
+        threadId: this._threadId,
+        input,
+      })
+        .then((result) => {
+          const turn = (result as Record<string, unknown>).turn as
+            | Record<string, unknown>
+            | undefined;
+          // app-server may emit turn/completed before replying to turn/start.
+          // Never resurrect a turn that the notification path already settled.
+          if (
+            this.pendingTurnCompletion &&
+            typeof turn?.id === "string"
+          ) {
+            this.pendingTurnId = turn.id;
+          }
+        })
+        .catch((error) => {
+          this.pendingTurnCompletion = null;
+          this.pendingTurnId = null;
+          this.setStatus("idle");
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
   }
 
   private async resolveWritableRootsConfig(
@@ -3692,6 +3782,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const turnId = stringOrNull(turn?.id);
         if (turnId) {
           this.pendingTurnId = turnId;
+          this.lastCompletedTurn = null;
           this.observeCoreActionTurnStarted(turnId);
           this.agentTurnTracker.startTurn(turnId);
         }
@@ -3951,6 +4042,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     const turnId = stringValue(turn?.id) ?? this.pendingTurnId;
     this.observeCoreActionTurnCompleted(turnId);
     const status = String(turn?.status ?? "completed");
+    if (turnId) this.lastCompletedTurn = { turnId, status };
     this.finalizePendingAgentText(turnId);
 
     const usage = this.lastTokenUsage;
