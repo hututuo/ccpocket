@@ -146,6 +146,7 @@ class ConversationMirrorStore {
     required int pageIndex,
     required int pageCount,
     required List<ConversationMirrorEntryInput> entries,
+    bool transportFragmented = false,
   }) async {
     _validateKey(key);
     _validateGeneration(generation);
@@ -171,11 +172,19 @@ class ConversationMirrorStore {
       );
     }
 
-    final prepared = _prepareEntries(entries);
+    final prepared = _prepareEntries(
+      entries,
+      maxEntryBytes: transportFragmented
+          ? limits.maxTotalBytes
+          : limits.maxEntryBytes,
+    );
     final pageBytes = prepared.fold<int>(0, (sum, entry) => sum + entry.bytes);
-    if (pageBytes > limits.maxPageBytes) {
+    final maxPageBytes = transportFragmented
+        ? limits.maxTotalBytes
+        : limits.maxPageBytes;
+    if (pageBytes > maxPageBytes) {
       throw ConversationMirrorValidationException(
-        'Page is $pageBytes bytes; limit is ${limits.maxPageBytes}.',
+        'Page is $pageBytes bytes; limit is $maxPageBytes.',
       );
     }
     _validateDistinctInputs(prepared);
@@ -1026,10 +1035,21 @@ class ConversationMirrorStore {
   }
 
   List<_PreparedEntry> _prepareEntries(
-    List<ConversationMirrorEntryInput> entries,
-  ) => entries.map(_prepareEntry).toList(growable: false);
+    List<ConversationMirrorEntryInput> entries, {
+    int? maxEntryBytes,
+  }) => entries
+      .map(
+        (entry) => _prepareEntry(
+          entry,
+          maxEntryBytes: maxEntryBytes ?? limits.maxEntryBytes,
+        ),
+      )
+      .toList(growable: false);
 
-  _PreparedEntry _prepareEntry(ConversationMirrorEntryInput input) {
+  _PreparedEntry _prepareEntry(
+    ConversationMirrorEntryInput input, {
+    required int maxEntryBytes,
+  }) {
     _validateEntryId(input.entryId);
     if (input.ordinal < 0) {
       throw ConversationMirrorValidationException(
@@ -1043,10 +1063,10 @@ class ConversationMirrorStore {
     }
     final messageJson = _encodeMessage(input.message, input.entryId);
     final bytes = utf8.encode(messageJson).length;
-    if (bytes > limits.maxEntryBytes) {
+    if (bytes > maxEntryBytes) {
       throw ConversationMirrorValidationException(
         'Entry ${input.entryId} is $bytes bytes; limit is '
-        '${limits.maxEntryBytes}.',
+        '$maxEntryBytes.',
       );
     }
     final actualHash = _contentHash(messageJson);

@@ -889,7 +889,7 @@ void main() {
           maxEntriesPerGeneration: 2,
           maxEntriesPerPage: 2,
           maxEntryBytes: 60,
-          maxPageBytes: 200,
+          maxPageBytes: 80,
           maxTotalBytes: 200,
         ),
       );
@@ -929,6 +929,30 @@ void main() {
         ),
         throwsA(isA<ConversationMirrorValidationException>()),
       );
+
+      await constrained.beginShadowGeneration(
+        key: key,
+        generation: 'generation-fragmented',
+        revision: _revision('fragmented'),
+        entryCount: 1,
+        pageCount: 1,
+        totalBytes: _totalBytes([oversized]),
+      );
+      await constrained.appendShadowPage(
+        key: key,
+        generation: 'generation-fragmented',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [oversized],
+        transportFragmented: true,
+      );
+      await constrained.completeShadowGeneration(
+        key: key,
+        generation: 'generation-fragmented',
+        revision: _revision('fragmented'),
+        entryCount: 1,
+      );
+      expect((await constrained.readEntries(key)).single.entryId, 'oversized');
     });
 
     test(

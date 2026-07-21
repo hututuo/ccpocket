@@ -12,6 +12,7 @@ import {
   conversationMirrorProtocolContribution,
   type ConversationMirrorClientMessage,
   type ConversationMirrorEventMessage,
+  type ConversationMirrorServerMessage,
 } from "./slots/conversation-mirror-protocol.js";
 import {
   fileBrowserProtocolContribution,
@@ -82,10 +83,15 @@ export { PERSISTED_SIDE_CHAT_CAPABILITY } from "./slots/persisted-side-chat-prot
 export type { CodexSubagentInfo } from "./slots/subagents-protocol.js";
 export type {
   ConversationMirrorClientMessage,
+  ConversationMirrorEntryChunkMessage,
   ConversationMirrorEntry,
   ConversationMirrorEventMessage,
   ConversationMirrorProvider,
+  ConversationMirrorServerMessage,
   ConversationMirrorThreadStatus,
+} from "./slots/conversation-mirror-protocol.js";
+export {
+  CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY,
 } from "./slots/conversation-mirror-protocol.js";
 export {
   FILE_BROWSER_CAPABILITY,
@@ -136,7 +142,7 @@ export type LocalFeatureClientMessage =
 export type LocalFeatureServerMessage =
   | CodexCoreActionsServerMessage
   | CodexDesktopContinuityEventMessage
-  | ConversationMirrorEventMessage
+  | ConversationMirrorServerMessage
   | FileBrowserServerMessage
   | SessionInsightsServerMessage
   | SubagentsServerMessage

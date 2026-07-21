@@ -27,11 +27,15 @@ Map<String, dynamic> _entry({
 };
 
 void main() {
-  test('advertises only the negotiated mirror event capability', () {
+  test('advertises mirror events and additive large-entry chunks', () {
     final capabilities = _json(ClientMessage.clientCapabilities());
     expect(
       capabilities['supportedServerMessages'],
       contains('conversation_mirror_event_v1'),
+    );
+    expect(
+      capabilities['supportedServerMessages'],
+      contains('conversation_mirror_entry_chunk_v1'),
     );
   });
 
@@ -130,6 +134,53 @@ void main() {
             })
             as ConversationMirrorEventMessage;
     expect(complete.event, ConversationMirrorEventKind.snapshotComplete);
+  });
+
+  test('parses a bounded fragmented mirror entry', () {
+    final chunk =
+        ServerMessage.fromJson({
+              'type': 'conversation_mirror_entry_chunk_v1',
+              'requestId': 'request-1',
+              'bridgeInstanceId': 'bridge-1',
+              'provider': 'codex',
+              'providerSessionId': 'thread-1',
+              'revision': 'rev-2',
+              'pageIndex': 0,
+              'pageCount': 1,
+              'entryId': 'large-entry',
+              'index': 0,
+              'contentHash': 'a' * 64,
+              'chunkIndex': 1,
+              'chunkCount': 3,
+              'totalBytes': 600000,
+              'payloadBase64': base64Encode([1, 2, 3]),
+            })
+            as ConversationMirrorEntryChunkMessage;
+
+    expect(chunk.entryId, 'large-entry');
+    expect(chunk.chunkIndex, 1);
+    expect(chunk.chunkCount, 3);
+    expect(chunk.totalBytes, 600000);
+    expect(
+      () => ServerMessage.fromJson({
+        'type': 'conversation_mirror_entry_chunk_v1',
+        'requestId': 'request-1',
+        'bridgeInstanceId': 'bridge-1',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'revision': 'rev-2',
+        'pageIndex': 0,
+        'pageCount': 1,
+        'entryId': 'large-entry',
+        'index': 0,
+        'contentHash': 'a' * 64,
+        'chunkIndex': 3,
+        'chunkCount': 3,
+        'totalBytes': 600000,
+        'payloadBase64': base64Encode([1]),
+      }),
+      throwsFormatException,
+    );
   });
 
   test('parses same-count mutation and rollback patch operations', () {

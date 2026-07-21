@@ -3,8 +3,11 @@
 // ignore_for_file: prefer_initializing_formals
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
@@ -52,6 +55,7 @@ class ConversationMirrorService extends ChangeNotifier {
   static const _initialRenderEntryCount = 200;
   static const _timestampAnchorScanLimit = 1000;
   static const _timestampAnchorBatchSize = 200;
+  static const _maxBufferedEntryChunkBytes = 96 * 1024 * 1024;
 
   final BridgeService _bridge;
   final ConversationMirrorStore _store;
@@ -65,6 +69,8 @@ class ConversationMirrorService extends ChangeNotifier {
   final Map<String, int> _bootstrapGenerationByRuntime = {};
   final Map<String, _RuntimeMirrorPageCursor> _pageCursorsByRuntime = {};
   final Map<String, _MirrorTransferGuard> _transferGuardsByRequestId = {};
+  final Map<String, _MirrorEntryChunkAssembly> _entryChunkAssemblies = {};
+  final Set<String> _completedEntryChunkPages = {};
   final Set<String> _acceptedRequestIds = {};
   final Set<ConversationMirrorKey> _syncing = {};
 
@@ -133,6 +139,8 @@ class ConversationMirrorService extends ChangeNotifier {
         _resetRequestIds.clear();
         _watchRequestIdsByConversation.clear();
         _transferGuardsByRequestId.clear();
+        _entryChunkAssemblies.clear();
+        _completedEntryChunkPages.clear();
       }
     });
     _bridge.configureSessionHistoryBootstrap(_bootstrapRuntimeSession);
@@ -765,6 +773,16 @@ class ConversationMirrorService extends ChangeNotifier {
   }
 
   void _onLocalFeature(LocalFeatureServerMessage message) {
+    if (message is ConversationMirrorEntryChunkMessage) {
+      if (!_acceptedRequestIds.contains(message.requestId)) return;
+      final pending = _pending[message.requestId];
+      if (pending != null) {
+        pending.acceptedByBridge = true;
+        _armPendingTimeout(pending);
+      }
+      unawaited(_enqueueStorage(() => _handleEntryChunk(message)));
+      return;
+    }
     if (message is ConversationMirrorEventMessage) {
       if (!_acceptedRequestIds.contains(message.requestId)) return;
       if (message.event == ConversationMirrorEventKind.accepted) {
@@ -866,7 +884,7 @@ class ConversationMirrorService extends ChangeNotifier {
           break;
         }
       }
-      if (ownedWatchKey != null && ownedWatchKey != key) return;
+      if (ownedWatchKey != key) return;
     }
     _currentBridgeInstanceId = event.bridgeInstanceId;
     _featureUnsupported = false;
@@ -887,6 +905,7 @@ class ConversationMirrorService extends ChangeNotifier {
           );
           break;
         case ConversationMirrorEventKind.snapshotBegin:
+          _clearEntryChunksForRequest(event.requestId);
           await _store.beginShadowGeneration(
             key: key,
             generation: generation,
@@ -909,6 +928,15 @@ class ConversationMirrorService extends ChangeNotifier {
           );
           break;
         case ConversationMirrorEventKind.snapshotComplete:
+          if (_entryChunkAssemblies.values.any(
+            (assembly) =>
+                assembly.requestId == event.requestId &&
+                assembly.revision == event.revision,
+          )) {
+            throw const ConversationMirrorValidationException(
+              'Mirror snapshot completed with an incomplete entry chunk.',
+            );
+          }
           final metadata = await _store.completeShadowGeneration(
             key: key,
             generation: generation,
@@ -1065,6 +1093,7 @@ class ConversationMirrorService extends ChangeNotifier {
       );
     }
     if (_isTransferTerminal(event.event)) {
+      _clearEntryChunksForRequest(event.requestId);
       _transferGuardsByRequestId.remove(event.requestId);
     }
     _notifyListeners();
@@ -1077,6 +1106,144 @@ class ConversationMirrorService extends ChangeNotifier {
         contentHash: entry.contentHash,
         message: entry.rawMessage,
       );
+
+  Future<void> _handleEntryChunk(
+    ConversationMirrorEntryChunkMessage chunk,
+  ) async {
+    if (!_acceptedRequestIds.contains(chunk.requestId)) return;
+    final key = ConversationMirrorKey(
+      bridgeInstanceId: chunk.bridgeInstanceId,
+      provider: chunk.provider,
+      providerSessionId: chunk.providerSessionId,
+    );
+    final pending = _pending[chunk.requestId];
+    if (pending != null &&
+        (pending.provider != chunk.provider ||
+            pending.providerSessionId != chunk.providerSessionId)) {
+      _finishPending(
+        chunk.requestId,
+        const ConversationMirrorSyncResult(
+          success: false,
+          changed: false,
+          errorCode: 'response_identity_mismatch',
+          error: 'Bridge returned a different conversation for this request.',
+        ),
+      );
+      return;
+    }
+    if (pending == null) {
+      ConversationMirrorKey? ownedWatchKey;
+      for (final entry in _watchRequestIds.entries) {
+        if (entry.value == chunk.requestId) {
+          ownedWatchKey = entry.key;
+          break;
+        }
+      }
+      if (ownedWatchKey != key) return;
+    }
+    if (pending != null) _adoptPendingEventKey(pending, key);
+    _currentBridgeInstanceId = chunk.bridgeInstanceId;
+    final assemblyKey = _entryChunkAssemblyKey(chunk);
+    if (_completedEntryChunkPages.contains(assemblyKey)) return;
+    try {
+      final bytes = base64Decode(chunk.payloadBase64);
+      if (bytes.isEmpty || bytes.length > 256 * 1024) {
+        throw const ConversationMirrorValidationException(
+          'Mirror entry chunk has an invalid decoded size.',
+        );
+      }
+      final assembly = _entryChunkAssemblies.putIfAbsent(
+        assemblyKey,
+        () => _MirrorEntryChunkAssembly.fromMessage(chunk),
+      );
+      assembly.validateMetadata(chunk);
+      final additionalBytes = assembly.hasChunk(chunk.chunkIndex)
+          ? 0
+          : bytes.length;
+      final bufferedBytes = _entryChunkAssemblies.values.fold<int>(
+        0,
+        (total, candidate) => total + candidate.receivedBytes,
+      );
+      if (bufferedBytes + additionalBytes > _maxBufferedEntryChunkBytes) {
+        throw const ConversationMirrorValidationException(
+          'Mirror entry chunks exceed the in-memory transfer limit.',
+        );
+      }
+      assembly.addChunk(chunk.chunkIndex, bytes);
+      if (!assembly.isComplete) return;
+
+      final messageBytes = assembly.join();
+      if (messageBytes.length != chunk.totalBytes ||
+          sha256.convert(messageBytes).toString() != chunk.contentHash) {
+        throw const ConversationMirrorValidationException(
+          'Reassembled mirror entry failed its length or SHA-256 check.',
+        );
+      }
+      final decoded = jsonDecode(
+        utf8.decode(messageBytes, allowMalformed: false),
+      );
+      if (decoded is! Map) {
+        throw const ConversationMirrorValidationException(
+          'Reassembled mirror entry is not a message map.',
+        );
+      }
+      await _store.appendShadowPage(
+        key: key,
+        generation: '${chunk.requestId}:${chunk.revision}',
+        pageIndex: chunk.pageIndex,
+        pageCount: chunk.pageCount,
+        entries: [
+          ConversationMirrorEntryInput(
+            entryId: chunk.entryId,
+            ordinal: chunk.index,
+            contentHash: chunk.contentHash,
+            message: Map<String, dynamic>.from(decoded),
+          ),
+        ],
+        transportFragmented: true,
+      );
+      _entryChunkAssemblies.remove(assemblyKey);
+      _completedEntryChunkPages.add(assemblyKey);
+    } catch (error) {
+      _clearEntryChunksForRequest(chunk.requestId);
+      try {
+        await _store.setSyncError(
+          key,
+          '$error',
+          projectPath: pending?.projectPath,
+        );
+        await _refreshMetadata(key);
+      } catch (_) {}
+      _stopWatchForRequest(
+        key: key,
+        requestId: chunk.requestId,
+        provider: chunk.provider,
+        providerSessionId: chunk.providerSessionId,
+      );
+      _finishPending(
+        chunk.requestId,
+        ConversationMirrorSyncResult(
+          success: false,
+          changed: false,
+          errorCode: 'local_storage_failed',
+          error: '$error',
+        ),
+      );
+      _notifyListeners();
+    }
+  }
+
+  String _entryChunkAssemblyKey(ConversationMirrorEntryChunkMessage chunk) =>
+      '${chunk.requestId}\u0000${chunk.revision}\u0000${chunk.pageIndex}';
+
+  void _clearEntryChunksForRequest(String requestId) {
+    _entryChunkAssemblies.removeWhere(
+      (_, assembly) => assembly.requestId == requestId,
+    );
+    _completedEntryChunkPages.removeWhere(
+      (key) => key.startsWith('$requestId\u0000'),
+    );
+  }
 
   void _adoptPendingEventKey(
     _PendingMirrorRequest pending,
@@ -1696,6 +1863,7 @@ class ConversationMirrorService extends ChangeNotifier {
   }
 
   void _finishPending(String requestId, ConversationMirrorSyncResult result) {
+    _clearEntryChunksForRequest(requestId);
     final pending = _pending.remove(requestId);
     if (pending == null) return;
     _transferGuardsByRequestId.remove(requestId);
@@ -1829,6 +1997,8 @@ class ConversationMirrorService extends ChangeNotifier {
     _bootstrapGenerationByRuntime.clear();
     _pageCursorsByRuntime.clear();
     _transferGuardsByRequestId.clear();
+    _entryChunkAssemblies.clear();
+    _completedEntryChunkPages.clear();
     await _storageSerial;
     await _database.close();
   }
@@ -1922,4 +2092,92 @@ class _PendingMirrorRequest {
   bool acceptedByBridge = false;
   final Completer<ConversationMirrorSyncResult> completer = Completer();
   Timer? timer;
+}
+
+class _MirrorEntryChunkAssembly {
+  _MirrorEntryChunkAssembly.fromMessage(
+    ConversationMirrorEntryChunkMessage message,
+  ) : requestId = message.requestId,
+      bridgeInstanceId = message.bridgeInstanceId,
+      provider = message.provider,
+      providerSessionId = message.providerSessionId,
+      revision = message.revision,
+      pageIndex = message.pageIndex,
+      pageCount = message.pageCount,
+      entryId = message.entryId,
+      index = message.index,
+      contentHash = message.contentHash,
+      chunkCount = message.chunkCount,
+      totalBytes = message.totalBytes,
+      chunks = List<Uint8List?>.filled(message.chunkCount, null);
+
+  final String requestId;
+  final String bridgeInstanceId;
+  final String provider;
+  final String providerSessionId;
+  final String revision;
+  final int pageIndex;
+  final int pageCount;
+  final String entryId;
+  final int index;
+  final String contentHash;
+  final int chunkCount;
+  final int totalBytes;
+  final List<Uint8List?> chunks;
+  int receivedBytes = 0;
+
+  bool get isComplete => chunks.every((chunk) => chunk != null);
+
+  bool hasChunk(int chunkIndex) => chunks[chunkIndex] != null;
+
+  void validateMetadata(ConversationMirrorEntryChunkMessage message) {
+    if (requestId != message.requestId ||
+        bridgeInstanceId != message.bridgeInstanceId ||
+        provider != message.provider ||
+        providerSessionId != message.providerSessionId ||
+        revision != message.revision ||
+        pageIndex != message.pageIndex ||
+        pageCount != message.pageCount ||
+        entryId != message.entryId ||
+        index != message.index ||
+        contentHash != message.contentHash ||
+        chunkCount != message.chunkCount ||
+        totalBytes != message.totalBytes) {
+      throw const ConversationMirrorValidationException(
+        'Mirror entry chunks disagree on their transfer metadata.',
+      );
+    }
+  }
+
+  void addChunk(int chunkIndex, Uint8List bytes) {
+    final existing = chunks[chunkIndex];
+    if (existing != null) {
+      if (!listEquals(existing, bytes)) {
+        throw const ConversationMirrorValidationException(
+          'Mirror entry chunk was repeated with different bytes.',
+        );
+      }
+      return;
+    }
+    if (receivedBytes + bytes.length > totalBytes) {
+      throw const ConversationMirrorValidationException(
+        'Mirror entry chunks exceed the declared entry length.',
+      );
+    }
+    chunks[chunkIndex] = bytes;
+    receivedBytes += bytes.length;
+  }
+
+  Uint8List join() {
+    final builder = BytesBuilder(copy: false);
+    for (final chunk in chunks) {
+      if (chunk == null) {
+        throw const ConversationMirrorValidationException(
+          'Mirror entry chunk assembly is incomplete.',
+        );
+      }
+      builder.add(chunk);
+    }
+    return builder.takeBytes();
+  }
 }

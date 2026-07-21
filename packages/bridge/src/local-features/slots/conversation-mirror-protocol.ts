@@ -45,6 +45,9 @@ export interface ConversationMirrorEntry {
 
 export type ConversationMirrorThreadStatus = string | null;
 
+export const CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY =
+  "conversation_mirror_entry_chunk_v1" as const;
+
 interface ConversationMirrorEventBase {
   type: "conversation_mirror_event_v1";
   requestId: string;
@@ -113,6 +116,28 @@ export type ConversationMirrorEventMessage =
       error: string;
     });
 
+export type ConversationMirrorEntryChunkMessage = {
+  type: typeof CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY;
+  requestId: string;
+  bridgeInstanceId: string;
+  provider: ConversationMirrorProvider;
+  providerSessionId: string;
+  revision: string;
+  pageIndex: number;
+  pageCount: number;
+  entryId: string;
+  index: number;
+  contentHash: string;
+  chunkIndex: number;
+  chunkCount: number;
+  totalBytes: number;
+  payloadBase64: string;
+};
+
+export type ConversationMirrorServerMessage =
+  | ConversationMirrorEventMessage
+  | ConversationMirrorEntryChunkMessage;
+
 const SNAPSHOT_TYPES = [
   "conversation_mirror_probe",
   "conversation_mirror_sync",
@@ -130,10 +155,13 @@ function validProvider(value: unknown): value is ConversationMirrorProvider {
 export const conversationMirrorProtocolContribution:
   LocalFeatureProtocolContribution<
     ConversationMirrorClientMessage,
-    ConversationMirrorEventMessage
+    ConversationMirrorServerMessage
   > = {
     clientTypes: CLIENT_TYPES,
-    serverTypes: ["conversation_mirror_event_v1"],
+    serverTypes: [
+      "conversation_mirror_event_v1",
+      CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY,
+    ],
     parseClient(message) {
       if (
         typeof message.type !== "string" ||

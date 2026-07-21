@@ -269,6 +269,14 @@
   same active mirror generation; selecting an unloaded prompt pages backward
   until the real rendered entry is available, rather than rendering the whole
   transcript at open time.
+- A single mirror envelope may exceed the original 512 KiB WebSocket event
+  ceiling (most often a large tool result). New peers negotiate
+  `conversation_mirror_entry_chunk_v1`: Bridge sends 256 KiB raw chunks as one
+  logical snapshot page, and Mobile reassembles them under bounded memory,
+  length, SHA-256, duplicate and generation checks before one atomic database
+  write. Old Mobile builds keep the explicit `entry_too_large` error instead
+  of receiving an event they cannot understand; new Mobile builds retain the
+  original v1 path with an old Bridge.
 - iOS drops reuse existing authorities. A known PNG/JPEG no larger than 20 MiB
   may remain an inline image; every other composer drop and every Home drop is
   streamed through the authenticated 15 GiB resumable transfer. Stage multiple

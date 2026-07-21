@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:ccpocket/features/conversation_mirror/conversation_mirror_service.dart';
 import 'package:ccpocket/features/conversation_mirror/conversation_mirror_target.dart';
@@ -217,6 +219,91 @@ void main() {
       expect(bridge.sent.single['type'], 'conversation_mirror_watch');
     },
   );
+
+  test('reassembles a large entry snapshot without the 512 KiB failure', () async {
+    final download = service.downloadAndWatch(_recentSession);
+    await _waitUntil(() async => bridge.sent.isNotEmpty);
+    final requestId = bridge.sent.single['requestId'] as String;
+    final revision = _hashText('large-fragmented-entry');
+    final message = <String, dynamic>{
+      'type': 'tool_result',
+      'toolUseId': 'large-tool-result',
+      'content': 'x' * 700000,
+    };
+    final payload = Uint8List.fromList(utf8.encode(jsonEncode(message)));
+    final contentHash = sha256.convert(payload).toString();
+    const chunkSize = 256 * 1024;
+    final chunks = <Uint8List>[];
+    for (var offset = 0; offset < payload.length; offset += chunkSize) {
+      chunks.add(
+        Uint8List.sublistView(
+          payload,
+          offset,
+          math.min(offset + chunkSize, payload.length),
+        ),
+      );
+    }
+    bridge
+      ..emit(_event(requestId: requestId, event: 'accepted'))
+      ..emit(
+        _event(
+          requestId: requestId,
+          event: 'watching',
+          revision: revision,
+          threadStatus: 'idle',
+        ),
+      )
+      ..emit(
+        _event(
+          requestId: requestId,
+          event: 'snapshot_begin',
+          revision: revision,
+          entryCount: 1,
+          pageCount: 1,
+          totalBytes: payload.length,
+          threadStatus: 'idle',
+        ),
+      );
+    // Delivery order is not trusted by the reassembler. A repeated identical
+    // chunk is idempotent; conflicting duplicates are rejected.
+    for (final chunkIndex in [2, 0, 0, 1]) {
+      bridge.emit(
+        ConversationMirrorEntryChunkMessage(
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-test',
+          provider: 'codex',
+          providerSessionId: 'provider-session-1',
+          revision: revision,
+          pageIndex: 0,
+          pageCount: 1,
+          entryId: 'large-entry',
+          index: 0,
+          contentHash: contentHash,
+          chunkIndex: chunkIndex,
+          chunkCount: chunks.length,
+          totalBytes: payload.length,
+          payloadBase64: base64Encode(chunks[chunkIndex]),
+        ),
+      );
+    }
+    bridge.emit(
+      _event(
+        requestId: requestId,
+        event: 'snapshot_complete',
+        revision: revision,
+        entryCount: 1,
+        threadStatus: 'idle',
+      ),
+    );
+
+    final result = await download;
+    final metadata = await service.metadataFor(_recentSession);
+    final stored = await store.readEntries(metadata!.key);
+
+    expect(result.success, isTrue);
+    expect(stored.single.entryId, 'large-entry');
+    expect(stored.single.message['content'], 'x' * 700000);
+  });
 
   test(
     'a silent pre-feature Bridge falls back on the short first-frame deadline',

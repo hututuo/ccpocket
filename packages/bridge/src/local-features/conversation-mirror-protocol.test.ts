@@ -97,9 +97,12 @@ describe("conversation mirror protocol slot", () => {
     ).toBeNull();
   });
 
-  it("registers one opt-in server capability", () => {
+  it("registers the base event and additive chunk capabilities", () => {
     expect(isLocalFeatureServerMessageType("conversation_mirror_event_v1")).toBe(
       true,
     );
+    expect(
+      isLocalFeatureServerMessageType("conversation_mirror_entry_chunk_v1"),
+    ).toBe(true);
   });
 });

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { CodexRpcError, type CodexProcess } from "../codex-process.js";
 import type { ServerMessage } from "../parser.js";
-import type { ConversationMirrorEventMessage } from "./protocol.js";
 import type { LocalFeatureRuntime } from "./runtime.js";
 import {
   chunkConversationMirrorEntries,
@@ -78,13 +77,14 @@ function runtimeFor(
     supported?: Set<object>;
     pathAllowed?: boolean;
     activeProcess?: boolean;
+    entryChunks?: boolean;
   } = {},
 ): {
   runtime: LocalFeatureRuntime;
-  sent: Map<object, ConversationMirrorEventMessage[]>;
+  sent: Map<object, any[]>;
   createStandalone: ReturnType<typeof vi.fn>;
 } {
-  const sent = new Map<object, ConversationMirrorEventMessage[]>();
+  const sent = new Map<object, any[]>();
   const createStandalone = vi.fn(async () => process);
   const runtime: LocalFeatureRuntime = {
     bridgeInstanceId: "bridge-test",
@@ -96,12 +96,20 @@ function runtimeFor(
     isProjectPathAllowed: () => options.pathAllowed !== false,
     send(client, message) {
       const messages = sent.get(client) ?? [];
-      messages.push(message as ConversationMirrorEventMessage);
+      messages.push(message);
       sent.set(client, messages);
     },
-    supports: (client, type) =>
-      type === "conversation_mirror_event_v1" &&
-      (options.supported ? options.supported.has(client) : true),
+    supports: (client, type) => {
+      const clientSupported = options.supported
+        ? options.supported.has(client)
+        : true;
+      if (!clientSupported) return false;
+      return (
+        type === "conversation_mirror_event_v1" ||
+        (type === "conversation_mirror_entry_chunk_v1" &&
+          options.entryChunks === true)
+      );
+    },
   };
   return { runtime, sent, createStandalone };
 }
@@ -872,6 +880,107 @@ describe("ConversationMirrorFeatureHandler", () => {
     expect(createStandalone).not.toHaveBeenCalled();
     expect(process.requestReadOnlyRpc).not.toHaveBeenCalled();
     expect((handler as any).watches.size).toBe(0);
+    handler.close();
+  });
+
+  it("fragments one oversized entry for a chunk-capable client", async () => {
+    const text = "x".repeat(700_000);
+    const process = fakeProcess(async (method) => {
+      if (method === "thread/read") return { thread: markerThread(1) };
+      if (method !== "thread/items/list") throw new Error(method);
+      return {
+        data: [
+          {
+            turnId: "turn-large",
+            item: {
+              type: "userMessage",
+              id: "large-user-entry",
+              content: [{ type: "text", text }],
+            },
+          },
+        ],
+        nextCursor: null,
+      };
+    });
+    const client = {};
+    const { runtime, sent } = runtimeFor(process, { entryChunks: true });
+    const handler = new ConversationMirrorFeatureHandler(runtime);
+
+    await handler.handle(
+      {
+        type: "conversation_mirror_sync",
+        requestId: "large-sync",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        projectPath: "/tmp/project",
+      },
+      { client, signal: signal(), runtime },
+    );
+
+    const messages = sent.get(client) ?? [];
+    const chunks = messages.filter(
+      (message) => message.type === "conversation_mirror_entry_chunk_v1",
+    );
+    expect(messages.some((message) => message.event === "error")).toBe(false);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.map((message) => message.chunkIndex)).toEqual(
+      Array.from({ length: chunks.length }, (_, index) => index),
+    );
+    for (const chunk of chunks) {
+      expect(Buffer.byteLength(JSON.stringify(chunk), "utf8")).toBeLessThanOrEqual(
+        MAX_CONVERSATION_MIRROR_EVENT_BYTES,
+      );
+    }
+    const decoded = Buffer.concat(
+      chunks.map((message) => Buffer.from(message.payloadBase64, "base64")),
+    );
+    expect(JSON.parse(decoded.toString("utf8"))).toMatchObject({
+      type: "user_input",
+      text,
+    });
+    expect(messages.at(-1)).toMatchObject({
+      event: "snapshot_complete",
+      entryCount: 1,
+    });
+    handler.close();
+  });
+
+  it("keeps the explicit old-client error for an oversized entry", async () => {
+    const process = fakeProcess(async (method) => {
+      if (method === "thread/read") return { thread: markerThread(1) };
+      if (method !== "thread/items/list") throw new Error(method);
+      return {
+        data: [
+          {
+            item: {
+              type: "userMessage",
+              id: "legacy-large-entry",
+              content: [{ type: "text", text: "x".repeat(700_000) }],
+            },
+          },
+        ],
+        nextCursor: null,
+      };
+    });
+    const client = {};
+    const { runtime, sent } = runtimeFor(process);
+    const handler = new ConversationMirrorFeatureHandler(runtime);
+
+    await handler.handle(
+      {
+        type: "conversation_mirror_sync",
+        requestId: "legacy-large-sync",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        projectPath: "/tmp/project",
+      },
+      { client, signal: signal(), runtime },
+    );
+
+    expect(sent.get(client)?.at(-1)).toMatchObject({
+      event: "error",
+      errorCode: "entry_too_large",
+    });
     handler.close();
   });
 

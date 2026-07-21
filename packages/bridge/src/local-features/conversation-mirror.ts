@@ -9,11 +9,13 @@ import {
 import type {
   ConversationMirrorClientMessage,
   ConversationMirrorEntry,
+  ConversationMirrorEntryChunkMessage,
   ConversationMirrorEventMessage,
   ConversationMirrorProvider,
   ConversationMirrorThreadStatus,
   LocalFeatureClientMessage,
 } from "./protocol.js";
+import { CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY } from "./protocol.js";
 import type {
   LocalFeatureHandler,
   LocalFeatureHandleContext,
@@ -32,6 +34,7 @@ const DEFAULT_POLL_JITTER_RATIO = 0.2;
 export const MAX_CONVERSATION_MIRROR_ENTRIES = 10_000;
 export const MAX_CONVERSATION_MIRROR_TOTAL_BYTES = 32 * 1024 * 1024;
 export const MAX_CONVERSATION_MIRROR_EVENT_BYTES = 512 * 1024;
+export const MAX_CONVERSATION_MIRROR_CHUNK_RAW_BYTES = 256 * 1024;
 export const MAX_CONVERSATION_MIRROR_PAGE_ENTRIES = 100;
 export const MAX_CONVERSATION_MIRROR_WATCHES_PER_CLIENT = 8;
 export const MAX_CONVERSATION_MIRROR_WATCHED_THREADS = 32;
@@ -1457,8 +1460,13 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
     request: ConversationMirrorClientMessage,
     snapshot: ConversationMirrorSnapshot,
   ): void {
-    const pages = chunkConversationMirrorEntries(request, snapshot, {
-      bridgeInstanceId: this.requireBridgeInstanceId(),
+    const identity = this.identityBase(request);
+    const pages = planConversationMirrorTransferPages(request, snapshot, {
+      bridgeInstanceId: identity.bridgeInstanceId,
+      allowEntryChunks: this.runtime.supports(
+        client,
+        CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY,
+      ),
     });
     this.runtime.send(client, {
       ...this.base(request),
@@ -1470,14 +1478,48 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
       threadStatus: snapshot.threadStatus,
     });
     for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
-      this.runtime.send(client, {
-        ...this.base(request),
-        event: "snapshot_page",
-        revision: snapshot.revision,
-        pageIndex,
-        pageCount: pages.length,
-        entries: pages[pageIndex]!,
-      });
+      const page = pages[pageIndex]!;
+      if (page.kind === "entries") {
+        this.runtime.send(client, {
+          ...this.base(request),
+          event: "snapshot_page",
+          revision: snapshot.revision,
+          pageIndex,
+          pageCount: pages.length,
+          entries: page.entries,
+        });
+        continue;
+      }
+      const payload = Buffer.from(jsonString(page.entry.message), "utf8");
+      const chunkCount = Math.ceil(
+        payload.length / MAX_CONVERSATION_MIRROR_CHUNK_RAW_BYTES,
+      );
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+        const start = chunkIndex * MAX_CONVERSATION_MIRROR_CHUNK_RAW_BYTES;
+        const chunk: ConversationMirrorEntryChunkMessage = {
+          type: CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY,
+          ...identity,
+          revision: snapshot.revision,
+          pageIndex,
+          pageCount: pages.length,
+          entryId: page.entry.entryId,
+          index: page.entry.index,
+          contentHash: page.entry.contentHash,
+          chunkIndex,
+          chunkCount,
+          totalBytes: payload.length,
+          payloadBase64: payload
+            .subarray(start, start + MAX_CONVERSATION_MIRROR_CHUNK_RAW_BYTES)
+            .toString("base64"),
+        };
+        if (jsonBytes(chunk) > MAX_CONVERSATION_MIRROR_EVENT_BYTES) {
+          throw new ConversationMirrorError(
+            "entry_too_large",
+            `Conversation entry ${page.entry.entryId} could not be safely fragmented`,
+          );
+        }
+        this.runtime.send(client, chunk);
+      }
     }
     this.runtime.send(client, {
       ...this.base(request),
@@ -1554,6 +1596,17 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
   } {
     return {
       type: "conversation_mirror_event_v1",
+      ...this.identityBase(request),
+    };
+  }
+
+  private identityBase(request: ConversationMirrorClientMessage): {
+    requestId: string;
+    bridgeInstanceId: string;
+    provider: ConversationMirrorProvider;
+    providerSessionId: string;
+  } {
+    return {
       requestId: request.requestId,
       bridgeInstanceId: this.requireBridgeInstanceId(),
       provider: request.provider,
@@ -1605,8 +1658,34 @@ export function chunkConversationMirrorEntries(
   snapshot: ConversationMirrorSnapshot,
   runtime: { bridgeInstanceId: string },
 ): ConversationMirrorEntry[][] {
+  return planConversationMirrorTransferPages(request, snapshot, {
+    ...runtime,
+    allowEntryChunks: false,
+  }).map((page) => {
+    if (page.kind !== "entries") {
+      throw new ConversationMirrorError(
+        "entry_too_large",
+        `Conversation entry ${page.entry.entryId} exceeds the 512 KiB event limit`,
+      );
+    }
+    return page.entries;
+  });
+}
+
+type ConversationMirrorTransferPage =
+  | { kind: "entries"; entries: ConversationMirrorEntry[] }
+  | { kind: "chunked_entry"; entry: ConversationMirrorEntry };
+
+function planConversationMirrorTransferPages(
+  request: Pick<
+    ConversationMirrorClientMessage,
+    "requestId" | "provider" | "providerSessionId"
+  >,
+  snapshot: ConversationMirrorSnapshot,
+  runtime: { bridgeInstanceId: string; allowEntryChunks: boolean },
+): ConversationMirrorTransferPage[] {
   if (snapshot.entries.length === 0) return [];
-  const pages: ConversationMirrorEntry[][] = [];
+  const pages: ConversationMirrorTransferPage[] = [];
   let page: ConversationMirrorEntry[] = [];
 
   const eventBytes = (entries: ConversationMirrorEntry[]): number =>
@@ -1625,23 +1704,31 @@ export function chunkConversationMirrorEntries(
 
   for (const entry of snapshot.entries) {
     if (eventBytes([entry]) > MAX_CONVERSATION_MIRROR_EVENT_BYTES) {
-      throw new ConversationMirrorError(
-        "entry_too_large",
-        `Conversation entry ${entry.entryId} exceeds the 512 KiB event limit`,
-      );
+      if (!runtime.allowEntryChunks) {
+        throw new ConversationMirrorError(
+          "entry_too_large",
+          `Conversation entry ${entry.entryId} exceeds the 512 KiB event limit`,
+        );
+      }
+      if (page.length > 0) {
+        pages.push({ kind: "entries", entries: page });
+        page = [];
+      }
+      pages.push({ kind: "chunked_entry", entry });
+      continue;
     }
     const candidate = [...page, entry];
     if (
       page.length >= MAX_CONVERSATION_MIRROR_PAGE_ENTRIES ||
       eventBytes(candidate) > MAX_CONVERSATION_MIRROR_EVENT_BYTES
     ) {
-      pages.push(page);
+      pages.push({ kind: "entries", entries: page });
       page = [entry];
     } else {
       page = candidate;
     }
   }
-  if (page.length > 0) pages.push(page);
+  if (page.length > 0) pages.push({ kind: "entries", entries: page });
   return pages;
 }
 

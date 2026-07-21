@@ -13,12 +13,18 @@ class _ConversationMirrorProtocolSlot
   @override
   List<String> get supportedServerMessageTypes => const [
     'conversation_mirror_event_v1',
+    'conversation_mirror_entry_chunk_v1',
   ];
 
   @override
   ServerMessage? tryDecode(Map<String, dynamic> json) {
-    if (json['type'] != 'conversation_mirror_event_v1') return null;
-    return ConversationMirrorEventMessage.fromJson(json);
+    return switch (json['type']) {
+      'conversation_mirror_event_v1' =>
+        ConversationMirrorEventMessage.fromJson(json),
+      'conversation_mirror_entry_chunk_v1' =>
+        ConversationMirrorEntryChunkMessage.fromJson(json),
+      _ => null,
+    };
   }
 
   @override
@@ -139,6 +145,121 @@ class ConversationMirrorWireEntry {
       index: _conversationMirrorRequiredInt(json, 'index', minimum: 0),
       contentHash: _conversationMirrorRequiredString(json, 'contentHash'),
       rawMessage: Map.unmodifiable(normalized),
+    );
+  }
+}
+
+class ConversationMirrorEntryChunkMessage
+    implements LocalFeatureTransientMessage {
+  @override
+  String get featureId => 'conversation_mirror';
+
+  final String requestId;
+  final String bridgeInstanceId;
+  final String provider;
+  final String providerSessionId;
+  final String revision;
+  final int pageIndex;
+  final int pageCount;
+  final String entryId;
+  final int index;
+  final String contentHash;
+  final int chunkIndex;
+  final int chunkCount;
+  final int totalBytes;
+  final String payloadBase64;
+
+  const ConversationMirrorEntryChunkMessage({
+    required this.requestId,
+    required this.bridgeInstanceId,
+    required this.provider,
+    required this.providerSessionId,
+    required this.revision,
+    required this.pageIndex,
+    required this.pageCount,
+    required this.entryId,
+    required this.index,
+    required this.contentHash,
+    required this.chunkIndex,
+    required this.chunkCount,
+    required this.totalBytes,
+    required this.payloadBase64,
+  });
+
+  @override
+  String get sessionId => providerSessionId;
+
+  factory ConversationMirrorEntryChunkMessage.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    final provider = _conversationMirrorRequiredString(json, 'provider');
+    if (!const {'codex', 'claude'}.contains(provider)) {
+      throw FormatException(
+        'Unsupported conversation mirror provider: $provider',
+      );
+    }
+    final pageIndex = _conversationMirrorRequiredInt(
+      json,
+      'pageIndex',
+      minimum: 0,
+    );
+    final pageCount = _conversationMirrorRequiredInt(
+      json,
+      'pageCount',
+      minimum: 1,
+    );
+    final chunkIndex = _conversationMirrorRequiredInt(
+      json,
+      'chunkIndex',
+      minimum: 0,
+    );
+    final chunkCount = _conversationMirrorRequiredInt(
+      json,
+      'chunkCount',
+      minimum: 1,
+    );
+    final totalBytes = _conversationMirrorRequiredInt(
+      json,
+      'totalBytes',
+      minimum: 1,
+    );
+    final contentHash = _conversationMirrorRequiredString(
+      json,
+      'contentHash',
+    );
+    final payloadBase64 = _conversationMirrorRequiredString(
+      json,
+      'payloadBase64',
+    );
+    if (pageIndex >= pageCount ||
+        chunkIndex >= chunkCount ||
+        chunkCount > 256 ||
+        totalBytes > 64 * 1024 * 1024 ||
+        payloadBase64.length > 400000 ||
+        !RegExp(r'^[0-9a-f]{64}$').hasMatch(contentHash)) {
+      throw const FormatException('Invalid conversation mirror entry chunk.');
+    }
+    return ConversationMirrorEntryChunkMessage(
+      requestId: _conversationMirrorRequiredString(json, 'requestId'),
+      bridgeInstanceId: _conversationMirrorRequiredString(
+        json,
+        'bridgeInstanceId',
+      ),
+      provider: provider,
+      providerSessionId: _conversationMirrorRequiredString(
+        json,
+        'providerSessionId',
+      ),
+      revision: _conversationMirrorRequiredString(json, 'revision'),
+      pageIndex: pageIndex,
+      pageCount: pageCount,
+      entryId: _conversationMirrorRequiredString(json, 'entryId'),
+      index: _conversationMirrorRequiredInt(json, 'index', minimum: 0),
+      contentHash: contentHash,
+      chunkIndex: chunkIndex,
+      chunkCount: chunkCount,
+      totalBytes: totalBytes,
+      payloadBase64: payloadBase64,
     );
   }
 }
