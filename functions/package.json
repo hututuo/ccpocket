@@ -1,6 +1,7 @@
 {
   "name": "ccpocket-functions",
   "private": true,
+  "license": "GPL-2.0-only",
   "type": "module",
   "main": "lib/index.js",
   "engines": {

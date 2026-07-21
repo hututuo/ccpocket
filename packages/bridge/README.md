@@ -383,5 +383,6 @@ The bridge server spawns and manages Claude Code CLI processes, translating WebS
 
 ## License
 
-This package is MIT licensed as part of CC Pocket. See [LICENSE](./LICENSE) and
-the repository root [LICENSE](../../LICENSE).
+This package is GPL-2.0-only as part of this CC Pocket compatibility fork. See
+[LICENSE](./LICENSE), the repository root [LICENSE](../../LICENSE), and the
+retained upstream notices in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).

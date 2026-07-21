@@ -5,8 +5,9 @@ Human-readable HTML is available at `https://k9i-0.github.io/ccpocket/architectu
 
 ## Product Shape
 
-CC Pocket is an MIT-licensed client framework for controlling local Codex and
-Claude agent sessions from mobile and desktop surfaces.
+This CC Pocket compatibility fork is a GPL-2.0-only client framework for
+controlling local Codex and Claude agent sessions from mobile and desktop
+surfaces. Original upstream MIT notices are retained separately.
 
 The project is designed around self-hosting:
 
@@ -224,6 +225,8 @@ npm run dev -- <device-id>
 
 ## Licensing
 
-CC Pocket is MIT licensed. Forks can reuse, modify, and specialize both the app
-and Bridge Server, subject to the MIT license notice requirements and any
-third-party service terms that apply to the fork's integrations.
+This compatibility fork is GPL-2.0-only. Forks may reuse, modify, and
+specialize both the app and Bridge Server, but distributed derivatives must
+remain GPL-2.0-only and provide corresponding source. Original upstream MIT
+notices and third-party attributions remain applicable; see the repository
+license and notices.

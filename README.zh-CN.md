@@ -118,4 +118,5 @@ cd apps/mobile && flutter pub get && cd ../..
 
 ## 许可证
 
-[MIT](LICENSE)
+[GPL-2.0-only](LICENSE)。上游 MIT 与参考组件声明见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

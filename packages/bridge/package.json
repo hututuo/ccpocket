@@ -4,7 +4,7 @@
   "description": "Bridge server that connects Claude Agent SDK and Codex CLI sessions to mobile devices via WebSocket",
   "private": false,
   "type": "module",
-  "license": "MIT",
+  "license": "GPL-2.0-only",
   "author": "K9i",
   "repository": {
     "type": "git",

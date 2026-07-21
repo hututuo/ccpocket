@@ -54,8 +54,9 @@ CC Pocket は無料で利用できます。もし開発ワークフローに役�
 
 ## Why fork CC Pocket?
 
-CC Pocket は MIT ライセンスです。完成済みアプリとして使うだけでなく、自分の
-エージェントワークフローを作るための土台として fork できます。
+この互換 fork は GPL-2.0-only で配布されます。利用、調査、変更、再配布は
+可能ですが、配布する派生物も GPL-2.0-only とし、対応するソースコードを
+提供する必要があります。上流の MIT 表示は `LICENSES/MIT.txt` に保持します。
 
 - Codex / Claude と、チームの Jira、Linear、GitHub、社内 REST API を組み合わせた内部向けクライアントを作れます。
 - 使わない画面や機能を削ぎ落とし、日々のワークフローに特化したアプリにできます。
@@ -135,4 +136,4 @@ cd apps/mobile && flutter pub get && cd ../..
 
 ## ライセンス
 
-[MIT](LICENSE)
+[GPL-2.0-only](LICENSE)

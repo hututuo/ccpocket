@@ -55,8 +55,10 @@ New to mobile coding agents? See [How to run Codex from iPhone or Android](https
 
 ## Why Fork CC Pocket?
 
-CC Pocket is MIT licensed so you can treat it as a starting point for your own
-agent workflow, not only as a finished app.
+This compatibility fork is licensed under GPL-2.0-only. You can use, study,
+modify, and redistribute it, but a distributed derivative must remain under
+GPL-2.0-only and provide its corresponding source. The original upstream MIT
+notice is preserved in [LICENSES/MIT.txt](LICENSES/MIT.txt).
 
 - Build an internal client that combines Codex or Claude with your team's Jira,
   Linear, GitHub, or private REST APIs.
@@ -145,4 +147,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## License
 
-[MIT](LICENSE)
+[GPL-2.0-only](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+for retained upstream and reference-component notices.

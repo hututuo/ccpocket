@@ -117,4 +117,4 @@ cd apps/mobile && flutter pub get && cd ../..
 
 ## 라이선스
 
-[MIT](LICENSE)
+[GPL-2.0-only](LICENSE)

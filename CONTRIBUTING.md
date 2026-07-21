@@ -56,9 +56,10 @@ For these environments:
 
 If a fix can be scoped cleanly to the Bridge Server, please also consider
 whether a fork is a better fit than asking the main project to carry long-term
-support for a niche environment. The MIT license allows compatibility forks,
-but they should remain clearly separate from official CC Pocket releases unless
-the changes are merged upstream.
+support for a niche environment. GPL-2.0-only allows compatibility forks, but
+distributed derivatives must retain that license and provide corresponding
+source. Forks should remain clearly separate from official CC Pocket releases
+unless the changes are merged upstream.
 
 If you file an Issue for one of these environments, please include:
 
