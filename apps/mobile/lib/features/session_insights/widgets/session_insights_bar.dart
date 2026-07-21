@@ -90,17 +90,16 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
     final usage = _controller.contextUsage;
     final hasContext = usage != null && usage.modelContextWindow > 0;
     final quota = _controller.codexUsage;
+    final quotaWindows = _primaryQuotaWindows(quota);
+    final fiveHour = quotaWindows.fiveHour;
+    final sevenDay = quotaWindows.sevenDay;
     if (!hasContext && !(quota?.hasData ?? false) && !_controller.isLoading) {
       return const SizedBox.shrink();
     }
     final cs = Theme.of(context).colorScheme;
     final percent = hasContext ? (usage.utilization * 100).round() : null;
     final percentValue = percent ?? 0;
-    final color = percentValue >= 90
-        ? cs.error
-        : percentValue >= 75
-        ? Colors.orange
-        : cs.primary;
+    final color = _meterColor(cs, percentValue.toDouble());
     final l = AppLocalizations.of(context);
     final strings = SessionInsightsStrings.of(context);
     final label = hasContext
@@ -112,9 +111,17 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
         : _controller.isLoading
         ? ''
         : strings.quota;
+    final semanticParts = <String>[
+      if (hasContext) '${strings.context} $percent%',
+      if (fiveHour != null)
+        '${l.usageFiveHour} ${fiveHour.utilization.clamp(0, 100).round()}%',
+      if (sevenDay != null)
+        '${l.usageSevenDay} ${sevenDay.utilization.clamp(0, 100).round()}%',
+      if (!hasContext && fiveHour == null && sevenDay == null) strings.quota,
+    ];
     final bar = Semantics(
       button: true,
-      label: hasContext ? '${strings.context} $percent%' : strings.quota,
+      label: semanticParts.join(', '),
       child: InkWell(
         key: ValueKey(
           widget.compact
@@ -131,28 +138,60 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox.square(
-                dimension: widget.compact ? 16 : 18,
-                child: hasContext
-                    ? CircularProgressIndicator(
-                        value: usage.utilization,
-                        strokeWidth: widget.compact ? 2.25 : 2.5,
-                        backgroundColor: cs.surfaceContainerHighest,
-                        color: color,
-                      )
-                    : _controller.isLoading
-                    ? const CircularProgressIndicator(strokeWidth: 2)
-                    : Icon(Icons.data_usage, size: 18, color: cs.primary),
-              ),
-              SizedBox(width: widget.compact ? 5 : 7),
-              Text(
-                widget.compact ? compactLabel : label,
-                style: widget.compact
-                    ? Theme.of(context).textTheme.labelSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      )
-                    : Theme.of(context).textTheme.labelMedium,
-              ),
+              if (hasContext) ...[
+                SizedBox.square(
+                  dimension: widget.compact ? 16 : 18,
+                  child: CircularProgressIndicator(
+                    key: const ValueKey('session_insights_context_ring'),
+                    value: usage.utilization,
+                    strokeWidth: widget.compact ? 2.25 : 2.5,
+                    backgroundColor: cs.surfaceContainerHighest,
+                    color: color,
+                  ),
+                ),
+                SizedBox(width: widget.compact ? 5 : 7),
+                Text(
+                  widget.compact ? compactLabel : label,
+                  style: widget.compact
+                      ? Theme.of(context).textTheme.labelSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        )
+                      : Theme.of(context).textTheme.labelMedium,
+                ),
+              ] else if (!widget.compact ||
+                  (fiveHour == null && sevenDay == null)) ...[
+                SizedBox.square(
+                  dimension: widget.compact ? 16 : 18,
+                  child: _controller.isLoading
+                      ? const CircularProgressIndicator(strokeWidth: 2)
+                      : Icon(Icons.data_usage, size: 18, color: cs.primary),
+                ),
+                SizedBox(width: widget.compact ? 5 : 7),
+                Text(
+                  widget.compact ? compactLabel : label,
+                  style: widget.compact
+                      ? Theme.of(context).textTheme.labelSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        )
+                      : Theme.of(context).textTheme.labelMedium,
+                ),
+              ],
+              if (widget.compact && fiveHour != null) ...[
+                if (hasContext) const SizedBox(width: 5),
+                _CompactQuotaRing(
+                  key: const ValueKey('session_insights_five_hour_ring'),
+                  label: '5h',
+                  window: fiveHour,
+                ),
+              ],
+              if (widget.compact && sevenDay != null) ...[
+                if (hasContext || fiveHour != null) const SizedBox(width: 4),
+                _CompactQuotaRing(
+                  key: const ValueKey('session_insights_seven_day_ring'),
+                  label: '7d',
+                  window: sevenDay,
+                ),
+              ],
               if (!widget.compact) ...[
                 const SizedBox(width: 2),
                 const Icon(Icons.expand_more, size: 17),
@@ -204,6 +243,50 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
                     widget.onCompact!();
                   },
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactQuotaRing extends StatelessWidget {
+  const _CompactQuotaRing({
+    super.key,
+    required this.label,
+    required this.window,
+  });
+
+  final String label;
+  final SessionUsageWindow window;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final utilization = window.utilization.clamp(0, 100).toDouble();
+    return ExcludeSemantics(
+      child: SizedBox.square(
+        dimension: 18,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            SizedBox.expand(
+              child: CircularProgressIndicator(
+                value: utilization / 100,
+                strokeWidth: 2.25,
+                backgroundColor: cs.surfaceContainerHighest,
+                color: _meterColor(cs, utilization),
+              ),
+            ),
+            Text(
+              label,
+              style: TextStyle(
+                color: cs.onSurfaceVariant,
+                fontSize: 6.5,
+                height: 1,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -568,6 +651,27 @@ List<SessionUsageResetCredit> sortResetCreditsForDisplay(
     if (expiryOrder != 0) return expiryOrder;
     return a.id.compareTo(b.id);
   });
+
+({SessionUsageWindow? fiveHour, SessionUsageWindow? sevenDay})
+_primaryQuotaWindows(SessionUsageInfo? info) {
+  if (info == null) return (fiveHour: null, sevenDay: null);
+  for (final card in info.limitCards) {
+    if (card.fiveHour != null && card.sevenDay != null) {
+      return (fiveHour: card.fiveHour, sevenDay: card.sevenDay);
+    }
+  }
+  if (info.limitCards.isNotEmpty) {
+    final first = info.limitCards.first;
+    return (fiveHour: first.fiveHour, sevenDay: first.sevenDay);
+  }
+  return (fiveHour: info.fiveHour, sevenDay: info.sevenDay);
+}
+
+Color _meterColor(ColorScheme colors, double utilization) {
+  if (utilization >= 90) return colors.error;
+  if (utilization >= 75) return Colors.orange;
+  return colors.primary;
+}
 
 class _EmptyCard extends StatelessWidget {
   const _EmptyCard({required this.text});

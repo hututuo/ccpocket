@@ -225,10 +225,13 @@
   session is idle, has no queued input, and is not streaming. Intermediate
   assistant/tool blocks remain ineligible.
 - The context-window ring remains in the compact session mode toolbar through
-  the `session_insights` slot. It is absent from the old status/top-right slot;
-  tapping it keeps the full insights detail view, and that view retains the
-  `Compact context` action routed to the existing `codex_core_actions` compact
-  request. Future upstream merges must preserve all three invariants together.
+  the `session_insights` slot. When quota windows are available, the same
+  bounded entry adds labeled 5h and 7d utilization rings beside the context
+  ring without creating another controller or toolbar slot. It is absent from
+  the old status/top-right slot; tapping any part keeps the full insights detail
+  view, and that view retains the `Compact context` action routed to the
+  existing `codex_core_actions` compact request. Future upstream merges must
+  preserve these invariants together.
 - No item in this integration authorizes a live Bridge replacement, physical
   iPhone installation, stable-branch merge, or remote push. Those remain
   separate decisions after code and compatibility verification.

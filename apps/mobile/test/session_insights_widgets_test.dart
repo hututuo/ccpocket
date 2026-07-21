@@ -260,7 +260,20 @@ void main() {
   testWidgets('compact context ring fits the session mode toolbar', (
     tester,
   ) async {
-    final bridge = _Bridge();
+    final bridge = _Bridge()
+      ..quotaProviders = const [
+        SessionUsageInfo(
+          provider: 'codex',
+          fiveHour: SessionUsageWindow(
+            utilization: 25,
+            windowDurationMins: 300,
+          ),
+          sevenDay: SessionUsageWindow(
+            utilization: 61,
+            windowDurationMins: 10080,
+          ),
+        ),
+      ];
     addTearDown(bridge.dispose);
 
     await tester.pumpWidget(
@@ -274,6 +287,14 @@ void main() {
           ),
         ),
       ),
+    );
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 's1',
+        requestId: _latestUsageRequestId(bridge),
+        providers: bridge.quotaProviders,
+      ),
+      's1',
     );
     bridge.emit(
       const ContextUsageMessage(
@@ -295,6 +316,49 @@ void main() {
     expect(find.text('53%'), findsOneWidget);
     expect(find.textContaining('53% ·'), findsNothing);
     expect(find.byType(VerticalDivider), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('session_insights_context_ring')),
+      findsOneWidget,
+    );
+    final fiveHourRing = find.byKey(
+      const ValueKey('session_insights_five_hour_ring'),
+    );
+    final sevenDayRing = find.byKey(
+      const ValueKey('session_insights_seven_day_ring'),
+    );
+    expect(fiveHourRing, findsOneWidget);
+    expect(sevenDayRing, findsOneWidget);
+    expect(
+      find.descendant(of: fiveHourRing, matching: find.text('5h')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: sevenDayRing, matching: find.text('7d')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.descendant(
+              of: fiveHourRing,
+              matching: find.byType(CircularProgressIndicator),
+            ),
+          )
+          .value,
+      0.25,
+    );
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.descendant(
+              of: sevenDayRing,
+              matching: find.byType(CircularProgressIndicator),
+            ),
+          )
+          .value,
+      0.61,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('empty compact insight slot hides its leading divider', (
