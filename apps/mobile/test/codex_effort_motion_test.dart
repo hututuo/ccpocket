@@ -48,6 +48,7 @@ void main() {
       ),
     );
     expect(codexEffortPixelCellCapacity, 432);
+    expect(codexEffortPixelFireDrawBatchCount, 1);
     expect(codexFastParticleCount, 14);
 
     final bounds = tester.getRect(find.byKey(const ValueKey('motion_slider')));
@@ -147,6 +148,45 @@ void main() {
     expect(
       ClaudeRangeSliderFireSimulation.rowCenter(5),
       closeTo(5.5 / 6, 0.000001),
+    );
+  });
+
+  test('bounded settle stays visually equivalent to the reference warmup', () {
+    ClaudeRangeSliderFireSimulation simulation() =>
+        ClaudeRangeSliderFireSimulation()
+          ..setFramebufferMetrics(width: 314, height: 24, devicePixelRatio: 3);
+
+    final bounded = simulation()..settle(slider: 1);
+    final reference = simulation()
+      ..settle(
+        slider: 1,
+        feedbackFrames: ClaudeRangeSliderFireSimulation.referenceSettleFrames,
+      );
+    var maximumChannelError = 0.0;
+    for (
+      var index = 0;
+      index < ClaudeRangeSliderFireSimulation.cellCount;
+      index++
+    ) {
+      for (final error in <double>[
+        (bounded.redAtIndex(index) - reference.redAtIndex(index)).abs(),
+        (bounded.greenAtIndex(index) - reference.greenAtIndex(index)).abs(),
+        (bounded.blueAtIndex(index) - reference.blueAtIndex(index)).abs(),
+        (bounded.glowRedAtIndex(index) - reference.glowRedAtIndex(index)).abs(),
+        (bounded.glowGreenAtIndex(index) - reference.glowGreenAtIndex(index))
+            .abs(),
+        (bounded.glowBlueAtIndex(index) - reference.glowBlueAtIndex(index))
+            .abs(),
+      ]) {
+        maximumChannelError = math.max(maximumChannelError, error);
+      }
+    }
+
+    expect(maximumChannelError, lessThan(0.001));
+    expect(
+      (bounded.energyChecksum - reference.energyChecksum).abs() /
+          reference.energyChecksum,
+      lessThan(0.001),
     );
   });
 
@@ -511,7 +551,12 @@ void main() {
     );
     await tester.pump();
 
-    expect(painter().debugThumbCenterX(size.width), isNot(initialThumb));
+    final draggedThumb = painter().debugThumbCenterX(size.width) as double;
+    expect(draggedThumb, isNot(initialThumb));
+    expect(
+      (painter().debugActiveBounds(size) as Rect).right,
+      closeTo(draggedThumb, 0.001),
+    );
     expect(painter().debugPixelFieldBounds(size), initialGrid);
     expect(painter().debugPixelCellSize(size), initialCell);
     for (var index = 0; index < initialCentres.length; index++) {
@@ -529,6 +574,12 @@ void main() {
       ),
     );
     await tester.pump();
+    final secondDraggedThumb =
+        painter().debugThumbCenterX(size.width) as double;
+    expect(
+      (painter().debugActiveBounds(size) as Rect).right,
+      closeTo(secondDraggedThumb, 0.001),
+    );
     expect(painter().debugPixelFieldBounds(size), initialGrid);
     expect(painter().debugPixelCellSize(size), initialCell);
     detector().onHorizontalDragEnd!(DragEndDetails());
@@ -561,7 +612,9 @@ void main() {
         .widget<CustomPaint>(paintFinder)
         .painter;
     final Rect ultraActive = ultraPainter.debugActiveBounds(size) as Rect;
-    expect(ultraActive.right, closeTo(track.right, 0.001));
+    final ultraThumb = ultraPainter.debugThumbCenterX(size.width) as double;
+    expect(ultraActive.right, closeTo(ultraThumb, 0.001));
+    expect(ultraActive.right, lessThan(track.right));
 
     await tester.pumpWidget(
       MaterialApp(
@@ -583,10 +636,16 @@ void main() {
     final dynamic narrowPainter = tester
         .widget<CustomPaint>(narrowPaint)
         .painter;
+    final Rect narrowTrack = narrowPainter.debugTrackBounds(narrowSize) as Rect;
+    final Rect narrowActive =
+        narrowPainter.debugActiveBounds(narrowSize) as Rect;
     expect(
       narrowPainter.debugThumbCenterX(narrowSize.width),
       inInclusiveRange(0.0, narrowSize.width),
     );
+    expect(narrowActive.left, greaterThanOrEqualTo(narrowTrack.left));
+    expect(narrowActive.right, lessThanOrEqualTo(narrowTrack.right));
+    expect(narrowActive.width, greaterThanOrEqualTo(0));
   });
 
   testWidgets('exposes slider semantics and keyboard steps', (tester) async {
@@ -686,9 +745,13 @@ void main() {
     final dynamic painter = tester.widget<CustomPaint>(paintFinder).painter;
     final Rect track = painter.debugTrackBounds(paintSize) as Rect;
     final Rect field = painter.debugPixelFieldBounds(paintSize) as Rect;
+    final Rect active = painter.debugActiveBounds(paintSize) as Rect;
+    final thumb = painter.debugThumbCenterX(paintSize.width) as double;
     expect(painter.debugPixelFieldFlowsToPhysicalLeft, isFalse);
     expect(painter.debugPixelFieldFlowsToPhysicalRight, isTrue);
     expect(field.width, greaterThan(track.width * 0.5));
+    expect(active.left, closeTo(thumb, 0.001));
+    expect(active.left, greaterThan(track.left));
 
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await tester.pump();

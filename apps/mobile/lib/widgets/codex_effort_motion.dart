@@ -1,4 +1,6 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui show VertexMode, Vertices;
 import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/material.dart';
@@ -118,6 +120,10 @@ int get codexEffortPixelCellCapacity =>
     ClaudeEffortMotionTokens.pixelColumns *
     ClaudeEffortMotionTokens.maxPixelRows;
 
+/// The three fire layers are submitted as one indexed vertex batch per frame.
+@visibleForTesting
+const int codexEffortPixelFireDrawBatchCount = 1;
+
 class _EffortPixelFieldState {
   static const int _columns = ClaudeRangeSliderFireSimulation.columns;
   static const int _rows = ClaudeRangeSliderFireSimulation.rows;
@@ -163,6 +169,12 @@ class _EffortPixelFieldState {
   double glowGreenAt(int column, int row) =>
       _simulation.glowGreenAt(column, row);
   double glowBlueAt(int column, int row) => _simulation.glowBlueAt(column, row);
+  double redAtIndex(int index) => _simulation.redAtIndex(index);
+  double greenAtIndex(int index) => _simulation.greenAtIndex(index);
+  double blueAtIndex(int index) => _simulation.blueAtIndex(index);
+  double glowRedAtIndex(int index) => _simulation.glowRedAtIndex(index);
+  double glowGreenAtIndex(int index) => _simulation.glowGreenAtIndex(index);
+  double glowBlueAtIndex(int index) => _simulation.glowBlueAtIndex(index);
 
   void setSliderPosition(double position) {
     _simulation.setSlider(position);
@@ -1032,6 +1044,111 @@ class _MaximumEffortIntent extends Intent {
   const _MaximumEffortIntent();
 }
 
+class _PixelFireMeshGeometry {
+  _PixelFireMeshGeometry._({
+    required this.trackRect,
+    required this.direction,
+    required this.positions,
+    required this.indices,
+    required this.colors,
+  });
+
+  static const int layerCount = 3;
+  static const int verticesPerQuad = 4;
+  static const int indicesPerQuad = 6;
+  static const int quadCount =
+      ClaudeRangeSliderFireSimulation.cellCount * layerCount;
+  static const int vertexCount = quadCount * verticesPerQuad;
+
+  final Rect trackRect;
+  final TextDirection direction;
+  final Float32List positions;
+  final Uint16List indices;
+  final Int32List colors;
+
+  bool matches(Rect nextTrackRect, TextDirection nextDirection) =>
+      trackRect == nextTrackRect && direction == nextDirection;
+
+  factory _PixelFireMeshGeometry.create(
+    Rect trackRect,
+    TextDirection direction,
+  ) {
+    const columns = ClaudeRangeSliderFireSimulation.columns;
+    const rows = ClaudeRangeSliderFireSimulation.rows;
+    final cellStepX = trackRect.width / columns;
+    final cellStepY = trackRect.height / rows;
+    final cellSize = math.min(cellStepX, cellStepY);
+    final outerCellSize = Size(cellStepX * 0.756, cellStepY * 0.68);
+    final coreCellSize = Size(cellStepX * 0.489, cellStepY * 0.44);
+    final positions = Float32List(vertexCount * 2);
+    final indices = Uint16List(quadCount * indicesPerQuad);
+    final colors = Int32List(vertexCount);
+
+    var quad = 0;
+    for (var layer = 0; layer < layerCount; layer++) {
+      for (var column = 0; column < columns; column++) {
+        final logicalX = ClaudeRangeSliderFireSimulation.columnCenter(column);
+        final x = direction == TextDirection.rtl
+            ? trackRect.right - logicalX * trackRect.width
+            : trackRect.left + logicalX * trackRect.width;
+        for (var row = 0; row < rows; row++) {
+          final logicalY = ClaudeRangeSliderFireSimulation.rowCenter(row);
+          final centre = Offset(x, trackRect.top + logicalY * trackRect.height);
+          final outerRect = Rect.fromCenter(
+            center: centre,
+            width: outerCellSize.width,
+            height: outerCellSize.height,
+          );
+          final rect = switch (layer) {
+            0 => outerRect.inflate(cellSize * 0.72),
+            1 => outerRect,
+            _ => Rect.fromCenter(
+              center: centre,
+              width: coreCellSize.width,
+              height: coreCellSize.height,
+            ),
+          };
+          _writeQuad(positions, indices, quad, rect);
+          quad += 1;
+        }
+      }
+    }
+    return _PixelFireMeshGeometry._(
+      trackRect: trackRect,
+      direction: direction,
+      positions: positions,
+      indices: indices,
+      colors: colors,
+    );
+  }
+
+  static void _writeQuad(
+    Float32List positions,
+    Uint16List indices,
+    int quad,
+    Rect rect,
+  ) {
+    final vertex = quad * verticesPerQuad;
+    final position = vertex * 2;
+    positions[position] = rect.left;
+    positions[position + 1] = rect.top;
+    positions[position + 2] = rect.right;
+    positions[position + 3] = rect.top;
+    positions[position + 4] = rect.right;
+    positions[position + 5] = rect.bottom;
+    positions[position + 6] = rect.left;
+    positions[position + 7] = rect.bottom;
+
+    final index = quad * indicesPerQuad;
+    indices[index] = vertex;
+    indices[index + 1] = vertex + 1;
+    indices[index + 2] = vertex + 2;
+    indices[index + 3] = vertex;
+    indices[index + 4] = vertex + 2;
+    indices[index + 5] = vertex + 3;
+  }
+}
+
 /// Public only so structural tests can verify repaint boundaries and geometry.
 /// Product code should construct [CodexEffortMotionSlider] instead.
 class _CodexEffortTrackPainter extends CustomPainter {
@@ -1061,6 +1178,10 @@ class _CodexEffortTrackPainter extends CustomPainter {
   final Color tick;
   final Color outline;
   final Color purple;
+  final Paint _pixelFireBatchPaint = Paint()
+    ..isAntiAlias = false
+    ..blendMode = BlendMode.screen;
+  _PixelFireMeshGeometry? _pixelFireMeshGeometry;
 
   _CodexEffortTrackPainter({
     required this.animation,
@@ -1119,10 +1240,9 @@ class _CodexEffortTrackPainter extends CustomPainter {
 
   Rect _activeRect(Rect trackRect, double logicalPosition, double width) {
     final thumbX = _positionX(logicalPosition, width, direction);
-    final fillThumbRadius = _safeThumbRadius(width);
     return direction == TextDirection.rtl
         ? Rect.fromLTRB(
-            math.max(trackRect.left, thumbX - fillThumbRadius),
+            math.max(trackRect.left, thumbX),
             trackRect.top,
             trackRect.right,
             trackRect.bottom,
@@ -1130,7 +1250,7 @@ class _CodexEffortTrackPainter extends CustomPainter {
         : Rect.fromLTRB(
             trackRect.left,
             trackRect.top,
-            math.min(trackRect.right, thumbX + fillThumbRadius),
+            math.min(trackRect.right, thumbX),
             trackRect.bottom,
           );
   }
@@ -1518,95 +1638,99 @@ class _CodexEffortTrackPainter extends CustomPainter {
     final fieldOpacity = _clampUnit(pixelField.opacity);
     if (fieldOpacity <= 0.001 || trackRect.isEmpty) return;
 
+    var geometry = _pixelFireMeshGeometry;
+    if (geometry == null || !geometry.matches(trackRect, direction)) {
+      geometry = _PixelFireMeshGeometry.create(trackRect, direction);
+      _pixelFireMeshGeometry = geometry;
+    }
+
     const columns = ClaudeRangeSliderFireSimulation.columns;
     const rows = ClaudeRangeSliderFireSimulation.rows;
-    final cellStepX = trackRect.width / columns;
-    final cellStepY = trackRect.height / rows;
-    final cellSize = math.min(cellStepX, cellStepY);
+    const cells = ClaudeRangeSliderFireSimulation.cellCount;
     final maskEnd = math.min(1.0, pixelField.slider + 0.02);
-
-    // The source shader's per-cell mask is smoothstep(0.34, 0.22, ...).
-    // Two fixed rectangles preserve its soft fringe and bright core without
-    // letting the grid geometry depend on the moving thumb.
-    final outerCellSize = Size(cellStepX * 0.756, cellStepY * 0.68);
-    final coreCellSize = Size(cellStepX * 0.489, cellStepY * 0.44);
-    final glowPaint = Paint()
-      ..isAntiAlias = false
-      ..blendMode = BlendMode.screen;
-    final fringePaint = Paint()
-      ..isAntiAlias = false
-      ..blendMode = BlendMode.screen;
-    final corePaint = Paint()
-      ..isAntiAlias = false
-      ..blendMode = BlendMode.screen;
+    final colors = geometry.colors..fillRange(0, geometry.colors.length, 0);
 
     for (var column = 0; column < columns; column++) {
       final logicalX = ClaudeRangeSliderFireSimulation.columnCenter(column);
       if (logicalX > maskEnd) continue;
-      final x = direction == TextDirection.rtl
-          ? trackRect.right - logicalX * trackRect.width
-          : trackRect.left + logicalX * trackRect.width;
       for (var row = 0; row < rows; row++) {
-        final value = pixelField.energyAt(column, row);
+        final cell = column * rows + row;
+        final red = pixelField.redAtIndex(cell);
+        final green = pixelField.greenAtIndex(cell);
+        final blue = pixelField.blueAtIndex(cell);
+        final value = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+        final glowRed = pixelField.glowRedAtIndex(cell);
+        final glowGreen = pixelField.glowGreenAtIndex(cell);
+        final glowBlue = pixelField.glowBlueAtIndex(cell);
         final glowLuminance =
-            pixelField.glowRedAt(column, row) * 0.2126 +
-            pixelField.glowGreenAt(column, row) * 0.7152 +
-            pixelField.glowBlueAt(column, row) * 0.0722;
+            glowRed * 0.2126 + glowGreen * 0.7152 + glowBlue * 0.0722;
         if (value <= 0.008 && glowLuminance <= 0.008) continue;
 
-        final logicalY = ClaudeRangeSliderFireSimulation.rowCenter(row);
-        final centre = Offset(x, trackRect.top + logicalY * trackRect.height);
-        final outerRect = Rect.fromCenter(
-          center: centre,
-          width: outerCellSize.width,
-          height: outerCellSize.height,
-        );
-        final coreRect = Rect.fromCenter(
-          center: centre,
-          width: coreCellSize.width,
-          height: coreCellSize.height,
-        );
-
         if (glowLuminance > 0.008) {
-          glowPaint.color = _pixelRgbColor(
-            pixelField.glowRedAt(column, row),
-            pixelField.glowGreenAt(column, row),
-            pixelField.glowBlueAt(column, row),
-            fieldOpacity * math.min(0.32, glowLuminance * 0.22),
+          _setPixelQuadColor(
+            colors,
+            cell,
+            _pixelArgb32(
+              glowRed,
+              glowGreen,
+              glowBlue,
+              fieldOpacity * math.min(0.32, glowLuminance * 0.22),
+            ),
           );
-          canvas.drawRect(outerRect.inflate(cellSize * 0.72), glowPaint);
         }
-
         if (value > 0.008) {
-          final red = pixelField.redAt(column, row);
-          final green = pixelField.greenAt(column, row);
-          final blue = pixelField.blueAt(column, row);
-          fringePaint.color = _pixelRgbColor(
-            red,
-            green,
-            blue,
-            fieldOpacity * math.min(0.58, value * 0.72),
+          _setPixelQuadColor(
+            colors,
+            cells + cell,
+            _pixelArgb32(
+              red,
+              green,
+              blue,
+              fieldOpacity * math.min(0.58, value * 0.72),
+            ),
           );
-          canvas.drawRect(outerRect, fringePaint);
-          corePaint.color = _pixelRgbColor(
-            red,
-            green,
-            blue,
-            fieldOpacity * math.min(1.0, value * 1.34),
+          _setPixelQuadColor(
+            colors,
+            cells * 2 + cell,
+            _pixelArgb32(
+              red,
+              green,
+              blue,
+              fieldOpacity * math.min(1.0, value * 1.34),
+            ),
           );
-          canvas.drawRect(coreRect, corePaint);
         }
       }
     }
+
+    final vertices = ui.Vertices.raw(
+      ui.VertexMode.triangles,
+      geometry.positions,
+      colors: colors,
+      indices: geometry.indices,
+    );
+    canvas.drawVertices(vertices, BlendMode.dst, _pixelFireBatchPaint);
+    vertices.dispose();
   }
 
-  Color _pixelRgbColor(double red, double green, double blue, double opacity) =>
-      Color.fromRGBO(
-        (_clampUnit(red) * 255).round(),
-        (_clampUnit(green) * 255).round(),
-        (_clampUnit(blue) * 255).round(),
-        _clampUnit(opacity),
-      );
+  void _setPixelQuadColor(Int32List colors, int quad, int color) {
+    final vertex = quad * _PixelFireMeshGeometry.verticesPerQuad;
+    colors[vertex] = color;
+    colors[vertex + 1] = color;
+    colors[vertex + 2] = color;
+    colors[vertex + 3] = color;
+  }
+
+  int _pixelArgb32(double red, double green, double blue, double opacity) {
+    final alpha = (_clampUnit(opacity) * 255).round();
+    final redChannel = (_clampUnit(red) * 255).round();
+    final greenChannel = (_clampUnit(green) * 255).round();
+    final blueChannel = (_clampUnit(blue) * 255).round();
+    return (alpha << 24) |
+        (redChannel << 16) |
+        (greenChannel << 8) |
+        blueChannel;
+  }
 
   void _paintArrivalBurst(
     Canvas canvas,

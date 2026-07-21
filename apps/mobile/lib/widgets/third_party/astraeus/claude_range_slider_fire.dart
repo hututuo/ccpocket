@@ -37,11 +37,70 @@ final class ClaudeRangeSliderFireSimulation {
   static const int rows = 6;
   static const int cellCount = columns * rows;
   static const double fixedStepSeconds = 1 / 60;
+  static const int referenceSettleFrames = 228;
+  static const int defaultSettleFeedbackFrames = 72;
+  static const int maxCatchUpSteps = 2;
 
   static const double _blurCentre = 0.227027;
   static const double _blurOne = 0.194595;
   static const double _blurTwo = 0.121622;
   static const double _blurThree = 0.054054;
+  static const List<int> _blurSampleOffsets = <int>[0, 1, -1, 2, -2, 3, -3];
+  static const List<double> _blurSampleWeights = <double>[
+    _blurCentre,
+    _blurOne,
+    _blurOne,
+    _blurTwo,
+    _blurTwo,
+    _blurThree,
+    _blurThree,
+  ];
+
+  static final List<double> _columnCenters = List<double>.generate(
+    columns,
+    (column) => (column + 0.5) / columns,
+    growable: false,
+  );
+  static final List<double> _rowCenters = List<double>.generate(
+    rows,
+    (row) => (row + 0.5) / rows,
+    growable: false,
+  );
+  static final List<double> _columnFadeMasks = List<double>.generate(
+    columns,
+    (column) => _smoothStep(0, 0.45, _columnCenters[column]),
+    growable: false,
+  );
+  static final List<double> _rowVerticalEnvelopes = List<double>.generate(
+    rows,
+    (row) {
+      final vertical = (_rowCenters[row] - 0.5).abs() * 2;
+      return math
+          .pow(math.max(1 - vertical * vertical * 0.45, 0.0), 0.75)
+          .toDouble();
+    },
+    growable: false,
+  );
+  static final List<double> _cellHashes = List<double>.generate(
+    cellCount,
+    (index) => _hash((index ~/ rows).toDouble(), (index % rows).toDouble()),
+    growable: false,
+  );
+  static final List<double> _secondCellHashes = List<double>.generate(
+    cellCount,
+    (index) => _hash(index ~/ rows + 99.0, index % rows + 33.0),
+    growable: false,
+  );
+  static final List<double> _cellSpeeds = List<double>.generate(
+    cellCount,
+    (index) => 0.85 + _cellHashes[index] * 0.30,
+    growable: false,
+  );
+  static final List<double> _cellOffsets = List<double>.generate(
+    cellCount,
+    (index) => (_cellHashes[index] - 0.5) * 0.05,
+    growable: false,
+  );
 
   List<double> _sceneR = List<double>.filled(cellCount, 0, growable: false);
   List<double> _sceneG = List<double>.filled(cellCount, 0, growable: false);
@@ -117,10 +176,10 @@ final class ClaudeRangeSliderFireSimulation {
   }
 
   static double columnCenter(int column) =>
-      (column.clamp(0, columns - 1).toInt() + 0.5) / columns;
+      _columnCenters[column.clamp(0, columns - 1).toInt()];
 
   static double rowCenter(int row) =>
-      (row.clamp(0, rows - 1).toInt() + 0.5) / rows;
+      _rowCenters[row.clamp(0, rows - 1).toInt()];
 
   void setSlider(double value) {
     _slider = _clamp(value);
@@ -161,34 +220,52 @@ final class ClaudeRangeSliderFireSimulation {
     _elapsed = -1;
   }
 
-  /// Produces a live-looking first frame without replaying the ignition when a
+  /// Produces a mature first frame without replaying the ignition when a
   /// session opens with Max or Ultra already selected.
+  ///
+  /// The absolute shader time still lands at the reference's 228th frame. Only
+  /// the final feedback window is evaluated because earlier contributions are
+  /// below 0.06% after 72 iterations of the source's 0.90 decay.
   void settle({
     required double slider,
     ClaudeRangeSliderFireTier tier = ClaudeRangeSliderFireTier.ultra,
+    int feedbackFrames = defaultSettleFeedbackFrames,
   }) {
     setSlider(slider);
     _tier = tier;
     _clearFrames();
     _active = true;
     _accumulator = 0;
-    _time = 0;
-    _elapsed = 0;
-    const settleFrames = 228;
-    for (var frame = 0; frame < settleFrames; frame++) {
+    final boundedFeedbackFrames = feedbackFrames
+        .clamp(1, referenceSettleFrames)
+        .toInt();
+    final skippedFrames = referenceSettleFrames - boundedFeedbackFrames;
+    _time = skippedFrames * fixedStepSeconds;
+    _elapsed = _time;
+    for (var frame = 0; frame < boundedFeedbackFrames; frame++) {
       _stepFrame();
     }
   }
 
   void advance(double deltaSeconds) {
     _accumulator += deltaSeconds.clamp(0.0, 0.12).toDouble();
-    var steps = 0;
-    while (_accumulator >= fixedStepSeconds && steps < 8) {
+    final availableSteps = (_accumulator / fixedStepSeconds).floor();
+    final skippedSteps = math.max(0, availableSteps - maxCatchUpSteps);
+    if (skippedSteps > 0) _skipSimulationFrames(skippedSteps);
+    final simulatedSteps = math.min(availableSteps, maxCatchUpSteps);
+    for (var step = 0; step < simulatedSteps; step++) {
       _stepFrame();
-      _accumulator -= fixedStepSeconds;
-      steps += 1;
     }
-    if (steps == 8) _accumulator = 0;
+    _accumulator -= availableSteps * fixedStepSeconds;
+  }
+
+  /// Drops stale simulation work after a long UI frame while preserving the
+  /// last visible feedback buffer. Decaying that buffer without also evaluating
+  /// the skipped source frames produces a conspicuous brightness dip, so only
+  /// the shader clocks advance before the final bounded catch-up steps run.
+  void _skipSimulationFrames(int count) {
+    _time += count * fixedStepSeconds;
+    if (_active) _elapsed += count * fixedStepSeconds;
   }
 
   void clear() {
@@ -207,6 +284,13 @@ final class ClaudeRangeSliderFireSimulation {
   double glowRedAt(int column, int row) => _glowR[_index(column, row)];
   double glowGreenAt(int column, int row) => _glowG[_index(column, row)];
   double glowBlueAt(int column, int row) => _glowB[_index(column, row)];
+
+  double redAtIndex(int index) => _compositeR[index];
+  double greenAtIndex(int index) => _compositeG[index];
+  double blueAtIndex(int index) => _compositeB[index];
+  double glowRedAtIndex(int index) => _glowR[index];
+  double glowGreenAtIndex(int index) => _glowG[index];
+  double glowBlueAtIndex(int index) => _glowB[index];
 
   double luminanceAt(int column, int row) {
     final index = _index(column, row);
@@ -325,13 +409,29 @@ final class ClaudeRangeSliderFireSimulation {
     final activation = _tier == ClaudeRangeSliderFireTier.max
         ? 1.0
         : _smoothStep(0.95, 1, _slider);
+    final energyScale = _mix(0.15, 0.50, math.min(_elapsed / 1.0, 1.0));
+    final timeScale = _mix(0.85, 1.0, math.min(_elapsed / 1.5, 1.0));
+    final pulse = math.sin(_time * 2.8) * 0.15 + 1;
+    final isMax = _tier == ClaudeRangeSliderFireTier.max;
+    final emberR = isMax ? 0.12 : 0.28;
+    const emberG = 0.10;
+    final emberB = isMax ? 0.50 : 0.58;
+    final purpleR = isMax ? 0.34 : 0.62;
+    final purpleG = isMax ? 0.42 : 0.32;
+    const purpleB = 1.0;
+    final whiteR = isMax ? 0.82 : 1.0;
+    final whiteG = isMax ? 0.91 : 0.94;
+    final whiteB = isMax ? 1.0 : 0.98;
+    final tierIntensity = isMax ? 0.74 : 1.0;
     for (var column = 0; column < columns; column++) {
-      final uvX = columnCenter(column);
-      final fadeMask = _smoothStep(0, 0.45, uvX);
+      final uvX = _columnCenters[column];
+      final fadeMask = _columnFadeMasks[column];
+      final core = math.exp(-math.pow((uvX - _slider) * 16, 2));
+      final wideCore = math.exp(-math.pow((uvX - _slider) * 3.5, 2));
       for (var row = 0; row < rows; row++) {
         final index = _index(column, row);
-        final uvY = rowCenter(row);
-        final cellHash = _hash(column.toDouble(), row.toDouble());
+        final uvY = _rowCenters[row];
+        final cellHash = _cellHashes[index];
         final decayR = _sceneR[index] * 0.90 * fadeMask;
         final decayG = _sceneG[index] * 0.90 * fadeMask;
         final decayB = _sceneB[index] * 0.90 * fadeMask;
@@ -344,11 +444,11 @@ final class ClaudeRangeSliderFireSimulation {
 
         final cellAge = math.max(_elapsed - cellHash * 1.2, 0.0);
         final ignited = _step(0.001, cellAge);
-        final cellSpeed = 0.85 + cellHash * 0.30;
+        final cellSpeed = _cellSpeeds[index];
         final growth = _clamp(cellAge / 2.5);
         final eased = 1 - math.pow(1 - growth, 3).toDouble();
         final distance = eased * _slider * cellSpeed * ignited;
-        final cellOffset = (cellHash - 0.5) * 0.05;
+        final cellOffset = _cellOffsets[index];
         final front = math.max(_slider - distance - cellOffset, 0.02);
         final tail = math.max(_slider - front, 0.001);
         final inZone = _step(front - 0.003, uvX) * _step(uvX, _slider + 0.003);
@@ -357,12 +457,7 @@ final class ClaudeRangeSliderFireSimulation {
         brightness = math.max(brightness, 0.04 * ignited) * inZone;
         brightness *= 1 - _smoothStep(0.94, 1.05, normalizedTail);
 
-        final energyScale = _mix(0.15, 0.50, math.min(_elapsed / 1.0, 1.0));
-        final vertical = (uvY - 0.5).abs() * 2;
-        final verticalEnvelope = math
-            .pow(math.max(1 - vertical * vertical * 0.45, 0.0), 0.75)
-            .toDouble();
-        final timeScale = _mix(0.85, 1.0, math.min(_elapsed / 1.5, 1.0));
+        final verticalEnvelope = _rowVerticalEnvelopes[row];
         final waveOne = math.sin(
           uvX * 30 + _time * 15 * timeScale + cellHash * 6.28,
         );
@@ -435,7 +530,7 @@ final class ClaudeRangeSliderFireSimulation {
             _smoothStep(0.07, 0, leadDistance) *
             _step(0, leadDistance) *
             verticalEnvelope;
-        final secondHash = _hash(column + 99.0, row + 33.0);
+        final secondHash = _secondCellHashes[index];
         final leadFlicker =
             math.sin(
                   leadDistance * 100 +
@@ -453,16 +548,6 @@ final class ClaudeRangeSliderFireSimulation {
             0.5;
         final total = energy + edge + leadSpark;
 
-        final isMax = _tier == ClaudeRangeSliderFireTier.max;
-        final emberR = isMax ? 0.12 : 0.28;
-        final emberG = isMax ? 0.10 : 0.10;
-        final emberB = isMax ? 0.50 : 0.58;
-        final purpleR = isMax ? 0.34 : 0.62;
-        final purpleG = isMax ? 0.42 : 0.32;
-        const purpleB = 1.0;
-        final whiteR = isMax ? 0.82 : 1.0;
-        final whiteG = isMax ? 0.91 : 0.94;
-        final whiteB = isMax ? 1.0 : 0.98;
         final temperature = 1 - normalizedTail;
         final whiteMix = math.pow(temperature, 4.5).toDouble();
         var red = _mix(emberR, purpleR, temperature);
@@ -472,9 +557,6 @@ final class ClaudeRangeSliderFireSimulation {
         green = _mix(green, whiteG, whiteMix) * total;
         blue = _mix(blue, whiteB, whiteMix) * total;
 
-        final pulse = math.sin(_time * 2.8) * 0.15 + 1;
-        final core = math.exp(-math.pow((uvX - _slider) * 16, 2));
-        final wideCore = math.exp(-math.pow((uvX - _slider) * 3.5, 2));
         red +=
             whiteR * core * 2.2 * pulse * activation * energyScale +
             purpleR * wideCore * 0.12 * activation * energyScale;
@@ -485,7 +567,6 @@ final class ClaudeRangeSliderFireSimulation {
             whiteB * core * 2.2 * pulse * activation * energyScale +
             purpleB * wideCore * 0.12 * activation * energyScale;
 
-        final tierIntensity = isMax ? 0.74 : 1.0;
         red *= tierIntensity;
         green *= tierIntensity;
         blue *= tierIntensity;
@@ -503,49 +584,87 @@ final class ClaudeRangeSliderFireSimulation {
   void _horizontalBlurPass() {
     for (var column = 0; column < columns; column++) {
       for (var row = 0; row < rows; row++) {
-        final index = _index(column, row);
-        _blurHorizontalR[index] = _blurHorizontalChannel(_nextR, column, row);
-        _blurHorizontalG[index] = _blurHorizontalChannel(_nextG, column, row);
-        _blurHorizontalB[index] = _blurHorizontalChannel(_nextB, column, row);
+        var resultR = 0.0;
+        var resultG = 0.0;
+        var resultB = 0.0;
+        for (
+          var sampleIndex = 0;
+          sampleIndex < _blurSampleOffsets.length;
+          sampleIndex++
+        ) {
+          final sampleColumn =
+              column + _blurSampleOffsets[sampleIndex] * _blurOffsetColumns;
+          final position = sampleColumn.clamp(0.0, columns - 1.0).toDouble();
+          final lowerColumn = position.floor();
+          final upperColumn = math.min(columns - 1, lowerColumn + 1);
+          final amount = position - lowerColumn;
+          final lowerIndex = lowerColumn * rows + row;
+          final upperIndex = upperColumn * rows + row;
+          final red = _mix(_nextR[lowerIndex], _nextR[upperIndex], amount);
+          final green = _mix(_nextG[lowerIndex], _nextG[upperIndex], amount);
+          final blue = _mix(_nextB[lowerIndex], _nextB[upperIndex], amount);
+          if (_luminance(red, green, blue) < 0.30) continue;
+          final weight = _blurSampleWeights[sampleIndex];
+          resultR += red * weight;
+          resultG += green * weight;
+          resultB += blue * weight;
+        }
+        final index = column * rows + row;
+        _blurHorizontalR[index] = resultR;
+        _blurHorizontalG[index] = resultG;
+        _blurHorizontalB[index] = resultB;
       }
     }
-  }
-
-  double _blurHorizontalChannel(List<double> channel, int column, int row) {
-    double sample(int offset) {
-      final sampleColumn = column + offset * _blurOffsetColumns;
-      final red = _sampleHorizontal(_nextR, sampleColumn, row);
-      final green = _sampleHorizontal(_nextG, sampleColumn, row);
-      final blue = _sampleHorizontal(_nextB, sampleColumn, row);
-      if (_luminance(red, green, blue) < 0.30) return 0;
-      return _sampleHorizontal(channel, sampleColumn, row);
-    }
-
-    return sample(0) * _blurCentre +
-        (sample(1) + sample(-1)) * _blurOne +
-        (sample(2) + sample(-2)) * _blurTwo +
-        (sample(3) + sample(-3)) * _blurThree;
   }
 
   void _verticalBlurPass() {
     for (var column = 0; column < columns; column++) {
       for (var row = 0; row < rows; row++) {
-        final index = _index(column, row);
-        _glowR[index] = _blurVerticalChannel(_blurHorizontalR, column, row);
-        _glowG[index] = _blurVerticalChannel(_blurHorizontalG, column, row);
-        _glowB[index] = _blurVerticalChannel(_blurHorizontalB, column, row);
+        var resultR = 0.0;
+        var resultG = 0.0;
+        var resultB = 0.0;
+        for (
+          var sampleIndex = 0;
+          sampleIndex < _blurSampleOffsets.length;
+          sampleIndex++
+        ) {
+          final sampleRow =
+              row + _blurSampleOffsets[sampleIndex] * _blurOffsetRows;
+          final position = sampleRow.clamp(0.0, rows - 1.0).toDouble();
+          final lowerRow = position.floor();
+          final upperRow = math.min(rows - 1, lowerRow + 1);
+          final amount = position - lowerRow;
+          final lowerIndex = column * rows + lowerRow;
+          final upperIndex = column * rows + upperRow;
+          final weight = _blurSampleWeights[sampleIndex];
+          resultR +=
+              _mix(
+                _blurHorizontalR[lowerIndex],
+                _blurHorizontalR[upperIndex],
+                amount,
+              ) *
+              weight;
+          resultG +=
+              _mix(
+                _blurHorizontalG[lowerIndex],
+                _blurHorizontalG[upperIndex],
+                amount,
+              ) *
+              weight;
+          resultB +=
+              _mix(
+                _blurHorizontalB[lowerIndex],
+                _blurHorizontalB[upperIndex],
+                amount,
+              ) *
+              weight;
+        }
+        final index = column * rows + row;
+        _glowR[index] = resultR;
+        _glowG[index] = resultG;
+        _glowB[index] = resultB;
       }
     }
-  }
-
-  double _blurVerticalChannel(List<double> channel, int column, int row) {
-    double sample(int offset) =>
-        _sampleVertical(channel, column, row + offset * _blurOffsetRows);
-
-    return sample(0) * _blurCentre +
-        (sample(1) + sample(-1)) * _blurOne +
-        (sample(2) + sample(-2)) * _blurTwo +
-        (sample(3) + sample(-3)) * _blurThree;
   }
 
   void _compositePass() {
@@ -558,32 +677,6 @@ final class ClaudeRangeSliderFireSimulation {
 
   static double _toneMap(double scene, double glow) =>
       1 - math.exp(-(scene + glow * 1.2 + scene * glow * 0.35) * 1.15);
-
-  static double _sampleHorizontal(
-    List<double> channel,
-    double column,
-    int row,
-  ) {
-    final position = column.clamp(0.0, columns - 1.0).toDouble();
-    final lower = position.floor();
-    final upper = math.min(columns - 1, lower + 1);
-    return _mix(
-      channel[_index(lower, row)],
-      channel[_index(upper, row)],
-      position - lower,
-    );
-  }
-
-  static double _sampleVertical(List<double> channel, int column, double row) {
-    final position = row.clamp(0.0, rows - 1.0).toDouble();
-    final lower = position.floor();
-    final upper = math.min(rows - 1, lower + 1);
-    return _mix(
-      channel[_index(column, lower)],
-      channel[_index(column, upper)],
-      position - lower,
-    );
-  }
 
   void _clearFrames() {
     for (final buffer in <List<double>>[

@@ -129,6 +129,18 @@
   during dragging, long visible tail coverage, per-cell brighten/dim changes,
   RTL mirroring, Max/Ultra palette separation and bounded lifecycle cleanup.
   TickerMode and Reduce Motion suspend the fire without a hidden time jump.
+- Fire performance changes must preserve the accepted equations, grid geometry
+  and palettes. Cache immutable UV/hash/envelope inputs, evaluate RGB blur
+  channels together, warm an already-selected tier from only the final 72
+  feedback frames at the reference frame-228 clock, and cap stale-frame catch-up
+  at two evaluated frames while retaining the last visible feedback buffer. The
+  three glow/fringe/core layers share one cached indexed mesh and one
+  `drawVertices` submission per frame; dispose each native `Vertices` object
+  immediately after recording the draw.
+- The active track ends at the thumb centre in both LTR and RTL, and the thumb
+  is painted above that seam. Do not extend the active track by the thumb's
+  maximum animated radius: that makes the fill protrude beyond the resting
+  circle. This fill correction is independent of the immutable fire grid.
 - The combined local fork is GPL-2.0-only. The original CC Pocket MIT notice is
   retained verbatim in `LICENSES/MIT.txt`, and the adapted reference keeps its
   attribution in `THIRD_PARTY_NOTICES.md` plus its module header. License
