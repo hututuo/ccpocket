@@ -1,5 +1,6 @@
 import { LocalFeaturesController } from "./controller.js";
 import type { LocalFeatureRuntime } from "./runtime.js";
+import { createAutoApprovalHandlers } from "./slots/auto-approval.js";
 import { createCodexCoreActionsHandlers } from "./slots/codex-core-actions.js";
 import { createCodexDesktopContinuityHandlers } from "./slots/codex-desktop-continuity.js";
 import { createConversationMirrorHandlers } from "./slots/conversation-mirror.js";
@@ -17,6 +18,7 @@ export function createLocalFeaturesController(
   runtime: LocalFeatureRuntime,
 ): LocalFeaturesController {
   return new LocalFeaturesController(runtime, [
+    ...createAutoApprovalHandlers(runtime),
     ...createCodexCoreActionsHandlers(runtime),
     ...createCodexDesktopContinuityHandlers(runtime),
     ...createConversationMirrorHandlers(runtime),

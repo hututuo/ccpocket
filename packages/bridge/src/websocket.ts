@@ -8184,6 +8184,8 @@ export class BridgeWebSocketServer {
     this.flushSessionDeltaBatches(sessionId);
     this.trackSessionMessage(sessionId, msg);
     this.broadcastSessionMessageNow(sessionId, msg, exclude);
+    const session = this.sessionManager.get(sessionId);
+    if (session) this.localFeatures.sessionMessage(session, msg);
   }
 
   private shouldBatchDelta(

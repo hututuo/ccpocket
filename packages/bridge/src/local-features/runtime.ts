@@ -1,6 +1,6 @@
 import type { CodexProcess } from "../codex-process.js";
 import type { FileBrowserManager } from "../file-browser-manager.js";
-import type { ClientMessage } from "../parser.js";
+import type { ClientMessage, ServerMessage } from "../parser.js";
 import type {
   LocalFeatureClientMessage,
   LocalFeatureServerMessage,
@@ -119,6 +119,8 @@ export interface LocalFeatureHandler {
   /** True when a Desktop-owned turn exists, even if no unique turn id exists. */
   hasExternalCodexActivity?(session: LocalFeatureSession): boolean;
   externalCodexTurnId?(session: LocalFeatureSession): string | undefined;
+  /** Observe one already-published session event without owning its transport. */
+  sessionMessage?(session: LocalFeatureSession, message: ServerMessage): void;
   capabilitiesChanged?(client: object): void;
   disconnect?(client: object): void;
   close?(): void | Promise<void>;

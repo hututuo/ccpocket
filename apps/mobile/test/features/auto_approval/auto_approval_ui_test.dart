@@ -17,8 +17,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class _Bridge extends BridgeService {
   final _sessionsController = StreamController<List<SessionInfo>>.broadcast();
+  final _featureController =
+      StreamController<LocalFeatureServerMessage>.broadcast();
   final sent = <ClientMessage>[];
   bool connected = true;
+  bool autoApprovalEnabled = false;
   List<SessionInfo> currentSessions = const [
     SessionInfo(
       id: 'session-1',
@@ -44,11 +47,68 @@ class _Bridge extends BridgeService {
   Stream<List<SessionInfo>> get sessionList => _sessionsController.stream;
 
   @override
-  void send(ClientMessage message) => sent.add(message);
+  Stream<LocalFeatureServerMessage> get localFeatureMessages =>
+      _featureController.stream;
+
+  @override
+  void send(ClientMessage message) {
+    sent.add(message);
+    final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+    scheduleMicrotask(() {
+      switch (json['type']) {
+        case 'get_auto_approval_state':
+          _featureController.add(
+            AutoApprovalStateMessage(
+              sessionId: json['sessionId'] as String,
+              requestId: json['requestId'] as String,
+              providerSessionId: 'thread-1',
+              enabled: autoApprovalEnabled,
+              enabledConversationCount: autoApprovalEnabled ? 1 : 0,
+              approvedCount: 0,
+              reason: 'query',
+            ),
+          );
+        case 'set_auto_approval':
+          autoApprovalEnabled = json['enabled'] as bool;
+          _featureController.add(
+            AutoApprovalStateMessage(
+              sessionId: json['sessionId'] as String,
+              requestId: json['requestId'] as String,
+              providerSessionId: 'thread-1',
+              enabled: autoApprovalEnabled,
+              enabledConversationCount: autoApprovalEnabled ? 1 : 0,
+              approvedCount: 0,
+              reason: 'updated',
+            ),
+          );
+        case 'import_legacy_auto_approvals':
+          autoApprovalEnabled = (json['providerSessionIds'] as List).isNotEmpty;
+          _featureController.add(
+            AutoApprovalStateMessage(
+              sessionId: json['sessionId'] as String,
+              requestId: json['requestId'] as String,
+              enabledConversationCount: autoApprovalEnabled ? 1 : 0,
+              reason: 'legacy_imported',
+            ),
+          );
+        case 'disable_all_auto_approvals':
+          autoApprovalEnabled = false;
+          _featureController.add(
+            AutoApprovalStateMessage(
+              sessionId: json['sessionId'] as String,
+              requestId: json['requestId'] as String,
+              enabledConversationCount: 0,
+              reason: 'disabled_all',
+            ),
+          );
+      }
+    });
+  }
 
   @override
   void dispose() {
     _sessionsController.close();
+    _featureController.close();
     super.dispose();
   }
 }
@@ -189,7 +249,7 @@ void main() {
     expect(opened, ['auto_approval']);
   });
 
-  testWidgets('settings can disable persisted supervision while offline', (
+  testWidgets('settings can queue Bridge supervision shutdown while offline', (
     tester,
   ) async {
     final identity = jsonEncode([
@@ -227,7 +287,7 @@ void main() {
       services.preferences.getStringList(AutoApprovalService.preferencesKey),
       isEmpty,
     );
-    expect(find.text('All auto approvals are disabled.'), findsOneWidget);
+    expect(find.textContaining('emergency stop is queued'), findsOneWidget);
   });
 
   testWidgets('feature UI stays absent when its provider is not installed', (

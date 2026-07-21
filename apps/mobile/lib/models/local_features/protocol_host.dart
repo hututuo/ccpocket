@@ -107,6 +107,7 @@ class DisabledLocalFeatureProtocolSlot implements LocalFeatureProtocolSlot {
 
 class LocalFeatureProtocolHost {
   static const List<LocalFeatureProtocolSlot> _slots = [
+    autoApprovalProtocolSlot,
     sessionInsightsProtocolSlot,
     subagentsProtocolSlot,
     addToConversationProtocolSlot,

@@ -305,3 +305,35 @@
   `e70bdf7e`, `705baa8c`, `eea8584a`, `4568c539`, `85d33c59`, and
   `586a6a78`. The final three commits deliberately separate transfer/storage
   foundations, drag/drop UI and received-file UI for future official updates.
+
+## Bridge-owned automatic approval
+
+- Mobile is only a control surface. The durable allowlist belongs to Bridge at
+  `~/.ccpocket/auto-approval-v1.json`, keyed by official Codex thread ID rather
+  than a transient runtime session. Bridge observes its own live Codex approval
+  requests and can therefore continue supervising while every phone is
+  disconnected. It cannot answer an approval owned by a separate Codex Desktop
+  app-server connection; that remains under Desktop's authority.
+- Auto approval is an additive, capability-gated local feature. A new Mobile
+  with an old Bridge receives an unavailable control and never falls back to
+  secretly approving on the phone. An old Mobile with a new Bridge retains its
+  prior live-only approval behavior because Bridge does nothing until the new
+  state protocol explicitly enables a thread.
+- Existing Mobile-owned v1 identities are imported once only when Bridge has no
+  authoritative state file. The import is bounded, bridge-identity scoped and
+  idempotent; after a correlated success Mobile removes only the imported
+  legacy identities. A pre-existing empty Bridge file is authoritative and may
+  not be repopulated by a stale phone.
+- The allowlist may approve ordinary commands, network access, file changes,
+  permission expansion, canonical MCP approval forms and plan completion.
+  `rm` remains human-only in direct, absolute-path, wrapper, compound, nested
+  shell, `xargs` and command-substitution forms. Other clearly destructive
+  executables and Git worktree-destroying operations also fail closed. User
+  questions, plugin/connector installation and malformed or ambiguous shell
+  commands remain manual.
+- A disable request blocks visible supervision immediately and persists on the
+  computer before becoming authoritative. If Mobile is offline, the emergency
+  stop is queued locally and sent on reconnect; the UI must not imply that an
+  unreachable computer was already changed. Multi-client updates are broadcast
+  from Bridge, and Mobile waits for correlated state before treating a setting
+  write as durable.

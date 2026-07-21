@@ -158,6 +158,28 @@ describe("LocalFeaturesController", () => {
     expect(controller.externalCodexTurnId(session)).toBeUndefined();
   });
 
+  it("forwards published session messages once per registered handler", () => {
+    const session = runtime().getSession("session-1")!;
+    const sessionMessage = vi.fn();
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage", "get_session_usage"],
+      handle: async () => {},
+      sessionMessage,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+    const message = {
+      type: "permission_request" as const,
+      toolUseId: "tool-1",
+      toolName: "Bash",
+      input: { command: "pwd" },
+    };
+
+    controller.sessionMessage(session, message);
+
+    expect(sessionMessage).toHaveBeenCalledOnce();
+    expect(sessionMessage).toHaveBeenCalledWith(session, message);
+  });
+
   it("composes generic queued-input drain guards and blocked callbacks", () => {
     const session = runtime().getSession("session-1")!;
     const blocked = vi.fn();

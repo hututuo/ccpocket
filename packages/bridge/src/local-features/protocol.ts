@@ -1,4 +1,9 @@
 import {
+  autoApprovalProtocolContribution,
+  type AutoApprovalClientMessage,
+  type AutoApprovalStateMessage,
+} from "./slots/auto-approval-protocol.js";
+import {
   codexCoreActionsProtocolContribution,
   type CodexCoreActionsClientMessage,
   type CodexCoreActionsServerMessage,
@@ -45,6 +50,13 @@ import type {
   LocalFeatureProtocolContribution,
 } from "./protocol-slot.js";
 
+export type {
+  AutoApprovalClientMessage,
+  AutoApprovalStateMessage,
+} from "./slots/auto-approval-protocol.js";
+export {
+  AUTO_APPROVAL_STATE_CAPABILITY,
+} from "./slots/auto-approval-protocol.js";
 export type {
   CodexCoreAction,
   CodexCoreActionStatus,
@@ -130,6 +142,7 @@ export type {
 } from "./slots/file-browser-protocol.js";
 
 export type LocalFeatureClientMessage =
+  | AutoApprovalClientMessage
   | CodexCoreActionsClientMessage
   | CodexDesktopContinuityClientMessage
   | ConversationMirrorClientMessage
@@ -140,6 +153,7 @@ export type LocalFeatureClientMessage =
   | OpenPersistedSideChatMessage;
 
 export type LocalFeatureServerMessage =
+  | AutoApprovalStateMessage
   | CodexCoreActionsServerMessage
   | CodexDesktopContinuityEventMessage
   | ConversationMirrorServerMessage
@@ -150,6 +164,7 @@ export type LocalFeatureServerMessage =
   | PersistedSideChatOpenedMessage;
 
 const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
+  autoApprovalProtocolContribution,
   codexCoreActionsProtocolContribution,
   codexDesktopContinuityProtocolContribution,
   conversationMirrorProtocolContribution,

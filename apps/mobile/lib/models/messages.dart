@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import '../utils/request_user_input.dart';
 
 part 'local_features/protocol_host.dart';
+part 'local_features/slots/auto_approval_protocol_slot.dart';
 part 'local_features/slots/session_insights_models_slot.dart';
 part 'local_features/slots/session_insights_protocol_slot.dart';
 part 'local_features/slots/subagents_models_slot.dart';

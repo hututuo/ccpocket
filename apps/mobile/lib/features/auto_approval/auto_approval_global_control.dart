@@ -4,10 +4,8 @@ import 'package:provider/provider.dart';
 import 'auto_approval_service.dart';
 import 'auto_approval_strings.dart';
 
-/// App-level emergency stop for persisted conversation supervision.
-///
-/// This stays available in Settings without a Bridge connection or live
-/// session list, so a stored approval scope can always be revoked first.
+/// App-level emergency stop for computer-owned conversation supervision.
+/// Offline changes are queued and applied as soon as Bridge reconnects.
 class AutoApprovalGlobalControl extends StatelessWidget {
   const AutoApprovalGlobalControl({super.key});
 
@@ -39,14 +37,16 @@ class AutoApprovalGlobalControl extends StatelessWidget {
             key: const ValueKey('auto_approval_global_control'),
             leading: Icon(Icons.admin_panel_settings_outlined, color: cs.error),
             title: Text(
-              count == 0
+              service.isEmergencyStopPending
+                  ? strings.globalPending
+                  : count == 0
                   ? strings.globalNone
                   : strings.globalDescription(count),
             ),
             subtitle: Text(strings.exclusions),
             trailing: TextButton(
               key: const ValueKey('auto_approval_disable_all'),
-              onPressed: count == 0
+              onPressed: count == 0 || service.isEmergencyStopPending
                   ? null
                   : () async {
                       final disabled = await service.disableAll();
@@ -55,7 +55,9 @@ class AutoApprovalGlobalControl extends StatelessWidget {
                         SnackBar(
                           content: Text(
                             disabled
-                                ? strings.disabledAll
+                                ? service.lastDisableWasQueued
+                                      ? strings.disableQueued
+                                      : strings.disabledAll
                                 : strings.disableAllFailed,
                           ),
                         ),

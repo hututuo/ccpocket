@@ -1,4 +1,5 @@
 import type { LocalFeatureClientMessage } from "./protocol.js";
+import type { ServerMessage } from "../parser.js";
 import type {
   LocalFeatureHandler,
   LocalFeatureInputAdmission,
@@ -102,6 +103,12 @@ export class LocalFeaturesController {
       if (handler.hasExternalCodexActivity?.(session) === true) return true;
     }
     return false;
+  }
+
+  sessionMessage(session: LocalFeatureSession, message: ServerMessage): void {
+    for (const handler of new Set(this.handlers.values())) {
+      handler.sessionMessage?.(session, message);
+    }
   }
 
   private async runHandler(
