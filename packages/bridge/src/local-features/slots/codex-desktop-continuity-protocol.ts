@@ -48,6 +48,8 @@ export type CodexDesktopContinuityEventMessage =
       state: "idle" | "running";
       turnId?: string;
       outcome?: "completed" | "interrupted";
+      /** Canonical runtime history now includes the completed Desktop turn. */
+      historyReady?: boolean;
       /** A queued mobile input is being handed to a freshly resumed runtime. */
       handoffQueued?: boolean;
       timestamp?: string;

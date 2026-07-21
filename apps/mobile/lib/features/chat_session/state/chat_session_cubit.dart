@@ -705,6 +705,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ),
     );
     _desktopContinuityReconcileTimer?.cancel();
+    if (message.historyReady) {
+      _desktopContinuityReconcileTimer = null;
+      _bridge.requestSessionHistory(sessionId);
+      return;
+    }
     _desktopContinuityReconcileTimer = Timer(
       const Duration(milliseconds: 900),
       () {

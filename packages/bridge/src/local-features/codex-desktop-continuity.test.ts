@@ -709,6 +709,27 @@ describe("CodexRolloutMonitor", () => {
         turn_id: "turn-a",
         text: "scoped A",
       }),
+      event("response_item", {
+        type: "function_call",
+        call_id: "metadata-tool-b",
+        name: "exec",
+        arguments: '{"command":"pwd"}',
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-b" },
+      }),
+      event("response_item", {
+        type: "function_call_output",
+        call_id: "metadata-tool-b",
+        output: "/project",
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-b" },
+      }),
+      event("response_item", {
+        type: "message",
+        role: "assistant",
+        id: "metadata-assistant-b",
+        phase: "commentary",
+        content: [{ type: "output_text", text: "scoped B" }],
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-b" },
+      }),
     ]);
 
     await monitor.refreshNow();
@@ -723,6 +744,24 @@ describe("CodexRolloutMonitor", () => {
         message: { type: "thinking_delta", text: "scoped A\n" },
       }),
     );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "message",
+          turnId: "turn-b",
+          message: expect.objectContaining({ type: "assistant" }),
+        }),
+        expect.objectContaining({
+          kind: "message",
+          turnId: "turn-b",
+          message: expect.objectContaining({
+            type: "tool_result",
+            toolUseId: "metadata-tool-b",
+          }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(events)).toContain("scoped B");
     monitor.close();
   });
 
@@ -839,6 +878,127 @@ describe("CodexRolloutMonitor", () => {
       state: "running",
       turnId: "desktop-current",
     });
+    monitor.close();
+  });
+
+  it("uses response metadata to retire an orphan when user_message is absent", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-metadata-repair",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-orphan" },
+        "2026-07-19T12:00:00Z",
+      ),
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-current" },
+        "2026-07-19T12:10:00Z",
+      ),
+    ]);
+    await monitor.refreshNow();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    expect(monitor.externalTurnIdForSteering).toBeUndefined();
+    await appendEntries(path, [
+      event(
+        "response_item",
+        {
+          type: "function_call",
+          call_id: "metadata-current-tool",
+          name: "exec_command",
+          arguments: "{}",
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "desktop-current",
+          },
+        },
+        "2026-07-19T12:10:01Z",
+      ),
+    ]);
+    await monitor.refreshNow();
+
+    expect(monitor.snapshot).toEqual({
+      state: "running",
+      turnId: "desktop-current",
+    });
+    expect(monitor.externalTurnIdForSteering).toBe("desktop-current");
+    expect(JSON.stringify(events)).toContain("metadata-current-tool");
+
+    await appendEntries(path, [
+      event("event_msg", {
+        type: "task_complete",
+        turn_id: "desktop-current",
+      }),
+    ]);
+    await monitor.refreshNow();
+    expect(monitor.snapshot.state).toBe("idle");
+    expect(events.at(-1)).toMatchObject({
+      kind: "state",
+      state: "idle",
+      turnId: "desktop-current",
+    });
+    monitor.close();
+  });
+
+  it("repairs metadata-scoped orphaned turns while seeding", async () => {
+    const path = await rollout([
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-seed-orphan-metadata" },
+        "2026-07-19T12:00:00Z",
+      ),
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "desktop-seed-current-metadata" },
+        "2026-07-19T12:10:00Z",
+      ),
+      event(
+        "response_item",
+        {
+          type: "function_call",
+          call_id: "metadata-seed-tool",
+          name: "exec_command",
+          arguments: "{}",
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "desktop-seed-current-metadata",
+          },
+        },
+        "2026-07-19T12:10:01Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "task_complete",
+          turn_id: "desktop-seed-current-metadata",
+        },
+        "2026-07-19T12:10:02Z",
+      ),
+    ]);
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-seed-metadata-repair",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+
+    await monitor.start();
+
+    expect(monitor.snapshot).toEqual({
+      state: "idle",
+      turnId: "desktop-seed-current-metadata",
+    });
+    expect(monitor.externalTurnIdForSteering).toBeUndefined();
+    expect(events).toEqual([]);
     monitor.close();
   });
 
@@ -1957,6 +2117,12 @@ describe("CodexDesktopContinuityHandler", () => {
           event: "state",
           state: "idle",
           outcome: "completed",
+          handoffQueued: true,
+        }),
+        expect.objectContaining({
+          event: "state",
+          state: "idle",
+          historyReady: true,
           handoffQueued: true,
         }),
       ]),

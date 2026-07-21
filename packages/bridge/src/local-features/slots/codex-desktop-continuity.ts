@@ -889,6 +889,11 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
         // the in-flight drain gate synchronously before promoting the queue;
         // finally still performs idempotent cleanup on every exit path.
         this.rehydrateInFlight.delete(sessionId);
+        this.sendHistoryReady(
+          monitor,
+          sessionId,
+          completedTurnId ?? monitor.snapshot.turnId,
+        );
         // The queue may have been accepted just after the replacement emitted
         // input_ready. Recheck once after the atomic refresh so that race does
         // not leave the phone handoff stuck until another turn completes.
@@ -919,6 +924,27 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       );
     } finally {
       this.rehydrateInFlight.delete(sessionId);
+    }
+  }
+
+  private sendHistoryReady(
+    monitor: CodexRolloutMonitor,
+    sessionId: string,
+    turnId?: string,
+  ): void {
+    for (const registration of monitor.watchers) {
+      if (registration.sessionId !== sessionId) continue;
+      const handoffQueued =
+        (this.runtime.hasCodexQueuedInput?.(sessionId) ?? false) ||
+        this.isLocalRuntimeActive(registration.threadId);
+      this.runtime.send(registration.client, {
+        ...this.eventBase(registration),
+        event: "state",
+        state: "idle",
+        historyReady: true,
+        ...(turnId ? { turnId } : {}),
+        ...(handoffQueued ? { handoffQueued: true } : {}),
+      });
     }
   }
 
@@ -1230,14 +1256,17 @@ export class CodexRolloutMonitor {
         continue;
       }
       sawActivity = true;
-      if (entry.type !== "event_msg") continue;
       const payload = asRecord(entry.payload);
       if (!payload) continue;
-      const type = payload.type;
       const timestampMs = parseTimestampMs(entry.timestamp);
+      if (entry.type === "response_item") {
+        this.reconcileSeedResponseTurn(payload, timestampMs);
+        continue;
+      }
+      const type = payload.type;
       if (type === "task_started") {
         sawLifecycle = true;
-        const turnId = optionalString(payload.turn_id);
+        const turnId = rolloutTurnId(payload);
         this.addActiveTurn(
           turnId,
           this.isExactlyLocalTurn(turnId) ? "local" : null,
@@ -1272,7 +1301,7 @@ export class CodexRolloutMonitor {
         }
       } else if (type === "task_complete" || type === "turn_aborted") {
         sawLifecycle = true;
-        const turnId = optionalString(payload.turn_id);
+        const turnId = rolloutTurnId(payload);
         if (turnId && this.retiredStaleDesktopTurnIds.delete(turnId)) {
           continue;
         }
@@ -1317,6 +1346,46 @@ export class CodexRolloutMonitor {
     ) {
       this.lastExternalTerminalTimestampMs = fileModifiedAtMs;
     }
+  }
+
+  private reconcileSeedResponseTurn(
+    payload: Record<string, unknown>,
+    timestampMs?: number,
+  ): void {
+    const turnId = rolloutTurnId(payload);
+    if (!turnId) return;
+    const current = this.activeTurns.get(`turn:${turnId}`);
+    if (!current) return;
+    if (current.origin === null) {
+      current.origin = this.isExactlyLocalTurn(turnId) ? "local" : "desktop";
+    }
+    if (current.origin !== "desktop") return;
+
+    const currentTimestampMs =
+      parseTimestampMs(current.timestamp) ?? timestampMs;
+    if (currentTimestampMs === undefined) return;
+    // A response item carrying an exact turn id is the same ownership
+    // evidence used by the live reader. Seed has no classification timers, so
+    // classify only stale predecessors before applying the bounded repair.
+    for (const candidate of this.activeTurns.values()) {
+      if (
+        candidate === current ||
+        candidate.origin !== null ||
+        candidate.sequence >= current.sequence ||
+        this.isExactlyLocalTurn(candidate.turnId)
+      ) {
+        continue;
+      }
+      const candidateTimestampMs = parseTimestampMs(candidate.timestamp);
+      if (
+        candidateTimestampMs !== undefined &&
+        currentTimestampMs - candidateTimestampMs >=
+          STALE_DESKTOP_PREDECESSOR_MS
+      ) {
+        candidate.origin = "desktop";
+      }
+    }
+    this.retireStaleDesktopPredecessors(current, currentTimestampMs);
   }
 
   private async readPass(): Promise<void> {
@@ -1398,13 +1467,13 @@ export class CodexRolloutMonitor {
   ): void {
     const type = optionalString(payload.type);
     if (type === "task_started") {
-      this.beginTurn(optionalString(payload.turn_id), timestamp);
+      this.beginTurn(rolloutTurnId(payload), timestamp);
       return;
     }
     if (type === "task_complete" || type === "turn_aborted") {
       this.flushPendingCompletedTools();
       this.completeTurn(
-        optionalString(payload.turn_id),
+        rolloutTurnId(payload),
         type === "turn_aborted" ? "interrupted" : "completed",
         timestamp,
       );
@@ -1423,8 +1492,7 @@ export class CodexRolloutMonitor {
       return;
     }
     if (type === "agent_reasoning") {
-      const turn = this.turnForPayload(payload);
-      this.flushPendingStart(turn);
+      const turn = this.scopedTurnForPayload(payload, timestamp);
       if (turn?.origin !== "desktop") return;
       const text = boundedText(optionalString(payload.text) ?? "", 16 * 1024);
       if (!text) return;
@@ -1444,8 +1512,7 @@ export class CodexRolloutMonitor {
       type === "web_search_end" ||
       type === "image_generation_end"
     ) {
-      const turn = this.turnForPayload(payload);
-      this.flushPendingStart(turn);
+      const turn = this.scopedTurnForPayload(payload, timestamp);
       if (turn?.origin === "desktop") {
         this.queueCompletedEventTool(type, payload, timestamp, turn.turnId);
       }
@@ -1632,15 +1699,14 @@ export class CodexRolloutMonitor {
       MAX_TEXT_BYTES,
     );
     if (!text) return;
-    const turn = this.turnForPayload(payload);
-    this.flushPendingStart(turn);
+    const turn = this.scopedTurnForPayload(payload, timestamp);
     if (turn?.origin !== "desktop") return;
     const phase = normalizeAssistantPhase(payload.phase);
     const timestampMs = parseTimestampMs(timestamp);
     const recent = this.findRecentResponseAssistant(
       text,
       phase,
-      optionalString(payload.turn_id),
+      rolloutTurnId(payload),
       timestampMs,
     );
     if (recent) {
@@ -1698,7 +1764,7 @@ export class CodexRolloutMonitor {
     if (!text) return;
     const phase = normalizeAssistantPhase(payload.phase);
     const timestampMs = parseTimestampMs(timestamp);
-    const currentTurn = this.turnForPayload(payload);
+    const currentTurn = this.scopedTurnForPayload(payload, timestamp);
     // Pairing by text is only a dedupe aid, not turn ownership evidence. If
     // multiple active turns make this payload ambiguous, suppress it and let
     // the terminal canonical rehydrate repair history.
@@ -1706,7 +1772,7 @@ export class CodexRolloutMonitor {
     const pending = this.findPendingAssistantMessage(
       text,
       phase,
-      optionalString(payload.turn_id),
+      rolloutTurnId(payload),
       timestampMs,
     );
     if (pending) {
@@ -1723,7 +1789,6 @@ export class CodexRolloutMonitor {
       return;
     }
 
-    this.flushPendingStart(currentTurn);
     if (currentTurn?.origin !== "desktop") return;
     const id =
       optionalString(payload.id) ??
@@ -1827,8 +1892,7 @@ export class CodexRolloutMonitor {
       this.consumeAssistantResponseItem(payload, timestamp);
       return;
     }
-    const turn = this.turnForPayload(payload);
-    this.flushPendingStart(turn);
+    const turn = this.scopedTurnForPayload(payload, timestamp);
     if (turn?.origin !== "desktop") return;
     if (type === "function_call" || type === "custom_tool_call") {
       const callId =
@@ -2194,7 +2258,7 @@ export class CodexRolloutMonitor {
   private turnForPayload(
     payload: Record<string, unknown>,
   ): ActiveTurn | undefined {
-    const explicitTurnId = optionalString(payload.turn_id);
+    const explicitTurnId = rolloutTurnId(payload);
     if (explicitTurnId) {
       return this.activeTurns.get(`turn:${explicitTurnId}`);
     }
@@ -2204,10 +2268,27 @@ export class CodexRolloutMonitor {
     return turns.length === 1 ? turns[0] : undefined;
   }
 
+  private scopedTurnForPayload(
+    payload: Record<string, unknown>,
+    timestamp?: string,
+  ): ActiveTurn | undefined {
+    const explicitTurnId = rolloutTurnId(payload);
+    const turn = this.turnForPayload(payload);
+    this.flushPendingStart(turn);
+    if (
+      turn?.origin === "desktop" &&
+      explicitTurnId !== undefined &&
+      this.retireStaleDesktopPredecessors(turn, parseTimestampMs(timestamp))
+    ) {
+      this.bumpActivityEpoch();
+    }
+    return turn;
+  }
+
   private turnForUserMessage(
     payload: Record<string, unknown>,
   ): ActiveTurn | undefined {
-    const explicitTurnId = optionalString(payload.turn_id);
+    const explicitTurnId = rolloutTurnId(payload);
     if (explicitTurnId) {
       return this.activeTurns.get(`turn:${explicitTurnId}`);
     }
@@ -2392,6 +2473,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function rolloutTurnId(
+  payload: Record<string, unknown>,
+): string | undefined {
+  return (
+    optionalString(payload.turn_id) ??
+    optionalString(
+      asRecord(payload.internal_chat_message_metadata_passthrough)?.turn_id,
+    )
+  );
 }
 
 function parseTimestampMs(value: unknown): number | undefined {

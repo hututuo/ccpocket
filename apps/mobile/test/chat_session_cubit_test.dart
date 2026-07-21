@@ -612,6 +612,8 @@ void main() {
         expect(watchJson, containsPair('sessionId', 's1'));
         expect(watchJson, containsPair('threadId', 'thread-1'));
 
+        final historyRequestsBeforeReady =
+            mockBridge.requestSessionHistoryCallCount;
         mockBridge.emitLocalFeature(
           CodexDesktopContinuityEventMessage(
             event: CodexDesktopContinuityEventKind.state,
@@ -801,6 +803,7 @@ void main() {
             state: CodexDesktopContinuityState.idle,
             turnId: 'turn-desktop',
             outcome: 'completed',
+            historyReady: true,
             handoffQueued: true,
           ),
           sessionId: 's1',
@@ -809,6 +812,10 @@ void main() {
         expect(cubit.state.externalDesktopTurnActive, isFalse);
         expect(cubit.state.status, ProcessStatus.running);
         expect(cubit.state.queuedInput?.itemId, 'queued-1');
+        expect(
+          mockBridge.requestSessionHistoryCallCount,
+          historyRequestsBeforeReady + 1,
+        );
       },
     );
 

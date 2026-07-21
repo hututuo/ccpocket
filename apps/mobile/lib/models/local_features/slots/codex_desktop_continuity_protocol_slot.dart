@@ -130,6 +130,7 @@ class CodexDesktopContinuityEventMessage
   final CodexDesktopContinuityState? state;
   final String? turnId;
   final String? outcome;
+  final bool historyReady;
   final bool handoffQueued;
   final String? timestamp;
   final String? itemKey;
@@ -147,6 +148,7 @@ class CodexDesktopContinuityEventMessage
     this.state,
     this.turnId,
     this.outcome,
+    this.historyReady = false,
     this.handoffQueued = false,
     this.timestamp,
     this.itemKey,
@@ -194,6 +196,7 @@ class CodexDesktopContinuityEventMessage
           : CodexDesktopContinuityState.parse(json['state']),
       turnId: optionalString('turnId'),
       outcome: optionalString('outcome'),
+      historyReady: json['historyReady'] as bool? ?? false,
       handoffQueued: json['handoffQueued'] as bool? ?? false,
       timestamp: optionalString('timestamp'),
       itemKey: optionalString('itemKey'),
@@ -267,6 +270,11 @@ void _validateCodexDesktopContinuityEvent(
     throw FormatException(
       'Unsupported Desktop continuity origin: ${message.origin}',
     );
+  }
+  if (message.historyReady &&
+      (message.event != CodexDesktopContinuityEventKind.state ||
+          message.state != CodexDesktopContinuityState.idle)) {
+    throw const FormatException('History-ready requires an idle state event.');
   }
   switch (message.event) {
     case CodexDesktopContinuityEventKind.watching:

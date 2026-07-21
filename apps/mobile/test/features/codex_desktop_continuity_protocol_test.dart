@@ -62,6 +62,65 @@ void main() {
     },
   );
 
+  test('decodes the additive canonical-history readiness marker', () {
+    final decoded =
+        ServerMessage.fromJson({
+              'type': 'codex_desktop_continuity_event_v1',
+              'event': 'state',
+              'requestId': 'watch-1',
+              'bridgeInstanceId': 'bridge-1',
+              'sessionId': 'runtime-1',
+              'threadId': 'thread-1',
+              'origin': 'desktop_rollout',
+              'state': 'idle',
+              'turnId': 'turn-1',
+              'historyReady': true,
+            })
+            as CodexDesktopContinuityEventMessage;
+
+    expect(decoded.historyReady, isTrue);
+    expect(
+      () => ServerMessage.fromJson({
+        'type': 'codex_desktop_continuity_event_v1',
+        'event': 'state',
+        'requestId': 'watch-1',
+        'bridgeInstanceId': 'bridge-1',
+        'sessionId': 'runtime-1',
+        'threadId': 'thread-1',
+        'origin': 'desktop_rollout',
+        'state': 'running',
+        'historyReady': true,
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => ServerMessage.fromJson({
+        'type': 'codex_desktop_continuity_event_v1',
+        'event': 'message',
+        'requestId': 'watch-1',
+        'bridgeInstanceId': 'bridge-1',
+        'sessionId': 'runtime-1',
+        'threadId': 'thread-1',
+        'origin': 'desktop_rollout',
+        'turnId': 'turn-1',
+        'historyReady': true,
+        'itemKey': 'assistant-1',
+        'payload': {
+          'type': 'assistant',
+          'message': {
+            'id': 'assistant-1',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'hello'},
+            ],
+            'model': 'codex',
+          },
+        },
+      }),
+      throwsFormatException,
+    );
+  });
+
   test('old-Bridge unsupported errors are isolated to the feature request', () {
     final request = LocalFeatureProtocolHost.describeRequest(
       requestCodexDesktopContinuityWatch(

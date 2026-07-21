@@ -11,7 +11,13 @@ import '../../services/bridge_service.dart';
 /// open. Once that watch is released, this tracker reclaims list-level
 /// observation without polling or creating a second Bridge runtime.
 class DesktopSessionListContinuityTracker {
-  DesktopSessionListContinuityTracker(this._bridge) {
+  DesktopSessionListContinuityTracker(
+    this._bridge, {
+    this.watchAckTimeout = const Duration(seconds: 4),
+    this.watchRetryBase = const Duration(milliseconds: 750),
+    this.watchRetryMax = const Duration(seconds: 8),
+    this.historyFallbackDelay = const Duration(seconds: 2),
+  }) {
     _sessionSubscription = _bridge.sessionList.listen(_syncSessions);
     _connectionSubscription = _bridge.connectionStatus.listen(_onConnection);
     _featureSubscription = _bridge.localFeatureMessages.listen(
@@ -21,6 +27,10 @@ class DesktopSessionListContinuityTracker {
   }
 
   final BridgeService _bridge;
+  final Duration watchAckTimeout;
+  final Duration watchRetryBase;
+  final Duration watchRetryMax;
+  final Duration historyFallbackDelay;
   final _uuid = const Uuid();
   StreamSubscription<List<SessionInfo>>? _sessionSubscription;
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
@@ -28,6 +38,11 @@ class DesktopSessionListContinuityTracker {
   final Set<String> _trackedSessionIds = {};
   final Map<String, String> _ownedRequestIds = {};
   final Map<String, String> _displacedByConversation = {};
+  final Set<String> _suppressedSessionIds = {};
+  final Map<String, Timer> _watchAckTimers = {};
+  final Map<String, Timer> _watchRetryTimers = {};
+  final Map<String, int> _watchRetryAttempts = {};
+  final Map<String, Timer> _historyFallbackTimers = {};
   bool _ensureScheduled = false;
   bool _unsupported = false;
   bool _closed = false;
@@ -46,6 +61,8 @@ class DesktopSessionListContinuityTracker {
       _trackedSessionIds.remove(sessionId);
       _ownedRequestIds.remove(sessionId);
       _displacedByConversation.remove(sessionId);
+      _suppressedSessionIds.remove(sessionId);
+      _cancelSessionTimers(sessionId);
       _bridge.clearBackgroundDesktopContinuity(sessionId);
     }
     _trackedSessionIds.addAll(codex.keys);
@@ -74,7 +91,9 @@ class DesktopSessionListContinuityTracker {
         !_bridge.bridgeCapabilities.contains(
           codexDesktopContinuityBridgeCapability,
         ) ||
+        _suppressedSessionIds.contains(session.id) ||
         _displacedByConversation.containsKey(session.id) ||
+        _watchRetryTimers.containsKey(session.id) ||
         _ownedRequestIds.containsKey(session.id)) {
       return;
     }
@@ -93,8 +112,10 @@ class DesktopSessionListContinuityTracker {
           projectPath: session.projectPath,
         ),
       );
+      _startWatchAckTimer(session.id, requestId);
     } catch (_) {
       _ownedRequestIds.remove(session.id);
+      _scheduleWatchRetry(session.id);
     }
   }
 
@@ -107,29 +128,68 @@ class DesktopSessionListContinuityTracker {
       :final errorCode,
     )) {
       if (_ownedRequestIds[ownerSessionId] != requestId) return;
+      _cancelWatchAck(ownerSessionId);
       _ownedRequestIds.remove(ownerSessionId);
       if (errorCode == 'unsupported_message' ||
           errorCode == 'unsupported_capability') {
         _unsupported = true;
+        _cancelAllWatchRetries();
+      } else {
+        _scheduleWatchRetry(ownerSessionId);
       }
       return;
     }
     if (message is! CodexDesktopContinuityEventMessage) return;
     final ownRequest = _ownedRequestIds[message.sessionId];
     if (message.requestId == ownRequest) {
+      if (message.event != CodexDesktopContinuityEventKind.error &&
+          message.event != CodexDesktopContinuityEventKind.unwatched) {
+        _acknowledgeWatch(message.sessionId, message.requestId);
+      }
       _bridge.recordBackgroundDesktopContinuity(message);
-      if (message.event == CodexDesktopContinuityEventKind.state &&
+      if ((message.event == CodexDesktopContinuityEventKind.watching ||
+              message.event == CodexDesktopContinuityEventKind.state) &&
+          message.state == CodexDesktopContinuityState.running) {
+        _cancelHistoryFallback(message.sessionId);
+      } else if ((message.event == CodexDesktopContinuityEventKind.watching ||
+              message.event == CodexDesktopContinuityEventKind.state) &&
           message.state == CodexDesktopContinuityState.idle) {
+        _refreshHistoryWhenReady(
+          message.sessionId,
+          historyReady: message.historyReady,
+        );
+      }
+      if (message.event == CodexDesktopContinuityEventKind.error &&
+          message.errorCode == 'runtime_rehydrate_failed') {
+        // This error is advisory: the rollout monitor remains registered and
+        // can recover on the next Desktop turn. Do not orphan the watch.
+        _cancelHistoryFallback(message.sessionId);
         _bridge.requestSessionHistory(message.sessionId);
+        return;
       }
       if (message.event == CodexDesktopContinuityEventKind.error ||
           message.event == CodexDesktopContinuityEventKind.unwatched) {
+        _cancelWatchAck(message.sessionId);
+        _cancelHistoryFallback(message.sessionId);
         _ownedRequestIds.remove(message.sessionId);
+        if (message.event == CodexDesktopContinuityEventKind.unwatched ||
+            (message.errorCode != 'path_not_allowed' &&
+                message.errorCode != 'continuity_binding_mismatch')) {
+          _scheduleWatchRetry(message.sessionId);
+        } else {
+          _suppressedSessionIds.add(message.sessionId);
+        }
       }
       return;
     }
 
     if (message.event == CodexDesktopContinuityEventKind.watching) {
+      // A timed-out list watch can finish after its replacement request. It is
+      // not a conversation owner and must not suppress the fresh list watch.
+      if (message.requestId.startsWith('list-')) return;
+      _cancelWatchAck(message.sessionId);
+      _cancelWatchRetry(message.sessionId);
+      _cancelHistoryFallback(message.sessionId);
       _ownedRequestIds.remove(message.sessionId);
       _displacedByConversation[message.sessionId] = message.requestId;
       return;
@@ -142,6 +202,7 @@ class DesktopSessionListContinuityTracker {
       return;
     }
     _displacedByConversation.remove(message.sessionId);
+    _watchRetryAttempts.remove(message.sessionId);
     _ownedRequestIds.remove(message.sessionId);
     for (final session in _bridge.sessions) {
       if (session.id == message.sessionId) {
@@ -154,22 +215,133 @@ class DesktopSessionListContinuityTracker {
   void _onConnection(BridgeConnectionState state) {
     if (_closed) return;
     if (state != BridgeConnectionState.connected) {
+      _cancelAllTimers();
       _ownedRequestIds.clear();
       _displacedByConversation.clear();
+      _suppressedSessionIds.clear();
       _unsupported = false;
       return;
     }
     _syncSessions(_bridge.sessions);
   }
 
+  void _startWatchAckTimer(String sessionId, String requestId) {
+    _cancelWatchAck(sessionId);
+    _watchAckTimers[sessionId] = Timer(watchAckTimeout, () {
+      _watchAckTimers.remove(sessionId);
+      if (_closed || _ownedRequestIds[sessionId] != requestId) return;
+      _ownedRequestIds.remove(sessionId);
+      _scheduleWatchRetry(sessionId);
+    });
+  }
+
+  void _acknowledgeWatch(String sessionId, String requestId) {
+    if (_ownedRequestIds[sessionId] != requestId) return;
+    _cancelWatchAck(sessionId);
+    _cancelWatchRetry(sessionId);
+    _watchRetryAttempts.remove(sessionId);
+  }
+
+  void _scheduleWatchRetry(String sessionId) {
+    if (_closed || _unsupported || !_trackedSessionIds.contains(sessionId)) {
+      return;
+    }
+    if (_watchRetryTimers.containsKey(sessionId) ||
+        _displacedByConversation.containsKey(sessionId)) {
+      return;
+    }
+    final attempt = _watchRetryAttempts[sessionId] ?? 0;
+    final multiplier = 1 << attempt.clamp(0, 4);
+    final delayMs = (watchRetryBase.inMilliseconds * multiplier).clamp(
+      watchRetryBase.inMilliseconds,
+      watchRetryMax.inMilliseconds,
+    );
+    _watchRetryAttempts[sessionId] = attempt + 1;
+    _watchRetryTimers[sessionId] = Timer(Duration(milliseconds: delayMs), () {
+      _watchRetryTimers.remove(sessionId);
+      if (_closed || !_bridge.isConnected) return;
+      for (final session in _bridge.sessions) {
+        if (session.id == sessionId) {
+          _ensureWatch(session);
+          return;
+        }
+      }
+    });
+  }
+
+  void _refreshHistoryWhenReady(
+    String sessionId, {
+    required bool historyReady,
+  }) {
+    _cancelHistoryFallback(sessionId);
+    if (historyReady) {
+      _bridge.requestSessionHistory(sessionId);
+      return;
+    }
+    // Compatibility fallback for a Bridge that predates historyReady. A
+    // delayed canonical read is less likely to race its runtime rehydrate.
+    _historyFallbackTimers[sessionId] = Timer(historyFallbackDelay, () {
+      _historyFallbackTimers.remove(sessionId);
+      if (_closed ||
+          !_bridge.isConnected ||
+          !_ownedRequestIds.containsKey(sessionId)) {
+        return;
+      }
+      _bridge.requestSessionHistory(sessionId);
+    });
+  }
+
+  void _cancelWatchAck(String sessionId) {
+    _watchAckTimers.remove(sessionId)?.cancel();
+  }
+
+  void _cancelWatchRetry(String sessionId) {
+    _watchRetryTimers.remove(sessionId)?.cancel();
+  }
+
+  void _cancelHistoryFallback(String sessionId) {
+    _historyFallbackTimers.remove(sessionId)?.cancel();
+  }
+
+  void _cancelSessionTimers(String sessionId) {
+    _cancelWatchAck(sessionId);
+    _cancelWatchRetry(sessionId);
+    _cancelHistoryFallback(sessionId);
+    _watchRetryAttempts.remove(sessionId);
+  }
+
+  void _cancelAllWatchRetries() {
+    for (final timer in _watchRetryTimers.values) {
+      timer.cancel();
+    }
+    _watchRetryTimers.clear();
+    _watchRetryAttempts.clear();
+  }
+
+  void _cancelAllTimers() {
+    for (final timer in [
+      ..._watchAckTimers.values,
+      ..._watchRetryTimers.values,
+      ..._historyFallbackTimers.values,
+    ]) {
+      timer.cancel();
+    }
+    _watchAckTimers.clear();
+    _watchRetryTimers.clear();
+    _historyFallbackTimers.clear();
+    _watchRetryAttempts.clear();
+  }
+
   void close() {
     if (_closed) return;
     _closed = true;
+    _cancelAllTimers();
     _sessionSubscription?.cancel();
     _connectionSubscription?.cancel();
     _featureSubscription?.cancel();
     _trackedSessionIds.clear();
     _ownedRequestIds.clear();
     _displacedByConversation.clear();
+    _suppressedSessionIds.clear();
   }
 }

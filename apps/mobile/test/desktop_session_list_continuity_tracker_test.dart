@@ -263,6 +263,7 @@ void main() {
           origin: 'desktop_rollout',
           state: CodexDesktopContinuityState.idle,
           turnId: 'turn-1',
+          historyReady: true,
         ),
       );
       await _flush();
@@ -270,4 +271,164 @@ void main() {
       expect(bridge.historyRequests, 1);
     },
   );
+
+  test(
+    'rehydrate failure keeps the live watch and later payloads flowing',
+    () async {
+      final bridge = _Bridge()..snapshot = const [_session];
+      final tracker = DesktopSessionListContinuityTracker(bridge);
+      addTearDown(() async {
+        tracker.close();
+        await bridge.closeFake();
+      });
+      final requestId = _json(bridge.sent.single)['requestId'] as String;
+
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.watching,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.running,
+        ),
+      );
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.error,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          errorCode: 'runtime_rehydrate_failed',
+          error: 'temporary refresh failure',
+        ),
+      );
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.message,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          turnId: 'turn-2',
+          itemKey: 'assistant-after-error',
+          payload: const AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-after-error',
+              role: 'assistant',
+              content: [TextContent(text: 'Still synchronized')],
+              model: 'codex',
+            ),
+          ),
+        ),
+      );
+      await _flush();
+
+      expect(bridge.historyRequests, 1);
+      expect(
+        bridge
+            .cachedSessionMessages('session-1')
+            .whereType<AssistantServerMessage>()
+            .single
+            .message
+            .id,
+        'assistant-after-error',
+      );
+      expect(
+        bridge.sent.where(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        ),
+        hasLength(1),
+      );
+    },
+  );
+
+  test('old Bridge idle state gets one delayed history fallback', () async {
+    final bridge = _Bridge()..snapshot = const [_session];
+    final tracker = DesktopSessionListContinuityTracker(
+      bridge,
+      historyFallbackDelay: const Duration(milliseconds: 1),
+    );
+    addTearDown(() async {
+      tracker.close();
+      await bridge.closeFake();
+    });
+    final requestId = _json(bridge.sent.single)['requestId'] as String;
+
+    bridge.emitFeature(
+      CodexDesktopContinuityEventMessage(
+        event: CodexDesktopContinuityEventKind.state,
+        requestId: requestId,
+        bridgeInstanceId: 'bridge-old',
+        sessionId: 'session-1',
+        threadId: 'thread-1',
+        origin: 'desktop_rollout',
+        state: CodexDesktopContinuityState.idle,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+
+    expect(bridge.historyRequests, 1);
+  });
+
+  test('silent list watch automatically retries', () async {
+    final bridge = _Bridge()..snapshot = const [_session];
+    final tracker = DesktopSessionListContinuityTracker(
+      bridge,
+      watchAckTimeout: const Duration(milliseconds: 1),
+      watchRetryBase: const Duration(milliseconds: 1),
+      watchRetryMax: const Duration(milliseconds: 1),
+    );
+    addTearDown(() async {
+      tracker.close();
+      await bridge.closeFake();
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 6));
+    final watches = bridge.sent
+        .where((message) => message.type == 'codex_desktop_continuity_watch')
+        .toList(growable: false);
+    expect(watches.length, greaterThan(1));
+  });
+
+  test('binding rejection stays quiet until reconnect', () async {
+    final bridge = _Bridge()..snapshot = const [_session];
+    final tracker = DesktopSessionListContinuityTracker(
+      bridge,
+      watchRetryBase: const Duration(milliseconds: 1),
+      watchRetryMax: const Duration(milliseconds: 1),
+    );
+    addTearDown(() async {
+      tracker.close();
+      await bridge.closeFake();
+    });
+    final requestId = _json(bridge.sent.single)['requestId'] as String;
+
+    bridge.emitFeature(
+      CodexDesktopContinuityEventMessage(
+        event: CodexDesktopContinuityEventKind.error,
+        requestId: requestId,
+        bridgeInstanceId: 'bridge-1',
+        sessionId: 'session-1',
+        threadId: 'thread-1',
+        origin: 'desktop_rollout',
+        errorCode: 'path_not_allowed',
+        error: 'blocked path',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(bridge.sent, hasLength(1));
+
+    bridge.connected = false;
+    bridge._connections.add(BridgeConnectionState.disconnected);
+    await _flush();
+    bridge.connected = true;
+    bridge._connections.add(BridgeConnectionState.connected);
+    await _flush();
+    expect(bridge.sent, hasLength(2));
+  });
 }

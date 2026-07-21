@@ -270,6 +270,17 @@
   deltas. Opening the exact conversation transfers ownership to its watcher,
   drains the backlog and performs canonical reconciliation; old Bridges keep
   session-list/history fallback and never receive an unknown request.
+- Desktop rollout response items use
+  `internal_chat_message_metadata_passthrough.turn_id` as canonical turn
+  identity when the top-level field is absent. This keeps assistant and tool
+  events attributable during overlapping or orphaned task lifecycles instead
+  of suppressing them until the conversation is reopened.
+- A successful Bridge runtime rehydrate sends an additive v1 idle state with
+  `historyReady: true`. Mobile performs canonical history reconciliation only
+  after that signal, with one delayed fallback for an older Bridge. Older Apps
+  ignore the field but still benefit from the repeated idle state. A
+  `runtime_rehydrate_failed` event is advisory and must not release the live
+  watch; silent or transient watch setup failures retry with bounded backoff.
 - A downloaded conversation keeps its local mirror as a pageable prefix when
   canonical runtime history arrives. Canonical envelopes update overlapping
   entries and append the live tail, but they do not destroy the older-page
