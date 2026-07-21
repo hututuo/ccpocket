@@ -107,11 +107,12 @@
 
 - High-tier Effort motion has two independent layers. Entering x-high, Max or
   Ultra plays one deterministic, finite radial arrival burst. Remaining on Max
-  or Ultra runs the persistent fire; x-high does not. Max uses a restrained
-  cool blue-violet palette, while Ultra keeps the hotter purple-to-white
-  reference palette. Switching Max <-> Ultra updates front, intensity and
-  palette without clearing the simulation. The six wire values and
-  model-advertised availability remain unchanged.
+  or Ultra runs the persistent fire; x-high does not. Max uses a distinct
+  red-leaning magenta palette at 35% of the original motion rate, while Ultra
+  keeps the hotter purple-to-white reference palette at 70% of the original
+  rate. Switching Max <-> Ultra updates front, intensity, palette and future
+  phase rate without clearing the simulation or jumping its accumulated phase.
+  The six wire values and model-advertised availability remain unchanged.
 - The persistent fire owns one immutable, full-track 72-by-6 UV grid. Cell
   centres and dimensions derive only from track bounds. Slider movement changes
   only the simulation front and the `slider + 2%` visibility mask; it must never
@@ -120,9 +121,9 @@
 - Fire equations, delayed per-cell hash, decaying feedback, separable blur and
   tone-map constants are adapted in an isolated GPL module from Astraeus's
   `claude-range-slider` reference. The former locally invented reach/density/
-  phase/advection model is retired. Max activation and its cooler palette are
-  the explicit CC Pocket extension; Ultra retains the reference activation
-  threshold and palette.
+  phase/advection model is retired. Max activation and its red-magenta palette
+  are the explicit CC Pocket extension; Ultra retains the reference activation
+  threshold and purple-white palette.
 - Because field columns now use absolute logical UV coordinates instead of
   "distance from thumb", motion toward lower logical effort produces a negative
   cross-frame shift in LTR tests. Regression coverage locks grid invariance
@@ -141,6 +142,10 @@
   is painted above that seam. Do not extend the active track by the thumb's
   maximum animated radius: that makes the fill protrude beyond the resting
   circle. This fill correction is independent of the immutable fire grid.
+- A tap starts the position glide on the next rendered frame and reaches the
+  selected effort in 120 ms. The one-shot reveal and persistent fire keep their
+  own longer lifetimes, and drag release retains its independent 150 ms settle;
+  do not make click responsiveness depend on those decorative durations.
 - The combined local fork is GPL-2.0-only. The original CC Pocket MIT notice is
   retained verbatim in `LICENSES/MIT.txt`, and the adapted reference keeps its
   attribution in `THIRD_PARTY_NOTICES.md` plus its module header. License

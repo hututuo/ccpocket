@@ -33,14 +33,14 @@ class ClaudeEffortBurstSpec {
 ///
 /// Entering x-high, Max or Ultra produces one bounded arrival burst. While the
 /// selected Max or Ultra tier remains active, a deterministic fixed-grid field
-/// carries cool blue-violet or white-hot purple pixels toward lower logical
+/// carries red-leaning magenta or white-hot purple pixels toward lower logical
 /// effort (physical screen-left in LTR and screen-right in RTL). The field is
 /// disabled entirely by Reduce Motion.
 abstract final class ClaudeEffortMotionTokens {
   static const Curve glideCurve = Cubic(0.23, 1, 0.32, 1);
   static const Curve colourCurve = Cubic(0.16, 1, 0.3, 1);
 
-  static const Duration selectionDuration = Duration(milliseconds: 300);
+  static const Duration selectionDuration = Duration(milliseconds: 120);
   static const Duration dragSettleDuration = Duration(milliseconds: 150);
   static const Duration xHighRevealDuration = Duration(milliseconds: 720);
   static const Duration maxRevealDuration = Duration(milliseconds: 880);

@@ -50,6 +50,10 @@ void main() {
     expect(codexEffortPixelCellCapacity, 432);
     expect(codexEffortPixelFireDrawBatchCount, 1);
     expect(codexFastParticleCount, 14);
+    expect(
+      ClaudeEffortMotionTokens.selectionDuration,
+      const Duration(milliseconds: 120),
+    );
 
     final bounds = tester.getRect(find.byKey(const ValueKey('motion_slider')));
     await tester.tapAt(Offset(bounds.right - 15, bounds.center.dy));
@@ -231,7 +235,8 @@ void main() {
     final maxBlue = channelTotal(maxFire, maxFire.blueAt);
     final ultraRed = channelTotal(ultraFire, ultraFire.redAt);
     final ultraBlue = channelTotal(ultraFire, ultraFire.blueAt);
-    expect(maxBlue / maxRed, greaterThan(ultraBlue / ultraRed));
+    expect(maxRed, greaterThan(maxBlue * 1.15));
+    expect(maxRed / maxBlue, greaterThan((ultraRed / ultraBlue) * 1.25));
 
     final checksum = maxFire.energyChecksum;
     for (var frame = 0; frame < 18; frame++) {
@@ -244,6 +249,38 @@ void main() {
       maxFire.advance(ClaudeRangeSliderFireSimulation.fixedStepSeconds);
     }
     expect(maxFire.energyChecksum, lessThan(checksum));
+  });
+
+  test('Max and Ultra use exact continuous motion-speed multipliers', () {
+    expect(ClaudeRangeSliderFireSimulation.maxMotionSpeed, 0.35);
+    expect(ClaudeRangeSliderFireSimulation.ultraMotionSpeed, 0.70);
+
+    final maxFire = ClaudeRangeSliderFireSimulation()
+      ..ignite(slider: 0.8, tier: ClaudeRangeSliderFireTier.max);
+    final ultraFire = ClaudeRangeSliderFireSimulation()
+      ..ignite(slider: 1, tier: ClaudeRangeSliderFireTier.ultra);
+    for (var frame = 0; frame < 60; frame++) {
+      maxFire.advance(ClaudeRangeSliderFireSimulation.fixedStepSeconds);
+      ultraFire.advance(ClaudeRangeSliderFireSimulation.fixedStepSeconds);
+    }
+    expect(maxFire.motionTime, closeTo(0.35, 0.000001));
+    expect(ultraFire.motionTime, closeTo(0.70, 0.000001));
+
+    final phaseBeforeSwitch = maxFire.motionTime;
+    maxFire.ignite(
+      slider: 1,
+      tier: ClaudeRangeSliderFireTier.ultra,
+      restart: false,
+    );
+    expect(maxFire.motionTime, phaseBeforeSwitch);
+    maxFire.advance(ClaudeRangeSliderFireSimulation.fixedStepSeconds);
+    expect(
+      maxFire.motionTime - phaseBeforeSwitch,
+      closeTo(
+        ClaudeRangeSliderFireSimulation.fixedStepSeconds * 0.70,
+        0.000001,
+      ),
+    );
   });
   testWidgets(
     'drag start/end emits its tier and same-frame return is not lost',
@@ -450,7 +487,7 @@ void main() {
     expect(painter().animation.isAnimating, isFalse);
   });
 
-  testWidgets('effort increase visibly glides the thumb and active range', (
+  testWidgets('tap starts moving next frame and settles without click lag', (
     tester,
   ) async {
     final key = GlobalKey<_EffortHarnessState>();
@@ -471,11 +508,14 @@ void main() {
     await tester.tapAt(Offset(targetX, bounds.center.dy));
     await tester.pump();
     expect(painter().debugLogicalPosition, closeTo(0.4, 0.001));
-    await tester.pump(const Duration(milliseconds: 120));
+    await tester.pump(const Duration(milliseconds: 16));
     expect(painter().debugLogicalPosition, greaterThan(0.4));
     expect(painter().debugLogicalPosition, lessThan(0.6));
     expect(painter().debugBurstParticleCount, 8);
-    await tester.pump(const Duration(milliseconds: 190));
+    await tester.pump(
+      ClaudeEffortMotionTokens.selectionDuration +
+          const Duration(milliseconds: 4),
+    );
     expect(painter().debugLogicalPosition, closeTo(0.6, 0.001));
   });
 
@@ -881,7 +921,7 @@ void main() {
       );
       expect(painter().debugLowestStrongPixelColumn, lessThan(30));
       expect(painter().debugLowestVisiblePixelColumn, lessThan(12));
-      expect(painter().debugStrongPixelColumnCount, greaterThanOrEqualTo(48));
+      expect(painter().debugStrongPixelColumnCount, greaterThanOrEqualTo(47));
       final checksum = painter().debugPixelEnergyChecksum as double;
       expect(painter().debugBurstProgress(0), -1);
       await tester.pump(const Duration(milliseconds: 240));

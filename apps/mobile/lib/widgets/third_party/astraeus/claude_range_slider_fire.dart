@@ -18,8 +18,9 @@ import 'dart:math' as math;
 /// CC Pocket's two persistent fire treatments.
 ///
 /// [ultra] keeps the GPL reference palette. [max] is the local extension: it
-/// uses the same simulation on the same fixed grid, but with a cooler palette
-/// and lower intensity so the two wire-level effort tiers remain distinct.
+/// uses the same simulation on the same fixed grid, but with a red-leaning
+/// magenta palette, lower intensity, and slower phase rate so the two wire-level
+/// effort tiers remain distinct.
 enum ClaudeRangeSliderFireTier { max, ultra }
 
 /// CPU-side, fixed-grid adaptation of the reference WebGL fire pipeline.
@@ -40,6 +41,8 @@ final class ClaudeRangeSliderFireSimulation {
   static const int referenceSettleFrames = 228;
   static const int defaultSettleFeedbackFrames = 72;
   static const int maxCatchUpSteps = 2;
+  static const double maxMotionSpeed = 0.35;
+  static const double ultraMotionSpeed = 0.70;
 
   static const double _blurCentre = 0.227027;
   static const double _blurOne = 0.194595;
@@ -158,6 +161,7 @@ final class ClaudeRangeSliderFireSimulation {
   ClaudeRangeSliderFireTier _tier = ClaudeRangeSliderFireTier.ultra;
   double _accumulator = 0;
   double _time = 0;
+  double _motionTime = 0;
   double _elapsed = -1;
   double _slider = 0;
   double _blurOffsetColumns = 0.14;
@@ -167,6 +171,10 @@ final class ClaudeRangeSliderFireSimulation {
   ClaudeRangeSliderFireTier get tier => _tier;
   double get elapsed => math.max(0, _elapsed);
   double get slider => _slider;
+  double get motionTime => _motionTime;
+  double get motionSpeed => _tier == ClaudeRangeSliderFireTier.max
+      ? maxMotionSpeed
+      : ultraMotionSpeed;
 
   /// Approximate position of the delayed ignition front for diagnostics.
   double get reach {
@@ -209,6 +217,7 @@ final class ClaudeRangeSliderFireSimulation {
     if (!_active || restart) {
       _clearFrames();
       _accumulator = 0;
+      _motionTime = 0;
       _elapsed = 0;
     }
     _active = true;
@@ -241,6 +250,7 @@ final class ClaudeRangeSliderFireSimulation {
         .toInt();
     final skippedFrames = referenceSettleFrames - boundedFeedbackFrames;
     _time = skippedFrames * fixedStepSeconds;
+    _motionTime = _time * motionSpeed;
     _elapsed = _time;
     for (var frame = 0; frame < boundedFeedbackFrames; frame++) {
       _stepFrame();
@@ -265,6 +275,7 @@ final class ClaudeRangeSliderFireSimulation {
   /// the shader clocks advance before the final bounded catch-up steps run.
   void _skipSimulationFrames(int count) {
     _time += count * fixedStepSeconds;
+    _motionTime += count * fixedStepSeconds * motionSpeed;
     if (_active) _elapsed += count * fixedStepSeconds;
   }
 
@@ -273,6 +284,7 @@ final class ClaudeRangeSliderFireSimulation {
     _tier = ClaudeRangeSliderFireTier.ultra;
     _accumulator = 0;
     _time = 0;
+    _motionTime = 0;
     _elapsed = -1;
     _slider = 0;
     _clearFrames();
@@ -386,6 +398,7 @@ final class ClaudeRangeSliderFireSimulation {
 
   void _stepFrame() {
     _time += fixedStepSeconds;
+    _motionTime += fixedStepSeconds * motionSpeed;
     if (_active) _elapsed += fixedStepSeconds;
     _simulatePass();
     _horizontalBlurPass();
@@ -411,17 +424,17 @@ final class ClaudeRangeSliderFireSimulation {
         : _smoothStep(0.95, 1, _slider);
     final energyScale = _mix(0.15, 0.50, math.min(_elapsed / 1.0, 1.0));
     final timeScale = _mix(0.85, 1.0, math.min(_elapsed / 1.5, 1.0));
-    final pulse = math.sin(_time * 2.8) * 0.15 + 1;
+    final pulse = math.sin(_motionTime * 2.8) * 0.15 + 1;
     final isMax = _tier == ClaudeRangeSliderFireTier.max;
-    final emberR = isMax ? 0.12 : 0.28;
-    const emberG = 0.10;
-    final emberB = isMax ? 0.50 : 0.58;
-    final purpleR = isMax ? 0.34 : 0.62;
-    final purpleG = isMax ? 0.42 : 0.32;
-    const purpleB = 1.0;
-    final whiteR = isMax ? 0.82 : 1.0;
-    final whiteG = isMax ? 0.91 : 0.94;
-    final whiteB = isMax ? 1.0 : 0.98;
+    final emberR = isMax ? 0.52 : 0.28;
+    final emberG = isMax ? 0.05 : 0.10;
+    final emberB = isMax ? 0.20 : 0.58;
+    final purpleR = isMax ? 0.98 : 0.62;
+    final purpleG = isMax ? 0.18 : 0.32;
+    final purpleB = isMax ? 0.50 : 1.0;
+    const whiteR = 1.0;
+    final whiteG = isMax ? 0.72 : 0.94;
+    final whiteB = isMax ? 0.80 : 0.98;
     final tierIntensity = isMax ? 0.74 : 1.0;
     for (var column = 0; column < columns; column++) {
       final uvX = _columnCenters[column];
@@ -459,13 +472,13 @@ final class ClaudeRangeSliderFireSimulation {
 
         final verticalEnvelope = _rowVerticalEnvelopes[row];
         final waveOne = math.sin(
-          uvX * 30 + _time * 15 * timeScale + cellHash * 6.28,
+          uvX * 30 + _motionTime * 15 * timeScale + cellHash * 6.28,
         );
         final waveTwo = math.sin(
-          uvX * 17 + _time * 8 * timeScale + cellHash * 3.14,
+          uvX * 17 + _motionTime * 8 * timeScale + cellHash * 3.14,
         );
         final waveThree = math.sin(
-          uvX * 52 + _time * 25 * timeScale + cellHash * 10,
+          uvX * 52 + _motionTime * 25 * timeScale + cellHash * 10,
         );
         final flame = _smoothStep(
           0.08,
@@ -474,10 +487,10 @@ final class ClaudeRangeSliderFireSimulation {
         );
 
         final rhythmOne = math.sin(
-          normalizedTail * 16 - _time * 5 * timeScale + cellHash * 3,
+          normalizedTail * 16 - _motionTime * 5 * timeScale + cellHash * 3,
         );
         final rhythmTwo = math.sin(
-          normalizedTail * 8 - _time * 2.5 * timeScale + cellHash * 5,
+          normalizedTail * 8 - _motionTime * 2.5 * timeScale + cellHash * 5,
         );
         var rhythm =
             _smoothStep(-0.15, 0.55, rhythmOne) * (rhythmTwo * 0.5 + 0.5);
@@ -492,7 +505,7 @@ final class ClaudeRangeSliderFireSimulation {
         final flash = _step(0, arrivalAge) * math.exp(-arrivalAge * 3.2);
 
         final sparkProgress = _fract(
-          _time * (0.38 + cellHash * 0.15) + cellHash * 7,
+          _motionTime * (0.38 + cellHash * 0.15) + cellHash * 7,
         );
         final sparkX = _slider - sparkProgress * tail;
         final sparkY =
@@ -511,11 +524,15 @@ final class ClaudeRangeSliderFireSimulation {
 
         final edgeBase = math.exp(-math.pow((uvX - front) * 18, 2));
         final edgeWaveOne =
-            math.sin(uvX * 45 + _time * 20 * timeScale + cellHash * 6.28) *
+            math.sin(
+                  uvX * 45 + _motionTime * 20 * timeScale + cellHash * 6.28,
+                ) *
                 0.5 +
             0.5;
         final edgeWaveTwo =
-            math.sin(uvX * 28 + _time * 11 * timeScale + cellHash * 3.14) *
+            math.sin(
+                  uvX * 28 + _motionTime * 11 * timeScale + cellHash * 3.14,
+                ) *
                 0.5 +
             0.5;
         final edge =
@@ -534,7 +551,7 @@ final class ClaudeRangeSliderFireSimulation {
         final leadFlicker =
             math.sin(
                   leadDistance * 100 +
-                      _time * 20 * timeScale +
+                      _motionTime * 20 * timeScale +
                       secondHash * 6.28,
                 ) *
                 0.5 +
