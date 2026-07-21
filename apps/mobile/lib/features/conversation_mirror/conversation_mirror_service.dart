@@ -142,6 +142,7 @@ class ConversationMirrorService extends ChangeNotifier {
           (_pageCursorsByRuntime[runtimeSessionId]?.nextOffset ?? 0) > 0,
       invalidate: _pageCursorsByRuntime.remove,
     );
+    _bridge.configureSessionHistoryUserIndex(_loadRuntimeUserIndex);
     if (kIsWeb) return;
     try {
       // Opening also removes interrupted shadow generations while preserving
@@ -1373,6 +1374,42 @@ class ConversationMirrorService extends ChangeNotifier {
     }
   }
 
+  Future<List<UserInputMessage>?> _loadRuntimeUserIndex({
+    required String runtimeSessionId,
+  }) async {
+    final cursor = _pageCursorsByRuntime[runtimeSessionId];
+    if (cursor == null ||
+        !_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
+      return null;
+    }
+    final metadataBefore = await _store.readMetadata(cursor.key);
+    if (!_pageCursorMetadataMatches(cursor, metadataBefore)) return null;
+    final entries = await _store.readUserEntries(cursor.key);
+    final metadataAfter = await _store.readMetadata(cursor.key);
+    if (!_pageCursorMetadataMatches(cursor, metadataAfter) ||
+        !_pageCursorIdentityMatches(runtimeSessionId, cursor) ||
+        !identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+      return null;
+    }
+    final messages = <UserInputMessage>[];
+    for (final entry in entries) {
+      try {
+        final message = ServerMessage.fromJson(entry.message);
+        if (message is UserInputMessage &&
+            !message.isSynthetic &&
+            !message.isMeta) {
+          messages.add(message);
+        }
+      } catch (error) {
+        debugPrint(
+          '[conversation-mirror] skipped invalid user index envelope '
+          '${entry.entryId}: $error',
+        );
+      }
+    }
+    return List.unmodifiable(messages);
+  }
+
   bool _pageCursorMetadataMatches(
     _RuntimeMirrorPageCursor cursor,
     ConversationMirrorMetadata? metadata,
@@ -1755,6 +1792,7 @@ class ConversationMirrorService extends ChangeNotifier {
     _closed = true;
     _bridge.configureSessionHistoryBootstrap(null);
     _bridge.configureSessionHistoryPaging();
+    _bridge.configureSessionHistoryUserIndex(null);
     await _localFeatureSub?.cancel();
     await _bridgeIdentitySub?.cancel();
     await _connectionSub?.cancel();

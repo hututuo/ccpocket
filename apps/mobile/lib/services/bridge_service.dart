@@ -63,6 +63,11 @@ typedef SessionHistoryPageLoader =
 typedef SessionHistoryHasMore = bool Function(String runtimeSessionId);
 typedef SessionHistoryPageInvalidator = void Function(String runtimeSessionId);
 
+typedef SessionHistoryUserIndexLoader =
+    Future<List<UserInputMessage>?> Function({
+      required String runtimeSessionId,
+    });
+
 class _ExternalSessionHistoryMetadata {
   const _ExternalSessionHistoryMetadata({this.timestampAnchor});
 
@@ -189,6 +194,7 @@ class BridgeService implements BridgeServiceBase {
   SessionHistoryPageLoader? _sessionHistoryPageLoader;
   SessionHistoryHasMore? _sessionHistoryHasMore;
   SessionHistoryPageInvalidator? _sessionHistoryPageInvalidator;
+  SessionHistoryUserIndexLoader? _sessionHistoryUserIndexLoader;
   final Expando<_ExternalSessionHistoryMetadata> _externalSessionHistories =
       Expando<_ExternalSessionHistoryMetadata>('externalSessionHistory');
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
@@ -2801,6 +2807,23 @@ class BridgeService implements BridgeServiceBase {
     _sessionHistoryPageLoader = loader;
     _sessionHistoryHasMore = hasMore;
     _sessionHistoryPageInvalidator = invalidate;
+  }
+
+  void configureSessionHistoryUserIndex(
+    SessionHistoryUserIndexLoader? loader,
+  ) {
+    _sessionHistoryUserIndexLoader = loader;
+  }
+
+  bool get hasSessionHistoryUserIndex =>
+      _sessionHistoryUserIndexLoader != null;
+
+  Future<List<UserInputMessage>?> tryLoadLocalSessionUserIndex({
+    required String runtimeSessionId,
+  }) {
+    final loader = _sessionHistoryUserIndexLoader;
+    if (loader == null) return Future.value();
+    return loader(runtimeSessionId: runtimeSessionId);
   }
 
   bool get hasSessionHistoryPaging => _sessionHistoryPageLoader != null;

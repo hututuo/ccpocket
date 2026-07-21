@@ -53,7 +53,7 @@ import '../git/state/git_status_cubit.dart';
 import '../git/state/git_view_cache_service.dart';
 import '../../router/app_router.dart';
 import '../claude_session/widgets/rewind_message_list_sheet.dart'
-    show UserMessageHistorySheet;
+    show UserMessageHistoryLoaderSheet;
 import 'state/codex_session_cubit.dart';
 import 'widgets/codex_goal_card.dart';
 import 'widgets/codex_goal_management.dart';
@@ -2026,17 +2026,20 @@ void _showUserMessageHistory(
   DraftService draftService,
 ) {
   final cubit = context.read<ChatSessionCubit>();
-  final messages = cubit.allUserMessages;
+  final messages = cubit.loadAllUserMessagesForNavigation();
 
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     constraints: macOSModalBottomSheetConstraints(context),
     useSafeArea: true,
-    builder: (_) => UserMessageHistorySheet(
+    builder: (_) => UserMessageHistoryLoaderSheet(
       messages: messages,
       onScrollToMessage: (msg) {
-        scrollToUserEntry.value = msg;
+        unawaited(() async {
+          final loaded = await cubit.revealUserMessage(msg);
+          if (loaded != null) scrollToUserEntry.value = loaded;
+        }());
       },
       onRewindMessage: (msg) => _showCodexRewindDialog(
         context,

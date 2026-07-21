@@ -4,6 +4,40 @@ import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
 import '../../../theme/app_theme.dart';
 
+class UserMessageHistoryLoaderSheet extends StatelessWidget {
+  final Future<List<UserChatEntry>> messages;
+  final void Function(UserChatEntry message) onScrollToMessage;
+  final void Function(UserChatEntry message)? onRewindMessage;
+
+  const UserMessageHistoryLoaderSheet({
+    super.key,
+    required this.messages,
+    required this.onScrollToMessage,
+    this.onRewindMessage,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<UserChatEntry>>(
+      future: messages,
+      builder: (context, snapshot) {
+        final loaded = snapshot.data;
+        if (loaded != null) {
+          return UserMessageHistorySheet(
+            messages: loaded,
+            onScrollToMessage: onScrollToMessage,
+            onRewindMessage: onRewindMessage,
+          );
+        }
+        return const SizedBox(
+          height: 280,
+          child: Center(child: CircularProgressIndicator.adaptive()),
+        );
+      },
+    );
+  }
+}
+
 /// Bottom sheet that lists all user messages as a message history.
 ///
 /// Provides two actions per message:

@@ -50,7 +50,8 @@ import '../explore/state/explore_state.dart';
 import '../git/state/git_status_cubit.dart';
 import '../git/state/git_view_cache_service.dart';
 import 'widgets/rewind_action_sheet.dart';
-import 'widgets/rewind_message_list_sheet.dart' show UserMessageHistorySheet;
+import 'widgets/rewind_message_list_sheet.dart'
+    show UserMessageHistoryLoaderSheet;
 import 'widgets/usage_summary_bar.dart';
 
 const _fileListRefreshToolNames = {
@@ -1636,17 +1637,20 @@ void _showUserMessageHistory(
   DraftService draftService,
 ) {
   final cubit = context.read<ChatSessionCubit>();
-  final messages = cubit.allUserMessages;
+  final messages = cubit.loadAllUserMessagesForNavigation();
 
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     constraints: macOSModalBottomSheetConstraints(context),
     useSafeArea: true,
-    builder: (_) => UserMessageHistorySheet(
+    builder: (_) => UserMessageHistoryLoaderSheet(
       messages: messages,
       onScrollToMessage: (msg) {
-        scrollToUserEntry.value = msg;
+        unawaited(() async {
+          final loaded = await cubit.revealUserMessage(msg);
+          if (loaded != null) scrollToUserEntry.value = loaded;
+        }());
       },
       onRewindMessage: (msg) => _showRewindActionSheet(
         context,

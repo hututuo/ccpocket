@@ -701,6 +701,56 @@ class ConversationMirrorStore {
     });
   }
 
+  /// Reads only user-input envelopes from the active generation.
+  ///
+  /// SQLite performs the JSON type filter so large assistant/tool payloads do
+  /// not cross the Dart boundary when the message-history picker only needs a
+  /// lightweight prompt index. The fallback keeps custom/older SQLite test
+  /// engines functional if JSON1 is unavailable.
+  Future<List<ConversationMirrorEntry>> readUserEntries(
+    ConversationMirrorKey key,
+  ) async {
+    _validateKey(key);
+    final db = await _database.database;
+    return db.transaction((txn) async {
+      final metadata = await _queryMetadata(txn, key);
+      final generation = metadata?['active_generation'] as String?;
+      if (generation == null) return const <ConversationMirrorEntry>[];
+      await readTransactionHook?.call(generation);
+
+      final args = [..._keyArgs(key), generation];
+      late final List<Map<String, Object?>> rows;
+      try {
+        rows = await txn.rawQuery(
+          '''
+          SELECT * FROM ${ConversationMirrorDatabase.entriesTable}
+          WHERE $_keyWhere
+            AND generation = ?
+            AND json_extract(message_json, '\$.type') = 'user_input'
+          ORDER BY ordinal ASC
+          ''',
+          args,
+        );
+      } on DatabaseException {
+        final candidates = await txn.query(
+          ConversationMirrorDatabase.entriesTable,
+          where: '$_keyWhere AND generation = ?',
+          whereArgs: args,
+          orderBy: 'ordinal ASC',
+        );
+        rows = candidates.where((row) {
+          try {
+            final decoded = jsonDecode(row['message_json'] as String);
+            return decoded is Map && decoded['type'] == 'user_input';
+          } catch (_) {
+            return false;
+          }
+        }).toList(growable: false);
+      }
+      return rows.map(_entryFromRow).toList(growable: false);
+    });
+  }
+
   Future<List<ConversationMirrorMetadata>> listAutoSync() async {
     final rows = await (await _database.database).query(
       ConversationMirrorDatabase.metadataTable,

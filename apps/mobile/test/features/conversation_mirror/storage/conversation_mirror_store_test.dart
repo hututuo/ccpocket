@@ -196,6 +196,58 @@ void main() {
       expect(await store.readEntries(key), hasLength(2));
     });
 
+    test('user index reads only user envelopes in ordinal order', () async {
+      const key = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-a',
+        provider: 'codex',
+        providerSessionId: 'session-user-index',
+      );
+      final entries = [
+        _rawEntry('user-index-0', 0, {
+          'type': 'user_input',
+          'text': 'first prompt',
+          'userMessageUuid': 'user-0',
+        }),
+        _rawEntry('user-index-1', 1, {
+          'type': 'assistant',
+          'message': {
+            'id': 'assistant-1',
+            'role': 'assistant',
+            'model': 'codex',
+            'content': [
+              {
+                'type': 'text',
+                'text': List.filled(1000, 'large result').join(),
+              },
+            ],
+          },
+        }),
+        _rawEntry('user-index-2', 2, {
+          'type': 'user_input',
+          'text': 'second prompt',
+          'userMessageUuid': 'user-2',
+        }),
+      ];
+      await _writeSnapshot(
+        store,
+        key,
+        generation: 'generation-user-index',
+        revision: _revision('user-index'),
+        entries: entries,
+      );
+
+      final indexed = await store.readUserEntries(key);
+
+      expect(indexed.map((entry) => entry.entryId), [
+        'user-index-0',
+        'user-index-2',
+      ]);
+      expect(indexed.map((entry) => entry.message['text']), [
+        'first prompt',
+        'second prompt',
+      ]);
+    });
+
     test(
       'incomplete completion leaves the prior generation readable',
       () async {
@@ -1179,6 +1231,19 @@ ConversationMirrorEntryInput _entry(
   required String text,
 }) {
   final message = <String, dynamic>{'type': 'user_input', 'text': text};
+  return ConversationMirrorEntryInput(
+    entryId: entryId,
+    ordinal: ordinal,
+    contentHash: sha256.convert(utf8.encode(jsonEncode(message))).toString(),
+    message: message,
+  );
+}
+
+ConversationMirrorEntryInput _rawEntry(
+  String entryId,
+  int ordinal,
+  Map<String, dynamic> message,
+) {
   return ConversationMirrorEntryInput(
     entryId: entryId,
     ordinal: ordinal,

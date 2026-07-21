@@ -262,6 +262,13 @@
   deltas. Opening the exact conversation transfers ownership to its watcher,
   drains the backlog and performs canonical reconciliation; old Bridges keep
   session-list/history fallback and never receive an unknown request.
+- A downloaded conversation keeps its local mirror as a pageable prefix when
+  canonical runtime history arrives. Canonical envelopes update overlapping
+  entries and append the live tail, but they do not destroy the older-page
+  cursor. The history picker queries a lightweight user-input index from the
+  same active mirror generation; selecting an unloaded prompt pages backward
+  until the real rendered entry is available, rather than rendering the whole
+  transcript at open time.
 - iOS drops reuse existing authorities. A known PNG/JPEG no larger than 20 MiB
   may remain an inline image; every other composer drop and every Home drop is
   streamed through the authenticated 15 GiB resumable transfer. Stage multiple

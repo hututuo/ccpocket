@@ -418,7 +418,9 @@ class _ChatMessageListState extends State<ChatMessageList> {
             }
             return _LocalHistoryPageIndicator(
               paging: paging,
-              onRetry: chatCubit.loadOlderLocalHistory,
+              onRetry: () async {
+                await chatCubit.loadOlderLocalHistory();
+              },
             );
           }
           // index 0 = newest entry (bottom of chat)
