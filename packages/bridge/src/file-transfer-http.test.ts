@@ -535,6 +535,15 @@ describe("FileTransferHttpHandler v2", () => {
     const f = await fixture({ http: { idleTimeoutMs: 10_000, totalTimeoutMs: 20_000 } });
     const { ready } = await prepareUpload(f, 5);
     const path = new URL(ready.uploadUrl).pathname;
+    let markUploadEntered!: () => void;
+    const uploadEntered = new Promise<void>((resolve) => {
+      markUploadEntered = resolve;
+    });
+    const appendUpload = f.manager.appendUpload.bind(f.manager);
+    vi.spyOn(f.manager, "appendUpload").mockImplementation(async (...args) => {
+      markUploadEntered();
+      return appendUpload(...args);
+    });
     const inFlight = new Promise<void>((resolve, reject) => {
       const req = request({
         hostname: "127.0.0.1",
@@ -557,7 +566,7 @@ describe("FileTransferHttpHandler v2", () => {
       req.flushHeaders();
     });
     const inFlightRejected = expect(inFlight).rejects.toThrow();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await uploadEntered;
     await f.handler.close();
     await inFlightRejected;
     const rejected = await httpRequest(f.port, "HEAD", path, transferHeaders(ready.uploadToken));
