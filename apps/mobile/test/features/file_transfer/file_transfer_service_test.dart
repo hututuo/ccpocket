@@ -274,7 +274,11 @@ void main() {
 
   tearDown(() async {
     await bridge.close();
-    if (await root.exists()) await root.delete(recursive: true);
+    try {
+      await root.delete(recursive: true);
+    } on FileSystemException {
+      if (await root.exists()) rethrow;
+    }
   });
 
   test(
@@ -2520,13 +2524,18 @@ void main() {
     });
     final service = createService(client: client);
     bridge.autoDownloadResumeSize = 4;
+    final completed = Completer<void>();
+    service.addListener(() {
+      if (!completed.isCompleted &&
+          service.recentResults.any(
+            (item) => item.status == FileTransferStatus.succeeded,
+          )) {
+        completed.complete();
+      }
+    });
 
     await service.initialize();
-    await _waitUntil(
-      () => service.recentResults.any(
-        (item) => item.status == FileTransferStatus.succeeded,
-      ),
-    );
+    await completed.future;
 
     expect(await File('${downloads.path}/report.bin').readAsBytes(), [
       1,

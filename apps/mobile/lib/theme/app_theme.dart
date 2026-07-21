@@ -17,6 +17,11 @@ class AppTheme {
     'Noto Sans CJK SC', // Linux / Android
   ];
 
+  static List<String>? fontFamilyFallbackForLocale(Locale? locale) {
+    if (locale?.languageCode.toLowerCase() != 'zh') return null;
+    return _zhFontFallback;
+  }
+
   static ThemeData get lightTheme {
     return lightThemeForLocale(null);
   }
@@ -380,10 +385,10 @@ class AppTheme {
       ),
     );
 
-    if (locale?.languageCode.toLowerCase() == 'zh') {
-      return textTheme.apply(fontFamilyFallback: _zhFontFallback);
-    }
-    return textTheme;
+    final fontFamilyFallback = fontFamilyFallbackForLocale(locale);
+    return fontFamilyFallback == null
+        ? textTheme
+        : textTheme.apply(fontFamilyFallback: fontFamilyFallback);
   }
 }
 

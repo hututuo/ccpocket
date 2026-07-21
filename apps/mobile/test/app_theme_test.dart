@@ -8,9 +8,9 @@ void main() {
 
   group('AppTheme font fallback', () {
     test('applies Chinese system font fallback only for zh locale', () {
-      final zhFallback = AppTheme.lightThemeForLocale(
+      final zhFallback = AppTheme.fontFamilyFallbackForLocale(
         const Locale('zh'),
-      ).textTheme.bodyMedium?.fontFamilyFallback;
+      );
 
       _expectChineseFallback(zhFallback);
 
@@ -20,9 +20,7 @@ void main() {
         const Locale('ja'),
         const Locale('ko'),
       ]) {
-        final fallback = AppTheme.lightThemeForLocale(
-          locale,
-        ).textTheme.bodyMedium?.fontFamilyFallback;
+        final fallback = AppTheme.fontFamilyFallbackForLocale(locale);
         _expectNoChineseFallback(fallback, reason: 'locale=$locale');
       }
     });
