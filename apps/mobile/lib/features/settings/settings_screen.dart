@@ -31,6 +31,8 @@ import '../../utils/platform_helper.dart';
 import '../../widgets/workspace_pane_chrome.dart';
 import '../auto_approval/auto_approval_global_control.dart';
 import '../file_transfer/file_transfer_sheet.dart';
+import '../permission_management/l10n/permission_management_strings.dart';
+import '../permission_management/permission_management_screen.dart';
 import '../session_list/workspace_shell_screen.dart';
 import 'code_font_settings_screen.dart';
 import 'state/settings_cubit.dart';
@@ -501,6 +503,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           .read<SettingsCubit>()
                           .setShowBridgeNameInSessionList(value),
                     ),
+                    if (isIOSPlatform) ...[
+                      Divider(
+                        height: 1,
+                        indent: 16,
+                        endIndent: 16,
+                        color: cs.outlineVariant,
+                      ),
+                      ListTile(
+                        key: const ValueKey('permission_management_tile'),
+                        leading: Icon(
+                          Icons.admin_panel_settings_outlined,
+                          color: cs.primary,
+                        ),
+                        title: Text(
+                          PermissionManagementStrings.of(context).title,
+                        ),
+                        subtitle: Text(
+                          PermissionManagementStrings.of(context).subtitle,
+                        ),
+                        trailing: const Icon(Icons.chevron_right, size: 20),
+                        onTap: () => Navigator.of(context).push<void>(
+                          MaterialPageRoute(
+                            builder: (_) => PermissionManagementScreen(),
+                          ),
+                        ),
+                      ),
+                    ],
                     if (FeatureFlags.current.isEnabled(
                       AppFeature.terminalAppIntegration,
                     )) ...[
