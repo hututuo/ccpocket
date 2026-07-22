@@ -238,6 +238,22 @@
 
 ## Official 1.68 session experience and iOS file ingress
 
+- Backend-first delivery is the default for this compatibility fork. Codex and
+  Claude protocol drift, session-state authority, stream/history normalization,
+  replay deduplication and provider lineage extraction belong in Bridge whenever
+  an already-installed Mobile can consume the existing wire shape. Mobile is a
+  cache and presentation surface, not a second source of canonical truth.
+- A correctness or compatibility fix must not require a new IPA merely because
+  it is convenient to implement in Flutter. Bridge should capability-negotiate,
+  omit or down-convert additive messages for older clients and keep their legacy
+  history/session flow usable. Mobile releases are reserved for behavior that is
+  inherently local: visible controls and rendering, local-database paging, iOS
+  native integration, or a genuinely new client protocol. Batch those changes
+  instead of coupling them to every Bridge rollout.
+- The locally sideloaded IPA is not assumed to participate in the official
+  Shorebird release/patch channel. Until a separately owned and verified OTA
+  release chain exists, Dart changes in this fork still require a rebuilt IPA;
+  native Swift/plugin changes always require a new base release.
 - Official Bridge 1.68.0 is integrated by explicit merge commit `a4999bce`.
   Preserve its configurable Codex-assist model and reasoning effort together
   with the existing artifact, transfer, mirror, Side Chat and Desktop
