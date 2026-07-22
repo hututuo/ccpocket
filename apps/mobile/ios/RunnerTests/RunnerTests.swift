@@ -235,7 +235,7 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertEqual(supported["supported"] as? Bool, true)
     XCTAssertEqual(supported["iosMajor"] as? Int, 26)
-    XCTAssertEqual(supported["nativeApiVersion"] as? Int, 1)
+    XCTAssertEqual(supported["nativeApiVersion"] as? Int, 2)
     XCTAssertEqual(supported["appVersion"] as? String, "1.72.1")
 
     let unsupported = FileTransferPlugin.supportInfo(
