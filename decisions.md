@@ -254,6 +254,19 @@
   Shorebird release/patch channel. Until a separately owned and verified OTA
   release chain exists, Dart changes in this fork still require a rebuilt IPA;
   native Swift/plugin changes always require a new base release.
+- Backend-first is a delivery architecture, not merely a rule to move individual
+  bug fixes into Bridge. The long-term Mobile target is a stable Dynamic
+  Capability Host: Bridge can publish versioned declarative manifests for
+  navigation entries, allowlisted UI components, state bindings and typed RPC
+  actions, while the installed app validates and renders them with pre-shipped
+  Flutter/iOS primitives. Unknown components, actions or schema versions fail
+  closed and fall back without destabilizing chat.
+- Do not use the Bridge protocol to download arbitrary Dart or native executable
+  code. Evolve the host's Dart implementation through a separately owned
+  Shorebird app/release channel, never the official CC Pocket `app_id`; reserve
+  a rebuilt and re-signed base IPA for Swift/plugin, entitlement, Flutter-engine
+  or other native-runtime changes. The free Apple profile's seven-day AltStore
+  refresh remains a separate requirement from delivering feature updates.
 - Official Bridge 1.68.0 is integrated by explicit merge commit `a4999bce`.
   Preserve its configurable Codex-assist model and reasoning effort together
   with the existing artifact, transfer, mirror, Side Chat and Desktop
