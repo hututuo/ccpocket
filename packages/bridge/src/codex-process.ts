@@ -510,12 +510,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private _skills: CodexSkillMetadata[] = [];
   /** Full app metadata from the last `app/list` response. */
   private _apps: CodexAppMetadata[] = [];
+  /** Full plugin metadata from the last `plugin/list` response. */
+  private _plugins: CodexPluginMetadata[] = [];
   /** Project path stored for re-fetching skills on `skills/changed`. */
   private _projectPath: string | null = null;
   /** Prevent redundant completion fetch storms from repeated change notifications. */
   private _completionFetchInFlight: Promise<void> | null = null;
   private _lastCompletionEntitiesSignature: string | null = null;
   private _completionFetchCooldownUntil = 0;
+  private _launchStartedAt = 0;
 
   /** Expose skill metadata so session/websocket can access it. */
   get skills(): CodexSkillMetadata[] {
@@ -1870,6 +1873,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.lastPlanItemText = null;
     this.lastResultText = null;
     this.agentTurnTracker.reset();
+    this._skills = [];
+    this._apps = [];
+    this._plugins = [];
+    this._lastCompletionEntitiesSignature = null;
+    this._launchStartedAt = Date.now();
     this.pendingPlanCompletion = null;
     this._pendingPlanInput = null;
     this._idleWhenInteractionsClear = false;
@@ -2799,7 +2807,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         await this.continueInterruptedTurnAfterBootstrap(options);
       }
 
-      // Fetch skills/apps in background (non-blocking)
+      // Fetch completion entities in background (non-blocking).
       this._projectPath = projectPath;
       setTimeout(() => {
         if (!this.stopped) {
@@ -3110,26 +3118,6 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             setTimeout(() => resolve(null), TIMEOUT_MS),
           ),
         ]) as Promise<T | null>;
-      const skillsResult = (await Promise.race([
-        this.request("skills/list", { cwds: [projectPath] }),
-        new Promise<null>((resolve) =>
-          setTimeout(() => resolve(null), TIMEOUT_MS),
-        ),
-      ])) as { data?: Array<{ cwd: string; skills: SkillRaw[] }> } | null;
-      const appsResult = (await Promise.race([
-        this.request("app/list", {
-          cursor: null,
-          limit: 100,
-          threadId: this._threadId ?? undefined,
-          forceRefetch: false,
-        }),
-        new Promise<null>((resolve) =>
-          setTimeout(() => resolve(null), TIMEOUT_MS),
-        ),
-      ])) as { data?: AppRaw[] } | null;
-      const pluginsResult = await requestOrNull<{
-        marketplaces?: PluginMarketplaceRaw[];
-      }>("plugin/list", { cwds: [projectPath] });
       const optionalString = (value: unknown): string | undefined =>
         typeof value === "string" ? value : undefined;
       const optionalFirstString = (value: unknown): string | undefined => {
@@ -3140,13 +3128,27 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         );
       };
 
-      const skills: string[] = [];
-      const skillMetadata: CodexSkillMetadata[] = [];
-      if (skillsResult?.data) {
-        for (const entry of skillsResult.data) {
-          for (const skill of entry.skills) {
-            if (skill.enabled) {
-              skills.push(skill.name);
+      const skillsRequest = requestOrNull<{
+        data?: Array<{ cwd: string; skills: SkillRaw[] }>;
+      }>("skills/list", { cwds: [projectPath] });
+      const appsRequest = requestOrNull<{ data?: AppRaw[] }>("app/list", {
+        cursor: null,
+        limit: 100,
+        threadId: this._threadId ?? undefined,
+        forceRefetch: false,
+      });
+      const pluginsRequest = requestOrNull<{
+        marketplaces?: PluginMarketplaceRaw[];
+      }>("plugin/list", { cwds: [projectPath] });
+      let skillsReady = false;
+
+      await Promise.all([
+        skillsRequest.then((skillsResult) => {
+          if (this.stopped || skillsResult === null) return;
+          const skillMetadata: CodexSkillMetadata[] = [];
+          for (const entry of skillsResult.data ?? []) {
+            for (const skill of entry.skills) {
+              if (!skill.enabled) continue;
               skillMetadata.push({
                 name: skill.name,
                 path: skill.path,
@@ -3163,82 +3165,107 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
               });
             }
           }
-        }
-      }
-      this._skills = skillMetadata;
-      const appMetadata = (appsResult?.data ?? [])
-        .filter((app) => (app.isAccessible ?? true) && (app.isEnabled ?? true))
-        .map((app) => ({
-          id: app.id,
-          name: app.name,
-          description: app.description,
-          installUrl: app.installUrl ?? undefined,
-          isAccessible: app.isAccessible ?? true,
-          isEnabled: app.isEnabled ?? true,
-        }));
-      this._apps = appMetadata;
-      const pluginMetadata: CodexPluginMetadata[] = [];
-      for (const marketplace of pluginsResult?.marketplaces ?? []) {
-        for (const plugin of marketplace.plugins ?? []) {
-          if (!plugin.installed || !plugin.enabled) continue;
-          pluginMetadata.push({
-            id: plugin.id,
-            name: plugin.name,
-            path: `plugin://${plugin.id}`,
-            marketplaceName: marketplace.name,
-            marketplacePath: marketplace.path ?? undefined,
-            installed: plugin.installed,
-            enabled: plugin.enabled,
-            displayName: optionalString(plugin.interface?.displayName),
-            shortDescription: optionalString(
-              plugin.interface?.shortDescription,
-            ),
-            longDescription: optionalString(plugin.interface?.longDescription),
-            defaultPrompt: optionalFirstString(plugin.interface?.defaultPrompt),
-            brandColor: optionalString(plugin.interface?.brandColor),
-            composerIcon: optionalString(plugin.interface?.composerIcon),
-            composerIconUrl: optionalString(plugin.interface?.composerIconUrl),
-          });
-        }
-      }
-      const plugins = pluginMetadata.map((plugin) => plugin.name);
-      if (this.stopped) return;
-      const signature = JSON.stringify({
-        skills,
-        skillMetadata,
-        apps: appMetadata.map((app) => app.id),
-        appMetadata,
-        plugins,
-        pluginMetadata,
-      });
-      if (signature === this._lastCompletionEntitiesSignature) {
-        return;
-      }
-      this._lastCompletionEntitiesSignature = signature;
-      if (
-        skills.length > 0 ||
-        appMetadata.length > 0 ||
-        pluginMetadata.length > 0
-      ) {
-        console.log(
-          `[codex-process] completion entities loaded: ${skills.length} skills, ${appMetadata.length} apps, ${pluginMetadata.length} plugins`,
-        );
-        this.emitMessage({
-          type: "system",
-          subtype: "supported_commands",
-          skills,
-          skillMetadata,
-          apps: appMetadata.map((app) => app.id),
-          appMetadata,
-          plugins,
-          pluginMetadata,
-        });
-      }
+          this._skills = skillMetadata;
+          skillsReady = true;
+          const elapsedMs =
+            this._launchStartedAt > 0
+              ? Date.now() - this._launchStartedAt
+              : undefined;
+          console.log(
+            `[codex-process] completion skills ready: ${skillMetadata.length} skills${elapsedMs === undefined ? "" : ` (${elapsedMs}ms since start)`}`,
+          );
+          this.emitCompletionEntitiesSnapshot("skills");
+        }),
+        appsRequest.then((appsResult) => {
+          if (this.stopped || appsResult === null) return;
+          this._apps = (appsResult.data ?? [])
+            .filter(
+              (app) =>
+                (app.isAccessible ?? true) && (app.isEnabled ?? true),
+            )
+            .map((app) => ({
+              id: app.id,
+              name: app.name,
+              description: app.description,
+              installUrl: app.installUrl ?? undefined,
+              isAccessible: app.isAccessible ?? true,
+              isEnabled: app.isEnabled ?? true,
+            }));
+          if (skillsReady) this.emitCompletionEntitiesSnapshot("apps");
+        }),
+        pluginsRequest.then((pluginsResult) => {
+          if (this.stopped || pluginsResult === null) return;
+          const pluginMetadata: CodexPluginMetadata[] = [];
+          for (const marketplace of pluginsResult.marketplaces ?? []) {
+            for (const plugin of marketplace.plugins ?? []) {
+              if (!plugin.installed || !plugin.enabled) continue;
+              pluginMetadata.push({
+                id: plugin.id,
+                name: plugin.name,
+                path: `plugin://${plugin.id}`,
+                marketplaceName: marketplace.name,
+                marketplacePath: marketplace.path ?? undefined,
+                installed: plugin.installed,
+                enabled: plugin.enabled,
+                displayName: optionalString(plugin.interface?.displayName),
+                shortDescription: optionalString(
+                  plugin.interface?.shortDescription,
+                ),
+                longDescription: optionalString(
+                  plugin.interface?.longDescription,
+                ),
+                defaultPrompt: optionalFirstString(
+                  plugin.interface?.defaultPrompt,
+                ),
+                brandColor: optionalString(plugin.interface?.brandColor),
+                composerIcon: optionalString(plugin.interface?.composerIcon),
+                composerIconUrl: optionalString(
+                  plugin.interface?.composerIconUrl,
+                ),
+              });
+            }
+          }
+          this._plugins = pluginMetadata;
+          if (skillsReady) this.emitCompletionEntitiesSnapshot("plugins");
+        }),
+      ]);
     } catch (err) {
       console.log(
         `[codex-process] completion entity fetch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private emitCompletionEntitiesSnapshot(
+    source: "skills" | "apps" | "plugins",
+  ): void {
+    if (this.stopped) return;
+    const skills = this._skills.map((skill) => skill.name);
+    const apps = this._apps.map((app) => app.id);
+    const plugins = this._plugins.map((plugin) => plugin.name);
+    const signature = JSON.stringify({
+      skills,
+      skillMetadata: this._skills,
+      apps,
+      appMetadata: this._apps,
+      plugins,
+      pluginMetadata: this._plugins,
+    });
+    if (signature === this._lastCompletionEntitiesSignature) return;
+    this._lastCompletionEntitiesSignature = signature;
+    console.log(
+      `[codex-process] completion entities updated (${source}): ${skills.length} skills, ${apps.length} apps, ${plugins.length} plugins`,
+    );
+    this.emitMessage({
+      type: "system",
+      subtype: "supported_commands",
+      skills,
+      skillMetadata: this._skills,
+      apps,
+      appMetadata: this._apps,
+      plugins,
+      pluginMetadata: this._plugins,
+    });
   }
 
   private async runInputLoop(options?: CodexStartOptions): Promise<void> {
@@ -3979,10 +4006,28 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "guardianWarning": {
         const message = stringValue(params.message);
         if (!message) break;
-        if (isInformationalGuardianApproval(message)) {
+        const approval = parseGuardianApproval(message);
+        if (
+          approval?.risk === "low" &&
+          isLowRiskAllowDecision(approval.reason)
+        ) {
           console.debug(
             "[codex-process] suppressed informational guardian approval notification",
           );
+          break;
+        }
+        if (
+          approval &&
+          (approval.risk === "medium" || approval.risk === "high")
+        ) {
+          this.emitMessage({
+            type: "guardian_approval",
+            risk: approval.risk,
+            reason: approval.reason,
+            ...(approval.authorization
+              ? { authorization: approval.authorization }
+              : {}),
+          });
           break;
         }
         this.emitMessage({
@@ -5690,9 +5735,48 @@ function parseResultObject(rawResult: string): {
   }
 }
 
-function isInformationalGuardianApproval(message: string): boolean {
-  const normalized = message.trim().replace(/\s+/g, " ").toLowerCase();
-  return /^automatic approval review approved\b/.test(normalized);
+interface GuardianApproval {
+  risk: "low" | "medium" | "high";
+  reason: string;
+  authorization?: string;
+}
+
+function parseGuardianApproval(message: string): GuardianApproval | null {
+  const match = message
+    .trim()
+    .match(
+      /^automatic approval review approved\s*\(([^)]*)\)\s*:\s*([\s\S]+)$/i,
+    );
+  if (!match) return null;
+
+  const metadata = new Map<string, string>();
+  for (const field of match[1].split(",")) {
+    const separator = field.indexOf(":");
+    if (separator === -1) continue;
+    metadata.set(
+      field.slice(0, separator).trim().toLowerCase(),
+      field.slice(separator + 1).trim(),
+    );
+  }
+
+  const risk = metadata.get("risk")?.toLowerCase();
+  const reason = match[2].trim();
+  if (!reason || (risk !== "low" && risk !== "medium" && risk !== "high")) {
+    return null;
+  }
+  const authorization = metadata.get("authorization");
+  return {
+    risk,
+    reason,
+    ...(authorization ? { authorization } : {}),
+  };
+}
+
+function isLowRiskAllowDecision(reason: string): boolean {
+  const normalized = reason.trim().replace(/\s+/g, " ");
+  return /^auto-review returned a low[- ]risk allow decision\.?$/i.test(
+    normalized,
+  );
 }
 
 function normalizeAnswerValues(value: unknown): string[] {

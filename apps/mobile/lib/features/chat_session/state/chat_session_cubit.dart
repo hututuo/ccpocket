@@ -75,7 +75,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<int>? _codexModelCatalogSubscription;
   StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
   StreamSubscription<BridgeConnectionState>?
-      _desktopContinuityConnectionSubscription;
+  _desktopContinuityConnectionSubscription;
   bool _pastHistoryLoaded = false;
   bool _historyBootstrapSucceeded = false;
   bool _historyFallbackRequested = false;
@@ -168,10 +168,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   bool get supportsAdvancedGoalControl => state.advancedGoalControlSupported;
 
-  bool get bridgeSupportsCodexPermissionApplyStrategy =>
-      _bridge.bridgeCapabilities.contains(
-        codexPermissionApplyStrategyCapability,
-      );
+  bool get bridgeSupportsCodexPermissionApplyStrategy => _bridge
+      .bridgeCapabilities
+      .contains(codexPermissionApplyStrategyCapability);
 
   bool get supportsCodexPermissionApplyStrategy {
     if (!bridgeSupportsCodexPermissionApplyStrategy) {
@@ -568,8 +567,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (rawMessage.requestId == null ||
           rawMessage.requestId == _desktopContinuityRequestId) {
         _desktopContinuitySuppressedThreadId = _desktopContinuityThreadId;
-        _desktopContinuitySuppressedProjectPath =
-            _desktopContinuityProjectPath;
+        _desktopContinuitySuppressedProjectPath = _desktopContinuityProjectPath;
         _retireDesktopContinuityBinding();
       }
       return;
@@ -719,10 +717,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
   }
 
-  void _applyExternalDesktopPayload(
-    ServerMessage message, {
-    String? turnId,
-  }) {
+  void _applyExternalDesktopPayload(ServerMessage message, {String? turnId}) {
     try {
       final turnKey = turnId ?? '__unattributed_desktop_turn__';
       final handler = _desktopContinuityHandlers.putIfAbsent(
@@ -860,8 +855,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     if (snapshot == null) return;
 
-    final hadAuthoritativeSessionSnapshot =
-        _hasAuthoritativeSessionSnapshot;
+    final hadAuthoritativeSessionSnapshot = _hasAuthoritativeSessionSnapshot;
     _hasAuthoritativeSessionSnapshot = true;
     final snapshotStatus = ProcessStatus.fromString(snapshot.status);
     final threadId = snapshot.claudeSessionId?.trim();
@@ -879,8 +873,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         (state.status == ProcessStatus.starting ||
             state.status == ProcessStatus.idle ||
             _statusFromSessionSnapshot ||
-            (!hadAuthoritativeSessionSnapshot &&
-                _statusFromHistoryFallback));
+            (!hadAuthoritativeSessionSnapshot && _statusFromHistoryFallback));
     final nextStatus = shouldApplySnapshotStatus
         ? snapshotStatus
         : state.status;
@@ -1105,7 +1098,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     PermissionRequestMessage pending,
   ) => pending.usesAskUserUi
       ? approval is ApprovalAskUser && approval.toolUseId == pending.toolUseId
-      : approval is ApprovalPermission && approval.toolUseId == pending.toolUseId;
+      : approval is ApprovalPermission &&
+            approval.toolUseId == pending.toolUseId;
 
   bool _sameQueuedInput(QueuedInputItem? left, QueuedInputItem right) =>
       left != null &&
@@ -2265,8 +2259,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (originalMsg is HistoryMessage &&
         effectiveStatus != null &&
         effectiveStatus != current.status) {
-      _statusFromHistoryFallback =
-          isCodex && !_hasAuthoritativeSessionSnapshot;
+      _statusFromHistoryFallback = isCodex && !_hasAuthoritativeSessionSnapshot;
       _statusFromSessionSnapshot = false;
     }
 
@@ -2381,9 +2374,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> mirrorEntries,
     required List<ChatEntry> canonicalEntries,
   }) {
-    for (var canonicalIndex = 0;
-        canonicalIndex < canonicalEntries.length;
-        canonicalIndex++) {
+    for (
+      var canonicalIndex = 0;
+      canonicalIndex < canonicalEntries.length;
+      canonicalIndex++
+    ) {
       final canonical = canonicalEntries[canonicalIndex];
       var mirrorIndex = _indexOfEquivalentEntry(mirrorEntries, canonical);
       if (mirrorIndex == -1 && _isCanonicalAssistantEntry(canonical)) {
@@ -2450,8 +2445,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return UserChatEntry(
         canonical.text.isNotEmpty ? canonical.text : existing.text,
         sessionId: canonical.sessionId ?? existing.sessionId,
-        clientMessageId:
-            existing.clientMessageId ?? canonical.clientMessageId,
+        clientMessageId: existing.clientMessageId ?? canonical.clientMessageId,
         imageBytesList: existing.imageBytesList.isNotEmpty
             ? existing.imageBytesList
             : canonical.imageBytesList,
@@ -2543,7 +2537,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           addition,
           start: lastUserIndex + 1,
         );
-      } else if (matchIndex == -1 && _canWeakMatchAppendedEntry(addition)) {
+      }
+      if (matchIndex == -1 && _canWeakMatchAppendedEntry(addition)) {
         final lastUserIndex = next.lastIndexWhere((e) => e is UserChatEntry);
         matchIndex = _indexOfEquivalentEntry(
           next,
@@ -2570,7 +2565,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   bool _canWeakMatchAppendedEntry(ChatEntry entry) {
-    return entry is ServerChatEntry && entry.message is ResultMessage;
+    return entry is ServerChatEntry &&
+        (entry.message is ResultMessage ||
+            entry.message is GuardianApprovalMessage);
   }
 
   bool _isCanonicalAssistantEntry(ChatEntry entry) {
@@ -2579,13 +2576,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     )) {
       return messageUuid?.isNotEmpty == true;
     }
+    if (entry is ServerChatEntry &&
+        (entry.message is ResultMessage ||
+            entry.message is GuardianApprovalMessage)) {
+      return true;
+    }
     return false;
   }
 
-  bool _isProvisionalAssistantAlias(
-    ChatEntry existing,
-    ChatEntry canonical,
-  ) {
+  bool _isProvisionalAssistantAlias(ChatEntry existing, ChatEntry canonical) {
     if (existing is! ServerChatEntry || canonical is! ServerChatEntry) {
       return false;
     }
@@ -2810,6 +2809,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return ['result', subtype, stopReason, result, error].join('\u0001');
       case ErrorMessage(:final message, :final errorCode):
         return ['error', errorCode, message].join('\u0001');
+      case GuardianApprovalMessage(
+        :final risk,
+        :final reason,
+        :final authorization,
+      ):
+        return [
+          'guardian_approval',
+          risk.name,
+          authorization,
+          reason,
+        ].join('\u0001');
       case ToolUseSummaryMessage(:final summary, :final precedingToolUseIds):
         return [
           'tool_use_summary',
@@ -2880,7 +2890,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         final incomingOwner = incomingMessage.artifactMessageId;
         final sameArtifactOwner =
             existingOwner.isNotEmpty && existingOwner == incomingOwner;
-        var useIncomingContent = _assistantContentWeight(incomingContent) >=
+        var useIncomingContent =
+            _assistantContentWeight(incomingContent) >=
             _assistantContentWeight(existingContent);
         var mergedId = incomingMessage.message.id.isNotEmpty
             ? incomingMessage.message.id
@@ -2935,8 +2946,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return ServerChatEntry(
           ToolResultMessage(
             toolUseId: incomingMessage.toolUseId,
-            content: incomingMessage.content.length >=
-                    existingMessage.content.length
+            content:
+                incomingMessage.content.length >= existingMessage.content.length
                 ? incomingMessage.content
                 : existingMessage.content,
             toolName: incomingMessage.toolName ?? existingMessage.toolName,
@@ -2944,7 +2955,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               existingMessage.images,
               incomingMessage.images,
             ),
-            userMessageUuid: incomingMessage.userMessageUuid ??
+            userMessageUuid:
+                incomingMessage.userMessageUuid ??
                 existingMessage.userMessageUuid,
             artifacts: _mergeArtifacts(
               existingMessage.artifacts,
@@ -3092,7 +3104,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     Iterable<String>? mentionablePaths,
     Iterable<Map<String, String>>? additionalMentions,
   }) {
-    final explicitMentions = additionalMentions?.toList(growable: false) ??
+    final explicitMentions =
+        additionalMentions?.toList(growable: false) ??
         const <Map<String, String>>[];
     if (text.trim().isEmpty &&
         (images == null || images.isEmpty) &&
@@ -3735,14 +3748,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (_pendingPermissionRequests.isNotEmpty) {
       final next = _pendingPermissionRequests.values.first;
       final nextApproval = next.usesAskUserUi
-          ? ApprovalState.askUser(
-              toolUseId: next.toolUseId,
-              input: next.input,
-            )
-          : ApprovalState.permission(
-              toolUseId: next.toolUseId,
-              request: next,
-            );
+          ? ApprovalState.askUser(toolUseId: next.toolUseId, input: next.input)
+          : ApprovalState.permission(toolUseId: next.toolUseId, request: next);
       emit(
         state.copyWith(
           approval: nextApproval,
@@ -4131,9 +4138,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setCodexSpeed(CodexSpeed speed) {
-    if (!isCodex ||
-        speed == CodexSpeed.unknown ||
-        speed == state.codexSpeed) {
+    if (!isCodex || speed == CodexSpeed.unknown || speed == state.codexSpeed) {
       return;
     }
     logger.info('[session:$sessionId] setCodexSpeed=${speed.value}');
@@ -4482,8 +4487,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (index == -1) {
         result.add(live);
       } else {
-        result[index] = _mergeCanonicalMirrorEntry(result[index], live)
-            as UserChatEntry;
+        result[index] =
+            _mergeCanonicalMirrorEntry(result[index], live) as UserChatEntry;
       }
     }
     return List.unmodifiable(result);
@@ -4680,8 +4685,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         if (seenMentions.add(key)) mentions.add(payload);
       }
     }
-    for (final additional in
-        additionalMentions ?? const <Map<String, String>>[]) {
+    for (final additional
+        in additionalMentions ?? const <Map<String, String>>[]) {
       final name = additional['name']?.trim() ?? '';
       final mentionPath = additional['path']?.trim() ?? '';
       if (name.isEmpty || mentionPath.isEmpty) continue;

@@ -8,6 +8,7 @@ import '../utils/system_message_visibility.dart';
 import '../features/file_peek/file_path_syntax.dart';
 import 'bubbles/assistant_bubble.dart';
 import 'bubbles/error_bubble.dart';
+import 'bubbles/guardian_approval_notice.dart';
 import 'bubbles/permission_request_bubble.dart';
 import 'bubbles/result_chip.dart';
 import 'bubbles/status_chip.dart';
@@ -239,6 +240,7 @@ class ServerMessageWidget extends StatelessWidget {
                 collapseNotifier: collapseToolResults,
               ),
       final ResultMessage msg => ResultChip(message: msg, onFileTap: onFileTap),
+      final GuardianApprovalMessage msg => GuardianApprovalNotice(message: msg),
       final ErrorMessage msg => ErrorBubble(
         message: msg,
         onDismiss:

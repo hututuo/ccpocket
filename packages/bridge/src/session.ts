@@ -115,6 +115,14 @@ export interface SessionInfo {
   codexLiveHistoryUserKey?: string;
   /** Stable live assistant identity to its Codex user turn across baselines. */
   codexLiveAssistantUserKeyByIdentity?: Map<string, string>;
+  /** Monotonic revision that invalidates deltas from an older Codex baseline. */
+  codexHistoryResetRevision?: number;
+  /** Latest Codex user input, retained even when the history tail is trimmed. */
+  codexLatestUserInput?: Extract<ServerMessage, { type: "user_input" }>;
+  /** Last merged Codex snapshot, retained to preserve live event ordering. */
+  codexOrderedHistoryEntries?: HistoryEntry[];
+  /** Bridge history revision covered by codexOrderedHistoryEntries. */
+  codexOrderedHistoryRevision?: number;
   /** Whether to generate a session name after the first completed turn. */
   autoRename?: boolean;
   /** Prevents automatic rename from running more than once. */
@@ -227,7 +235,7 @@ interface SessionCreateInternalOptions {
   onReplacementFailed?: (error: Error) => void;
 }
 
-const MAX_HISTORY_PER_SESSION = 100;
+export const MAX_HISTORY_PER_SESSION = 100;
 const MAX_IDLE_SESSIONS = 30;
 
 export type GalleryImageCallback = (meta: GalleryImageMeta) => void;
@@ -330,7 +338,7 @@ export class SessionManager {
   private artifactManager: ArtifactManager | null;
   private codexQueueDrainHooks: CodexQueueDrainHooks;
 
-  /** Cache slash commands per project path for early loading on subsequent sessions. */
+  /** Cache completion entities per provider and effective cwd. */
   private commandCache = new Map<
     string,
     {
@@ -762,30 +770,32 @@ export class SessionManager {
             msg.plugins ||
             msg.pluginMetadata)
         ) {
-          this.commandCache.set(projectPath, {
+          const commandCacheKey = this.commandCacheKey(
+            effectiveProvider,
+            effectiveCwd,
+          );
+          const previousCommands = this.commandCache.get(commandCacheKey);
+          this.commandCache.set(commandCacheKey, {
             slashCommands:
-              msg.slashCommands ??
-              this.commandCache.get(projectPath)?.slashCommands ??
-              [],
-            skills:
-              msg.skills ?? this.commandCache.get(projectPath)?.skills ?? [],
+              msg.slashCommands ?? previousCommands?.slashCommands ?? [],
+            skills: msg.skills ?? previousCommands?.skills ?? [],
             skillMetadata:
               (msg.skillMetadata as
-                  Array<Record<string, unknown>> | undefined) ??
-              this.commandCache.get(projectPath)?.skillMetadata,
-            apps: msg.apps ?? this.commandCache.get(projectPath)?.apps ?? [],
+                | Array<Record<string, unknown>>
+                | undefined) ??
+              previousCommands?.skillMetadata,
+            apps: msg.apps ?? previousCommands?.apps ?? [],
             appMetadata:
               (msg.appMetadata as
-                  Array<Record<string, unknown>> | undefined) ??
-              this.commandCache.get(projectPath)?.appMetadata,
-            plugins:
-                msg.plugins ??
-                this.commandCache.get(projectPath)?.plugins ??
-                [],
+                | Array<Record<string, unknown>>
+                | undefined) ??
+              previousCommands?.appMetadata,
+            plugins: msg.plugins ?? previousCommands?.plugins ?? [],
             pluginMetadata:
               (msg.pluginMetadata as
-                  Array<Record<string, unknown>> | undefined) ??
-              this.commandCache.get(projectPath)?.pluginMetadata,
+                | Array<Record<string, unknown>>
+                | undefined) ??
+              previousCommands?.pluginMetadata,
           });
         }
 
@@ -1380,6 +1390,9 @@ export class SessionManager {
     session.historyRevision = entry.seq;
     session.history.push(msg);
     session.historyEntries.push(entry);
+    if (session.provider === "codex" && msg.type === "user_input") {
+      session.codexLatestUserInput = msg;
+    }
     this.trimHistory(session);
     return entry;
   }
@@ -1980,7 +1993,10 @@ export class SessionManager {
     } as ServerMessage;
   }
 
-  getCachedCommands(projectPath: string):
+  getCachedCommands(
+    provider: Provider,
+    effectiveCwd: string,
+  ):
     | {
         slashCommands: string[];
         skills: string[];
@@ -1991,7 +2007,11 @@ export class SessionManager {
         pluginMetadata?: Array<Record<string, unknown>>;
       }
     | undefined {
-    return this.commandCache.get(projectPath);
+    return this.commandCache.get(this.commandCacheKey(provider, effectiveCwd));
+  }
+
+  private commandCacheKey(provider: Provider, effectiveCwd: string): string {
+    return `${provider}\u0000${effectiveCwd}`;
   }
 
   /** Get worktree store for external use (e.g., resume_session in websocket.ts). */

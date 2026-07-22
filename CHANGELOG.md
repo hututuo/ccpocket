@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.108.0] - 2026-07-21
+
+### Added
+- Show medium- and high-risk Codex Guardian auto-approvals as quiet, expandable activity notices with localized risk and authorization details.
+
+### Changed
+- Require Bridge 1.69.0 for structured Guardian approval notices and legacy-client compatibility.
+
+### Fixed
+- Strip text-position suffixes from file URI links before opening files in File Peek.
+
+## [1.107.2] - 2026-07-21
+
+### Changed
+- Require Bridge 1.68.1 for faster Codex skill completion loading and provider-specific completion caching.
+
+### Fixed
+- Refresh active slash, skill, app, plugin, and file completions as soon as new candidates arrive without requiring another keystroke.
+- Clear removed completion candidates when empty snapshots are received or restored from session history.
+
 ## [1.107.1] - 2026-07-19
 
 ### Changed

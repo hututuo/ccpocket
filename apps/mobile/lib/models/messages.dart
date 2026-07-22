@@ -854,8 +854,7 @@ class ArtifactRef {
     'source': source,
     if (textContentIndex != null) 'textContentIndex': textContentIndex,
     if (originalHref != null) 'originalHref': originalHref,
-    if (projectRelativePath != null)
-      'projectRelativePath': projectRelativePath,
+    if (projectRelativePath != null) 'projectRelativePath': projectRelativePath,
     if (line != null) 'line': line,
     if (column != null) 'column': column,
   };
@@ -1018,6 +1017,11 @@ sealed class ServerMessage {
         outputTokens: json['outputTokens'] as int?,
         toolCalls: json['toolCalls'] as int?,
         fileEdits: json['fileEdits'] as int?,
+      ),
+      'guardian_approval' => GuardianApprovalMessage(
+        risk: GuardianApprovalRisk.fromString(json['risk'] as String?),
+        reason: json['reason'] as String? ?? '',
+        authorization: json['authorization'] as String?,
       ),
       'error' => ErrorMessage(
         message: json['message'] as String,
@@ -1859,6 +1863,27 @@ class ErrorMessage implements ServerMessage {
     this.sessionId,
     this.permissionChangeId,
     this.goalChangeId,
+  });
+}
+
+enum GuardianApprovalRisk {
+  medium,
+  high;
+
+  static GuardianApprovalRisk fromString(String? value) => switch (value) {
+    'high' => GuardianApprovalRisk.high,
+    _ => GuardianApprovalRisk.medium,
+  };
+}
+
+class GuardianApprovalMessage implements ServerMessage {
+  final GuardianApprovalRisk risk;
+  final String reason;
+  final String? authorization;
+  const GuardianApprovalMessage({
+    required this.risk,
+    required this.reason,
+    this.authorization,
   });
 }
 
@@ -4238,6 +4263,7 @@ class ClientMessage {
           'conversation_queue',
           'goal_state',
           'goal_state_raw_status',
+          'guardian_approval',
           'history_delta',
           'history_snapshot',
           'git_status_result',
@@ -4549,10 +4575,11 @@ class ClientMessage {
   factory ClientMessage.approveLiveOnly(
     String id, {
     required String sessionId,
-  }) => ClientMessage._(
-    <String, dynamic>{'type': 'approve', 'id': id, 'sessionId': sessionId},
-    delivery: ClientMessageDelivery.ephemeral,
-  );
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'approve',
+    'id': id,
+    'sessionId': sessionId,
+  }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.approveAlways(String id, {String? sessionId}) =>
       ClientMessage._(<String, dynamic>{
@@ -4752,8 +4779,13 @@ class ClientMessage {
     required String filePath,
     int? maxLines,
   }) {
-    if ([requestId, sessionId, messageId, artifactId, filePath]
-        .any((value) => value.trim().isEmpty)) {
+    if ([
+      requestId,
+      sessionId,
+      messageId,
+      artifactId,
+      filePath,
+    ].any((value) => value.trim().isEmpty)) {
       throw ArgumentError('Artifact source request is incomplete.');
     }
     return ClientMessage._(<String, dynamic>{

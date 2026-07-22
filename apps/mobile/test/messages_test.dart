@@ -178,6 +178,21 @@ void main() {
     );
   });
 
+  test('parses structured Guardian approval notices', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'guardian_approval',
+              'risk': 'high',
+              'reason': 'The command changes files outside the workspace.',
+              'authorization': 'high',
+            })
+            as GuardianApprovalMessage;
+
+    expect(message.risk, GuardianApprovalRisk.high);
+    expect(message.reason, 'The command changes files outside the workspace.');
+    expect(message.authorization, 'high');
+  });
+
   test('ReasoningEffort preserves model-advertised future values', () {
     final effort = reasoningEffortByValue('future-tier');
 
@@ -492,6 +507,7 @@ void main() {
         'conversation_queue',
         'goal_state',
         'goal_state_raw_status',
+        'guardian_approval',
         'history_delta',
         'history_snapshot',
         'git_status_result',
@@ -1457,44 +1473,50 @@ void main() {
     });
 
     test('parses correlated archived session lifecycle results', () {
-      final list = ServerMessage.fromJson({
-        'type': 'archived_sessions_result',
-        'requestId': 'list-1',
-        'success': true,
-        'truncated': true,
-        'sessions': [
-          {
-            'sessionId': 'thread-1',
-            'provider': 'codex',
-            'projectPath': '/project',
-            'archivedAt': '2026-07-18T00:00:00Z',
-            'name': 'Named thread',
-          },
-        ],
-      }) as ArchivedSessionsResultMessage;
+      final list =
+          ServerMessage.fromJson({
+                'type': 'archived_sessions_result',
+                'requestId': 'list-1',
+                'success': true,
+                'truncated': true,
+                'sessions': [
+                  {
+                    'sessionId': 'thread-1',
+                    'provider': 'codex',
+                    'projectPath': '/project',
+                    'archivedAt': '2026-07-18T00:00:00Z',
+                    'name': 'Named thread',
+                  },
+                ],
+              })
+              as ArchivedSessionsResultMessage;
       expect(list.requestId, 'list-1');
       expect(list.truncated, isTrue);
       expect(list.sessions.single.displayTitle, 'Named thread');
 
-      final result = ServerMessage.fromJson({
-        'type': 'delete_session_result',
-        'requestId': 'delete-1',
-        'sessionId': 'thread-1',
-        'success': false,
-        'errorCode': 'session_active',
-      }) as SessionLifecycleResultMessage;
+      final result =
+          ServerMessage.fromJson({
+                'type': 'delete_session_result',
+                'requestId': 'delete-1',
+                'sessionId': 'thread-1',
+                'success': false,
+                'errorCode': 'session_active',
+              })
+              as SessionLifecycleResultMessage;
       expect(result.type, 'delete_session_result');
       expect(result.requestId, 'delete-1');
       expect(result.sessionId, 'thread-1');
       expect(result.errorCode, 'session_active');
 
-      final archiveResult = ServerMessage.fromJson({
-        'type': 'archive_result',
-        'requestId': 'archive-1',
-        'sessionId': 'shared-id',
-        'provider': 'codex',
-        'success': true,
-      }) as ArchiveResultMessage;
+      final archiveResult =
+          ServerMessage.fromJson({
+                'type': 'archive_result',
+                'requestId': 'archive-1',
+                'sessionId': 'shared-id',
+                'provider': 'codex',
+                'success': true,
+              })
+              as ArchiveResultMessage;
       expect(archiveResult.requestId, 'archive-1');
       expect(archiveResult.provider, 'codex');
       expect(
@@ -1512,7 +1534,10 @@ void main() {
         name: 'Named thread',
       );
       expect(archive.delivery, ClientMessageDelivery.ephemeral);
-      expect(jsonDecode(archive.toJson()), containsPair('requestId', 'archive-1'));
+      expect(
+        jsonDecode(archive.toJson()),
+        containsPair('requestId', 'archive-1'),
+      );
 
       final unarchive = ClientMessage.unarchiveSession(
         requestId: 'restore-1',

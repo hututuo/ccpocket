@@ -625,6 +625,12 @@ export type ServerMessage =
       fileEdits?: number;
     }
   | {
+      type: "guardian_approval";
+      risk: "medium" | "high";
+      reason: string;
+      authorization?: string;
+    }
+  | {
       type: "error";
       message: string;
       errorCode?: string;

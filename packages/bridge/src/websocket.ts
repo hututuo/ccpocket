@@ -19,6 +19,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import {
   artifactCandidateRootsForSession,
   SessionManager,
+  MAX_HISTORY_PER_SESSION,
   type HistoryEntry,
   type SessionInfo,
   type WorktreeOptions,
@@ -504,9 +505,14 @@ const CODEX_USER_TURN_UUID_RE = /^codex:user-turn:(\d+)$/;
 const OPT_IN_SERVER_MESSAGES = new Set<string>([
   "conversation_queue",
   "goal_state",
+  "guardian_approval",
   "prompt_history_status",
   "artifact_resolved",
 ]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function parseCodexUserTurnOrdinal(uuid: string | undefined): number | null {
   if (!uuid) return null;
@@ -2173,6 +2179,10 @@ export class BridgeWebSocketServer {
         session.codexSettings?.approvalPolicy ?? process.approvalPolicy,
     });
     const planMode = process.collaborationMode === "plan";
+    const cached = this.sessionManager.getCachedCommands(
+      "codex",
+      session.worktreePath ?? session.projectPath,
+    );
     this.send(
       ws,
       this.buildSessionCreatedMessage({
@@ -2190,7 +2200,26 @@ export class BridgeWebSocketServer {
         ),
         executionMode,
         planMode,
+        approvalsReviewer: session.codexSettings?.approvalsReviewer,
+        codexPermissionsMode: session.codexSettings?.codexPermissionsMode,
         providerSessionId: threadId,
+        ...(cached
+          ? {
+              slashCommands: cached.slashCommands,
+              skills: cached.skills,
+              ...(cached.skillMetadata
+                ? { skillMetadata: cached.skillMetadata }
+                : {}),
+              apps: cached.apps,
+              ...(cached.appMetadata
+                ? { appMetadata: cached.appMetadata }
+                : {}),
+              plugins: cached.plugins,
+              ...(cached.pluginMetadata
+                ? { pluginMetadata: cached.pluginMetadata }
+                : {}),
+            }
+          : {}),
       }),
     );
   }
@@ -2219,8 +2248,12 @@ export class BridgeWebSocketServer {
       seq: index + 1,
       message,
     }));
-    this.applyCodexCanonicalHistoryBaseline(session, history, entries);
-    return [...entries, ...session.historyEntries];
+    this.applyCodexCanonicalHistoryBaseline(
+      session,
+      history,
+      entries,
+    );
+    return entries;
   }
 
   private applyCodexCanonicalHistoryBaseline(
@@ -2228,16 +2261,38 @@ export class BridgeWebSocketServer {
     history: SessionHistoryMessage[],
     canonicalEntries: HistoryEntry[],
   ): void {
-    const liveEntries = session.historyEntries.map((entry) => ({
+    const orderedRevision = session.codexOrderedHistoryRevision ?? 0;
+    const liveEntries: HistoryEntry[] = [
+      ...(session.codexOrderedHistoryEntries ?? []),
+      ...session.historyEntries.filter((entry) => entry.seq > orderedRevision),
+    ].map((entry) => ({
       seq: entry.seq,
       message: entry.message,
     }));
-    const canonicalKeys = new Set<string>();
+    const latestUserInput = session.codexLatestUserInput;
+    const latestUserKeys = latestUserInput
+      ? this.codexHistoryMessageIdentityKeys(latestUserInput)
+      : [];
+    if (
+      latestUserInput &&
+      !liveEntries.some(
+        (entry) =>
+          entry.message === latestUserInput ||
+          (entry.message.type === "user_input" &&
+            this.codexHistoryMessageIdentityKeys(entry.message).some((key) =>
+              latestUserKeys.includes(key),
+            )),
+      )
+    ) {
+      const historySeq = (latestUserInput as Record<string, unknown>)
+        .historySeq;
+      liveEntries.unshift({
+        seq: typeof historySeq === "number" ? historySeq : 0,
+        message: latestUserInput,
+      });
+    }
     const canonicalUserUuids = new Set<string>();
     for (const entry of canonicalEntries) {
-      for (const key of this.codexHistoryMessageIdentityKeys(entry.message)) {
-        canonicalKeys.add(key);
-      }
       const message = entry.message;
       if (message.type === "user_input" && message.userMessageUuid) {
         canonicalUserUuids.add(message.userMessageUuid);
@@ -2246,87 +2301,92 @@ export class BridgeWebSocketServer {
 
     this.seedCodexCanonicalUserTurnUuidMap(session, history);
 
-    let nextSeq = canonicalEntries.at(-1)?.seq ?? 0;
-    const canonicalAssistantContentsByUser = new Map<string, string[]>();
-    let canonicalUserKey: string | null = null;
-    for (const entry of canonicalEntries) {
-      if (entry.message.type === "user_input") {
-        canonicalUserKey = entry.message.userMessageUuid
-          ? `user:${entry.message.userMessageUuid}`
-          : null;
+    const merged: Array<{ message: ServerMessage; retained: boolean }> = [];
+    let canonicalCursor = 0;
+    let hasCanonicalAnchor = false;
+    let canMatchAssistantContent = false;
+    const appendCanonicalUntil = (endExclusive: number): void => {
+      while (canonicalCursor < endExclusive) {
+        const message = canonicalEntries[canonicalCursor].message;
+        merged.push({ message, retained: false });
+        canonicalCursor += 1;
+        hasCanonicalAnchor = true;
+        if (message.type === "user_input") {
+          canMatchAssistantContent = true;
+        }
+      }
+    };
+
+    for (let liveIndex = 0; liveIndex < liveEntries.length; liveIndex++) {
+      const liveEntry = liveEntries[liveIndex];
+      const matchIndex = this.findCodexCanonicalMatchIndex(
+        canonicalEntries,
+        liveEntry.message,
+        canonicalCursor,
+        canMatchAssistantContent,
+      );
+      if (matchIndex === -1) {
+        let nextMatchIndex = -1;
+        for (
+          let nextLiveIndex = liveIndex + 1;
+          nextLiveIndex < liveEntries.length;
+          nextLiveIndex++
+        ) {
+          nextMatchIndex = this.findCodexCanonicalMatchIndex(
+            canonicalEntries,
+            liveEntries[nextLiveIndex].message,
+            canonicalCursor,
+            canMatchAssistantContent,
+          );
+          if (nextMatchIndex !== -1) break;
+        }
+        if (nextMatchIndex !== -1) {
+          appendCanonicalUntil(nextMatchIndex);
+        } else if (!hasCanonicalAnchor) {
+          appendCanonicalUntil(canonicalEntries.length);
+        }
+        if (this.shouldRetainCodexLiveHistoryMessage(liveEntry.message)) {
+          merged.push({ message: liveEntry.message, retained: true });
+        }
         continue;
       }
-      if (entry.message.type !== "assistant" || !canonicalUserKey) continue;
-      const contents = canonicalAssistantContentsByUser.get(canonicalUserKey);
-      const contentKey = this.historyValueKey(entry.message.message.content);
-      if (contents) contents.push(contentKey);
-      else canonicalAssistantContentsByUser.set(canonicalUserKey, [contentKey]);
+
+      appendCanonicalUntil(matchIndex + 1);
     }
-    const remainingCanonicalAssistantContentsByUser = new Map(
-      [...canonicalAssistantContentsByUser.entries()].map(([key, contents]) => [
-        key,
-        [...contents],
-      ]),
-    );
-    let liveUserKey = canonicalUserKey ?? session.codexLiveHistoryUserKey ?? null;
-    const previousAssistantUserKeys =
-      session.codexLiveAssistantUserKeyByIdentity ?? new Map<string, string>();
-    const retainedAssistantUserKeys = new Map<string, string>();
+    appendCanonicalUntil(canonicalEntries.length);
+
     const retainedMessages: ServerMessage[] = [];
     const retainedEntries: HistoryEntry[] = [];
-    for (const entry of liveEntries) {
-      if (!this.shouldRetainCodexLiveHistoryMessage(entry.message)) continue;
-      const keys = this.codexHistoryMessageIdentityKeys(entry.message);
-      const matchesCanonical = keys.some((key) => canonicalKeys.has(key));
-      if (entry.message.type === "user_input") {
-        const userKey = entry.message.userMessageUuid
-          ? `user:${entry.message.userMessageUuid}`
-          : null;
-        if (userKey) liveUserKey = userKey;
+    let canonicalRevision = 0;
+    const previousRevision = session.historyRevision;
+    const requiresNewBaselineRevision = previousRevision > 0;
+    const targetRevision = requiresNewBaselineRevision
+      ? Math.max(merged.length, previousRevision + 1)
+      : merged.length;
+    const sequenceOffset = targetRevision - merged.length;
+    const mergedEntries = merged.map(({ message, retained }, index) => {
+      const seq = sequenceOffset + index + 1;
+      if (retained) {
+        (message as Record<string, unknown>).historySeq = seq;
+        retainedMessages.push(message);
+        retainedEntries.push({ seq, message });
+      } else {
+        canonicalRevision = seq;
       }
-      if (entry.message.type === "assistant") {
-        const assistantIdentity = keys.find((key) =>
-          key.startsWith("assistant:"),
-        );
-        const assistantUserKey =
-          (assistantIdentity
-            ? previousAssistantUserKeys.get(assistantIdentity)
-            : undefined) ?? liveUserKey;
-        const pendingCanonicalAssistantContents = assistantUserKey
-          ? remainingCanonicalAssistantContentsByUser.get(assistantUserKey) ?? []
-          : [];
-        const contentKey = this.historyValueKey(entry.message.message.content);
-        const contentIndex =
-          pendingCanonicalAssistantContents.indexOf(contentKey);
-        if (matchesCanonical) {
-          if (contentIndex !== -1) {
-            pendingCanonicalAssistantContents.splice(contentIndex, 1);
-          }
-          continue;
-        }
-        const matchesCanonicalTurnAssistant = contentIndex !== -1;
-        if (matchesCanonicalTurnAssistant) {
-          pendingCanonicalAssistantContents.splice(contentIndex, 1);
-        }
-        if (matchesCanonicalTurnAssistant) continue;
-        if (assistantIdentity && assistantUserKey) {
-          retainedAssistantUserKeys.set(assistantIdentity, assistantUserKey);
-        }
-      }
-      if (matchesCanonical) continue;
-      const seq = ++nextSeq;
-      (entry.message as Record<string, unknown>).historySeq = seq;
-      retainedMessages.push(entry.message);
-      retainedEntries.push({ seq, message: entry.message });
-    }
+      return { seq, message };
+    });
+    canonicalEntries.splice(0, canonicalEntries.length, ...mergedEntries);
+
+    session.codexOrderedHistoryEntries =
+      this.buildCodexOrderedHistoryWindow(mergedEntries);
+    session.codexOrderedHistoryRevision = targetRevision;
 
     session.pastMessages = history;
     session.history = retainedMessages;
     session.historyEntries = retainedEntries;
-    session.historyRevision = nextSeq;
-    session.codexCanonicalHistoryRevision = canonicalEntries.at(-1)?.seq ?? 0;
-    session.codexLiveHistoryUserKey = liveUserKey ?? undefined;
-    session.codexLiveAssistantUserKeyByIdentity = retainedAssistantUserKeys;
+    session.historyRevision = targetRevision;
+    session.codexCanonicalHistoryRevision = canonicalRevision;
+    session.codexHistoryResetRevision = targetRevision;
     session.historyLowWatermark =
       retainedEntries[0]?.seq ?? session.historyRevision + 1;
 
@@ -2342,6 +2402,66 @@ export class BridgeWebSocketServer {
         if (!stillLive) session.pendingCodexUserEchoUuids.delete(uuid);
       }
     }
+  }
+
+  private buildCodexOrderedHistoryWindow(
+    entries: HistoryEntry[],
+  ): HistoryEntry[] {
+    if (entries.length <= MAX_HISTORY_PER_SESSION) {
+      return entries.map((entry) => ({
+        seq: entry.seq,
+        message: entry.message,
+      }));
+    }
+
+    const tail = entries.slice(-MAX_HISTORY_PER_SESSION);
+    if (tail.some((entry) => entry.message.type === "user_input")) {
+      return tail;
+    }
+
+    let latestUser: HistoryEntry | undefined;
+    for (let index = entries.length - 1; index >= 0; index--) {
+      if (entries[index].message.type === "user_input") {
+        latestUser = entries[index];
+        break;
+      }
+    }
+    return latestUser
+      ? [latestUser, ...entries.slice(-(MAX_HISTORY_PER_SESSION - 1))]
+      : tail;
+  }
+
+  private findCodexCanonicalMatchIndex(
+    canonicalEntries: HistoryEntry[],
+    liveMessage: ServerMessage,
+    start: number,
+    allowAssistantContentMatch: boolean,
+  ): number {
+    const liveKeys = this.codexHistoryMessageIdentityKeys(liveMessage);
+    if (liveKeys.length > 0) {
+      for (let index = start; index < canonicalEntries.length; index++) {
+        const canonicalKeys = this.codexHistoryMessageIdentityKeys(
+          canonicalEntries[index].message,
+        );
+        if (liveKeys.some((key) => canonicalKeys.includes(key))) return index;
+      }
+    }
+
+    if (!allowAssistantContentMatch || liveMessage.type !== "assistant") {
+      return -1;
+    }
+    const liveContent = this.historyValueKey(liveMessage.message.content);
+    for (let index = start; index < canonicalEntries.length; index++) {
+      const canonicalMessage = canonicalEntries[index].message;
+      if (canonicalMessage.type === "user_input") break;
+      if (
+        canonicalMessage.type === "assistant" &&
+        this.historyValueKey(canonicalMessage.message.content) === liveContent
+      ) {
+        return index;
+      }
+    }
+    return -1;
   }
 
   private seedCodexCanonicalUserTurnUuidMap(
@@ -2430,8 +2550,8 @@ export class BridgeWebSocketServer {
       this.send(ws, {
         type: "history_snapshot",
         sessionId,
-        fromSeq: entries[0]?.seq ?? 1,
-        toSeq: entries.at(-1)?.seq ?? 0,
+        fromSeq: entries[0]?.seq ?? session.historyRevision + 1,
+        toSeq: session.historyRevision,
         messages: entries,
         status: session.status,
         reason: "reset",
@@ -2494,8 +2614,10 @@ export class BridgeWebSocketServer {
     resultKind: "delta" | "snapshot",
   ): boolean {
     if (!this.codexThreadIdForSession(session)) return false;
-    if (typeof session.codexCanonicalHistoryRevision !== "number") return true;
-    if (sinceSeq < session.codexCanonicalHistoryRevision) return true;
+    const resetRevision = session.codexHistoryResetRevision ??
+      session.codexCanonicalHistoryRevision;
+    if (typeof resetRevision !== "number") return true;
+    if (sinceSeq < resetRevision) return true;
     return resultKind === "snapshot";
   }
 
@@ -3251,10 +3373,6 @@ export class BridgeWebSocketServer {
             );
             break;
           }
-          const cached =
-            provider === "claude"
-              ? this.sessionManager.getCachedCommands(projectPath)
-              : undefined;
           const {
             sessionId,
             permissionMode: effectivePermissionMode,
@@ -3337,6 +3455,10 @@ export class BridgeWebSocketServer {
                   usedFallback: false,
                 };
           const createdSession = this.sessionManager.get(sessionId);
+          const cached = this.sessionManager.getCachedCommands(
+            provider,
+            createdSession?.worktreePath ?? projectPath,
+          );
 
           // Load saved session name from CLI storage (for resumed sessions)
           void this.loadAndSetSessionName(
@@ -6283,7 +6405,6 @@ export class BridgeWebSocketServer {
         }
 
         const claudeSessionId = sessionRefId;
-        const cached = this.sessionManager.getCachedCommands(resumeProjectPath);
         let pendingResumes = this.pendingClaudeResumeInputs.get(ws);
         if (!pendingResumes) {
           pendingResumes = new Map();
@@ -6351,6 +6472,10 @@ export class BridgeWebSocketServer {
               worktreeOptions: worktreeOpts,
             });
             const createdSession = this.sessionManager.get(sessionId);
+            const cached = this.sessionManager.getCachedCommands(
+              "claude",
+              createdSession?.worktreePath ?? resumeProjectPath,
+            );
             const finishResume = () => {
               this.send(ws, {
                 ...this.buildSessionCreatedMessage({
@@ -8509,12 +8634,19 @@ export class BridgeWebSocketServer {
     msg: ServerMessage,
     exclude?: WebSocket,
   ): void {
-    const data = JSON.stringify({ ...msg, sessionId });
     for (const client of this.wss.clients) {
       if (client === exclude) continue;
       if (client.readyState === WebSocket.OPEN) {
-        if (!this.shouldSendToClient(client, msg)) continue;
-        client.send(data);
+        const outboundMsg = {
+          ...(msg as unknown as Record<string, unknown>),
+          sessionId,
+        };
+        const compatibleMsg = this.prepareServerMessageForClient(
+          client,
+          outboundMsg,
+        );
+        if (!compatibleMsg) continue;
+        client.send(JSON.stringify(compatibleMsg));
       }
     }
   }
@@ -9505,13 +9637,42 @@ export class BridgeWebSocketServer {
   }
 
   private broadcast(msg: Record<string, unknown>): void {
-    const data = JSON.stringify(msg);
     for (const client of this.wss.clients) {
       if (client.readyState === WebSocket.OPEN) {
-        if (!this.shouldSendToClient(client, msg)) continue;
-        client.send(data);
+        const compatibleMsg = this.prepareServerMessageForClient(client, msg);
+        if (!compatibleMsg) continue;
+        client.send(JSON.stringify(compatibleMsg));
       }
     }
+  }
+
+  private prepareServerMessageForClient(
+    ws: WebSocket,
+    msg: ServerMessage | Record<string, unknown>,
+  ): ServerMessage | Record<string, unknown> | null {
+    if (!this.shouldSendToClient(ws, msg)) return null;
+    if (!("messages" in msg) || !Array.isArray(msg.messages)) return msg;
+    const messages = msg.messages as unknown[];
+
+    if (msg.type === "history") {
+      return {
+        ...(msg as unknown as Record<string, unknown>),
+        messages: messages.filter(
+          (message) =>
+            isRecord(message) && this.shouldSendToClient(ws, message),
+        ),
+      };
+    }
+    if (msg.type === "history_delta" || msg.type === "history_snapshot") {
+      return {
+        ...(msg as unknown as Record<string, unknown>),
+        messages: messages.filter((entry) => {
+          if (!isRecord(entry) || !isRecord(entry.message)) return true;
+          return this.shouldSendToClient(ws, entry.message);
+        }),
+      };
+    }
+    return msg;
   }
 
   private shouldSendToClient(
@@ -9571,10 +9732,12 @@ export class BridgeWebSocketServer {
     session: SessionInfo,
     baseSeq: number,
   ): boolean {
+    const codexResetRevision = session.codexHistoryResetRevision ??
+      session.codexCanonicalHistoryRevision;
     if (
       session.provider === "codex" &&
-      typeof session.codexCanonicalHistoryRevision === "number" &&
-      baseSeq < session.codexCanonicalHistoryRevision
+      typeof codexResetRevision === "number" &&
+      baseSeq < codexResetRevision
     ) {
       return true;
     }
@@ -9650,7 +9813,10 @@ export class BridgeWebSocketServer {
   ): void {
     // Restore command metadata when the original init/supported_commands event
     // has fallen out of the bounded in-memory history.
-    const cached = this.sessionManager.getCachedCommands(session.projectPath);
+    const cached = this.sessionManager.getCachedCommands(
+      session.provider,
+      session.worktreePath ?? session.projectPath,
+    );
     if (
       !cached ||
       (cached.slashCommands.length === 0 &&
@@ -9691,18 +9857,19 @@ export class BridgeWebSocketServer {
     ws: WebSocket,
     msg: ServerMessage | Record<string, unknown>,
   ): void {
-    if (!this.shouldSendToClient(ws, msg)) return;
-    const sessionId = this.extractSessionIdFromServerMessage(msg);
+    const compatibleMsg = this.prepareServerMessageForClient(ws, msg);
+    if (!compatibleMsg) return;
+    const sessionId = this.extractSessionIdFromServerMessage(compatibleMsg);
     if (sessionId && this.sessionManager.get(sessionId)) {
       this.recordDebugEvent(sessionId, {
         direction: "outgoing",
         channel: "ws",
-        type: String(msg.type ?? "unknown"),
-        detail: this.summarizeOutboundMessage(msg),
+        type: String(compatibleMsg.type ?? "unknown"),
+        detail: this.summarizeOutboundMessage(compatibleMsg),
       });
     }
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
+      ws.send(JSON.stringify(compatibleMsg));
     }
   }
 

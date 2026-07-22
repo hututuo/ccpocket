@@ -91,6 +91,25 @@ void main() {
     });
   });
 
+  group('GuardianApprovalMessage handling', () {
+    test('adds the dedicated notice without warning side effects', () {
+      const message = GuardianApprovalMessage(
+        risk: GuardianApprovalRisk.medium,
+        reason: 'Writes build files outside the workspace.',
+        authorization: 'medium',
+      );
+
+      final update = handler.handle(message, isBackground: false);
+
+      expect(update.entriesToAdd, hasLength(1));
+      expect(
+        (update.entriesToAdd.single as ServerChatEntry).message,
+        same(message),
+      );
+      expect(update.sideEffects, isEmpty);
+    });
+  });
+
   group('ThinkingDelta handling', () {
     test('accumulates thinking text', () {
       handler.handle(
@@ -1111,6 +1130,62 @@ void main() {
       expect(update.slashCommands!.length, 3);
     });
 
+    test(
+      'latest empty supported_commands clears cached history completions',
+      () {
+        final update = handler.handle(
+          const HistoryMessage(
+            messages: [
+              SystemMessage(
+                subtype: 'session_created',
+                provider: 'codex',
+                skills: ['removed-skill'],
+                skillMetadata: [
+                  CodexSkillMetadata(
+                    name: 'removed-skill',
+                    path: '/tmp/removed-skill/SKILL.md',
+                    description: 'Removed skill',
+                  ),
+                ],
+              ),
+              SystemMessage(subtype: 'supported_commands', provider: 'codex'),
+            ],
+          ),
+          isBackground: false,
+        );
+
+        expect(update.slashCommands, isEmpty);
+      },
+    );
+
+    test('restores plugin-only supported_commands from history', () {
+      final update = handler.handle(
+        const HistoryMessage(
+          messages: [
+            SystemMessage(
+              subtype: 'supported_commands',
+              provider: 'codex',
+              plugins: ['sample'],
+              pluginMetadata: [
+                CodexPluginMetadata(
+                  id: 'sample@test',
+                  name: 'sample',
+                  path: 'plugin://sample@test',
+                  marketplaceName: 'test',
+                ),
+              ],
+            ),
+          ],
+        ),
+        isBackground: false,
+      );
+
+      expect(
+        update.slashCommands?.map((command) => command.command),
+        contains('@sample'),
+      );
+    });
+
     test('restores slash commands alongside pending state', () {
       final update = handler.handle(
         HistoryMessage(
@@ -1239,12 +1314,12 @@ void main() {
       expect(update.entriesToAdd, isEmpty);
     });
 
-    test('supported_commands with empty list does not set commands', () {
+    test('supported_commands with empty list clears commands', () {
       final update = handler.handle(
         const SystemMessage(subtype: 'supported_commands'),
         isBackground: false,
       );
-      expect(update.slashCommands, isNull);
+      expect(update.slashCommands, isEmpty);
       expect(update.entriesToAdd, isEmpty);
     });
   });

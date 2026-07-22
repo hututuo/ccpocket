@@ -2,10 +2,31 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
-## [1.68.0-compat.1] - 2026-07-21
+## [1.69.0-compat.1] - 2026-07-22
 
 ### Changed
-- Merge official Bridge 1.68.0 while preserving the local artifact, file-transfer, file-browser, session-mirror, Side Chat, and Desktop-continuity modules.
+- Merge official Bridge 1.69.0 while preserving the local artifact, file-transfer, file-browser, session-mirror, Side Chat, Desktop-continuity, Fork-lineage, and Mobile-host capability modules.
+
+## [1.69.0] - 2026-07-21
+
+### Added
+- Emit structured Codex Guardian approval notices for medium- and high-risk auto-approved actions, with client capability negotiation and legacy history filtering.
+
+## [1.68.2] - 2026-07-21
+
+### Fixed
+- Preserve live Codex subagent tool logs before the final assistant response when canonical thread snapshots omit subagent activity, including compacted and multi-client history synchronization.
+
+## [1.68.1] - 2026-07-21
+
+### Changed
+- Reduce Codex skill-completion latency by reusing provider- and working-directory-scoped completion metadata and fetching skills, apps, and plugins in parallel with skills prioritized.
+- Log the elapsed time from session start until completion metadata becomes available.
+
+### Fixed
+- Propagate empty completion snapshots so removed skills, apps, and plugins do not remain cached.
+
+## [1.68.0] - 2026-07-20
 
 ### Added
 - Support configuring the Codex model and reasoning effort used for session auto-rename and commit-message assistance, including persisted launchd and systemd service settings.

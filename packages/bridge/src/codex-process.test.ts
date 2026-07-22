@@ -4200,21 +4200,64 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
-  it("suppresses approved guardian notifications regardless of risk", () => {
+  it("suppresses low-risk guardian allow decisions", () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
     proc.on("message", (message) => messages.push(message));
 
     (proc as any).handleNotification("guardianWarning", {
       message:
-        "Automatic approval review approved (risk: low, authorization: unknown):\nAuto-review returned a low-risk allow decision.",
+        "Automatic approval review approved (risk: low, authorization: unknown):\nAuto-review returned a\n  low-risk   allow decision.",
     });
-    (proc as any).handleNotification("guardianWarning", {
-      message:
-        "Automatic approval review approved (risk: medium, authorization: medium):\nLaunching the Flutter app on the local iOS simulator is a bounded, reversible verification step for the user-requested UI fix, even though it writes build/cache files outside the workspace and starts a long-running local process.",
-    });
-
     expect(messages).toEqual([]);
+    proc.stop();
+  });
+
+  it.each([
+    [
+      "medium",
+      "medium",
+      "Launching the Flutter app writes build files outside the workspace.",
+    ],
+    [
+      "high",
+      "high",
+      "Running this command can change files outside the workspace.",
+    ],
+  ] as const)(
+    "surfaces %s-risk guardian approvals as dedicated notices",
+    (risk, authorization, reason) => {
+      const proc = new CodexProcess("linux");
+      const messages: unknown[] = [];
+      proc.on("message", (message) => messages.push(message));
+
+      (proc as any).handleNotification("guardianWarning", {
+        message: `Automatic approval review approved (risk: ${risk}, authorization: ${authorization}):\n${reason}`,
+      });
+
+      expect(messages).toEqual([
+        {
+          type: "guardian_approval",
+          risk,
+          authorization,
+          reason,
+        },
+      ]);
+      proc.stop();
+    },
+  );
+
+  it("surfaces malformed approved guardian notifications as warnings", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const message = "Automatic approval review approved without metadata.";
+
+    (proc as any).handleNotification("guardianWarning", { message });
+
+    expect(messages).toEqual([
+      { type: "error", errorCode: "codex_warning", message },
+    ]);
     proc.stop();
   });
 
@@ -5266,6 +5309,13 @@ describe("CodexProcess (app-server)", () => {
       "/tmp/project-completions",
     ) as Promise<void>;
 
+    await tick();
+    expect(outgoingRequests(child).map((request) => request.method)).toEqual([
+      "skills/list",
+      "app/list",
+      "plugin/list",
+    ]);
+
     const skillsReq = await waitForOutgoingRequest(child, "skills/list");
     expect(skillsReq.method).toBe("skills/list");
     emitRpc({ id: skillsReq.id, result: { data: [] } });
@@ -5305,6 +5355,45 @@ describe("CodexProcess (app-server)", () => {
     emitRpc({ id: refetchPluginsReq.id, result: { marketplaces: [] } });
     await tick();
 
+    proc.stop();
+  });
+
+  it("emits an empty skill snapshot before slower completion sources finish", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+    const emitRpc = (message: Record<string, unknown>) => {
+      internal.handleStdoutChunk(`${JSON.stringify(message)}\n`);
+    };
+
+    const fetchPromise = internal.fetchCompletionEntities(
+      "/tmp/project-empty-completions",
+    ) as Promise<void>;
+    const skillsReq = await waitForOutgoingRequest(child, "skills/list");
+    const appsReq = await waitForOutgoingRequest(child, "app/list");
+    const pluginsReq = await waitForOutgoingRequest(child, "plugin/list");
+
+    emitRpc({ id: skillsReq.id, result: { data: [] } });
+    await tick();
+
+    expect(messages).toContainEqual({
+      type: "system",
+      subtype: "supported_commands",
+      skills: [],
+      skillMetadata: [],
+      apps: [],
+      appMetadata: [],
+      plugins: [],
+      pluginMetadata: [],
+    });
+
+    emitRpc({ id: appsReq.id, result: { data: [] } });
+    emitRpc({ id: pluginsReq.id, result: { marketplaces: [] } });
+    await fetchPromise;
     proc.stop();
   });
 
@@ -5389,7 +5478,11 @@ describe("CodexProcess (app-server)", () => {
       (msg): msg is { pluginMetadata: Array<Record<string, unknown>> } =>
         typeof msg === "object" &&
         msg !== null &&
-        (msg as { subtype?: unknown }).subtype === "supported_commands",
+        (msg as { subtype?: unknown }).subtype === "supported_commands" &&
+        Array.isArray(
+          (msg as { pluginMetadata?: unknown }).pluginMetadata,
+        ) &&
+        (msg as { pluginMetadata: unknown[] }).pluginMetadata.length > 0,
     );
     expect(supportedCommands?.pluginMetadata[0]?.composerIcon).toBeUndefined();
 
@@ -5433,6 +5526,16 @@ describe("CodexProcess (app-server)", () => {
         ],
       },
     });
+    await tick();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "supported_commands",
+        skills: ["review"],
+        apps: [],
+        plugins: [],
+      }),
+    );
     const appsReq = await waitForOutgoingRequest(child, "app/list");
     emitRpc({
       id: appsReq.id,
