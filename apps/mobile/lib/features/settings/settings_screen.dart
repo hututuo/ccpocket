@@ -6,7 +6,6 @@ import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:shorebird_code_push/shorebird_code_push.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../constants/app_constants.dart';
@@ -31,6 +30,10 @@ import '../../utils/platform_helper.dart';
 import '../../widgets/workspace_pane_chrome.dart';
 import '../auto_approval/auto_approval_global_control.dart';
 import '../file_transfer/file_transfer_sheet.dart';
+import '../mobile_update/l10n/mobile_update_strings.dart';
+import '../mobile_update/mobile_update_models.dart';
+import '../mobile_update/mobile_update_service.dart';
+import '../mobile_update/mobile_update_settings_tile.dart';
 import '../permission_management/l10n/permission_management_strings.dart';
 import '../permission_management/permission_management_screen.dart';
 import '../session_list/workspace_shell_screen.dart';
@@ -1091,6 +1094,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 margin: const EdgeInsets.symmetric(horizontal: 16),
                 child: Column(
                   children: [
+                    if (isMobilePlatform) ...[
+                      const MobileUpdateSettingsTile(),
+                      Divider(
+                        height: 1,
+                        indent: 16,
+                        endIndent: 16,
+                        color: cs.outlineVariant,
+                      ),
+                    ],
                     // Version
                     const _VersionTile(),
                     const _AppUpdateTile(),
@@ -1846,6 +1858,8 @@ class _VersionTile extends StatefulWidget {
 
 class _VersionTileState extends State<_VersionTile> {
   String? _versionText;
+  int _versionTapCount = 0;
+  Timer? _versionTapResetTimer;
 
   @override
   void initState() {
@@ -1855,22 +1869,33 @@ class _VersionTileState extends State<_VersionTile> {
 
   Future<void> _loadVersion() async {
     final info = await PackageInfo.fromPlatform();
-    final version = '${info.version}+${info.buildNumber}';
-
-    String result = version;
-    try {
-      final updater = ShorebirdUpdater();
-      final patch = await updater.readCurrentPatch();
-      if (patch != null) {
-        result = '$version (patch ${patch.number})';
-      }
-    } catch (_) {
-      // Shorebird not available (e.g. debug builds)
-    }
-
     if (mounted) {
-      setState(() => _versionText = result);
+      setState(() => _versionText = '${info.version}+${info.buildNumber}');
     }
+  }
+
+  Future<void> _handleVersionTap() async {
+    if (!isMobilePlatform) return;
+    _versionTapResetTimer?.cancel();
+    _versionTapResetTimer = Timer(const Duration(seconds: 4), () {
+      _versionTapCount = 0;
+    });
+    _versionTapCount++;
+    if (_versionTapCount < 7) return;
+    _versionTapCount = 0;
+    final service = context.read<MobileUpdateService>();
+    final unlocked = await service.unlockDeveloperSettings();
+    if (!mounted || !unlocked) return;
+    final l = MobileUpdateStrings.of(context);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(l.developerUnlocked)));
+  }
+
+  @override
+  void dispose() {
+    _versionTapResetTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -1878,19 +1903,25 @@ class _VersionTileState extends State<_VersionTile> {
     final cs = Theme.of(context).colorScheme;
     final l = AppLocalizations.of(context);
 
-    return BlocBuilder<SettingsCubit, SettingsState>(
-      builder: (context, settings) {
-        final trackSuffix = settings.shorebirdTrack != 'stable'
-            ? ' [${settings.shorebirdTrack}]'
-            : '';
-        return ListTile(
-          leading: Icon(Icons.info_outline, color: cs.onSurfaceVariant),
-          title: Text(l.version),
-          subtitle: Text(
-            _versionText != null ? '$_versionText$trackSuffix' : l.loading,
-          ),
-        );
-      },
+    final updateState = isMobilePlatform
+        ? context.watch<MobileUpdateService>().state
+        : const MobileUpdateState();
+    final patchSuffix = updateState.currentPatchNumber == null
+        ? ''
+        : ' (patch ${updateState.currentPatchNumber})';
+    final trackSuffix = updateState.developerSettingsUnlocked
+        ? ' [${updateState.channel.name}]'
+        : '';
+    return ListTile(
+      key: const ValueKey('settings_version_tile'),
+      leading: Icon(Icons.info_outline, color: cs.onSurfaceVariant),
+      title: Text(l.version),
+      subtitle: Text(
+        _versionText != null
+            ? '$_versionText$patchSuffix$trackSuffix'
+            : l.loading,
+      ),
+      onTap: _handleVersionTap,
     );
   }
 }

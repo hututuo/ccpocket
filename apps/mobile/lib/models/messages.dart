@@ -4230,6 +4230,7 @@ class ClientMessage {
     int protocolVersion = 1,
     bool fileTransferSupported = false,
     List<String>? supportedServerMessages,
+    Map<String, dynamic>? mobileRuntime,
   }) {
     final advertisedMessages =
         supportedServerMessages ??
@@ -4259,6 +4260,7 @@ class ClientMessage {
       'appVersion': ?appVersion,
       if (advertisedMessages.isNotEmpty)
         'supportedServerMessages': advertisedMessages,
+      'mobileRuntime': ?mobileRuntime,
     });
   }
 

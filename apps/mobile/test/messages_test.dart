@@ -517,6 +517,27 @@ void main() {
         nativeSupported['supportedServerMessages'],
         containsAll(fileTransferProtocolSlot.supportedServerMessageTypes),
       );
+
+      final runtime =
+          jsonDecode(
+                ClientMessage.clientCapabilities(
+                  mobileRuntime: const {
+                    'baseVersion': '1.107.2',
+                    'buildNumber': '198',
+                    'patchNumber': 4,
+                    'hostSchemaVersion': 1,
+                    'nativeCapabilities': {'fileTransfer': 2},
+                  },
+                ).toJson(),
+              )
+              as Map<String, dynamic>;
+      expect(runtime['mobileRuntime'], {
+        'baseVersion': '1.107.2',
+        'buildNumber': '198',
+        'patchNumber': 4,
+        'hostSchemaVersion': 1,
+        'nativeCapabilities': {'fileTransfer': 2},
+      });
     });
 
     test('ClientMessage.getHistoryDelta serializes sinceSeq', () {

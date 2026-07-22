@@ -183,6 +183,7 @@ class BridgeService implements BridgeServiceBase {
   final Duration permissionChangeTimeout;
   final bool fileTransferClientSupported;
   final String? clientAppVersion;
+  final Map<String, dynamic>? clientMobileRuntime;
   String? _promptHistoryBridgeId;
   UsageResultMessage? _lastUsageResult;
   final SessionRuntimeStore _runtimeStore = SessionRuntimeStore();
@@ -355,6 +356,7 @@ class BridgeService implements BridgeServiceBase {
     this.permissionChangeTimeout = const Duration(seconds: 30),
     this.fileTransferClientSupported = false,
     this.clientAppVersion,
+    this.clientMobileRuntime,
   }) {
     unawaited(_ensureOfflineQueueRestored());
   }
@@ -1211,6 +1213,7 @@ class BridgeService implements BridgeServiceBase {
         ClientMessage.clientCapabilities(
           appVersion: clientAppVersion,
           fileTransferSupported: fileTransferClientSupported,
+          mobileRuntime: clientMobileRuntime,
         ),
       );
       _flushMessageQueue();

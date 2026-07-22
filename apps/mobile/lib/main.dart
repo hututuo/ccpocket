@@ -25,7 +25,6 @@ import 'package:marionette_flutter/marionette_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shorebird_code_push/shorebird_code_push.dart';
 import 'package:talker_bloc_logger/talker_bloc_logger.dart';
 
 import 'core/logger.dart';
@@ -38,6 +37,9 @@ import 'features/file_transfer/file_transfer_service.dart';
 import 'features/file_transfer/file_transfer_sheet.dart';
 import 'features/file_transfer/file_transfer_storage.dart';
 import 'features/file_transfer/ios_file_transfer_gateway.dart';
+import 'features/mobile_host/mobile_host_service.dart';
+import 'features/mobile_update/mobile_update_restart_prompt.dart';
+import 'features/mobile_update/mobile_update_service.dart';
 import 'features/session_list/state/session_list_cubit.dart';
 import 'features/git/state/git_status_cubit.dart';
 import 'features/git/state/git_view_cache_service.dart';
@@ -80,23 +82,6 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // warning on Android.
 }
 
-/// Checks for Shorebird patches using the user-selected update track.
-Future<void> _checkShorebirdUpdate(SharedPreferences prefs) async {
-  try {
-    final updater = ShorebirdUpdater();
-    final trackName =
-        prefs.getString(SettingsCubit.keyShorebirdTrack) ?? 'stable';
-    final track = UpdateTrack(trackName);
-    final status = await updater.checkForUpdate(track: track);
-    if (status == UpdateStatus.outdated) {
-      await updater.update(track: track);
-      logger.info('[shorebird] Patch downloaded (track: $trackName)');
-    }
-  } catch (e) {
-    logger.warning('[shorebird] Update check failed: $e');
-  }
-}
-
 void main() async {
   if (kDebugMode && !kIsWeb) {
     MarionetteBinding.ensureInitialized();
@@ -134,6 +119,24 @@ void main() async {
   // Initialize SharedPreferences and services
   final prefs = await SharedPreferences.getInstance();
   const secureStorage = FlutterSecureStorage();
+  const mobileUpdateSecureStorage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accountName: 'ccpocket_mobile_update_v1',
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+      synchronizable: false,
+    ),
+  );
+  final mobileHostService = MobileHostService();
+  final mobileHostSnapshot = !kIsWeb && isMobilePlatform
+      ? await mobileHostService.loadSnapshot()
+      : const MobileHostSnapshot.unavailable('mobile_host_not_applicable');
+  final mobileUpdateService = MobileUpdateService(
+    preferences: prefs,
+    secureStore: const FlutterMobileUpdateSecureStore(
+      mobileUpdateSecureStorage,
+    ),
+  );
+  await mobileUpdateService.initialize();
   final machineManagerService = MachineManagerService(prefs, secureStorage);
   // SSH is only supported on native platforms (not web)
   final sshStartupService = kIsWeb
@@ -147,14 +150,6 @@ void main() async {
       wsUrlResolver: sshBridgeTunnelService.buildWsUrl,
       httpBaseUrlResolver: sshBridgeTunnelService.buildHttpBaseUrl,
     );
-  }
-
-  // Shorebird manual update check (auto_update is disabled in shorebird.yaml).
-  // Reads the user-selected track from SharedPreferences and checks for patches
-  // in the background. The patch is applied on next app restart.
-  // Shorebird OTA is only available on mobile platforms (iOS/Android).
-  if (!kIsWeb && isMobilePlatform) {
-    unawaited(_checkShorebirdUpdate(prefs));
   }
 
   const fileTransferSecureStorage = FlutterSecureStorage(
@@ -176,7 +171,12 @@ void main() async {
   }
   final bridge = BridgeService(
     fileTransferClientSupported: fileTransferPlatformSupport.supported,
-    clientAppVersion: fileTransferPlatformSupport.appVersion,
+    clientAppVersion:
+        mobileHostSnapshot.baseVersion ??
+        fileTransferPlatformSupport.appVersion,
+    clientMobileRuntime: mobileHostSnapshot.toClientCapabilitiesJson(
+      patchNumber: mobileUpdateService.state.currentPatchNumber,
+    ),
   );
   bridge.onDisconnect = sshBridgeTunnelService?.closeAll;
   final fileTransferService = FileTransferService(
@@ -258,6 +258,9 @@ void main() async {
     gitStatusCubit: gitStatusCubit,
   );
   unawaited(revenueCatService.initialize());
+  if (!kIsWeb && isMobilePlatform) {
+    unawaited(mobileUpdateService.runStartupPolicy());
+  }
   runApp(
     MultiRepositoryProvider(
       providers: [
@@ -285,6 +288,10 @@ void main() async {
         ChangeNotifierProvider<ConversationMirrorService>(
           create: (_) => conversationMirrorService,
           lazy: false,
+        ),
+        RepositoryProvider<MobileHostService>.value(value: mobileHostService),
+        ChangeNotifierProvider<MobileUpdateService>.value(
+          value: mobileUpdateService,
         ),
         RepositoryProvider<GitViewCacheService>(
           create: (_) => gitViewCacheService,
@@ -373,16 +380,24 @@ void main() async {
             lazy: false,
           ),
         ],
-        child: CcpocketApp(fcmService: fcmService),
+        child: CcpocketApp(
+          fcmService: fcmService,
+          mobileUpdateService: mobileUpdateService,
+        ),
       ),
     ),
   );
 }
 
 class CcpocketApp extends StatefulWidget {
-  const CcpocketApp({required this.fcmService, super.key});
+  const CcpocketApp({
+    required this.fcmService,
+    this.mobileUpdateService,
+    super.key,
+  });
 
   final FcmService fcmService;
+  final MobileUpdateService? mobileUpdateService;
 
   @override
   State<CcpocketApp> createState() => _CcpocketAppState();
@@ -409,6 +424,10 @@ class _CcpocketAppState extends State<CcpocketApp> {
       onStateChange: (state) {
         if (state == AppLifecycleState.resumed) {
           NotificationService.instance.cancelAll();
+          final updateService = widget.mobileUpdateService;
+          if (updateService != null) {
+            unawaited(updateService.checkInBackground());
+          }
         }
       },
     );
@@ -625,7 +644,12 @@ class _CcpocketAppState extends State<CcpocketApp> {
                   multiplier: settings.textScale,
                 ),
               ),
-              child: app,
+              child: widget.mobileUpdateService == null
+                  ? app
+                  : MobileUpdateRestartPrompt(
+                      service: widget.mobileUpdateService!,
+                      child: app,
+                    ),
             );
           },
           debugShowCheckedModeBanner: false,
