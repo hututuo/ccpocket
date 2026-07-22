@@ -1,7 +1,48 @@
 import '../../../models/messages.dart';
 
-/// One independently collapsible reasoning/tool block associated with one
-/// visible assistant update (or a process-only tail before output exists).
+/// A single tool invocation as represented by the public Bridge protocol.
+///
+/// This deliberately retains the generic name/input/output shape instead of
+/// hard-coding the current Codex tool list. New app-server tools can therefore
+/// appear in the mobile transcript as soon as Bridge can forward them.
+class ChatProcessToolActivity {
+  const ChatProcessToolActivity({
+    required this.toolUseId,
+    required this.name,
+    required this.input,
+    required this.entryIndex,
+    this.output,
+    this.completed = false,
+  });
+
+  final String toolUseId;
+  final String name;
+  final Map<String, dynamic> input;
+  final int entryIndex;
+  final String? output;
+  final bool completed;
+
+  ChatProcessToolActivity completedWith({
+    required String output,
+    required int entryIndex,
+    String? name,
+  }) {
+    return ChatProcessToolActivity(
+      toolUseId: toolUseId,
+      name: name ?? this.name,
+      input: input,
+      entryIndex: entryIndex,
+      output: output,
+      completed: true,
+    );
+  }
+}
+
+/// One assistant-output interval and the thought/tool activity attached to it.
+///
+/// An interval starts at a visible assistant update and ends immediately before
+/// the next visible assistant update. Tool results are additionally linked by
+/// tool-use id, so a delayed result stays with the update that issued it.
 class ChatProcessSegmentLayout {
   const ChatProcessSegmentLayout({
     required this.key,
@@ -13,6 +54,9 @@ class ChatProcessSegmentLayout {
     required this.toolCalls,
     required this.toolResults,
     required this.hasInlineAssistantProcess,
+    required this.firstEntryIndex,
+    required this.lastEntryIndex,
+    this.latestTool,
   });
 
   final String key;
@@ -24,6 +68,9 @@ class ChatProcessSegmentLayout {
   final int toolCalls;
   final int toolResults;
   final bool hasInlineAssistantProcess;
+  final int firstEntryIndex;
+  final int lastEntryIndex;
+  final ChatProcessToolActivity? latestTool;
 
   int get detailCount {
     final explicit = thinkingBlocks + toolCalls + toolResults;
@@ -31,16 +78,23 @@ class ChatProcessSegmentLayout {
   }
 
   bool isProcessEntry(int index) => processEntryIndices.contains(index);
+
   bool showsSummaryAt(int index) => summaryEntryIndex == index;
+
   bool hasInlineProcessAt(int index) =>
       assistantEntryIndex == index && hasInlineAssistantProcess;
+
+  bool containsEntry(int index) =>
+      assistantEntryIndex == index || processEntryIndices.contains(index);
 }
 
-/// The second-level disclosure for one user turn.
+/// Layout for one user turn.
 ///
-/// Intermediate visible assistant updates and their own process segments are
-/// hidden together by default. The final assistant result and its process
-/// segment remain outside this set.
+/// Historical assistant updates and all of their thought/tool activity are
+/// represented by [intermediateEntryIndices]. During an active turn, exactly
+/// one latest interval is kept outside that fold as [currentSegment]. A live
+/// stream without a persisted assistant item keeps [currentSegment] null and
+/// is rendered by the dedicated transient progress surface instead.
 class ChatProcessTurnLayout {
   const ChatProcessTurnLayout({
     required this.key,
@@ -49,6 +103,11 @@ class ChatProcessTurnLayout {
     required this.intermediateAssistantEntryIndices,
     required this.intermediateSummaryEntryIndex,
     required this.finalAssistantEntryIndex,
+    required this.currentAssistantEntryIndex,
+    required this.currentSegment,
+    required this.isActive,
+    required this.hasTransientCurrentOutput,
+    this.activeTool,
   });
 
   final String key;
@@ -57,36 +116,78 @@ class ChatProcessTurnLayout {
   final Set<int> intermediateAssistantEntryIndices;
   final int? intermediateSummaryEntryIndex;
   final int? finalAssistantEntryIndex;
+  final int? currentAssistantEntryIndex;
+  final ChatProcessSegmentLayout? currentSegment;
+  final bool isActive;
+  final bool hasTransientCurrentOutput;
+  final ChatProcessToolActivity? activeTool;
 
   int get intermediateOutputCount => intermediateAssistantEntryIndices.length;
-  bool get hasIntermediateOutputs => intermediateOutputCount > 0;
+
+  int get intermediateDetailCount => segments
+      .where(
+        (segment) =>
+            (segment.assistantEntryIndex != null &&
+                intermediateEntryIndices.contains(
+                  segment.assistantEntryIndex,
+                )) ||
+            segment.processEntryIndices.any(intermediateEntryIndices.contains),
+      )
+      .fold<int>(0, (count, segment) => count + segment.detailCount);
+
+  bool get hasIntermediateEntries => intermediateEntryIndices.isNotEmpty;
+
   bool isIntermediateEntry(int index) =>
       intermediateEntryIndices.contains(index);
+
   bool showsIntermediateSummaryAt(int index) =>
       intermediateSummaryEntryIndex == index;
+
+  bool isCurrentAssistantEntry(int index) =>
+      currentAssistantEntryIndex == index;
+
+  bool isCurrentProcessEntry(int index) =>
+      currentSegment?.isProcessEntry(index) == true;
+
+  ChatProcessToolActivity? get currentTool =>
+      activeTool ?? currentSegment?.latestTool;
 }
 
 class ChatProcessLayout {
   const ChatProcessLayout(
     this._segmentsByEntryIndex,
-    this._turnsByIntermediateEntryIndex,
-    this.latestTurnKey,
-  );
+    this._turnsByEntryIndex, {
+    required this.latestTurnKey,
+    this.latestTurn,
+  });
 
   final Map<int, ChatProcessSegmentLayout> _segmentsByEntryIndex;
-  final Map<int, ChatProcessTurnLayout> _turnsByIntermediateEntryIndex;
+  final Map<int, ChatProcessTurnLayout> _turnsByEntryIndex;
   final String? latestTurnKey;
+  final ChatProcessTurnLayout? latestTurn;
 
   ChatProcessSegmentLayout? segmentForEntry(int index) =>
       _segmentsByEntryIndex[index];
-  ChatProcessTurnLayout? turnForEntry(int index) =>
-      _turnsByIntermediateEntryIndex[index];
+
+  ChatProcessTurnLayout? turnForEntry(int index) => _turnsByEntryIndex[index];
 }
 
-ChatProcessLayout buildChatProcessLayout(List<ChatEntry> entries) {
+/// Builds a display-only process layout from the existing chat entries.
+///
+/// [latestTurnIsActive] is passed by the session surface rather than inferred
+/// from a message shape: Desktop-owned turns and pending approvals can be
+/// running even before a stream delta reaches the phone. [hasTransientCurrentOutput]
+/// is true when the fast streaming surface contains the newest unfinished
+/// assistant text or reasoning.
+ChatProcessLayout buildChatProcessLayout(
+  List<ChatEntry> entries, {
+  bool latestTurnIsActive = false,
+  bool hasTransientCurrentOutput = false,
+}) {
   final segmentsByIndex = <int, ChatProcessSegmentLayout>{};
-  final turnsByIntermediateIndex = <int, ChatProcessTurnLayout>{};
+  final turnsByIndex = <int, ChatProcessTurnLayout>{};
   String? latestTurnKey;
+  ChatProcessTurnLayout? latestTurn;
 
   var cursor = 0;
   while (cursor < entries.length) {
@@ -103,56 +204,78 @@ ChatProcessLayout buildChatProcessLayout(List<ChatEntry> entries) {
     }
 
     final turnKey = _turnKey(current);
+    final isLatestTurn = turnEnd == entries.length;
+    final isActive = isLatestTurn && latestTurnIsActive;
+    final usesTransientCurrentOutput = isActive && hasTransientCurrentOutput;
     latestTurnKey = turnKey;
+
     final visibleAssistantIndices = <int>[];
     for (var index = turnStart + 1; index < turnEnd; index++) {
-      if (entries[index] case ServerChatEntry(
+      final entry = entries[index];
+      if (entry case ServerChatEntry(
         message: final AssistantServerMessage assistant,
       ) when _hasVisibleText(assistant)) {
         visibleAssistantIndices.add(index);
       }
     }
 
-    final accumulators = visibleAssistantIndices.isEmpty
-        ? [_SegmentAccumulator(assistantEntryIndex: null)]
-        : visibleAssistantIndices
-              .map(
-                (index) => _SegmentAccumulator(assistantEntryIndex: index),
-              )
-              .toList();
-    final visiblePositionByIndex = <int, int>{
-      for (var position = 0;
-          position < visibleAssistantIndices.length;
-          position++)
-        visibleAssistantIndices[position]: position,
-    };
-    final toolSegmentById = <String, int>{};
-
-    int segmentForPosition(int entryIndex) {
-      final exact = visiblePositionByIndex[entryIndex];
-      if (exact != null) return exact;
-      for (var position = 0;
-          position < visibleAssistantIndices.length;
-          position++) {
-        if (entryIndex < visibleAssistantIndices[position]) return position;
-      }
-      return accumulators.length - 1;
+    final accumulators = <_SegmentAccumulator>[
+      _SegmentAccumulator(assistantEntryIndex: null),
+    ];
+    final accumulatorByAssistantIndex = <int, _SegmentAccumulator>{};
+    for (final index in visibleAssistantIndices) {
+      final accumulator = _SegmentAccumulator(assistantEntryIndex: index);
+      accumulators.add(accumulator);
+      accumulatorByAssistantIndex[index] = accumulator;
     }
 
-    // Tool results stay with the assistant block that issued the tool, even
-    // when a later visible update appears before the result is rendered.
-    for (var index = turnStart + 1; index < turnEnd; index++) {
-      final entry = entries[index];
-      if (entry is! ServerChatEntry ||
-          entry.message is! AssistantServerMessage) {
-        continue;
-      }
-      final segmentPosition = segmentForPosition(index);
-      final assistant = entry.message as AssistantServerMessage;
+    var activeAccumulator = accumulators.first;
+    final toolAccumulatorById = <String, _SegmentAccumulator>{};
+    final activeToolById = <String, ChatProcessToolActivity>{};
+    final activeToolOrder = <String>[];
+
+    void markToolStarted(
+      _SegmentAccumulator accumulator,
+      ToolUseContent tool,
+      int entryIndex,
+    ) {
+      if (tool.name == 'ExitPlanMode') return;
+      final activity = ChatProcessToolActivity(
+        toolUseId: tool.id,
+        name: tool.name,
+        input: tool.input,
+        entryIndex: entryIndex,
+      );
+      accumulator.toolCalls++;
+      accumulator.latestTool = activity;
+      toolAccumulatorById[tool.id] = accumulator;
+      activeToolById[tool.id] = activity;
+      activeToolOrder.remove(tool.id);
+      activeToolOrder.add(tool.id);
+    }
+
+    void noteAssistant(
+      _SegmentAccumulator accumulator,
+      AssistantServerMessage assistant,
+      int entryIndex, {
+      required bool visible,
+    }) {
+      accumulator.noteEntry(entryIndex);
+      var hasProcess = false;
       for (final content in assistant.message.content) {
-        if (content is ToolUseContent && content.name != 'ExitPlanMode') {
-          toolSegmentById[content.id] = segmentPosition;
+        if (content is ThinkingContent && content.thinking.trim().isNotEmpty) {
+          accumulator.thinkingBlocks++;
+          if (visible) accumulator.inlineThinkingBlocks++;
+          hasProcess = true;
+        } else if (content is ToolUseContent &&
+            content.name != 'ExitPlanMode') {
+          if (visible) accumulator.inlineToolCalls++;
+          markToolStarted(accumulator, content, entryIndex);
+          hasProcess = true;
         }
+      }
+      if (!visible && hasProcess) {
+        accumulator.processEntryIndices.add(entryIndex);
       }
     }
 
@@ -160,89 +283,138 @@ ChatProcessLayout buildChatProcessLayout(List<ChatEntry> entries) {
       final entry = entries[index];
       if (entry is! ServerChatEntry) continue;
       final message = entry.message;
+
       if (message is AssistantServerMessage) {
-        final segment = accumulators[segmentForPosition(index)];
-        final counts = _assistantProcessCounts(message);
-        segment.thinkingBlocks += counts.thinking;
-        segment.toolCalls += counts.tools;
-        if (_hasVisibleText(message)) {
-          segment.inlineThinkingBlocks += counts.thinking;
-          segment.inlineToolCalls += counts.tools;
+        final isVisible = _hasVisibleText(message);
+        if (isVisible) {
+          activeAccumulator = accumulatorByAssistantIndex[index]!;
         }
-        if (!_hasVisibleText(message)) {
-          segment.processEntryIndices.add(index);
-        }
+        noteAssistant(activeAccumulator, message, index, visible: isVisible);
         continue;
       }
-      if (message is ToolResultMessage &&
-          message.images.isEmpty &&
-          message.artifacts.isEmpty) {
-        final segmentPosition =
-            toolSegmentById[message.toolUseId] ?? segmentForPosition(index);
-        final segment = accumulators[segmentPosition];
-        segment.processEntryIndices.add(index);
-        segment.toolResults++;
+
+      if (message is ToolResultMessage) {
+        final accumulator =
+            toolAccumulatorById[message.toolUseId] ?? activeAccumulator;
+        accumulator.noteEntry(index);
+        accumulator.processEntryIndices.add(index);
+        accumulator.toolResults++;
+        final prior = activeToolById.remove(message.toolUseId);
+        activeToolOrder.remove(message.toolUseId);
+        final activity =
+            (prior ??
+                    ChatProcessToolActivity(
+                      toolUseId: message.toolUseId,
+                      name: message.toolName?.trim().isNotEmpty == true
+                          ? message.toolName!.trim()
+                          : 'Tool',
+                      input: const <String, dynamic>{},
+                      entryIndex: index,
+                    ))
+                .completedWith(
+                  output: message.content,
+                  entryIndex: index,
+                  name: message.toolName?.trim().isNotEmpty == true
+                      ? message.toolName!.trim()
+                      : null,
+                );
+        accumulator.latestTool = activity;
         continue;
       }
+
       if (message is ToolUseSummaryMessage) {
-        final segment = accumulators[segmentForPosition(index)];
-        segment.processEntryIndices.add(index);
-        segment.toolResults++;
+        activeAccumulator.noteEntry(index);
+        activeAccumulator.processEntryIndices.add(index);
+        activeAccumulator.toolResults++;
+        activeAccumulator.latestTool = ChatProcessToolActivity(
+          toolUseId: 'summary:$index',
+          name: 'Subagent',
+          input: const <String, dynamic>{},
+          output: message.summary,
+          completed: true,
+          entryIndex: index,
+        );
       }
     }
 
     final segments = <ChatProcessSegmentLayout>[];
     for (var position = 0; position < accumulators.length; position++) {
       final accumulator = accumulators[position];
+      if (!accumulator.hasEntries) continue;
       final hasInlineProcess =
           accumulator.assistantEntryIndex != null &&
           (accumulator.inlineThinkingBlocks > 0 ||
               accumulator.inlineToolCalls > 0);
-      if (accumulator.processEntryIndices.isEmpty && !hasInlineProcess) {
-        continue;
-      }
-      final summaryIndex = [
-        ...accumulator.processEntryIndices,
-        if (hasInlineProcess) accumulator.assistantEntryIndex!,
-      ].reduce((left, right) => left < right ? left : right);
+      final summaryEntryIndex =
+          accumulator.assistantEntryIndex ?? accumulator.firstEntryIndex!;
       final segment = ChatProcessSegmentLayout(
-        key: '$turnKey:segment:${_segmentIdentity(entries, accumulator, position)}',
+        key:
+            '$turnKey:segment:${_segmentIdentity(entries, accumulator, position)}',
         turnKey: turnKey,
-        processEntryIndices: Set.unmodifiable(
-          accumulator.processEntryIndices,
-        ),
-        summaryEntryIndex: summaryIndex,
+        processEntryIndices: Set.unmodifiable(accumulator.processEntryIndices),
+        summaryEntryIndex: summaryEntryIndex,
         assistantEntryIndex: accumulator.assistantEntryIndex,
         thinkingBlocks: accumulator.thinkingBlocks,
         toolCalls: accumulator.toolCalls,
         toolResults: accumulator.toolResults,
         hasInlineAssistantProcess: hasInlineProcess,
+        firstEntryIndex: accumulator.firstEntryIndex!,
+        lastEntryIndex: accumulator.lastEntryIndex!,
+        latestTool: accumulator.latestTool,
       );
       segments.add(segment);
+      if (segment.assistantEntryIndex case final assistantIndex?) {
+        segmentsByIndex[assistantIndex] = segment;
+      }
       for (final index in segment.processEntryIndices) {
         segmentsByIndex[index] = segment;
       }
-      segmentsByIndex[segment.summaryEntryIndex] = segment;
-      if (hasInlineProcess) {
-        segmentsByIndex[segment.assistantEntryIndex!] = segment;
+    }
+
+    ChatProcessSegmentLayout? segmentForAssistant(int? assistantIndex) {
+      if (assistantIndex == null) return null;
+      for (final segment in segments) {
+        if (segment.assistantEntryIndex == assistantIndex) return segment;
       }
+      return null;
+    }
+
+    ChatProcessToolActivity? activeTool;
+    if (activeToolOrder.isNotEmpty) {
+      activeTool = activeToolById[activeToolOrder.last];
+    }
+    ChatProcessSegmentLayout? currentSegment;
+    int? currentAssistantEntryIndex;
+    if (isActive) {
+      if (!usesTransientCurrentOutput) {
+        final lastVisible = visibleAssistantIndices.isEmpty
+            ? null
+            : visibleAssistantIndices.last;
+        currentSegment = segmentForAssistant(lastVisible);
+        if (currentSegment == null && segments.isNotEmpty) {
+          currentSegment = segments.last;
+        }
+      }
+      currentAssistantEntryIndex = currentSegment?.assistantEntryIndex;
     }
 
     final finalAssistantIndex = visibleAssistantIndices.isEmpty
         ? null
         : visibleAssistantIndices.last;
-    final intermediateAssistants = finalAssistantIndex == null
-        ? const <int>{}
-        : visibleAssistantIndices
-              .where((index) => index != finalAssistantIndex)
-              .toSet();
-    final intermediateEntries = <int>{...intermediateAssistants};
+    final finalSegment = segmentForAssistant(finalAssistantIndex);
+    final protectedSegment = isActive ? currentSegment : finalSegment;
+
+    final intermediateEntries = <int>{};
+    final intermediateAssistants = <int>{};
     for (final segment in segments) {
-      if (segment.assistantEntryIndex != null &&
-          intermediateAssistants.contains(segment.assistantEntryIndex)) {
-        intermediateEntries.addAll(segment.processEntryIndices);
+      if (identical(segment, protectedSegment)) continue;
+      if (segment.assistantEntryIndex case final assistantIndex?) {
+        intermediateEntries.add(assistantIndex);
+        intermediateAssistants.add(assistantIndex);
       }
+      intermediateEntries.addAll(segment.processEntryIndices);
     }
+
     final intermediateSummaryIndex = intermediateEntries.isEmpty
         ? null
         : intermediateEntries.reduce(
@@ -257,17 +429,30 @@ ChatProcessLayout buildChatProcessLayout(List<ChatEntry> entries) {
       ),
       intermediateSummaryEntryIndex: intermediateSummaryIndex,
       finalAssistantEntryIndex: finalAssistantIndex,
+      currentAssistantEntryIndex: currentAssistantEntryIndex,
+      currentSegment: currentSegment,
+      isActive: isActive,
+      hasTransientCurrentOutput: usesTransientCurrentOutput,
+      activeTool: activeTool,
     );
-    for (final index in intermediateEntries) {
-      turnsByIntermediateIndex[index] = turn;
+
+    for (final segment in segments) {
+      if (segment.assistantEntryIndex case final assistantIndex?) {
+        turnsByIndex[assistantIndex] = turn;
+      }
+      for (final index in segment.processEntryIndices) {
+        turnsByIndex[index] = turn;
+      }
     }
+    if (isLatestTurn) latestTurn = turn;
     cursor = turnEnd;
   }
 
   return ChatProcessLayout(
     Map.unmodifiable(segmentsByIndex),
-    Map.unmodifiable(turnsByIntermediateIndex),
-    latestTurnKey,
+    Map.unmodifiable(turnsByIndex),
+    latestTurnKey: latestTurnKey,
+    latestTurn: latestTurn,
   );
 }
 
@@ -275,12 +460,22 @@ class _SegmentAccumulator {
   _SegmentAccumulator({required this.assistantEntryIndex});
 
   final int? assistantEntryIndex;
-  final Set<int> processEntryIndices = {};
+  final Set<int> processEntryIndices = <int>{};
   int thinkingBlocks = 0;
   int toolCalls = 0;
   int toolResults = 0;
   int inlineThinkingBlocks = 0;
   int inlineToolCalls = 0;
+  int? firstEntryIndex;
+  int? lastEntryIndex;
+  ChatProcessToolActivity? latestTool;
+
+  bool get hasEntries => firstEntryIndex != null;
+
+  void noteEntry(int index) {
+    firstEntryIndex ??= index;
+    lastEntryIndex = index;
+  }
 }
 
 String _segmentIdentity(
@@ -289,7 +484,9 @@ String _segmentIdentity(
   int position,
 ) {
   final index = accumulator.assistantEntryIndex;
-  if (index == null) return 'pending-$position';
+  if (index == null) {
+    return 'leading:${accumulator.firstEntryIndex ?? position}';
+  }
   final entry = entries[index];
   if (entry case ServerChatEntry(
     message: AssistantServerMessage(:final messageUuid, :final message),
@@ -311,18 +508,3 @@ String _turnKey(UserChatEntry entry) {
 bool _hasVisibleText(AssistantServerMessage message) => message.message.content
     .whereType<TextContent>()
     .any((content) => content.text.trim().isNotEmpty);
-
-({int thinking, int tools}) _assistantProcessCounts(
-  AssistantServerMessage message,
-) {
-  var thinking = 0;
-  var tools = 0;
-  for (final content in message.message.content) {
-    if (content is ThinkingContent && content.thinking.trim().isNotEmpty) {
-      thinking++;
-    } else if (content is ToolUseContent && content.name != 'ExitPlanMode') {
-      tools++;
-    }
-  }
-  return (thinking: thinking, tools: tools);
-}
