@@ -1107,6 +1107,11 @@ export class BridgeWebSocketServer {
   private deltaBatches = new Map<WebSocket, Map<string, DeltaBatch>>();
   private platform: NodeJS.Platform;
   private clientSupportedServerMessages = new WeakMap<WebSocket, Set<string>>();
+  // Diagnostic-only: feature behavior remains gated by advertised capabilities.
+  private clientMobileRuntime = new WeakMap<
+    WebSocket,
+    Extract<ClientMessage, { type: "client_capabilities" }>['mobileRuntime']
+  >();
   private activeArtifactSourceReads = new WeakSet<WebSocket>();
   private pendingClaudeResumeInputs = new WeakMap<
     WebSocket,
@@ -3072,6 +3077,11 @@ export class BridgeWebSocketServer {
         ws,
         new Set(msg.supportedServerMessages ?? []),
       );
+      if (msg.mobileRuntime) {
+        this.clientMobileRuntime.set(ws, msg.mobileRuntime);
+      } else {
+        this.clientMobileRuntime.delete(ws);
+      }
       this.localFeatures.capabilitiesChanged(ws);
       this.sendPromptHistoryStatus(ws);
       return;

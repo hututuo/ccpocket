@@ -1989,6 +1989,36 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("stores mobile host metadata as diagnostics without changing capabilities", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const mobileRuntime = {
+      baseVersion: "1.107.2",
+      buildNumber: "198",
+      patchNumber: 7,
+      hostSchemaVersion: 1,
+      nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
+    };
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [],
+        mobileRuntime,
+      },
+      ws,
+    );
+
+    expect((bridge as any).clientMobileRuntime.get(ws)).toEqual(mobileRuntime);
+    expect((bridge as any).clientSupportedServerMessages.get(ws)).toEqual(
+      new Set(),
+    );
+    bridge.close();
+  });
+
   it("suppresses prompt_history_status for clients that did not opt in", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

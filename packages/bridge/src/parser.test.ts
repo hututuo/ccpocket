@@ -72,6 +72,47 @@ describe("parseClientMessage", () => {
     });
   });
 
+  it("parses bounded mobile host diagnostics", () => {
+    const msg = parseClientMessage(JSON.stringify({
+      type: "client_capabilities",
+      appVersion: "1.107.2",
+      mobileRuntime: {
+        baseVersion: "1.107.2",
+        buildNumber: "198",
+        patchNumber: 7,
+        hostSchemaVersion: 1,
+        nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
+      },
+    }));
+
+    expect(msg).toMatchObject({
+      type: "client_capabilities",
+      mobileRuntime: {
+        patchNumber: 7,
+        hostSchemaVersion: 1,
+        nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
+      },
+    });
+  });
+
+  it("rejects malformed mobile host diagnostics", () => {
+    expect(parseClientMessage(JSON.stringify({
+      type: "client_capabilities",
+      mobileRuntime: {
+        hostSchemaVersion: 1,
+        nativeCapabilities: { fileTransfer: 0 },
+      },
+    }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({
+      type: "client_capabilities",
+      mobileRuntime: {
+        hostSchemaVersion: 1,
+        nativeCapabilities: {},
+        unexpectedAuthority: true,
+      },
+    }))).toBeNull();
+  });
+
   it("rejects client capabilities with invalid supported messages", () => {
     expect(
       parseClientMessage(

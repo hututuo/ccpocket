@@ -108,12 +108,22 @@ export interface QueuedInputItem {
   mentions?: Array<{ name: string; path: string }>;
 }
 
+/** Diagnostic-only metadata for the native host installed under Dart OTA code. */
+export interface MobileRuntimeCapabilities {
+  baseVersion?: string;
+  buildNumber?: string;
+  patchNumber?: number;
+  hostSchemaVersion: number;
+  nativeCapabilities: Record<string, number>;
+}
+
 export type ClientMessage =
   | {
       type: "client_capabilities";
       appVersion?: string;
       protocolVersion?: number;
       supportedServerMessages?: string[];
+      mobileRuntime?: MobileRuntimeCapabilities;
     }
   | {
       type: "start";
@@ -1018,6 +1028,58 @@ export function parseClientMessage(data: string): ClientMessage | null {
             msg.supportedServerMessages.some((type) => typeof type !== "string")
           )
             return null;
+        }
+        if (msg.mobileRuntime !== undefined) {
+          if (
+            typeof msg.mobileRuntime !== "object" ||
+            msg.mobileRuntime === null ||
+            Array.isArray(msg.mobileRuntime)
+          ) return null;
+          const runtime = msg.mobileRuntime as Record<string, unknown>;
+          if (
+            !Object.keys(runtime).every((key) => [
+              "baseVersion",
+              "buildNumber",
+              "patchNumber",
+              "hostSchemaVersion",
+              "nativeCapabilities",
+            ].includes(key))
+          ) return null;
+          for (const key of ["baseVersion", "buildNumber"] as const) {
+            const value = runtime[key];
+            if (
+              value !== undefined &&
+              (typeof value !== "string" || value.length < 1 || value.length > 64)
+            ) return null;
+          }
+          if (
+            runtime.patchNumber !== undefined &&
+            (!Number.isInteger(runtime.patchNumber) ||
+              Number(runtime.patchNumber) < 0 ||
+              Number(runtime.patchNumber) > 1_000_000)
+          ) return null;
+          if (
+            !Number.isInteger(runtime.hostSchemaVersion) ||
+            Number(runtime.hostSchemaVersion) < 0 ||
+            Number(runtime.hostSchemaVersion) > 1_000
+          ) return null;
+          if (
+            typeof runtime.nativeCapabilities !== "object" ||
+            runtime.nativeCapabilities === null ||
+            Array.isArray(runtime.nativeCapabilities)
+          ) return null;
+          const capabilities = Object.entries(
+            runtime.nativeCapabilities as Record<string, unknown>,
+          );
+          if (capabilities.length > 64) return null;
+          if (
+            capabilities.some(([key, value]) =>
+              !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(key) ||
+              !Number.isInteger(value) ||
+              Number(value) < 1 ||
+              Number(value) > 1_000
+            )
+          ) return null;
         }
         break;
       case "start":
