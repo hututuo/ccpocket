@@ -186,9 +186,10 @@ class _ChatMessageListState extends State<ChatMessageList> {
       KeyedSubtree(key: _anchorKey(id), child: child);
 
   /// Expanding a reverse, variable-height list can otherwise move the tapped
-  /// disclosure away from the user's finger. Measure that row before and after
-  /// the layout change, then compensate the scroll offset by the observed
-  /// movement so the row remains in the same viewport position.
+  /// disclosure away from the user's finger. Measure the disclosure itself,
+  /// then compensate only its viewport movement. The expanded children stay
+  /// after the disclosure in transcript order, so the content below is pushed
+  /// down instead of being laid out above the tapped row.
   void _toggleWithStableAnchor(String anchorId, VoidCallback mutate) {
     final anchorContext = _anchorKey(anchorId).currentContext;
     final beforeBox = anchorContext?.findRenderObject();
@@ -638,8 +639,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
           final processExpanded =
               processSegment != null &&
               _expandedProcessSegments.contains(processSegment.key);
-          if (!isIntermediateEntry &&
-              !isCurrentProcess &&
+          if (!isCurrentProcess &&
               processSegment != null &&
               processSegment.detailCount > 0 &&
               processSegment.isProcessEntry(entryIndex) &&
@@ -675,9 +675,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
               ? widget.onForkMessage
               : null;
           final fileRoot = widget.projectPath;
-          final showAssistantProcessDetails = isIntermediateEntry
-              ? true
-              : isCurrentAssistant
+          final showAssistantProcessDetails = isCurrentAssistant
               ? currentExpanded
               : processSegment?.hasInlineProcessAt(entryIndex) != true ||
                     processExpanded;
@@ -734,6 +732,28 @@ class _ChatMessageListState extends State<ChatMessageList> {
             },
             isCodex: widget.isCodex,
           );
+          final showSegmentDisclosure =
+              !isCurrentAssistant &&
+              !isCurrentProcess &&
+              processSegment != null &&
+              processSegment.detailCount > 0 &&
+              processSegment.showsSummaryAt(entryIndex);
+          if (showSegmentDisclosure) {
+            child = Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _anchoredDisclosure(
+                  'process:${processSegment.key}',
+                  ChatProcessDisclosure(
+                    segment: processSegment,
+                    expanded: processExpanded,
+                    onToggle: () => _toggleProcessSegment(processSegment.key),
+                  ),
+                ),
+                child,
+              ],
+            );
+          }
           if (isIntermediateEntry &&
               showIntermediateHeader &&
               intermediateTurn != null) {
@@ -796,26 +816,6 @@ class _ChatMessageListState extends State<ChatMessageList> {
                     activity: currentTool,
                     onTap: () => _toggleCurrentProgress(currentProgressKey),
                   ),
-                child,
-              ],
-            );
-          } else if (!isIntermediateEntry &&
-              !isCurrentAssistant &&
-              !isCurrentProcess &&
-              processSegment != null &&
-              processSegment.detailCount > 0 &&
-              processSegment.showsSummaryAt(entryIndex)) {
-            child = Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _anchoredDisclosure(
-                  'process:${processSegment.key}',
-                  ChatProcessDisclosure(
-                    segment: processSegment,
-                    expanded: processExpanded,
-                    onToggle: () => _toggleProcessSegment(processSegment.key),
-                  ),
-                ),
                 child,
               ],
             );

@@ -51,7 +51,7 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   testWidgets(
-    'one intermediate disclosure reveals historical text, thinking, and tools together',
+    'intermediate disclosure reveals updates while each thought and tool interval stays folded',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -118,9 +118,22 @@ void main() {
 
       expect(find.text('I will inspect the first file.'), findsOneWidget);
       expect(find.text('The second file confirms the issue.'), findsOneWidget);
+      expect(find.text('first result'), findsNothing);
+      expect(find.text('second result'), findsNothing);
+      expect(find.byType(ChatProcessDisclosure), findsOneWidget);
+
+      await tester.tap(
+        find.byKey(
+          const ValueKey(
+            'chat_process_disclosure_client:turn-phases:segment:id:update-1',
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('first thought'), findsOneWidget);
       expect(find.text('first result'), findsOneWidget);
       expect(find.text('second result'), findsOneWidget);
-      expect(find.byType(ChatProcessDisclosure), findsNothing);
       expect(find.text('Final answer'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await cubit.close();
@@ -184,6 +197,12 @@ void main() {
     await tester.pump();
 
     expect(tester.getTopLeft(disclosure).dy, closeTo(beforeY, 1));
+    final firstUpdate = find.text('First historical update.');
+    expect(firstUpdate, findsOneWidget);
+    expect(
+      tester.getTopLeft(firstUpdate).dy,
+      greaterThan(tester.getBottomLeft(disclosure).dy),
+    );
     expect(tester.takeException(), isNull);
     await cubit.close();
   });
