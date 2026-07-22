@@ -267,6 +267,16 @@
   a rebuilt and re-signed base IPA for Swift/plugin, entitlement, Flutter-engine
   or other native-runtime changes. The free Apple profile's seven-day AltStore
   refresh remains a separate requirement from delivering feature updates.
+- The base iOS host exposes permission API v1 for notifications, camera,
+  microphone, speech recognition, local network and system file selection.
+  Loading a manifest or launching the app may inspect status but must never
+  trigger a prompt; only a deliberate in-app user action may request access.
+  Unknown permission identifiers and newer native API requirements fail closed
+  as an app-update requirement. Local-network and file-picker access remain
+  explicitly system-managed because iOS exposes no trustworthy persistent
+  grant query for those flows. Do not predeclare speculative location,
+  contacts, Bluetooth or photo-library permissions before a concrete feature
+  requires them.
 - Official Bridge 1.68.0 is integrated by explicit merge commit `a4999bce`.
   Preserve its configurable Codex-assist model and reasoning effort together
   with the existing artifact, transfer, mirror, Side Chat and Desktop

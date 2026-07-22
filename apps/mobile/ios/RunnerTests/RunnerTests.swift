@@ -244,4 +244,27 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(unsupported["supported"] as? Bool, false)
   }
 
+  func testPermissionHostSupportInfoGatesOSAndFreezesNativeAPI() {
+    let supported = PermissionHostPlugin.supportInfo(
+      osVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 1, patchVersion: 0),
+      appVersion: "1.107.2",
+      buildNumber: "197"
+    )
+    XCTAssertEqual(supported["supported"] as? Bool, true)
+    XCTAssertEqual(supported["nativeApiVersion"] as? Int, 1)
+    XCTAssertEqual(supported["appVersion"] as? String, "1.107.2")
+
+    let unsupported = PermissionHostPlugin.supportInfo(
+      osVersion: OperatingSystemVersion(majorVersion: 14, minorVersion: 8, patchVersion: 1)
+    )
+    XCTAssertEqual(unsupported["supported"] as? Bool, false)
+  }
+
+  func testPermissionHostRequestModesFailClosed() {
+    XCTAssertEqual(PermissionHostPlugin.requestMode(for: "notDetermined"), "direct")
+    XCTAssertEqual(PermissionHostPlugin.requestMode(for: "denied"), "openSettings")
+    XCTAssertEqual(PermissionHostPlugin.requestMode(for: "authorized"), "none")
+    XCTAssertEqual(PermissionHostPlugin.requestMode(for: "futureStatus"), "unavailable")
+  }
+
 }

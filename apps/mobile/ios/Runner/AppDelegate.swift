@@ -35,6 +35,9 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "FileTransferPlugin") {
       FileTransferPlugin.register(with: registrar)
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "PermissionHostPlugin") {
+      PermissionHostPlugin.register(with: registrar)
+    }
   }
 
   private func handleAppIconMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {

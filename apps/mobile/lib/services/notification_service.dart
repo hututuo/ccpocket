@@ -32,9 +32,12 @@ class NotificationService extends ChangeNotifier {
       '@mipmap/launcher_icon',
     );
     const iosSettings = DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
+      // Initializing the notification channel must not prompt on launch.
+      // Permission is requested only when the user enables notifications or
+      // explicitly requests it from Settings > Permission Management.
+      requestAlertPermission: false,
+      requestBadgePermission: false,
+      requestSoundPermission: false,
     );
     const macosSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
