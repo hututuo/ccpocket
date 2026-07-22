@@ -65,6 +65,40 @@ class AssistantBubble extends StatefulWidget {
   State<AssistantBubble> createState() => _AssistantBubbleState();
 }
 
+/// The reasoning and tool portion of an assistant envelope, without its
+/// visible text, artifacts, or message actions.
+///
+/// Process disclosures use this separate surface so expanding details can
+/// place them after the disclosure row even when the provider originally sent
+/// `ThinkingContent` before `TextContent` in the same envelope.
+class AssistantProcessDetails extends StatelessWidget {
+  const AssistantProcessDetails({super.key, required this.message});
+
+  final AssistantServerMessage message;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    key: ValueKey('assistant_process_details_${message.message.id}'),
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      for (final content in message.message.content)
+        switch (content) {
+          ThinkingContent(:final thinking) =>
+            thinking.trim().isEmpty
+                ? const SizedBox.shrink()
+                : ThinkingBubble(thinking: thinking),
+          ToolUseContent(:final id, :final name, :final input) =>
+            name == 'ExitPlanMode'
+                ? const SizedBox.shrink()
+                : name == 'TodoWrite' || isCodexUpdatePlanTool(name)
+                ? TodoWriteWidget(input: input)
+                : ToolUseTile(toolUseId: id, name: name, input: input),
+          TextContent() => const SizedBox.shrink(),
+        },
+    ],
+  );
+}
+
 class _AssistantBubbleState extends State<AssistantBubble> {
   bool _plainTextMode = false;
 

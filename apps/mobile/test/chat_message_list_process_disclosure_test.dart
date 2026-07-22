@@ -107,12 +107,24 @@ void main() {
       expect(find.text('Final answer'), findsOneWidget);
       expect(find.text('I will inspect the first file.'), findsNothing);
       expect(find.text('The second file confirms the issue.'), findsNothing);
-      expect(find.byType(ChatIntermediateOutputsDisclosure), findsOneWidget);
-      expect(find.byType(ChatProcessDisclosure), findsNothing);
 
       final disclosure = find.byKey(
         const ValueKey('chat_intermediate_disclosure_client:turn-phases'),
       );
+      for (var step = 0; step <= 100; step++) {
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * step / 100,
+        );
+        await tester.pump();
+        if (disclosure.evaluate().isNotEmpty) {
+          final y = tester.getTopLeft(disclosure).dy;
+          if (y >= 120 && y <= 400) break;
+        }
+      }
+      expect(disclosure, findsOneWidget);
+      expect(find.byType(ChatIntermediateOutputsDisclosure), findsOneWidget);
+      expect(find.byType(ChatProcessDisclosure), findsNothing);
+
       await tester.tap(disclosure);
       await tester.pump();
       await tester.pump();
@@ -149,12 +161,29 @@ void main() {
         greaterThan(tester.getBottomLeft(secondUpdate).dy),
       );
 
+      final firstDisclosureY = tester.getTopLeft(firstDisclosure).dy;
       await tester.tap(firstDisclosure);
       await tester.pump();
 
+      expect(
+        tester.getTopLeft(firstDisclosure).dy,
+        closeTo(firstDisclosureY, 1),
+      );
       expect(find.text('first thought'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('first thought')).dy,
+        greaterThan(tester.getBottomLeft(firstDisclosure).dy),
+      );
       expect(find.text('first result'), findsOneWidget);
       expect(find.text('second result'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('second result')).dy,
+        greaterThan(tester.getBottomLeft(firstDisclosure).dy),
+      );
+      expect(
+        tester.getBottomLeft(find.text('second result')).dy,
+        lessThan(tester.getTopLeft(secondUpdate).dy),
+      );
       expect(find.text('second thought'), findsNothing);
       expect(find.text('third result'), findsNothing);
 
@@ -304,6 +333,186 @@ void main() {
   );
 
   testWidgets(
+    'a long intermediate hierarchy unfolds below a persistent outer header',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit();
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-long-hierarchy',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-long-hierarchy',
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(messages: _manyIntermediateHistory(13)),
+        'session-long-hierarchy',
+      );
+      await tester.pump();
+
+      final outerDisclosure = find.byKey(
+        const ValueKey('chat_intermediate_disclosure_client:turn-many'),
+      );
+      for (var step = 0; step <= 20; step++) {
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * step / 20,
+        );
+        await tester.pump();
+        if (outerDisclosure.evaluate().isNotEmpty) {
+          final y = tester.getTopLeft(outerDisclosure).dy;
+          if (y >= 120 && y <= 320) break;
+        }
+      }
+      expect(outerDisclosure, findsOneWidget);
+
+      final beforeY = tester.getTopLeft(outerDisclosure).dy;
+      await tester.tap(outerDisclosure);
+      await tester.pump();
+
+      expect(outerDisclosure, findsOneWidget);
+      expect(tester.getTopLeft(outerDisclosure).dy, closeTo(beforeY, 1));
+      expect(find.byType(ChatIntermediateOutputsDisclosure), findsOneWidget);
+      expect(find.byType(ChatProcessDisclosure), findsNWidgets(13));
+      expect(find.text('Intermediate update 0'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Intermediate update 0')).dy,
+        greaterThan(tester.getBottomLeft(outerDisclosure).dy),
+      );
+
+      final firstProcessDisclosure = find.byKey(
+        const ValueKey(
+          'chat_process_disclosure_client:turn-many:segment:id:many-update-0',
+        ),
+      );
+      expect(
+        tester.getTopLeft(firstProcessDisclosure).dy,
+        greaterThan(
+          tester.getBottomLeft(find.text('Intermediate update 0')).dy,
+        ),
+      );
+      final processY = tester.getTopLeft(firstProcessDisclosure).dy;
+      await tester.tap(firstProcessDisclosure);
+      await tester.pump();
+      expect(
+        tester.getTopLeft(firstProcessDisclosure).dy,
+        closeTo(processY, 1),
+      );
+      expect(
+        tester.getTopLeft(find.text('Intermediate thought 0')).dy,
+        greaterThan(tester.getBottomLeft(firstProcessDisclosure).dy),
+      );
+      expect(find.text('Intermediate result 0'), findsOneWidget);
+
+      final outerY = tester.getTopLeft(outerDisclosure).dy;
+      await tester.tap(outerDisclosure);
+      await tester.pump();
+      expect(tester.getTopLeft(outerDisclosure).dy, closeTo(outerY, 1));
+      expect(find.byType(ChatIntermediateOutputsDisclosure), findsOneWidget);
+      expect(find.byType(ChatProcessDisclosure), findsNothing);
+      expect(find.text('Intermediate update 0'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await cubit.close();
+    },
+  );
+
+  testWidgets(
+    'a standalone process disclosure also reveals every detail below its row',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit();
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-standalone-process',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-standalone-process',
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(messages: _standaloneProcessHistory()),
+        'session-standalone-process',
+      );
+      await tester.pump();
+
+      final output = find.text('Standalone final output');
+      final disclosure = find.byKey(
+        const ValueKey(
+          'chat_process_disclosure_client:turn-standalone:segment:id:standalone-final',
+        ),
+      );
+      for (var step = 0; step <= 100; step++) {
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * step / 100,
+        );
+        await tester.pump();
+        if (disclosure.evaluate().isNotEmpty && output.evaluate().isNotEmpty) {
+          final y = tester.getTopLeft(disclosure).dy;
+          if (y >= 120 && y <= 650) break;
+        }
+      }
+      expect(output, findsOneWidget);
+      expect(disclosure, findsOneWidget);
+      expect(find.text('Standalone thought'), findsNothing);
+      expect(find.text('Standalone result'), findsNothing);
+      expect(
+        tester.getTopLeft(disclosure).dy,
+        greaterThan(tester.getBottomLeft(output).dy),
+      );
+
+      await tester.tap(disclosure);
+      await tester.pump();
+
+      expect(
+        tester.getTopLeft(find.text('Standalone thought')).dy,
+        greaterThan(tester.getBottomLeft(disclosure).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('Standalone result')).dy,
+        greaterThan(tester.getBottomLeft(disclosure).dy),
+      );
+      expect(tester.takeException(), isNull);
+      await cubit.close();
+    },
+  );
+
+  testWidgets(
     'active turn keeps only its latest output in the current-progress surface',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 900));
@@ -344,15 +553,29 @@ void main() {
       expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
       expect(find.text('first result'), findsNothing);
 
-      await tester.tap(
-        find.byKey(
-          const ValueKey('chat_current_progress_entry:client:turn-active'),
-        ),
+      final currentHeader = find.byKey(
+        const ValueKey('chat_current_progress_entry:client:turn-active'),
       );
+      final currentOutput = find.text('The second file is being checked.');
+      final currentToolLine = find.byType(ChatCurrentToolActivityLine);
+      expect(
+        tester.getTopLeft(currentOutput).dy,
+        greaterThan(tester.getBottomLeft(currentHeader).dy),
+      );
+      expect(
+        tester.getTopLeft(currentToolLine).dy,
+        greaterThan(tester.getBottomLeft(currentOutput).dy),
+      );
+
+      await tester.tap(currentHeader);
       await tester.pump();
 
       expect(find.text('current thought'), findsOneWidget);
       expect(find.byType(ToolUseTile), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('current thought')).dy,
+        greaterThan(tester.getBottomLeft(currentToolLine).dy),
+      );
       expect(find.text('Earlier update.'), findsNothing);
       expect(tester.takeException(), isNull);
       await cubit.close();
@@ -501,11 +724,6 @@ List<ServerMessage> _history() => [
       model: 'codex',
     ),
   ),
-  const ToolResultMessage(
-    toolUseId: 'tool-2',
-    toolName: 'Read',
-    content: 'second result',
-  ),
   AssistantServerMessage(
     message: AssistantMessage(
       id: 'update-2',
@@ -522,6 +740,13 @@ List<ServerMessage> _history() => [
       model: 'codex',
     ),
   ),
+  // Deliberately arrives after the next visible update. The UI must still
+  // render it under the process segment that issued tool-2.
+  const ToolResultMessage(
+    toolUseId: 'tool-2',
+    toolName: 'Read',
+    content: 'second result',
+  ),
   const ToolResultMessage(
     toolUseId: 'tool-3',
     toolName: 'Bash',
@@ -531,7 +756,15 @@ List<ServerMessage> _history() => [
     message: AssistantMessage(
       id: 'final',
       role: 'assistant',
-      content: const [TextContent(text: 'Final answer')],
+      content: [
+        const TextContent(text: 'Final answer'),
+        TextContent(
+          text: List<String>.filled(
+            18,
+            'Completed answer context remains below the intermediate process.',
+          ).join('\n\n'),
+        ),
+      ],
       model: 'codex',
     ),
   ),
@@ -597,6 +830,117 @@ List<ServerMessage> _streamHistory() => [
     ),
   ),
   const StatusMessage(status: ProcessStatus.running),
+];
+
+List<ServerMessage> _manyIntermediateHistory(int count) => [
+  const UserInputMessage(
+    text: 'earlier question',
+    clientMessageId: 'turn-before-many',
+  ),
+  AssistantServerMessage(
+    message: AssistantMessage(
+      id: 'before-many-final',
+      role: 'assistant',
+      content: [
+        TextContent(
+          text: List<String>.filled(
+            24,
+            'Earlier completed content keeps the target away from the transcript boundary.',
+          ).join('\n'),
+        ),
+      ],
+      model: 'codex',
+    ),
+  ),
+  const UserInputMessage(text: 'investigate', clientMessageId: 'turn-many'),
+  for (var index = 0; index < count; index++) ...[
+    AssistantServerMessage(
+      message: AssistantMessage(
+        id: 'many-update-$index',
+        role: 'assistant',
+        content: [
+          ThinkingContent(thinking: 'Intermediate thought $index'),
+          TextContent(text: 'Intermediate update $index'),
+          ToolUseContent(
+            id: 'many-tool-$index',
+            name: index.isEven ? 'Read' : 'Bash',
+            input: index.isEven
+                ? {'file_path': 'file-$index.txt'}
+                : {'command': 'printf $index'},
+          ),
+        ],
+        model: 'codex',
+      ),
+    ),
+    ToolResultMessage(
+      toolUseId: 'many-tool-$index',
+      toolName: index.isEven ? 'Read' : 'Bash',
+      content: 'Intermediate result $index',
+    ),
+  ],
+  AssistantServerMessage(
+    message: AssistantMessage(
+      id: 'many-final',
+      role: 'assistant',
+      content: [
+        TextContent(
+          text: List<String>.filled(
+            20,
+            'Final answer after many updates keeps content below the target.',
+          ).join('\n'),
+        ),
+      ],
+      model: 'codex',
+    ),
+  ),
+];
+
+List<ServerMessage> _standaloneProcessHistory() => [
+  const UserInputMessage(
+    text: 'finish the task',
+    clientMessageId: 'turn-standalone',
+  ),
+  AssistantServerMessage(
+    message: AssistantMessage(
+      id: 'standalone-final',
+      role: 'assistant',
+      content: const [
+        ThinkingContent(thinking: 'Standalone thought'),
+        TextContent(text: 'Standalone final output'),
+        ToolUseContent(
+          id: 'standalone-tool',
+          name: 'Read',
+          input: {'file_path': 'standalone.txt'},
+        ),
+      ],
+      model: 'codex',
+    ),
+  ),
+  const ToolResultMessage(
+    toolUseId: 'standalone-tool',
+    toolName: 'Read',
+    content: 'Standalone result',
+  ),
+  const ResultMessage(subtype: 'success'),
+  const UserInputMessage(
+    text: 'next question',
+    clientMessageId: 'turn-after-standalone',
+  ),
+  AssistantServerMessage(
+    message: AssistantMessage(
+      id: 'after-standalone-final',
+      role: 'assistant',
+      content: [
+        TextContent(
+          text: List<String>.filled(
+            40,
+            'A later completed answer keeps the standalone process in the middle.',
+          ).join('\n\n'),
+        ),
+      ],
+      model: 'codex',
+    ),
+  ),
 ];
 
 List<ServerMessage> _anchoringHistory({

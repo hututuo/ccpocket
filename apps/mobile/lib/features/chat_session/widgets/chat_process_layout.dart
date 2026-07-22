@@ -137,6 +137,24 @@ class ChatProcessTurnLayout {
 
   bool get hasIntermediateEntries => intermediateEntryIndices.isNotEmpty;
 
+  List<ChatProcessSegmentLayout> get intermediateSegments => segments
+      .where(
+        (segment) =>
+            (segment.assistantEntryIndex != null &&
+                intermediateAssistantEntryIndices.contains(
+                  segment.assistantEntryIndex,
+                )) ||
+            segment.processEntryIndices.any(intermediateEntryIndices.contains),
+      )
+      .toList(growable: false);
+
+  ChatProcessSegmentLayout? segmentForIntermediateEntry(int index) {
+    for (final segment in intermediateSegments) {
+      if (segment.containsEntry(index)) return segment;
+    }
+    return null;
+  }
+
   bool isIntermediateEntry(int index) =>
       intermediateEntryIndices.contains(index);
 
@@ -404,15 +422,36 @@ ChatProcessLayout buildChatProcessLayout(
     final finalSegment = segmentForAssistant(finalAssistantIndex);
     final protectedSegment = isActive ? currentSegment : finalSegment;
 
-    final intermediateEntries = <int>{};
+    final intermediateSegments = <ChatProcessSegmentLayout>[];
     final intermediateAssistants = <int>{};
     for (final segment in segments) {
       if (identical(segment, protectedSegment)) continue;
+      intermediateSegments.add(segment);
       if (segment.assistantEntryIndex case final assistantIndex?) {
-        intermediateEntries.add(assistantIndex);
         intermediateAssistants.add(assistantIndex);
       }
-      intermediateEntries.addAll(segment.processEntryIndices);
+    }
+
+    // The outer disclosure owns one contiguous historical interval. Keeping
+    // every entry in that interval under the same parent preserves transcript
+    // order for status/permission/system items that may sit between visible
+    // assistant updates instead of leaving them as unrelated ListView rows.
+    final intermediateEntries = <int>{};
+    if (intermediateSegments.isNotEmpty) {
+      final intervalEnd = protectedSegment?.firstEntryIndex ?? turnEnd;
+      for (var index = turnStart + 1; index < intervalEnd; index++) {
+        intermediateEntries.add(index);
+      }
+      // A tool can finish after the next visible assistant update. Its result
+      // still belongs to the segment that started it, so keep every explicit
+      // process entry owned by a historical segment inside that segment's
+      // disclosure even when the raw event index crosses the interval end.
+      for (final segment in intermediateSegments) {
+        if (segment.assistantEntryIndex case final assistantIndex?) {
+          intermediateEntries.add(assistantIndex);
+        }
+        intermediateEntries.addAll(segment.processEntryIndices);
+      }
     }
 
     final intermediateSummaryIndex = intermediateEntries.isEmpty
@@ -443,6 +482,9 @@ ChatProcessLayout buildChatProcessLayout(
       for (final index in segment.processEntryIndices) {
         turnsByIndex[index] = turn;
       }
+    }
+    for (final index in intermediateEntries) {
+      turnsByIndex[index] = turn;
     }
     if (isLatestTurn) latestTurn = turn;
     cursor = turnEnd;

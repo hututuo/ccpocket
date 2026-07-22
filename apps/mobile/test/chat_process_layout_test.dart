@@ -178,6 +178,65 @@ void main() {
       expect(turn.currentTool!.name, 'WebSearch');
     },
   );
+
+  test('outer fold owns auxiliary entries between its historical segments', () {
+    final entries = <ChatEntry>[
+      UserChatEntry('inspect', clientMessageId: 'turn-auxiliary'),
+      ServerChatEntry(const StatusMessage(status: ProcessStatus.running)),
+      ServerChatEntry(
+        _assistant('update', const [TextContent(text: 'Working update')]),
+      ),
+      ServerChatEntry(
+        _assistant('final', const [TextContent(text: 'Completed answer')]),
+      ),
+      ServerChatEntry(const ResultMessage(subtype: 'success')),
+    ];
+
+    final layout = buildChatProcessLayout(entries);
+    final turn = layout.turnForEntry(1)!;
+
+    expect(turn.intermediateEntryIndices, {1, 2});
+    expect(turn.intermediateSummaryEntryIndex, 1);
+    expect(turn.segmentForIntermediateEntry(1), isNull);
+    expect(turn.segmentForIntermediateEntry(2)?.assistantEntryIndex, 2);
+    expect(turn.finalAssistantEntryIndex, 3);
+  });
+
+  test('a delayed tool result stays with its historical inner segment', () {
+    final entries = <ChatEntry>[
+      UserChatEntry('inspect', clientMessageId: 'turn-delayed-result'),
+      ServerChatEntry(
+        _assistant('update', const [
+          TextContent(text: 'Working update'),
+          ToolUseContent(
+            id: 'delayed-tool',
+            name: 'Read',
+            input: {'file_path': 'delayed.txt'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        _assistant('final', const [TextContent(text: 'Completed answer')]),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'delayed-tool',
+          toolName: 'Read',
+          content: 'delayed result',
+        ),
+      ),
+      ServerChatEntry(const ResultMessage(subtype: 'success')),
+    ];
+
+    final layout = buildChatProcessLayout(entries);
+    final turn = layout.turnForEntry(1)!;
+    final historical = turn.segmentForIntermediateEntry(1)!;
+
+    expect(turn.intermediateEntryIndices, {1, 3});
+    expect(turn.segmentForIntermediateEntry(3), same(historical));
+    expect(historical.processEntryIndices, {3});
+    expect(turn.finalAssistantEntryIndex, 2);
+  });
 }
 
 AssistantServerMessage _assistant(String id, List<AssistantContent> content) =>

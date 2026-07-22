@@ -2,6 +2,29 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 
+/// Marks the full extent of one variable-height timeline item.
+///
+/// The render object records its own laid-out size while it is allowed to read
+/// it. Anchor correction can then use an exact item extent without asking an
+/// unrelated RenderBox for `size` during the viewport's layout pass.
+class ReadingPositionItem extends SingleChildRenderObjectWidget {
+  const ReadingPositionItem({super.key, required super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderReadingPositionItem();
+}
+
+class _RenderReadingPositionItem extends RenderProxyBox {
+  double? laidOutMainAxisExtent;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    laidOutMainAxisExtent = size.height;
+  }
+}
+
 /// An [AutoScrollController] that can keep one visible row fixed while a
 /// reverse, variable-height chat list changes around it.
 ///
@@ -121,7 +144,11 @@ double? _sliverMainAxisOffsetFor(GlobalKey anchorKey) {
   RenderObject? current = context.findRenderObject();
   if (current == null || !current.attached) return null;
   var boxOffset = 0.0;
+  double? exactItemExtent;
   while (current?.parent != null) {
+    if (current is _RenderReadingPositionItem) {
+      exactItemExtent = current.laidOutMainAxisExtent;
+    }
     final parent = current!.parent;
     if (parent is RenderSliverMultiBoxAdaptor) {
       final parentData = current.parentData;
@@ -141,13 +168,16 @@ double? _sliverMainAxisOffsetFor(GlobalKey anchorKey) {
       if (rightWayUp) {
         return sliverOffset + boxOffset;
       }
-      final nextChild = parent.childAfter(current);
-      final nextParentData = nextChild?.parentData;
-      final nextOffset = nextParentData is SliverMultiBoxAdaptorParentData
-          ? nextParentData.layoutOffset
-          : null;
-      if (nextOffset == null) return null;
-      final childExtent = nextOffset - sliverOffset;
+      var childExtent = exactItemExtent;
+      if (childExtent == null) {
+        final nextChild = parent.childAfter(current);
+        final nextParentData = nextChild?.parentData;
+        final nextOffset = nextParentData is SliverMultiBoxAdaptorParentData
+            ? nextParentData.layoutOffset
+            : null;
+        if (nextOffset == null) return null;
+        childExtent = nextOffset - sliverOffset;
+      }
       if (childExtent <= 0) return null;
       return sliverOffset + childExtent - boxOffset;
     }

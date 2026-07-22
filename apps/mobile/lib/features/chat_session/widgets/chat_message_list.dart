@@ -11,6 +11,7 @@ import '../../../models/messages.dart';
 import '../../../providers/bridge_cubits.dart';
 import '../../../services/bridge_service.dart';
 import '../../../utils/artifact_link_matcher.dart';
+import '../../../widgets/bubbles/assistant_bubble.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import '../../../widgets/message_bubble.dart';
 import '../../artifact_preview/artifact_preview_entry.dart';
@@ -19,6 +20,7 @@ import '../../message_images/message_images_screen.dart';
 import '../state/chat_session_cubit.dart';
 import '../state/streaming_state.dart';
 import '../state/streaming_state_cubit.dart';
+import 'chat_intermediate_process_group.dart';
 import 'maintain_reading_position_physics.dart';
 import 'chat_process_disclosure.dart';
 import 'chat_process_layout.dart';
@@ -390,6 +392,243 @@ class _ChatMessageListState extends State<ChatMessageList> {
     return null;
   }
 
+  Widget _timelineItem({
+    required String key,
+    required int entryIndex,
+    required Widget child,
+  }) => ReadingPositionItem(
+    child: AutoScrollTag(
+      key: ValueKey(key),
+      controller: widget.scrollController,
+      index: entryIndex,
+      child: child,
+    ),
+  );
+
+  Widget _buildTranscriptEntry({
+    required List<ChatEntry> entries,
+    required int entryIndex,
+    required Set<String> hiddenToolUseIds,
+    required bool transcriptTailComplete,
+    required bool showAssistantProcessDetails,
+  }) {
+    final entry = entries[entryIndex];
+    final previous = entryIndex > 0 ? entries[entryIndex - 1] : null;
+    final onForkMessage =
+        widget.isCodex &&
+            shouldShowForkForAssistant(
+              entries,
+              entryIndex,
+              transcriptTailComplete: transcriptTailComplete,
+            )
+        ? widget.onForkMessage
+        : null;
+    final fileRoot = widget.projectPath;
+    final chatCubit = context.read<ChatSessionCubit>();
+    return ChatEntryWidget(
+      entry: entry,
+      previous: previous,
+      httpBaseUrl: widget.httpBaseUrl,
+      sessionId: widget.sessionId,
+      projectPath: widget.projectPath,
+      onRetryMessage: widget.onRetryMessage,
+      onRewindMessage: widget.onRewindMessage,
+      onForkMessage: onForkMessage,
+      onDismissCodexWarning: chatCubit.dismissCodexWarning,
+      collapseToolResults: widget.collapseToolResults,
+      showAssistantProcessDetails: showAssistantProcessDetails,
+      resolvedPlanText: _resolvePlanText(entry),
+      hiddenToolUseIds: hiddenToolUseIds,
+      onArtifactOpen: _openArtifact,
+      onFileTap: fileRoot?.isNotEmpty == true
+          ? (filePath) {
+              openFilePeek(
+                context,
+                bridge: context.read<BridgeService>(),
+                projectPath: fileRoot!,
+                filePath: filePath,
+                projectFiles: context.read<FileListCubit>().state,
+                onResolvedFilePath: widget.onFilePeekOpened,
+              );
+            }
+          : null,
+      onImageTap: (user) {
+        final claudeSessionId = chatCubit.state.claudeSessionId;
+        final httpBaseUrl = widget.httpBaseUrl;
+        if (claudeSessionId == null ||
+            claudeSessionId.isEmpty ||
+            httpBaseUrl == null) {
+          return;
+        }
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => MessageImagesScreen(
+              bridge: context.read<BridgeService>(),
+              httpBaseUrl: httpBaseUrl,
+              claudeSessionId: claudeSessionId,
+              messageUuid: user.messageUuid!,
+              imageCount: user.imageCount,
+            ),
+          ),
+        );
+      },
+      isCodex: widget.isCodex,
+    );
+  }
+
+  Widget _buildAssistantProcessDetails(
+    List<ChatEntry> entries,
+    int entryIndex,
+  ) {
+    final entry = entries[entryIndex];
+    if (entry case ServerChatEntry(
+      message: final AssistantServerMessage message,
+    )) {
+      return AssistantProcessDetails(message: message);
+    }
+    return const SizedBox.shrink();
+  }
+
+  List<Widget> _buildProcessSegmentDetails({
+    required ChatProcessSegmentLayout segment,
+    required List<ChatEntry> entries,
+    required Set<String> hiddenToolUseIds,
+    required bool transcriptTailComplete,
+  }) {
+    final details = <Widget>[];
+    if (segment.assistantEntryIndex case final assistantIndex?
+        when segment.hasInlineAssistantProcess) {
+      details.add(
+        KeyedSubtree(
+          key: ValueKey('chat_process_inline_${segment.key}'),
+          child: _buildAssistantProcessDetails(entries, assistantIndex),
+        ),
+      );
+    }
+    final processIndices = segment.processEntryIndices.toList()..sort();
+    for (final processIndex in processIndices) {
+      details.add(
+        KeyedSubtree(
+          key: ValueKey('chat_process_entry_${segment.key}_$processIndex'),
+          child: _buildTranscriptEntry(
+            entries: entries,
+            entryIndex: processIndex,
+            hiddenToolUseIds: hiddenToolUseIds,
+            transcriptTailComplete: transcriptTailComplete,
+            showAssistantProcessDetails: true,
+          ),
+        ),
+      );
+    }
+    return details;
+  }
+
+  Widget _buildHistoricalProcessGroup({
+    required ChatProcessSegmentLayout segment,
+    required List<ChatEntry> entries,
+    required Set<String> hiddenToolUseIds,
+    required bool transcriptTailComplete,
+  }) {
+    final expanded = _expandedProcessSegments.contains(segment.key);
+    final children = <Widget>[];
+    if (segment.assistantEntryIndex case final assistantIndex?) {
+      children.add(
+        _buildTranscriptEntry(
+          entries: entries,
+          entryIndex: assistantIndex,
+          hiddenToolUseIds: hiddenToolUseIds,
+          transcriptTailComplete: transcriptTailComplete,
+          showAssistantProcessDetails: false,
+        ),
+      );
+    }
+    if (segment.detailCount > 0) {
+      children.add(
+        _anchoredDisclosure(
+          'process:${segment.key}',
+          ChatProcessDisclosure(
+            segment: segment,
+            expanded: expanded,
+            onToggle: () => _toggleProcessSegment(segment.key),
+          ),
+        ),
+      );
+      if (expanded) {
+        children.addAll(
+          _buildProcessSegmentDetails(
+            segment: segment,
+            entries: entries,
+            hiddenToolUseIds: hiddenToolUseIds,
+            transcriptTailComplete: transcriptTailComplete,
+          ),
+        );
+      }
+    }
+    return Column(
+      key: ValueKey('chat_process_group_${segment.key}'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+
+  Widget _buildCurrentProcessGroup({
+    required ChatProcessTurnLayout turn,
+    required ChatProcessSegmentLayout segment,
+    required String progressKey,
+    required List<ChatEntry> entries,
+    required Set<String> hiddenToolUseIds,
+    required bool transcriptTailComplete,
+  }) {
+    final expanded = _expandedCurrentProgress.contains(progressKey);
+    final currentTool = turn.currentTool;
+    final hasDetails = segment.detailCount > 0 || currentTool != null;
+    final children = <Widget>[
+      _anchoredDisclosure(
+        'current:$progressKey',
+        ChatCurrentProgressHeader(
+          turnKey: progressKey,
+          expanded: expanded,
+          hasDetails: hasDetails,
+          onToggle: () => _toggleCurrentProgress(progressKey),
+        ),
+      ),
+    ];
+    if (segment.assistantEntryIndex case final assistantIndex?) {
+      children.add(
+        _buildTranscriptEntry(
+          entries: entries,
+          entryIndex: assistantIndex,
+          hiddenToolUseIds: hiddenToolUseIds,
+          transcriptTailComplete: transcriptTailComplete,
+          showAssistantProcessDetails: false,
+        ),
+      );
+    }
+    if (currentTool != null) {
+      children.add(
+        ChatCurrentToolActivityLine(
+          activity: currentTool,
+          onTap: () => _toggleCurrentProgress(progressKey),
+        ),
+      );
+    }
+    if (expanded) {
+      children.addAll(
+        _buildProcessSegmentDetails(
+          segment: segment,
+          entries: entries,
+          hiddenToolUseIds: hiddenToolUseIds,
+          transcriptTailComplete: transcriptTailComplete,
+        ),
+      );
+    }
+    return Column(
+      key: ValueKey('chat_current_process_group_${turn.key}'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Build
   // ---------------------------------------------------------------------------
@@ -485,326 +724,166 @@ class _ChatMessageListState extends State<ChatMessageList> {
                 processLayout.latestTurnKey ??
                 'session:${widget.sessionId}';
             final progressKey = 'live:$turnKey';
-            return _anchoredDisclosure(
-              'current:$progressKey',
-              BlocBuilder<StreamingStateCubit, StreamingState>(
-                builder: (context, streamingState) {
-                  if (!streamingState.isStreaming) {
-                    return const SizedBox.shrink();
-                  }
-                  final thinking = streamingState.thinking.trim();
-                  final currentTool = turn?.currentTool;
-                  final expanded = _expandedCurrentProgress.contains(
-                    progressKey,
-                  );
-                  final hasDetails = thinking.isNotEmpty || currentTool != null;
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      ChatCurrentProgressHeader(
-                        turnKey: progressKey,
-                        expanded: expanded,
-                        hasDetails: hasDetails,
-                        onToggle: () => _toggleCurrentProgress(progressKey),
-                      ),
-                      if (streamingState.text.isNotEmpty)
-                        ChatEntryWidget(
-                          entry: StreamingChatEntry(text: streamingState.text),
-                          previous: null,
-                          httpBaseUrl: widget.httpBaseUrl,
-                          sessionId: widget.sessionId,
-                          projectPath: widget.projectPath,
-                          onRetryMessage: null,
-                          collapseToolResults: null,
-                          hiddenToolUseIds: const {},
-                          isCodex: widget.isCodex,
+            return ReadingPositionItem(
+              child: _anchoredDisclosure(
+                'current:$progressKey',
+                BlocBuilder<StreamingStateCubit, StreamingState>(
+                  builder: (context, streamingState) {
+                    if (!streamingState.isStreaming) {
+                      return const SizedBox.shrink();
+                    }
+                    final thinking = streamingState.thinking.trim();
+                    final currentTool = turn?.currentTool;
+                    final expanded = _expandedCurrentProgress.contains(
+                      progressKey,
+                    );
+                    final hasDetails =
+                        thinking.isNotEmpty || currentTool != null;
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        ChatCurrentProgressHeader(
+                          turnKey: progressKey,
+                          expanded: expanded,
+                          hasDetails: hasDetails,
+                          onToggle: () => _toggleCurrentProgress(progressKey),
                         ),
-                      if (currentTool != null)
-                        ChatCurrentToolActivityLine(
-                          activity: currentTool,
-                          onTap: () => _toggleCurrentProgress(progressKey),
-                        ),
-                      if (thinking.isNotEmpty && expanded)
-                        ChatLiveThinkingDetails(text: thinking),
-                    ],
-                  );
-                },
+                        if (streamingState.text.isNotEmpty)
+                          ChatEntryWidget(
+                            entry: StreamingChatEntry(
+                              text: streamingState.text,
+                            ),
+                            previous: null,
+                            httpBaseUrl: widget.httpBaseUrl,
+                            sessionId: widget.sessionId,
+                            projectPath: widget.projectPath,
+                            onRetryMessage: null,
+                            collapseToolResults: null,
+                            hiddenToolUseIds: const {},
+                            isCodex: widget.isCodex,
+                          ),
+                        if (currentTool != null)
+                          ChatCurrentToolActivityLine(
+                            activity: currentTool,
+                            onTap: () => _toggleCurrentProgress(progressKey),
+                          ),
+                        if (thinking.isNotEmpty && expanded)
+                          ChatLiveThinkingDetails(text: thinking),
+                      ],
+                    );
+                  },
+                ),
               ),
             );
           }
 
           final entry = allEntries[entryIndex];
-          final previous = entryIndex > 0 ? allEntries[entryIndex - 1] : null;
           final processSegment = processLayout.segmentForEntry(entryIndex);
           final intermediateTurn = processLayout.turnForEntry(entryIndex);
           final isIntermediateEntry =
               intermediateTurn?.isIntermediateEntry(entryIndex) == true;
-          final intermediateExpanded =
-              intermediateTurn != null &&
-              _expandedIntermediateTurns.contains(intermediateTurn.key);
-          final showIntermediateHeader =
-              intermediateTurn?.showsIntermediateSummaryAt(entryIndex) == true;
-          if (isIntermediateEntry && !intermediateExpanded) {
-            final collapsedTurn = intermediateTurn;
-            if (!showIntermediateHeader || collapsedTurn == null) {
-              return const SizedBox.shrink();
-            }
-            return AutoScrollTag(
-              key: ValueKey('intermediate:${collapsedTurn.key}'),
-              controller: widget.scrollController,
-              index: entryIndex,
-              child: _anchoredDisclosure(
-                'intermediate:${collapsedTurn.key}',
-                ChatIntermediateOutputsDisclosure(
-                  turn: collapsedTurn,
-                  expanded: false,
-                  onToggle: () => _toggleIntermediateTurn(collapsedTurn.key),
-                ),
-              ),
-            );
-          }
-
-          final isCurrentAssistant =
-              !hasStreaming &&
-              intermediateTurn?.isCurrentAssistantEntry(entryIndex) == true;
-          final isCurrentProcess =
-              !hasStreaming &&
-              intermediateTurn?.isCurrentProcessEntry(entryIndex) == true;
-          final currentProgressKey = intermediateTurn == null
-              ? null
-              : 'entry:${intermediateTurn.key}';
-          final currentExpanded =
-              currentProgressKey != null &&
-              _expandedCurrentProgress.contains(currentProgressKey);
-          final isCurrentSummary =
-              isCurrentProcess &&
-              intermediateTurn?.currentSegment?.showsSummaryAt(entryIndex) ==
-                  true;
-          if (isCurrentProcess && !currentExpanded) {
-            if (!isCurrentSummary || currentProgressKey == null) {
-              return const SizedBox.shrink();
-            }
-            final currentTool = intermediateTurn?.currentTool;
-            return AutoScrollTag(
-              key: ValueKey('current:$currentProgressKey'),
-              controller: widget.scrollController,
-              index: entryIndex,
-              child: _anchoredDisclosure(
-                'current:$currentProgressKey',
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    ChatCurrentProgressHeader(
-                      turnKey: currentProgressKey,
-                      expanded: false,
-                      hasDetails: true,
-                      onToggle: () =>
-                          _toggleCurrentProgress(currentProgressKey),
-                    ),
-                    if (currentTool != null)
-                      ChatCurrentToolActivityLine(
-                        activity: currentTool,
-                        onTap: () => _toggleCurrentProgress(currentProgressKey),
-                      ),
-                  ],
-                ),
-              ),
-            );
-          }
-
-          final processExpanded =
-              processSegment != null &&
-              _expandedProcessSegments.contains(processSegment.key);
-          if (!isCurrentProcess &&
-              processSegment != null &&
-              processSegment.detailCount > 0 &&
-              processSegment.isProcessEntry(entryIndex) &&
-              !processExpanded) {
-            if (!processSegment.showsSummaryAt(entryIndex)) {
-              return const SizedBox.shrink();
-            }
-            return AutoScrollTag(
-              key: ValueKey('process:${processSegment.key}'),
-              controller: widget.scrollController,
-              index: entryIndex,
-              child: _anchoredDisclosure(
-                'process:${processSegment.key}',
-                ChatProcessDisclosure(
-                  segment: processSegment,
-                  expanded: false,
-                  onToggle: () => _toggleProcessSegment(processSegment.key),
-                ),
-              ),
-            );
-          }
           final transcriptTailComplete =
               chatState.status == ProcessStatus.idle &&
               chatState.queuedInput == null &&
               !hasStreaming;
-          final onForkMessage =
-              widget.isCodex &&
-                  shouldShowForkForAssistant(
-                    allEntries,
-                    entryIndex,
-                    transcriptTailComplete: transcriptTailComplete,
-                  )
-              ? widget.onForkMessage
-              : null;
-          final fileRoot = widget.projectPath;
-          final showAssistantProcessDetails = isCurrentAssistant
-              ? currentExpanded
-              : processSegment?.hasInlineProcessAt(entryIndex) != true ||
-                    processExpanded;
 
-          Widget child = ChatEntryWidget(
-            entry: entry,
-            previous: previous,
-            httpBaseUrl: widget.httpBaseUrl,
-            sessionId: widget.sessionId,
-            projectPath: widget.projectPath,
-            onRetryMessage: widget.onRetryMessage,
-            onRewindMessage: widget.onRewindMessage,
-            onForkMessage: onForkMessage,
-            onDismissCodexWarning: chatCubit.dismissCodexWarning,
-            collapseToolResults: widget.collapseToolResults,
-            showAssistantProcessDetails: showAssistantProcessDetails,
-            resolvedPlanText: _resolvePlanText(entry),
-            hiddenToolUseIds: hiddenToolUseIds,
-            onArtifactOpen: _openArtifact,
-            onFileTap: fileRoot?.isNotEmpty == true
-                ? (filePath) {
-                    openFilePeek(
-                      context,
-                      bridge: context.read<BridgeService>(),
-                      projectPath: fileRoot!,
-                      filePath: filePath,
-                      projectFiles: context.read<FileListCubit>().state,
-                      onResolvedFilePath: widget.onFilePeekOpened,
-                    );
-                  }
-                : null,
-            onImageTap: (user) {
-              final claudeSessionId = context
-                  .read<ChatSessionCubit>()
-                  .state
-                  .claudeSessionId;
-              final httpBaseUrl = widget.httpBaseUrl;
-              if (claudeSessionId == null ||
-                  claudeSessionId.isEmpty ||
-                  httpBaseUrl == null) {
-                return;
-              }
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => MessageImagesScreen(
-                    bridge: context.read<BridgeService>(),
-                    httpBaseUrl: httpBaseUrl,
-                    claudeSessionId: claudeSessionId,
-                    messageUuid: user.messageUuid!,
-                    imageCount: user.imageCount,
-                  ),
-                ),
-              );
-            },
-            isCodex: widget.isCodex,
-          );
-          final showSegmentDisclosure =
-              !isCurrentAssistant &&
-              !isCurrentProcess &&
-              processSegment != null &&
-              processSegment.detailCount > 0 &&
-              processSegment.showsSummaryAt(entryIndex);
-          if (showSegmentDisclosure) {
-            child = Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                child,
-                _anchoredDisclosure(
-                  'process:${processSegment.key}',
-                  ChatProcessDisclosure(
-                    segment: processSegment,
-                    expanded: processExpanded,
-                    onToggle: () => _toggleProcessSegment(processSegment.key),
-                  ),
-                ),
-              ],
+          // One outer fold is one real ListView item. Its temporary outputs,
+          // nested disclosures and process details are descendants of that
+          // item instead of independently appearing/disappearing peer rows.
+          if (isIntermediateEntry) {
+            if (intermediateTurn == null ||
+                !intermediateTurn.showsIntermediateSummaryAt(entryIndex)) {
+              return const SizedBox.shrink();
+            }
+            final intermediateExpanded = _expandedIntermediateTurns.contains(
+              intermediateTurn.key,
             );
-          }
-          if (isIntermediateEntry &&
-              showIntermediateHeader &&
-              intermediateTurn != null) {
-            child = Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _anchoredDisclosure(
+            return _timelineItem(
+              key: 'intermediate:${intermediateTurn.key}',
+              entryIndex: entryIndex,
+              child: ChatIntermediateProcessGroup(
+                turn: intermediateTurn,
+                expanded: intermediateExpanded,
+                outerDisclosure: _anchoredDisclosure(
                   'intermediate:${intermediateTurn.key}',
                   ChatIntermediateOutputsDisclosure(
                     turn: intermediateTurn,
-                    expanded: true,
+                    expanded: intermediateExpanded,
                     onToggle: () =>
                         _toggleIntermediateTurn(intermediateTurn.key),
                   ),
                 ),
-                child,
-              ],
-            );
-          } else if (isCurrentAssistant && currentProgressKey != null) {
-            final currentTool = intermediateTurn?.currentTool;
-            final hasDetails =
-                (intermediateTurn?.currentSegment?.detailCount ?? 0) > 0 ||
-                currentTool != null;
-            child = Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _anchoredDisclosure(
-                  'current:$currentProgressKey',
-                  ChatCurrentProgressHeader(
-                    turnKey: currentProgressKey,
-                    expanded: currentExpanded,
-                    hasDetails: hasDetails,
-                    onToggle: () => _toggleCurrentProgress(currentProgressKey),
-                  ),
+                segmentBuilder: (segment) => _buildHistoricalProcessGroup(
+                  segment: segment,
+                  entries: allEntries,
+                  hiddenToolUseIds: hiddenToolUseIds,
+                  transcriptTailComplete: transcriptTailComplete,
                 ),
-                child,
-                if (currentTool != null)
-                  ChatCurrentToolActivityLine(
-                    activity: currentTool,
-                    onTap: () => _toggleCurrentProgress(currentProgressKey),
-                  ),
-              ],
-            );
-          } else if (isCurrentSummary && currentProgressKey != null) {
-            final currentTool = intermediateTurn?.currentTool;
-            child = Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _anchoredDisclosure(
-                  'current:$currentProgressKey',
-                  ChatCurrentProgressHeader(
-                    turnKey: currentProgressKey,
-                    expanded: currentExpanded,
-                    hasDetails: true,
-                    onToggle: () => _toggleCurrentProgress(currentProgressKey),
-                  ),
+                auxiliaryEntryBuilder: (entryIndex) => _buildTranscriptEntry(
+                  entries: allEntries,
+                  entryIndex: entryIndex,
+                  hiddenToolUseIds: hiddenToolUseIds,
+                  transcriptTailComplete: transcriptTailComplete,
+                  showAssistantProcessDetails: true,
                 ),
-                if (currentTool != null)
-                  ChatCurrentToolActivityLine(
-                    activity: currentTool,
-                    onTap: () => _toggleCurrentProgress(currentProgressKey),
-                  ),
-                child,
-              ],
+              ),
             );
           }
-          // Wrap with AutoScrollTag for scroll-to-index support.
-          // Use entryIndex (not reverse index) as the AutoScrollTag index.
-          child = AutoScrollTag(
-            key: ValueKey(_entryKey(entry, entryIndex)),
-            controller: widget.scrollController,
-            index: entryIndex,
-            child: child,
+
+          final currentSegment = intermediateTurn?.currentSegment;
+          final isCurrentSegmentEntry =
+              !hasStreaming &&
+              currentSegment != null &&
+              currentSegment.containsEntry(entryIndex);
+          if (isCurrentSegmentEntry) {
+            if (!currentSegment.showsSummaryAt(entryIndex)) {
+              return const SizedBox.shrink();
+            }
+            final progressKey = 'entry:${intermediateTurn!.key}';
+            return _timelineItem(
+              key: 'current:$progressKey',
+              entryIndex: entryIndex,
+              child: _buildCurrentProcessGroup(
+                turn: intermediateTurn,
+                segment: currentSegment,
+                progressKey: progressKey,
+                entries: allEntries,
+                hiddenToolUseIds: hiddenToolUseIds,
+                transcriptTailComplete: transcriptTailComplete,
+              ),
+            );
+          }
+
+          if (processSegment != null) {
+            if (!processSegment.showsSummaryAt(entryIndex)) {
+              return const SizedBox.shrink();
+            }
+            final itemKey = processSegment.assistantEntryIndex != null
+                ? _entryKey(entry, entryIndex)
+                : 'process:${processSegment.key}';
+            return _timelineItem(
+              key: itemKey,
+              entryIndex: entryIndex,
+              child: _buildHistoricalProcessGroup(
+                segment: processSegment,
+                entries: allEntries,
+                hiddenToolUseIds: hiddenToolUseIds,
+                transcriptTailComplete: transcriptTailComplete,
+              ),
+            );
+          }
+
+          return _timelineItem(
+            key: _entryKey(entry, entryIndex),
+            entryIndex: entryIndex,
+            child: _buildTranscriptEntry(
+              entries: allEntries,
+              entryIndex: entryIndex,
+              hiddenToolUseIds: hiddenToolUseIds,
+              transcriptTailComplete: transcriptTailComplete,
+              showAssistantProcessDetails: true,
+            ),
           );
-          return child;
         },
       ),
     );
