@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('shouldShowForkForAssistant', () {
-    test('keeps an earlier text reply forkable while a newer reply runs', () {
+    test('only exposes the final visible reply inside one completed turn', () {
       final first = _assistant('a1');
       final second = _assistant('a2');
       final entries = <ChatEntry>[
@@ -16,7 +16,7 @@ void main() {
         ServerChatEntry(_result()),
       ];
 
-      expect(shouldShowForkForAssistant(entries, 1), isTrue);
+      expect(shouldShowForkForAssistant(entries, 1), isFalse);
       expect(shouldShowForkForAssistant(entries, 3), isTrue);
     });
 
@@ -32,24 +32,23 @@ void main() {
       expect(shouldShowForkForAssistant(entries, 3), isFalse);
     });
 
-    test('only exposes a result-less transcript tail when the turn is idle', () {
-      final entries = <ChatEntry>[
-        UserChatEntry('first'),
-        ServerChatEntry(_assistant('a1')),
-      ];
+    test(
+      'only exposes a result-less transcript tail when the turn is idle',
+      () {
+        final entries = <ChatEntry>[
+          UserChatEntry('first'),
+          ServerChatEntry(_assistant('a1')),
+        ];
 
-      expect(shouldShowForkForAssistant(entries, 1), isFalse);
-      expect(
-        shouldShowForkForAssistant(
-          entries,
-          1,
-          transcriptTailComplete: true,
-        ),
-        isTrue,
-      );
-    });
+        expect(shouldShowForkForAssistant(entries, 1), isFalse);
+        expect(
+          shouldShowForkForAssistant(entries, 1, transcriptTailComplete: true),
+          isTrue,
+        );
+      },
+    );
 
-    test('keeps a prior visible assistant block forkable', () {
+    test('does not expose a progress update before the final reply', () {
       final entries = <ChatEntry>[
         UserChatEntry('first'),
         ServerChatEntry(_assistant('tool-preface')),
@@ -58,24 +57,16 @@ void main() {
       ];
 
       expect(
-        shouldShowForkForAssistant(
-          entries,
-          1,
-          transcriptTailComplete: true,
-        ),
-        isTrue,
+        shouldShowForkForAssistant(entries, 1, transcriptTailComplete: true),
+        isFalse,
       );
       expect(
-        shouldShowForkForAssistant(
-          entries,
-          3,
-          transcriptTailComplete: true,
-        ),
+        shouldShowForkForAssistant(entries, 3, transcriptTailComplete: true),
         isTrue,
       );
     });
 
-    test('shows one fork action under every completed assistant reply', () {
+    test('shows one fork action for each completed user turn', () {
       final firstReply = _assistant('first-reply');
       final intermediate = _assistant('tool-preface');
       final secondReply = _assistant('second-reply');
@@ -91,7 +82,7 @@ void main() {
       ];
 
       expect(shouldShowForkForAssistant(entries, 1), isTrue);
-      expect(shouldShowForkForAssistant(entries, 4), isTrue);
+      expect(shouldShowForkForAssistant(entries, 4), isFalse);
       expect(shouldShowForkForAssistant(entries, 6), isTrue);
     });
 

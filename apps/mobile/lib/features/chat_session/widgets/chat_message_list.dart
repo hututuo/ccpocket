@@ -47,6 +47,7 @@ bool shouldShowForkForAssistant(
   );
   if (!hasVisibleReply) return false;
 
+  var hasTerminalResult = false;
   for (var i = entryIndex + 1; i < entries.length; i++) {
     final next = entries[i];
     // Desktop/app-server history may omit the synthetic ResultMessage that the
@@ -55,14 +56,20 @@ bool shouldShowForkForAssistant(
     if (next is UserChatEntry) return true;
     if (next is ServerChatEntry) {
       final message = next.message;
-      // A later assistant block proves that this is no longer the newest
-      // reply, even while the current turn is still running. Forking still
-      // targets the user turn immediately preceding this reply.
-      if (message is AssistantServerMessage) return true;
-      if (message is ResultMessage) return true;
+      // Fork is turn-granular: a later visible assistant update means this
+      // block was progress inside the same turn, not an item-level branch
+      // point. Tool-only assistant envelopes do not replace the visible reply.
+      if (message is AssistantServerMessage &&
+          message.message.content.any(
+            (content) =>
+                content is TextContent && content.text.trim().isNotEmpty,
+          )) {
+        return false;
+      }
+      if (message is ResultMessage) hasTerminalResult = true;
     }
   }
-  return transcriptTailComplete;
+  return hasTerminalResult || transcriptTailComplete;
 }
 
 @visibleForTesting
@@ -500,9 +507,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
               child: ChatIntermediateOutputsDisclosure(
                 turn: intermediateTurn,
                 expanded: false,
-                onToggle: () => _toggleIntermediateTurn(
-                  intermediateTurn.key,
-                ),
+                onToggle: () => _toggleIntermediateTurn(intermediateTurn.key),
               ),
             );
           }
@@ -527,9 +532,8 @@ class _ChatMessageListState extends State<ChatMessageList> {
                   ChatIntermediateOutputsDisclosure(
                     turn: intermediateTurn,
                     expanded: true,
-                    onToggle: () => _toggleIntermediateTurn(
-                      intermediateTurn.key,
-                    ),
+                    onToggle: () =>
+                        _toggleIntermediateTurn(intermediateTurn.key),
                   ),
                   disclosure,
                 ],
@@ -632,9 +636,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
                 ChatIntermediateOutputsDisclosure(
                   turn: intermediateTurn,
                   expanded: true,
-                  onToggle: () => _toggleIntermediateTurn(
-                    intermediateTurn.key,
-                  ),
+                  onToggle: () => _toggleIntermediateTurn(intermediateTurn.key),
                 ),
                 child,
               ],
