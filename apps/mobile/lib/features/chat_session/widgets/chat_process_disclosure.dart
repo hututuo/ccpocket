@@ -261,6 +261,9 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
       activity.name,
       zh: zh,
       input: activity.input,
+      phase: activity.completed
+          ? ToolDisplayPhase.completed
+          : ToolDisplayPhase.action,
     );
 
     return Padding(

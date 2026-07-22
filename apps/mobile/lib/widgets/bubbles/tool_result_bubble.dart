@@ -281,6 +281,7 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
               : getToolDisplayName(
                   widget.message.toolName!,
                   zh: Localizations.localeOf(context).languageCode == 'zh',
+                  phase: ToolDisplayPhase.result,
                 ),
           category: _category,
           summary: summary,
@@ -597,6 +598,7 @@ class _ExpandedToolResult extends StatelessWidget {
         : getToolDisplayName(
             message.toolName!,
             zh: Localizations.localeOf(context).languageCode == 'zh',
+            phase: ToolDisplayPhase.result,
           );
     final lines = content.split('\n');
     final hasMore = lines.length > _previewLines;

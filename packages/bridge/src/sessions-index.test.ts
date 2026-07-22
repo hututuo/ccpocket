@@ -141,6 +141,91 @@ describe("codexThreadToSessionHistory", () => {
     ]);
   });
 
+  it("preserves official Read, List, Search, and command completion semantics", () => {
+    const history = codexThreadToSessionHistory({
+      turns: [
+        {
+          items: [
+            {
+              type: "commandExecution",
+              id: "read-1",
+              command: "sed -n '1,40p' /tmp/repo/README.md",
+              cwd: "/tmp/repo",
+              status: "completed",
+              commandActions: [
+                {
+                  type: "read",
+                  command: "sed -n '1,40p' /tmp/repo/README.md",
+                  name: "sed",
+                  path: "/tmp/repo/README.md",
+                },
+              ],
+              aggregatedOutput: "hello",
+              exitCode: 0,
+            },
+            {
+              type: "commandExecution",
+              id: "list-1",
+              command: "ls -la",
+              status: "completed",
+              commandActions: [
+                { type: "listFiles", command: "ls -la", path: "." },
+              ],
+              aggregatedOutput: "README.md",
+              exitCode: 0,
+            },
+            {
+              type: "commandExecution",
+              id: "search-1",
+              command: "rg TODO lib",
+              status: "completed",
+              commandActions: [
+                {
+                  type: "search",
+                  command: "rg TODO lib",
+                  query: "TODO",
+                  path: "lib",
+                },
+              ],
+              aggregatedOutput: "lib/a.ts:TODO",
+              exitCode: 0,
+            },
+          ],
+        },
+      ],
+    });
+
+    const toolUses = history
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.content[0]);
+    expect(toolUses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "read-1", name: "Read" }),
+        expect.objectContaining({ id: "list-1", name: "ListFiles" }),
+        expect.objectContaining({ id: "search-1", name: "Search" }),
+      ]),
+    );
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "tool_result",
+          toolUseId: "read-1",
+          toolName: "Read",
+        }),
+        expect.objectContaining({
+          role: "tool_result",
+          toolUseId: "list-1",
+          toolName: "ListFiles",
+        }),
+        expect.objectContaining({
+          role: "tool_result",
+          toolUseId: "search-1",
+          toolName: "Search",
+        }),
+      ]),
+    );
+  });
+
   it("preserves official tool item ids and user image refs", () => {
     const history = codexThreadToSessionHistory({
       turns: [
@@ -1499,7 +1584,7 @@ describe("codex sessions integration", () => {
       ],
     });
     expect(history[2].content[0].type).toBe("tool_use");
-    expect(history[2].content[0].name).toBe("apply_patch");
+    expect(history[2].content[0].name).toBe("FileChange");
     expect(history[3]).toEqual({
       role: "assistant",
       uuid: "web-search-5",
@@ -1519,6 +1604,96 @@ describe("codex sessions integration", () => {
     expect(history[4].uuid).toMatch(/^codex:assistant:[A-Za-z0-9_-]{32}$/);
     const replayed = await getCodexSessionHistory(threadId);
     expect(replayed[4].uuid).toBe(history[4].uuid);
+  });
+
+  it("restores Desktop exec categories and matching completion outputs", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68019";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: threadId, cwd: "/tmp/project-a" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call-read",
+          input:
+            'const r = await tools.exec_command({cmd:"sed -n \'1,40p\' /tmp/project-a/SKILL.md",workdir:"/tmp/project-a"}); text(r.output);',
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-02-13T11:28:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "call-read",
+          output: [
+            { type: "input_text", text: "Script completed\n" },
+            { type: "input_text", text: "skill body" },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "spawn_agent",
+          call_id: "call-agent",
+          arguments: '{"task_name":"review"}',
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-agent",
+          output: "agent started",
+        },
+      }),
+    ];
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
+      lines.join("\n"),
+    );
+
+    const history = await getCodexSessionHistory(threadId);
+    expect(history).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        uuid: "call-read",
+        content: [
+          expect.objectContaining({
+            type: "tool_use",
+            id: "call-read",
+            name: "ReadSkill",
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        role: "tool_result",
+        toolUseId: "call-read",
+        toolName: "ReadSkill",
+        content: "Script completed\n\nskill body",
+      }),
+      expect.objectContaining({
+        role: "assistant",
+        uuid: "call-agent",
+        content: [
+          expect.objectContaining({ name: "SpawnAgent" }),
+        ],
+      }),
+      expect.objectContaining({
+        role: "tool_result",
+        toolUseId: "call-agent",
+        toolName: "SpawnAgent",
+        content: "agent started",
+      }),
+    ]);
   });
 
   it("restores codex MCP tool result images from event_msg entries", async () => {

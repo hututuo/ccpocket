@@ -14,6 +14,11 @@ import { createHash } from "node:crypto";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
 import { isAutoRenamePromptText } from "./auto-rename.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
+import {
+  codexDesktopToolOutputText,
+  describeCodexDesktopToolCall,
+  formatCodexFileChanges,
+} from "./local-features/codex-tool-history.js";
 
 export interface SessionIndexEntry {
   sessionId: string;
@@ -2354,11 +2359,13 @@ export function codexThreadToSessionHistory(
         }
 
         case "commandExecution": {
-          const command = stringValue(item.command) ?? "";
-          appendToolUseMessage(messages, itemId, "Bash", {
-            command,
-            ...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
-          });
+          const descriptor = describeCodexHistoryCommand(item);
+          appendToolUseMessage(
+            messages,
+            itemId,
+            descriptor.name,
+            descriptor.input,
+          );
           const outputParts: string[] = [];
           if (typeof item.status === "string") {
             outputParts.push(`status: ${item.status}`);
@@ -2372,7 +2379,7 @@ export function codexThreadToSessionHistory(
           appendCodexOfficialToolResult(
             messages,
             itemId,
-            "Bash",
+            descriptor.name,
             outputParts.join("\n").trim(),
             itemTimestamp,
           );
@@ -2384,6 +2391,13 @@ export function codexThreadToSessionHistory(
             changes: Array.isArray(item.changes) ? item.changes : [],
             ...(typeof item.status === "string" ? { status: item.status } : {}),
           });
+          appendCodexOfficialToolResult(
+            messages,
+            itemId,
+            "FileChange",
+            formatCodexFileChanges(item.changes),
+            itemTimestamp,
+          );
           break;
         }
 
@@ -2450,10 +2464,18 @@ export function codexThreadToSessionHistory(
         }
 
         case "webSearch": {
+          const query = stringValue(item.query) ?? "";
           appendToolUseMessage(messages, itemId, "WebSearch", {
-            query: stringValue(item.query) ?? "",
+            query,
             ...(item.action != null ? { action: item.action } : {}),
           });
+          appendCodexOfficialToolResult(
+            messages,
+            itemId,
+            "WebSearch",
+            query ? `Web search: ${query}` : "Web search completed",
+            itemTimestamp,
+          );
           break;
         }
 
@@ -2729,22 +2751,6 @@ function appendToolUseMessage(
   });
 }
 
-function normalizeCodexToolName(name: string): string {
-  if (name === "exec_command" || name === "write_stdin") {
-    return "Bash";
-  }
-
-  // Codex function names for MCP tools look like: mcp__server__tool_name
-  if (name.startsWith("mcp__")) {
-    const [server, ...toolParts] = name.slice("mcp__".length).split("__");
-    if (server && toolParts.length > 0) {
-      return `mcp:${server}/${toolParts.join("__")}`;
-    }
-  }
-
-  return name;
-}
-
 function describeCodexHistoryCommand(payload: Record<string, unknown>): {
   name: string;
   input: Record<string, unknown>;
@@ -2763,6 +2769,13 @@ function describeCodexHistoryCommand(payload: Record<string, unknown>): {
     command,
     ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}),
     ...(actions.length > 0 ? { commandActions: actions } : {}),
+    ...(typeof payload.status === "string" ? { status: payload.status } : {}),
+    ...(typeof payload.exitCode === "number"
+      ? { exitCode: payload.exitCode }
+      : {}),
+    ...(typeof payload.durationMs === "number"
+      ? { durationMs: payload.durationMs }
+      : {}),
   };
   if (actions.length > 1) {
     return {
@@ -3737,6 +3750,7 @@ export async function getCodexSessionHistory(
   if (!jsonlPath) return [];
 
   const messages: SessionHistoryMessage[] = [];
+  const responseToolNames = new Map<string, string>();
   let userTurnOrdinal = 0;
 
   try {
@@ -3911,12 +3925,12 @@ export async function getCodexSessionHistory(
             : `tool-${index}`;
         const rawName =
           typeof payload.name === "string" ? payload.name : "tool";
-        appendToolUseMessage(
-          messages,
-          id,
-          normalizeCodexToolName(rawName),
-          parseObjectLike(payload.arguments),
+        const descriptor = describeCodexDesktopToolCall(
+          rawName,
+          payload.arguments,
         );
+        appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
+        responseToolNames.set(id, descriptor.name);
         continue;
       }
 
@@ -3927,24 +3941,42 @@ export async function getCodexSessionHistory(
             : `tool-${index}`;
         const rawName =
           typeof payload.name === "string" ? payload.name : "custom_tool";
-        appendToolUseMessage(
+        const descriptor = describeCodexDesktopToolCall(rawName, payload.input);
+        appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
+        responseToolNames.set(id, descriptor.name);
+        continue;
+      }
+
+      if (
+        payload.type === "function_call_output" ||
+        payload.type === "custom_tool_call_output"
+      ) {
+        const id =
+          typeof payload.call_id === "string"
+            ? payload.call_id
+            : `tool-result-${index}`;
+        appendToolResultMessage(
           messages,
           id,
-          normalizeCodexToolName(rawName),
-          parseObjectLike(payload.input),
+          responseToolNames.get(id),
+          codexDesktopToolOutputText(payload.output),
+          entryTimestamp ? { timestamp: entryTimestamp } : undefined,
         );
         continue;
       }
 
       if (payload.type === "web_search_call") {
-        appendToolUseMessage(
-          messages,
+        const id =
           typeof payload.call_id === "string"
             ? payload.call_id
-            : `web-search-${index}`,
+            : `web-search-${index}`;
+        appendToolUseMessage(
+          messages,
+          id,
           "WebSearch",
           getCodexSearchInput(payload),
         );
+        responseToolNames.set(id, "WebSearch");
         continue;
       }
 

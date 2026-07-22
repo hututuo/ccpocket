@@ -17,6 +17,37 @@ void main() {
         'FutureCodexTool',
       );
     });
+
+    test('matches Codex lifecycle labels for exploration and commands', () {
+      expect(
+        getToolDisplayName('Read', zh: true, phase: ToolDisplayPhase.completed),
+        '已读取',
+      );
+      expect(
+        getToolDisplayName(
+          'ListFiles',
+          zh: true,
+          phase: ToolDisplayPhase.completed,
+        ),
+        '已列出文件',
+      );
+      expect(
+        getToolDisplayName(
+          'Search',
+          zh: true,
+          phase: ToolDisplayPhase.completed,
+        ),
+        '已搜索',
+      );
+      expect(
+        getToolDisplayName('Bash', zh: true, phase: ToolDisplayPhase.completed),
+        '已运行命令',
+      );
+      expect(
+        getToolDisplayName('Bash', zh: true, phase: ToolDisplayPhase.result),
+        '终端命令已完成',
+      );
+    });
   });
 
   group('getToolFullInput', () {

@@ -572,8 +572,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   /** Last assistant text message — used as `result` in completion notification. */
   private lastResultText: string | null = null;
   private readonly agentTurnTracker = new CodexAgentTurnTracker();
-  /** Item ids whose tool-use envelope was already emitted at item/started. */
-  private readonly startedToolItemIds = new Set<string>();
+  /** Tool descriptors already emitted at item/started, keyed by stable item id. */
+  private readonly startedToolItems = new Map<string, CodexItemToolDescriptor>();
   private pendingPlanCompletion: {
     toolUseId: string;
     planText: string;
@@ -1875,7 +1875,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.lastPlanItemText = null;
     this.lastResultText = null;
     this.agentTurnTracker.reset();
-    this.startedToolItemIds.clear();
+    this.startedToolItems.clear();
     this._skills = [];
     this._apps = [];
     this._plugins = [];
@@ -4214,8 +4214,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     itemId: string,
     descriptor: CodexItemToolDescriptor,
   ): void {
-    if (this.startedToolItemIds.has(itemId)) return;
-    this.startedToolItemIds.add(itemId);
+    if (this.startedToolItems.has(itemId)) return;
+    this.startedToolItems.set(itemId, descriptor);
+    this.emitToolUse(itemId, descriptor);
+  }
+
+  private emitToolUse(
+    itemId: string,
+    descriptor: CodexItemToolDescriptor,
+  ): void {
     this.emitMessage({
       type: "assistant",
       message: {
@@ -4238,9 +4245,19 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     itemId: string,
     descriptor: CodexItemToolDescriptor,
   ): void {
-    if (this.startedToolItemIds.delete(itemId)) return;
-    this.emitStartedToolUse(itemId, descriptor);
-    this.startedToolItemIds.delete(itemId);
+    const started = this.startedToolItems.get(itemId);
+    this.startedToolItems.delete(itemId);
+    if (!started) {
+      this.emitToolUse(itemId, descriptor);
+      return;
+    }
+
+    // A completed app-server item can carry a more precise parsed command
+    // than its started counterpart. Re-emit the same stable assistant id so
+    // capable clients replace the generic row instead of losing Read/List/Search.
+    if (started.name !== descriptor.name) {
+      this.emitToolUse(itemId, descriptor);
+    }
   }
 
   private processItemCompleted(
@@ -5138,14 +5155,23 @@ function describeCodexItemTool(
     case "filechange":
       return {
         name: "FileChange",
-        input: { changes: Array.isArray(item.changes) ? item.changes : [] },
+        input: {
+          changes: Array.isArray(item.changes) ? item.changes : [],
+          ...(typeof item.status === "string" ? { status: item.status } : {}),
+        },
       };
     case "mcptoolcall": {
       const server = stringOrNull(item.server) ?? "mcp";
       const tool = stringOrNull(item.tool) ?? "unknown";
       return {
         name: `mcp:${server}/${tool}`,
-        input: toToolUseInput(item.arguments),
+        input: {
+          ...toToolUseInput(item.arguments),
+          ...(typeof item.status === "string" ? { status: item.status } : {}),
+          ...(typeof item.durationMs === "number"
+            ? { durationMs: item.durationMs }
+            : {}),
+        },
       };
     }
     case "dynamictoolcall":
@@ -5164,6 +5190,7 @@ function describeCodexItemTool(
         name: collabToolDisplayName(tool),
         input: {
           tool,
+          ...(typeof item.status === "string" ? { status: item.status } : {}),
           ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
           ...(typeof item.senderThreadId === "string"
             ? { senderThreadId: item.senderThreadId }
@@ -5240,6 +5267,11 @@ function describeCommandExecution(
     command,
     ...(cwd ? { cwd } : {}),
     ...(actions.length > 0 ? { commandActions: actions } : {}),
+    ...(typeof item.status === "string" ? { status: item.status } : {}),
+    ...(typeof item.exitCode === "number" ? { exitCode: item.exitCode } : {}),
+    ...(typeof item.durationMs === "number"
+      ? { durationMs: item.durationMs }
+      : {}),
   };
   if (actions.length > 1) {
     return {

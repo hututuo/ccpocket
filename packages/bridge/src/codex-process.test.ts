@@ -5311,6 +5311,62 @@ describe("CodexProcess (app-server)", () => {
     );
   });
 
+  it("upgrades a generic started command when completion adds a semantic action", () => {
+    const proc = new CodexProcess("darwin");
+    const messages: Array<Record<string, any>> = [];
+    proc.on("message", (message) => messages.push(message as any));
+
+    (proc as any).handleNotification("item/started", {
+      item: {
+        type: "commandExecution",
+        id: "late-read-1",
+        command: "sed -n '1,40p' /tmp/demo/README.md",
+        status: "inProgress",
+        commandActions: [],
+      },
+    });
+    (proc as any).handleNotification("item/completed", {
+      item: {
+        type: "commandExecution",
+        id: "late-read-1",
+        command: "sed -n '1,40p' /tmp/demo/README.md",
+        status: "completed",
+        commandActions: [
+          {
+            type: "read",
+            command: "sed -n '1,40p' /tmp/demo/README.md",
+            name: "sed",
+            path: "/tmp/demo/README.md",
+          },
+        ],
+        aggregatedOutput: "read output",
+        exitCode: 0,
+      },
+    });
+
+    const toolUses = messages
+      .filter((message) => message.type === "assistant")
+      .map((message) => message.message.content[0]);
+    expect(toolUses).toEqual([
+      expect.objectContaining({ id: "late-read-1", name: "Bash" }),
+      expect.objectContaining({
+        id: "late-read-1",
+        name: "Read",
+        input: expect.objectContaining({
+          file_path: "/tmp/demo/README.md",
+          status: "completed",
+        }),
+      }),
+    ]);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "late-read-1",
+        toolName: "Read",
+      }),
+    );
+  });
+
   it("emits plan notifications as structured checklist messages", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
