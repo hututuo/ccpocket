@@ -420,6 +420,16 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                       ),
                     ],
                   ),
+                  if (session.forkedFromSessionId != null ||
+                      session.forkedFromThreadId != null) ...[
+                    const SizedBox(height: 6),
+                    _ForkLineageBadge(
+                      key: ValueKey('running_session_fork_${session.id}'),
+                      parentId:
+                          session.forkedFromThreadId ??
+                          session.forkedFromSessionId!,
+                    ),
+                  ],
                   if (agentLabel != null) ...[
                     const SizedBox(height: 8),
                     _AgentLabel(label: agentLabel),
@@ -2561,6 +2571,44 @@ class _AgentLabel extends StatelessWidget {
   }
 }
 
+class _ForkLineageBadge extends StatelessWidget {
+  final String parentId;
+
+  const _ForkLineageBadge({super.key, required this.parentId});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final color = colorScheme.tertiary;
+    return Tooltip(
+      message: '${AppLocalizations.of(context).fork}: $parentId',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withValues(alpha: 0.35), width: 0.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.call_split, size: 12, color: color),
+            const SizedBox(width: 4),
+            Text(
+              AppLocalizations.of(context).fork,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class RecentSessionCard extends StatelessWidget {
   final RecentSession session;
   final VoidCallback onTap;
@@ -2708,6 +2756,13 @@ class RecentSessionCard extends StatelessWidget {
                       ),
                     ],
                   ),
+                  if (session.forkedFromThreadId != null) ...[
+                    const SizedBox(height: 6),
+                    _ForkLineageBadge(
+                      key: ValueKey('recent_session_fork_${session.sessionId}'),
+                      parentId: session.forkedFromThreadId!,
+                    ),
+                  ],
                   if (agentLabel != null) ...[
                     const SizedBox(height: 8),
                     _AgentLabel(label: agentLabel),

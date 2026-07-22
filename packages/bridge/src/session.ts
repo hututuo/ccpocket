@@ -63,6 +63,10 @@ export interface SessionInfo {
   pastMessages?: unknown[];
   projectPath: string;
   claudeSessionId?: string;
+  /** Bridge runtime that was forked, when it is still known locally. */
+  forkedFromSessionId?: string;
+  /** Durable Codex thread that this session was forked from. */
+  forkedFromThreadId?: string;
   /** User-assigned session name (via /rename or mobile rename). */
   name?: string;
   status: ProcessStatus;
@@ -169,6 +173,8 @@ export interface SessionSummary {
   provider: Provider;
   projectPath: string;
   claudeSessionId?: string;
+  forkedFromSessionId?: string;
+  forkedFromThreadId?: string;
   /** User-assigned session name. */
   name?: string;
   status: ProcessStatus;
@@ -559,6 +565,8 @@ export class SessionManager {
       // Pre-populate claudeSessionId for resumed sessions so that get_history
       // can return it immediately (before the SDK sends a system/result event).
       claudeSessionId: options?.sessionId,
+      forkedFromSessionId: replacementSession?.forkedFromSessionId,
+      forkedFromThreadId: replacementSession?.forkedFromThreadId,
     };
     const ownsRuntimeSlot = (): boolean =>
       replacementSession === undefined || this.sessions.get(id) === session;
@@ -1305,6 +1313,8 @@ export class SessionManager {
         provider: s.provider,
         projectPath: s.projectPath,
         claudeSessionId: s.claudeSessionId,
+        forkedFromSessionId: s.forkedFromSessionId,
+        forkedFromThreadId: s.forkedFromThreadId,
         name: s.name,
         status: s.status,
         createdAt: s.createdAt.toISOString(),

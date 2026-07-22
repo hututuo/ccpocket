@@ -363,6 +363,8 @@ vi.mock("./session.js", async () => {
       this.sessions.delete(temporaryId);
       replacement.id = sessionId;
       replacement.name = current.name;
+      replacement.forkedFromSessionId = current.forkedFromSessionId;
+      replacement.forkedFromThreadId = current.forkedFromThreadId;
       replacement.codexQueuedInput = current.codexQueuedInput;
       replacement.codexGoal = current.codexGoal;
       replacement.codexGoalUpdatedAt = current.codexGoalUpdatedAt;
@@ -555,6 +557,8 @@ vi.mock("./session.js", async () => {
         provider: s.provider,
         projectPath: s.projectPath,
         claudeSessionId: s.claudeSessionId,
+        forkedFromSessionId: s.forkedFromSessionId,
+        forkedFromThreadId: s.forkedFromThreadId,
         status: s.status,
         createdAt: "",
         lastActivityAt: "",
@@ -3265,6 +3269,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         [
           "thr_preserve_settings",
           {
+            forkedFromThreadId: "thr_parent",
             codexSettings: {
               profile: "ccpocket",
               model: "gpt-5.6-sol",
@@ -3315,6 +3320,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       webSearchMode: "live",
       additionalWritableRoots: [resolve("/tmp/shared")],
     });
+    expect(session.forkedFromThreadId).toBe("thr_parent");
+    const resumed = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" &&
+          message.subtype === "session_created" &&
+          message.sessionId === session.id,
+      );
+    expect(resumed.forkedFromThreadId).toBe("thr_parent");
 
     bridge.close();
   });
@@ -10867,9 +10882,26 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(forkCreated).toMatchObject({
       provider: "codex",
       sourceSessionId: created.sessionId,
+      forkedFromSessionId: created.sessionId,
+      forkedFromThreadId: "thread-source-latest",
     });
     const forked = (bridge as any).sessionManager.get(forkCreated.sessionId);
+    expect(forked).toMatchObject({
+      forkedFromSessionId: created.sessionId,
+      forkedFromThreadId: "thread-source-latest",
+    });
     expect(forked.pastMessages).toHaveLength(3);
+
+    const sessionList = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "session_list");
+    expect(sessionList.sessions).toContainEqual(
+      expect.objectContaining({
+        id: forkCreated.sessionId,
+        forkedFromSessionId: created.sessionId,
+        forkedFromThreadId: "thread-source-latest",
+      }),
+    );
 
     bridge.close();
   });
@@ -10921,9 +10953,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(forkCreated).toMatchObject({
       provider: "codex",
       projectPath: resolve("/tmp/project-codex"),
+      forkedFromThreadId: "thread-persisted",
     });
     expect(forkCreated).not.toHaveProperty("sourceSessionId");
     const forked = (bridge as any).sessionManager.get(forkCreated.sessionId);
+    expect(forked.forkedFromThreadId).toBe("thread-persisted");
     expect(forked.codexOptions).toMatchObject({
       forkFromThreadId: "thread-persisted",
     });
@@ -11644,6 +11678,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
             firstPrompt: "Investigate crash in the parser",
             lastPrompt: "add a regression test",
             summary: "Fixed the off-by-one in the tokenizer",
+            forkedFromThreadId: "thr_parent",
           },
         ],
       ]),
@@ -11668,6 +11703,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(payload.sessions[0]).toMatchObject({
       provider: "codex",
       sessionId: "thr_codex_1",
+      forkedFromThreadId: "thr_parent",
       name: "Crash triage",
       agentNickname: "Atlas",
       agentRole: "explorer",

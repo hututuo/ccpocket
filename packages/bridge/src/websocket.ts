@@ -938,6 +938,12 @@ function codexThreadToRecentSession(
   return {
     sessionId: thread.id,
     provider: "codex",
+    ...((thread.forkedFromThreadId ?? indexed?.forkedFromThreadId)
+      ? {
+          forkedFromThreadId:
+            thread.forkedFromThreadId ?? indexed?.forkedFromThreadId,
+        }
+      : {}),
     ...(thread.name ? { name: thread.name } : {}),
     ...(thread.agentNickname ? { agentNickname: thread.agentNickname } : {}),
     ...(thread.agentRole ? { agentRole: thread.agentRole } : {}),
@@ -1565,6 +1571,12 @@ export class BridgeWebSocketServer {
         ? { claudeSessionId: providerSessionId ?? session?.claudeSessionId }
         : {}),
       ...(sourceSessionId ? { sourceSessionId } : {}),
+      ...(session?.forkedFromSessionId
+        ? { forkedFromSessionId: session.forkedFromSessionId }
+        : {}),
+      ...(session?.forkedFromThreadId
+        ? { forkedFromThreadId: session.forkedFromThreadId }
+        : {}),
     };
 
     if (provider === "codex" && derivedCodexSettings) {
@@ -1855,6 +1867,11 @@ export class BridgeWebSocketServer {
       } as CodexStartOptions,
     );
     const newSession = this.sessionManager.get(newSessionId);
+    if (newSession) {
+      newSession.forkedFromSessionId = session.id;
+      newSession.forkedFromThreadId =
+        session.claudeSessionId ?? codexProcess.sessionId ?? undefined;
+    }
 
     this.send(
       ws,
@@ -1942,6 +1959,9 @@ export class BridgeWebSocketServer {
         { forkFromThreadId: threadId },
       );
       const newSession = this.sessionManager.get(newSessionId);
+      if (newSession) {
+        newSession.forkedFromThreadId = threadId;
+      }
       this.send(
         ws,
         this.buildSessionCreatedMessage({
@@ -6087,9 +6107,10 @@ export class BridgeWebSocketServer {
               wtMapping?.projectPath ?? resumeProjectPath,
               this.platform,
             );
-            const indexedSettings = (
+            const indexedMetadata = (
               await getCodexSessionIndexMetadata([sessionRefId])
-            ).get(sessionRefId)?.codexSettings;
+            ).get(sessionRefId);
+            const indexedSettings = indexedMetadata?.codexSettings;
             const requestedProfile = msg.profile ?? indexedSettings?.profile;
             const effectiveProfile = requestedProfile
               ? await this.resolveCodexResumeProfile(
@@ -6207,6 +6228,8 @@ export class BridgeWebSocketServer {
                 `Bridge session was not registered: ${sessionId}`,
               );
             }
+            createdSession.forkedFromThreadId =
+              indexedMetadata?.forkedFromThreadId;
             await this.loadAndSetSessionName(
               createdSession,
               "codex",

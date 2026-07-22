@@ -656,6 +656,7 @@ describe("codex sessions integration", () => {
 
   it("includes codex sessions in getAllRecentSessions", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68010";
+    const parentThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68000";
     const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
     mkdirSync(codexDir, { recursive: true });
 
@@ -665,6 +666,7 @@ describe("codex sessions integration", () => {
         type: "session_meta",
         payload: {
           id: threadId,
+          forked_from_id: parentThreadId,
           cwd: "/tmp/project-a",
           git: { branch: "main" },
         },
@@ -696,9 +698,13 @@ describe("codex sessions integration", () => {
     const entry = sessions.find((s) => s.sessionId === threadId);
     expect(entry).toBeDefined();
     expect(entry?.provider).toBe("codex");
+    expect(entry?.forkedFromThreadId).toBe(parentThreadId);
     expect(entry?.projectPath).toBe("/tmp/project-a");
     expect(entry?.resumeCwd).toBeUndefined();
     expect(entry?.firstPrompt).toBe("hello codex");
+
+    const metadata = await getCodexSessionIndexMetadata([threadId]);
+    expect(metadata.get(threadId)?.forkedFromThreadId).toBe(parentThreadId);
   });
 
   it("excludes codex subagent sessions from recent sessions", async () => {

@@ -18,6 +18,8 @@ import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 export interface SessionIndexEntry {
   sessionId: string;
   provider: "claude" | "codex";
+  /** Durable Codex parent thread for a forked conversation. */
+  forkedFromThreadId?: string;
   /** User-assigned session name (customTitle for Claude, thread_name for Codex). */
   name?: string;
   agentNickname?: string;
@@ -1229,6 +1231,7 @@ interface CodexRecentPerfStats {
 }
 
 export interface CodexSessionIndexMetadata {
+  forkedFromThreadId?: string;
   codexSettings?: SessionIndexEntry["codexSettings"];
   resumeCwd?: string;
   /** First user prompt parsed from the rollout file. The thread/list API
@@ -1279,6 +1282,7 @@ function parseCodexSessionJsonl(
 ): CodexSessionParseResult | null {
   const lines = raw.split("\n");
   let threadId = fallbackSessionId;
+  let forkedFromThreadId: string | undefined;
   let projectPath = "";
   let resumeCwd = "";
   let gitBranch = "";
@@ -1349,6 +1353,13 @@ function parseCodexSessionJsonl(
         }
         if (typeof payload.id === "string" && payload.id.length > 0) {
           threadId = payload.id;
+        }
+        if (
+          forkedFromThreadId === undefined &&
+          typeof payload.forked_from_id === "string" &&
+          payload.forked_from_id.length > 0
+        ) {
+          forkedFromThreadId = payload.forked_from_id;
         }
         if (typeof payload.cwd === "string" && payload.cwd.length > 0) {
           resumeCwd = payload.cwd;
@@ -1530,6 +1541,7 @@ function parseCodexSessionJsonl(
     entry: {
       sessionId: threadId,
       provider: "codex",
+      ...(forkedFromThreadId ? { forkedFromThreadId } : {}),
       ...(agentNickname ? { agentNickname } : {}),
       ...(agentRole ? { agentRole } : {}),
       summary: summary || undefined,
@@ -2035,6 +2047,9 @@ export async function getCodexSessionIndexMetadata(
   for (const parsed of parsedResults) {
     if (!parsed || !wantedThreadIds.has(parsed.threadId)) continue;
     result.set(parsed.threadId, {
+      ...(parsed.entry.forkedFromThreadId
+        ? { forkedFromThreadId: parsed.entry.forkedFromThreadId }
+        : {}),
       ...(parsed.entry.codexSettings
         ? { codexSettings: parsed.entry.codexSettings }
         : {}),
@@ -2081,6 +2096,9 @@ export async function getCodexSessionIndexMetadataForFiles(
   for (const { expectedThreadId, parsed } of parsedResults) {
     if (!parsed || parsed.threadId !== expectedThreadId) continue;
     result.set(expectedThreadId, {
+      ...(parsed.entry.forkedFromThreadId
+        ? { forkedFromThreadId: parsed.entry.forkedFromThreadId }
+        : {}),
       ...(parsed.entry.codexSettings
         ? { codexSettings: parsed.entry.codexSettings }
         : {}),

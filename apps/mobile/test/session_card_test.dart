@@ -71,6 +71,26 @@ void main() {
       );
     });
 
+    test('parses and preserves optional fork lineage', () {
+      final info = SessionInfo.fromJson({
+        'id': 'fork-child',
+        'provider': 'codex',
+        'projectPath': '/home/user/my-app',
+        'status': 'idle',
+        'createdAt': '',
+        'lastActivityAt': '',
+        'forkedFromSessionId': 'runtime-parent',
+        'forkedFromThreadId': 'thread-parent',
+      });
+
+      expect(info.forkedFromSessionId, 'runtime-parent');
+      expect(info.forkedFromThreadId, 'thread-parent');
+      expect(
+        info.copyWith(status: 'running').forkedFromThreadId,
+        'thread-parent',
+      );
+    });
+
     test('parses codex settings from codexSettings object', () {
       final json = {
         'id': 'codex1',
@@ -222,6 +242,31 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('shows fork lineage for a running child session', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'fork-running',
+        provider: Provider.codex.value,
+        projectPath: '/home/user/my-app',
+        status: 'idle',
+        createdAt: '',
+        lastActivityAt: '',
+        forkedFromSessionId: 'runtime-parent',
+        forkedFromThreadId: 'thread-parent',
+      );
+
+      await tester.pumpWidget(
+        _wrap(RunningSessionCard(session: session, onTap: () {})),
+      );
+
+      expect(
+        find.byKey(const ValueKey('running_session_fork_fork-running')),
+        findsOneWidget,
+      );
+      expect(find.text('Fork'), findsOneWidget);
     });
 
     testWidgets('keeps the pin at the right edge while waiting approval', (
@@ -1299,6 +1344,31 @@ void main() {
   });
 
   group('RecentSessionCard', () {
+    testWidgets('shows persisted fork lineage', (tester) async {
+      final session = RecentSession.fromJson({
+        'sessionId': 'fork-recent',
+        'provider': 'codex',
+        'forkedFromThreadId': 'thread-parent',
+        'firstPrompt': 'prompt',
+        'created': '',
+        'modified': '',
+        'gitBranch': '',
+        'projectPath': '/home/user/my-app',
+        'isSidechain': false,
+      });
+
+      expect(session.forkedFromThreadId, 'thread-parent');
+      await tester.pumpWidget(
+        _wrap(RecentSessionCard(session: session, onTap: () {})),
+      );
+
+      expect(
+        find.byKey(const ValueKey('recent_session_fork_fork-recent')),
+        findsOneWidget,
+      );
+      expect(find.text('Fork'), findsOneWidget);
+    });
+
     testWidgets('always shows an empty pin button and calls toggle', (
       tester,
     ) async {

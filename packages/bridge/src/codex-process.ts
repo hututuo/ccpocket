@@ -324,6 +324,7 @@ export interface CodexPluginMetadata {
 
 export interface CodexThreadSummary {
   id: string;
+  forkedFromThreadId?: string | null;
   preview: string;
   createdAt: number;
   updatedAt: number;
@@ -5505,6 +5506,7 @@ function toCodexThreadSummary(entry: unknown): CodexThreadSummary {
       : {};
   return {
     id: typeof record.id === "string" ? record.id : "",
+    forkedFromThreadId: stringOrNull(record.forkedFromId),
     preview: typeof record.preview === "string" ? record.preview : "",
     createdAt: numberOrUndefined(record.createdAt) ?? 0,
     updatedAt: numberOrUndefined(record.updatedAt) ?? 0,

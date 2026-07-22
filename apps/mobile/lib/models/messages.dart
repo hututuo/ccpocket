@@ -968,6 +968,8 @@ sealed class ServerMessage {
         worktreeBranch: json['worktreeBranch'] as String?,
         clearContext: json['clearContext'] as bool? ?? false,
         sourceSessionId: json['sourceSessionId'] as String?,
+        forkedFromSessionId: json['forkedFromSessionId'] as String?,
+        forkedFromThreadId: json['forkedFromThreadId'] as String?,
         tipCode: json['tipCode'] as String?,
         permissionChangeId: json['permissionChangeId'] as String?,
         codexCliJoin: json['codexCliJoin'] is Map<String, dynamic>
@@ -1701,6 +1703,8 @@ class SystemMessage implements ServerMessage {
   final String? worktreeBranch;
   final bool clearContext;
   final String? sourceSessionId;
+  final String? forkedFromSessionId;
+  final String? forkedFromThreadId;
   final String? tipCode;
   final String? permissionChangeId;
   final CodexCliJoinTarget? codexCliJoin;
@@ -1733,6 +1737,8 @@ class SystemMessage implements ServerMessage {
     this.worktreeBranch,
     this.clearContext = false,
     this.sourceSessionId,
+    this.forkedFromSessionId,
+    this.forkedFromThreadId,
     this.tipCode,
     this.permissionChangeId,
     this.codexCliJoin,
@@ -3727,6 +3733,7 @@ class RecentSession {
   final String sessionId;
   final String? provider;
   final String? rawPermissionMode;
+  final String? forkedFromThreadId;
 
   /// User-assigned session name (customTitle for Claude, thread_name for Codex).
   final String? name;
@@ -3759,6 +3766,7 @@ class RecentSession {
     required this.sessionId,
     this.provider,
     this.rawPermissionMode,
+    this.forkedFromThreadId,
     this.name,
     this.agentNickname,
     this.agentRole,
@@ -3811,6 +3819,7 @@ class RecentSession {
       sessionId: json['sessionId'] as String,
       provider: json['provider'] as String?,
       rawPermissionMode: json['permissionMode'] as String?,
+      forkedFromThreadId: json['forkedFromThreadId'] as String?,
       name: json['name'] as String?,
       agentNickname: json['agentNickname'] as String?,
       agentRole: json['agentRole'] as String?,
@@ -3945,6 +3954,8 @@ class SessionInfo {
   final String? provider;
   final String projectPath;
   final String? claudeSessionId;
+  final String? forkedFromSessionId;
+  final String? forkedFromThreadId;
 
   /// User-assigned session name.
   final String? name;
@@ -3986,6 +3997,8 @@ class SessionInfo {
     this.provider,
     required this.projectPath,
     this.claudeSessionId,
+    this.forkedFromSessionId,
+    this.forkedFromThreadId,
     this.name,
     this.agentNickname,
     this.agentRole,
@@ -4073,6 +4086,8 @@ class SessionInfo {
       provider: provider,
       projectPath: projectPath,
       claudeSessionId: claudeSessionId,
+      forkedFromSessionId: forkedFromSessionId,
+      forkedFromThreadId: forkedFromThreadId,
       name: clearName ? null : (name ?? this.name),
       agentNickname: agentNickname,
       agentRole: agentRole,
@@ -4129,6 +4144,8 @@ class SessionInfo {
       provider: json['provider'] as String?,
       projectPath: json['projectPath'] as String,
       claudeSessionId: json['claudeSessionId'] as String?,
+      forkedFromSessionId: json['forkedFromSessionId'] as String?,
+      forkedFromThreadId: json['forkedFromThreadId'] as String?,
       name: json['name'] as String?,
       agentNickname: json['agentNickname'] as String?,
       agentRole: json['agentRole'] as String?,

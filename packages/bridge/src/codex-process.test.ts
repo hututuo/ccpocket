@@ -2480,6 +2480,33 @@ describe("CodexProcess (app-server)", () => {
     });
   });
 
+  it("keeps Codex fork lineage from thread/list", async () => {
+    const proc = new CodexProcess("linux");
+    vi.spyOn(proc as any, "request").mockResolvedValue({
+      data: [
+        {
+          id: "thr_child",
+          forkedFromId: "thr_parent",
+          preview: "Inherited prefix",
+          createdAt: 1,
+          updatedAt: 2,
+          cwd: "/tmp/project-a",
+        },
+      ],
+      nextCursor: null,
+    });
+
+    await expect(proc.listThreads()).resolves.toMatchObject({
+      data: [
+        {
+          id: "thr_child",
+          forkedFromThreadId: "thr_parent",
+        },
+      ],
+    });
+    proc.stop();
+  });
+
   it("exposes one generic, read-only RPC seam for optional modules", async () => {
     const proc = new CodexProcess("linux");
     const response = { rateLimits: { limitId: "codex" } };

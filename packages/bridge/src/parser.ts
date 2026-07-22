@@ -566,6 +566,8 @@ export type ServerMessage =
       codexNativePlanModeSupported?: boolean;
       clearContext?: boolean;
       sourceSessionId?: string;
+      forkedFromSessionId?: string;
+      forkedFromThreadId?: string;
       tipCode?: string;
       permissionChangeId?: string;
       codexCliJoin?: CodexCliJoinTarget;
