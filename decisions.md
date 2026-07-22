@@ -248,6 +248,17 @@
   once a later user turn or explicit result proves their completion. Runtime
   metadata such as model, effort and continuation still hydrates session state
   but does not require a visible `System:` timeline chip.
+- A visible intermediate assistant update, reasoning segment, or tool preface is
+  not by itself a completed reply. Do not infer completion merely because a
+  later `AssistantServerMessage` exists in the same user turn. The current Fork
+  wire contract carries the preceding Codex user-turn ordinal, not an
+  assistant-item identity; until an item-level backend contract exists, Mobile
+  must not present reasoning or intermediate progress as an item-level branch
+  point. Parent and child histories may legitimately share the inherited
+  prefix, but branch lineage must be identified by provider thread IDs and
+  `forked_from_id`, never collapsed or explained by matching titles/previews.
+  Diagnose and repair presentation/runtime state without rewriting or deleting
+  the canonical rollout files.
 - Historical process presentation has two independent render-only folds.
   Reasoning/tool calls/results are first grouped by the visible assistant
   update that owns them, so one long turn no longer concentrates every tool at
