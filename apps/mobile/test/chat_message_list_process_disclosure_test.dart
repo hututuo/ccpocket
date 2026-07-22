@@ -4,6 +4,7 @@ import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_message_list.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_process_disclosure.dart';
+import 'package:ccpocket/features/chat_session/widgets/reading_position_auto_scroll_controller.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
@@ -64,7 +65,7 @@ void main() {
         streamingCubit: streaming,
         provider: Provider.codex,
       );
-      final scrollController = AutoScrollController();
+      final scrollController = ReadingPositionAutoScrollController();
       addTearDown(bridge.dispose);
       addTearDown(streaming.close);
       addTearDown(scrollController.dispose);
@@ -181,7 +182,7 @@ void main() {
       streamingCubit: streaming,
       provider: Provider.codex,
     );
-    final scrollController = AutoScrollController();
+    final scrollController = ReadingPositionAutoScrollController();
     addTearDown(bridge.dispose);
     addTearDown(streaming.close);
     addTearDown(scrollController.dispose);
@@ -208,9 +209,9 @@ void main() {
     final disclosure = find.byKey(
       const ValueKey('chat_intermediate_disclosure_client:turn-anchor'),
     );
-    for (final factor in [0.0, 0.25, 0.5, 0.75, 1.0]) {
+    for (var step = 0; step <= 20; step++) {
       scrollController.jumpTo(
-        scrollController.position.maxScrollExtent * factor,
+        scrollController.position.maxScrollExtent * step / 20,
       );
       await tester.pump();
       if (disclosure.evaluate().isNotEmpty) break;
@@ -220,9 +221,6 @@ void main() {
     final beforeY = tester.getTopLeft(disclosure).dy;
     await tester.tap(disclosure);
     await tester.pump();
-    // The anchoring jump happens after the expansion layout pass.
-    await tester.pump();
-
     expect(tester.getTopLeft(disclosure).dy, closeTo(beforeY, 1));
     final firstUpdate = find.text('First historical update.');
     expect(firstUpdate, findsOneWidget);
@@ -233,6 +231,77 @@ void main() {
     expect(tester.takeException(), isNull);
     await cubit.close();
   });
+
+  testWidgets(
+    'a thirteen-tool expansion is anchored before its first painted frame',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit();
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-large-anchor',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-large-anchor',
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(
+          messages: _anchoringHistory(toolCount: 13, includeActiveTail: true),
+        ),
+        'session-large-anchor',
+      );
+      await tester.pump();
+      streaming.appendText('A live tail must not double-correct the anchor.');
+      await tester.pump();
+
+      final disclosure = find.byKey(
+        const ValueKey('chat_intermediate_disclosure_client:turn-anchor'),
+      );
+      for (var step = 0; step <= 20; step++) {
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * step / 20,
+        );
+        await tester.pump();
+        if (disclosure.evaluate().isNotEmpty) break;
+      }
+      expect(disclosure, findsOneWidget);
+
+      final beforeY = tester.getTopLeft(disclosure).dy;
+      await tester.tap(disclosure);
+      await tester.pump();
+
+      expect(tester.getTopLeft(disclosure).dy, closeTo(beforeY, 1));
+      expect(
+        scrollController.position.pixels,
+        lessThan(scrollController.position.maxScrollExtent - 1),
+      );
+      final expandedY = tester.getTopLeft(disclosure).dy;
+      await tester.tap(disclosure);
+      await tester.pump();
+      expect(tester.getTopLeft(disclosure).dy, closeTo(expandedY, 1));
+      expect(tester.takeException(), isNull);
+      await cubit.close();
+    },
+  );
 
   testWidgets(
     'active turn keeps only its latest output in the current-progress surface',
@@ -248,7 +317,7 @@ void main() {
         streamingCubit: streaming,
         provider: Provider.codex,
       );
-      final scrollController = AutoScrollController();
+      final scrollController = ReadingPositionAutoScrollController();
       addTearDown(bridge.dispose);
       addTearDown(streaming.close);
       addTearDown(scrollController.dispose);
@@ -304,7 +373,7 @@ void main() {
         streamingCubit: streaming,
         provider: Provider.codex,
       );
-      final scrollController = AutoScrollController();
+      final scrollController = ReadingPositionAutoScrollController();
       addTearDown(bridge.dispose);
       addTearDown(streaming.close);
       addTearDown(scrollController.dispose);
@@ -530,33 +599,59 @@ List<ServerMessage> _streamHistory() => [
   const StatusMessage(status: ProcessStatus.running),
 ];
 
-List<ServerMessage> _anchoringHistory() {
+List<ServerMessage> _anchoringHistory({
+  int toolCount = 2,
+  bool includeActiveTail = false,
+}) {
+  final earlierText = List<String>.filled(
+    18,
+    'An earlier completed turn leaves real transcript space above the target.',
+  ).join('\n');
   final finalText = List<String>.filled(
     36,
     'A later completed answer keeps this disclosure in the middle of the transcript.',
   ).join('\n');
+  final toolUses = <AssistantContent>[
+    for (var index = 0; index < toolCount; index++)
+      ToolUseContent(
+        id: 'anchor-tool-$index',
+        name: index.isEven ? 'Read' : 'Bash',
+        input: index.isEven
+            ? {'file_path': 'file-$index.txt'}
+            : {'command': 'printf tool-$index'},
+      ),
+  ];
   return [
+    const UserInputMessage(
+      text: 'earlier question',
+      clientMessageId: 'turn-before-anchor',
+    ),
+    AssistantServerMessage(
+      message: AssistantMessage(
+        id: 'earlier-final',
+        role: 'assistant',
+        content: [TextContent(text: earlierText)],
+        model: 'codex',
+      ),
+    ),
     const UserInputMessage(text: 'investigate', clientMessageId: 'turn-anchor'),
     AssistantServerMessage(
       message: AssistantMessage(
         id: 'anchor-update-1',
         role: 'assistant',
-        content: const [
-          TextContent(text: 'First historical update.'),
-          ToolUseContent(
-            id: 'anchor-tool-1',
-            name: 'Read',
-            input: {'file_path': 'first.txt'},
-          ),
+        content: [
+          const TextContent(text: 'First historical update.'),
+          ...toolUses,
         ],
         model: 'codex',
       ),
     ),
-    const ToolResultMessage(
-      toolUseId: 'anchor-tool-1',
-      toolName: 'Read',
-      content: 'first historical result',
-    ),
+    for (var index = 0; index < toolCount; index++)
+      ToolResultMessage(
+        toolUseId: 'anchor-tool-$index',
+        toolName: index.isEven ? 'Read' : 'Bash',
+        content: 'historical result $index',
+      ),
     AssistantServerMessage(
       message: AssistantMessage(
         id: 'anchor-update-2',
@@ -565,7 +660,7 @@ List<ServerMessage> _anchoringHistory() {
           ThinkingContent(thinking: 'second historical thought'),
           TextContent(text: 'Second historical update.'),
           ToolUseContent(
-            id: 'anchor-tool-2',
+            id: 'anchor-tail-tool',
             name: 'Bash',
             input: {'command': 'git status --short'},
           ),
@@ -574,7 +669,7 @@ List<ServerMessage> _anchoringHistory() {
       ),
     ),
     const ToolResultMessage(
-      toolUseId: 'anchor-tool-2',
+      toolUseId: 'anchor-tail-tool',
       toolName: 'Bash',
       content: 'second historical result',
     ),
@@ -586,5 +681,10 @@ List<ServerMessage> _anchoringHistory() {
         model: 'codex',
       ),
     ),
+    if (includeActiveTail)
+      const UserInputMessage(
+        text: 'new active turn',
+        clientMessageId: 'turn-after-anchor',
+      ),
   ];
 }

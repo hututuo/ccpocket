@@ -2,6 +2,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 
+import '../features/chat_session/widgets/reading_position_auto_scroll_controller.dart';
+
 /// Cross-session scroll offset persistence.
 final Map<String, double> _scrollOffsets = {};
 
@@ -25,7 +27,7 @@ typedef ScrollTrackingResult = ({
 /// 3. **Scroll-to-bottom**: Provides a [scrollToBottom] callback that smoothly
 ///    animates to the bottom (skipped when the user has scrolled up).
 ScrollTrackingResult useScrollTracking(String sessionId) {
-  final controller = useMemoized(AutoScrollController.new);
+  final controller = useMemoized(ReadingPositionAutoScrollController.new);
   // Dispose the controller when the hook is disposed.
   useEffect(() => controller.dispose, const []);
 

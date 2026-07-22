@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show RenderBox, ScrollDirection;
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -22,6 +22,7 @@ import '../state/streaming_state_cubit.dart';
 import 'maintain_reading_position_physics.dart';
 import 'chat_process_disclosure.dart';
 import 'chat_process_layout.dart';
+import 'reading_position_auto_scroll_controller.dart';
 
 String? resolveChatFileRoot({String? worktreePath, String? projectPath}) {
   final worktree = worktreePath?.trim();
@@ -133,7 +134,6 @@ class _ChatMessageListState extends State<ChatMessageList> {
   final Set<String> _expandedIntermediateTurns = {};
   final Set<String> _expandedCurrentProgress = {};
   final Map<String, GlobalKey> _disclosureAnchorKeys = {};
-  bool _userScrollInProgress = false;
 
   @override
   void initState() {
@@ -180,50 +180,23 @@ class _ChatMessageListState extends State<ChatMessageList> {
   }
 
   GlobalKey _anchorKey(String id) =>
-      _disclosureAnchorKeys.putIfAbsent(id, () => GlobalKey());
+      _disclosureAnchorKeys.putIfAbsent(id, GlobalKey.new);
 
   Widget _anchoredDisclosure(String id, Widget child) =>
       KeyedSubtree(key: _anchorKey(id), child: child);
 
-  /// Expanding a reverse, variable-height list can otherwise move the tapped
-  /// disclosure away from the user's finger. Measure the disclosure itself,
-  /// then compensate only its viewport movement. The expanded children stay
-  /// after the disclosure in transcript order, so the content below is pushed
-  /// down instead of being laid out above the tapped row.
-  void _toggleWithStableAnchor(String anchorId, VoidCallback mutate) {
-    final anchorContext = _anchorKey(anchorId).currentContext;
-    final beforeBox = anchorContext?.findRenderObject();
-    final beforeY = beforeBox is RenderBox
-        ? beforeBox.localToGlobal(Offset.zero).dy
+  /// Keeps a user-triggered height change inside the viewport's layout pass.
+  /// The custom scroll position corrects the anchor before paint; the callback
+  /// below only releases the request and never moves the viewport.
+  void _toggleWithStableReadingPosition(String anchorId, VoidCallback mutate) {
+    final controller = widget.scrollController;
+    final generation = controller is ReadingPositionAutoScrollController
+        ? controller.beginAnchorMutation(_anchorKey(anchorId))
         : null;
-
     setState(mutate);
-    if (beforeY == null) return;
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted ||
-          _userScrollInProgress ||
-          !widget.scrollController.hasClients) {
-        return;
-      }
-      final afterBox = _anchorKey(anchorId).currentContext?.findRenderObject();
-      if (afterBox is! RenderBox) return;
-      final delta = afterBox.localToGlobal(Offset.zero).dy - beforeY;
-      if (delta.abs() < 0.5) return;
-      final position = widget.scrollController.position;
-      // This chat is a reverse ListView: increasing its offset moves content
-      // down on screen, unlike a conventional downwards viewport. Read the
-      // actual axis direction so the compensation also remains correct if the
-      // list becomes non-reversed later.
-      final reverseAxis =
-          position.axisDirection == AxisDirection.up ||
-          position.axisDirection == AxisDirection.left;
-      final scrollDelta = reverseAxis ? -delta : delta;
-      final target = (position.pixels + scrollDelta)
-          .clamp(position.minScrollExtent, position.maxScrollExtent)
-          .toDouble();
-      if ((target - position.pixels).abs() >= 0.5) {
-        widget.scrollController.jumpTo(target);
+      if (controller is ReadingPositionAutoScrollController) {
+        controller.endAnchorMutation(generation);
       }
     });
   }
@@ -456,9 +429,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
         // This prevents the keyboard from being dismissed during automatic
         // scroll-to-bottom triggered by streaming updates.
         if (notification is UserScrollNotification) {
-          _userScrollInProgress =
-              notification.direction != ScrollDirection.idle;
-          if (_userScrollInProgress) {
+          if (notification.direction != ScrollDirection.idle) {
             FocusScope.of(context).unfocus();
           }
         }
@@ -473,7 +444,12 @@ class _ChatMessageListState extends State<ChatMessageList> {
         controller: widget.scrollController,
         reverse: true,
         physics: MaintainReadingPositionPhysics(
-          shouldMaintain: () => streamingCubit.state.isStreaming,
+          shouldMaintain: () {
+            final controller = widget.scrollController;
+            return streamingCubit.state.isStreaming &&
+                (controller is! ReadingPositionAutoScrollController ||
+                    !controller.hasAnchorMutation);
+          },
         ),
         padding: EdgeInsets.only(top: 36, bottom: widget.bottomPadding),
         itemCount:
@@ -840,7 +816,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   }
 
   void _toggleProcessSegment(String segmentKey) {
-    _toggleWithStableAnchor('process:$segmentKey', () {
+    _toggleWithStableReadingPosition('process:$segmentKey', () {
       if (!_expandedProcessSegments.add(segmentKey)) {
         _expandedProcessSegments.remove(segmentKey);
       }
@@ -848,7 +824,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   }
 
   void _toggleIntermediateTurn(String turnKey) {
-    _toggleWithStableAnchor('intermediate:$turnKey', () {
+    _toggleWithStableReadingPosition('intermediate:$turnKey', () {
       if (!_expandedIntermediateTurns.add(turnKey)) {
         _expandedIntermediateTurns.remove(turnKey);
       }
@@ -856,7 +832,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   }
 
   void _toggleCurrentProgress(String progressKey) {
-    _toggleWithStableAnchor('current:$progressKey', () {
+    _toggleWithStableReadingPosition('current:$progressKey', () {
       if (!_expandedCurrentProgress.add(progressKey)) {
         _expandedCurrentProgress.remove(progressKey);
       }
