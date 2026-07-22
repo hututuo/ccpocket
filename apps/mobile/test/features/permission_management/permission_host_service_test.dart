@@ -35,6 +35,10 @@ void main() {
         MobilePermissionStatus.authorized,
       );
       expect(
+        snapshot.stateFor(MobilePermission.photoLibrary).status,
+        MobilePermissionStatus.limited,
+      );
+      expect(
         snapshot.stateFor(MobilePermission.localNetwork).requestMode,
         MobilePermissionRequestMode.featureTriggered,
       );
@@ -156,6 +160,7 @@ Map<String, Object> _snapshotPayload({
     'permissions': {
       'notifications': {'status': 'notDetermined', 'requestMode': 'direct'},
       'camera': {'status': cameraStatus, 'requestMode': 'none'},
+      'photoLibrary': {'status': 'limited', 'requestMode': 'none'},
       'microphone': {'status': 'denied', 'requestMode': 'openSettings'},
       'speechRecognition': {
         'status': 'restricted',
@@ -166,6 +171,10 @@ Map<String, Object> _snapshotPayload({
         'requestMode': 'featureTriggered',
       },
       'files': {'status': 'systemManaged', 'requestMode': 'systemPicker'},
+      'biometrics': {
+        'status': 'systemManaged',
+        'requestMode': 'featureTriggered',
+      },
     },
   };
 }

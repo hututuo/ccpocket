@@ -21,7 +21,9 @@ enum MobileHostCapability {
   secureStorage('secureStorage'),
   database('database'),
   clipboard('clipboard'),
-  dragDrop('dragDrop');
+  dragDrop('dragDrop'),
+  photoLibrary('photoLibrary'),
+  biometrics('biometrics');
 
   const MobileHostCapability(this.id);
 

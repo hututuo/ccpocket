@@ -127,6 +127,11 @@ class _ScreenPermissionGateway implements PermissionHostGateway {
               ? MobilePermissionRequestMode.none
               : MobilePermissionRequestMode.direct,
         ),
+        MobilePermission.photoLibrary: const MobilePermissionState(
+          permission: MobilePermission.photoLibrary,
+          status: MobilePermissionStatus.limited,
+          requestMode: MobilePermissionRequestMode.none,
+        ),
         MobilePermission.microphone: const MobilePermissionState(
           permission: MobilePermission.microphone,
           status: MobilePermissionStatus.authorized,
@@ -146,6 +151,11 @@ class _ScreenPermissionGateway implements PermissionHostGateway {
           permission: MobilePermission.files,
           status: MobilePermissionStatus.systemManaged,
           requestMode: MobilePermissionRequestMode.systemPicker,
+        ),
+        MobilePermission.biometrics: const MobilePermissionState(
+          permission: MobilePermission.biometrics,
+          status: MobilePermissionStatus.systemManaged,
+          requestMode: MobilePermissionRequestMode.featureTriggered,
         ),
       },
     );

@@ -393,6 +393,11 @@ class _PermissionCopy {
         description: l.cameraDescription,
         icon: Icons.photo_camera_outlined,
       ),
+      MobilePermission.photoLibrary => _PermissionCopy(
+        title: l.photoLibraryTitle,
+        description: l.photoLibraryDescription,
+        icon: Icons.photo_library_outlined,
+      ),
       MobilePermission.microphone => _PermissionCopy(
         title: l.microphoneTitle,
         description: l.microphoneDescription,
@@ -412,6 +417,11 @@ class _PermissionCopy {
         title: l.filesTitle,
         description: l.filesDescription,
         icon: Icons.folder_open_outlined,
+      ),
+      MobilePermission.biometrics => _PermissionCopy(
+        title: l.biometricsTitle,
+        description: l.biometricsDescription,
+        icon: Icons.fingerprint,
       ),
     };
   }

@@ -1,4 +1,5 @@
 import Flutter
+import Photos
 import UIKit
 import XCTest
 @testable import Runner
@@ -251,7 +252,7 @@ class RunnerTests: XCTestCase {
       buildNumber: "197"
     )
     XCTAssertEqual(supported["supported"] as? Bool, true)
-    XCTAssertEqual(supported["nativeApiVersion"] as? Int, 1)
+    XCTAssertEqual(supported["nativeApiVersion"] as? Int, 2)
     XCTAssertEqual(supported["appVersion"] as? String, "1.107.2")
 
     let unsupported = PermissionHostPlugin.supportInfo(
@@ -267,6 +268,12 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(PermissionHostPlugin.requestMode(for: "futureStatus"), "unavailable")
   }
 
+  func testPermissionHostPhotoLibraryStatusesAreStable() {
+    XCTAssertEqual(PermissionHostPlugin.statusName(PHAuthorizationStatus.notDetermined), "notDetermined")
+    XCTAssertEqual(PermissionHostPlugin.statusName(PHAuthorizationStatus.limited), "limited")
+    XCTAssertEqual(PermissionHostPlugin.statusName(PHAuthorizationStatus.denied), "denied")
+  }
+
   func testMobileHostSnapshotIsVersionedAndIncludesRequiredCapabilities() throws {
     let snapshot = MobileHostSnapshotPlugin.snapshot(
       osVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 1, patchVersion: 0)
@@ -276,11 +283,13 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(snapshot["schemaVersion"] as? Int, 1)
     XCTAssertEqual(snapshot["platform"] as? String, "ios")
     let capabilities = try XCTUnwrap(snapshot["capabilities"] as? [String: Int])
-    XCTAssertEqual(capabilities["permissionHost"], 1)
+    XCTAssertEqual(capabilities["permissionHost"], 2)
     XCTAssertEqual(capabilities["fileTransfer"], 2)
     XCTAssertEqual(capabilities["quickLook"], 1)
     XCTAssertEqual(capabilities["secureStorage"], 1)
     XCTAssertEqual(capabilities["dragDrop"], 1)
+    XCTAssertEqual(capabilities["photoLibrary"], 1)
+    XCTAssertEqual(capabilities["biometrics"], 1)
   }
 
   func testMobileHostSnapshotFailsClosedBelowMinimumIOS() throws {

@@ -12,7 +12,7 @@ final class MobileHostSnapshotPlugin: NSObject, FlutterPlugin {
   static let minimumOSMajorVersion = 15
 
   static let nativeCapabilities: [String: Int] = [
-    "permissionHost": 1,
+    "permissionHost": 2,
     "fileTransfer": 2,
     "quickLook": 1,
     "share": 1,
@@ -23,6 +23,8 @@ final class MobileHostSnapshotPlugin: NSObject, FlutterPlugin {
     "database": 1,
     "clipboard": 1,
     "dragDrop": 1,
+    "photoLibrary": 1,
+    "biometrics": 1,
   ]
 
   static func register(with registrar: FlutterPluginRegistrar) {

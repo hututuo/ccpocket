@@ -61,6 +61,12 @@
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voice input requires microphone access to transcribe speech to text</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Select photos and videos to attach to conversations or transfer to your computer</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save received or generated images and videos to your photo library</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Protect CC Pocket credentials and private content with Face ID</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Speech recognition is used to convert voice input to text messages</string>
 	<key>UIApplicationSceneManifest</key>

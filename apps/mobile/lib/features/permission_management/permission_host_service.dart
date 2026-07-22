@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 const permissionHostChannelName = 'ccpocket/permission_host';
-const permissionHostNativeApiVersion = 1;
+const permissionHostNativeApiVersion = 2;
 const permissionHostProbeTimeout = Duration(seconds: 2);
 const permissionHostRequestTimeout = Duration(minutes: 2);
 
@@ -17,10 +17,12 @@ const permissionHostRequestTimeout = Duration(minutes: 2);
 enum MobilePermission {
   notifications('notifications'),
   camera('camera'),
+  photoLibrary('photoLibrary'),
   microphone('microphone'),
   speechRecognition('speechRecognition'),
   localNetwork('localNetwork'),
-  files('files');
+  files('files'),
+  biometrics('biometrics');
 
   const MobilePermission(this.id);
 

@@ -1,5 +1,6 @@
 import AVFoundation
 import Flutter
+import Photos
 import Speech
 import UIKit
 import UserNotifications
@@ -12,15 +13,17 @@ import UserNotifications
 /// request API are reported as system-managed instead of being guessed.
 final class PermissionHostPlugin: NSObject, FlutterPlugin {
   static let channelName = "ccpocket/permission_host"
-  static let nativeAPIVersion = 1
+  static let nativeAPIVersion = 2
   static let minimumOSMajorVersion = 15
   static let permissionIds = [
     "notifications",
     "camera",
+    "photoLibrary",
     "microphone",
     "speechRecognition",
     "localNetwork",
     "files",
+    "biometrics",
   ]
 
   static func register(with registrar: FlutterPluginRegistrar) {
@@ -92,6 +95,9 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
   ) -> [String: [String: String]] {
     let notification = statusName(notificationStatus)
     let camera = cameraStatusName()
+    let photoLibrary = statusName(
+      PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    )
     let microphone = microphoneStatusName()
     let speechRecognition = statusName(SFSpeechRecognizer.authorizationStatus())
 
@@ -103,6 +109,10 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
       "camera": entry(
         status: camera,
         requestMode: requestMode(for: camera)
+      ),
+      "photoLibrary": entry(
+        status: photoLibrary,
+        requestMode: requestMode(for: photoLibrary)
       ),
       "microphone": entry(
         status: microphone,
@@ -117,6 +127,10 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
         requestMode: "featureTriggered"
       ),
       "files": entry(status: "systemManaged", requestMode: "systemPicker"),
+      "biometrics": entry(
+        status: "systemManaged",
+        requestMode: "featureTriggered"
+      ),
     ]
   }
 
@@ -184,6 +198,23 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
     }
   }
 
+  static func statusName(_ status: PHAuthorizationStatus) -> String {
+    switch status {
+    case .notDetermined:
+      return "notDetermined"
+    case .restricted:
+      return "restricted"
+    case .denied:
+      return "denied"
+    case .authorized:
+      return "authorized"
+    case .limited:
+      return "limited"
+    @unknown default:
+      return "unknown"
+    }
+  }
+
   private static func cameraStatusName() -> String {
     statusName(AVCaptureDevice.authorizationStatus(for: .video))
   }
@@ -240,13 +271,17 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
       AVCaptureDevice.requestAccess(for: .video) { _ in
         self.completeSnapshot(result)
       }
+    case "photoLibrary":
+      PHPhotoLibrary.requestAuthorization(for: .readWrite) { _ in
+        self.completeSnapshot(result)
+      }
     case "microphone":
       requestMicrophone(result: result)
     case "speechRecognition":
       SFSpeechRecognizer.requestAuthorization { _ in
         self.completeSnapshot(result)
       }
-    case "localNetwork", "files":
+    case "localNetwork", "files", "biometrics":
       // iOS presents these prompts only from the feature operation itself.
       completeSnapshot(result)
     default:

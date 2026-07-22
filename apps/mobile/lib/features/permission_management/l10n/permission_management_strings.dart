@@ -26,6 +26,8 @@ class PermissionManagementStrings {
     required this.notificationsDescription,
     required this.cameraTitle,
     required this.cameraDescription,
+    required this.photoLibraryTitle,
+    required this.photoLibraryDescription,
     required this.microphoneTitle,
     required this.microphoneDescription,
     required this.speechRecognitionTitle,
@@ -34,6 +36,8 @@ class PermissionManagementStrings {
     required this.localNetworkDescription,
     required this.filesTitle,
     required this.filesDescription,
+    required this.biometricsTitle,
+    required this.biometricsDescription,
   });
 
   final String title;
@@ -58,6 +62,8 @@ class PermissionManagementStrings {
   final String notificationsDescription;
   final String cameraTitle;
   final String cameraDescription;
+  final String photoLibraryTitle;
+  final String photoLibraryDescription;
   final String microphoneTitle;
   final String microphoneDescription;
   final String speechRecognitionTitle;
@@ -66,6 +72,8 @@ class PermissionManagementStrings {
   final String localNetworkDescription;
   final String filesTitle;
   final String filesDescription;
+  final String biometricsTitle;
+  final String biometricsDescription;
 
   static PermissionManagementStrings of(BuildContext context) =>
       forLocale(Localizations.localeOf(context));
@@ -103,6 +111,9 @@ class PermissionManagementStrings {
     notificationsDescription: 'Session, approval, and file-transfer alerts.',
     cameraTitle: 'Camera',
     cameraDescription: 'Scan a Bridge connection QR code.',
+    photoLibraryTitle: 'Photo Library',
+    photoLibraryDescription:
+        'Attach photos and videos, or save received media to your library.',
     microphoneTitle: 'Microphone',
     microphoneDescription: 'Capture audio for voice input.',
     speechRecognitionTitle: 'Speech Recognition',
@@ -113,6 +124,9 @@ class PermissionManagementStrings {
     filesTitle: 'Files',
     filesDescription:
         'Files are shared one at a time through the system picker; there is no permanent library permission.',
+    biometricsTitle: 'Face ID & Biometrics',
+    biometricsDescription:
+        'Protect credentials and private content when a security feature uses biometrics.',
   );
 
   static const _zh = PermissionManagementStrings(
@@ -138,6 +152,8 @@ class PermissionManagementStrings {
     notificationsDescription: '用于会话、审批和文件互传提醒。',
     cameraTitle: '相机',
     cameraDescription: '扫描 Bridge 连接二维码。',
+    photoLibraryTitle: '照片图库',
+    photoLibraryDescription: '选择照片或视频发送，也可以把收到的媒体保存到系统图库。',
     microphoneTitle: '麦克风',
     microphoneDescription: '采集语音输入所需的音频。',
     speechRecognitionTitle: '语音识别',
@@ -146,6 +162,8 @@ class PermissionManagementStrings {
     localNetworkDescription: '发现并连接局域网内的 Bridge；iOS 会在实际发现设备时弹出授权。',
     filesTitle: '文件',
     filesDescription: '文件通过系统选择器逐次共享，不需要授予整个文件库的永久权限。',
+    biometricsTitle: 'Face ID 与生物认证',
+    biometricsDescription: '在安全功能实际使用生物认证时，用于保护凭据和私密内容。',
   );
 
   static const _ja = PermissionManagementStrings(
@@ -172,6 +190,8 @@ class PermissionManagementStrings {
     notificationsDescription: 'セッション、承認、ファイル転送の通知に使用します。',
     cameraTitle: 'カメラ',
     cameraDescription: 'Bridge 接続用 QR コードを読み取ります。',
+    photoLibraryTitle: '写真ライブラリ',
+    photoLibraryDescription: '写真や動画を添付し、受信したメディアをライブラリに保存します。',
     microphoneTitle: 'マイク',
     microphoneDescription: '音声入力用の音声を取り込みます。',
     speechRecognitionTitle: '音声認識',
@@ -181,6 +201,8 @@ class PermissionManagementStrings {
         'ネットワーク上の Bridge を検出して接続します。iOS は検出機能の使用時に権限を表示します。',
     filesTitle: 'ファイル',
     filesDescription: 'ファイルはシステムピッカーから個別に共有され、ライブラリ全体への恒久的な権限は不要です。',
+    biometricsTitle: 'Face ID と生体認証',
+    biometricsDescription: 'セキュリティ機能で生体認証を使用するときに、資格情報と非公開コンテンツを保護します。',
   );
 
   static const _ko = PermissionManagementStrings(
@@ -208,6 +230,8 @@ class PermissionManagementStrings {
     notificationsDescription: '세션, 승인 및 파일 전송 알림에 사용합니다.',
     cameraTitle: '카메라',
     cameraDescription: 'Bridge 연결 QR 코드를 스캔합니다.',
+    photoLibraryTitle: '사진 보관함',
+    photoLibraryDescription: '사진과 동영상을 첨부하거나 받은 미디어를 보관함에 저장합니다.',
     microphoneTitle: '마이크',
     microphoneDescription: '음성 입력을 위한 오디오를 캡처합니다.',
     speechRecognitionTitle: '음성 인식',
@@ -218,5 +242,7 @@ class PermissionManagementStrings {
     filesTitle: '파일',
     filesDescription:
         '파일은 시스템 선택기를 통해 하나씩 공유되며 전체 파일 보관함에 대한 영구 권한은 필요하지 않습니다.',
+    biometricsTitle: 'Face ID 및 생체 인증',
+    biometricsDescription: '보안 기능이 생체 인증을 사용할 때 자격 증명과 비공개 콘텐츠를 보호합니다.',
   );
 }

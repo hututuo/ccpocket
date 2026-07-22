@@ -10,7 +10,13 @@ void main() {
         'platform': 'ios',
         'baseVersion': '1.107.2',
         'buildNumber': '198',
-        'capabilities': {'fileTransfer': 2, 'quickLook': 1},
+        'capabilities': {
+          'fileTransfer': 2,
+          'quickLook': 1,
+          'permissionHost': 2,
+          'photoLibrary': 1,
+          'biometrics': 1,
+        },
       });
 
       expect(snapshot.supported, isTrue);
@@ -23,6 +29,15 @@ void main() {
         isFalse,
       );
       expect(snapshot.supports(MobileHostCapability.dragDrop), isFalse);
+      expect(
+        snapshot.supports(
+          MobileHostCapability.permissionHost,
+          minimumVersion: 2,
+        ),
+        isTrue,
+      );
+      expect(snapshot.supports(MobileHostCapability.photoLibrary), isTrue);
+      expect(snapshot.supports(MobileHostCapability.biometrics), isTrue);
     });
 
     test('fails closed for malformed capability maps', () {
