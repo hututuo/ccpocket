@@ -259,6 +259,14 @@
   `forked_from_id`, never collapsed or explained by matching titles/previews.
   Diagnose and repair presentation/runtime state without rewriting or deleting
   the canonical rollout files.
+- Branch lineage is an additive compatibility contract. Bridge normalizes the
+  provider's `forkedFromId` / rollout `forked_from_id` to
+  `forkedFromThreadId`, retains the transient Bridge parent separately as
+  `forkedFromSessionId`, and preserves both through session-list publication
+  and runtime replacement. Mobile treats both fields as optional: a new client
+  with an old Bridge renders the old list unchanged, while an old client safely
+  ignores the new fields. The visible Fork badge is presentation only and may
+  not participate in history identity or deduplication.
 - Historical process presentation has two independent render-only folds.
   Reasoning/tool calls/results are first grouped by the visible assistant
   update that owns them, so one long turn no longer concentrates every tool at
