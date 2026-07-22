@@ -595,21 +595,18 @@ class ConversationMirrorService extends ChangeNotifier {
     final key = metadata.key;
     _metadata[key] = metadata;
 
-    // A canonical runtime snapshot may already have arrived before bootstrap
-    // starts. Never replace that newer content with an older durable mirror;
-    // the watch below will reconcile the independent copy in the background.
-    if (!_hasCanonicalRuntimeHistory(runtimeSessionId)) {
-      final publishGuard = _captureRuntimePublishGuard(
-        key,
-        runtimeSessionId,
-        expectedBridgeInstanceId: currentBridgeInstanceId,
-      );
-      if (publishGuard == null) return false;
-      final published = await _publishKeyToRuntime(key, publishGuard);
-      if (published != _MirrorPublishResult.published) return false;
-    } else {
-      _pageCursorsByRuntime.remove(runtimeSessionId);
-    }
+    // Always establish the durable paging cursor. A list-level continuity
+    // snapshot may have filled the bounded runtime cache before this screen
+    // opens; that cache is merged into the local render window below instead
+    // of disabling access to the rest of the downloaded conversation.
+    final publishGuard = _captureRuntimePublishGuard(
+      key,
+      runtimeSessionId,
+      expectedBridgeInstanceId: currentBridgeInstanceId,
+    );
+    if (publishGuard == null) return false;
+    final published = await _publishKeyToRuntime(key, publishGuard);
+    if (published != _MirrorPublishResult.published) return false;
 
     if (!_bridge.isConnected) return true;
     final effectiveProjectPath = projectPath ?? metadata.projectPath;
@@ -1440,7 +1437,15 @@ class ConversationMirrorService extends ChangeNotifier {
         metadataAfter.entryCount != metadataBefore.entryCount) {
       return _MirrorPublishResult.invalidated;
     }
-    final messages = _decodeRenderableEntries(entries);
+    final mirrorMessages = _decodeRenderableEntries(entries);
+    final canonicalMessages = _bridge
+        .cachedSessionMessages(guard.runtimeSessionId)
+        .where(_isRenderableHistoryMessage)
+        .toList(growable: false);
+    final messages = _mergeMirrorWindowWithCanonicalTail(
+      mirrorMessages: mirrorMessages,
+      canonicalMessages: canonicalMessages,
+    );
     final postDecodeFailure = _publishGuardFailure(key, guard);
     if (postDecodeFailure != null) return postDecodeFailure;
     _pageCursorsByRuntime[guard.runtimeSessionId] = _RuntimeMirrorPageCursor(
@@ -1485,6 +1490,79 @@ class ConversationMirrorService extends ChangeNotifier {
       }
     }
     return messages;
+  }
+
+  List<ServerMessage> _mergeMirrorWindowWithCanonicalTail({
+    required List<ServerMessage> mirrorMessages,
+    required List<ServerMessage> canonicalMessages,
+  }) {
+    if (canonicalMessages.isEmpty) return mirrorMessages;
+    if (mirrorMessages.isEmpty) return canonicalMessages;
+
+    final mirrorIndexByKey = <String, int>{};
+    for (var index = 0; index < mirrorMessages.length; index++) {
+      final key = _historyMessageStableKey(mirrorMessages[index]);
+      if (key != null) mirrorIndexByKey[key] = index;
+    }
+
+    var firstOverlap = -1;
+    for (var index = 0; index < canonicalMessages.length; index++) {
+      final key = _historyMessageStableKey(canonicalMessages[index]);
+      if (key != null && mirrorIndexByKey.containsKey(key)) {
+        firstOverlap = index;
+        break;
+      }
+    }
+
+    // With no overlap, the bounded runtime cache normally starts after the
+    // last downloaded revision (for example a Desktop turn completed while
+    // the phone was away). Provider identity and the publish guard fence the
+    // merge, so keep the complete local window and append the canonical tail.
+    if (firstOverlap == -1) {
+      return List.unmodifiable([...mirrorMessages, ...canonicalMessages]);
+    }
+
+    final merged = List<ServerMessage>.from(mirrorMessages);
+    final mergedIndexByKey = Map<String, int>.from(mirrorIndexByKey);
+    for (final canonical in canonicalMessages.skip(firstOverlap)) {
+      final key = _historyMessageStableKey(canonical);
+      final existingIndex = key == null ? null : mergedIndexByKey[key];
+      if (existingIndex == null) {
+        if (key != null) mergedIndexByKey[key] = merged.length;
+        merged.add(canonical);
+      } else {
+        // Canonical runtime content wins for an overlapping envelope because
+        // it may include a newer live assistant/tool representation.
+        merged[existingIndex] = canonical;
+      }
+    }
+    return List.unmodifiable(merged);
+  }
+
+  bool _isRenderableHistoryMessage(ServerMessage message) =>
+      message is UserInputMessage ||
+      message is AssistantServerMessage ||
+      message is ToolResultMessage;
+
+  String? _historyMessageStableKey(ServerMessage message) {
+    switch (message) {
+      case UserInputMessage(:final userMessageUuid, :final clientMessageId):
+        final uuid = userMessageUuid?.trim();
+        if (uuid?.isNotEmpty == true) return 'user:uuid:$uuid';
+        final clientId = clientMessageId?.trim();
+        if (clientId?.isNotEmpty == true) return 'user:client:$clientId';
+        return null;
+      case AssistantServerMessage(:final messageUuid, :final message):
+        final uuid = messageUuid?.trim();
+        if (uuid?.isNotEmpty == true) return 'assistant:uuid:$uuid';
+        final id = message.id.trim();
+        return id.isEmpty ? null : 'assistant:id:$id';
+      case ToolResultMessage(:final toolUseId):
+        final id = toolUseId.trim();
+        return id.isEmpty ? null : 'tool-result:$id';
+      default:
+        return null;
+    }
   }
 
   Future<LocalSessionHistoryPage?> _loadOlderRuntimeHistory({
@@ -1737,15 +1815,6 @@ class ConversationMirrorService extends ChangeNotifier {
             provider: key.provider,
           ) ==
           key.providerSessionId;
-
-  bool _hasCanonicalRuntimeHistory(String runtimeSessionId) => _bridge
-      .cachedSessionMessages(runtimeSessionId)
-      .any(
-        (message) =>
-            message is UserInputMessage ||
-            message is AssistantServerMessage ||
-            message is ToolResultMessage,
-      );
 
   bool _isTransferTerminal(ConversationMirrorEventKind event) =>
       switch (event) {

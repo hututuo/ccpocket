@@ -863,6 +863,92 @@ void main() {
   );
 
   test(
+    'a bounded canonical cache keeps the complete local mirror pageable',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 3000,
+        revision: _hashText('paged-history-with-canonical-cache'),
+      );
+      bridge
+        ..connected = false
+        ..canonicalMessages = const [
+          UserInputMessage(
+            text: 'new Desktop turn',
+            userMessageUuid: 'codex:user-turn:3000',
+          ),
+        ];
+
+      final handled = await bridge.tryBootstrapSessionHistory(
+        runtimeSessionId: 'runtime-1',
+        provider: 'codex',
+        projectPath: '/tmp/project',
+      );
+
+      expect(handled, isTrue);
+      expect(bridge.externallyPublishedHistories, hasLength(1));
+      final initial = bridge.externallyPublishedHistories.single;
+      expect(initial, hasLength(201));
+      expect((initial.first as UserInputMessage).text, 'message-2800');
+      expect((initial.last as UserInputMessage).text, 'new Desktop turn');
+      expect(bridge.hasOlderLocalSessionHistory('runtime-1'), isTrue);
+
+      var loadedCount = initial.length;
+      while (bridge.hasOlderLocalSessionHistory('runtime-1')) {
+        final page = await bridge.tryLoadOlderLocalSessionHistory(
+          runtimeSessionId: 'runtime-1',
+        );
+        expect(page, isNotNull);
+        loadedCount += page!.messages.length;
+      }
+      expect(loadedCount, 3001);
+    },
+  );
+
+  test(
+    'canonical overlap replaces rather than duplicates a mirror envelope',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 300,
+        revision: _hashText('paged-history-canonical-overlap'),
+      );
+      bridge
+        ..connected = false
+        ..canonicalMessages = const [
+          UserInputMessage(
+            text: 'canonical message 299',
+            userMessageUuid: 'codex:user-turn:299',
+          ),
+          UserInputMessage(
+            text: 'canonical message 300',
+            userMessageUuid: 'codex:user-turn:300',
+          ),
+        ];
+
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        ),
+        isTrue,
+      );
+
+      final initial = bridge.externallyPublishedHistories.single;
+      expect(initial, hasLength(201));
+      expect(
+        initial.whereType<UserInputMessage>().where(
+          (message) => message.userMessageUuid == 'codex:user-turn:299',
+        ),
+        hasLength(1),
+      );
+      expect((initial[199] as UserInputMessage).text, 'canonical message 299');
+      expect((initial.last as UserInputMessage).text, 'canonical message 300');
+    },
+  );
+
+  test(
     'a superseded page read cannot remove the replacement mirror cursor',
     () async {
       await _seedLocalConversation(
@@ -1045,7 +1131,11 @@ void main() {
       );
 
       expect(handled, isTrue);
-      expect(bridge.externallyPublishedHistories, isEmpty);
+      expect(bridge.externallyPublishedHistories, hasLength(1));
+      final published = bridge.externallyPublishedHistories.single;
+      expect(published, hasLength(1));
+      expect((published.single as UserInputMessage).text, 'new canonical text');
+      expect(bridge.hasOlderLocalSessionHistory('runtime-1'), isFalse);
       expect(bridge.sent, isEmpty);
     },
   );
