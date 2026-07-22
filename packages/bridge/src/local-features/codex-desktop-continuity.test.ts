@@ -1700,6 +1700,131 @@ describe("CodexRolloutMonitor", () => {
 });
 
 describe("CodexDesktopContinuityHandler", () => {
+  it("isolates same-Bridge watchers per client while sharing one rollout monitor", async () => {
+    const path = await rollout();
+    const sentByClient = new Map<object, any[]>();
+    const session = {
+      id: "runtime-multi-client",
+      provider: "codex",
+      projectPath: "/project",
+      process: { isWaitingForInput: true },
+    };
+    const runtime: LocalFeatureRuntime = {
+      bridgeInstanceId: "bridge-multi-client",
+      getSession: (id) => (id === session.id ? session : undefined),
+      getCodexThreadId: () => "thread-multi-client",
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: async () => {
+        throw new Error("not used");
+      },
+      send: (client, message) => {
+        const sent = sentByClient.get(client) ?? [];
+        sent.push(message);
+        sentByClient.set(client, sent);
+      },
+      supports: (_client, type) =>
+        type === "codex_desktop_continuity_event_v1",
+    };
+    const handler = new CodexDesktopContinuityHandler(runtime, {
+      resolveRolloutPath: async () => path,
+    });
+    const client1 = {};
+    const client2 = {};
+    const watch = (client: object, requestId: string) =>
+      handler.handle(
+        {
+          type: "codex_desktop_continuity_watch",
+          protocolVersion: 1,
+          requestId,
+          sessionId: session.id,
+          threadId: "thread-multi-client",
+          projectPath: "/project",
+        },
+        { client, signal: new AbortController().signal, runtime },
+      );
+
+    await watch(client1, "watch-client-1");
+    await watch(client2, "watch-client-2");
+    expect((handler as any).monitors.size).toBe(1);
+    expect(
+      (handler as any).monitors.get("thread-multi-client")?.watcherCount,
+    ).toBe(2);
+
+    await appendEntries(path, [
+      event("event_msg", {
+        type: "task_started",
+        turn_id: "turn-multi-client",
+      }),
+      event("event_msg", {
+        type: "user_message",
+        turn_id: "turn-multi-client",
+        client_id: "desktop-multi-client",
+        message: "stream to both phones",
+      }),
+      event("event_msg", {
+        type: "agent_reasoning",
+        turn_id: "turn-multi-client",
+        text: "shared reasoning",
+      }),
+    ]);
+    await (handler as any).monitors
+      .get("thread-multi-client")
+      .refreshNow();
+
+    for (const [client, requestId] of [
+      [client1, "watch-client-1"],
+      [client2, "watch-client-2"],
+    ] as const) {
+      expect(sentByClient.get(client)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            requestId,
+            event: "message",
+            itemKey: "user:desktop-multi-client",
+          }),
+          expect.objectContaining({
+            requestId,
+            event: "message",
+            message: { type: "thinking_delta", text: "shared reasoning\n" },
+          }),
+        ]),
+      );
+    }
+
+    const disconnectedCount = sentByClient.get(client1)?.length ?? 0;
+    handler.disconnect(client1);
+    await appendEntries(path, [
+      event("response_item", {
+        type: "function_call",
+        call_id: "call-after-disconnect",
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "pwd" }),
+        turn_id: "turn-multi-client",
+      }),
+    ]);
+    await (handler as any).monitors
+      .get("thread-multi-client")
+      .refreshNow();
+
+    expect(sentByClient.get(client1)).toHaveLength(disconnectedCount);
+    expect(sentByClient.get(client2)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          requestId: "watch-client-2",
+          event: "message",
+          itemKey: "tool-start:call-after-disconnect",
+        }),
+      ]),
+    );
+    expect(
+      (handler as any).monitors.get("thread-multi-client")?.watcherCount,
+    ).toBe(1);
+
+    handler.disconnect(client2);
+    expect((handler as any).monitors.size).toBe(0);
+    handler.close();
+  });
+
   it("reports unknown to a watcher that joins during ownership delay", async () => {
     vi.useFakeTimers();
     const path = await rollout();

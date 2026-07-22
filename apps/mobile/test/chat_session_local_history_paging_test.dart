@@ -3,9 +3,15 @@ import 'dart:async';
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_state.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
+import 'package:ccpocket/features/chat_session/widgets/chat_message_list.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
+import 'package:ccpocket/theme/app_theme.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:scroll_to_index/scroll_to_index.dart';
 
 class _Bridge extends BridgeService {
   final _taggedController =
@@ -350,10 +356,7 @@ void main() {
         hasMore: (_) => true,
         invalidate: (_) => invalidated = true,
         loader: ({required runtimeSessionId, required limit}) async {
-          return const LocalSessionHistoryPage(
-            messages: [],
-            hasMore: true,
-          );
+          return const LocalSessionHistoryPage(messages: [], hasMore: true);
         },
       );
 
@@ -473,9 +476,12 @@ void main() {
     final revealed = await cubit.revealUserMessage(index.first);
 
     expect(revealed?.messageUuid, 'old-user');
-    expect(cubit.state.entries.whereType<UserChatEntry>().map((entry) {
-      return entry.text;
-    }), ['old unloaded prompt', 'recent visible prompt']);
+    expect(
+      cubit.state.entries.whereType<UserChatEntry>().map((entry) {
+        return entry.text;
+      }),
+      ['old unloaded prompt', 'recent visible prompt'],
+    );
     expect(cubit.localHistoryPaging.value.hasMore, isFalse);
   });
 
@@ -565,4 +571,119 @@ void main() {
       expect(bridge.sentMessages, isEmpty);
     },
   );
+
+  testWidgets('ordinary history drag requests the next local page', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    var hasMore = true;
+    var pageCalls = 0;
+    final recent = <ServerMessage>[];
+    for (var index = 0; index < 36; index++) {
+      recent
+        ..add(
+          UserInputMessage(
+            text: 'recent prompt $index ${'content ' * 8}',
+            userMessageUuid: 'recent-user-$index',
+          ),
+        )
+        ..add(
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'recent-assistant-$index',
+              role: 'assistant',
+              content: [
+                TextContent(text: 'recent answer $index ${'detail ' * 10}'),
+              ],
+              model: 'codex',
+            ),
+          ),
+        );
+    }
+    bridge.configureSessionHistoryBootstrap(({
+      required runtimeSessionId,
+      required provider,
+      required providerSessionId,
+      required projectPath,
+      required force,
+    }) async {
+      bridge.publishExternalSessionHistory(runtimeSessionId, recent);
+      return true;
+    });
+    bridge.configureSessionHistoryPaging(
+      hasMore: (_) => hasMore,
+      loader: ({required runtimeSessionId, required limit}) async {
+        pageCalls += 1;
+        hasMore = false;
+        return const LocalSessionHistoryPage(
+          messages: [
+            UserInputMessage(
+              text: 'oldest loaded by scroll',
+              userMessageUuid: 'oldest-user',
+            ),
+          ],
+          hasMore: false,
+        );
+      },
+    );
+
+    final cubit = createCubit();
+    final scrollController = AutoScrollController();
+    addTearDown(scrollController.dispose);
+    await tester.pumpWidget(
+      RepositoryProvider<BridgeService>.value(
+        value: bridge,
+        child: MultiBlocProvider(
+          providers: [
+            BlocProvider<ChatSessionCubit>.value(value: cubit),
+            BlocProvider<StreamingStateCubit>.value(value: streamingCubit),
+          ],
+          child: MaterialApp(
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            locale: const Locale('en'),
+            theme: AppTheme.darkTheme,
+            home: Scaffold(
+              body: ChatMessageList(
+                sessionId: 's1',
+                scrollController: scrollController,
+                httpBaseUrl: null,
+                onRetryMessage: null,
+                collapseToolResults: null,
+                isCodex: true,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(cubit.localHistoryPaging.value.hasMore, isTrue);
+    expect(pageCalls, 0);
+    expect(scrollController.position.maxScrollExtent, greaterThan(0));
+
+    await tester.drag(find.byType(ListView), const Offset(0, 20000));
+    await tester.pump();
+
+    expect(
+      scrollController.offset,
+      greaterThanOrEqualTo(scrollController.position.maxScrollExtent - 480),
+    );
+    await tester.pumpAndSettle();
+
+    expect(pageCalls, 1);
+    expect(
+      cubit.state.entries.whereType<UserChatEntry>().first.text,
+      'oldest loaded by scroll',
+    );
+    expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+    expect(tester.takeException(), isNull);
+
+    cubits.remove(cubit);
+    await cubit.close();
+  });
 }

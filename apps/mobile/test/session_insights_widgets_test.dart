@@ -361,6 +361,69 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('compact quota rings omit windows the Bridge does not report', (
+    tester,
+  ) async {
+    final bridge = _Bridge()
+      ..quotaProviders = const [
+        SessionUsageInfo(
+          provider: 'codex',
+          sevenDay: SessionUsageWindow(
+            utilization: 42,
+            windowDurationMins: 10080,
+          ),
+        ),
+      ];
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      _app(
+        Center(
+          child: SessionInsightsBar(
+            sessionId: 's1',
+            bridgeService: bridge,
+            compact: true,
+          ),
+        ),
+      ),
+    );
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 's1',
+        requestId: _latestUsageRequestId(bridge),
+        providers: bridge.quotaProviders,
+      ),
+      's1',
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('session_insights_five_hour_ring')),
+      findsNothing,
+    );
+    final sevenDayRing = find.byKey(
+      const ValueKey('session_insights_seven_day_ring'),
+    );
+    expect(sevenDayRing, findsOneWidget);
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.descendant(
+              of: sevenDayRing,
+              matching: find.byType(CircularProgressIndicator),
+            ),
+          )
+          .value,
+      0.42,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('session_insights_mode_chip')));
+    await tester.pumpAndSettle();
+    expect(find.text('5h'), findsNothing);
+    expect(find.text('7d'), findsWidgets);
+    expect(find.text('42%'), findsOneWidget);
+  });
+
   testWidgets('empty compact insight slot hides its leading divider', (
     tester,
   ) async {
