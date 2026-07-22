@@ -427,3 +427,30 @@
   fail, Bridge reports `permission_restart_continuation_failed` and leaves the
   replacement runtime idle and usable instead of destroying it or retrying an
   unbounded number of times.
+
+## Mobile OTA host and two-track update policy
+
+- The installed IPA remains a versioned native host. `MobileHostSnapshot v1`
+  advertises bounded native capability versions, while Dart OTA code and Bridge
+  diagnostics consume only additive optional metadata. Missing capabilities
+  fail closed and require a new base IPA; old Mobile and old Bridge behavior is
+  otherwise unchanged.
+- `stable` is the default channel. The local owner device may unlock `owner` by
+  tapping the version seven times; the unlock and selected channel live in iOS
+  secure storage. Changing channels affects future checks only and must never
+  pretend to downgrade an already installed patch.
+- Manual checks always bypass the six-hour automatic throttle and never begin a
+  download without a second user action. Automatic and silent modes may check
+  and download in the background; silent mode suppresses the restart prompt.
+  The public Shorebird SDK does not expose the remote patch number before the
+  download, so the UI identifies the checked track first and shows the concrete
+  patch number once it is available locally.
+- The repository must not reuse the upstream Shorebird app id. Until the owner
+  logs in and runs `shorebird init`, `shorebird.yaml` keeps a rejected placeholder.
+  Base releases and owner patches require RSA signing; native, entitlement,
+  plugin, asset, Flutter/Xcode and native-dependency changes require a new base
+  IPA. Stable promotion requires the explicit `--confirm-stable` gate and user
+  approval after physical-iPhone validation.
+- The implementation is isolated on `feature/mobile-ota-host` as `46ea8971`,
+  `645c694d`, `e9b53b27`, `6b4d4711`, and `22b8a7f1`. Nothing is deployed,
+  promoted, installed or merged by these commits.
