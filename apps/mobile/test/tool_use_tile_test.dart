@@ -31,7 +31,7 @@ void main() {
       );
 
       // Tool name
-      expect(find.text('Read'), findsOneWidget);
+      expect(find.text('Read file'), findsOneWidget);
       // Input summary: file name only (category=read extracts basename)
       expect(find.text('main.dart'), findsOneWidget);
       // Chevron right (collapsed)
@@ -171,7 +171,7 @@ void main() {
         expect(find.byType(SelectableText), findsOneWidget);
 
         // Tap header area → collapsed (tap tool name to avoid SelectableText)
-        await tester.tap(find.text('Bash'));
+        await tester.tap(find.text('Run command'));
         await tester.pumpAndSettle();
 
         expect(find.byIcon(Icons.chevron_right), findsOneWidget);
@@ -242,7 +242,7 @@ void main() {
       expect(find.byIcon(Icons.expand_less), findsOneWidget);
 
       // Tap header area → collapsed (tap tool name to avoid SelectableText)
-      await tester.tap(find.text('Read'));
+      await tester.tap(find.text('Read file'));
       await tester.pumpAndSettle();
       expect(find.byIcon(Icons.chevron_right), findsOneWidget);
     });

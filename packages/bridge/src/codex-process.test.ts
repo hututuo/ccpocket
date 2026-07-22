@@ -5203,6 +5203,114 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("maps official Codex item types to stable semantic tool activities", () => {
+    const proc = new CodexProcess("darwin");
+    const messages: Array<Record<string, any>> = [];
+    proc.on("message", (message) => messages.push(message as any));
+
+    const emitLifecycle = (item: Record<string, unknown>) => {
+      (proc as any).handleNotification("item/started", { item });
+      (proc as any).handleNotification("item/completed", { item });
+    };
+
+    emitLifecycle({
+      type: "commandExecution",
+      id: "read-skill-1",
+      command: "sed -n '1,200p' /tmp/demo/SKILL.md",
+      cwd: "/tmp/demo",
+      commandActions: [
+        {
+          type: "read",
+          command: "sed -n '1,200p' /tmp/demo/SKILL.md",
+          name: "sed",
+          path: "/tmp/demo/SKILL.md",
+        },
+      ],
+      aggregatedOutput: "skill instructions",
+      exitCode: 0,
+    });
+    emitLifecycle({
+      type: "commandExecution",
+      id: "multi-command-1",
+      command: "git status && rg TODO",
+      cwd: "/tmp/demo",
+      commandActions: [
+        { type: "unknown", command: "git status" },
+        { type: "search", command: "rg TODO", query: "TODO", path: null },
+      ],
+      aggregatedOutput: "clean",
+      exitCode: 0,
+    });
+    emitLifecycle({
+      type: "collabAgentToolCall",
+      id: "spawn-agent-1",
+      tool: "spawnAgent",
+      status: "completed",
+      senderThreadId: "root",
+      receiverThreadIds: ["child"],
+      prompt: "Review the change",
+    });
+    emitLifecycle({
+      type: "contextCompaction",
+      id: "compact-1",
+    });
+    emitLifecycle({
+      type: "mcpToolCall",
+      id: "mcp-live-1",
+      server: "workspace",
+      tool: "lookup",
+      status: "completed",
+      arguments: { query: "history" },
+      result: { content: [{ type: "text", text: "found" }] },
+    });
+
+    const toolUses = messages
+      .filter((message) => message.type === "assistant")
+      .map((message) => message.message.content[0]);
+    expect(toolUses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "read-skill-1",
+          name: "ReadSkill",
+          input: expect.objectContaining({
+            file_path: "/tmp/demo/SKILL.md",
+            skill: "demo",
+          }),
+        }),
+        expect.objectContaining({
+          id: "multi-command-1",
+          name: "MultiCommand",
+          input: expect.objectContaining({ commands: ["git status", "rg TODO"] }),
+        }),
+        expect.objectContaining({ id: "spawn-agent-1", name: "SpawnAgent" }),
+        expect.objectContaining({
+          id: "compact-1",
+          name: "ContextCompaction",
+        }),
+        expect.objectContaining({
+          id: "mcp-live-1",
+          name: "mcp:workspace/lookup",
+        }),
+      ]),
+    );
+    for (const id of [
+      "read-skill-1",
+      "multi-command-1",
+      "spawn-agent-1",
+      "compact-1",
+      "mcp-live-1",
+    ]) {
+      expect(toolUses.filter((tool) => tool.id === id)).toHaveLength(1);
+    }
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "compact-1",
+        toolName: "ContextCompaction",
+      }),
+    );
+  });
+
   it("emits plan notifications as structured checklist messages", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];

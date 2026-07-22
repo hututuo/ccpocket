@@ -3,6 +3,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ccpocket/utils/tool_categories.dart';
 
 void main() {
+  group('Codex semantic tool labels', () {
+    test('covers command, skill, sub-agent, and compaction activities', () {
+      expect(getToolDisplayName('MultiCommand', zh: true), '运行多个命令');
+      expect(getToolDisplayName('ReadSkill', zh: true), '读取 Skill');
+      expect(getToolDisplayName('SpawnAgent', zh: true), '开启子 Agent');
+      expect(getToolDisplayName('ContextCompaction', zh: true), '压缩上下文');
+    });
+
+    test('keeps unknown future tool names intact', () {
+      expect(
+        getToolDisplayName('FutureCodexTool', zh: false),
+        'FutureCodexTool',
+      );
+    });
+  });
+
   group('getToolFullInput', () {
     test('bash: returns full command string', () {
       final result = getToolFullInput(ToolCategory.bash, {

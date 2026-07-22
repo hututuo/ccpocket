@@ -2745,6 +2745,95 @@ function normalizeCodexToolName(name: string): string {
   return name;
 }
 
+function describeCodexHistoryCommand(payload: Record<string, unknown>): {
+  name: string;
+  input: Record<string, unknown>;
+} {
+  const command =
+    typeof payload.command === "string" ? payload.command : "";
+  const rawActions = payload.commandActions ?? payload.command_actions;
+  const actions = Array.isArray(rawActions)
+    ? rawActions
+        .map(asObject)
+        .filter(
+          (value): value is Record<string, unknown> => value !== null,
+        )
+    : [];
+  const baseInput: Record<string, unknown> = {
+    command,
+    ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}),
+    ...(actions.length > 0 ? { commandActions: actions } : {}),
+  };
+  if (actions.length > 1) {
+    return {
+      name: "MultiCommand",
+      input: {
+        ...baseInput,
+        commands: actions
+          .map((action) => action.command)
+          .filter((value): value is string => typeof value === "string"),
+      },
+    };
+  }
+  const action = actions[0];
+  if (!action) return { name: "Bash", input: baseInput };
+  const actionType =
+    typeof action.type === "string"
+      ? action.type.replace(/[_\s-]/g, "").toLowerCase()
+      : "";
+  if (actionType === "read") {
+    const path = typeof action.path === "string" ? action.path : undefined;
+    const readsSkill = path?.toLowerCase().endsWith("/skill.md") === true;
+    return {
+      name: readsSkill ? "ReadSkill" : "Read",
+      input: {
+        ...baseInput,
+        ...(path ? { file_path: path } : {}),
+        ...(readsSkill && path
+          ? { skill: path.split(/[\\/]/).filter(Boolean).at(-2) ?? "Skill" }
+          : {}),
+      },
+    };
+  }
+  if (actionType === "listfiles") {
+    return {
+      name: "ListFiles",
+      input: {
+        ...baseInput,
+        ...(typeof action.path === "string" ? { path: action.path } : {}),
+      },
+    };
+  }
+  if (actionType === "search") {
+    return {
+      name: "Search",
+      input: {
+        ...baseInput,
+        ...(typeof action.query === "string" ? { query: action.query } : {}),
+        ...(typeof action.path === "string" ? { path: action.path } : {}),
+      },
+    };
+  }
+  return { name: "Bash", input: baseInput };
+}
+
+function codexCollabHistoryToolName(tool: string): string {
+  switch (tool.replace(/[_\s-]/g, "").toLowerCase()) {
+    case "spawnagent":
+      return "SpawnAgent";
+    case "sendinput":
+      return "SendAgentInput";
+    case "resumeagent":
+      return "ResumeAgent";
+    case "wait":
+      return "WaitForAgents";
+    case "closeagent":
+      return "CloseAgent";
+    default:
+      return "SubAgent";
+  }
+}
+
 function normalizeCodexMcpResult(result: unknown): {
   content: string;
   imageBase64: Array<{ data: string; mimeType: string }>;
@@ -3877,11 +3966,8 @@ export async function getCodexSessionHistory(
           : typeof payload.call_id === "string"
             ? payload.call_id
             : `cmd-${index}`;
-        const input =
-          typeof payload.command === "string"
-          ? { command: payload.command }
-          : parseObjectLike(payload);
-        appendToolUseMessage(messages, id, "Bash", input);
+        const descriptor = describeCodexHistoryCommand(payload);
+        appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
         continue;
       }
 
@@ -3930,6 +4016,53 @@ export async function getCodexSessionHistory(
           ? { query: payload.query }
           : getCodexSearchInput(payload);
         appendToolUseMessage(messages, id, "WebSearch", input);
+        continue;
+      }
+
+      if (
+        payload.type === "collab_agent_tool_call" ||
+        payload.type === "collab_tool_call"
+      ) {
+        const id =
+          typeof payload.id === "string" ? payload.id : `collab-${index}`;
+        const tool =
+          typeof payload.tool === "string" ? payload.tool : "subagent";
+        appendToolUseMessage(
+          messages,
+          id,
+          codexCollabHistoryToolName(tool),
+          parseObjectLike(payload),
+        );
+        continue;
+      }
+
+      if (payload.type === "context_compaction") {
+        appendToolUseMessage(
+          messages,
+          typeof payload.id === "string" ? payload.id : `compact-${index}`,
+          "ContextCompaction",
+          { description: "Compact the conversation context" },
+        );
+        continue;
+      }
+
+      if (payload.type === "image_view") {
+        appendToolUseMessage(
+          messages,
+          typeof payload.id === "string" ? payload.id : `image-view-${index}`,
+          "ViewImage",
+          typeof payload.path === "string" ? { path: payload.path } : {},
+        );
+        continue;
+      }
+
+      if (payload.type === "sleep") {
+        appendToolUseMessage(
+          messages,
+          typeof payload.id === "string" ? payload.id : `wait-${index}`,
+          "Wait",
+          parseObjectLike(payload),
+        );
       }
     }
     }

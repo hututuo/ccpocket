@@ -276,7 +276,12 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
 
       if (_expansion == ToolResultExpansion.collapsed) {
         result = _CollapsedToolResult(
-          toolName: widget.message.toolName,
+          toolName: widget.message.toolName == null
+              ? null
+              : getToolDisplayName(
+                  widget.message.toolName!,
+                  zh: Localizations.localeOf(context).languageCode == 'zh',
+                ),
           category: _category,
           summary: summary,
           onTap: _onTap,
@@ -587,7 +592,12 @@ class _ExpandedToolResult extends StatelessWidget {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final l = AppLocalizations.of(context);
     final content = message.content;
-    final toolName = message.toolName;
+    final toolName = message.toolName == null
+        ? null
+        : getToolDisplayName(
+            message.toolName!,
+            zh: Localizations.localeOf(context).languageCode == 'zh',
+          );
     final lines = content.split('\n');
     final hasMore = lines.length > _previewLines;
     final previewText = hasMore

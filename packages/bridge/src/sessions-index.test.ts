@@ -2038,6 +2038,68 @@ describe("codex sessions integration", () => {
     ]);
   });
 
+  it("preserves semantic Codex process tools when rebuilding history", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68019";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    const toolItems = [
+      {
+        type: "command_execution",
+        id: "read-skill-1",
+        command: "sed -n '1,200p' /tmp/demo/SKILL.md",
+        command_actions: [
+          {
+            type: "read",
+            command: "sed -n '1,200p' /tmp/demo/SKILL.md",
+            name: "SKILL.md",
+            path: "/tmp/demo/SKILL.md",
+          },
+        ],
+      },
+      {
+        type: "command_execution",
+        id: "multi-1",
+        command: "git status && git diff --stat",
+        command_actions: [
+          { type: "unknown", command: "git status" },
+          { type: "unknown", command: "git diff --stat" },
+        ],
+      },
+      {
+        type: "collab_agent_tool_call",
+        id: "agent-1",
+        tool: "spawnAgent",
+        prompt: "Inspect the parser",
+      },
+      { type: "context_compaction", id: "compact-1" },
+    ];
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
+      toolItems
+        .map((payload) => JSON.stringify({ type: "response_item", payload }))
+        .join("\n"),
+    );
+
+    const history = await getCodexSessionHistory(threadId);
+    const toolUses = history.flatMap((message) =>
+      message.content.filter((item) => item.type === "tool_use"),
+    );
+    expect(toolUses.map((item) => item.name)).toEqual([
+      "ReadSkill",
+      "MultiCommand",
+      "SpawnAgent",
+      "ContextCompaction",
+    ]);
+    expect(toolUses[0]?.input).toMatchObject({
+      file_path: "/tmp/demo/SKILL.md",
+      skill: "demo",
+    });
+    expect(toolUses[1]?.input).toMatchObject({
+      commands: ["git status", "git diff --stat"],
+    });
+  });
+
   it("joins multiple assistant output_text chunks and ignores non-text chunks", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68011";
     const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");

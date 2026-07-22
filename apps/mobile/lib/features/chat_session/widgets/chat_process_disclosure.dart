@@ -257,6 +257,11 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
     final categoryColor = getToolCategoryColor(category, appColors);
     final summary = _toolActivitySummary(activity, category);
     final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final displayName = getToolDisplayName(
+      activity.name,
+      zh: zh,
+      input: activity.input,
+    );
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -289,7 +294,7 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  activity.name,
+                  displayName,
                   style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,

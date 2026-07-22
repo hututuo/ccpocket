@@ -728,6 +728,11 @@ class _ToolUseTileState extends State<ToolUseTile> {
 
   @override
   Widget build(BuildContext context) {
+    final displayName = getToolDisplayName(
+      widget.name,
+      zh: Localizations.localeOf(context).languageCode == 'zh',
+      input: widget.input,
+    );
     if (widget.name == _imageGenerationToolName) {
       return _ImageGenerationToolUseStatus(
         input: widget.input,
@@ -737,7 +742,7 @@ class _ToolUseTileState extends State<ToolUseTile> {
 
     if (_expansion == ToolUseExpansion.collapsed) {
       return _ToolUseCollapsed(
-        name: widget.name,
+        name: displayName,
         category: _category,
         inputSummary: _inputSummary(),
         onTap: _cycleExpansion,
@@ -745,7 +750,7 @@ class _ToolUseTileState extends State<ToolUseTile> {
       );
     }
     return _ToolUseCard(
-      name: widget.name,
+      name: displayName,
       input: widget.input,
       category: _category,
       inputSummary: _inputSummary(),

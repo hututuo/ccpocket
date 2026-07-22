@@ -572,6 +572,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   /** Last assistant text message — used as `result` in completion notification. */
   private lastResultText: string | null = null;
   private readonly agentTurnTracker = new CodexAgentTurnTracker();
+  /** Item ids whose tool-use envelope was already emitted at item/started. */
+  private readonly startedToolItemIds = new Set<string>();
   private pendingPlanCompletion: {
     toolUseId: string;
     planText: string;
@@ -1873,6 +1875,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.lastPlanItemText = null;
     this.lastResultText = null;
     this.agentTurnTracker.reset();
+    this.startedToolItemIds.clear();
     this._skills = [];
     this._apps = [];
     this._plugins = [];
@@ -4201,136 +4204,43 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.agentTurnTracker.startAgentItem({ turnId, itemId });
     }
 
-    switch (itemType) {
-      case "commandexecution": {
-        const commandText =
-          typeof item.command === "string"
-            ? item.command
-            : Array.isArray(item.command)
-              ? item.command.map((part) => String(part)).join(" ")
-              : "";
-        this.emitMessage({
-          type: "assistant",
-          message: {
-            id: itemId,
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: itemId,
-                name: "Bash",
-                input: { command: commandText },
-              },
-            ],
-            model: this.getMessageModel(),
-          },
-        });
-        break;
-      }
-
-      case "filechange": {
-        this.emitMessage({
-          type: "assistant",
-          message: {
-            id: itemId,
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: itemId,
-                name: "FileChange",
-                input: {
-                  changes: Array.isArray(item.changes) ? item.changes : [],
-                },
-              },
-            ],
-            model: this.getMessageModel(),
-          },
-        });
-        break;
-      }
-
-      case "dynamictoolcall": {
-        const tool = typeof item.tool === "string" ? item.tool : "DynamicTool";
-        this.emitMessage({
-          type: "assistant",
-          message: {
-            id: itemId,
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: itemId,
-                name: tool,
-                input: toToolUseInput(item.arguments),
-              },
-            ],
-            model: this.getMessageModel(),
-          },
-        });
-        break;
-      }
-
-      case "imagegeneration": {
-        this.emitMessage({
-          type: "assistant",
-          message: {
-            id: itemId,
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: itemId,
-                name: "ImageGeneration",
-                input: toImageGenerationToolInput(item),
-              },
-            ],
-            model: this.getMessageModel(),
-          },
-        });
-        break;
-      }
-
-      case "collabagenttoolcall": {
-        const tool = typeof item.tool === "string" ? item.tool : "subagent";
-        const toolName = "SubAgent";
-        const input: Record<string, unknown> = {
-          tool,
-          ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
-          ...(typeof item.senderThreadId === "string"
-            ? { senderThreadId: item.senderThreadId }
-            : {}),
-          ...(Array.isArray(item.receiverThreadIds)
-            ? { receiverThreadIds: item.receiverThreadIds }
-            : {}),
-          ...(typeof item.model === "string" ? { model: item.model } : {}),
-          ...(typeof item.reasoningEffort === "string"
-            ? { reasoningEffort: item.reasoningEffort }
-            : {}),
-          ...(item.agentsStates ? { agentsStates: item.agentsStates } : {}),
-        };
-        this.emitMessage({
-          type: "assistant",
-          message: {
-            id: itemId,
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: itemId,
-                name: toolName,
-                input,
-              },
-            ],
-            model: this.getMessageModel(),
-          },
-        });
-        break;
-      }
-
-      default:
-        break;
+    const descriptor = describeCodexItemTool(item, itemType);
+    if (descriptor) {
+      this.emitStartedToolUse(itemId, descriptor);
     }
+  }
+
+  private emitStartedToolUse(
+    itemId: string,
+    descriptor: CodexItemToolDescriptor,
+  ): void {
+    if (this.startedToolItemIds.has(itemId)) return;
+    this.startedToolItemIds.add(itemId);
+    this.emitMessage({
+      type: "assistant",
+      message: {
+        id: itemId,
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: itemId,
+            name: descriptor.name,
+            input: descriptor.input,
+          },
+        ],
+        model: this.getMessageModel(),
+      },
+    });
+  }
+
+  private ensureStartedToolUse(
+    itemId: string,
+    descriptor: CodexItemToolDescriptor,
+  ): void {
+    if (this.startedToolItemIds.delete(itemId)) return;
+    this.emitStartedToolUse(itemId, descriptor);
+    this.startedToolItemIds.delete(itemId);
   }
 
   private processItemCompleted(
@@ -4391,6 +4301,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
 
       case "commandexecution": {
+        const descriptor = describeCodexItemTool(item, itemType)!;
+        this.ensureStartedToolUse(itemId, descriptor);
         const output =
           typeof item.aggregatedOutput === "string"
             ? item.aggregatedOutput
@@ -4402,12 +4314,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           type: "tool_result",
           toolUseId: itemId,
           content: output || `exit code: ${exitCode ?? "unknown"}`,
-          toolName: "Bash",
+          toolName: descriptor.name,
         });
         break;
       }
 
       case "filechange": {
+        const descriptor = describeCodexItemTool(item, itemType)!;
+        this.ensureStartedToolUse(itemId, descriptor);
         const content = formatFileChangesWithDiff(item.changes);
         this.emitMessage({
           type: "tool_result",
@@ -4424,21 +4338,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const toolName = `mcp:${server}/${tool}`;
         const result = item.result ?? item.error ?? "MCP call completed";
         const normalized = normalizeMcpToolResult(result);
-        this.emitMessage({
-          type: "assistant",
-          message: {
-            id: itemId,
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: itemId,
-                name: toolName,
-                input: (item.arguments as Record<string, unknown>) ?? {},
-              },
-            ],
-            model: this.getMessageModel(),
-          },
+        this.ensureStartedToolUse(itemId, {
+          name: toolName,
+          input: toToolUseInput(item.arguments),
         });
         this.emitMessage({
           type: "tool_result",
@@ -4454,6 +4356,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "dynamictoolcall": {
         const tool = typeof item.tool === "string" ? item.tool : "DynamicTool";
+        this.ensureStartedToolUse(itemId, {
+          name: tool,
+          input: toToolUseInput(item.arguments),
+        });
         const content = formatDynamicToolResult(item);
         this.emitMessage({
           type: "tool_result",
@@ -4465,6 +4371,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
 
       case "imagegeneration": {
+        this.ensureStartedToolUse(
+          itemId,
+          describeCodexItemTool(item, itemType)!,
+        );
         const normalized = formatImageGenerationResult(item);
         this.emitMessage({
           type: "tool_result",
@@ -4483,21 +4393,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "websearch": {
         const query = typeof item.query === "string" ? item.query : "";
-        this.emitMessage({
-          type: "assistant",
-          message: {
-            id: itemId,
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: itemId,
-                name: "WebSearch",
-                input: { query },
-              },
-            ],
-            model: this.getMessageModel(),
-          },
+        this.ensureStartedToolUse(itemId, {
+          name: "WebSearch",
+          input: query ? { query } : {},
         });
         this.emitMessage({
           type: "tool_result",
@@ -4509,6 +4407,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
 
       case "collabagenttoolcall": {
+        const descriptor = describeCodexItemTool(item, itemType)!;
+        this.ensureStartedToolUse(itemId, descriptor);
         const tool = typeof item.tool === "string" ? item.tool : "subagent";
         const status =
           typeof item.status === "string" ? item.status : "completed";
@@ -4526,7 +4426,22 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           type: "tool_result",
           toolUseId: itemId,
           content,
-          toolName: "SubAgent",
+          toolName: descriptor.name,
+        });
+        break;
+      }
+
+      case "imageview":
+      case "sleep":
+      case "contextcompaction":
+      case "subagentactivity": {
+        const descriptor = describeCodexItemTool(item, itemType)!;
+        this.ensureStartedToolUse(itemId, descriptor);
+        this.emitMessage({
+          type: "tool_result",
+          toolUseId: itemId,
+          content: completedCodexItemSummary(item, itemType),
+          toolName: descriptor.name,
         });
         break;
       }
@@ -5206,6 +5121,223 @@ function normalizeSandboxPolicyFromRpc(
 function normalizeItemType(raw: unknown): string {
   if (typeof raw !== "string") return "";
   return raw.replace(/[_\s-]/g, "").toLowerCase();
+}
+
+interface CodexItemToolDescriptor {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+function describeCodexItemTool(
+  item: Record<string, unknown>,
+  itemType = normalizeItemType(item.type),
+): CodexItemToolDescriptor | null {
+  switch (itemType) {
+    case "commandexecution":
+      return describeCommandExecution(item);
+    case "filechange":
+      return {
+        name: "FileChange",
+        input: { changes: Array.isArray(item.changes) ? item.changes : [] },
+      };
+    case "mcptoolcall": {
+      const server = stringOrNull(item.server) ?? "mcp";
+      const tool = stringOrNull(item.tool) ?? "unknown";
+      return {
+        name: `mcp:${server}/${tool}`,
+        input: toToolUseInput(item.arguments),
+      };
+    }
+    case "dynamictoolcall":
+      return {
+        name: stringOrNull(item.tool) ?? "DynamicTool",
+        input: toToolUseInput(item.arguments),
+      };
+    case "imagegeneration":
+      return {
+        name: "ImageGeneration",
+        input: toImageGenerationToolInput(item),
+      };
+    case "collabagenttoolcall": {
+      const tool = stringOrNull(item.tool) ?? "subagent";
+      return {
+        name: collabToolDisplayName(tool),
+        input: {
+          tool,
+          ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
+          ...(typeof item.senderThreadId === "string"
+            ? { senderThreadId: item.senderThreadId }
+            : {}),
+          ...(Array.isArray(item.receiverThreadIds)
+            ? { receiverThreadIds: item.receiverThreadIds }
+            : {}),
+          ...(typeof item.model === "string" ? { model: item.model } : {}),
+          ...(typeof item.reasoningEffort === "string"
+            ? { reasoningEffort: item.reasoningEffort }
+            : {}),
+          ...(item.agentsStates ? { agentsStates: item.agentsStates } : {}),
+        },
+      };
+    }
+    case "subagentactivity":
+      return {
+        name: "SubAgentActivity",
+        input: {
+          ...(typeof item.kind === "string" ? { kind: item.kind } : {}),
+          ...(typeof item.agentThreadId === "string"
+            ? { agentThreadId: item.agentThreadId }
+            : {}),
+          ...(typeof item.agentPath === "string"
+            ? { agentPath: item.agentPath }
+            : {}),
+        },
+      };
+    case "websearch": {
+      const query = stringOrNull(item.query);
+      return { name: "WebSearch", input: query ? { query } : {} };
+    }
+    case "imageview":
+      return {
+        name: "ViewImage",
+        input: typeof item.path === "string" ? { path: item.path } : {},
+      };
+    case "sleep": {
+      const durationMs = numberOrUndefined(item.durationMs ?? item.duration_ms);
+      return {
+        name: "Wait",
+        input: durationMs === undefined ? {} : { durationMs },
+      };
+    }
+    case "contextcompaction":
+      return {
+        name: "ContextCompaction",
+        input: { description: "Compact the conversation context" },
+      };
+    default:
+      return null;
+  }
+}
+
+function describeCommandExecution(
+  item: Record<string, unknown>,
+): CodexItemToolDescriptor {
+  const command =
+    typeof item.command === "string"
+      ? item.command
+      : Array.isArray(item.command)
+        ? item.command.map((part) => String(part)).join(" ")
+        : "";
+  const rawActions = item.commandActions ?? item.command_actions;
+  const actions = Array.isArray(rawActions)
+    ? rawActions
+        .map((entry) => asRecord(entry))
+        .filter(
+          (entry): entry is Record<string, unknown> => entry !== undefined,
+        )
+    : [];
+  const cwd = stringOrNull(item.cwd);
+  const baseInput: Record<string, unknown> = {
+    command,
+    ...(cwd ? { cwd } : {}),
+    ...(actions.length > 0 ? { commandActions: actions } : {}),
+  };
+  if (actions.length > 1) {
+    return {
+      name: "MultiCommand",
+      input: {
+        ...baseInput,
+        commands: actions
+          .map((action) => stringOrNull(action.command))
+          .filter((value): value is string => value !== null),
+      },
+    };
+  }
+  const action = actions[0];
+  if (!action) return { name: "Bash", input: baseInput };
+  switch (normalizeItemType(action.type)) {
+    case "read": {
+      const path = stringOrNull(action.path);
+      const actionName = stringOrNull(action.name);
+      const readsSkill =
+        path?.toLowerCase().endsWith("/skill.md") === true ||
+        actionName?.toLowerCase().includes("skill") === true;
+      return {
+        name: readsSkill ? "ReadSkill" : "Read",
+        input: {
+          ...baseInput,
+          ...(path ? { file_path: path } : {}),
+          ...(readsSkill && path ? { skill: skillNameFromPath(path) } : {}),
+        },
+      };
+    }
+    case "listfiles":
+      return {
+        name: "ListFiles",
+        input: {
+          ...baseInput,
+          ...(typeof action.path === "string" ? { path: action.path } : {}),
+        },
+      };
+    case "search":
+      return {
+        name: "Search",
+        input: {
+          ...baseInput,
+          ...(typeof action.query === "string"
+            ? { query: action.query }
+            : {}),
+          ...(typeof action.path === "string" ? { path: action.path } : {}),
+        },
+      };
+    default:
+      return { name: "Bash", input: baseInput };
+  }
+}
+
+function collabToolDisplayName(tool: string): string {
+  switch (normalizeItemType(tool)) {
+    case "spawnagent":
+      return "SpawnAgent";
+    case "sendinput":
+      return "SendAgentInput";
+    case "resumeagent":
+      return "ResumeAgent";
+    case "wait":
+      return "WaitForAgents";
+    case "closeagent":
+      return "CloseAgent";
+    default:
+      return "SubAgent";
+  }
+}
+
+function skillNameFromPath(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : "Skill";
+}
+
+function completedCodexItemSummary(
+  item: Record<string, unknown>,
+  itemType: string,
+): string {
+  switch (itemType) {
+    case "contextcompaction":
+      return "Conversation context compacted";
+    case "imageview":
+      return typeof item.path === "string"
+        ? `Viewed image: ${item.path}`
+        : "Image viewed";
+    case "sleep": {
+      const durationMs = numberOrUndefined(item.durationMs ?? item.duration_ms);
+      return durationMs === undefined ? "Wait completed" : `Waited ${durationMs} ms`;
+    }
+    case "subagentactivity":
+      return typeof item.kind === "string"
+        ? `Sub-agent activity: ${item.kind}`
+        : "Sub-agent activity updated";
+    default:
+      return "Tool completed";
+  }
 }
 
 function isThreadScopedNotification(method: string): boolean {

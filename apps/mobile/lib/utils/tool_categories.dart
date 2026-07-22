@@ -8,7 +8,17 @@ import '../theme/app_theme.dart';
 ///
 /// Each category has a distinct icon, color, and summary extraction rule
 /// for compact CLI-like display in chat bubbles.
-enum ToolCategory { read, write, bash, search, other }
+enum ToolCategory {
+  read,
+  write,
+  bash,
+  search,
+  subagent,
+  compact,
+  wait,
+  image,
+  other,
+}
 
 /// Classify a tool name into a [ToolCategory].
 ToolCategory categorizeToolName(String name) {
@@ -16,14 +26,29 @@ ToolCategory categorizeToolName(String name) {
   if (name.startsWith('mcp__')) return ToolCategory.other;
 
   return switch (name) {
-    'Read' => ToolCategory.read,
+    'Read' || 'ReadSkill' => ToolCategory.read,
     'Write' ||
     'Edit' ||
     'NotebookEdit' ||
     'MultiEdit' ||
     'FileChange' => ToolCategory.write,
-    'Bash' => ToolCategory.bash,
-    'Grep' || 'Glob' || 'WebSearch' || 'WebFetch' => ToolCategory.search,
+    'Bash' || 'MultiCommand' => ToolCategory.bash,
+    'Grep' ||
+    'Glob' ||
+    'Search' ||
+    'ListFiles' ||
+    'WebSearch' ||
+    'WebFetch' => ToolCategory.search,
+    'SubAgent' ||
+    'SpawnAgent' ||
+    'SendAgentInput' ||
+    'ResumeAgent' ||
+    'WaitForAgents' ||
+    'CloseAgent' ||
+    'SubAgentActivity' => ToolCategory.subagent,
+    'ContextCompaction' => ToolCategory.compact,
+    'Wait' || 'Sleep' => ToolCategory.wait,
+    'ViewImage' || 'ImageGeneration' => ToolCategory.image,
     _ => ToolCategory.other,
   };
 }
@@ -40,6 +65,10 @@ String getToolSummary(ToolCategory category, Map<String, dynamic> input) {
     ToolCategory.read || ToolCategory.write => _fileSummary(input),
     ToolCategory.bash => _bashSummary(input),
     ToolCategory.search => _searchSummary(input),
+    ToolCategory.subagent ||
+    ToolCategory.compact ||
+    ToolCategory.wait ||
+    ToolCategory.image ||
     ToolCategory.other => _otherSummary(input),
   };
 }
@@ -51,6 +80,10 @@ IconData getToolCategoryIcon(ToolCategory category) {
     ToolCategory.write => Icons.edit_note,
     ToolCategory.bash => Icons.terminal,
     ToolCategory.search => Icons.search,
+    ToolCategory.subagent => Icons.account_tree_outlined,
+    ToolCategory.compact => Icons.compress,
+    ToolCategory.wait => Icons.timer_outlined,
+    ToolCategory.image => Icons.image_outlined,
     ToolCategory.other => Icons.build_outlined,
   };
 }
@@ -62,6 +95,10 @@ Color getToolCategoryColor(ToolCategory category, AppColors appColors) {
     ToolCategory.write => appColors.toolIcon,
     ToolCategory.bash => appColors.toolIcon,
     ToolCategory.search => appColors.toolIcon,
+    ToolCategory.subagent => appColors.toolIcon,
+    ToolCategory.compact => appColors.toolIcon,
+    ToolCategory.wait => appColors.toolIcon,
+    ToolCategory.image => appColors.toolIcon,
     ToolCategory.other => appColors.toolIcon,
   };
 }
@@ -75,7 +112,56 @@ String getToolFullInput(ToolCategory category, Map<String, dynamic> input) {
     ToolCategory.bash => _bashFullInput(input),
     ToolCategory.search => _searchFullInput(input),
     ToolCategory.read || ToolCategory.write => _fileFullInput(input),
+    ToolCategory.subagent ||
+    ToolCategory.compact ||
+    ToolCategory.wait ||
+    ToolCategory.image ||
     ToolCategory.other => _otherFullInput(input),
+  };
+}
+
+/// Codex app-server item names are deliberately kept stable on the wire while
+/// the transcript uses concise, user-facing labels. Unknown tools retain their
+/// original name so newer Bridge versions remain forward compatible.
+String getToolDisplayName(
+  String name, {
+  required bool zh,
+  Map<String, dynamic> input = const {},
+}) {
+  final normalized = name == 'SubAgent' ? input['tool']?.toString() : name;
+  return switch (normalized) {
+    'Read' => zh ? '读取文件' : 'Read file',
+    'ReadSkill' => zh ? '读取 Skill' : 'Read Skill',
+    'Write' ||
+    'Edit' ||
+    'NotebookEdit' ||
+    'MultiEdit' ||
+    'FileChange' => zh ? '修改文件' : 'File change',
+    'Bash' => zh ? '运行命令' : 'Run command',
+    'MultiCommand' => zh ? '运行多个命令' : 'Run multiple commands',
+    'Search' || 'Grep' => zh ? '搜索内容' : 'Search files',
+    'Glob' || 'ListFiles' => zh ? '查看目录' : 'List files',
+    'WebSearch' => zh ? '搜索网页' : 'Search web',
+    'WebFetch' => zh ? '读取网页' : 'Read web page',
+    'spawnAgent' ||
+    'spawn_agent' ||
+    'SpawnAgent' => zh ? '开启子 Agent' : 'Start sub-agent',
+    'sendInput' ||
+    'send_input' ||
+    'SendAgentInput' => zh ? '引导子 Agent' : 'Guide sub-agent',
+    'resumeAgent' ||
+    'resume_agent' ||
+    'ResumeAgent' => zh ? '继续子 Agent' : 'Resume sub-agent',
+    'wait' || 'WaitForAgents' => zh ? '等待子 Agent' : 'Wait for sub-agents',
+    'closeAgent' ||
+    'close_agent' ||
+    'CloseAgent' => zh ? '关闭子 Agent' : 'Close sub-agent',
+    'SubAgentActivity' => zh ? '子 Agent 活动' : 'Sub-agent activity',
+    'ContextCompaction' => zh ? '压缩上下文' : 'Compact context',
+    'Wait' || 'Sleep' => zh ? '等待' : 'Wait',
+    'ViewImage' => zh ? '查看图片' : 'View image',
+    'ImageGeneration' => zh ? '生成图片' : 'Generate image',
+    _ => name,
   };
 }
 
