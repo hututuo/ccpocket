@@ -1,112 +1,76 @@
 ---
 name: shorebird-patch
-description: Shorebird OTA パッチの作成・staging 配布（stable 昇格はユーザー実施）
+description: Shorebird OTA パッチの作成・owner 配布（stable 昇格はユーザー確認後）
 disable-model-invocation: true
 allowed-tools: Bash(bash:*), Bash(shorebird:*), Bash(dart:*), Bash(xcrun:*), Bash(grep:*), Read
 ---
 
 # Shorebird パッチ配布
 
-Shorebird OTA パッチを staging に作成する。stable への昇格はユーザーが検証後に手動で実施する。
+署名済みの OTA パッチを `owner` に作成し、物理 iPhone で検証する。`stable` への昇格はユーザーが検証結果を確認した後だけ実行する。
 
-> **新バージョンのリリース**は `/release-mobile` スキルを使用する。
-> アセット差分でパッチが適用されない場合も、`/release-mobile` でリリース後に再パッチする。
-
-## フロー概要
+## フロー
 
 ```
-patch (staging) → デバッグ画面で検証 → ユーザーが promote (stable) → 全ユーザーに配信
+patch (owner) → 物理 iPhone で検証 → ユーザー確認 → stable → 他ユーザー
 ```
 
-## パッチ手順
+## 必須設定
 
-### 1. バージョン確認
+- `apps/mobile/shorebird.yaml` は個人 Shorebird アカウントの `app_id` を使う。
+- `CCPOCKET_SHOREBIRD_APP_ID` はその ID と完全一致させる。誤った上流アプリへの公開を防ぐ門禁である。
+- `SHOREBIRD_PUBLIC_KEY_PATH` と `SHOREBIRD_PRIVATE_KEY_PATH` を設定する。
+- 秘密鍵はリポジトリに置かない。紛失すると、その公開鍵を埋め込んだ base IPA に新しいパッチを発行できない。
+
+## パッチ
 
 ```bash
-grep '^version:' apps/mobile/pubspec.yaml
+bash .claude/skills/shorebird-patch/patch.sh ios <release-version>
 ```
 
-`version: X.Y.Z+N` の値を記録する（= `<version>`）。
+`patch.sh` は次を強制する。
 
-### 2. パッチ作成 (staging)
+- 配布先は `owner`。
+- RSA 公開鍵と秘密鍵で署名する。
+- `--allow-native-diffs` と `--allow-asset-diffs` を拒否する。
+- Native、Swift/Kotlin、entitlement、plugin、asset、Flutter/Xcode、依存関係の差分はパッチにせず、新しい base release にする。
 
-引数でプラットフォームが指定された場合はそのまま使う。指定がなければ、その時点のエージェントで利用可能な質問手段でユーザーに確認する。特定の質問ツール名には依存しない。
+## 新しい base IPA
 
 ```bash
-# iOS
-bash .claude/skills/shorebird-patch/patch.sh ios <version>
-
-# Android
-bash .claude/skills/shorebird-patch/patch.sh android <version>
-
-# 両方の場合は順番に実行
+bash .claude/skills/shorebird-patch/release.sh ios
 ```
 
-スクリプトが以下を一括で行う:
-- `shorebird patch` で **staging** にパッチ作成
-- `--allow-asset-diffs` によりアセット変更の確認プロンプトを自動スキップ
+このコマンドは公開鍵を base release に埋め込む。初回、または native/asset 差分がある場合に使う。iOS Simulator は UI と通常ビルドだけに使い、Shorebird パッチは物理 iPhone で検証する。
 
-完了後の出力から **パッチ番号** を記録する（= `<patch-number>`）。
+## owner の実機確認
 
-### 3. アセット差分の検証（重要）
+1. 設定のバージョン番号を7回タップして開発者更新通道を解锁する。
+2. ソフトウェア更新で `owner` を選ぶ。
+3. 「检查更新」を押し、表示された更新を明示的にダウンロードする。
+4. App を完全に終了して再度開き、patch 番号と変更内容を確認する。
+5. AltStore の再署名後も patch が残ることを物理端末で確認する。
 
-パッチ出力に以下の警告が含まれていないか確認する:
+## stable への昇格
 
-```
-[WARN] Your app contains asset changes, which will not be included in the patch.
-```
-
-**この警告が出た場合、パッチは publish されるが実機に適用されない可能性が高い。**
-
-#### 対処法
-
-アセット差分が検出された場合、ユーザーに以下を報告する:
-
-1. **警告内容**: どのファイルにアセット差分があるか（例: `MaterialIcons-Regular.otf`）
-2. **影響**: パッチは作成されるが、デバイスでダウンロード後に適用されない
-3. **推奨対応**: `/release-mobile` で新リリースを作成してから、クリーンな状態でパッチを再作成する
-
-### 4. 検証（staging）
-
-パッチが staging に配信されたら、以下の方法で検証する:
-
-- **ローカル**: `shorebird preview --track=staging --release-version=<version>`
-- **実機（TestFlight等）**: アプリのデバッグ画面（ロゴ5連打）→ Update Track を Staging に変更 → アプリ再起動
-
-### 5. Promote (staging → stable)
-
-このスキルでは stable への昇格は実行しない。検証が問題なければ、ユーザーが以下を手動実行する:
+ユーザーが明示的に確認した後だけ実行する。
 
 ```bash
-bash .claude/skills/shorebird-patch/promote.sh <version> <patch-number>
+bash .claude/skills/shorebird-patch/promote.sh \
+  <release-version> <patch-number> --confirm-stable
 ```
 
-エージェントは promote を自動実行せず、上記コマンドをそのまま案内する。
+中間の owner patch を全て昇格する必要はない。検証済みの指定 patch だけを stable に設定する。
 
-### 6. 完了報告
+## ロールバック
 
-以下を報告する:
-- パッチ番号
-- 対象プラットフォーム
-- リリースバージョン
-- トラック: **staging** に配信済み
-- stable 昇格は未実施で、ユーザー実行待ちであること
-- アセット差分: あり/なし（ありの場合は警告を明記）
-- ユーザーがそのまま実行できる promote コマンド
+stable に問題があれば Shorebird Console で対象 patch の Rollback を実行する。ロールバック後、App の手動チェックと再起動で前の正常 patch または base release に戻ったことを物理 iPhone で確認する。エージェントはユーザーの明示確認なしに stable の変更やロールバックを実行しない。
 
-## npm scripts
+## 完了報告
 
-```bash
-npm run shorebird:patch:android -- <release-version>
-npm run shorebird:patch:ios -- <release-version>
-npm run shorebird:promote -- <release-version> <patch-number>
-```
-
-## トラブルシュート
-
-- **アセット差分でパッチが適用されない**: `--allow-asset-diffs` でパッチ作成は成功するが、アセット変更（フォント、画像等）を含むパッチは実機で適用に失敗する。`/release-mobile` で新リリースが必要
-- **署名エラー（exportArchive）**: IPA生成時のエラーはShorebirdパッチ自体には影響しない。パッチが `Published Patch N!` と表示されていれば成功
-- **インタラクティブプロンプト**: `shorebird` コマンドを直接実行する場合は `--release-version` フラグ必須（省略するとインタラクティブプロンプトで非TTY環境がエラーになる）
-- **パッチが反映されない場合の確認**: 設定画面のバージョン表示で `(patch N)` が出ているか確認。出ていなければShorebirdリリースビルドでない可能性がある
-- **staging パッチの確認方法**: デバッグ画面（ロゴ5連打）→ Update Track を Staging に変更 → アプリ再起動
-- **エージェント差異への対応**: ユーザーへの確認が必要な場面では `AskUserQuestion` などの固有ツール名を前提にせず、その環境で使える質問手段を使う
+- platform / base release version / patch number
+- app_id の照合結果（ID 自体は秘密ではない）
+- track が `owner` であり、stable は未変更であること
+- native/asset diff の有無
+- 署名済みであること（秘密鍵の内容やパスはログに出さない）
+- 物理 iPhone の検証結果

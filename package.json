@@ -26,6 +26,8 @@
     "release-card": "node scripts/release-card/generate.mjs",
     "shorebird:patch:android": "bash .claude/skills/shorebird-patch/patch.sh android",
     "shorebird:patch:ios": "bash .claude/skills/shorebird-patch/patch.sh ios",
+    "shorebird:release:android": "bash .claude/skills/shorebird-patch/release.sh android",
+    "shorebird:release:ios": "bash .claude/skills/shorebird-patch/release.sh ios",
     "shorebird:promote": "bash .claude/skills/shorebird-patch/promote.sh"
   }
 }

@@ -1,35 +1,40 @@
 #!/usr/bin/env bash
-# promote.sh - Shorebird パッチを staging → stable に昇格
-#
-# Usage: promote.sh <release-version> <patch-number>
-# Example: promote.sh 1.7.0+20 3
+# Promote one verified owner patch to stable.
+# Usage: promote.sh <release-version> <patch-number> --confirm-stable
 
-set -euo pipefail
+set -Eeuo pipefail
 export PATH="$HOME/.shorebird/bin:$PATH"
 
-if [ $# -lt 2 ]; then
-  echo "Usage: $0 <release-version> <patch-number>"
-  echo "Example: $0 1.7.0+20 3"
-  exit 1
+if [ "$#" -ne 3 ] || [ "$3" != "--confirm-stable" ]; then
+  echo "Usage: $0 <release-version> <patch-number> --confirm-stable" >&2
+  echo "The confirmation flag is required because this affects every stable device." >&2
+  exit 64
 fi
 
 RELEASE_VERSION="$1"
 PATCH_NUMBER="$2"
+: "${CCPOCKET_SHOREBIRD_APP_ID:?Set CCPOCKET_SHOREBIRD_APP_ID to your personal Shorebird app_id.}"
+command -v shorebird >/dev/null || {
+  echo "Shorebird CLI is not installed." >&2
+  exit 69
+}
 
-echo "=== Shorebird Promote ==="
-echo "Release version: $RELEASE_VERSION"
-echo "Patch number: $PATCH_NUMBER"
-echo "Track: staging → stable"
-echo ""
-
-# Ensure we are in the Flutter app directory (where shorebird.yaml lives)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR/../../../apps/mobile"
+PROJECT_DIR="$SCRIPT_DIR/../../../apps/mobile"
+CONFIGURED_APP_ID="$(awk '/^[[:space:]]*app_id:/ {print $2; exit}' "$PROJECT_DIR/shorebird.yaml")"
+if [ "$CONFIGURED_APP_ID" = "00000000-0000-0000-0000-000000000000" ]; then
+  echo "Refusing to promote: run Shorebird init with the owner's personal account first." >&2
+  exit 78
+fi
+if [ "$CONFIGURED_APP_ID" != "$CCPOCKET_SHOREBIRD_APP_ID" ]; then
+  echo "Refusing to promote from an unexpected Shorebird app_id." >&2
+  exit 78
+fi
 
-shorebird patches promote \
+cd "$PROJECT_DIR"
+shorebird patches set-track \
   --release-version="$RELEASE_VERSION" \
-  --patch-number="$PATCH_NUMBER"
+  --patch-number="$PATCH_NUMBER" \
+  --track=stable
 
-echo ""
-echo "=== Done ==="
-echo "Patch $PATCH_NUMBER promoted to stable. All users will receive it on next app restart."
+echo "Patch $PATCH_NUMBER is now on stable."
