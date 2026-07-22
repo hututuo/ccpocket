@@ -267,4 +267,29 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(PermissionHostPlugin.requestMode(for: "futureStatus"), "unavailable")
   }
 
+  func testMobileHostSnapshotIsVersionedAndIncludesRequiredCapabilities() throws {
+    let snapshot = MobileHostSnapshotPlugin.snapshot(
+      osVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 1, patchVersion: 0)
+    )
+
+    XCTAssertEqual(snapshot["supported"] as? Bool, true)
+    XCTAssertEqual(snapshot["schemaVersion"] as? Int, 1)
+    XCTAssertEqual(snapshot["platform"] as? String, "ios")
+    let capabilities = try XCTUnwrap(snapshot["capabilities"] as? [String: Int])
+    XCTAssertEqual(capabilities["permissionHost"], 1)
+    XCTAssertEqual(capabilities["fileTransfer"], 2)
+    XCTAssertEqual(capabilities["quickLook"], 1)
+    XCTAssertEqual(capabilities["secureStorage"], 1)
+    XCTAssertEqual(capabilities["dragDrop"], 1)
+  }
+
+  func testMobileHostSnapshotFailsClosedBelowMinimumIOS() throws {
+    let snapshot = MobileHostSnapshotPlugin.snapshot(
+      osVersion: OperatingSystemVersion(majorVersion: 14, minorVersion: 8, patchVersion: 0)
+    )
+
+    XCTAssertEqual(snapshot["supported"] as? Bool, false)
+    XCTAssertEqual(snapshot["reason"] as? String, "minimum_ios_15_required")
+  }
+
 }

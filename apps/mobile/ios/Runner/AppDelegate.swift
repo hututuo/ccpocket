@@ -38,6 +38,9 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "PermissionHostPlugin") {
       PermissionHostPlugin.register(with: registrar)
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MobileHostSnapshotPlugin") {
+      MobileHostSnapshotPlugin.register(with: registrar)
+    }
   }
 
   private func handleAppIconMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
