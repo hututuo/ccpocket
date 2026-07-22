@@ -742,6 +742,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
             child = Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                child,
                 _anchoredDisclosure(
                   'process:${processSegment.key}',
                   ChatProcessDisclosure(
@@ -750,7 +751,6 @@ class _ChatMessageListState extends State<ChatMessageList> {
                     onToggle: () => _toggleProcessSegment(processSegment.key),
                   ),
                 ),
-                child,
               ],
             );
           }

@@ -120,20 +120,47 @@ void main() {
       expect(find.text('The second file confirms the issue.'), findsOneWidget);
       expect(find.text('first result'), findsNothing);
       expect(find.text('second result'), findsNothing);
-      expect(find.byType(ChatProcessDisclosure), findsOneWidget);
+      expect(find.text('third result'), findsNothing);
+      expect(find.byType(ChatProcessDisclosure), findsNWidgets(2));
 
-      await tester.tap(
-        find.byKey(
-          const ValueKey(
-            'chat_process_disclosure_client:turn-phases:segment:id:update-1',
-          ),
+      final firstUpdate = find.text('I will inspect the first file.');
+      final secondUpdate = find.text('The second file confirms the issue.');
+      final firstDisclosure = find.byKey(
+        const ValueKey(
+          'chat_process_disclosure_client:turn-phases:segment:id:update-1',
         ),
       );
+      final secondDisclosure = find.byKey(
+        const ValueKey(
+          'chat_process_disclosure_client:turn-phases:segment:id:update-2',
+        ),
+      );
+      expect(
+        tester.getTopLeft(firstDisclosure).dy,
+        greaterThan(tester.getBottomLeft(firstUpdate).dy),
+      );
+      expect(
+        tester.getBottomLeft(firstDisclosure).dy,
+        lessThan(tester.getTopLeft(secondUpdate).dy),
+      );
+      expect(
+        tester.getTopLeft(secondDisclosure).dy,
+        greaterThan(tester.getBottomLeft(secondUpdate).dy),
+      );
+
+      await tester.tap(firstDisclosure);
       await tester.pump();
 
       expect(find.text('first thought'), findsOneWidget);
       expect(find.text('first result'), findsOneWidget);
       expect(find.text('second result'), findsOneWidget);
+      expect(find.text('second thought'), findsNothing);
+      expect(find.text('third result'), findsNothing);
+
+      await tester.tap(secondDisclosure);
+      await tester.pump();
+      expect(find.text('second thought'), findsOneWidget);
+      expect(find.text('third result'), findsOneWidget);
       expect(find.text('Final answer'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await cubit.close();
@@ -414,9 +441,22 @@ List<ServerMessage> _history() => [
     message: AssistantMessage(
       id: 'update-2',
       role: 'assistant',
-      content: const [TextContent(text: 'The second file confirms the issue.')],
+      content: const [
+        ThinkingContent(thinking: 'second thought'),
+        TextContent(text: 'The second file confirms the issue.'),
+        ToolUseContent(
+          id: 'tool-3',
+          name: 'Bash',
+          input: {'command': 'git diff --stat'},
+        ),
+      ],
       model: 'codex',
     ),
+  ),
+  const ToolResultMessage(
+    toolUseId: 'tool-3',
+    toolName: 'Bash',
+    content: 'third result',
   ),
   AssistantServerMessage(
     message: AssistantMessage(
