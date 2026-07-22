@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:flutter/rendering.dart' show RenderBox, ScrollDirection;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -131,6 +131,9 @@ class _ChatMessageListState extends State<ChatMessageList> {
   ChatSessionCubit? _pagingCubit;
   final Set<String> _expandedProcessSegments = {};
   final Set<String> _expandedIntermediateTurns = {};
+  final Set<String> _expandedCurrentProgress = {};
+  final Map<String, GlobalKey> _disclosureAnchorKeys = {};
+  bool _userScrollInProgress = false;
 
   @override
   void initState() {
@@ -174,6 +177,54 @@ class _ChatMessageListState extends State<ChatMessageList> {
     // Reset the notifier
     widget.scrollToUserEntry?.value = null;
     _scrollToUserEntry(entry);
+  }
+
+  GlobalKey _anchorKey(String id) =>
+      _disclosureAnchorKeys.putIfAbsent(id, () => GlobalKey());
+
+  Widget _anchoredDisclosure(String id, Widget child) =>
+      KeyedSubtree(key: _anchorKey(id), child: child);
+
+  /// Expanding a reverse, variable-height list can otherwise move the tapped
+  /// disclosure away from the user's finger. Measure that row before and after
+  /// the layout change, then compensate the scroll offset by the observed
+  /// movement so the row remains in the same viewport position.
+  void _toggleWithStableAnchor(String anchorId, VoidCallback mutate) {
+    final anchorContext = _anchorKey(anchorId).currentContext;
+    final beforeBox = anchorContext?.findRenderObject();
+    final beforeY = beforeBox is RenderBox
+        ? beforeBox.localToGlobal(Offset.zero).dy
+        : null;
+
+    setState(mutate);
+    if (beforeY == null) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _userScrollInProgress ||
+          !widget.scrollController.hasClients) {
+        return;
+      }
+      final afterBox = _anchorKey(anchorId).currentContext?.findRenderObject();
+      if (afterBox is! RenderBox) return;
+      final delta = afterBox.localToGlobal(Offset.zero).dy - beforeY;
+      if (delta.abs() < 0.5) return;
+      final position = widget.scrollController.position;
+      // This chat is a reverse ListView: increasing its offset moves content
+      // down on screen, unlike a conventional downwards viewport. Read the
+      // actual axis direction so the compensation also remains correct if the
+      // list becomes non-reversed later.
+      final reverseAxis =
+          position.axisDirection == AxisDirection.up ||
+          position.axisDirection == AxisDirection.left;
+      final scrollDelta = reverseAxis ? -delta : delta;
+      final target = (position.pixels + scrollDelta)
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble();
+      if ((target - position.pixels).abs() >= 0.5) {
+        widget.scrollController.jumpTo(target);
+      }
+    });
   }
 
   Future<void> _openArtifact(String messageId, ArtifactRef artifact) async {
@@ -375,7 +426,6 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final chatState = chatCubit.state;
     final hiddenToolUseIds = chatState.hiddenToolUseIds;
     final allEntries = chatState.entries;
-    final processLayout = buildChatProcessLayout(allEntries);
 
     // Watch only the isStreaming flag (not the full streaming text) so the
     // list rebuilds when streaming starts/stops (to adjust itemCount) but NOT
@@ -383,6 +433,17 @@ class _ChatMessageListState extends State<ChatMessageList> {
     // scoped BlocBuilder on the streaming item only.
     final hasStreaming = context.select<StreamingStateCubit, bool>(
       (cubit) => cubit.state.isStreaming,
+    );
+    final latestTurnIsActive =
+        chatState.status == ProcessStatus.running ||
+        chatState.status == ProcessStatus.waitingApproval ||
+        chatState.status == ProcessStatus.compacting ||
+        chatState.externalDesktopTurnActive ||
+        hasStreaming;
+    final processLayout = buildChatProcessLayout(
+      allEntries,
+      latestTurnIsActive: latestTurnIsActive,
+      hasTransientCurrentOutput: hasStreaming,
     );
     final messageCount = allEntries.length + (hasStreaming ? 1 : 0);
     final streamingCubit = context.read<StreamingStateCubit>();
@@ -393,9 +454,12 @@ class _ChatMessageListState extends State<ChatMessageList> {
         // Only unfocus when user drags the list (not programmatic scroll).
         // This prevents the keyboard from being dismissed during automatic
         // scroll-to-bottom triggered by streaming updates.
-        if (notification is UserScrollNotification &&
-            notification.direction != ScrollDirection.idle) {
-          FocusScope.of(context).unfocus();
+        if (notification is UserScrollNotification) {
+          _userScrollInProgress =
+              notification.direction != ScrollDirection.idle;
+          if (_userScrollInProgress) {
+            FocusScope.of(context).unfocus();
+          }
         }
         if (paging.enabled &&
             paging.hasMore &&
@@ -438,54 +502,57 @@ class _ChatMessageListState extends State<ChatMessageList> {
           // Streaming entry is at messageCount - 1 (index 0 in reverse)
           if (hasStreaming && entryIndex == allEntries.length) {
             // Scoped BlocBuilder: only this widget rebuilds on streaming deltas
-            return BlocBuilder<StreamingStateCubit, StreamingState>(
-              builder: (context, streamingState) {
-                if (!streamingState.isStreaming) {
-                  return const SizedBox.shrink();
-                }
-                final thinking = streamingState.thinking.trim();
-                final turnKey =
-                    processLayout.latestTurnKey ??
-                    'session:${widget.sessionId}';
-                final expanded = _expandedProcessSegments.contains(turnKey);
-                final liveSegment = ChatProcessSegmentLayout(
-                  key: turnKey,
-                  turnKey: turnKey,
-                  processEntryIndices: const <int>{},
-                  summaryEntryIndex: -1,
-                  assistantEntryIndex: null,
-                  thinkingBlocks: thinking.isEmpty ? 0 : 1,
-                  toolCalls: 0,
-                  toolResults: 0,
-                  hasInlineAssistantProcess: false,
-                );
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (thinking.isNotEmpty)
-                      ChatProcessDisclosure(
-                        segment: liveSegment,
+            final turn = processLayout.latestTurn;
+            final turnKey =
+                turn?.key ??
+                processLayout.latestTurnKey ??
+                'session:${widget.sessionId}';
+            final progressKey = 'live:$turnKey';
+            return _anchoredDisclosure(
+              'current:$progressKey',
+              BlocBuilder<StreamingStateCubit, StreamingState>(
+                builder: (context, streamingState) {
+                  if (!streamingState.isStreaming) {
+                    return const SizedBox.shrink();
+                  }
+                  final thinking = streamingState.thinking.trim();
+                  final currentTool = turn?.currentTool;
+                  final expanded = _expandedCurrentProgress.contains(
+                    progressKey,
+                  );
+                  final hasDetails = thinking.isNotEmpty || currentTool != null;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      ChatCurrentProgressHeader(
+                        turnKey: progressKey,
                         expanded: expanded,
-                        running: true,
-                        onToggle: () => _toggleProcessSegment(turnKey),
+                        hasDetails: hasDetails,
+                        onToggle: () => _toggleCurrentProgress(progressKey),
                       ),
-                    if (thinking.isNotEmpty && expanded)
-                      ChatLiveThinkingDetails(text: thinking),
-                    if (streamingState.text.isNotEmpty)
-                      ChatEntryWidget(
-                        entry: StreamingChatEntry(text: streamingState.text),
-                        previous: null,
-                        httpBaseUrl: widget.httpBaseUrl,
-                        sessionId: widget.sessionId,
-                        projectPath: widget.projectPath,
-                        onRetryMessage: null,
-                        collapseToolResults: null,
-                        hiddenToolUseIds: const {},
-                        isCodex: widget.isCodex,
-                      ),
-                  ],
-                );
-              },
+                      if (streamingState.text.isNotEmpty)
+                        ChatEntryWidget(
+                          entry: StreamingChatEntry(text: streamingState.text),
+                          previous: null,
+                          httpBaseUrl: widget.httpBaseUrl,
+                          sessionId: widget.sessionId,
+                          projectPath: widget.projectPath,
+                          onRetryMessage: null,
+                          collapseToolResults: null,
+                          hiddenToolUseIds: const {},
+                          isCodex: widget.isCodex,
+                        ),
+                      if (currentTool != null)
+                        ChatCurrentToolActivityLine(
+                          activity: currentTool,
+                          onTap: () => _toggleCurrentProgress(progressKey),
+                        ),
+                      if (thinking.isNotEmpty && expanded)
+                        ChatLiveThinkingDetails(text: thinking),
+                    ],
+                  );
+                },
+              ),
             );
           }
 
@@ -493,57 +560,105 @@ class _ChatMessageListState extends State<ChatMessageList> {
           final previous = entryIndex > 0 ? allEntries[entryIndex - 1] : null;
           final processSegment = processLayout.segmentForEntry(entryIndex);
           final intermediateTurn = processLayout.turnForEntry(entryIndex);
+          final isIntermediateEntry =
+              intermediateTurn?.isIntermediateEntry(entryIndex) == true;
           final intermediateExpanded =
               intermediateTurn != null &&
               _expandedIntermediateTurns.contains(intermediateTurn.key);
           final showIntermediateHeader =
               intermediateTurn?.showsIntermediateSummaryAt(entryIndex) == true;
-          if (intermediateTurn != null && !intermediateExpanded) {
-            if (!showIntermediateHeader) return const SizedBox.shrink();
+          if (isIntermediateEntry && !intermediateExpanded) {
+            final collapsedTurn = intermediateTurn;
+            if (!showIntermediateHeader || collapsedTurn == null) {
+              return const SizedBox.shrink();
+            }
             return AutoScrollTag(
-              key: ValueKey('intermediate:${intermediateTurn.key}'),
+              key: ValueKey('intermediate:${collapsedTurn.key}'),
               controller: widget.scrollController,
               index: entryIndex,
-              child: ChatIntermediateOutputsDisclosure(
-                turn: intermediateTurn,
-                expanded: false,
-                onToggle: () => _toggleIntermediateTurn(intermediateTurn.key),
+              child: _anchoredDisclosure(
+                'intermediate:${collapsedTurn.key}',
+                ChatIntermediateOutputsDisclosure(
+                  turn: collapsedTurn,
+                  expanded: false,
+                  onToggle: () => _toggleIntermediateTurn(collapsedTurn.key),
+                ),
               ),
             );
           }
+
+          final isCurrentAssistant =
+              !hasStreaming &&
+              intermediateTurn?.isCurrentAssistantEntry(entryIndex) == true;
+          final isCurrentProcess =
+              !hasStreaming &&
+              intermediateTurn?.isCurrentProcessEntry(entryIndex) == true;
+          final currentProgressKey = intermediateTurn == null
+              ? null
+              : 'entry:${intermediateTurn.key}';
+          final currentExpanded =
+              currentProgressKey != null &&
+              _expandedCurrentProgress.contains(currentProgressKey);
+          final isCurrentSummary =
+              isCurrentProcess &&
+              intermediateTurn?.currentSegment?.showsSummaryAt(entryIndex) ==
+                  true;
+          if (isCurrentProcess && !currentExpanded) {
+            if (!isCurrentSummary || currentProgressKey == null) {
+              return const SizedBox.shrink();
+            }
+            final currentTool = intermediateTurn?.currentTool;
+            return AutoScrollTag(
+              key: ValueKey('current:$currentProgressKey'),
+              controller: widget.scrollController,
+              index: entryIndex,
+              child: _anchoredDisclosure(
+                'current:$currentProgressKey',
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    ChatCurrentProgressHeader(
+                      turnKey: currentProgressKey,
+                      expanded: false,
+                      hasDetails: true,
+                      onToggle: () =>
+                          _toggleCurrentProgress(currentProgressKey),
+                    ),
+                    if (currentTool != null)
+                      ChatCurrentToolActivityLine(
+                        activity: currentTool,
+                        onTap: () => _toggleCurrentProgress(currentProgressKey),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          }
+
           final processExpanded =
               processSegment != null &&
               _expandedProcessSegments.contains(processSegment.key);
-          if (processSegment != null &&
+          if (!isIntermediateEntry &&
+              !isCurrentProcess &&
+              processSegment != null &&
+              processSegment.detailCount > 0 &&
               processSegment.isProcessEntry(entryIndex) &&
               !processExpanded) {
             if (!processSegment.showsSummaryAt(entryIndex)) {
               return const SizedBox.shrink();
             }
-            Widget disclosure = ChatProcessDisclosure(
-              segment: processSegment,
-              expanded: false,
-              onToggle: () => _toggleProcessSegment(processSegment.key),
-            );
-            if (showIntermediateHeader && intermediateTurn != null) {
-              disclosure = Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  ChatIntermediateOutputsDisclosure(
-                    turn: intermediateTurn,
-                    expanded: true,
-                    onToggle: () =>
-                        _toggleIntermediateTurn(intermediateTurn.key),
-                  ),
-                  disclosure,
-                ],
-              );
-            }
             return AutoScrollTag(
               key: ValueKey('process:${processSegment.key}'),
               controller: widget.scrollController,
               index: entryIndex,
-              child: disclosure,
+              child: _anchoredDisclosure(
+                'process:${processSegment.key}',
+                ChatProcessDisclosure(
+                  segment: processSegment,
+                  expanded: false,
+                  onToggle: () => _toggleProcessSegment(processSegment.key),
+                ),
+              ),
             );
           }
           final transcriptTailComplete =
@@ -560,6 +675,12 @@ class _ChatMessageListState extends State<ChatMessageList> {
               ? widget.onForkMessage
               : null;
           final fileRoot = widget.projectPath;
+          final showAssistantProcessDetails = isIntermediateEntry
+              ? true
+              : isCurrentAssistant
+              ? currentExpanded
+              : processSegment?.hasInlineProcessAt(entryIndex) != true ||
+                    processExpanded;
 
           Widget child = ChatEntryWidget(
             entry: entry,
@@ -572,9 +693,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
             onForkMessage: onForkMessage,
             onDismissCodexWarning: chatCubit.dismissCodexWarning,
             collapseToolResults: widget.collapseToolResults,
-            showAssistantProcessDetails:
-                processSegment?.hasInlineProcessAt(entryIndex) != true ||
-                processExpanded,
+            showAssistantProcessDetails: showAssistantProcessDetails,
             resolvedPlanText: _resolvePlanText(entry),
             hiddenToolUseIds: hiddenToolUseIds,
             onArtifactOpen: _openArtifact,
@@ -615,28 +734,87 @@ class _ChatMessageListState extends State<ChatMessageList> {
             },
             isCodex: widget.isCodex,
           );
-          if (processSegment != null &&
-              processSegment.showsSummaryAt(entryIndex)) {
+          if (isIntermediateEntry &&
+              showIntermediateHeader &&
+              intermediateTurn != null) {
             child = Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                ChatProcessDisclosure(
-                  segment: processSegment,
-                  expanded: processExpanded,
-                  onToggle: () => _toggleProcessSegment(processSegment.key),
+                _anchoredDisclosure(
+                  'intermediate:${intermediateTurn.key}',
+                  ChatIntermediateOutputsDisclosure(
+                    turn: intermediateTurn,
+                    expanded: true,
+                    onToggle: () =>
+                        _toggleIntermediateTurn(intermediateTurn.key),
+                  ),
                 ),
                 child,
               ],
             );
-          }
-          if (showIntermediateHeader && intermediateTurn != null) {
+          } else if (isCurrentAssistant && currentProgressKey != null) {
+            final currentTool = intermediateTurn?.currentTool;
+            final hasDetails =
+                (intermediateTurn?.currentSegment?.detailCount ?? 0) > 0 ||
+                currentTool != null;
             child = Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                ChatIntermediateOutputsDisclosure(
-                  turn: intermediateTurn,
-                  expanded: true,
-                  onToggle: () => _toggleIntermediateTurn(intermediateTurn.key),
+                _anchoredDisclosure(
+                  'current:$currentProgressKey',
+                  ChatCurrentProgressHeader(
+                    turnKey: currentProgressKey,
+                    expanded: currentExpanded,
+                    hasDetails: hasDetails,
+                    onToggle: () => _toggleCurrentProgress(currentProgressKey),
+                  ),
+                ),
+                child,
+                if (currentTool != null)
+                  ChatCurrentToolActivityLine(
+                    activity: currentTool,
+                    onTap: () => _toggleCurrentProgress(currentProgressKey),
+                  ),
+              ],
+            );
+          } else if (isCurrentSummary && currentProgressKey != null) {
+            final currentTool = intermediateTurn?.currentTool;
+            child = Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _anchoredDisclosure(
+                  'current:$currentProgressKey',
+                  ChatCurrentProgressHeader(
+                    turnKey: currentProgressKey,
+                    expanded: currentExpanded,
+                    hasDetails: true,
+                    onToggle: () => _toggleCurrentProgress(currentProgressKey),
+                  ),
+                ),
+                if (currentTool != null)
+                  ChatCurrentToolActivityLine(
+                    activity: currentTool,
+                    onTap: () => _toggleCurrentProgress(currentProgressKey),
+                  ),
+                child,
+              ],
+            );
+          } else if (!isIntermediateEntry &&
+              !isCurrentAssistant &&
+              !isCurrentProcess &&
+              processSegment != null &&
+              processSegment.detailCount > 0 &&
+              processSegment.showsSummaryAt(entryIndex)) {
+            child = Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _anchoredDisclosure(
+                  'process:${processSegment.key}',
+                  ChatProcessDisclosure(
+                    segment: processSegment,
+                    expanded: processExpanded,
+                    onToggle: () => _toggleProcessSegment(processSegment.key),
+                  ),
                 ),
                 child,
               ],
@@ -662,7 +840,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   }
 
   void _toggleProcessSegment(String segmentKey) {
-    setState(() {
+    _toggleWithStableAnchor('process:$segmentKey', () {
       if (!_expandedProcessSegments.add(segmentKey)) {
         _expandedProcessSegments.remove(segmentKey);
       }
@@ -670,9 +848,17 @@ class _ChatMessageListState extends State<ChatMessageList> {
   }
 
   void _toggleIntermediateTurn(String turnKey) {
-    setState(() {
+    _toggleWithStableAnchor('intermediate:$turnKey', () {
       if (!_expandedIntermediateTurns.add(turnKey)) {
         _expandedIntermediateTurns.remove(turnKey);
+      }
+    });
+  }
+
+  void _toggleCurrentProgress(String progressKey) {
+    _toggleWithStableAnchor('current:$progressKey', () {
+      if (!_expandedCurrentProgress.add(progressKey)) {
+        _expandedCurrentProgress.remove(progressKey);
       }
     });
   }

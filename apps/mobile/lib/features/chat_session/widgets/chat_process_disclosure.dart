@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../theme/app_spacing.dart';
 import '../../../theme/app_theme.dart';
+import '../../../utils/tool_categories.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import 'chat_process_layout.dart';
 
@@ -100,6 +101,7 @@ class ChatIntermediateOutputsDisclosure extends StatelessWidget {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final color = Theme.of(context).colorScheme.secondary;
     final count = turn.intermediateOutputCount;
+    final detailCount = turn.intermediateDetailCount;
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: AppSpacing.bubbleMarginH,
@@ -117,20 +119,35 @@ class ChatIntermediateOutputsDisclosure extends StatelessWidget {
               children: [
                 Icon(Icons.layers_outlined, size: 15, color: color),
                 const SizedBox(width: 7),
-                Text(
-                  zh ? '中间过程' : 'Intermediate updates',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: color,
+                Expanded(
+                  flex: 3,
+                  child: Text(
+                    zh ? '中间过程' : 'Intermediate updates',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: color,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const SizedBox(width: 7),
-                Text(
-                  zh ? '$count 条输出' : '$count outputs',
-                  style: TextStyle(fontSize: 11, color: appColors.subtleText),
+                const SizedBox(width: 6),
+                Expanded(
+                  flex: 2,
+                  child: Text(
+                    detailCount > 0
+                        ? (zh
+                              ? '$count 条更新 · $detailCount 项过程'
+                              : '$count updates · $detailCount details')
+                        : (zh ? '$count 条更新' : '$count updates'),
+                    style: TextStyle(fontSize: 11, color: appColors.subtleText),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.end,
+                  ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 4),
                 Icon(
                   expanded ? Icons.expand_less : Icons.expand_more,
                   size: 17,
@@ -143,6 +160,188 @@ class ChatIntermediateOutputsDisclosure extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Header for the one active, unfinished assistant interval.
+///
+/// The live text itself intentionally remains outside this card. This makes
+/// the current progress readable at a glance while its thought/tool detail is
+/// still opt-in.
+class ChatCurrentProgressHeader extends StatelessWidget {
+  const ChatCurrentProgressHeader({
+    super.key,
+    required this.turnKey,
+    required this.expanded,
+    required this.onToggle,
+    this.hasDetails = true,
+  });
+
+  final String turnKey;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final bool hasDetails;
+
+  @override
+  Widget build(BuildContext context) {
+    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final color = Theme.of(context).colorScheme.primary;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.bubbleMarginH,
+        3,
+        AppSpacing.bubbleMarginH,
+        1,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: ValueKey('chat_current_progress_$turnKey'),
+          borderRadius: BorderRadius.circular(10),
+          onTap: hasDetails ? onToggle : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+            child: Row(
+              children: [
+                Icon(Icons.pending_outlined, size: 15, color: color),
+                const SizedBox(width: 7),
+                Text(
+                  zh ? '当前进度' : 'Current progress',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: color,
+                  ),
+                ),
+                const SizedBox(width: 7),
+                Text(
+                  zh ? '正在生成' : 'Live',
+                  style: TextStyle(fontSize: 11, color: appColors.subtleText),
+                ),
+                const Spacer(),
+                if (hasDetails)
+                  Icon(
+                    expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 17,
+                    color: appColors.subtleText,
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The compact, single-tool line shown below the currently visible text.
+///
+/// It intentionally displays only the newest invocation/result. Tapping it
+/// uses the same expansion action as the current-progress header, revealing
+/// the complete interval rather than opening a second, conflicting detail UI.
+class ChatCurrentToolActivityLine extends StatelessWidget {
+  const ChatCurrentToolActivityLine({
+    super.key,
+    required this.activity,
+    required this.onTap,
+  });
+
+  final ChatProcessToolActivity activity;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final category = categorizeToolName(activity.name);
+    final categoryColor = getToolCategoryColor(category, appColors);
+    final summary = _toolActivitySummary(activity, category);
+    final zh = Localizations.localeOf(context).languageCode == 'zh';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.bubbleMarginH + 4,
+        1,
+        AppSpacing.bubbleMarginH + 4,
+        5,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: ValueKey('chat_current_tool_${activity.toolUseId}'),
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              children: [
+                Icon(
+                  getToolCategoryIcon(category),
+                  size: 12,
+                  color: categoryColor,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  activity.completed
+                      ? (zh ? '最新工具' : 'Latest tool')
+                      : (zh ? '正在使用' : 'Running'),
+                  style: TextStyle(fontSize: 11, color: appColors.subtleText),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  activity.name,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (summary.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      summary,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: appColors.subtleText,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ] else
+                  const Spacer(),
+                Icon(
+                  Icons.chevron_right,
+                  size: 15,
+                  color: appColors.subtleText,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _toolActivitySummary(
+  ChatProcessToolActivity activity,
+  ToolCategory category,
+) {
+  final output = activity.output?.trim();
+  if (output != null && output.isNotEmpty) {
+    final firstLine = output
+        .split('\n')
+        .map((line) => line.trim())
+        .firstWhere(
+          (line) => line.isNotEmpty,
+          orElse: () => output.replaceAll(RegExp(r'\s+'), ' ').trim(),
+        );
+    return firstLine.length <= 96
+        ? firstLine
+        : '${firstLine.substring(0, 93)}...';
+  }
+  return getToolSummary(category, activity.input);
 }
 
 class ChatLiveThinkingDetails extends StatelessWidget {
