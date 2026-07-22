@@ -2707,15 +2707,16 @@ class BridgeService implements BridgeServiceBase {
   /// Stores list-level Desktop continuity until a conversation screen takes
   /// over the exact watch. Only the list tracker calls this method, so an open
   /// conversation never processes the same live payload through two paths.
-  void recordBackgroundDesktopContinuity(
+  bool recordBackgroundDesktopContinuity(
     CodexDesktopContinuityEventMessage message,
   ) {
     final acceptedPayload = _desktopContinuityBacklog.record(message);
     _patchExternalDesktopTurn(message);
     final payload = message.payload;
-    if (!acceptedPayload || payload == null) return;
+    if (!acceptedPayload || payload == null) return false;
     _runtimeStore.applyServerMessage(message.sessionId, payload);
     _patchExternalDesktopPreview(message.sessionId, payload);
+    return true;
   }
 
   DesktopContinuityBacklogSnapshot? takeBackgroundDesktopContinuity(

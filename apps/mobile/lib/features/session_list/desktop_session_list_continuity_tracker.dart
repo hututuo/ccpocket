@@ -43,6 +43,8 @@ class DesktopSessionListContinuityTracker {
   final Map<String, Timer> _watchRetryTimers = {};
   final Map<String, int> _watchRetryAttempts = {};
   final Map<String, Timer> _historyFallbackTimers = {};
+  final Set<String> _historyDirtySessionIds = {};
+  final Map<String, String> _lastReconciledHistoryReadyKey = {};
   bool _ensureScheduled = false;
   bool _unsupported = false;
   bool _closed = false;
@@ -62,10 +64,20 @@ class DesktopSessionListContinuityTracker {
       _ownedRequestIds.remove(sessionId);
       _displacedByConversation.remove(sessionId);
       _suppressedSessionIds.remove(sessionId);
+      _historyDirtySessionIds.remove(sessionId);
+      _lastReconciledHistoryReadyKey.remove(sessionId);
       _cancelSessionTimers(sessionId);
       _bridge.clearBackgroundDesktopContinuity(sessionId);
     }
-    _trackedSessionIds.addAll(codex.keys);
+    for (final session in codex.values) {
+      final newlyTracked = _trackedSessionIds.add(session.id);
+      if (newlyTracked && _bridge.cachedSessionMessages(session.id).isEmpty) {
+        // A cold list has no canonical preview yet. One initial fallback keeps
+        // old Bridges useful; later tracker remounts reuse the runtime cache
+        // instead of requesting the same history again.
+        _markHistoryDirty(session.id);
+      }
+    }
     for (final session in codex.values) {
       _ensureWatch(session);
     }
@@ -146,10 +158,16 @@ class DesktopSessionListContinuityTracker {
           message.event != CodexDesktopContinuityEventKind.unwatched) {
         _acknowledgeWatch(message.sessionId, message.requestId);
       }
-      _bridge.recordBackgroundDesktopContinuity(message);
+      final acceptedPayload = _bridge.recordBackgroundDesktopContinuity(
+        message,
+      );
+      if (acceptedPayload) {
+        _markHistoryDirty(message.sessionId);
+      }
       if ((message.event == CodexDesktopContinuityEventKind.watching ||
               message.event == CodexDesktopContinuityEventKind.state) &&
           message.state == CodexDesktopContinuityState.running) {
+        _markHistoryDirty(message.sessionId);
         _cancelHistoryFallback(message.sessionId);
       } else if ((message.event == CodexDesktopContinuityEventKind.watching ||
               message.event == CodexDesktopContinuityEventKind.state) &&
@@ -157,6 +175,7 @@ class DesktopSessionListContinuityTracker {
         _refreshHistoryWhenReady(
           message.sessionId,
           historyReady: message.historyReady,
+          turnId: message.turnId,
         );
       }
       if (message.event == CodexDesktopContinuityEventKind.error &&
@@ -215,6 +234,8 @@ class DesktopSessionListContinuityTracker {
   void _onConnection(BridgeConnectionState state) {
     if (_closed) return;
     if (state != BridgeConnectionState.connected) {
+      _historyDirtySessionIds.addAll(_trackedSessionIds);
+      _lastReconciledHistoryReadyKey.clear();
       _cancelAllTimers();
       _ownedRequestIds.clear();
       _displacedByConversation.clear();
@@ -272,23 +293,42 @@ class DesktopSessionListContinuityTracker {
   void _refreshHistoryWhenReady(
     String sessionId, {
     required bool historyReady,
+    required String? turnId,
   }) {
     _cancelHistoryFallback(sessionId);
     if (historyReady) {
+      final readyKey = turnId?.trim().isNotEmpty == true
+          ? turnId!.trim()
+          : '<no-turn>';
+      if (!_historyDirtySessionIds.contains(sessionId) &&
+          _lastReconciledHistoryReadyKey[sessionId] == readyKey) {
+        return;
+      }
       _bridge.requestSessionHistory(sessionId);
+      _historyDirtySessionIds.remove(sessionId);
+      _lastReconciledHistoryReadyKey[sessionId] = readyKey;
       return;
     }
+    if (!_historyDirtySessionIds.contains(sessionId)) return;
     // Compatibility fallback for a Bridge that predates historyReady. A
     // delayed canonical read is less likely to race its runtime rehydrate.
     _historyFallbackTimers[sessionId] = Timer(historyFallbackDelay, () {
       _historyFallbackTimers.remove(sessionId);
       if (_closed ||
           !_bridge.isConnected ||
-          !_ownedRequestIds.containsKey(sessionId)) {
+          !_ownedRequestIds.containsKey(sessionId) ||
+          !_historyDirtySessionIds.contains(sessionId)) {
         return;
       }
       _bridge.requestSessionHistory(sessionId);
+      _historyDirtySessionIds.remove(sessionId);
+      _lastReconciledHistoryReadyKey.remove(sessionId);
     });
+  }
+
+  void _markHistoryDirty(String sessionId) {
+    _historyDirtySessionIds.add(sessionId);
+    _lastReconciledHistoryReadyKey.remove(sessionId);
   }
 
   void _cancelWatchAck(String sessionId) {
@@ -343,5 +383,7 @@ class DesktopSessionListContinuityTracker {
     _ownedRequestIds.clear();
     _displacedByConversation.clear();
     _suppressedSessionIds.clear();
+    _historyDirtySessionIds.clear();
+    _lastReconciledHistoryReadyKey.clear();
   }
 }

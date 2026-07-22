@@ -176,6 +176,141 @@ void main() {
   );
 
   test(
+    'a remounted list tracker does not reload an already cached idle session',
+    () async {
+      final bridge = _Bridge()..snapshot = const [_session];
+      bridge.recordBackgroundDesktopContinuity(
+        const CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.message,
+          requestId: 'seed-watch',
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          turnId: 'seed-turn',
+          itemKey: 'seed-user',
+          payload: UserInputMessage(
+            text: 'already cached',
+            userMessageUuid: 'seed-user',
+          ),
+        ),
+      );
+      final tracker = DesktopSessionListContinuityTracker(
+        bridge,
+        historyFallbackDelay: const Duration(milliseconds: 1),
+      );
+      addTearDown(() async {
+        tracker.close();
+        await bridge.closeFake();
+      });
+      final requestId = _json(bridge.sent.single)['requestId'] as String;
+
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.watching,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.idle,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      expect(bridge.historyRequests, 0);
+    },
+  );
+
+  test(
+    'duplicate history-ready idle states reconcile one completed turn once',
+    () async {
+      final bridge = _Bridge()..snapshot = const [_session];
+      final tracker = DesktopSessionListContinuityTracker(bridge);
+      addTearDown(() async {
+        tracker.close();
+        await bridge.closeFake();
+      });
+      final requestId = _json(bridge.sent.single)['requestId'] as String;
+
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.watching,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.running,
+          turnId: 'turn-1',
+        ),
+      );
+      const assistantPayload = AssistantServerMessage(
+        message: AssistantMessage(
+          id: 'assistant-1',
+          role: 'assistant',
+          content: [TextContent(text: 'completed once')],
+          model: 'codex',
+        ),
+      );
+      void emitAssistant() {
+        bridge.emitFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.message,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 'session-1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            turnId: 'turn-1',
+            itemKey: 'assistant-1',
+            payload: assistantPayload,
+          ),
+        );
+      }
+
+      emitAssistant();
+      for (var index = 0; index < 2; index++) {
+        bridge.emitFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.state,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 'session-1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            state: CodexDesktopContinuityState.idle,
+            turnId: 'turn-1',
+            historyReady: true,
+          ),
+        );
+      }
+      await _flush();
+
+      expect(bridge.historyRequests, 1);
+
+      // A replayed item key and repeated ready state do not dirty the same
+      // completed turn after it has already reconciled.
+      emitAssistant();
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.state,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.idle,
+          turnId: 'turn-1',
+          historyReady: true,
+        ),
+      );
+      await _flush();
+      expect(bridge.historyRequests, 1);
+    },
+  );
+
+  test(
     'list watch caches completed payloads and hands off live deltas',
     () async {
       final bridge = _Bridge()..snapshot = const [_session];
