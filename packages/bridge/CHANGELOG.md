@@ -2,6 +2,11 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.69.0-compat.5] - 2026-07-23
+
+### Fixed
+- Reuse the bounded Desktop tool descriptor in the live continuity stream, so Skill reads, semantic shell actions, and sub-agent lifecycle calls keep the same names while a Desktop turn is running and after canonical history reconciliation.
+
 ## [1.69.0-compat.4] - 2026-07-23
 
 ### Added

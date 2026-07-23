@@ -196,6 +196,33 @@ describe("CodexRolloutMonitor", () => {
         ],
       }),
       event("response_item", {
+        type: "function_call",
+        call_id: "call-skill",
+        name: "exec_command",
+        arguments: JSON.stringify({
+          cmd: "sed -n '1,200p' /Users/test/.codex/skills/chronicle/SKILL.md",
+        }),
+      }),
+      event("response_item", {
+        type: "function_call_output",
+        call_id: "call-skill",
+        output: "# Chronicle",
+      }),
+      event("response_item", {
+        type: "function_call",
+        call_id: "call-spawn",
+        name: "spawn_agent",
+        arguments: JSON.stringify({
+          task_name: "reviewer",
+          message: "Review the change",
+        }),
+      }),
+      event("response_item", {
+        type: "function_call_output",
+        call_id: "call-spawn",
+        output: '{"agent_id":"agent-1"}',
+      }),
+      event("response_item", {
         type: "agent_message",
         id: "subagent-private-1",
         author: "/root/reviewer",
@@ -256,7 +283,27 @@ describe("CodexRolloutMonitor", () => {
             type: "tool_result",
             toolUseId: "call-2",
             content: "Script completed\nvalue=1",
-            toolName: "exec",
+            toolName: "Bash",
+          },
+        }),
+        expect.objectContaining({
+          kind: "message",
+          itemKey: "tool-result:call-skill",
+          message: {
+            type: "tool_result",
+            toolUseId: "call-skill",
+            content: "# Chronicle",
+            toolName: "ReadSkill",
+          },
+        }),
+        expect.objectContaining({
+          kind: "message",
+          itemKey: "tool-result:call-spawn",
+          message: {
+            type: "tool_result",
+            toolUseId: "call-spawn",
+            content: '{"agent_id":"agent-1"}',
+            toolName: "SpawnAgent",
           },
         }),
         expect.objectContaining({

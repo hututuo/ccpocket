@@ -4,6 +4,7 @@ import { open, stat, type FileHandle } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 import type { ServerMessage } from "../../parser.js";
 import { resolveCodexSessionJsonlPath } from "../../sessions-index.js";
+import { describeCodexDesktopToolCall } from "../codex-tool-history.js";
 import type {
   CodexDesktopContinuityClientMessage,
   CodexDesktopContinuityEventMessage,
@@ -1899,14 +1900,18 @@ export class CodexRolloutMonitor {
         optionalString(payload.call_id) ??
         optionalString(payload.id) ??
         `desktop-tool-${hashText(`${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`)}`;
-      const name = normalizeToolName(optionalString(payload.name) ?? "tool");
+      const rawInput =
+        type === "function_call" ? payload.arguments : payload.input;
+      const descriptor = describeCodexDesktopToolCall(
+        optionalString(payload.name) ?? "tool",
+        rawInput,
+      );
+      const name = descriptor.name;
       this.toolNames.set(callId, name);
       while (this.toolNames.size > 512) {
         this.toolNames.delete(this.toolNames.keys().next().value!);
       }
-      const input = boundedToolInput(
-        type === "function_call" ? payload.arguments : payload.input,
-      );
+      const input = boundedToolInput(descriptor.input);
       this.emitMessage(
         `tool-start:${callId}`,
         {
@@ -1989,12 +1994,14 @@ export class CodexRolloutMonitor {
         break;
       case "command_execution":
         idPrefix = "desktop-command";
-        name = "Bash";
         preferItemId = true;
-        input =
-          typeof payload.command === "string"
-            ? { command: payload.command }
-            : boundedToolInput(payload);
+        {
+          const descriptor = describeCodexDesktopToolCall("exec_command", {
+            command: payload.command,
+          });
+          name = descriptor.name;
+          input = boundedToolInput(descriptor.input);
+        }
         if (hasCommandExecutionResult(payload)) {
           immediateResult = normalizeCommandExecutionResult(payload);
         }
@@ -2686,17 +2693,6 @@ function formatJson(value: unknown): string {
   } catch {
     return String(value ?? "");
   }
-}
-
-function normalizeToolName(name: string): string {
-  if (name === "exec_command" || name === "write_stdin") {
-    return "Bash";
-  }
-  if (name.startsWith("mcp__")) {
-    const [server, ...tool] = name.slice(5).split("__");
-    if (server && tool.length > 0) return `mcp:${server}/${tool.join("__")}`;
-  }
-  return name;
 }
 
 function boundedText(value: string, maxBytes: number): string {
