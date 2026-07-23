@@ -34,6 +34,8 @@ import '../mobile_update/l10n/mobile_update_strings.dart';
 import '../mobile_update/mobile_update_models.dart';
 import '../mobile_update/mobile_update_service.dart';
 import '../mobile_update/mobile_update_settings_tile.dart';
+import '../notification_settings/l10n/notification_settings_strings.dart';
+import '../notification_settings/notification_settings_screen.dart';
 import '../permission_management/l10n/permission_management_strings.dart';
 import '../permission_management/permission_management_screen.dart';
 import '../session_list/workspace_shell_screen.dart';
@@ -718,66 +720,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const SizedBox(height: 8),
 
-              if (state.activeMachineId != null) ...[
-                _SectionHeader(title: l.sectionNotifications),
-                Card(
-                  margin: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Column(
-                    children: [
-                      _PushNotificationTile(
-                        state: state,
-                        onChanged: (enabled) =>
-                            context.read<SettingsCubit>().toggleFcm(enabled),
-                      ),
-                      if (state.fcmEnabled) ...[
-                        Divider(
-                          height: 1,
-                          indent: 16,
-                          endIndent: 16,
-                          color: cs.outlineVariant,
-                        ),
-                        _PushPrivacyTile(
-                          value: state.fcmPrivacy,
-                          syncInProgress: state.fcmSyncInProgress,
-                          onChanged: (enabled) => context
-                              .read<SettingsCubit>()
-                              .toggleFcmPrivacy(enabled),
-                        ),
-                        Divider(
-                          height: 1,
-                          indent: 16,
-                          endIndent: 16,
-                          color: cs.outlineVariant,
-                        ),
-                        _UpdateNotificationLanguageTile(
-                          syncInProgress: state.fcmSyncInProgress,
-                          onTap: () async {
-                            final cubit = context.read<SettingsCubit>();
-                            await cubit.syncPushLocale();
-                            if (context.mounted) {
-                              final status = cubit.state.fcmStatusKey;
-                              final isSuccess =
-                                  status == FcmStatusKey.enabled ||
-                                  status == FcmStatusKey.enabledPending;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    isSuccess
-                                        ? l.notificationLanguageUpdated
-                                        : l.fcmTokenFailed,
-                                  ),
-                                  duration: const Duration(seconds: 2),
-                                ),
-                              );
-                            }
-                          },
-                        ),
-                      ],
-                    ],
+              _SectionHeader(title: l.sectionNotifications),
+              Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                child: ListTile(
+                  key: const ValueKey('notification_settings_tile'),
+                  leading: Icon(
+                    Icons.notifications_active_outlined,
+                    color: cs.primary,
+                  ),
+                  title: Text(NotificationSettingsStrings.of(context).title),
+                  subtitle: Text(
+                    NotificationSettingsStrings.of(context).summary(
+                      actionRequired:
+                          state.notificationPreferences.actionRequired,
+                      completed: state.notificationPreferences.taskCompleted,
+                      failed: state.notificationPreferences.taskFailed,
+                      progress: state.notificationPreferences.progress,
+                    ),
+                  ),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => const NotificationSettingsScreen(),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 8),
-              ],
+              ),
+              const SizedBox(height: 8),
 
               // ── Editor ──
               _SectionHeader(title: l.sectionEditor),
@@ -1598,100 +1568,6 @@ class _BridgeUpdateSetupStep extends StatelessWidget {
         const SizedBox(width: 12),
         Expanded(child: Text(text)),
       ],
-    );
-  }
-}
-
-class _PushNotificationTile extends StatelessWidget {
-  final SettingsState state;
-  final ValueChanged<bool> onChanged;
-
-  const _PushNotificationTile({required this.state, required this.onChanged});
-
-  static String? _resolveFcmStatus(AppLocalizations l, FcmStatusKey? key) {
-    if (key == null) return null;
-    return switch (key) {
-      FcmStatusKey.unavailable => l.pushNotificationsUnavailable,
-      FcmStatusKey.bridgeNotInitialized => l.fcmBridgeNotInitialized,
-      FcmStatusKey.tokenFailed => l.fcmTokenFailed,
-      FcmStatusKey.enabled => l.fcmEnabled,
-      FcmStatusKey.enabledPending => l.fcmEnabledPending,
-      FcmStatusKey.disabled => l.fcmDisabled,
-      FcmStatusKey.disabledPending => l.fcmDisabledPending,
-    };
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    final baseSubtitle = state.fcmAvailable
-        ? l.pushNotificationsSubtitle
-        : l.pushNotificationsUnavailable;
-    final subtitle = _resolveFcmStatus(l, state.fcmStatusKey) ?? baseSubtitle;
-
-    return SwitchListTile(
-      value: state.fcmEnabled,
-      onChanged: state.fcmSyncInProgress ? null : onChanged,
-      title: Text(l.pushNotifications),
-      subtitle: Text(subtitle),
-      secondary: state.fcmSyncInProgress
-          ? const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : const Icon(Icons.notifications_active_outlined),
-    );
-  }
-}
-
-class _PushPrivacyTile extends StatelessWidget {
-  final bool value;
-  final bool syncInProgress;
-  final ValueChanged<bool> onChanged;
-
-  const _PushPrivacyTile({
-    required this.value,
-    required this.syncInProgress,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    return SwitchListTile(
-      value: value,
-      onChanged: syncInProgress ? null : onChanged,
-      title: Text(l.pushPrivacyMode),
-      subtitle: Text(l.pushPrivacyModeSubtitle),
-      secondary: const Icon(Icons.visibility_off_outlined),
-    );
-  }
-}
-
-class _UpdateNotificationLanguageTile extends StatelessWidget {
-  final bool syncInProgress;
-  final VoidCallback onTap;
-
-  const _UpdateNotificationLanguageTile({
-    required this.syncInProgress,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    return ListTile(
-      leading: const Icon(Icons.translate_outlined),
-      title: Text(l.updateNotificationLanguage),
-      trailing: syncInProgress
-          ? const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : const Icon(Icons.chevron_right, size: 20),
-      onTap: syncInProgress ? null : onTap,
     );
   }
 }

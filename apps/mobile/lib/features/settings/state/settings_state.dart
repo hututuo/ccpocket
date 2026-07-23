@@ -6,6 +6,7 @@ import '../../../models/code_font_family.dart';
 import '../../../models/git_diff_interaction_mode.dart';
 import '../../../models/image_paste_shortcut.dart';
 import '../../../models/new_session_tab.dart';
+import '../../../models/notification_preferences.dart';
 import '../../../models/terminal_app.dart';
 
 part 'settings_state.freezed.dart';
@@ -57,6 +58,10 @@ abstract class SettingsState with _$SettingsState {
 
     /// Last push sync status key (resolved to localized string in UI).
     FcmStatusKey? fcmStatusKey,
+
+    /// Local and remote notification categories selected on this device.
+    @Default(NotificationPreferences.defaults)
+    NotificationPreferences notificationPreferences,
 
     /// Shorebird update track ('stable' or 'staging').
     @Default('stable') String shorebirdTrack,

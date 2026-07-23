@@ -1,9 +1,13 @@
-import 'package:flutter/foundation.dart' show ChangeNotifier, kIsWeb;
+import 'package:flutter/foundation.dart'
+    show ChangeNotifier, TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/scheduler.dart' show SchedulerBinding, SchedulerPhase;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../l10n/app_localizations.dart';
 import '../models/messages.dart';
+import '../models/notification_preferences.dart';
+
+enum NotificationPermissionStatus { unavailable, enabled, disabled }
 
 class NotificationService extends ChangeNotifier {
   NotificationService._();
@@ -13,12 +17,14 @@ class NotificationService extends ChangeNotifier {
       FlutterLocalNotificationsPlugin();
 
   bool _initialized = false;
+  NotificationPreferences _preferences = NotificationPreferences.defaults;
   String? _activeSessionId;
   String? _activeProvider;
   bool _notifyScheduled = false;
 
   String? get activeSessionId => _activeSessionId;
   String? get activeProvider => _activeProvider;
+  NotificationPreferences get preferences => _preferences;
 
   /// Called when the user taps a notification. The [payload] string
   /// (typically a sessionId) is forwarded.
@@ -77,6 +83,76 @@ class NotificationService extends ChangeNotifier {
     }
 
     _initialized = true;
+  }
+
+  void configure(NotificationPreferences preferences) {
+    if (_preferences == preferences) return;
+    _preferences = preferences;
+    _notifyListenersSafely();
+  }
+
+  bool allowsRemoteEvent(String eventType, {required bool appIsForeground}) {
+    if (!_preferences.allowsRemoteEvent(eventType)) return false;
+    return !appIsForeground || _preferences.showWhileAppOpen;
+  }
+
+  Future<NotificationPermissionStatus> permissionStatus() async {
+    if (kIsWeb) return NotificationPermissionStatus.unavailable;
+    await init();
+
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      final plugin = _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >();
+      final status = await plugin?.checkPermissions();
+      if (status == null) return NotificationPermissionStatus.unavailable;
+      return status.isEnabled
+          ? NotificationPermissionStatus.enabled
+          : NotificationPermissionStatus.disabled;
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final plugin = _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
+      final enabled = await plugin?.areNotificationsEnabled();
+      if (enabled == null) return NotificationPermissionStatus.unavailable;
+      return enabled
+          ? NotificationPermissionStatus.enabled
+          : NotificationPermissionStatus.disabled;
+    }
+
+    return NotificationPermissionStatus.enabled;
+  }
+
+  Future<bool> requestPermission() async {
+    if (kIsWeb) return false;
+    await init();
+
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      final plugin = _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >();
+      return await plugin?.requestPermissions(
+            alert: true,
+            badge: true,
+            sound: true,
+          ) ??
+          false;
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final plugin = _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
+      return await plugin?.requestNotificationsPermission() ?? false;
+    }
+
+    return true;
   }
 
   void _onNotificationResponse(NotificationResponse response) {
@@ -166,6 +242,7 @@ class NotificationService extends ChangeNotifier {
     int id = 1,
     String? payload,
   }) {
+    if (!_preferences.actionRequired) return Future<void>.value();
     final copy = ApprovalNotificationCopy.from(permission, l: l);
     return show(title: copy.title, body: copy.body, id: id, payload: payload);
   }
@@ -175,6 +252,7 @@ class NotificationService extends ChangeNotifier {
     int id = 3,
     String? payload,
   }) {
+    if (!_preferences.taskCompleted) return Future<void>.value();
     return show(
       title: 'Session Complete',
       body: body,

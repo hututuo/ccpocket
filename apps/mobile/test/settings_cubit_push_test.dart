@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:ccpocket/features/settings/state/settings_cubit.dart';
 import 'package:ccpocket/features/settings/state/settings_state.dart';
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/models/notification_preferences.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/fcm_service.dart';
 import 'package:ccpocket/services/machine_manager_service.dart';
@@ -14,7 +16,15 @@ class FakeBridgeService extends BridgeService {
   final _connectionController =
       StreamController<BridgeConnectionState>.broadcast();
   final registerCalls =
-      <({String token, String platform, String? locale, bool? privacyMode})>[];
+      <
+        ({
+          String token,
+          String platform,
+          String? locale,
+          bool? privacyMode,
+          List<String>? enabledEventTypes,
+        })
+      >[];
   final unregisterCalls = <String>[];
   bool _connected = false;
   String? _fakeLastUrl;
@@ -41,12 +51,14 @@ class FakeBridgeService extends BridgeService {
     required String platform,
     String? locale,
     bool? privacyMode,
+    List<String>? enabledEventTypes,
   }) {
     registerCalls.add((
       token: token,
       platform: platform,
       locale: locale,
       privacyMode: privacyMode,
+      enabledEventTypes: enabledEventTypes,
     ));
   }
 
@@ -177,6 +189,12 @@ void main() {
       expect(bridge.registerCalls.first.token, 'token-1');
       expect(bridge.registerCalls.first.platform, 'ios');
       expect(bridge.registerCalls.first.locale, isNotNull);
+      expect(bridge.registerCalls.first.enabledEventTypes, [
+        NotificationPreferences.approvalRequiredEvent,
+        NotificationPreferences.askUserQuestionEvent,
+        NotificationPreferences.sessionCompletedEvent,
+        NotificationPreferences.sessionFailedEvent,
+      ]);
       expect(cubit.state.fcmAvailable, isTrue);
       expect(cubit.state.fcmStatusKey, FcmStatusKey.enabled);
 
@@ -333,6 +351,53 @@ void main() {
       expect(prefs.getBool('settings_fcm_enabled'), isNull);
       // Migrated data should be persisted
       expect(prefs.getString('settings_fcm_machines'), isNotNull);
+
+      await cubit.close();
+      await fcm.disposeFake();
+      bridge.dispose();
+    });
+
+    test('persists notification categories and re-registers token', () async {
+      SharedPreferences.setMockInitialValues({
+        'settings_fcm_machines': '["$_testMachineId"]',
+        'machines_v2':
+            '[{"id":"$_testMachineId","host":"$_testHost","port":$_testPort}]',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final manager = await _createMachineManager(prefs);
+      await manager.init();
+      final bridge = FakeBridgeService()
+        ..emitConnection(BridgeConnectionState.connected, url: _testUrl);
+      final fcm = FakeFcmService(available: true, token: 'token-1');
+      final cubit = SettingsCubit(
+        prefs,
+        bridgeService: bridge,
+        machineManager: manager,
+        fcmService: fcm,
+      );
+
+      await _flushAsync();
+      final updated = cubit.state.notificationPreferences.copyWith(
+        taskCompleted: false,
+        progress: true,
+        showWhileAppOpen: false,
+      );
+      await cubit.setNotificationPreferences(updated);
+
+      expect(cubit.state.notificationPreferences, updated);
+      expect(bridge.registerCalls.last.enabledEventTypes, [
+        NotificationPreferences.approvalRequiredEvent,
+        NotificationPreferences.askUserQuestionEvent,
+        NotificationPreferences.sessionFailedEvent,
+        NotificationPreferences.sessionProgressEvent,
+      ]);
+      expect(
+        NotificationPreferences.fromJson(
+          jsonDecode(prefs.getString('settings_notification_preferences_v1')!)
+              as Map<String, dynamic>,
+        ),
+        updated,
+      );
 
       await cubit.close();
       await fcm.disposeFake();

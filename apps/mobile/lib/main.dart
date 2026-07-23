@@ -434,6 +434,9 @@ class _CcpocketAppState extends State<CcpocketApp> {
   @override
   void initState() {
     super.initState();
+    NotificationService.instance.configure(
+      context.read<SettingsCubit>().state.notificationPreferences,
+    );
 
     // Clear stale notifications on launch and whenever the app is resumed.
     _lifecycleListener = AppLifecycleListener(
@@ -541,6 +544,12 @@ class _CcpocketAppState extends State<CcpocketApp> {
         data['body']?.toString() ??
         'New update available';
     final eventType = data['eventType']?.toString() ?? '';
+    if (!NotificationService.instance.allowsRemoteEvent(
+      eventType,
+      appIsForeground: true,
+    )) {
+      return;
+    }
     final payload = jsonEncode({'sessionId': sessionId, 'provider': provider});
 
     await NotificationService.instance.show(
@@ -657,8 +666,12 @@ class _CcpocketAppState extends State<CcpocketApp> {
       listenWhen: (previous, current) =>
           previous.fcmAvailable != current.fcmAvailable ||
           previous.fcmEnabledMachines.isEmpty !=
-              current.fcmEnabledMachines.isEmpty,
+              current.fcmEnabledMachines.isEmpty ||
+          previous.notificationPreferences != current.notificationPreferences,
       listener: (context, settings) {
+        NotificationService.instance.configure(
+          settings.notificationPreferences,
+        );
         if (settings.fcmEnabledMachines.isNotEmpty && settings.fcmAvailable) {
           _initFcmHandlers();
         }

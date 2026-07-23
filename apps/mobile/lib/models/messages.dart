@@ -4539,12 +4539,14 @@ class ClientMessage {
     required String platform,
     String? locale,
     bool? privacyMode,
+    List<String>? enabledEventTypes,
   }) => ClientMessage._(<String, dynamic>{
     'type': 'push_register',
     'token': token,
     'platform': platform,
     'locale': ?locale,
     'privacyMode': ?privacyMode,
+    'enabledEventTypes': ?enabledEventTypes,
   });
 
   factory ClientMessage.pushUnregister(String token) => ClientMessage._(

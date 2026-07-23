@@ -3173,6 +3173,7 @@ class BridgeService implements BridgeServiceBase {
     required String platform,
     String? locale,
     bool? privacyMode,
+    List<String>? enabledEventTypes,
   }) {
     send(
       ClientMessage.pushRegister(
@@ -3180,6 +3181,7 @@ class BridgeService implements BridgeServiceBase {
         platform: platform,
         locale: locale,
         privacyMode: privacyMode,
+        enabledEventTypes: enabledEventTypes,
       ),
     );
   }

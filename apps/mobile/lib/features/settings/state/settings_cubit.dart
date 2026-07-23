@@ -12,6 +12,7 @@ import '../../../models/git_diff_interaction_mode.dart';
 import '../../../models/image_paste_shortcut.dart';
 import '../../../models/messages.dart';
 import '../../../models/new_session_tab.dart';
+import '../../../models/notification_preferences.dart';
 import '../../../models/terminal_app.dart';
 import '../../../services/app_icon_service.dart';
 import '../../../services/bridge_service.dart';
@@ -40,6 +41,8 @@ class SettingsCubit extends Cubit<SettingsState> {
   static const _keySpeechLocale = 'settings_speech_locale';
   static const _keyFcmMachines = 'settings_fcm_machines';
   static const _keyFcmPrivacyMachines = 'settings_fcm_privacy_machines';
+  static const _keyNotificationPreferences =
+      'settings_notification_preferences_v1';
 
   /// SharedPreferences key for the Shorebird update track.
   /// Also read directly from SharedPreferences in main.dart at startup.
@@ -146,6 +149,20 @@ class SettingsCubit extends Cubit<SettingsState> {
     final themeModeIndex = prefs.getInt(_keyThemeMode);
     final appLocale = prefs.getString(_keyAppLocale) ?? '';
     final speechLocale = prefs.getString(_keySpeechLocale);
+    var notificationPreferences = NotificationPreferences.defaults;
+    final notificationPreferencesJson = prefs.getString(
+      _keyNotificationPreferences,
+    );
+    if (notificationPreferencesJson != null) {
+      try {
+        notificationPreferences = NotificationPreferences.fromJson(
+          jsonDecode(notificationPreferencesJson) as Map<String, dynamic>,
+        );
+      } catch (_) {
+        // Keep safe defaults when preferences from a future or corrupt build
+        // cannot be decoded.
+      }
+    }
 
     // Load per-machine FCM set
     var fcmMachines = <String>{};
@@ -248,6 +265,7 @@ class SettingsCubit extends Cubit<SettingsState> {
       speechLocaleId: speechLocale ?? '',
       fcmEnabledMachines: fcmMachines,
       fcmPrivacyMachines: fcmPrivacyMachines,
+      notificationPreferences: notificationPreferences,
       shorebirdTrack: shorebirdTrack,
       indentSize: indentSize.clamp(1, 4),
       textScale: textScale.clamp(minTextScale, maxTextScale),
@@ -514,6 +532,24 @@ class SettingsCubit extends Cubit<SettingsState> {
     }
   }
 
+  Future<void> setNotificationPreferences(
+    NotificationPreferences preferences,
+  ) async {
+    if (state.notificationPreferences == preferences) return;
+    await _prefs.setString(
+      _keyNotificationPreferences,
+      jsonEncode(preferences.toJson()),
+    );
+    emit(state.copyWith(notificationPreferences: preferences));
+
+    // A compatible Bridge stores this per token. Older Bridges ignore the
+    // additive field and keep their existing critical-notification behavior.
+    if (state.fcmEnabled) {
+      emit(state.copyWith(fcmSyncInProgress: true, fcmStatusKey: null));
+      await _syncPushRegistration();
+    }
+  }
+
   /// Resolve the push notification locale from app settings or system locale.
   /// Returns a BCP-47 language subtag (e.g. "en", "ja", "zh", "ko").
   String _resolvePushLocale() {
@@ -565,6 +601,7 @@ class SettingsCubit extends Cubit<SettingsState> {
       platform: _fcmService.platform,
       locale: _resolvePushLocale(),
       privacyMode: state.fcmPrivacy ? true : null,
+      enabledEventTypes: state.notificationPreferences.enabledRemoteEventTypes,
     );
     final statusKey = bridge.isConnected
         ? FcmStatusKey.enabled
