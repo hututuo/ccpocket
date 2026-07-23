@@ -435,6 +435,74 @@ void main() {
   );
 
   testWidgets(
+    'a render window starting mid-turn still owns one outer process fold',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 700));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit();
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-partial-window',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-partial-window',
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(messages: _partialTurnWindowHistory(13)),
+        'session-partial-window',
+      );
+      await tester.pump();
+
+      final outerDisclosure = find.byKey(
+        const ValueKey(
+          'chat_intermediate_disclosure_partial:id:partial-window-update-0',
+        ),
+      );
+      for (var step = 0; step <= 30; step++) {
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * step / 30,
+        );
+        await tester.pump();
+        if (outerDisclosure.evaluate().isNotEmpty) break;
+      }
+
+      expect(outerDisclosure, findsOneWidget);
+      expect(find.byType(ChatIntermediateOutputsDisclosure), findsOneWidget);
+      expect(find.byType(ChatProcessDisclosure), findsNothing);
+      expect(find.text('Retained update 0'), findsNothing);
+      expect(find.text('Retained thought 0'), findsNothing);
+
+      await tester.tap(outerDisclosure);
+      await tester.pump();
+
+      expect(outerDisclosure, findsOneWidget);
+      expect(find.byType(ChatProcessDisclosure), findsNWidgets(13));
+      expect(find.text('Retained update 0'), findsOneWidget);
+      expect(find.text('Retained thought 0'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await cubit.close();
+    },
+  );
+
+  testWidgets(
     'a standalone process disclosure also reveals every detail below its row',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 900));
@@ -1031,4 +1099,61 @@ List<ServerMessage> _anchoringHistory({
         clientMessageId: 'turn-after-anchor',
       ),
   ];
+}
+
+List<ServerMessage> _partialTurnWindowHistory(int updateCount) {
+  final messages = <ServerMessage>[];
+  for (var index = 0; index < updateCount; index++) {
+    messages.add(
+      AssistantServerMessage(
+        message: AssistantMessage(
+          id: 'partial-window-update-$index',
+          role: 'assistant',
+          content: [
+            ThinkingContent(thinking: 'Retained thought $index'),
+            TextContent(text: 'Retained update $index'),
+            ToolUseContent(
+              id: 'partial-window-tool-$index',
+              name: index.isEven ? 'Read' : 'Bash',
+              input: index.isEven
+                  ? {'file_path': 'retained-$index.txt'}
+                  : {'command': 'printf retained-$index'},
+            ),
+          ],
+          model: 'codex',
+        ),
+      ),
+    );
+    messages.add(
+      ToolResultMessage(
+        toolUseId: 'partial-window-tool-$index',
+        toolName: index.isEven ? 'Read' : 'Bash',
+        content: 'Retained result $index',
+      ),
+    );
+  }
+  messages.addAll([
+    AssistantServerMessage(
+      message: const AssistantMessage(
+        id: 'partial-window-final',
+        role: 'assistant',
+        content: [TextContent(text: 'Retained final answer')],
+        model: 'codex',
+      ),
+    ),
+    const ResultMessage(subtype: 'success'),
+    const UserInputMessage(
+      text: 'A later complete turn',
+      clientMessageId: 'turn-after-partial-window',
+    ),
+    AssistantServerMessage(
+      message: const AssistantMessage(
+        id: 'after-partial-window-final',
+        role: 'assistant',
+        content: [TextContent(text: 'Later final answer')],
+        model: 'codex',
+      ),
+    ),
+  ]);
+  return messages;
 }

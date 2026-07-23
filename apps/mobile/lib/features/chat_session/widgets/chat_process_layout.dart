@@ -191,26 +191,30 @@ ChatProcessLayout buildChatProcessLayout(
 
   var cursor = 0;
   while (cursor < entries.length) {
-    final current = entries[cursor];
-    if (current is! UserChatEntry) {
-      cursor++;
-      continue;
-    }
-
     final turnStart = cursor;
-    var turnEnd = turnStart + 1;
+    final userEntry = entries[turnStart] is UserChatEntry
+        ? entries[turnStart] as UserChatEntry
+        : null;
+    final turnContentStart = userEntry == null ? turnStart : turnStart + 1;
+    var turnEnd = turnContentStart;
     while (turnEnd < entries.length && entries[turnEnd] is! UserChatEntry) {
       turnEnd++;
     }
 
-    final turnKey = _turnKey(current);
+    // A bounded render window can begin in the middle of a tool-heavy turn,
+    // after its UserChatEntry has already been paged out. Treat that leading
+    // range as one partial turn so its thought/tool hierarchy keeps the same
+    // two-level disclosure instead of falling back to independent bubbles.
+    final turnKey = userEntry == null
+        ? _partialTurnKey(entries, turnContentStart, turnEnd)
+        : _turnKey(userEntry);
     final isLatestTurn = turnEnd == entries.length;
     final isActive = isLatestTurn && latestTurnIsActive;
     final usesTransientCurrentOutput = isActive && hasTransientCurrentOutput;
     latestTurnKey = turnKey;
 
     final visibleAssistantIndices = <int>[];
-    for (var index = turnStart + 1; index < turnEnd; index++) {
+    for (var index = turnContentStart; index < turnEnd; index++) {
       final entry = entries[index];
       if (entry case ServerChatEntry(
         message: final AssistantServerMessage assistant,
@@ -279,7 +283,7 @@ ChatProcessLayout buildChatProcessLayout(
       }
     }
 
-    for (var index = turnStart + 1; index < turnEnd; index++) {
+    for (var index = turnContentStart; index < turnEnd; index++) {
       final entry = entries[index];
       if (entry is! ServerChatEntry) continue;
       final message = entry.message;
@@ -421,7 +425,7 @@ ChatProcessLayout buildChatProcessLayout(
     final intermediateEntries = <int>{};
     if (intermediateSegments.isNotEmpty) {
       final intervalEnd = protectedSegment?.firstEntryIndex ?? turnEnd;
-      for (var index = turnStart + 1; index < intervalEnd; index++) {
+      for (var index = turnContentStart; index < intervalEnd; index++) {
         intermediateEntries.add(index);
       }
       // A tool can finish after the next visible assistant update. Its result
@@ -533,6 +537,34 @@ String _turnKey(UserChatEntry entry) {
   final clientId = entry.clientMessageId?.trim();
   if (clientId?.isNotEmpty == true) return 'client:$clientId';
   return 'time:${entry.timestamp.microsecondsSinceEpoch}:${entry.text.length}';
+}
+
+String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
+  for (var index = start; index < end; index++) {
+    final entry = entries[index];
+    if (entry is! ServerChatEntry) continue;
+    final message = entry.message;
+    if (message is AssistantServerMessage) {
+      final messageUuid = message.messageUuid?.trim();
+      if (messageUuid?.isNotEmpty == true) {
+        return 'partial:uuid:$messageUuid';
+      }
+      final messageId = message.message.id.trim();
+      if (messageId.isNotEmpty) return 'partial:id:$messageId';
+    }
+    if (message is ToolResultMessage) {
+      final toolUseId = message.toolUseId.trim();
+      if (toolUseId.isNotEmpty) return 'partial:tool:$toolUseId';
+    }
+    if (message is ToolUseSummaryMessage &&
+        message.precedingToolUseIds.isNotEmpty) {
+      return 'partial:tool:${message.precedingToolUseIds.first}';
+    }
+  }
+  final timestamp = start < entries.length
+      ? entries[start].timestamp.microsecondsSinceEpoch
+      : 0;
+  return 'partial:time:$timestamp:$start';
 }
 
 bool _hasVisibleText(AssistantServerMessage message) => message.message.content

@@ -237,6 +237,112 @@ void main() {
     expect(historical.processEntryIndices, {3});
     expect(turn.finalAssistantEntryIndex, 2);
   });
+
+  test('folds a leading partial turn whose user entry was paged out', () {
+    final entries = <ChatEntry>[
+      ServerChatEntry(
+        _assistant('partial-update', const [
+          ThinkingContent(thinking: 'partial reasoning'),
+          TextContent(text: 'A visible update inside the retained window.'),
+          ToolUseContent(
+            id: 'partial-tool',
+            name: 'Read',
+            input: {'file_path': 'partial.txt'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'partial-tool',
+          toolName: 'Read',
+          content: 'partial result',
+        ),
+      ),
+      ServerChatEntry(
+        _assistant('partial-final', const [
+          TextContent(text: 'The retained final answer.'),
+        ]),
+      ),
+      ServerChatEntry(const ResultMessage(subtype: 'success')),
+    ];
+
+    final layout = buildChatProcessLayout(entries);
+    final turn = layout.turnForEntry(0)!;
+
+    expect(turn.key, 'partial:id:partial-update');
+    expect(turn.intermediateAssistantEntryIndices, {0});
+    expect(turn.intermediateEntryIndices, {0, 1});
+    expect(turn.intermediateSummaryEntryIndex, 0);
+    expect(turn.finalAssistantEntryIndex, 2);
+    expect(turn.hasIntermediateEntries, isTrue);
+    expect(layout.segmentForEntry(0)?.toolCalls, 1);
+    expect(layout.segmentForEntry(1)?.toolResults, 1);
+  });
+
+  test(
+    'keeps every persisted segment in a partial active turn behind transient progress',
+    () {
+      final entries = <ChatEntry>[
+        ServerChatEntry(
+          _assistant('partial-update-1', const [
+            TextContent(text: 'Earlier retained update.'),
+            ToolUseContent(
+              id: 'partial-tool-1',
+              name: 'Read',
+              input: {'file_path': 'first.txt'},
+            ),
+          ]),
+        ),
+        ServerChatEntry(
+          const ToolResultMessage(
+            toolUseId: 'partial-tool-1',
+            toolName: 'Read',
+            content: 'first result',
+          ),
+        ),
+        ServerChatEntry(
+          _assistant('partial-update-2', const [
+            ThinkingContent(thinking: 'latest persisted reasoning'),
+            TextContent(text: 'Latest persisted update.'),
+            ToolUseContent(
+              id: 'partial-tool-2',
+              name: 'Bash',
+              input: {'command': 'git status --short'},
+            ),
+          ]),
+        ),
+      ];
+
+      final layout = buildChatProcessLayout(
+        entries,
+        latestTurnIsActive: true,
+        hasTransientCurrentOutput: true,
+      );
+      final turn = layout.turnForEntry(0)!;
+
+      expect(turn.hasTransientCurrentOutput, isTrue);
+      expect(turn.currentSegment, isNull);
+      expect(turn.intermediateAssistantEntryIndices, {0, 2});
+      expect(turn.intermediateEntryIndices, {0, 1, 2});
+      expect(turn.currentTool?.name, 'Bash');
+    },
+  );
+
+  test('does not absorb an unrelated leading status without process data', () {
+    final entries = <ChatEntry>[
+      ServerChatEntry(const StatusMessage(status: ProcessStatus.idle)),
+      UserChatEntry('next turn', clientMessageId: 'next-turn'),
+      ServerChatEntry(
+        _assistant('next-final', const [TextContent(text: 'Next answer')]),
+      ),
+    ];
+
+    final layout = buildChatProcessLayout(entries);
+
+    expect(layout.turnForEntry(0), isNull);
+    expect(layout.latestTurnKey, 'client:next-turn');
+    expect(layout.turnForEntry(2)?.finalAssistantEntryIndex, 2);
+  });
 }
 
 AssistantServerMessage _assistant(String id, List<AssistantContent> content) =>
