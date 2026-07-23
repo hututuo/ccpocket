@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   transactionGet: vi.fn(),
   transactionSet: vi.fn(),
   serverTimestamp: vi.fn(),
+  deleteField: vi.fn(),
   loggerInfo: vi.fn(),
   loggerWarn: vi.fn(),
   loggerError: vi.fn(),
@@ -29,7 +30,10 @@ vi.mock("firebase-admin/app-check", () => ({
   getAppCheck: () => ({ verifyToken: mocks.verifyAppCheckToken }),
 }));
 vi.mock("firebase-admin/firestore", () => ({
-  FieldValue: { serverTimestamp: mocks.serverTimestamp },
+  FieldValue: {
+    serverTimestamp: mocks.serverTimestamp,
+    delete: mocks.deleteField,
+  },
   getFirestore: () => ({
     runTransaction: mocks.runTransaction,
     doc: mocks.doc,
@@ -101,6 +105,7 @@ beforeEach(() => {
   mocks.verifyIdToken.mockResolvedValue({ uid: "bridge-uid" });
   mocks.verifyAppCheckToken.mockResolvedValue({});
   mocks.serverTimestamp.mockReturnValue("server-timestamp");
+  mocks.deleteField.mockReturnValue("delete-field");
   mocks.transactionGet.mockResolvedValue({ data: () => ({ timestamps: [] }) });
   mocks.runTransaction.mockImplementation(async (callback) => callback({
     get: mocks.transactionGet,
@@ -205,6 +210,7 @@ describe("relay", () => {
     expect(mocks.tokenUpdate).toHaveBeenCalledWith({
       token: VALID_TOKEN,
       platform: "android",
+      enabledEventTypes: "delete-field",
       locale: "ja",
       updatedAt: "server-timestamp",
     });
@@ -219,6 +225,21 @@ describe("relay", () => {
       token: VALID_TOKEN,
       platform: "web",
     }));
+  });
+
+  it("stores explicit notification event filters", async () => {
+    await invoke({
+      op: "register",
+      token: VALID_TOKEN,
+      platform: "ios",
+      enabledEventTypes: ["approval_required", "session_progress"],
+    });
+
+    expect(mocks.tokenSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enabledEventTypes: ["approval_required", "session_progress"],
+      }),
+    );
   });
 
   it("unregisters a token", async () => {
@@ -245,6 +266,88 @@ describe("relay", () => {
       failureCount: 0,
       deletedInvalidTokens: 0,
     });
+  });
+
+  it("does not opt legacy tokens into intermediate progress", async () => {
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) =>
+            field === "token" ? VALID_TOKEN : undefined,
+        },
+      ],
+    });
+
+    const res = await invoke({
+      op: "notify",
+      eventType: "session_progress",
+      title: "Working",
+      body: "Reading files",
+    });
+
+    expect(mocks.sendEachForMulticast).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenCount: 0 }),
+    );
+  });
+
+  it("sends progress only to explicitly subscribed tokens", async () => {
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) => {
+            if (field === "token") return VALID_TOKEN;
+            if (field === "enabledEventTypes") {
+              return ["session_progress"];
+            }
+            return undefined;
+          },
+        },
+      ],
+    });
+
+    await invoke({
+      op: "notify",
+      eventType: "session_progress",
+      title: "Working",
+      body: "Reading files",
+      data: { sessionId: "s-1" },
+    });
+
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokens: [VALID_TOKEN],
+        data: {
+          sessionId: "s-1",
+          eventType: "session_progress",
+        },
+      }),
+    );
+  });
+
+  it("filters established events when a token has explicit preferences", async () => {
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) => {
+            if (field === "token") return VALID_TOKEN;
+            if (field === "enabledEventTypes") {
+              return ["approval_required"];
+            }
+            return undefined;
+          },
+        },
+      ],
+    });
+
+    await invoke({
+      op: "notify",
+      eventType: "session_completed",
+      title: "Done",
+      body: "Finished",
+    });
+
+    expect(mocks.sendEachForMulticast).not.toHaveBeenCalled();
   });
 
   it("sanitizes unexpected Firestore errors and logs their details", async () => {

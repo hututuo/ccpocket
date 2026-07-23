@@ -214,6 +214,7 @@ export type ClientMessage =
       platform: "ios" | "android" | "web";
       locale?: string;
       privacyMode?: boolean;
+      enabledEventTypes?: string[];
     }
   | { type: "push_unregister"; token: string }
   | {
@@ -1333,6 +1334,19 @@ export function parseClientMessage(data: string): ClientMessage | null {
           msg.platform !== "web"
         )
           return null;
+        if (msg.enabledEventTypes !== undefined) {
+          if (
+            !Array.isArray(msg.enabledEventTypes) ||
+            msg.enabledEventTypes.length > 16 ||
+            msg.enabledEventTypes.some(
+              (eventType) =>
+                typeof eventType !== "string" ||
+                eventType.length === 0 ||
+                eventType.length > 64,
+            )
+          )
+            return null;
+        }
         break;
       case "push_unregister":
         if (typeof msg.token !== "string") return null;

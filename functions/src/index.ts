@@ -17,6 +17,7 @@ type RegisterBody = {
   token: string;
   platform: PushPlatform;
   locale?: string;
+  enabledEventTypes?: string[];
 };
 
 type UnregisterBody = {
@@ -37,6 +38,8 @@ type NotifyBody = {
 };
 
 type RelayBody = RegisterBody | UnregisterBody | NotifyBody;
+
+const OPT_IN_ONLY_EVENT_TYPES = new Set(["session_progress"]);
 
 class RelayHttpError extends Error {
   constructor(
@@ -170,7 +173,31 @@ function parseRelayBody(payload: unknown): RelayBody | null {
       return null;
     }
     const locale = asNonEmptyString(body.locale) ?? undefined;
-    return { op, bridgeId: "", token, platform, locale };
+    let enabledEventTypes: string[] | undefined;
+    if (body.enabledEventTypes !== undefined) {
+      if (
+        !Array.isArray(body.enabledEventTypes) ||
+        body.enabledEventTypes.length > 16
+      ) {
+        return null;
+      }
+      enabledEventTypes = [];
+      for (const rawEventType of body.enabledEventTypes) {
+        const eventType = asNonEmptyString(rawEventType);
+        if (!eventType || eventType.length > 64) return null;
+        if (!enabledEventTypes.includes(eventType)) {
+          enabledEventTypes.push(eventType);
+        }
+      }
+    }
+    return {
+      op,
+      bridgeId: "",
+      token,
+      platform,
+      locale,
+      enabledEventTypes,
+    };
   }
 
   if (op === "unregister") {
@@ -220,6 +247,8 @@ async function handleRegister(body: RegisterBody): Promise<void> {
     const updateData: Record<string, unknown> = {
       token: body.token,
       platform: body.platform,
+      enabledEventTypes:
+        body.enabledEventTypes ?? FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     };
     if (body.locale) updateData.locale = body.locale;
@@ -238,6 +267,9 @@ async function handleRegister(body: RegisterBody): Promise<void> {
     token: body.token,
     platform: body.platform,
     ...(body.locale ? { locale: body.locale } : {}),
+    ...(body.enabledEventTypes !== undefined
+      ? { enabledEventTypes: body.enabledEventTypes }
+      : {}),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -264,9 +296,19 @@ async function handleNotify(body: NotifyBody): Promise<{
     .filter((d) => {
       // When locale is specified, only send to tokens with matching locale.
       // Tokens without a locale field are included when no locale filter is set (backward compat).
-      if (!body.locale) return true;
-      const tokenLocale = asNonEmptyString(d.get("locale"));
-      return tokenLocale === body.locale || tokenLocale == null;
+      if (body.locale) {
+        const tokenLocale = asNonEmptyString(d.get("locale"));
+        if (tokenLocale !== body.locale && tokenLocale != null) return false;
+      }
+
+      const enabledEventTypes = d.get("enabledEventTypes");
+      if (Array.isArray(enabledEventTypes)) {
+        return enabledEventTypes.includes(body.eventType);
+      }
+      // Older clients did not register preferences. Preserve their established
+      // approval/completion notifications, but never opt them into a new noisy
+      // category such as progress.
+      return !OPT_IN_ONLY_EVENT_TYPES.has(body.eventType);
     })
     .map((d) => asNonEmptyString(d.get("token")))
     .filter((token): token is string => token != null);
@@ -288,7 +330,7 @@ async function handleNotify(body: NotifyBody): Promise<{
     const response = await messaging.sendEachForMulticast({
       tokens: chunk,
       notification: { title: body.title, body: body.body },
-      data: body.data,
+      data: { ...body.data, eventType: body.eventType },
       android: {
         priority: "high",
         notification: {

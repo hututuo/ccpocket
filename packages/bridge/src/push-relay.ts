@@ -19,7 +19,13 @@ export interface PushRelayClientOptions {
 }
 
 type PushRelayOpPayload =
-  | { op: "register"; token: string; platform: PushPlatform; locale?: string }
+  | {
+      op: "register";
+      token: string;
+      platform: PushPlatform;
+      locale?: string;
+      enabledEventTypes?: string[];
+    }
   | { op: "unregister"; token: string }
   | { op: "notify"; eventType: string; title: string; body: string; locale?: string; data?: Record<string, string> };
 
@@ -48,9 +54,20 @@ export class PushRelayClient {
     return this.firebaseAuth!.uid;
   }
 
-  async registerToken(token: string, platform: PushPlatform, locale?: string): Promise<void> {
+  async registerToken(
+    token: string,
+    platform: PushPlatform,
+    locale?: string,
+    enabledEventTypes?: string[],
+  ): Promise<void> {
     if (!this.isConfigured) return;
-    await this.post({ op: "register", token, platform, locale });
+    await this.post({
+      op: "register",
+      token,
+      platform,
+      locale,
+      enabledEventTypes,
+    });
   }
 
   async unregisterToken(token: string): Promise<void> {

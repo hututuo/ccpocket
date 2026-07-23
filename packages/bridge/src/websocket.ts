@@ -168,6 +168,10 @@ const CODEX_DESKTOP_CONTINUITY_CAPABILITY =
   "codex_desktop_continuity_v1";
 const CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY =
   "codex_resume_preserves_settings_v1";
+const PUSH_NOTIFICATION_PREFERENCES_CAPABILITY =
+  "push_notification_preferences_v1";
+const PUSH_PROGRESS_EVENT = "session_progress";
+const PUSH_PROGRESS_MIN_INTERVAL_MS = 45_000;
 const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
@@ -1075,6 +1079,10 @@ export class BridgeWebSocketServer {
   private recentSessionsRequestIds = new WeakMap<WebSocket, number>();
   private debugEvents = new Map<string, DebugTraceEvent[]>();
   private notifiedPermissionToolUses = new Map<string, Set<string>>();
+  private progressNotificationState = new Map<
+    string,
+    { lastSentAt: number; lastToolKey: string }
+  >();
   private archiveStore: ArchiveStore;
   private archiveStoreReady: Promise<void>;
   private archiveStoreInitializationError: Error | null = null;
@@ -1105,6 +1113,7 @@ export class BridgeWebSocketServer {
   /** FCM token → push notification locale */
   private tokenLocales = new Map<string, PushLocale>();
   private tokenPrivacyMode = new Map<string, boolean>();
+  private tokenEnabledEventTypes = new Map<string, Set<string>>();
   private failSetPermissionMode = envFlagEnabled(
     "BRIDGE_FAIL_SET_PERMISSION_MODE",
   );
@@ -4168,8 +4177,21 @@ export class BridgeWebSocketServer {
         }
         this.tokenLocales.set(msg.token, locale);
         this.tokenPrivacyMode.set(msg.token, privacyMode);
+        if (msg.enabledEventTypes == null) {
+          this.tokenEnabledEventTypes.delete(msg.token);
+        } else {
+          this.tokenEnabledEventTypes.set(
+            msg.token,
+            new Set(msg.enabledEventTypes),
+          );
+        }
         this.pushRelay
-          .registerToken(msg.token, msg.platform, locale)
+          .registerToken(
+            msg.token,
+            msg.platform,
+            locale,
+            msg.enabledEventTypes,
+          )
           .then(() => {
             console.log("[ws] push_register: token registered successfully");
           })
@@ -4195,6 +4217,7 @@ export class BridgeWebSocketServer {
         }
         this.tokenLocales.delete(msg.token);
         this.tokenPrivacyMode.delete(msg.token);
+        this.tokenEnabledEventTypes.delete(msg.token);
         this.pushRelay
           .unregisterToken(msg.token)
           .then(() => {
@@ -5795,6 +5818,7 @@ export class BridgeWebSocketServer {
           });
           this.debugEvents.delete(msg.sessionId);
           this.notifiedPermissionToolUses.delete(msg.sessionId);
+          this.progressNotificationState.delete(msg.sessionId);
           this.broadcastSessionList();
         } else {
           this.send(ws, {
@@ -8310,6 +8334,7 @@ export class BridgeWebSocketServer {
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
+        PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -8355,6 +8380,7 @@ export class BridgeWebSocketServer {
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
+        PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -9506,6 +9532,14 @@ export class BridgeWebSocketServer {
     return false;
   }
 
+  /** New noisy events require an explicit opt-in from at least one token. */
+  private hasExplicitPushSubscriber(eventType: string): boolean {
+    for (const enabledEventTypes of this.tokenEnabledEventTypes.values()) {
+      if (enabledEventTypes.has(eventType)) return true;
+    }
+    return false;
+  }
+
   /** Get a display label for push notification title: "name (project)" or just project. */
   private sessionLabel(sessionId: string): string {
     const session = this.sessionManager.get(sessionId);
@@ -9524,6 +9558,57 @@ export class BridgeWebSocketServer {
 
     const privacy = this.isPrivacyMode();
     const label = privacy ? "" : this.sessionLabel(sessionId);
+
+    if (msg.type === "assistant" && Array.isArray(msg.message.content)) {
+      if (!this.hasExplicitPushSubscriber(PUSH_PROGRESS_EVENT)) return;
+      const toolUse = [...msg.message.content]
+        .reverse()
+        .find((content) => content.type === "tool_use");
+      if (!toolUse || !toolUse.id || !toolUse.name) return;
+
+      const now = Date.now();
+      const last = this.progressNotificationState.get(sessionId);
+      const toolKey = `${toolUse.id}:${toolUse.name}`;
+      if (
+        last?.lastToolKey === toolKey ||
+        (last != null && now - last.lastSentAt < PUSH_PROGRESS_MIN_INTERVAL_MS)
+      ) {
+        return;
+      }
+      this.progressNotificationState.set(sessionId, {
+        lastSentAt: now,
+        lastToolKey: toolKey,
+      });
+
+      const data: Record<string, string> = {
+        sessionId,
+        provider: this.sessionManager.get(sessionId)?.provider ?? "claude",
+        toolUseId: toolUse.id,
+        toolName: toolUse.name,
+      };
+      for (const locale of this.getRegisteredLocales()) {
+        const baseTitle = t(locale, "progress_title");
+        const title = label ? `${baseTitle} - ${label}` : baseTitle;
+        const body = privacy
+          ? t(locale, "progress_body_private")
+          : t(locale, "progress_body", { toolName: toolUse.name });
+        void this.pushRelay
+          .notify({
+            eventType: PUSH_PROGRESS_EVENT,
+            title,
+            body,
+            locale,
+            data,
+          })
+          .catch((err) => {
+            const detail = err instanceof Error ? err.message : String(err);
+            console.warn(
+              `[ws] Failed to send push notification (${PUSH_PROGRESS_EVENT}, ${locale}): ${detail}`,
+            );
+          });
+      }
+      return;
+    }
 
     if (msg.type === "permission_request") {
       const seen =
@@ -9609,6 +9694,7 @@ export class BridgeWebSocketServer {
     if (msg.subtype !== "success" && msg.subtype !== "error") return;
 
     const isSuccess = msg.subtype === "success";
+    this.progressNotificationState.delete(sessionId);
     const eventType = isSuccess ? "session_completed" : "session_failed";
 
     const pieces: string[] = [];
@@ -10466,6 +10552,11 @@ export class BridgeWebSocketServer {
     for (const sessionId of this.notifiedPermissionToolUses.keys()) {
       if (!active.has(sessionId)) {
         this.notifiedPermissionToolUses.delete(sessionId);
+      }
+    }
+    for (const sessionId of this.progressNotificationState.keys()) {
+      if (!active.has(sessionId)) {
+        this.progressNotificationState.delete(sessionId);
       }
     }
   }

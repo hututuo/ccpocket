@@ -52,6 +52,29 @@ describe("PushRelayClient", () => {
     });
   });
 
+  it("forwards optional event filters when registering", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    const client = new PushRelayClient({
+      relayUrl: "https://relay.example.com/push",
+      firebaseAuth: createMockAuth("bridge-uid-123"),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await client.registerToken("token-1", "ios", "zh", [
+      "approval_required",
+      "session_progress",
+    ]);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      op: "register",
+      token: "token-1",
+      platform: "ios",
+      locale: "zh",
+      enabledEventTypes: ["approval_required", "session_progress"],
+    });
+  });
+
   it("throws on non-2xx relay response", async () => {
     const fetchMock = vi.fn(async () => new Response("boom", { status: 500 }));
     const mockAuth = createMockAuth("bridge-uid-123", "firebase-id-token-abc");

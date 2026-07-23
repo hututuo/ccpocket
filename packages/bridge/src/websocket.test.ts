@@ -10496,6 +10496,103 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("rate limits and deduplicates intermediate progress notifications", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-24T00:00:00Z"));
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const mockAuth = {
+      uid: "bridge-test",
+      getIdToken: vi.fn(async () => "mock-token"),
+      initialize: vi.fn(async () => {}),
+    };
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: mockAuth as any,
+    });
+    (bridge as any).tokenEnabledEventTypes.set(
+      "token-progress",
+      new Set(["session_progress"]),
+    );
+    const assistantTool = (id: string, name: string) => ({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id, name, input: {} }],
+      },
+    });
+
+    (bridge as any).broadcastSessionMessage(
+      "s-1",
+      assistantTool("tool-1", "Read"),
+    );
+    (bridge as any).broadcastSessionMessage(
+      "s-1",
+      assistantTool("tool-1", "Read"),
+    );
+    vi.advanceTimersByTime(30_000);
+    (bridge as any).broadcastSessionMessage(
+      "s-1",
+      assistantTool("tool-2", "Bash"),
+    );
+    vi.advanceTimersByTime(15_000);
+    (bridge as any).broadcastSessionMessage(
+      "s-1",
+      assistantTool("tool-3", "Edit"),
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const payloads = fetchMock.mock.calls.map(([, init]) =>
+      JSON.parse(String((init as RequestInit).body)),
+    );
+    expect(payloads).toEqual([
+      expect.objectContaining({
+        eventType: "session_progress",
+        data: expect.objectContaining({ toolUseId: "tool-1" }),
+      }),
+      expect.objectContaining({
+        eventType: "session_progress",
+        data: expect.objectContaining({ toolUseId: "tool-3" }),
+      }),
+    ]);
+
+    bridge.close();
+  });
+
+  it("does not generate intermediate progress without an explicit subscriber", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const mockAuth = {
+      uid: "bridge-test",
+      getIdToken: vi.fn(async () => "mock-token"),
+      initialize: vi.fn(async () => {}),
+    };
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: mockAuth as any,
+    });
+    (bridge as any).broadcastSessionMessage("s-1", {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+        ],
+      },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
   it("derives Codex permissions mode in session_created output", () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const complete = (bridge as any).buildSessionCreatedMessage({

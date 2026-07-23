@@ -12,6 +12,9 @@ const translations: Record<PushLocale, Record<string, string>> = {
     error_occurred: "Error occurred",
     session_completed: "Session completed",
     session_failed: "Session failed",
+    progress_title: "Task in progress",
+    progress_body: "Using {toolName}",
+    progress_body_private: "The agent is continuing to work",
     // Privacy mode: generic bodies without tool names, question text, or result details
     approval_body_private: "Approve tool execution",
     ask_body_private: "Please respond to a question",
@@ -29,6 +32,9 @@ const translations: Record<PushLocale, Record<string, string>> = {
     error_occurred: "エラー発生",
     session_completed: "セッション完了",
     session_failed: "セッションが失敗しました",
+    progress_title: "処理中",
+    progress_body: "{toolName} を使用中",
+    progress_body_private: "エージェントが処理を続けています",
     // Privacy mode
     approval_body_private: "ツールの実行を承認してください",
     ask_body_private: "質問に回答してください",
@@ -46,6 +52,9 @@ const translations: Record<PushLocale, Record<string, string>> = {
     error_occurred: "发生错误",
     session_completed: "会话已完成",
     session_failed: "会话失败",
+    progress_title: "任务进行中",
+    progress_body: "正在使用 {toolName}",
+    progress_body_private: "Agent 正在继续处理",
     // Privacy mode
     approval_body_private: "请批准工具执行",
     ask_body_private: "请回答一个问题",
@@ -63,6 +72,9 @@ const translations: Record<PushLocale, Record<string, string>> = {
     error_occurred: "오류 발생",
     session_completed: "세션 완료",
     session_failed: "세션 실패",
+    progress_title: "작업 진행 중",
+    progress_body: "{toolName} 사용 중",
+    progress_body_private: "에이전트가 계속 작업 중입니다",
     // Privacy mode
     approval_body_private: "도구 실행을 승인하세요",
     ask_body_private: "질문에 응답해 주세요",

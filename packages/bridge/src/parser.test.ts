@@ -351,6 +351,31 @@ describe("parseClientMessage", () => {
     });
   });
 
+  it("parses bounded push notification preferences", () => {
+    const msg = parseClientMessage(
+      '{"type":"push_register","token":"t1","platform":"ios","enabledEventTypes":["approval_required","session_progress"]}',
+    );
+    expect(msg).toEqual({
+      type: "push_register",
+      token: "t1",
+      platform: "ios",
+      enabledEventTypes: ["approval_required", "session_progress"],
+    });
+  });
+
+  it("rejects malformed push notification preferences", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"push_register","token":"t1","platform":"ios","enabledEventTypes":[1]}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        `{"type":"push_register","token":"t1","platform":"ios","enabledEventTypes":[${Array.from({ length: 17 }, () => '"event"').join(",")}]}`,
+      ),
+    ).toBeNull();
+  });
+
   it("rejects push_register with invalid platform", () => {
     expect(
       parseClientMessage(
