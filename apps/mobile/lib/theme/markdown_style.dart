@@ -61,6 +61,10 @@ class MarkdownPerformanceProbe {
 
 Future<void> initializeMarkdownSyntaxHighlight() async {
   await _syntaxHighlight.initialize();
+  // Code blocks rendered before deferred initialization use the fallback
+  // highlighter and are cached. Drop those entries so the post-init rebuild can
+  // render them with syntax_highlight instead of reusing stale fallback spans.
+  _highlightCache.clear();
 }
 
 /// Handles tapping on markdown links by opening them in browser.
@@ -553,6 +557,10 @@ class _HighlightSpanCache {
     while (_entries.length > maxEntries) {
       _entries.remove(_entries.keys.first);
     }
+  }
+
+  void clear() {
+    _entries.clear();
   }
 }
 

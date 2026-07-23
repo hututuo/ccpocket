@@ -45,6 +45,7 @@ import 'features/git/state/git_status_cubit.dart';
 import 'features/git/state/git_view_cache_service.dart';
 import 'features/settings/state/settings_cubit.dart';
 import 'features/settings/state/settings_state.dart';
+import 'models/code_font_family.dart';
 import 'models/messages.dart';
 import 'providers/bridge_cubits.dart';
 import 'providers/machine_manager_cubit.dart';
@@ -82,6 +83,16 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // warning on Android.
 }
 
+Future<void> _initializeFileTransferAfterFirstFrame(
+  FileTransferService service,
+) async {
+  try {
+    await service.initialize();
+  } catch (error) {
+    logger.error('[main] FileTransferService init failed', error);
+  }
+}
+
 void main() async {
   if (kDebugMode && !kIsWeb) {
     MarionetteBinding.ensureInitialized();
@@ -110,12 +121,6 @@ void main() async {
   } catch (e) {
     logger.error('[main] NotificationService init failed', e);
   }
-  try {
-    await initializeMarkdownSyntaxHighlight();
-  } catch (e) {
-    logger.error('[main] syntax_highlight init failed', e);
-  }
-
   // Initialize SharedPreferences and services
   final prefs = await SharedPreferences.getInstance();
   const secureStorage = FlutterSecureStorage();
@@ -200,7 +205,6 @@ void main() async {
     ),
     preferences: prefs,
   );
-  await fileTransferService.initialize();
   final fileBrowserService = FileBrowserService(
     bridge: BridgeServiceFileBrowserGateway(bridge),
     preferences: prefs,
@@ -387,6 +391,9 @@ void main() async {
       ),
     ),
   );
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(_initializeFileTransferAfterFirstFrame(fileTransferService));
+  });
 }
 
 class CcpocketApp extends StatefulWidget {
@@ -403,6 +410,14 @@ class CcpocketApp extends StatefulWidget {
   State<CcpocketApp> createState() => _CcpocketAppState();
 }
 
+typedef _AppPresentationSettings = ({
+  ThemeMode themeMode,
+  String appLocaleId,
+  double textScale,
+  double codeFontSize,
+  CodeFontFamily codeFontFamily,
+});
+
 class _CcpocketAppState extends State<CcpocketApp> {
   AppLinks? _appLinks;
   final _deepLinkNotifier = ValueNotifier<ConnectionParams?>(null);
@@ -413,6 +428,7 @@ class _CcpocketAppState extends State<CcpocketApp> {
   late final AppRouter _appRouter;
   bool _routerInitialized = false;
   bool _fcmHandlersInitialized = false;
+  bool _checkedInitialFcmSettings = false;
   late final AppLifecycleListener _lifecycleListener;
 
   @override
@@ -436,6 +452,32 @@ class _CcpocketAppState extends State<CcpocketApp> {
     if (!kIsWeb) {
       _appLinks = AppLinks();
       _initDeepLinks();
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_initializeMarkdownHighlighting());
+    });
+  }
+
+  Future<void> _initializeMarkdownHighlighting() async {
+    try {
+      await initializeMarkdownSyntaxHighlight();
+      // A deep link can open a code-bearing conversation on the first frame.
+      // Rebuild once after the deferred highlighters are ready so that initial
+      // plain-text fallback blocks gain syntax highlighting.
+      if (mounted) setState(() {});
+    } catch (error) {
+      logger.error('[main] syntax_highlight init failed', error);
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_checkedInitialFcmSettings) return;
+    _checkedInitialFcmSettings = true;
+    final settings = context.read<SettingsCubit>().state;
+    if (settings.fcmEnabledMachines.isNotEmpty && settings.fcmAvailable) {
+      _initFcmHandlers();
     }
   }
 
@@ -611,50 +653,67 @@ class _CcpocketAppState extends State<CcpocketApp> {
     // Initialize router on first build (needs BlocProvider context)
     _initRouter();
 
-    return BlocBuilder<SettingsCubit, SettingsState>(
-      builder: (context, settings) {
+    return BlocListener<SettingsCubit, SettingsState>(
+      listenWhen: (previous, current) =>
+          previous.fcmAvailable != current.fcmAvailable ||
+          previous.fcmEnabledMachines.isEmpty !=
+              current.fcmEnabledMachines.isEmpty,
+      listener: (context, settings) {
         if (settings.fcmEnabledMachines.isNotEmpty && settings.fcmAvailable) {
           _initFcmHandlers();
         }
-        final appLocale = settings.appLocaleId.isEmpty
-            ? null
-            : Locale(settings.appLocaleId);
-        final themeLocale =
-            appLocale ?? WidgetsBinding.instance.platformDispatcher.locale;
-        updateReleaseErrorWidgetLocale(appLocale);
-        return MaterialApp.router(
-          title: 'CC Pocket',
-          theme: AppTheme.lightThemeForLocale(themeLocale),
-          darkTheme: AppTheme.darkThemeForLocale(themeLocale),
-          themeMode: settings.themeMode,
-          locale: appLocale,
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          routerConfig: _appRouter.config(
-            navigatorObservers: () => [SessionRouteObserver()],
-          ),
-          builder: (context, child) {
-            final mediaQuery = MediaQuery.maybeOf(context);
-            final app = child ?? const SizedBox.shrink();
-            if (mediaQuery == null) return app;
-            return MediaQuery(
-              data: mediaQuery.copyWith(
-                textScaler: _AppTextScaler(
-                  base: mediaQuery.textScaler,
-                  multiplier: settings.textScale,
-                ),
-              ),
-              child: widget.mobileUpdateService == null
-                  ? app
-                  : MobileUpdateRestartPrompt(
-                      service: widget.mobileUpdateService!,
-                      child: app,
-                    ),
-            );
-          },
-          debugShowCheckedModeBanner: false,
-        );
       },
+      child:
+          BlocSelector<SettingsCubit, SettingsState, _AppPresentationSettings>(
+            selector: (settings) => (
+              themeMode: settings.themeMode,
+              appLocaleId: settings.appLocaleId,
+              textScale: settings.textScale,
+              codeFontSize: settings.codeFontSize,
+              codeFontFamily: settings.codeFontFamily,
+            ),
+            builder: (context, settings) {
+              final appLocale = settings.appLocaleId.isEmpty
+                  ? null
+                  : Locale(settings.appLocaleId);
+              final themeLocale =
+                  appLocale ??
+                  WidgetsBinding.instance.platformDispatcher.locale;
+              updateReleaseErrorWidgetLocale(appLocale);
+              return MaterialApp.router(
+                title: 'CC Pocket',
+                theme: AppTheme.lightThemeForLocale(themeLocale),
+                darkTheme: AppTheme.darkThemeForLocale(themeLocale),
+                themeMode: settings.themeMode,
+                locale: appLocale,
+                localizationsDelegates: AppLocalizations.localizationsDelegates,
+                supportedLocales: AppLocalizations.supportedLocales,
+                routerConfig: _appRouter.config(
+                  navigatorObservers: () => [SessionRouteObserver()],
+                ),
+                builder: (context, child) {
+                  final mediaQuery = MediaQuery.maybeOf(context);
+                  final app = child ?? const SizedBox.shrink();
+                  if (mediaQuery == null) return app;
+                  return MediaQuery(
+                    data: mediaQuery.copyWith(
+                      textScaler: _AppTextScaler(
+                        base: mediaQuery.textScaler,
+                        multiplier: settings.textScale,
+                      ),
+                    ),
+                    child: widget.mobileUpdateService == null
+                        ? app
+                        : MobileUpdateRestartPrompt(
+                            service: widget.mobileUpdateService!,
+                            child: app,
+                          ),
+                  );
+                },
+                debugShowCheckedModeBanner: false,
+              );
+            },
+          ),
     );
   }
 }

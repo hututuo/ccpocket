@@ -63,6 +63,52 @@ void main() {
   });
 
   group('highlightToTextSpans', () {
+    testWidgets('invalidates fallback spans after deferred initialization', (
+      tester,
+    ) async {
+      const source = 'void main() => print("ready");';
+      late List<TextSpan> fallbackSpans;
+      late List<TextSpan> initializedSpans;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Builder(
+            builder: (context) {
+              fallbackSpans = highlightToTextSpans(
+                context: context,
+                source: source,
+                baseStyle: const TextStyle(),
+                language: 'dart',
+              );
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
+      );
+
+      await initializeMarkdownSyntaxHighlight();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: Builder(
+            builder: (context) {
+              initializedSpans = highlightToTextSpans(
+                context: context,
+                source: source,
+                baseStyle: const TextStyle(),
+                language: 'dart',
+              );
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
+      );
+
+      expect(initializedSpans, isNot(same(fallbackSpans)));
+      expect(_flattenText(initializedSpans), source);
+    });
+
     testWidgets(
       'falls back safely when TypeScript syntax highlighting throws',
       (tester) async {
