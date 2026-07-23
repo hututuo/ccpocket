@@ -10,6 +10,9 @@ import UIKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    // BGTaskScheduler requires registration before launch returns. The Flutter
+    // channel is attached later by didInitializeImplicitFlutterEngine.
+    BackgroundSyncHostPlugin.registerBackgroundRefreshTask()
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -40,6 +43,9 @@ import UIKit
     }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MobileHostSnapshotPlugin") {
       MobileHostSnapshotPlugin.register(with: registrar)
+    }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "BackgroundSyncHostPlugin") {
+      BackgroundSyncHostPlugin.register(with: registrar)
     }
   }
 

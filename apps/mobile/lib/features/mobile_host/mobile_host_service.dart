@@ -23,7 +23,11 @@ enum MobileHostCapability {
   clipboard('clipboard'),
   dragDrop('dragDrop'),
   photoLibrary('photoLibrary'),
-  biometrics('biometrics');
+  biometrics('biometrics'),
+  backgroundContinuation('backgroundContinuation'),
+  // Opportunistic BGAppRefresh while the existing Flutter runtime is
+  // available. This does not claim a cold/headless Dart runtime.
+  backgroundRefreshWarmRuntime('backgroundRefreshWarmRuntime');
 
   const MobileHostCapability(this.id);
 

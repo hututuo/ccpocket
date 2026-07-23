@@ -38,6 +38,14 @@ void main() {
       );
       expect(snapshot.supports(MobileHostCapability.photoLibrary), isTrue);
       expect(snapshot.supports(MobileHostCapability.biometrics), isTrue);
+      expect(
+        snapshot.supports(MobileHostCapability.backgroundContinuation),
+        isFalse,
+      );
+      expect(
+        snapshot.supports(MobileHostCapability.backgroundRefreshWarmRuntime),
+        isFalse,
+      );
     });
 
     test('fails closed for malformed capability maps', () {
@@ -49,6 +57,28 @@ void main() {
 
       expect(snapshot.supported, isFalse);
       expect(snapshot.reason, 'invalid_snapshot_response');
+    });
+
+    test('recognizes the versioned background host capabilities', () {
+      final snapshot = MobileHostSnapshot.fromChannelValue({
+        'supported': true,
+        'schemaVersion': 1,
+        'capabilities': {
+          'backgroundContinuation': 1,
+          'backgroundRefreshWarmRuntime': 1,
+        },
+      });
+
+      expect(
+        snapshot.supports(MobileHostCapability.backgroundContinuation),
+        isTrue,
+      );
+      expect(
+        snapshot.supports(
+          MobileHostCapability.backgroundRefreshWarmRuntime,
+        ),
+        isTrue,
+      );
     });
 
     test('serializes bounded compatibility metadata for Bridge', () {

@@ -290,6 +290,9 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(capabilities["dragDrop"], 1)
     XCTAssertEqual(capabilities["photoLibrary"], 1)
     XCTAssertEqual(capabilities["biometrics"], 1)
+    XCTAssertEqual(capabilities["backgroundContinuation"], 1)
+    XCTAssertEqual(capabilities["backgroundRefreshWarmRuntime"], 1)
+    XCTAssertNil(capabilities["backgroundAppRefresh"])
   }
 
   func testMobileHostSnapshotFailsClosedBelowMinimumIOS() throws {
@@ -299,6 +302,228 @@ class RunnerTests: XCTestCase {
 
     XCTAssertEqual(snapshot["supported"] as? Bool, false)
     XCTAssertEqual(snapshot["reason"] as? String, "minimum_ios_15_required")
+  }
+
+  func testBackgroundContinuationGenerationIsIdempotentAndFenced() {
+    var nextIdentifier = 0
+    var beginCount = 0
+    var ended: [Int] = []
+    let controller = BackgroundContinuationController(
+      begin: { _, _ in
+        beginCount += 1
+        nextIdentifier += 1
+        return UIBackgroundTaskIdentifier(rawValue: nextIdentifier)
+      },
+      end: { identifier in
+        ended.append(identifier.rawValue)
+      }
+    )
+
+    XCTAssertTrue(
+      controller.begin(generation: 1, reason: "test") { _ in }
+    )
+    XCTAssertTrue(
+      controller.begin(generation: 1, reason: "duplicate") { _ in }
+    )
+    XCTAssertEqual(beginCount, 1)
+    XCTAssertTrue(
+      controller.begin(generation: 2, reason: "new-generation") { _ in }
+    )
+    XCTAssertEqual(beginCount, 2)
+    XCTAssertEqual(ended, [1])
+    XCTAssertFalse(controller.end(generation: 1))
+    XCTAssertEqual(ended, [1])
+    XCTAssertTrue(controller.end(generation: 2))
+    XCTAssertEqual(ended, [1, 2])
+  }
+
+  func testBackgroundRefreshCompletionRunsExactlyOnce() {
+    var values: [Bool] = []
+    let completion = BackgroundRefreshCompletion { values.append($0) }
+
+    XCTAssertTrue(completion.finish(success: false))
+    XCTAssertFalse(completion.finish(success: true))
+    XCTAssertEqual(values, [false])
+  }
+
+  func testBackgroundRefreshPendingRunIsTakenOverOnceWhenChannelBecomesReady() {
+    let now = Date(timeIntervalSince1970: 100)
+    let controller = BackgroundRefreshPendingController(now: { now })
+    var operationCompletion: ((Bool) -> Void)?
+    var startedRunIds: [String] = []
+    var finishedValues: [Bool] = []
+
+    XCTAssertEqual(
+      controller.enqueue(
+        runId: "runtime-startup",
+        deadline: now.addingTimeInterval(25),
+        finish: { finishedValues.append($0) }
+      ),
+      .waitingForEndpoint
+    )
+    XCTAssertEqual(controller.state, .waiting(runId: "runtime-startup"))
+
+    let endpoint = BackgroundRefreshEndpoint(
+      perform: { runId, _, completion in
+        startedRunIds.append(runId)
+        operationCompletion = completion
+      },
+      expire: { _ in }
+    )
+    controller.attach(endpoint: endpoint)
+    controller.attach(endpoint: endpoint)
+
+    XCTAssertEqual(startedRunIds, ["runtime-startup"])
+    XCTAssertEqual(controller.state, .running(runId: "runtime-startup"))
+
+    operationCompletion?(true)
+    operationCompletion?(false)
+    XCTAssertEqual(finishedValues, [true])
+    XCTAssertEqual(controller.state, .idle)
+    XCTAssertFalse(controller.expire(runId: "runtime-startup"))
+  }
+
+  func testBackgroundRefreshPendingControllerRejectsDuplicateAndExpiresOldPending() {
+    final class TestClock {
+      var value = Date(timeIntervalSince1970: 100)
+    }
+
+    let clock = TestClock()
+    let controller = BackgroundRefreshPendingController(now: { clock.value })
+    var firstFinishes: [Bool] = []
+    var duplicateFinishes: [Bool] = []
+    var startedRunIds: [String] = []
+    var freshOperationCompletion: ((Bool) -> Void)?
+
+    XCTAssertEqual(
+      controller.enqueue(
+        runId: "first",
+        deadline: clock.value.addingTimeInterval(10),
+        finish: { firstFinishes.append($0) }
+      ),
+      .waitingForEndpoint
+    )
+    XCTAssertEqual(
+      controller.enqueue(
+        runId: "duplicate",
+        deadline: clock.value.addingTimeInterval(10),
+        finish: { duplicateFinishes.append($0) }
+      ),
+      .rejectedBusy
+    )
+    XCTAssertEqual(duplicateFinishes, [false])
+    XCTAssertEqual(controller.state, .waiting(runId: "first"))
+
+    clock.value = clock.value.addingTimeInterval(11)
+    controller.attach(
+      endpoint: BackgroundRefreshEndpoint(
+        perform: { runId, _, completion in
+          startedRunIds.append(runId)
+          freshOperationCompletion = completion
+        },
+        expire: { _ in }
+      )
+    )
+
+    XCTAssertEqual(startedRunIds, [])
+    XCTAssertEqual(firstFinishes, [false])
+    XCTAssertEqual(controller.state, .idle)
+    XCTAssertFalse(controller.expire(runId: "first"))
+
+    XCTAssertEqual(
+      controller.enqueue(
+        runId: "fresh",
+        deadline: clock.value.addingTimeInterval(10),
+        finish: { firstFinishes.append($0) }
+      ),
+      .started
+    )
+    XCTAssertEqual(startedRunIds, ["fresh"])
+    freshOperationCompletion?(true)
+    XCTAssertEqual(firstFinishes, [false, true])
+    XCTAssertEqual(controller.state, .idle)
+  }
+
+  func testBackgroundRefreshExpirationNotifiesOnlyStartedMatchingRun() {
+    let now = Date(timeIntervalSince1970: 100)
+    let controller = BackgroundRefreshPendingController(now: { now })
+    var operationCompletion: ((Bool) -> Void)?
+    var expiredRunIds: [String] = []
+    var finishedValues: [Bool] = []
+
+    controller.attach(
+      endpoint: BackgroundRefreshEndpoint(
+        perform: { _, _, completion in operationCompletion = completion },
+        expire: { expiredRunIds.append($0) }
+      )
+    )
+    XCTAssertEqual(
+      controller.enqueue(
+        runId: "active",
+        deadline: now.addingTimeInterval(25),
+        finish: { finishedValues.append($0) }
+      ),
+      .started
+    )
+
+    XCTAssertTrue(controller.expire(runId: "active"))
+    XCTAssertFalse(controller.expire(runId: "active"))
+    operationCompletion?(true)
+
+    XCTAssertEqual(expiredRunIds, ["active"])
+    XCTAssertEqual(finishedValues, [false])
+    XCTAssertEqual(controller.state, .idle)
+  }
+
+  func testBackgroundRefreshEndpointReplacementFailsRunningButKeepsPending() {
+    let now = Date(timeIntervalSince1970: 100)
+    let controller = BackgroundRefreshPendingController(now: { now })
+    var expiredRunIds: [String] = []
+    var finishedValues: [Bool] = []
+
+    controller.attach(
+      endpoint: BackgroundRefreshEndpoint(
+        perform: { _, _, _ in },
+        expire: { expiredRunIds.append($0) }
+      )
+    )
+    XCTAssertEqual(
+      controller.enqueue(
+        runId: "old-engine",
+        deadline: now.addingTimeInterval(25),
+        finish: { finishedValues.append($0) }
+      ),
+      .started
+    )
+
+    controller.detachEndpoint()
+    XCTAssertEqual(expiredRunIds, ["old-engine"])
+    XCTAssertEqual(finishedValues, [false])
+    XCTAssertEqual(controller.state, .idle)
+
+    XCTAssertEqual(
+      controller.enqueue(
+        runId: "new-engine",
+        deadline: now.addingTimeInterval(25),
+        finish: { finishedValues.append($0) }
+      ),
+      .waitingForEndpoint
+    )
+    controller.detachEndpoint()
+    XCTAssertEqual(controller.state, .waiting(runId: "new-engine"))
+    XCTAssertEqual(finishedValues, [false])
+  }
+
+  func testBackgroundRefreshIdentifierMatchesInfoPlist() throws {
+    let bundle = Bundle(for: AppDelegate.self)
+    let identifiers = try XCTUnwrap(
+      bundle.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers")
+        as? [String]
+    )
+
+    XCTAssertTrue(
+      identifiers.contains(BackgroundSyncHostPlugin.refreshTaskIdentifier)
+    )
   }
 
 }
