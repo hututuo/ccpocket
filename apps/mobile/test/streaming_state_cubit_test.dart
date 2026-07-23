@@ -8,7 +8,7 @@ void main() {
     late StreamingStateCubit cubit;
 
     setUp(() {
-      cubit = StreamingStateCubit();
+      cubit = StreamingStateCubit(coalesceInterval: Duration.zero);
     });
 
     tearDown(() {
@@ -25,7 +25,7 @@ void main() {
     group('appendText', () {
       blocTest<StreamingStateCubit, StreamingState>(
         'emits accumulated text with isStreaming true',
-        build: () => StreamingStateCubit(),
+        build: () => StreamingStateCubit(coalesceInterval: Duration.zero),
         act: (cubit) {
           cubit.appendText('Hello ');
           cubit.appendText('world');
@@ -62,7 +62,7 @@ void main() {
     group('appendThinking', () {
       blocTest<StreamingStateCubit, StreamingState>(
         'emits accumulated thinking text as a live stream',
-        build: () => StreamingStateCubit(),
+        build: () => StreamingStateCubit(coalesceInterval: Duration.zero),
         act: (cubit) {
           cubit.appendThinking('Thinking...');
           cubit.appendThinking(' more');
@@ -103,7 +103,7 @@ void main() {
     group('reset', () {
       blocTest<StreamingStateCubit, StreamingState>(
         'clears all state back to initial',
-        build: () => StreamingStateCubit(),
+        build: () => StreamingStateCubit(coalesceInterval: Duration.zero),
         act: (cubit) {
           cubit.appendText('text');
           cubit.appendThinking('thought');
@@ -134,6 +134,84 @@ void main() {
         expect(cubit.state.text, 'second');
         expect(cubit.state.isStreaming, true);
       });
+    });
+
+    group('delta coalescing', () {
+      test(
+        'emits the first delta immediately and batches following deltas',
+        () async {
+          final coalesced = StreamingStateCubit(
+            coalesceInterval: const Duration(milliseconds: 10),
+          );
+          addTearDown(coalesced.close);
+          final emitted = <StreamingState>[];
+          final subscription = coalesced.stream.listen(emitted.add);
+          addTearDown(subscription.cancel);
+
+          coalesced.appendText('A');
+          coalesced.appendText('B');
+          coalesced.appendText('C');
+
+          expect(coalesced.state.text, 'A');
+          await Future<void>.delayed(Duration.zero);
+          expect(emitted, [const StreamingState(text: 'A', isStreaming: true)]);
+
+          await Future<void>.delayed(const Duration(milliseconds: 15));
+
+          expect(coalesced.state.text, 'ABC');
+          expect(emitted, [
+            const StreamingState(text: 'A', isStreaming: true),
+            const StreamingState(text: 'ABC', isStreaming: true),
+          ]);
+        },
+      );
+
+      test('batches text and thinking without mixing their content', () async {
+        final coalesced = StreamingStateCubit(
+          coalesceInterval: const Duration(milliseconds: 10),
+        );
+        addTearDown(coalesced.close);
+
+        coalesced.appendText('answer ');
+        coalesced.appendThinking('reason ');
+        coalesced.appendText('done');
+        coalesced.appendThinking('done');
+
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+
+        expect(coalesced.state.text, 'answer done');
+        expect(coalesced.state.thinking, 'reason done');
+      });
+
+      test(
+        'reset discards queued deltas and cancels the trailing update',
+        () async {
+          final coalesced = StreamingStateCubit(
+            coalesceInterval: const Duration(milliseconds: 10),
+          );
+          addTearDown(coalesced.close);
+          final emitted = <StreamingState>[];
+          final subscription = coalesced.stream.listen(emitted.add);
+          addTearDown(subscription.cancel);
+
+          coalesced.appendText('visible');
+          coalesced.appendText('queued');
+          coalesced.reset();
+
+          await Future<void>.delayed(const Duration(milliseconds: 15));
+
+          expect(coalesced.state, const StreamingState());
+          expect(emitted.last, const StreamingState());
+          expect(
+            emitted,
+            isNot(
+              contains(
+                const StreamingState(text: 'visiblequeued', isStreaming: true),
+              ),
+            ),
+          );
+        },
+      );
     });
   });
 }

@@ -193,7 +193,7 @@ void main() {
 
   setUp(() {
     mockBridge = MockBridgeService();
-    streamingCubit = StreamingStateCubit();
+    streamingCubit = StreamingStateCubit(coalesceInterval: Duration.zero);
   });
 
   tearDown(() {

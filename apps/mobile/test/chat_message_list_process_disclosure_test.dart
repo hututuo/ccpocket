@@ -60,7 +60,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final bridge = _Bridge();
-      final streaming = StreamingStateCubit();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
       final cubit = ChatSessionCubit(
         sessionId: 'session-1',
         bridge: bridge,
@@ -213,7 +213,7 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     final bridge = _Bridge();
-    final streaming = StreamingStateCubit();
+    final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
     final cubit = ChatSessionCubit(
       sessionId: 'session-anchor',
       bridge: bridge,
@@ -277,7 +277,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final bridge = _Bridge();
-      final streaming = StreamingStateCubit();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
       final cubit = ChatSessionCubit(
         sessionId: 'session-large-anchor',
         bridge: bridge,
@@ -348,7 +348,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final bridge = _Bridge();
-      final streaming = StreamingStateCubit();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
       final cubit = ChatSessionCubit(
         sessionId: 'session-long-hierarchy',
         bridge: bridge,
@@ -452,7 +452,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final bridge = _Bridge();
-      final streaming = StreamingStateCubit();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
       final cubit = ChatSessionCubit(
         sessionId: 'session-partial-window',
         bridge: bridge,
@@ -520,7 +520,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final bridge = _Bridge();
-      final streaming = StreamingStateCubit();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
       final cubit = ChatSessionCubit(
         sessionId: 'session-standalone-process',
         bridge: bridge,
@@ -600,7 +600,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final bridge = _Bridge();
-      final streaming = StreamingStateCubit();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
       final cubit = ChatSessionCubit(
         sessionId: 'session-active',
         bridge: bridge,
@@ -670,7 +670,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final bridge = _Bridge();
-      final streaming = StreamingStateCubit();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
       final cubit = ChatSessionCubit(
         sessionId: 'session-live',
         bridge: bridge,
@@ -741,7 +741,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(430, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final bridge = _Bridge();
-    final streaming = StreamingStateCubit();
+    final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
     final cubit = ChatSessionCubit(
       sessionId: 'session-live-plan',
       bridge: bridge,
@@ -795,7 +795,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(430, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final bridge = _Bridge();
-    final streaming = StreamingStateCubit();
+    final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
     final cubit = ChatSessionCubit(
       sessionId: 'session-collapse-all',
       bridge: bridge,

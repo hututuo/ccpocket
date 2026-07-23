@@ -807,48 +807,73 @@ class _ChatMessageListState extends State<ChatMessageList>
             return ReadingPositionItem(
               child: _anchoredDisclosure(
                 'current:$progressKey',
-                BlocBuilder<StreamingStateCubit, StreamingState>(
+                BlocSelector<StreamingStateCubit, StreamingState, bool>(
+                  selector: (state) => state.isStreaming,
                   builder: (context, streamingState) {
-                    if (!streamingState.isStreaming) {
+                    if (!streamingState) {
                       return const SizedBox.shrink();
                     }
-                    final thinking = streamingState.thinking.trim();
                     final currentTool = turn?.currentTool;
                     final expanded = _expandedCurrentProgress.contains(
                       progressKey,
                     );
-                    final hasDetails =
-                        thinking.isNotEmpty || currentTool != null;
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        ChatCurrentProgressHeader(
-                          turnKey: progressKey,
-                          expanded: expanded,
-                          hasDetails: hasDetails,
-                          onToggle: () => _toggleCurrentProgress(progressKey),
+                        BlocSelector<StreamingStateCubit, StreamingState, bool>(
+                          selector: (state) => state.thinking.trim().isNotEmpty,
+                          builder: (context, hasThinking) {
+                            return ChatCurrentProgressHeader(
+                              turnKey: progressKey,
+                              expanded: expanded,
+                              hasDetails: hasThinking || currentTool != null,
+                              onToggle: () =>
+                                  _toggleCurrentProgress(progressKey),
+                            );
+                          },
                         ),
-                        if (streamingState.text.isNotEmpty)
-                          ChatEntryWidget(
-                            entry: StreamingChatEntry(
-                              text: streamingState.text,
-                            ),
-                            previous: null,
-                            httpBaseUrl: widget.httpBaseUrl,
-                            sessionId: widget.sessionId,
-                            projectPath: widget.projectPath,
-                            onRetryMessage: null,
-                            collapseToolResults: null,
-                            hiddenToolUseIds: const {},
-                            isCodex: widget.isCodex,
-                          ),
+                        BlocSelector<
+                          StreamingStateCubit,
+                          StreamingState,
+                          String
+                        >(
+                          selector: (state) => state.text,
+                          builder: (context, text) {
+                            if (text.isEmpty) {
+                              return const SizedBox.shrink();
+                            }
+                            return ChatEntryWidget(
+                              entry: StreamingChatEntry(text: text),
+                              previous: null,
+                              httpBaseUrl: widget.httpBaseUrl,
+                              sessionId: widget.sessionId,
+                              projectPath: widget.projectPath,
+                              onRetryMessage: null,
+                              collapseToolResults: null,
+                              hiddenToolUseIds: const {},
+                              isCodex: widget.isCodex,
+                            );
+                          },
+                        ),
                         if (currentTool != null)
                           ChatCurrentToolActivityLine(
                             activity: currentTool,
                             onTap: () => _toggleCurrentProgress(progressKey),
                           ),
-                        if (thinking.isNotEmpty && expanded)
-                          ChatLiveThinkingDetails(text: thinking),
+                        if (expanded)
+                          BlocSelector<
+                            StreamingStateCubit,
+                            StreamingState,
+                            String
+                          >(
+                            selector: (state) => state.thinking.trim(),
+                            builder: (context, thinking) {
+                              if (thinking.isEmpty) {
+                                return const SizedBox.shrink();
+                              }
+                              return ChatLiveThinkingDetails(text: thinking);
+                            },
+                          ),
                       ],
                     );
                   },
