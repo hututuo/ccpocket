@@ -51,8 +51,15 @@ ToolCategory categorizeToolName(String name) {
     'ResumeAgent' ||
     'WaitForAgents' ||
     'CloseAgent' ||
+    'InterruptAgent' ||
+    'ListAgents' ||
+    'SubAgentInteraction' ||
     'SubAgentActivity' => ToolCategory.subagent,
-    'ContextCompaction' => ToolCategory.compact,
+    'ContextCompaction' ||
+    'UpdatePlan' ||
+    'CreateGoal' ||
+    'ReadGoal' ||
+    'UpdateGoal' => ToolCategory.compact,
     'Wait' || 'Sleep' => ToolCategory.wait,
     'ViewImage' || 'ImageGeneration' => ToolCategory.image,
     _ => ToolCategory.other,
@@ -170,8 +177,20 @@ String getToolDisplayName(
     'closeAgent' ||
     'close_agent' ||
     'CloseAgent' => zh ? '关闭子 Agent' : 'Close sub-agent',
+    'interruptAgent' ||
+    'interrupt_agent' ||
+    'InterruptAgent' => zh ? '中断子 Agent' : 'Interrupt sub-agent',
+    'listAgents' ||
+    'list_agents' ||
+    'ListAgents' => zh ? '查看子 Agent' : 'List sub-agents',
+    'SubAgentInteraction' => zh ? '与子 Agent 交互' : 'Interact with sub-agent',
     'SubAgentActivity' => zh ? '子 Agent 活动' : 'Sub-agent activity',
     'ContextCompaction' => zh ? '压缩上下文' : 'Compact context',
+    'UpdatePlan' => zh ? '更新计划' : 'Update plan',
+    'CreateGoal' => zh ? '创建目标' : 'Create goal',
+    'ReadGoal' => zh ? '查看目标' : 'Read goal',
+    'UpdateGoal' => zh ? '更新目标' : 'Update goal',
+    'RequestUserInput' => zh ? '请求用户输入' : 'Request user input',
     'Wait' || 'Sleep' => zh ? '等待' : 'Wait',
     'ViewImage' => zh ? '查看图片' : 'View image',
     'ImageGeneration' => zh ? '生成图片' : 'Generate image',
@@ -216,8 +235,20 @@ String _completedToolDisplayName(
     'closeAgent' ||
     'close_agent' ||
     'CloseAgent' => zh ? '已关闭子 Agent' : 'Closed sub-agent',
+    'interruptAgent' ||
+    'interrupt_agent' ||
+    'InterruptAgent' => zh ? '已中断子 Agent' : 'Interrupted sub-agent',
+    'listAgents' ||
+    'list_agents' ||
+    'ListAgents' => zh ? '已查看子 Agent' : 'Listed sub-agents',
+    'SubAgentInteraction' => zh ? '已与子 Agent 交互' : 'Interacted with sub-agent',
     'SubAgentActivity' => zh ? '子 Agent 活动已更新' : 'Sub-agent activity updated',
     'ContextCompaction' => zh ? '已压缩上下文' : 'Compacted context',
+    'UpdatePlan' => zh ? '已更新计划' : 'Updated plan',
+    'CreateGoal' => zh ? '已创建目标' : 'Created goal',
+    'ReadGoal' => zh ? '已查看目标' : 'Read goal',
+    'UpdateGoal' => zh ? '已更新目标' : 'Updated goal',
+    'RequestUserInput' => zh ? '已请求用户输入' : 'Requested user input',
     'Wait' || 'Sleep' => zh ? '等待已完成' : 'Wait completed',
     'ViewImage' => zh ? '已查看图片' : 'Viewed image',
     'ImageGeneration' => zh ? '图片生成已完成' : 'Image generation completed',

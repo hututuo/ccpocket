@@ -8,7 +8,19 @@ void main() {
       expect(getToolDisplayName('MultiCommand', zh: true), '运行多个命令');
       expect(getToolDisplayName('ReadSkill', zh: true), '读取 Skill');
       expect(getToolDisplayName('SpawnAgent', zh: true), '开启子 Agent');
+      expect(getToolDisplayName('ResumeAgent', zh: true), '继续子 Agent');
+      expect(getToolDisplayName('InterruptAgent', zh: true), '中断子 Agent');
+      expect(getToolDisplayName('ListAgents', zh: true), '查看子 Agent');
+      expect(
+        getToolDisplayName('SubAgentInteraction', zh: true),
+        '与子 Agent 交互',
+      );
       expect(getToolDisplayName('ContextCompaction', zh: true), '压缩上下文');
+      expect(getToolDisplayName('UpdatePlan', zh: true), '更新计划');
+      expect(getToolDisplayName('RequestUserInput', zh: true), '请求用户输入');
+      expect(categorizeToolName('InterruptAgent'), ToolCategory.subagent);
+      expect(categorizeToolName('SubAgentInteraction'), ToolCategory.subagent);
+      expect(categorizeToolName('UpdatePlan'), ToolCategory.compact);
     });
 
     test('keeps unknown future tool names intact', () {
