@@ -76,6 +76,29 @@ export type CodexPermissionsMode =
 
 export type Provider = "claude" | "codex";
 
+export type GuardianReviewRisk =
+  | "unknown"
+  | "low"
+  | "medium"
+  | "high"
+  | "critical";
+
+export type GuardianReviewStatus =
+  | "approved"
+  | "denied"
+  | "timedOut"
+  | "aborted";
+
+export interface GuardianReviewDetails {
+  status: GuardianReviewStatus;
+  risk: GuardianReviewRisk;
+  reason: string;
+  authorization?: string;
+  reviewId?: string;
+  targetItemId?: string;
+  action?: Record<string, unknown>;
+}
+
 export type CodexGoalWritableStatus =
   | "active"
   | "paused"
@@ -629,6 +652,10 @@ export type ServerMessage =
       risk: "medium" | "high";
       reason: string;
       authorization?: string;
+      status?: "approved";
+      reviewId?: string;
+      targetItemId?: string;
+      action?: Record<string, unknown>;
     }
   | {
       type: "error";
@@ -637,6 +664,12 @@ export type ServerMessage =
       sessionId?: string;
       permissionChangeId?: string;
       goalChangeId?: string;
+      /**
+       * Additive metadata for new clients. Legacy clients keep rendering the
+       * original Codex warning text, so low/critical and non-approved reviews
+       * remain backward compatible.
+       */
+      guardianReview?: GuardianReviewDetails;
     }
   | { type: "status"; status: ProcessStatus }
   | { type: "history"; messages: ServerMessage[] }

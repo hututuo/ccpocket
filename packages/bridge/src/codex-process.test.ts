@@ -4200,17 +4200,22 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
-  it("suppresses low-risk guardian allow decisions", () => {
+  it("suppresses low-risk guardian allow decisions", async () => {
+    vi.useFakeTimers();
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
     proc.on("message", (message) => messages.push(message));
-
-    (proc as any).handleNotification("guardianWarning", {
-      message:
-        "Automatic approval review approved (risk: low, authorization: unknown):\nAuto-review returned a\n  low-risk   allow decision.",
-    });
-    expect(messages).toEqual([]);
-    proc.stop();
+    try {
+      (proc as any).handleNotification("guardianWarning", {
+        message:
+          "Automatic approval review approved (risk: low, authorization: unknown):\nAuto-review returned a\n  low-risk   allow decision.",
+      });
+      await vi.runAllTimersAsync();
+      expect(messages).toEqual([]);
+    } finally {
+      proc.stop();
+      vi.useRealTimers();
+    }
   });
 
   it.each([
@@ -4226,26 +4231,217 @@ describe("CodexProcess (app-server)", () => {
     ],
   ] as const)(
     "surfaces %s-risk guardian approvals as dedicated notices",
-    (risk, authorization, reason) => {
+    async (risk, authorization, reason) => {
+      vi.useFakeTimers();
       const proc = new CodexProcess("linux");
       const messages: unknown[] = [];
       proc.on("message", (message) => messages.push(message));
+      try {
+        (proc as any).handleNotification("guardianWarning", {
+          message: `Automatic approval review approved (risk: ${risk}, authorization: ${authorization}):\n${reason}`,
+        });
+        await vi.runAllTimersAsync();
 
+        expect(messages).toEqual([
+          {
+            type: "guardian_approval",
+            risk,
+            authorization,
+            reason,
+            status: "approved",
+          },
+        ]);
+      } finally {
+        proc.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("keeps a custom low-risk review compact while preserving legacy fallback", async () => {
+    vi.useFakeTimers();
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const message =
+      "Automatic approval review approved (risk: low, authorization: high):\n" +
+      "The command only lists local simulator database metadata.";
+    try {
+      (proc as any).handleNotification("guardianWarning", { message });
+      await vi.runAllTimersAsync();
+
+      expect(messages).toEqual([
+        {
+          type: "error",
+          errorCode: "codex_warning",
+          message,
+          guardianReview: {
+            status: "approved",
+            risk: "low",
+            authorization: "high",
+            reason: "The command only lists local simulator database metadata.",
+          },
+        },
+      ]);
+    } finally {
+      proc.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("merges the legacy warning with structured action details", async () => {
+    vi.useFakeTimers();
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const reason =
+      "The command reads simulator metadata without modifying the database.";
+    const action = {
+      type: "command",
+      command: "ls -la /tmp/simulator.db*",
+      cwd: "/tmp",
+      source: "shell",
+    };
+    try {
       (proc as any).handleNotification("guardianWarning", {
-        message: `Automatic approval review approved (risk: ${risk}, authorization: ${authorization}):\n${reason}`,
+        message:
+          "Automatic approval review approved (risk: medium, authorization: high): " +
+          reason,
       });
+      (proc as any).handleNotification(
+        "item/autoApprovalReview/completed",
+        {
+          reviewId: "guardian-1",
+          targetItemId: "command-1",
+          review: {
+            status: "approved",
+            riskLevel: null,
+            userAuthorization: null,
+            rationale: null,
+          },
+          action,
+        },
+      );
+      await vi.runAllTimersAsync();
 
       expect(messages).toEqual([
         {
           type: "guardian_approval",
-          risk,
-          authorization,
+          status: "approved",
+          risk: "medium",
+          authorization: "high",
           reason,
+          reviewId: "guardian-1",
+          targetItemId: "command-1",
+          action,
         },
       ]);
+    } finally {
       proc.stop();
-    },
-  );
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores guardian review events for other threads", async () => {
+    vi.useFakeTimers();
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    (proc as any)._threadId = "thread-self";
+    const reason = "The command reads metadata.";
+    try {
+      (proc as any).handleNotification("guardianWarning", {
+        threadId: "thread-other",
+        message:
+          "Automatic approval review approved (risk: medium, authorization: high): " +
+          reason,
+      });
+      (proc as any).handleNotification(
+        "item/autoApprovalReview/completed",
+        {
+          threadId: "thread-other",
+          reviewId: "guardian-other",
+          review: {
+            status: "approved",
+            riskLevel: "medium",
+            userAuthorization: "high",
+            rationale: reason,
+          },
+          action: {
+            type: "command",
+            command: "ls -la",
+            cwd: "/tmp",
+            source: "shell",
+          },
+        },
+      );
+      await vi.runAllTimersAsync();
+
+      expect(messages).toEqual([]);
+    } finally {
+      proc.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves denied reviews as localized-card metadata for new clients", async () => {
+    vi.useFakeTimers();
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const reason = "The command would upload source code.";
+    const message =
+      "Automatic approval review denied (risk: high, authorization: low): " +
+      reason;
+    try {
+      (proc as any).handleNotification("guardianWarning", { message });
+      (proc as any).handleNotification(
+        "item/autoApprovalReview/completed",
+        {
+          reviewId: "guardian-denied",
+          review: {
+            status: "denied",
+            riskLevel: "high",
+            userAuthorization: "low",
+            rationale: reason,
+          },
+          action: {
+            type: "networkAccess",
+            protocol: "https",
+            host: "example.com",
+            port: 443,
+            target: "https://example.com/upload",
+          },
+        },
+      );
+      await vi.runAllTimersAsync();
+
+      expect(messages).toEqual([
+        {
+          type: "error",
+          errorCode: "codex_warning",
+          message,
+          guardianReview: {
+            status: "denied",
+            risk: "high",
+            authorization: "low",
+            reason,
+            reviewId: "guardian-denied",
+            action: {
+              type: "networkAccess",
+              protocol: "https",
+              host: "example.com",
+              port: 443,
+              target: "https://example.com/upload",
+            },
+          },
+        },
+      ]);
+    } finally {
+      proc.stop();
+      vi.useRealTimers();
+    }
+  });
 
   it("surfaces malformed approved guardian notifications as warnings", () => {
     const proc = new CodexProcess("linux");

@@ -6,6 +6,7 @@ import { rm, writeFile } from "node:fs/promises";
 import type {
   CodexGoal,
   CodexGoalWritableStatus,
+  GuardianReviewDetails,
   ServerMessage,
   ProcessStatus,
 } from "./parser.js";
@@ -30,6 +31,7 @@ const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const COMPLETION_FETCH_COOLDOWN_MS = 1000;
 const NATIVE_PLAN_MODE_PROBE_TIMEOUT_MS = 1500;
 const NATIVE_PLAN_MODE_EXPLICIT_PROBE_TIMEOUT_MS = 5000;
+const GUARDIAN_REVIEW_ENRICHMENT_DELAY_MS = 75;
 const CODEX_CLI_NOT_FOUND_MESSAGE =
   "Codex CLI is not installed or not available on PATH on the Bridge machine. Install it with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`, then restart Bridge.";
 
@@ -375,6 +377,12 @@ interface PendingUserInputRequest {
     | "tool_suggestion";
 }
 
+interface PendingGuardianReviewWarning {
+  review: GuardianReviewDetails;
+  message: string;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
 interface ToolSuggestionApp {
   id: string;
   name: string;
@@ -489,6 +497,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private activeCoreActionTurnId: string | null = null;
   private pendingApprovals = new Map<string, PendingApproval>();
   private pendingUserInputs = new Map<string, PendingUserInputRequest>();
+  private pendingGuardianReviewWarnings = new Map<
+    string,
+    PendingGuardianReviewWarning[]
+  >();
+  private emittedGuardianReviewIds = new Set<string>();
+  private emittedGuardianReviewIdOrder: string[] = [];
   private goalOperationSequence = 0;
   private goalOrderingGeneration = 0;
   private _lastGoalRpcSequence: number | undefined;
@@ -1814,6 +1828,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
     this.pendingApprovals.clear();
     this.pendingUserInputs.clear();
+    this.clearPendingGuardianReviewWarnings();
     this.cleanupSteerTempPaths();
     this.rejectAllPending(new Error("stopped"));
 
@@ -1841,6 +1856,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.pendingTurnCompletion = null;
     this.pendingApprovals.clear();
     this.pendingUserInputs.clear();
+    this.clearPendingGuardianReviewWarnings();
+    this.emittedGuardianReviewIds.clear();
+    this.emittedGuardianReviewIdOrder = [];
     this.cleanupSteerTempPaths();
     this.lastTokenUsage = null;
     this.startModel = sanitizeCodexModel(options?.model);
@@ -3791,6 +3809,132 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
   }
 
+  private queueGuardianReviewWarning(
+    review: GuardianReviewDetails,
+    message: string,
+  ): void {
+    const key = guardianReviewSignature(review);
+    let pending!: PendingGuardianReviewWarning;
+    const timeout = setTimeout(() => {
+      const queued = this.pendingGuardianReviewWarnings.get(key);
+      if (!queued) return;
+      const index = queued.indexOf(pending);
+      if (index === -1) return;
+      queued.splice(index, 1);
+      if (queued.length === 0) {
+        this.pendingGuardianReviewWarnings.delete(key);
+      }
+      this.emitGuardianReview(review, message);
+    }, GUARDIAN_REVIEW_ENRICHMENT_DELAY_MS);
+    timeout.unref?.();
+    pending = { review, message, timeout };
+    const queued = this.pendingGuardianReviewWarnings.get(key);
+    if (queued) {
+      queued.push(pending);
+    } else {
+      this.pendingGuardianReviewWarnings.set(key, [pending]);
+    }
+  }
+
+  private takePendingGuardianReviewWarning(
+    review: GuardianReviewDetails,
+  ): PendingGuardianReviewWarning | null {
+    const exactKey = guardianReviewSignature(review);
+    const exact = this.takeQueuedGuardianReviewWarning(exactKey, 0);
+    if (exact) return exact;
+
+    for (const [key, queued] of this.pendingGuardianReviewWarnings) {
+      const index = queued.findIndex((pending) =>
+        guardianReviewsCompatible(pending.review, review),
+      );
+      if (index !== -1) {
+        return this.takeQueuedGuardianReviewWarning(key, index);
+      }
+    }
+    return null;
+  }
+
+  private takeQueuedGuardianReviewWarning(
+    key: string,
+    index: number,
+  ): PendingGuardianReviewWarning | null {
+    const queued = this.pendingGuardianReviewWarnings.get(key);
+    if (!queued || index < 0 || index >= queued.length) return null;
+    const [pending] = queued.splice(index, 1);
+    clearTimeout(pending.timeout);
+    if (queued.length === 0) {
+      this.pendingGuardianReviewWarnings.delete(key);
+    }
+    return pending;
+  }
+
+  private clearPendingGuardianReviewWarnings(): void {
+    for (const queued of this.pendingGuardianReviewWarnings.values()) {
+      for (const pending of queued) {
+        clearTimeout(pending.timeout);
+      }
+    }
+    this.pendingGuardianReviewWarnings.clear();
+  }
+
+  private emitGuardianReview(
+    review: GuardianReviewDetails,
+    legacyMessage?: string,
+  ): void {
+    if (
+      review.reviewId &&
+      this.emittedGuardianReviewIds.has(review.reviewId)
+    ) {
+      return;
+    }
+    if (
+      review.status === "approved" &&
+      review.risk === "low" &&
+      isLowRiskAllowDecision(review.reason)
+    ) {
+      this.rememberGuardianReviewId(review.reviewId);
+      return;
+    }
+
+    this.rememberGuardianReviewId(review.reviewId);
+    if (
+      review.status === "approved" &&
+      (review.risk === "medium" || review.risk === "high")
+    ) {
+      this.emitMessage({
+        type: "guardian_approval",
+        risk: review.risk,
+        reason: review.reason,
+        ...(review.authorization
+          ? { authorization: review.authorization }
+          : {}),
+        status: "approved",
+        ...(review.reviewId ? { reviewId: review.reviewId } : {}),
+        ...(review.targetItemId
+          ? { targetItemId: review.targetItemId }
+          : {}),
+        ...(review.action ? { action: review.action } : {}),
+      });
+      return;
+    }
+
+    this.emitMessage({
+      type: "error",
+      errorCode: "codex_warning",
+      message: legacyMessage ?? formatGuardianReviewWarning(review),
+      guardianReview: review,
+    });
+  }
+
+  private rememberGuardianReviewId(reviewId: string | undefined): void {
+    if (!reviewId || this.emittedGuardianReviewIds.has(reviewId)) return;
+    this.emittedGuardianReviewIds.add(reviewId);
+    this.emittedGuardianReviewIdOrder.push(reviewId);
+    if (this.emittedGuardianReviewIdOrder.length <= 256) return;
+    const expired = this.emittedGuardianReviewIdOrder.shift();
+    if (expired) this.emittedGuardianReviewIds.delete(expired);
+  }
+
   private handleNotification(
     method: string,
     params: Record<string, unknown>,
@@ -3989,6 +4133,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         break;
       }
 
+      case "item/autoApprovalReview/completed": {
+        const completed = parseGuardianReviewCompleted(params);
+        if (!completed) break;
+        const pending = this.takePendingGuardianReviewWarning(completed);
+        const review = pending
+          ? mergeGuardianReviewDetails(pending.review, completed)
+          : completed;
+        this.emitGuardianReview(review, pending?.message);
+        break;
+      }
+
       case "serverRequest/resolved": {
         this.handleServerRequestResolved(params);
         break;
@@ -4009,28 +4164,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "guardianWarning": {
         const message = stringValue(params.message);
         if (!message) break;
-        const approval = parseGuardianApproval(message);
-        if (
-          approval?.risk === "low" &&
-          isLowRiskAllowDecision(approval.reason)
-        ) {
-          console.debug(
-            "[codex-process] suppressed informational guardian approval notification",
-          );
-          break;
-        }
-        if (
-          approval &&
-          (approval.risk === "medium" || approval.risk === "high")
-        ) {
-          this.emitMessage({
-            type: "guardian_approval",
-            risk: approval.risk,
-            reason: approval.reason,
-            ...(approval.authorization
-              ? { authorization: approval.authorization }
-              : {}),
-          });
+        const review = parseGuardianReviewWarning(message);
+        if (review) {
+          this.queueGuardianReviewWarning(review, message);
           break;
         }
         this.emitMessage({
@@ -5377,6 +5513,7 @@ function isThreadScopedNotification(method: string): boolean {
     method.startsWith("thread/") ||
     method.startsWith("turn/") ||
     method.startsWith("item/") ||
+    method === "guardianWarning" ||
     method === "serverRequest/resolved"
   );
 }
@@ -5899,22 +6036,30 @@ function parseResultObject(rawResult: string): {
   }
 }
 
-interface GuardianApproval {
-  risk: "low" | "medium" | "high";
-  reason: string;
-  authorization?: string;
-}
-
-function parseGuardianApproval(message: string): GuardianApproval | null {
-  const match = message
-    .trim()
-    .match(
-      /^automatic approval review approved\s*\(([^)]*)\)\s*:\s*([\s\S]+)$/i,
-    );
-  if (!match) return null;
+function parseGuardianReviewWarning(
+  message: string,
+): GuardianReviewDetails | null {
+  const normalizedMessage = message.trim();
+  const match = normalizedMessage.match(
+    /^automatic approval review (approved|denied)\s*\(([^)]*)\)\s*:\s*([\s\S]+)$/i,
+  );
+  if (!match) {
+    if (
+      /^automatic approval review timed out while evaluating the requested approval\.?$/i.test(
+        normalizedMessage,
+      )
+    ) {
+      return {
+        status: "timedOut",
+        risk: "unknown",
+        reason: normalizedMessage,
+      };
+    }
+    return null;
+  }
 
   const metadata = new Map<string, string>();
-  for (const field of match[1].split(",")) {
+  for (const field of match[2].split(",")) {
     const separator = field.indexOf(":");
     if (separator === -1) continue;
     metadata.set(
@@ -5923,17 +6068,141 @@ function parseGuardianApproval(message: string): GuardianApproval | null {
     );
   }
 
-  const risk = metadata.get("risk")?.toLowerCase();
-  const reason = match[2].trim();
-  if (!reason || (risk !== "low" && risk !== "medium" && risk !== "high")) {
-    return null;
-  }
+  const risk = parseGuardianReviewRisk(metadata.get("risk"));
+  const reason = match[3].trim();
+  if (!reason || !risk) return null;
   const authorization = metadata.get("authorization");
   return {
+    status: match[1].toLowerCase() === "denied" ? "denied" : "approved",
     risk,
     reason,
     ...(authorization ? { authorization } : {}),
   };
+}
+
+function parseGuardianReviewCompleted(
+  params: Record<string, unknown>,
+): GuardianReviewDetails | null {
+  const review = asRecord(params.review);
+  const status = parseGuardianReviewStatus(stringOrNull(review?.status));
+  if (!review || !status) return null;
+
+  const risk =
+    parseGuardianReviewRisk(stringOrNull(review.riskLevel)) ?? "unknown";
+  const reason = stringOrNull(review.rationale)?.trim() ?? "";
+  const authorization = stringOrNull(review.userAuthorization)?.trim();
+  const reviewId = stringOrNull(params.reviewId)?.trim();
+  const targetItemId = stringOrNull(params.targetItemId)?.trim();
+  const action = asRecord(params.action);
+  return {
+    status,
+    risk,
+    reason,
+    ...(authorization ? { authorization } : {}),
+    ...(reviewId ? { reviewId } : {}),
+    ...(targetItemId ? { targetItemId } : {}),
+    ...(action ? { action: { ...action } } : {}),
+  };
+}
+
+function parseGuardianReviewRisk(
+  value: string | null | undefined,
+): GuardianReviewDetails["risk"] | null {
+  switch (value?.trim().toLowerCase()) {
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "critical":
+      return "critical";
+    case "unknown":
+      return "unknown";
+    default:
+      return null;
+  }
+}
+
+function parseGuardianReviewStatus(
+  value: string | null,
+): GuardianReviewDetails["status"] | null {
+  switch (value) {
+    case "approved":
+      return "approved";
+    case "denied":
+      return "denied";
+    case "timedOut":
+      return "timedOut";
+    case "aborted":
+      return "aborted";
+    default:
+      return null;
+  }
+}
+
+function guardianReviewSignature(review: GuardianReviewDetails): string {
+  return [
+    review.status,
+    review.risk,
+    review.authorization?.trim().toLowerCase() ?? "",
+    review.reason.trim().replace(/\s+/g, " ").toLowerCase(),
+  ].join("\u0000");
+}
+
+function guardianReviewsCompatible(
+  pending: GuardianReviewDetails,
+  completed: GuardianReviewDetails,
+): boolean {
+  if (pending.status !== completed.status) return false;
+  if (completed.risk !== "unknown" && pending.risk !== completed.risk) {
+    return false;
+  }
+  const pendingAuthorization = pending.authorization?.trim().toLowerCase();
+  const completedAuthorization = completed.authorization
+    ?.trim()
+    .toLowerCase();
+  if (
+    completedAuthorization &&
+    pendingAuthorization !== completedAuthorization
+  ) {
+    return false;
+  }
+  const completedReason = normalizeGuardianReviewText(completed.reason);
+  return (
+    completedReason.length === 0 ||
+    normalizeGuardianReviewText(pending.reason) === completedReason
+  );
+}
+
+function mergeGuardianReviewDetails(
+  pending: GuardianReviewDetails,
+  completed: GuardianReviewDetails,
+): GuardianReviewDetails {
+  return {
+    ...completed,
+    risk: completed.risk === "unknown" ? pending.risk : completed.risk,
+    reason: completed.reason.trim() || pending.reason,
+    authorization: completed.authorization ?? pending.authorization,
+  };
+}
+
+function normalizeGuardianReviewText(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function formatGuardianReviewWarning(review: GuardianReviewDetails): string {
+  if (review.status === "timedOut" && review.reason) return review.reason;
+  if (review.status === "aborted") {
+    return review.reason || "Automatic approval review was aborted.";
+  }
+  const verdict = review.status === "denied" ? "denied" : "approved";
+  const authorization = review.authorization ?? "unknown";
+  const reason = review.reason || "No review rationale was provided.";
+  return (
+    `Automatic approval review ${verdict} ` +
+    `(risk: ${review.risk}, authorization: ${authorization}): ${reason}`
+  );
 }
 
 function isLowRiskAllowDecision(reason: string): boolean {
