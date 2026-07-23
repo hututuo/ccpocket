@@ -265,19 +265,46 @@ class ConversationMirrorDatabase {
   /// the app next opens this feature database.
   static Future<void> _cleanupInterruptedGenerations(Database db) async {
     await db.transaction((txn) async {
-      await txn.execute('''
-        DELETE FROM $entriesTable
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM $metadataTable AS metadata
-          WHERE metadata.bridge_instance_id =
-                  $entriesTable.bridge_instance_id
-            AND metadata.provider = $entriesTable.provider
-            AND metadata.provider_session_id =
-                  $entriesTable.provider_session_id
-            AND metadata.active_generation = $entriesTable.generation
-        )
-      ''');
+      final interrupted = await txn.query(
+        stagingTable,
+        columns: [
+          'bridge_instance_id',
+          'provider',
+          'provider_session_id',
+          'generation',
+        ],
+      );
+      for (final generation in interrupted) {
+        // Shadow entry rows and their staging marker are committed together.
+        // Starting from the normally tiny staging set avoids scanning every
+        // active entry on each database open. The active-generation guard
+        // preserves the last known-good copy if the database is inconsistent.
+        await txn.execute(
+          '''
+          DELETE FROM $entriesTable
+          WHERE bridge_instance_id = ?
+            AND provider = ?
+            AND provider_session_id = ?
+            AND generation = ?
+            AND NOT EXISTS (
+              SELECT 1
+              FROM $metadataTable AS metadata
+              WHERE metadata.bridge_instance_id =
+                      $entriesTable.bridge_instance_id
+                AND metadata.provider = $entriesTable.provider
+                AND metadata.provider_session_id =
+                      $entriesTable.provider_session_id
+                AND metadata.active_generation = $entriesTable.generation
+            )
+          ''',
+          [
+            generation['bridge_instance_id'],
+            generation['provider'],
+            generation['provider_session_id'],
+            generation['generation'],
+          ],
+        );
+      }
       await txn.delete(stagingTable);
     });
   }

@@ -524,6 +524,13 @@ void main() {
         )).map((entry) => entry.ordinal),
         List<int>.generate(20, (index) => index + 200),
       );
+      expect(
+        (await store.readEntries(
+          key,
+          offset: 240,
+        )).map((entry) => entry.ordinal),
+        List<int>.generate(10, (index) => index + 240),
+      );
     });
 
     test('persists an activated copy across app relaunch', () async {

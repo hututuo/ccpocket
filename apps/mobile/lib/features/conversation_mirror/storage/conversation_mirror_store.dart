@@ -691,13 +691,15 @@ class ConversationMirrorStore {
       if (generation == null) return const <ConversationMirrorEntry>[];
       await readTransactionHook?.call(generation);
 
+      // Active generations enforce contiguous zero-based ordinals. Treat the
+      // public offset as the first ordinal so SQLite can seek directly through
+      // the composite ordinal index instead of walking every preceding row.
       final rows = await txn.query(
         ConversationMirrorDatabase.entriesTable,
-        where: '$_keyWhere AND generation = ?',
-        whereArgs: [..._keyArgs(key), generation],
+        where: '$_keyWhere AND generation = ? AND ordinal >= ?',
+        whereArgs: [..._keyArgs(key), generation, offset],
         orderBy: 'ordinal ASC',
-        limit: limit ?? (offset > 0 ? -1 : null),
-        offset: offset > 0 ? offset : null,
+        limit: limit,
       );
       for (var index = 0; index < rows.length; index++) {
         final expectedOrdinal = offset + index;
