@@ -12,6 +12,8 @@ import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/bubbles/assistant_bubble.dart'
     show ToolUseTile;
 import 'package:ccpocket/widgets/bubbles/streaming_bubble.dart';
+import 'package:ccpocket/widgets/bubbles/todo_write_widget.dart';
+import 'package:ccpocket/widgets/bubbles/tool_result_bubble.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -174,6 +176,11 @@ void main() {
         tester.getTopLeft(find.text('first thought')).dy,
         greaterThan(tester.getBottomLeft(firstDisclosure).dy),
       );
+      expect(find.byType(ToolResultBubble), findsNWidgets(2));
+      expect(find.text('first result'), findsNothing);
+      expect(find.text('second result'), findsNothing);
+      await _expandToolResult(tester, 0);
+      await _expandToolResult(tester, 1);
       expect(find.text('first result'), findsOneWidget);
       expect(find.text('second result'), findsOneWidget);
       expect(
@@ -190,6 +197,8 @@ void main() {
       await tester.tap(secondDisclosure);
       await tester.pump();
       expect(find.text('second thought'), findsOneWidget);
+      expect(find.text('third result'), findsNothing);
+      await _expandToolResult(tester, 2);
       expect(find.text('third result'), findsOneWidget);
       expect(find.text('Final answer'), findsOneWidget);
       expect(tester.takeException(), isNull);
@@ -420,6 +429,8 @@ void main() {
         tester.getTopLeft(find.text('Intermediate thought 0')).dy,
         greaterThan(tester.getBottomLeft(firstProcessDisclosure).dy),
       );
+      expect(find.text('Intermediate result 0'), findsNothing);
+      await _expandToolResult(tester, 0);
       expect(find.text('Intermediate result 0'), findsOneWidget);
 
       final outerY = tester.getTopLeft(outerDisclosure).dy;
@@ -571,6 +582,8 @@ void main() {
         tester.getTopLeft(find.text('Standalone thought')).dy,
         greaterThan(tester.getBottomLeft(disclosure).dy),
       );
+      expect(find.text('Standalone result'), findsNothing);
+      await _expandToolResult(tester, 0);
       expect(
         tester.getTopLeft(find.text('Standalone result')).dy,
         greaterThan(tester.getBottomLeft(disclosure).dy),
@@ -721,6 +734,118 @@ void main() {
       await cubit.close();
     },
   );
+
+  testWidgets('latest plan checklist stays outside and updates in place', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final bridge = _Bridge();
+    final streaming = StreamingStateCubit();
+    final cubit = ChatSessionCubit(
+      sessionId: 'session-live-plan',
+      bridge: bridge,
+      streamingCubit: streaming,
+      provider: Provider.codex,
+    );
+    final scrollController = ReadingPositionAutoScrollController();
+    addTearDown(bridge.dispose);
+    addTearDown(streaming.close);
+    addTearDown(scrollController.dispose);
+    addTearDown(() async {
+      if (!cubit.isClosed) await cubit.close();
+    });
+    await tester.pumpWidget(
+      _chatHarness(
+        bridge: bridge,
+        cubit: cubit,
+        streaming: streaming,
+        scrollController: scrollController,
+        sessionId: 'session-live-plan',
+      ),
+    );
+
+    bridge.emit(
+      HistoryMessage(messages: _planHistory(completed: false)),
+      'session-live-plan',
+    );
+    await tester.pump();
+    final planKey = find.byKey(
+      const ValueKey('live_plan_update_client:turn-live-plan'),
+    );
+    expect(planKey, findsOneWidget);
+    expect(find.byType(TodoWriteWidget), findsOneWidget);
+    expect(find.text('(0/2)'), findsOneWidget);
+    expect(find.text('Update plan'), findsNothing);
+
+    bridge.emit(_planUpdateMessage(completed: true), 'session-live-plan');
+    await tester.pump();
+    await tester.pump();
+
+    expect(planKey, findsOneWidget);
+    expect(find.byType(TodoWriteWidget), findsOneWidget);
+    expect(find.text('(1/2)'), findsOneWidget);
+    expect(find.text('Implement lazily'), findsOneWidget);
+    await cubit.close();
+  });
+
+  testWidgets('collapse notifier closes the outer process hierarchy', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final bridge = _Bridge();
+    final streaming = StreamingStateCubit();
+    final cubit = ChatSessionCubit(
+      sessionId: 'session-collapse-all',
+      bridge: bridge,
+      streamingCubit: streaming,
+      provider: Provider.codex,
+    );
+    final scrollController = ReadingPositionAutoScrollController();
+    final collapseNotifier = ValueNotifier<int>(0);
+    addTearDown(bridge.dispose);
+    addTearDown(streaming.close);
+    addTearDown(scrollController.dispose);
+    addTearDown(collapseNotifier.dispose);
+    addTearDown(() async {
+      if (!cubit.isClosed) await cubit.close();
+    });
+    await tester.pumpWidget(
+      _chatHarness(
+        bridge: bridge,
+        cubit: cubit,
+        streaming: streaming,
+        scrollController: scrollController,
+        sessionId: 'session-collapse-all',
+        collapseNotifier: collapseNotifier,
+      ),
+    );
+    bridge.emit(HistoryMessage(messages: _history()), 'session-collapse-all');
+    await tester.pump();
+
+    final disclosure = find.byKey(
+      const ValueKey('chat_intermediate_disclosure_client:turn-phases'),
+    );
+    for (var step = 0; step <= 100; step++) {
+      scrollController.jumpTo(
+        scrollController.position.maxScrollExtent * step / 100,
+      );
+      await tester.pump();
+      if (disclosure.evaluate().isNotEmpty) {
+        final y = tester.getTopLeft(disclosure.first).dy;
+        if (y >= 80 && y <= 820) break;
+      }
+    }
+    await tester.tap(disclosure.first);
+    await tester.pump();
+    expect(find.text('I will inspect the first file.'), findsOneWidget);
+
+    collapseNotifier.value++;
+    await tester.pump();
+    expect(find.text('I will inspect the first file.'), findsNothing);
+    await cubit.close();
+  });
 }
 
 Widget _chatHarness({
@@ -729,6 +854,7 @@ Widget _chatHarness({
   required StreamingStateCubit streaming,
   required AutoScrollController scrollController,
   required String sessionId,
+  ValueNotifier<int>? collapseNotifier,
 }) => RepositoryProvider<BridgeService>.value(
   value: bridge,
   child: MultiBlocProvider(
@@ -747,13 +873,89 @@ Widget _chatHarness({
           scrollController: scrollController,
           httpBaseUrl: null,
           onRetryMessage: null,
-          collapseToolResults: null,
+          collapseToolResults: collapseNotifier,
           isCodex: true,
         ),
       ),
     ),
   ),
 );
+
+Future<void> _expandToolResult(WidgetTester tester, int index) async {
+  final bubble = find.byType(ToolResultBubble).at(index);
+  final disclosure = find.descendant(
+    of: bubble,
+    matching: find.byKey(const ValueKey('tool_result_disclosure')),
+  );
+  expect(disclosure, findsOneWidget);
+  await tester.ensureVisible(disclosure);
+  await tester.pump();
+  await tester.tap(disclosure);
+  await tester.pump();
+}
+
+List<ServerMessage> _planHistory({required bool completed}) => [
+  const UserInputMessage(text: 'implement', clientMessageId: 'turn-live-plan'),
+  const AssistantServerMessage(
+    message: AssistantMessage(
+      id: 'plan-initial',
+      role: 'assistant',
+      model: 'codex',
+      content: [
+        ToolUseContent(
+          id: 'plan-tool-1',
+          name: 'UpdatePlan',
+          input: {
+            'title': 'Implementation plan',
+            'todos': [
+              {
+                'content': 'Inspect current behavior',
+                'status': 'in_progress',
+                'activeForm': 'Inspecting',
+              },
+              {
+                'content': 'Implement lazily',
+                'status': 'pending',
+                'activeForm': '',
+              },
+            ],
+          },
+        ),
+      ],
+    ),
+  ),
+  _planUpdateMessage(completed: completed),
+];
+
+AssistantServerMessage _planUpdateMessage({required bool completed}) =>
+    AssistantServerMessage(
+      message: AssistantMessage(
+        id: completed ? 'plan-completed' : 'plan-latest',
+        role: 'assistant',
+        model: 'codex',
+        content: [
+          ToolUseContent(
+            id: completed ? 'plan-tool-completed' : 'plan-tool-2',
+            name: 'UpdatePlan',
+            input: {
+              'title': 'Implementation plan',
+              'todos': [
+                {
+                  'content': 'Inspect current behavior',
+                  'status': completed ? 'completed' : 'in_progress',
+                  'activeForm': completed ? '' : 'Inspecting',
+                },
+                {
+                  'content': 'Implement lazily',
+                  'status': completed ? 'in_progress' : 'pending',
+                  'activeForm': completed ? 'Implementing' : '',
+                },
+              ],
+            },
+          ),
+        ],
+      ),
+    );
 
 List<ServerMessage> _history() => [
   const UserInputMessage(text: 'investigate', clientMessageId: 'turn-phases'),

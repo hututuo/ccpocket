@@ -1,4 +1,5 @@
 import '../../../models/messages.dart';
+import '../../../utils/codex_plan_update.dart';
 
 /// A single tool invocation as represented by the public Bridge protocol.
 ///
@@ -109,6 +110,9 @@ class ChatProcessTurnLayout {
     required this.currentSegment,
     required this.isActive,
     required this.hasTransientCurrentOutput,
+    required this.planUpdateEntryIndices,
+    required this.planUpdateDisplayEntryIndex,
+    required this.latestPlanUpdateInput,
     this.activeTool,
   });
 
@@ -124,6 +128,9 @@ class ChatProcessTurnLayout {
   final ChatProcessSegmentLayout? currentSegment;
   final bool isActive;
   final bool hasTransientCurrentOutput;
+  final Set<int> planUpdateEntryIndices;
+  final int? planUpdateDisplayEntryIndex;
+  final Map<String, dynamic>? latestPlanUpdateInput;
   final ChatProcessToolActivity? activeTool;
 
   int get intermediateOutputCount => intermediateAssistantEntryIndices.length;
@@ -148,6 +155,10 @@ class ChatProcessTurnLayout {
 
   bool isCurrentProcessEntry(int index) =>
       currentSegment?.isProcessEntry(index) == true;
+
+  bool isPlanUpdateEntry(int index) => planUpdateEntryIndices.contains(index);
+
+  bool showsPlanUpdateAt(int index) => planUpdateDisplayEntryIndex == index;
 
   ChatProcessToolActivity? get currentTool =>
       activeTool ?? currentSegment?.latestTool;
@@ -214,12 +225,22 @@ ChatProcessLayout buildChatProcessLayout(
     latestTurnKey = turnKey;
 
     final visibleAssistantIndices = <int>[];
+    final planUpdateEntryIndices = <int>{};
+    Map<String, dynamic>? latestPlanUpdateInput;
+    int? planUpdateDisplayEntryIndex;
     for (var index = turnContentStart; index < turnEnd; index++) {
       final entry = entries[index];
       if (entry case ServerChatEntry(
         message: final AssistantServerMessage assistant,
-      ) when _hasVisibleText(assistant)) {
-        visibleAssistantIndices.add(index);
+      )) {
+        final planInput = _planOnlyUpdateInput(assistant);
+        if (planInput != null) {
+          planUpdateEntryIndices.add(index);
+          planUpdateDisplayEntryIndex = index;
+          latestPlanUpdateInput = planInput;
+        } else if (_hasVisibleText(assistant)) {
+          visibleAssistantIndices.add(index);
+        }
       }
     }
 
@@ -237,13 +258,16 @@ ChatProcessLayout buildChatProcessLayout(
     final toolAccumulatorById = <String, _SegmentAccumulator>{};
     final activeToolById = <String, ChatProcessToolActivity>{};
     final activeToolOrder = <String>[];
+    final planToolUseIds = <String>{};
 
     void markToolStarted(
       _SegmentAccumulator accumulator,
       ToolUseContent tool,
       int entryIndex,
     ) {
-      if (tool.name == 'ExitPlanMode') return;
+      if (tool.name == 'ExitPlanMode' || isCodexUpdatePlanTool(tool.name)) {
+        return;
+      }
       final activity = ChatProcessToolActivity(
         toolUseId: tool.id,
         name: tool.name,
@@ -264,7 +288,6 @@ ChatProcessLayout buildChatProcessLayout(
       int entryIndex, {
       required bool visible,
     }) {
-      accumulator.noteEntry(entryIndex);
       var hasProcess = false;
       for (final content in assistant.message.content) {
         if (content is ThinkingContent && content.thinking.trim().isNotEmpty) {
@@ -272,12 +295,17 @@ ChatProcessLayout buildChatProcessLayout(
           if (visible) accumulator.inlineThinkingBlocks++;
           hasProcess = true;
         } else if (content is ToolUseContent &&
-            content.name != 'ExitPlanMode') {
+            content.name != 'ExitPlanMode' &&
+            !isCodexUpdatePlanTool(content.name)) {
           if (visible) accumulator.inlineToolCalls++;
           markToolStarted(accumulator, content, entryIndex);
           hasProcess = true;
+        } else if (content is ToolUseContent &&
+            isCodexUpdatePlanTool(content.name)) {
+          planToolUseIds.add(content.id);
         }
       }
+      if (visible || hasProcess) accumulator.noteEntry(entryIndex);
       if (!visible && hasProcess) {
         accumulator.processEntryIndices.add(entryIndex);
       }
@@ -289,7 +317,8 @@ ChatProcessLayout buildChatProcessLayout(
       final message = entry.message;
 
       if (message is AssistantServerMessage) {
-        final isVisible = _hasVisibleText(message);
+        final isVisible =
+            !planUpdateEntryIndices.contains(index) && _hasVisibleText(message);
         if (isVisible) {
           activeAccumulator = accumulatorByAssistantIndex[index]!;
         }
@@ -298,6 +327,10 @@ ChatProcessLayout buildChatProcessLayout(
       }
 
       if (message is ToolResultMessage) {
+        if (planToolUseIds.contains(message.toolUseId)) {
+          planUpdateEntryIndices.add(index);
+          continue;
+        }
         final accumulator =
             toolAccumulatorById[message.toolUseId] ?? activeAccumulator;
         accumulator.noteEntry(index);
@@ -426,7 +459,9 @@ ChatProcessLayout buildChatProcessLayout(
     if (intermediateSegments.isNotEmpty) {
       final intervalEnd = protectedSegment?.firstEntryIndex ?? turnEnd;
       for (var index = turnContentStart; index < intervalEnd; index++) {
-        intermediateEntries.add(index);
+        if (!planUpdateEntryIndices.contains(index)) {
+          intermediateEntries.add(index);
+        }
       }
       // A tool can finish after the next visible assistant update. Its result
       // still belongs to the segment that started it, so keep every explicit
@@ -438,6 +473,7 @@ ChatProcessLayout buildChatProcessLayout(
         }
         intermediateEntries.addAll(segment.processEntryIndices);
       }
+      intermediateEntries.removeAll(planUpdateEntryIndices);
     }
 
     final intermediateSummaryIndex = intermediateEntries.isEmpty
@@ -464,6 +500,11 @@ ChatProcessLayout buildChatProcessLayout(
       currentSegment: currentSegment,
       isActive: isActive,
       hasTransientCurrentOutput: usesTransientCurrentOutput,
+      planUpdateEntryIndices: Set.unmodifiable(planUpdateEntryIndices),
+      planUpdateDisplayEntryIndex: planUpdateDisplayEntryIndex,
+      latestPlanUpdateInput: latestPlanUpdateInput == null
+          ? null
+          : Map.unmodifiable(latestPlanUpdateInput),
       activeTool: activeTool,
     );
 
@@ -476,6 +517,9 @@ ChatProcessLayout buildChatProcessLayout(
       }
     }
     for (final index in intermediateEntries) {
+      turnsByIndex[index] = turn;
+    }
+    for (final index in planUpdateEntryIndices) {
       turnsByIndex[index] = turn;
     }
     if (isLatestTurn) latestTurn = turn;
@@ -570,3 +614,29 @@ String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
 bool _hasVisibleText(AssistantServerMessage message) => message.message.content
     .whereType<TextContent>()
     .any((content) => content.text.trim().isNotEmpty);
+
+Map<String, dynamic>? _planOnlyUpdateInput(AssistantServerMessage message) {
+  Map<String, dynamic>? planInput;
+  var hasOtherContent = false;
+  for (final content in message.message.content) {
+    switch (content) {
+      case ToolUseContent(:final name, :final input):
+        if (isCodexUpdatePlanTool(name)) {
+          planInput = input;
+        } else {
+          hasOtherContent = true;
+        }
+      case TextContent(:final text):
+        if (text.trim().isEmpty) continue;
+        final legacyInput = codexPlanUpdateInputFromText(text);
+        if (legacyInput == null) {
+          hasOtherContent = true;
+        } else {
+          planInput = legacyInput;
+        }
+      case ThinkingContent(:final thinking):
+        if (thinking.trim().isNotEmpty) hasOtherContent = true;
+    }
+  }
+  return hasOtherContent ? null : planInput;
+}

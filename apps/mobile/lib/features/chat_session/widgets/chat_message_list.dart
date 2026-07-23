@@ -12,6 +12,7 @@ import '../../../providers/bridge_cubits.dart';
 import '../../../services/bridge_service.dart';
 import '../../../utils/artifact_link_matcher.dart';
 import '../../../widgets/bubbles/assistant_bubble.dart';
+import '../../../widgets/bubbles/todo_write_widget.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import '../../../widgets/message_bubble.dart';
 import '../../artifact_preview/artifact_preview_entry.dart';
@@ -130,7 +131,8 @@ class ChatMessageList extends StatefulWidget {
   State<ChatMessageList> createState() => _ChatMessageListState();
 }
 
-class _ChatMessageListState extends State<ChatMessageList> {
+class _ChatMessageListState extends State<ChatMessageList>
+    with WidgetsBindingObserver {
   ChatSessionCubit? _pagingCubit;
   List<ChatEntry>? _processLayoutEntries;
   bool? _processLayoutLatestTurnIsActive;
@@ -140,16 +142,26 @@ class _ChatMessageListState extends State<ChatMessageList> {
   final Set<String> _expandedIntermediateTurns = {};
   final Set<String> _expandedCurrentProgress = {};
   final Map<String, GlobalKey> _disclosureAnchorKeys = {};
+  bool? _tickerEnabled;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.scrollToUserEntry?.addListener(_onScrollToUserEntry);
+    widget.collapseToolResults?.addListener(_onCollapseSignal);
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final tickerEnabled = TickerMode.valuesOf(context).enabled;
+    if (_tickerEnabled == true && !tickerEnabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _requestCollapseAll();
+      });
+    }
+    _tickerEnabled = tickerEnabled;
     final nextCubit = context.read<ChatSessionCubit>();
     if (identical(nextCubit, _pagingCubit)) return;
     _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
@@ -164,13 +176,50 @@ class _ChatMessageListState extends State<ChatMessageList> {
       oldWidget.scrollToUserEntry?.removeListener(_onScrollToUserEntry);
       widget.scrollToUserEntry?.addListener(_onScrollToUserEntry);
     }
+    if (oldWidget.collapseToolResults != widget.collapseToolResults) {
+      oldWidget.collapseToolResults?.removeListener(_onCollapseSignal);
+      widget.collapseToolResults?.addListener(_onCollapseSignal);
+      _collapseAllState();
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.scrollToUserEntry?.removeListener(_onScrollToUserEntry);
+    widget.collapseToolResults?.removeListener(_onCollapseSignal);
     _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _requestCollapseAll();
+  }
+
+  void _requestCollapseAll() {
+    final notifier = widget.collapseToolResults;
+    if (notifier != null) {
+      notifier.value++;
+    } else {
+      _collapseAllState();
+    }
+  }
+
+  void _onCollapseSignal() => _collapseAllState();
+
+  void _collapseAllState() {
+    if (_expandedProcessSegments.isEmpty &&
+        _expandedIntermediateTurns.isEmpty &&
+        _expandedCurrentProgress.isEmpty) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _expandedProcessSegments.clear();
+      _expandedIntermediateTurns.clear();
+      _expandedCurrentProgress.clear();
+    });
   }
 
   void _onPagingChanged() {
@@ -512,7 +561,10 @@ class _ChatMessageListState extends State<ChatMessageList> {
     if (entry case ServerChatEntry(
       message: final AssistantServerMessage message,
     )) {
-      return AssistantProcessDetails(message: message);
+      return AssistantProcessDetails(
+        message: message,
+        collapseNotifier: widget.collapseToolResults,
+      );
     }
     return const SizedBox.shrink();
   }
@@ -808,6 +860,22 @@ class _ChatMessageListState extends State<ChatMessageList> {
           final entry = allEntries[entryIndex];
           final processSegment = processLayout.segmentForEntry(entryIndex);
           final intermediateTurn = processLayout.turnForEntry(entryIndex);
+          if (intermediateTurn?.isPlanUpdateEntry(entryIndex) == true) {
+            if (!intermediateTurn!.showsPlanUpdateAt(entryIndex)) {
+              return const SizedBox.shrink();
+            }
+            final input = intermediateTurn.latestPlanUpdateInput;
+            if (input == null) return const SizedBox.shrink();
+            return _timelineItem(
+              key: 'plan_update:${intermediateTurn.key}',
+              entryIndex: entryIndex,
+              child: TodoWriteWidget(
+                key: ValueKey('live_plan_update_${intermediateTurn.key}'),
+                input: input,
+                collapseNotifier: widget.collapseToolResults,
+              ),
+            );
+          }
           final isIntermediateEntry =
               intermediateTurn?.isIntermediateEntry(entryIndex) == true;
           final transcriptTailComplete =

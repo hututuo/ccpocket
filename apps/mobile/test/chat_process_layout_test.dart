@@ -343,6 +343,105 @@ void main() {
     expect(layout.latestTurnKey, 'client:next-turn');
     expect(layout.turnForEntry(2)?.finalAssistantEntryIndex, 2);
   });
+
+  test(
+    'keeps the latest plan update outside process folds and current tools',
+    () {
+      final entries = <ChatEntry>[
+        UserChatEntry('implement', clientMessageId: 'turn-plan'),
+        ServerChatEntry(
+          _assistant('plan-1', const [
+            ToolUseContent(
+              id: 'plan-tool-1',
+              name: 'UpdatePlan',
+              input: {
+                'title': 'Plan',
+                'todos': [
+                  {
+                    'content': 'Inspect',
+                    'status': 'in_progress',
+                    'activeForm': 'Inspecting',
+                  },
+                ],
+              },
+            ),
+          ]),
+        ),
+        ServerChatEntry(
+          _assistant('working', const [
+            TextContent(text: 'Inspecting the source.'),
+            ToolUseContent(
+              id: 'read-tool',
+              name: 'Read',
+              input: {'file_path': 'source.dart'},
+            ),
+          ]),
+        ),
+        ServerChatEntry(
+          _assistant('plan-2', const [
+            ToolUseContent(
+              id: 'plan-tool-2',
+              name: 'UpdatePlan',
+              input: {
+                'title': 'Plan',
+                'todos': [
+                  {
+                    'content': 'Inspect',
+                    'status': 'completed',
+                    'activeForm': '',
+                  },
+                  {
+                    'content': 'Implement',
+                    'status': 'in_progress',
+                    'activeForm': 'Implementing',
+                  },
+                ],
+              },
+            ),
+          ]),
+        ),
+      ];
+
+      final layout = buildChatProcessLayout(entries, latestTurnIsActive: true);
+      final turn = layout.turnForEntry(1)!;
+
+      expect(turn.planUpdateEntryIndices, {1, 3});
+      expect(turn.showsPlanUpdateAt(1), isFalse);
+      expect(turn.showsPlanUpdateAt(3), isTrue);
+      expect(turn.latestPlanUpdateInput?['todos'], hasLength(2));
+      expect(turn.currentTool?.name, 'Read');
+      expect(turn.intermediateEntryIndices, isNot(contains(1)));
+      expect(turn.intermediateEntryIndices, isNot(contains(3)));
+    },
+  );
+
+  test('recognizes a legacy plan-only text update as an outer live card', () {
+    final entries = <ChatEntry>[
+      UserChatEntry('implement', clientMessageId: 'turn-legacy-plan'),
+      ServerChatEntry(
+        _assistant('legacy-plan', const [
+          TextContent(
+            text:
+                'Plan update: implementation started\n'
+                '1. [completed] Inspect\n'
+                '2. [in progress] Implement',
+          ),
+        ]),
+      ),
+    ];
+
+    final turn = buildChatProcessLayout(
+      entries,
+      latestTurnIsActive: true,
+    ).turnForEntry(1)!;
+
+    expect(turn.planUpdateEntryIndices, {1});
+    expect(
+      turn.latestPlanUpdateInput?['explanation'],
+      'implementation started',
+    );
+    expect(turn.currentTool, isNull);
+  });
 }
 
 AssistantServerMessage _assistant(String id, List<AssistantContent> content) =>

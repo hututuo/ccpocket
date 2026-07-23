@@ -1045,6 +1045,8 @@ class _ChatScreenBody extends HookWidget {
                               _renameSession(context, sessionId);
                             case 'terminal':
                               _openInTerminal(context, effectiveProjectPath);
+                            case 'collapse_all':
+                              collapseToolResults.value++;
                           }
                         },
                         itemBuilder: (context) {
@@ -1103,6 +1105,26 @@ class _ChatScreenBody extends HookWidget {
                                   size: 20,
                                 ),
                                 title: Text(l.gallery),
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                            PopupMenuItem(
+                              key: const ValueKey('menu_collapse_all'),
+                              value: 'collapse_all',
+                              child: ListTile(
+                                leading: const Icon(
+                                  Icons.unfold_less_double,
+                                  size: 20,
+                                ),
+                                title: Text(
+                                  Localizations.localeOf(
+                                            context,
+                                          ).languageCode ==
+                                          'zh'
+                                      ? '一键全部折叠'
+                                      : 'Collapse all',
+                                ),
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
                               ),

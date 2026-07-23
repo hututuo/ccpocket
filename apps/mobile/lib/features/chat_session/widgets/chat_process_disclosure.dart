@@ -335,22 +335,7 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
 String _toolActivitySummary(
   ChatProcessToolActivity activity,
   ToolCategory category,
-) {
-  final output = activity.output?.trim();
-  if (output != null && output.isNotEmpty) {
-    final firstLine = output
-        .split('\n')
-        .map((line) => line.trim())
-        .firstWhere(
-          (line) => line.isNotEmpty,
-          orElse: () => output.replaceAll(RegExp(r'\s+'), ' ').trim(),
-        );
-    return firstLine.length <= 96
-        ? firstLine
-        : '${firstLine.substring(0, 93)}...';
-  }
-  return getToolSummary(category, activity.input);
-}
+) => getToolCollapsedSummary(category, activity.input);
 
 class ChatLiveThinkingDetails extends StatelessWidget {
   const ChatLiveThinkingDetails({super.key, required this.text});

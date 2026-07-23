@@ -1311,6 +1311,8 @@ class _CodexChatBody extends HookWidget {
                               );
                             case 'terminal':
                               _openInTerminal(context, effectiveProjectPath);
+                            case 'collapse_all':
+                              collapseToolResults.value++;
                           }
                         },
                         itemBuilder: (context) {
@@ -1391,6 +1393,26 @@ class _CodexChatBody extends HookWidget {
                               child: ListTile(
                                 leading: Icon(Icons.collections, size: 20),
                                 title: Text('Gallery'),
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                            PopupMenuItem(
+                              key: const ValueKey('menu_collapse_all'),
+                              value: 'collapse_all',
+                              child: ListTile(
+                                leading: const Icon(
+                                  Icons.unfold_less_double,
+                                  size: 20,
+                                ),
+                                title: Text(
+                                  Localizations.localeOf(
+                                            context,
+                                          ).languageCode ==
+                                          'zh'
+                                      ? '一键全部折叠'
+                                      : 'Collapse all',
+                                ),
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
                               ),
