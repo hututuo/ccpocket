@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/database_service.dart';
 import 'package:ccpocket/services/prompt_history_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite/sqflite.dart';
 
 void main() {
   test('bridgeIdForUrl canonicalizes IPv6 and default ports', () {
@@ -11,6 +14,28 @@ void main() {
     expect(service.bridgeIdForUrl('ws://[::1]:80'), '[::1]:80');
     expect(service.bridgeIdForUrl('wss://EXAMPLE.com'), 'example.com:443');
     expect(service.bridgeIdForUrl('wss://example.com:443'), 'example.com:443');
+  });
+
+  test('coalesces concurrent syncs for the same bridge', () async {
+    final databaseService = _BlockingDatabaseService();
+    final service = PromptHistoryService(databaseService);
+    const target = PromptHistorySyncTarget(
+      bridgeId: 'bridge-a',
+      bridgeUrl: 'ws://bridge-a.invalid',
+      bridgeName: 'Bridge A',
+    );
+
+    final first = service.syncBridge(target);
+    final duplicate = service.syncBridge(target);
+
+    expect(duplicate, same(first));
+
+    databaseService.complete(null);
+    expect(await first, isNull);
+
+    final next = service.syncBridge(target);
+    expect(next, isNot(same(first)));
+    expect(await next, isNull);
   });
 
   group('PromptHistoryEntry', () {
@@ -236,6 +261,17 @@ void main() {
       isFalse,
     );
   });
+}
+
+class _BlockingDatabaseService extends DatabaseService {
+  final _database = Completer<Database?>();
+
+  @override
+  Future<Database?> get database => _database.future;
+
+  void complete(Database? database) {
+    _database.complete(database);
+  }
 }
 
 PromptHistoryEntry _entry({

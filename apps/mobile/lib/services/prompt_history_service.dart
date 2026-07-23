@@ -234,6 +234,7 @@ class PromptHistoryService {
   static const _uuid = Uuid();
 
   final DatabaseService _dbService;
+  final Map<String, Future<String?>> _bridgeSyncsInFlight = {};
 
   PromptHistoryService(this._dbService);
 
@@ -442,7 +443,29 @@ class PromptHistoryService {
     return getSyncStatuses();
   }
 
-  Future<String?> syncBridge(PromptHistorySyncTarget target) async {
+  Future<String?> syncBridge(PromptHistorySyncTarget target) {
+    final key = target.bridgeId.isNotEmpty ? target.bridgeId : target.bridgeUrl;
+    final inFlight = _bridgeSyncsInFlight[key];
+    if (inFlight != null) return inFlight;
+
+    final operation = _performSyncBridge(target);
+    _bridgeSyncsInFlight[key] = operation;
+    void clearInFlight() {
+      if (identical(_bridgeSyncsInFlight[key], operation)) {
+        _bridgeSyncsInFlight.remove(key);
+      }
+    }
+
+    unawaited(
+      operation.then<void>(
+        (_) => clearInFlight(),
+        onError: (Object _, StackTrace _) => clearInFlight(),
+      ),
+    );
+    return operation;
+  }
+
+  Future<String?> _performSyncBridge(PromptHistorySyncTarget target) async {
     final db = await _db;
     if (db == null) return null;
     final clientId = await clientDeviceId;
