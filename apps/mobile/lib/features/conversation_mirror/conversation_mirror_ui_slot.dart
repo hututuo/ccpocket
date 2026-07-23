@@ -278,6 +278,7 @@ class _ConversationMirrorResidentPanelState
       'unsupported_message' ||
       'capability_not_negotiated' => strings.bridgeUpdateRequired,
       'bridge_disconnected' => strings.connectToDownload,
+      'path_not_allowed' => strings.projectOutsideAllowedDirectories,
       _ => strings.failed(result.error ?? result.errorCode ?? 'unknown error'),
     };
   }

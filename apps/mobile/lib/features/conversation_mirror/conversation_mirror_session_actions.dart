@@ -172,6 +172,8 @@ Future<bool> handleConversationMirrorTargetAction(
               result.errorCode == 'unsupported_message' ||
               result.errorCode == 'capability_not_negotiated'
         ? strings.bridgeUpdateRequired
+        : result.errorCode == 'path_not_allowed'
+        ? strings.projectOutsideAllowedDirectories
         : strings.failed(result.error ?? result.errorCode ?? 'unknown error');
     messenger.showSnackBar(SnackBar(content: Text(message)));
   } catch (error) {

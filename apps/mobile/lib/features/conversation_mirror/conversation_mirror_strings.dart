@@ -170,6 +170,23 @@ class ConversationMirrorStrings {
     return 'This Bridge does not support conversation mirrors; existing loading remains active';
   }
 
+  String get projectOutsideAllowedDirectories {
+    if (_zh) {
+      return '会话所在的项目目录未获 Bridge 授权，请在电脑端将该目录加入 '
+          'BRIDGE_ALLOWED_DIRS 后重试';
+    }
+    if (_ja) {
+      return '会話のプロジェクトフォルダが Bridge に許可されていません。'
+          'PC 側の BRIDGE_ALLOWED_DIRS に追加してから再試行してください';
+    }
+    if (_ko) {
+      return '대화의 프로젝트 폴더가 Bridge에서 허용되지 않았습니다. '
+          '컴퓨터의 BRIDGE_ALLOWED_DIRS에 추가한 뒤 다시 시도하세요';
+    }
+    return 'The conversation project is outside the Bridge allowlist. '
+        'Add it to BRIDGE_ALLOWED_DIRS on the computer, then try again';
+  }
+
   String failed(String detail) {
     if (_zh) return '会话同步失败：$detail';
     if (_ja) return '会話の同期に失敗しました：$detail';

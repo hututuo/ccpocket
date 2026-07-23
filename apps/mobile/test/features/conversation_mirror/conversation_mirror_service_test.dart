@@ -541,6 +541,57 @@ void main() {
   });
 
   test(
+    'same-title conversations remain isolated by durable thread ID',
+    () async {
+      final first = _recentSessionWithId(
+        'thread-same-title-a',
+        name: 'Repeated title',
+      );
+      final second = _recentSessionWithId(
+        'thread-same-title-b',
+        name: 'Repeated title',
+      );
+      const firstKey = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-test',
+        provider: 'codex',
+        providerSessionId: 'thread-same-title-a',
+      );
+      const secondKey = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-test',
+        provider: 'codex',
+        providerSessionId: 'thread-same-title-b',
+      );
+      await _seedLocalCopy(
+        store,
+        key: firstKey,
+        message: const {
+          'type': 'user_input',
+          'text': 'first conversation',
+          'userMessageUuid': 'same-title-a',
+        },
+        revision: _hashText('same-title-a'),
+      );
+      await _seedLocalCopy(
+        store,
+        key: secondKey,
+        message: const {
+          'type': 'user_input',
+          'text': 'second conversation',
+          'userMessageUuid': 'same-title-b',
+        },
+        revision: _hashText('same-title-b'),
+      );
+
+      final firstMetadata = await service.metadataFor(first);
+      final secondMetadata = await service.metadataFor(second);
+
+      expect(firstMetadata?.key, firstKey);
+      expect(secondMetadata?.key, secondKey);
+      expect(firstMetadata?.key, isNot(secondMetadata?.key));
+    },
+  );
+
+  test(
     'paused phone copy can become resident while Bridge is offline',
     () async {
       const key = ConversationMirrorKey(
@@ -2419,9 +2470,10 @@ const _recentSession = RecentSession(
   isSidechain: false,
 );
 
-RecentSession _recentSessionWithId(String id) => RecentSession(
+RecentSession _recentSessionWithId(String id, {String? name}) => RecentSession(
   sessionId: id,
   provider: 'codex',
+  name: name,
   firstPrompt: id,
   created: '2026-07-18T00:00:00Z',
   modified: '2026-07-18T00:00:00Z',
