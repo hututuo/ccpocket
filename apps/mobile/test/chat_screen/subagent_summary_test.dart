@@ -32,6 +32,7 @@ void main() {
         ),
       ]);
       await pumpN($.tester);
+      await expandTranscriptProcess($.tester);
 
       expect($(ToolUseSummaryBubble), findsOneWidget);
       expect($('Read 3 files and analyzed code'), findsOneWidget);
@@ -52,8 +53,11 @@ void main() {
         ),
       ]);
       await pumpN($.tester);
+      await expandTranscriptProcess($.tester);
 
       expect($('Read 2 files'), findsOneWidget);
+      expect($('Result 1'), findsNothing);
+      expect($('Result 2'), findsNothing);
     });
 
     patrolWidgetTest('F3: Non-hidden tool results display normally', ($) async {
@@ -69,6 +73,7 @@ void main() {
         ),
       ]);
       await pumpN($.tester);
+      await expandTranscriptProcess($.tester, expandToolResults: true);
 
       expect($('Normal result'), findsOneWidget);
     });

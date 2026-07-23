@@ -482,9 +482,16 @@
   plugin, asset, Flutter/Xcode and native-dependency changes require a new base
   IPA. Stable promotion requires the explicit `--confirm-stable` gate and user
   approval after physical-iPhone validation.
-- The implementation is isolated on `feature/mobile-ota-host` as `46ea8971`,
-  `645c694d`, `e9b53b27`, `6b4d4711`, and `22b8a7f1`. Nothing is deployed,
-  promoted, installed or merged by these commits.
+- The update implementation originated in the `feature/mobile-ota-host`
+  lineage. Personal app binding `52ac916e`, permission-host v2 `b55c5cb1` and
+  release build `242c98d5` established `1.107.2+199` as the previous native
+  baseline candidate, including photo-library and biometric permission
+  surfaces without speculative unrelated permissions.
+- The unified `1.108.1+200` integration adds the native background-sync host
+  and therefore supersedes build 199 as the next base-IPA candidate. It must
+  be built, signed, installed and accepted on the physical owner iPhone before
+  any owner patch or stable promotion. Merging source does not publish a
+  Shorebird release, deploy a backend, install an IPA or change the phone.
 
 ## Full conversation storage and bounded turn navigation
 
@@ -562,3 +569,10 @@
   base lacks usable APS provisioning or Firebase configuration, remote
   lock-screen delivery requires a newly signed base IPA; local/in-app behavior
   remains available.
+- A 2026-07-24 production-dependency audit against the official npm registry
+  reports the same pre-existing findings before and after this integration:
+  root/Bridge has 9 advisories (4 high) and Cloud Functions has 20 (2 critical,
+  5 high). The notification commits do not change npm manifests or lockfiles.
+  Source integration is therefore not a security regression, but Cloud/Bridge
+  deployment must not be described as security-cleared until those dependency
+  upgrades receive a separate compatibility review.

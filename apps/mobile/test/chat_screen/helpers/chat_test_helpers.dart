@@ -2,21 +2,22 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
+import 'package:ccpocket/features/chat_session/widgets/chat_process_disclosure.dart';
 import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
+import 'package:ccpocket/features/settings/state/settings_cubit.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/providers/bridge_cubits.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/database_service.dart';
 import 'package:ccpocket/services/draft_service.dart';
 import 'package:ccpocket/services/prompt_history_service.dart';
-import 'package:ccpocket/features/settings/state/settings_cubit.dart';
-import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/theme/app_theme.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:patrol_finders/patrol_finders.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ---------------------------------------------------------------------------
 // MockBridgeService — extends the cubit-test version with streams needed by
@@ -442,6 +443,34 @@ HistoryMessage makeHistoryWithAskUser(
 Future<void> pumpN(WidgetTester tester, {int count = 5}) async {
   for (var i = 0; i < count; i++) {
     await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
+/// Expands the transcript hierarchy before asserting on process-owned rows.
+///
+/// Historical intermediate outputs, their nested process segments, and the
+/// latest active process use separate disclosures. Tool-result content has an
+/// additional disclosure of its own.
+Future<void> expandTranscriptProcess(
+  WidgetTester tester, {
+  bool expandToolResults = false,
+}) async {
+  await _tapAll(tester, find.byType(ChatIntermediateOutputsDisclosure));
+  await _tapAll(tester, find.byType(ChatProcessDisclosure));
+  await _tapAll(tester, find.byType(ChatCurrentProgressHeader));
+  if (expandToolResults) {
+    await _tapAll(tester, find.byKey(const ValueKey('tool_result_disclosure')));
+  }
+}
+
+Future<void> _tapAll(WidgetTester tester, Finder finder) async {
+  final count = finder.evaluate().length;
+  for (var index = 0; index < count; index++) {
+    final target = finder.at(index);
+    await tester.ensureVisible(target);
+    await tester.pump();
+    await tester.tap(target);
+    await tester.pump();
   }
 }
 

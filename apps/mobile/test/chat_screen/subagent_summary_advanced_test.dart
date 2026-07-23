@@ -35,11 +35,16 @@ void main() {
           makeToolUseSummary('Wrote 2 files', ['sub-3', 'sub-4']),
         ]);
         await pumpN($.tester);
+        await expandTranscriptProcess($.tester);
 
         // Both summary bubbles visible
         expect($(ToolUseSummaryBubble), findsNWidgets(2));
         expect($('Read 2 files'), findsOneWidget);
         expect($('Wrote 2 files'), findsOneWidget);
+        expect($('File content 1'), findsNothing);
+        expect($('File content 2'), findsNothing);
+        expect($('Write output 1'), findsNothing);
+        expect($('Write output 2'), findsNothing);
       },
     );
 
@@ -61,10 +66,12 @@ void main() {
         makeToolResult('normal-2', 'Normal result after'),
       ]);
       await pumpN($.tester);
+      await expandTranscriptProcess($.tester, expandToolResults: true);
 
       // Normal results visible
       expect($('Normal result before'), findsOneWidget);
       expect($('Normal result after'), findsOneWidget);
+      expect($('Hidden result'), findsNothing);
 
       // Summary visible
       expect($('Subagent work done'), findsOneWidget);
@@ -90,6 +97,7 @@ void main() {
 
       await emitAndPump($.tester, bridge, messages);
       await pumpN($.tester);
+      await expandTranscriptProcess($.tester);
 
       // One summary bubble
       expect($(ToolUseSummaryBubble), findsOneWidget);
@@ -130,6 +138,7 @@ void main() {
 
         await emitAndPump($.tester, bridge, [history]);
         await pumpN($.tester);
+        await expandTranscriptProcess($.tester, expandToolResults: true);
 
         // Summary bubble is rendered
         expect($(ToolUseSummaryBubble), findsOneWidget);
@@ -157,6 +166,7 @@ void main() {
         makeToolUseSummary('Read file', ['sub-1']),
       ]);
       await pumpN($.tester);
+      await expandTranscriptProcess($.tester);
 
       expect($('Read file'), findsOneWidget);
 
@@ -166,6 +176,7 @@ void main() {
         makeToolResult('new-1', 'New live result'),
       ]);
       await pumpN($.tester);
+      await expandTranscriptProcess($.tester, expandToolResults: true);
 
       expect($('New live result'), findsOneWidget);
       expect($(ToolUseSummaryBubble), findsOneWidget);
@@ -194,6 +205,7 @@ void main() {
         makeToolUseSummary('Phase 3 done', ['s3-1']),
       ]);
       await pumpN($.tester);
+      await expandTranscriptProcess($.tester);
 
       // Three summary bubbles
       expect($(ToolUseSummaryBubble), findsNWidgets(3));

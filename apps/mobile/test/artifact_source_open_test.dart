@@ -38,7 +38,8 @@ class _SourceBridgeService extends BridgeService {
   bool get isConnected => true;
 
   @override
-  Stream<ServerMessage> messagesForSession(String sessionId) => controller.stream
+  Stream<ServerMessage> messagesForSession(String sessionId) => controller
+      .stream
       .where((event) => event.$2 == sessionId)
       .map((event) => event.$1);
 
@@ -96,7 +97,9 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  testWidgets('source validates before an exact File Peek read', (tester) async {
+  testWidgets('source validates before an exact File Peek read', (
+    tester,
+  ) async {
     final bridge = _SourceBridgeService();
     final streaming = StreamingStateCubit();
     final cubit = ChatSessionCubit(
@@ -159,6 +162,22 @@ void main() {
     );
     await tester.pump();
 
+    await tester.tap(
+      find.byKey(
+        const ValueKey('chat_intermediate_disclosure_partial:tool:tool-source'),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(
+        const ValueKey(
+          'chat_process_disclosure_partial:tool:tool-source:segment:leading:0',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
+    await tester.pump();
     await tester.tap(
       find.byKey(const ValueKey('artifact_attachment_artifact-source')),
     );
