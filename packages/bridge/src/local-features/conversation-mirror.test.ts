@@ -196,6 +196,103 @@ describe("CodexConversationMirrorReader", () => {
     });
   });
 
+  it("persists Desktop-only Skill and sub-agent tools in their turn order", async () => {
+    const process = fakeProcess(
+      async (method: string, params: Record<string, unknown>) => {
+        if (method === "thread/read") {
+          return { thread: markerThread(2, "idle") };
+        }
+        if (method === "thread/items/list" && params.cursor === null) {
+          return {
+            data: [
+              {
+                turnId: "turn-1",
+                item: {
+                  type: "agentMessage",
+                  id: "assistant-1",
+                  text: "inspection complete",
+                },
+              },
+              {
+                turnId: "turn-1",
+                item: {
+                  type: "userMessage",
+                  id: "user-1",
+                  content: [{ type: "text", text: "inspect this" }],
+                },
+              },
+            ],
+            nextCursor: null,
+          };
+        }
+        throw new Error(method);
+      },
+    );
+    const desktopToolTimelineReader = vi.fn(async () => ({
+      callIds: new Set(["call-skill", "call-agent"]),
+      events: [
+        {
+          turnId: "turn-1",
+          callId: "call-skill",
+          afterVisibleMessage: 1,
+          sequence: 1,
+          type: "tool_use" as const,
+          name: "ReadSkill",
+          input: { file_path: "/tmp/pdf/SKILL.md", skill: "pdf" },
+        },
+        {
+          turnId: "turn-1",
+          callId: "call-skill",
+          afterVisibleMessage: 1,
+          sequence: 2,
+          type: "tool_result" as const,
+          name: "ReadSkill",
+          content: "skill body",
+        },
+        {
+          turnId: "turn-1",
+          callId: "call-agent",
+          afterVisibleMessage: 2,
+          sequence: 3,
+          type: "tool_use" as const,
+          name: "SpawnAgent",
+          input: { task_name: "review" },
+        },
+        {
+          turnId: "turn-1",
+          callId: "call-agent",
+          afterVisibleMessage: 2,
+          sequence: 4,
+          type: "tool_result" as const,
+          name: "SpawnAgent",
+          content: "agent started",
+        },
+      ],
+    }));
+
+    const result = await new CodexConversationMirrorReader({
+      desktopToolTimelineReader,
+    }).readSnapshot(process, "thread-1");
+
+    expect(desktopToolTimelineReader).toHaveBeenCalledWith("thread-1");
+    expect(result.entries.map((value) => value.entryId)).toEqual([
+      "user-1",
+      "call-skill",
+      "call-skill:part-2",
+      "assistant-1",
+      "call-agent",
+      "call-agent:part-2",
+    ]);
+    const toolNames = result.entries.flatMap((value) =>
+      value.message.type === "assistant"
+        ? value.message.message.content
+            .filter((content) => content.type === "tool_use")
+            .map((content) => content.name)
+        : [],
+    );
+    expect(toolNames).toEqual(["ReadSkill", "SpawnAgent"]);
+  });
+
   it("preserves item-pagination turn identity when raw items have no id", async () => {
     const process = fakeProcess(
       async (method: string, params: Record<string, unknown>) => {

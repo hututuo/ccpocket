@@ -15,9 +15,12 @@ import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-ag
 import { isAutoRenamePromptText } from "./auto-rename.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import {
+  CodexDesktopToolTimelineBuilder,
   codexDesktopToolOutputText,
   describeCodexDesktopToolCall,
   formatCodexFileChanges,
+  type CodexDesktopToolTimeline,
+  type CodexDesktopToolTimelineEvent,
 } from "./local-features/codex-tool-history.js";
 
 export interface SessionIndexEntry {
@@ -2278,9 +2281,13 @@ function appendCodexOfficialToolResult(
 
 export function codexThreadToSessionHistory(
   thread: unknown,
+  options: { desktopToolTimeline?: CodexDesktopToolTimeline } = {},
 ): SessionHistoryMessage[] {
   const messages: SessionHistoryMessage[] = [];
-  const turns = arrayValue(asObject(thread)?.turns);
+  const sourceThread = options.desktopToolTimeline
+    ? supplementCodexThreadWithDesktopTools(thread, options.desktopToolTimeline)
+    : thread;
+  const turns = arrayValue(asObject(sourceThread)?.turns);
   let userTurnOrdinal = 0;
 
   for (const rawTurn of turns) {
@@ -2479,6 +2486,122 @@ export function codexThreadToSessionHistory(
           break;
         }
 
+        case "collabAgentToolCall": {
+          const tool = stringValue(item.tool) ?? "subagent";
+          const toolName = codexCollabHistoryToolName(tool);
+          const status = stringValue(item.status) ?? "completed";
+          const receiverThreadIds = arrayValue(item.receiverThreadIds).map(
+            (value) => String(value),
+          );
+          appendToolUseMessage(messages, itemId, toolName, {
+            tool,
+            status,
+            ...(typeof item.prompt === "string"
+              ? { prompt: item.prompt }
+              : {}),
+            ...(typeof item.senderThreadId === "string"
+              ? { senderThreadId: item.senderThreadId }
+              : {}),
+            ...(receiverThreadIds.length > 0 ? { receiverThreadIds } : {}),
+            ...(typeof item.model === "string" ? { model: item.model } : {}),
+            ...(typeof item.reasoningEffort === "string"
+              ? { reasoningEffort: item.reasoningEffort }
+              : {}),
+            ...(item.agentsStates != null
+              ? { agentsStates: item.agentsStates }
+              : {}),
+          });
+          if (status !== "inProgress") {
+            appendCodexOfficialToolResult(
+              messages,
+              itemId,
+              toolName,
+              [
+                `status: ${status}`,
+                ...(receiverThreadIds.length > 0
+                  ? [`agents: ${receiverThreadIds.join(", ")}`]
+                  : []),
+              ].join("\n"),
+              itemTimestamp,
+            );
+          }
+          break;
+        }
+
+        case "subAgentActivity": {
+          const kind = stringValue(item.kind) ?? "activity";
+          const toolName = codexSubAgentActivityHistoryToolName(kind);
+          const agentPath = stringValue(item.agentPath);
+          appendToolUseMessage(messages, itemId, toolName, {
+            kind,
+            ...(typeof item.agentThreadId === "string"
+              ? { agentThreadId: item.agentThreadId }
+              : {}),
+            ...(agentPath ? { agentPath } : {}),
+          });
+          appendCodexOfficialToolResult(
+            messages,
+            itemId,
+            toolName,
+            codexSubAgentActivitySummary(kind, agentPath),
+            itemTimestamp,
+          );
+          break;
+        }
+
+        case "contextCompaction": {
+          appendToolUseMessage(messages, itemId, "ContextCompaction", {
+            description: "Compact the conversation context",
+          });
+          appendCodexOfficialToolResult(
+            messages,
+            itemId,
+            "ContextCompaction",
+            "Conversation context compacted",
+            itemTimestamp,
+          );
+          break;
+        }
+
+        case "imageView": {
+          const path = stringValue(item.path);
+          appendToolUseMessage(
+            messages,
+            itemId,
+            "ViewImage",
+            path ? { path } : {},
+          );
+          appendCodexOfficialToolResult(
+            messages,
+            itemId,
+            "ViewImage",
+            path ? `Viewed image: ${path}` : "Image viewed",
+            itemTimestamp,
+          );
+          break;
+        }
+
+        case "sleep": {
+          const durationMs =
+            typeof item.durationMs === "number" ? item.durationMs : undefined;
+          appendToolUseMessage(
+            messages,
+            itemId,
+            "Wait",
+            durationMs === undefined ? {} : { durationMs },
+          );
+          appendCodexOfficialToolResult(
+            messages,
+            itemId,
+            "Wait",
+            durationMs === undefined
+              ? "Wait completed"
+              : `Waited ${durationMs} ms`,
+            itemTimestamp,
+          );
+          break;
+        }
+
         case "imageGeneration": {
           appendToolUseMessage(messages, itemId, "ImageGeneration", {
             ...(typeof item.status === "string" ? { status: item.status } : {}),
@@ -2520,6 +2643,230 @@ export function codexThreadToSessionHistory(
   }
 
   return messages;
+}
+
+/**
+ * Restore host-side Desktop tools as ordinary dynamic ThreadItems.
+ *
+ * app-server intentionally leaves these Responses API records out of
+ * `thread/read`. Keeping the compatibility layer at the ThreadItem boundary
+ * lets active history and the optional on-device mirror share exactly the
+ * same ordering, de-duplication, and future removal point.
+ */
+export function supplementCodexThreadWithDesktopTools(
+  thread: unknown,
+  timeline: CodexDesktopToolTimeline,
+): unknown {
+  const root = asObject(thread);
+  if (!root || timeline.events.length === 0) return thread;
+
+  const eventsByTurn = new Map<string, CodexDesktopToolTimelineEvent[]>();
+  for (const event of timeline.events) {
+    const events = eventsByTurn.get(event.turnId) ?? [];
+    events.push(event);
+    eventsByTurn.set(event.turnId, events);
+  }
+
+  let changed = false;
+  const turns = arrayValue(root.turns).map((rawTurn) => {
+    const turn = asObject(rawTurn);
+    const turnId = stringValue(turn?.id);
+    const turnEvents = turnId ? eventsByTurn.get(turnId) : undefined;
+    if (!turn || !turnEvents || turnEvents.length === 0) return rawTurn;
+    const items = arrayValue(turn.items);
+    const supplemented = supplementCodexTurnItems(items, turnEvents);
+    if (supplemented === items) return rawTurn;
+    changed = true;
+    return { ...turn, items: supplemented };
+  });
+
+  return changed ? { ...root, turns } : thread;
+}
+
+function supplementCodexTurnItems(
+  original: unknown[],
+  turnEvents: CodexDesktopToolTimelineEvent[],
+): unknown[] {
+  const supplementalCallIds = new Set(
+    turnEvents.map((event) => event.callId),
+  );
+  const officialToolCounts = new Map<string, number>();
+
+  for (const rawItem of original) {
+    const item = asObject(rawItem);
+    const itemId = stringValue(item?.id);
+    const toolName = item ? codexOfficialItemToolName(item) : undefined;
+    if (!toolName || (itemId && supplementalCallIds.has(itemId))) continue;
+    officialToolCounts.set(
+      toolName,
+      (officialToolCounts.get(toolName) ?? 0) + 1,
+    );
+  }
+
+  const eventsByCall = new Map<string, CodexDesktopToolTimelineEvent[]>();
+  const callOrder: string[] = [];
+  for (const event of turnEvents) {
+    let events = eventsByCall.get(event.callId);
+    if (!events) {
+      events = [];
+      eventsByCall.set(event.callId, events);
+      callOrder.push(event.callId);
+    }
+    events.push(event);
+  }
+
+  const keptCalls: Array<{
+    use: CodexDesktopToolTimelineEvent;
+    result?: CodexDesktopToolTimelineEvent;
+  }> = [];
+  for (const callId of callOrder) {
+    const callEvents = eventsByCall.get(callId)!;
+    const use = callEvents.find((event) => event.type === "tool_use");
+    if (!use) continue;
+
+    const officialCount = officialToolCounts.get(use.name) ?? 0;
+    const exactOfficialMatch = original.some(
+      (rawItem) => stringValue(asObject(rawItem)?.id) === callId,
+    );
+    if (!exactOfficialMatch && officialCount > 0) {
+      officialToolCounts.set(use.name, officialCount - 1);
+      continue;
+    }
+    keptCalls.push({
+      use,
+      result: callEvents.find((event) => event.type === "tool_result"),
+    });
+  }
+
+  if (keptCalls.length === 0) return original;
+
+  const keptCallIds = new Set(keptCalls.map(({ use }) => use.callId));
+  const filteredOfficial = original.filter((rawItem) => {
+    const itemId = stringValue(asObject(rawItem)?.id);
+    return !itemId || !keptCallIds.has(itemId);
+  });
+
+  const byVisibleMessage = new Map<number, Record<string, unknown>[]>();
+  for (const { use, result } of keptCalls.sort(
+    (a, b) => a.use.sequence - b.use.sequence,
+  )) {
+    const bucket = byVisibleMessage.get(use.afterVisibleMessage) ?? [];
+    bucket.push({
+      type: "dynamicToolCall",
+      id: use.callId,
+      tool: use.name,
+      arguments: use.input ?? {},
+      status: result ? "completed" : "inProgress",
+      contentItems:
+        result?.content && result.content.length > 0
+          ? [{ type: "inputText", text: result.content }]
+          : [],
+      desktopHostTool: true,
+    });
+    byVisibleMessage.set(use.afterVisibleMessage, bucket);
+  }
+
+  const merged: unknown[] = [];
+  const flushed = new Set<number>();
+  let visibleMessages = 0;
+  const flush = (anchor: number): void => {
+    if (flushed.has(anchor)) return;
+    flushed.add(anchor);
+    merged.push(...(byVisibleMessage.get(anchor) ?? []));
+  };
+
+  for (const rawItem of filteredOfficial) {
+    if (isVisibleCodexThreadItem(rawItem)) {
+      flush(visibleMessages);
+      merged.push(rawItem);
+      visibleMessages += 1;
+    } else {
+      merged.push(rawItem);
+    }
+  }
+  flush(visibleMessages);
+
+  for (const anchor of [...byVisibleMessage.keys()].sort((a, b) => a - b)) {
+    flush(anchor);
+  }
+
+  return merged;
+}
+
+function isVisibleCodexThreadItem(rawItem: unknown): boolean {
+  const item = asObject(rawItem);
+  if (!item) return false;
+  if (item.type === "userMessage") return true;
+  return (
+    (item.type === "agentMessage" || item.type === "plan") &&
+    typeof item.text === "string" &&
+    item.text.trim().length > 0
+  );
+}
+
+function codexOfficialItemToolName(
+  item: Record<string, unknown>,
+): string | undefined {
+  switch (item.type) {
+    case "commandExecution":
+      return describeCodexHistoryCommand(item).name;
+    case "fileChange":
+      return "FileChange";
+    case "mcpToolCall":
+      return `mcp:${stringValue(item.server) ?? "mcp"}/${
+        stringValue(item.tool) ?? "tool"
+      }`;
+    case "dynamicToolCall":
+      return stringValue(item.tool) ?? "tool";
+    case "webSearch":
+      return "WebSearch";
+    case "collabAgentToolCall":
+      return codexCollabHistoryToolName(stringValue(item.tool) ?? "subagent");
+    case "subAgentActivity":
+      return codexSubAgentActivityHistoryToolName(
+        stringValue(item.kind) ?? "activity",
+      );
+    case "contextCompaction":
+      return "ContextCompaction";
+    case "imageView":
+      return "ViewImage";
+    case "sleep":
+      return "Wait";
+    case "imageGeneration":
+      return "ImageGeneration";
+    default:
+      return undefined;
+  }
+}
+
+function codexSubAgentActivityHistoryToolName(kind: string): string {
+  switch (kind.replace(/[_\s-]/g, "").toLowerCase()) {
+    case "started":
+      return "SpawnAgent";
+    case "interacted":
+      return "SubAgentInteraction";
+    case "interrupted":
+      return "InterruptAgent";
+    default:
+      return "SubAgentActivity";
+  }
+}
+
+function codexSubAgentActivitySummary(
+  kind: string,
+  agentPath: string | undefined,
+): string {
+  const target = agentPath ? ` ${agentPath}` : "";
+  switch (kind.replace(/[_\s-]/g, "").toLowerCase()) {
+    case "started":
+      return `Started sub-agent${target}`;
+    case "interacted":
+      return `Interacted with sub-agent${target}`;
+    case "interrupted":
+      return `Interrupted sub-agent${target}`;
+    default:
+      return `Sub-agent activity: ${kind}${target}`;
+  }
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -3057,6 +3404,142 @@ export async function resolveCodexSessionJsonlPath(
   threadId: string,
 ): Promise<string | null> {
   return findCodexSessionJsonlPath(threadId);
+}
+
+interface CodexDesktopToolTimelineCacheEntry {
+  jsonlPath: string;
+  builder: CodexDesktopToolTimelineBuilder;
+  readOffset: number;
+  pendingLine: Buffer;
+  mtimeMs: number;
+}
+
+const CODEX_DESKTOP_TOOL_TIMELINE_CACHE_LIMIT = 8;
+const codexDesktopToolTimelineCache = new Map<
+  string,
+  CodexDesktopToolTimelineCacheEntry
+>();
+const codexDesktopToolTimelineRefreshes = new Map<
+  string,
+  Promise<CodexDesktopToolTimeline>
+>();
+
+/**
+ * Read the host-side Responses API tool records omitted by app-server's
+ * canonical ThreadItems. The first read streams the rollout once; later reads
+ * consume appended bytes only, which keeps Desktop continuity polling cheap
+ * even for very large conversations.
+ */
+export async function getCodexDesktopToolTimeline(
+  threadId: string,
+): Promise<CodexDesktopToolTimeline> {
+  const inFlight = codexDesktopToolTimelineRefreshes.get(threadId);
+  if (inFlight) return inFlight;
+
+  const refresh = refreshCodexDesktopToolTimeline(threadId).finally(() => {
+    codexDesktopToolTimelineRefreshes.delete(threadId);
+  });
+  codexDesktopToolTimelineRefreshes.set(threadId, refresh);
+  return refresh;
+}
+
+async function refreshCodexDesktopToolTimeline(
+  threadId: string,
+): Promise<CodexDesktopToolTimeline> {
+  const cachedPath = codexDesktopToolTimelineCache.get(threadId)?.jsonlPath;
+  const jsonlPath = cachedPath ?? (await findCodexSessionJsonlPath(threadId));
+  if (!jsonlPath) return emptyCodexDesktopToolTimeline();
+
+  let fileStat;
+  try {
+    fileStat = await stat(jsonlPath);
+  } catch {
+    if (cachedPath) codexDesktopToolTimelineCache.delete(threadId);
+    return emptyCodexDesktopToolTimeline();
+  }
+
+  let cache = codexDesktopToolTimelineCache.get(threadId);
+  if (
+    !cache ||
+    cache.jsonlPath !== jsonlPath ||
+    fileStat.size < cache.readOffset ||
+    (fileStat.size === cache.readOffset &&
+      cache.mtimeMs !== 0 &&
+      fileStat.mtimeMs !== cache.mtimeMs)
+  ) {
+    cache = {
+      jsonlPath,
+      builder: new CodexDesktopToolTimelineBuilder(),
+      readOffset: 0,
+      pendingLine: Buffer.alloc(0),
+      mtimeMs: 0,
+    };
+    codexDesktopToolTimelineCache.set(threadId, cache);
+    trimCodexDesktopToolTimelineCache();
+  } else {
+    // Refresh insertion order for the small LRU cache.
+    codexDesktopToolTimelineCache.delete(threadId);
+    codexDesktopToolTimelineCache.set(threadId, cache);
+  }
+
+  if (
+    fileStat.size === cache.readOffset &&
+    fileStat.mtimeMs === cache.mtimeMs
+  ) {
+    return cache.builder.snapshot();
+  }
+
+  if (fileStat.size > cache.readOffset) {
+    const stream = createReadStream(jsonlPath, {
+      start: cache.readOffset,
+      end: fileStat.size - 1,
+    });
+    let pending = cache.pendingLine;
+    try {
+      for await (const chunk of stream) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const combined =
+          pending.length === 0 ? bytes : Buffer.concat([pending, bytes]);
+        let lineStart = 0;
+        let lineEnd = combined.indexOf(0x0a, lineStart);
+        while (lineEnd !== -1) {
+          const rawLine = combined.subarray(lineStart, lineEnd);
+          if (rawLine.length > 0) {
+            try {
+              cache.builder.ingest(JSON.parse(rawLine.toString("utf8")));
+            } catch {
+              // A malformed rollout entry must not poison later append reads.
+            }
+          }
+          lineStart = lineEnd + 1;
+          lineEnd = combined.indexOf(0x0a, lineStart);
+        }
+        pending = combined.subarray(lineStart);
+      }
+    } finally {
+      stream.destroy();
+    }
+    cache.pendingLine = Buffer.from(pending);
+    cache.readOffset = fileStat.size;
+  }
+
+  cache.mtimeMs = fileStat.mtimeMs;
+  return cache.builder.snapshot();
+}
+
+function emptyCodexDesktopToolTimeline(): CodexDesktopToolTimeline {
+  return { events: [], callIds: new Set<string>() };
+}
+
+function trimCodexDesktopToolTimelineCache(): void {
+  while (
+    codexDesktopToolTimelineCache.size >
+    CODEX_DESKTOP_TOOL_TIMELINE_CACHE_LIMIT
+  ) {
+    const oldest = codexDesktopToolTimelineCache.keys().next().value;
+    if (!oldest) return;
+    codexDesktopToolTimelineCache.delete(oldest);
+  }
 }
 
 async function codexJsonlHasThreadId(

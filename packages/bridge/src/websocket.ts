@@ -56,6 +56,7 @@ import {
 } from "./parser.js";
 import {
   getAllRecentSessions,
+  getCodexDesktopToolTimeline,
   getCodexSessionHistory,
   getSessionHistory,
   codexUserTurnUuid,
@@ -2983,8 +2984,11 @@ export class BridgeWebSocketServer {
       activeProcess ?? (await this.createStandaloneCodexProcess(projectPath));
     const isStandalone = process !== activeProcess;
     try {
-      const thread = await process.readThread(threadId, true);
-      return codexThreadToSessionHistory(thread);
+      const [thread, desktopToolTimeline] = await Promise.all([
+        process.readThread(threadId, true),
+        getCodexDesktopToolTimeline(threadId),
+      ]);
+      return codexThreadToSessionHistory(thread, { desktopToolTimeline });
     } catch (err) {
       if (this.isCodexThreadNotMaterializedError(err)) return [];
       throw err;

@@ -13,6 +13,155 @@ export interface CodexHistoryToolDescriptor {
   input: Record<string, unknown>;
 }
 
+export interface CodexDesktopToolTimelineEvent {
+  turnId: string;
+  callId: string;
+  /** Number of visible user/assistant messages already seen in this turn. */
+  afterVisibleMessage: number;
+  sequence: number;
+  type: "tool_use" | "tool_result";
+  name: string;
+  input?: Record<string, unknown>;
+  content?: string;
+  timestamp?: string;
+}
+
+export interface CodexDesktopToolTimeline {
+  events: CodexDesktopToolTimelineEvent[];
+  callIds: ReadonlySet<string>;
+}
+
+interface PendingDesktopToolCall {
+  name: string;
+  turnId: string;
+}
+
+/**
+ * Incrementally recovers host-side tool calls that app-server's ThreadItem
+ * history deliberately omits. The builder consumes already-decoded JSONL
+ * entries and retains only a bounded recent timeline; no recorded script is
+ * evaluated.
+ */
+export class CodexDesktopToolTimelineBuilder {
+  private readonly visibleMessagesByTurn = new Map<string, number>();
+  private readonly pendingCalls = new Map<string, PendingDesktopToolCall>();
+  private readonly timelineEvents: CodexDesktopToolTimelineEvent[] = [];
+  private sequence = 0;
+
+  constructor(
+    // A very long Desktop rollout can contain tens of thousands of host-side
+    // calls. Keep the recent 1,000 call/result pairs: canonical ThreadItems
+    // still provide the full transcript, while this compatibility supplement
+    // remains small enough to send to a phone in one history snapshot.
+    private readonly maxEvents = 2_000,
+    private readonly maxResultCharacters = 8 * 1024,
+  ) {}
+
+  ingest(entry: unknown): void {
+    const record = asRecord(entry);
+    const payload = asRecord(record?.payload);
+    if (!record || !payload || record.type !== "response_item") return;
+
+    const metadata = asRecord(
+      payload.internal_chat_message_metadata_passthrough,
+    );
+    const payloadTurnId = stringValue(metadata?.turn_id);
+    const payloadType = stringValue(payload.type) ?? "";
+
+    if (payloadType === "message" && payloadTurnId) {
+      const role = stringValue(payload.role);
+      if (
+        (role === "assistant" && responseMessageText(payload, "output_text")) ||
+        (role === "user" &&
+          !isInjectedCodexUserContext(responseMessageText(payload, "input_text")))
+      ) {
+        this.visibleMessagesByTurn.set(
+          payloadTurnId,
+          (this.visibleMessagesByTurn.get(payloadTurnId) ?? 0) + 1,
+        );
+      }
+      return;
+    }
+
+    if (payloadType === "function_call" || payloadType === "custom_tool_call") {
+      if (!payloadTurnId) return;
+      const callId =
+        stringValue(payload.call_id) ?? stringValue(payload.id) ?? undefined;
+      if (!callId) return;
+      const rawName = stringValue(payload.name) ?? "tool";
+      const descriptor = describeCodexDesktopToolCall(
+        rawName,
+        payloadType === "function_call" ? payload.arguments : payload.input,
+      );
+      this.pendingCalls.set(callId, {
+        name: descriptor.name,
+        turnId: payloadTurnId,
+      });
+      this.push({
+        turnId: payloadTurnId,
+        callId,
+        afterVisibleMessage:
+          this.visibleMessagesByTurn.get(payloadTurnId) ?? 0,
+        type: "tool_use",
+        name: descriptor.name,
+        input: limitToolInput(descriptor.input),
+        ...(stringValue(record.timestamp)
+          ? { timestamp: stringValue(record.timestamp) }
+          : {}),
+      });
+      return;
+    }
+
+    if (
+      payloadType !== "function_call_output" &&
+      payloadType !== "custom_tool_call_output"
+    ) {
+      return;
+    }
+
+    const callId =
+      stringValue(payload.call_id) ?? stringValue(payload.id) ?? undefined;
+    if (!callId) return;
+    const pending = this.pendingCalls.get(callId);
+    const turnId = payloadTurnId ?? pending?.turnId;
+    if (!turnId || !pending) return;
+    this.push({
+      turnId,
+      callId,
+      afterVisibleMessage: this.visibleMessagesByTurn.get(turnId) ?? 0,
+      type: "tool_result",
+      name: pending.name,
+      content: truncateText(
+        codexDesktopToolOutputText(payload.output),
+        this.maxResultCharacters,
+      ),
+      ...(stringValue(record.timestamp)
+        ? { timestamp: stringValue(record.timestamp) }
+        : {}),
+    });
+    this.pendingCalls.delete(callId);
+  }
+
+  snapshot(): CodexDesktopToolTimeline {
+    const events = this.timelineEvents.map((event) => ({ ...event }));
+    return {
+      events,
+      callIds: new Set(events.map((event) => event.callId)),
+    };
+  }
+
+  private push(
+    event: Omit<CodexDesktopToolTimelineEvent, "sequence">,
+  ): void {
+    this.timelineEvents.push({ ...event, sequence: ++this.sequence });
+    if (this.timelineEvents.length <= this.maxEvents) return;
+    this.timelineEvents.splice(
+      0,
+      this.timelineEvents.length - this.maxEvents,
+    );
+  }
+}
+
 export function describeCodexDesktopToolCall(
   rawName: string,
   rawInput: unknown,
@@ -117,12 +266,23 @@ function normalizeCodexToolName(name: string): string {
     case "spawn_agent":
       return "SpawnAgent";
     case "send_message":
-    case "followup_task":
       return "SendAgentInput";
+    case "followup_task":
+      return "ResumeAgent";
     case "interrupt_agent":
-      return "CloseAgent";
+      return "InterruptAgent";
     case "list_agents":
-      return "SubAgentActivity";
+      return "ListAgents";
+    case "request_user_input":
+      return "RequestUserInput";
+    case "update_plan":
+      return "UpdatePlan";
+    case "create_goal":
+      return "CreateGoal";
+    case "get_goal":
+      return "ReadGoal";
+    case "update_goal":
+      return "UpdateGoal";
   }
   if (name.startsWith("mcp__")) {
     const [server, ...toolParts] = name.slice("mcp__".length).split("__");
@@ -246,4 +406,52 @@ function jsonText(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function responseMessageText(
+  payload: Record<string, unknown>,
+  contentType: "input_text" | "output_text",
+): string {
+  if (!Array.isArray(payload.content)) return "";
+  return payload.content
+    .map((entry) => asRecord(entry))
+    .filter(
+      (entry): entry is Record<string, unknown> =>
+        entry?.type === contentType && typeof entry.text === "string",
+    )
+    .map((entry) => String(entry.text))
+    .join("\n")
+    .trim();
+}
+
+function isInjectedCodexUserContext(text: string): boolean {
+  const normalized = text.trimStart();
+  return (
+    !normalized ||
+    normalized.startsWith("# AGENTS.md instructions for ") ||
+    normalized.startsWith("<environment_context>") ||
+    normalized.startsWith("<permissions instructions>") ||
+    normalized.startsWith("<collaboration_mode>") ||
+    normalized.startsWith("<personality_spec>") ||
+    normalized.startsWith("<skills_instructions>") ||
+    normalized.startsWith("<plugins_instructions>") ||
+    normalized.startsWith("<skill>")
+  );
+}
+
+function limitToolInput(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const limited: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    limited[key] =
+      typeof value === "string" ? truncateText(value, 8 * 1024) : value;
+  }
+  return limited;
+}
+
+function truncateText(text: string, maxCharacters: number): string {
+  if (text.length <= maxCharacters) return text;
+  const omitted = text.length - maxCharacters;
+  return `${text.slice(0, maxCharacters)}\n… ${omitted} characters omitted`;
 }

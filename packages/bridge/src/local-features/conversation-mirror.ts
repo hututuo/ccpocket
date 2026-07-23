@@ -4,8 +4,11 @@ import type { AssistantContent, ServerMessage } from "../parser.js";
 import {
   codexThreadToSessionHistory,
   codexUserTurnUuid,
+  getCodexDesktopToolTimeline,
+  supplementCodexThreadWithDesktopTools,
   type SessionHistoryMessage,
 } from "../sessions-index.js";
+import type { CodexDesktopToolTimeline } from "./codex-tool-history.js";
 import type {
   ConversationMirrorClientMessage,
   ConversationMirrorEntry,
@@ -77,6 +80,9 @@ export interface ConversationMirrorReaderOptions {
   maxPages?: number;
   maxEntries?: number;
   maxTotalBytes?: number;
+  desktopToolTimelineReader?: (
+    threadId: string,
+  ) => Promise<CodexDesktopToolTimeline>;
 }
 
 type ConversationMirrorHistoryMode =
@@ -98,6 +104,9 @@ export class CodexConversationMirrorReader {
   private readonly maxPages: number;
   private readonly maxEntries: number;
   private readonly maxTotalBytes: number;
+  private readonly desktopToolTimelineReader: (
+    threadId: string,
+  ) => Promise<CodexDesktopToolTimeline>;
 
   constructor(options: ConversationMirrorReaderOptions = {}) {
     this.rpcTimeoutMs = positiveInteger(
@@ -113,6 +122,11 @@ export class CodexConversationMirrorReader {
       options.maxTotalBytes,
       MAX_CONVERSATION_MIRROR_TOTAL_BYTES,
     );
+    this.desktopToolTimelineReader =
+      options.desktopToolTimelineReader ??
+      (process.env.NODE_ENV === "test"
+        ? async () => emptyDesktopToolTimeline()
+        : getCodexDesktopToolTimeline);
   }
 
   async readMarker(
@@ -138,21 +152,27 @@ export class CodexConversationMirrorReader {
     try {
       const marker = await this.readMarker(process, threadId, signal);
       authorizeMarker?.(marker);
-      const history = await this.readPaginatedOrFallback(
-        process,
-        threadId,
-        signal,
-      );
+      const [history, desktopToolTimeline] = await Promise.all([
+        this.readPaginatedOrFallback(process, threadId, signal),
+        this.readDesktopToolTimeline(threadId),
+      ]);
       // Re-check a full-thread fallback response to close the cwd race between
       // the lightweight marker read and the history read. Only the paginated
       // adapter is synthetic and therefore legitimately has no cwd.
       if (!history.paginated) {
         authorizeMarker?.(markerFromThread(history.thread));
       }
-      return normalizeConversationMirrorSnapshot(history.thread, marker, {
-        maxEntries: this.maxEntries,
-        maxTotalBytes: this.maxTotalBytes,
-      });
+      return normalizeConversationMirrorSnapshot(
+        supplementCodexThreadWithDesktopTools(
+          history.thread,
+          desktopToolTimeline,
+        ),
+        marker,
+        {
+          maxEntries: this.maxEntries,
+          maxTotalBytes: this.maxTotalBytes,
+        },
+      );
     } catch (error) {
       if (error instanceof ConversationMirrorError) throw error;
       if (signal?.aborted) throw abortError(signal);
@@ -161,6 +181,19 @@ export class CodexConversationMirrorReader {
         errorMessage(error),
         error,
       );
+    }
+  }
+
+  private async readDesktopToolTimeline(
+    threadId: string,
+  ): Promise<CodexDesktopToolTimeline> {
+    try {
+      return await this.desktopToolTimelineReader(threadId);
+    } catch (error) {
+      console.warn(
+        `[conversation-mirror] Desktop tool supplement unavailable for thread ${threadId}: ${errorMessage(error)}`,
+      );
+      return emptyDesktopToolTimeline();
     }
   }
 
@@ -379,6 +412,10 @@ export class CodexConversationMirrorReader {
     );
     return responseThread(response);
   }
+}
+
+function emptyDesktopToolTimeline(): CodexDesktopToolTimeline {
+  return { events: [], callIds: new Set<string>() };
 }
 
 function groupPaginatedItemsByTurn(

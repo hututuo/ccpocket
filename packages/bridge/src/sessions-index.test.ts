@@ -274,6 +274,181 @@ describe("codexThreadToSessionHistory", () => {
       ],
     });
   });
+
+  it("converts the full official Codex activity item family", () => {
+    const history = codexThreadToSessionHistory({
+      turns: [
+        {
+          id: "turn-activity",
+          items: [
+            {
+              type: "collabAgentToolCall",
+              id: "agent-wait",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: { "agent-1": "completed" },
+            },
+            {
+              type: "subAgentActivity",
+              id: "agent-start",
+              kind: "started",
+              agentThreadId: "agent-2",
+              agentPath: "/root/reviewer",
+            },
+            {
+              type: "subAgentActivity",
+              id: "agent-interact",
+              kind: "interacted",
+              agentThreadId: "agent-2",
+              agentPath: "/root/reviewer",
+            },
+            { type: "contextCompaction", id: "compact-1" },
+            { type: "imageView", id: "image-1", path: "/tmp/a.png" },
+            { type: "sleep", id: "sleep-1", durationMs: 250 },
+          ],
+        },
+      ],
+    });
+
+    const toolNames = history.flatMap((message) =>
+      message.role === "assistant" && Array.isArray(message.content)
+        ? message.content
+            .filter((item) => item.type === "tool_use")
+            .map((item) => item.name)
+        : [],
+    );
+    expect(toolNames).toEqual([
+      "WaitForAgents",
+      "SpawnAgent",
+      "SubAgentInteraction",
+      "ContextCompaction",
+      "ViewImage",
+      "Wait",
+    ]);
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "tool_result",
+          toolUseId: "agent-start",
+          toolName: "SpawnAgent",
+          content: "Started sub-agent /root/reviewer",
+        }),
+        expect.objectContaining({
+          role: "tool_result",
+          toolUseId: "compact-1",
+          toolName: "ContextCompaction",
+        }),
+      ]),
+    );
+  });
+
+  it("merges omitted Desktop tools into the correct visible-message interval", () => {
+    const history = codexThreadToSessionHistory(
+      {
+        turns: [
+          {
+            id: "turn-1",
+            items: [
+              {
+                type: "userMessage",
+                id: "user-1",
+                content: [{ type: "text", text: "inspect this" }],
+              },
+              { type: "reasoning", id: "r1", summary: ["checking"] },
+              {
+                type: "agentMessage",
+                id: "a1",
+                text: "I found the adapter.",
+              },
+              { type: "reasoning", id: "r2", summary: ["reviewing"] },
+              {
+                type: "subAgentActivity",
+                id: "call-agent",
+                kind: "started",
+                agentThreadId: "agent-1",
+                agentPath: "/root/reviewer",
+              },
+              {
+                type: "agentMessage",
+                id: "a2",
+                text: "The review is running.",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        desktopToolTimeline: {
+          callIds: new Set(["call-skill", "call-agent"]),
+          events: [
+            {
+              turnId: "turn-1",
+              callId: "call-skill",
+              afterVisibleMessage: 1,
+              sequence: 1,
+              type: "tool_use",
+              name: "ReadSkill",
+              input: { file_path: "/tmp/pdf/SKILL.md", skill: "pdf" },
+            },
+            {
+              turnId: "turn-1",
+              callId: "call-skill",
+              afterVisibleMessage: 1,
+              sequence: 2,
+              type: "tool_result",
+              name: "ReadSkill",
+              content: "skill body",
+            },
+            {
+              turnId: "turn-1",
+              callId: "call-agent",
+              afterVisibleMessage: 2,
+              sequence: 3,
+              type: "tool_use",
+              name: "SpawnAgent",
+              input: { task_name: "review" },
+            },
+            {
+              turnId: "turn-1",
+              callId: "call-agent",
+              afterVisibleMessage: 2,
+              sequence: 4,
+              type: "tool_result",
+              name: "SpawnAgent",
+              content: "agent started",
+            },
+          ],
+        },
+      },
+    );
+
+    const labels = history.map((message) => {
+      if (message.role === "user") return "user";
+      if (message.role === "tool_result") return `result:${message.toolName}`;
+      const item = Array.isArray(message.content) ? message.content[0] : null;
+      if (item?.type === "tool_use") return `tool:${item.name}`;
+      if (item?.type === "thinking") return `thinking:${item.thinking}`;
+      return `text:${item?.text}`;
+    });
+    expect(labels).toEqual([
+      "user",
+      "thinking:checking",
+      "tool:ReadSkill",
+      "result:ReadSkill",
+      "text:I found the adapter.",
+      "thinking:reviewing",
+      "tool:SpawnAgent",
+      "result:SpawnAgent",
+      "text:The review is running.",
+    ]);
+    expect(
+      history.filter(
+        (message) =>
+          message.role === "tool_result" && message.toolUseId === "call-agent",
+      ),
+    ).toHaveLength(1);
+  });
 });
 
 describe("isWorktreeSlug", () => {

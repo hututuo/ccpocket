@@ -2,6 +2,19 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.69.0-compat.4] - 2026-07-23
+
+### Added
+- Restore bounded recent Codex Desktop host-tool activity that app-server omits from canonical thread history, including skill reads, shell reads and searches, multi-command execution, image inspection, plans, goals, and the full sub-agent lifecycle.
+- Preserve official Codex collaboration, sub-agent activity, context compaction, image view, and wait ThreadItems in both active history and on-device full-conversation synchronization.
+
+### Fixed
+- Merge Desktop-only tools at their actual turn and visible-message interval while de-duplicating equivalent official ThreadItems, so live history and downloaded history use one ordering model.
+- Cache large rollout reads incrementally and cap supplemental events and output text to keep repeated mobile synchronization bounded.
+
+### Compatibility
+- Keep the supplement Bridge-owned and additive; Mobile `1.107.2+199` gains localized activity labels while older clients continue rendering unknown tool names through the existing fallback.
+
 ## [1.69.0-compat.1] - 2026-07-22
 
 ### Changed

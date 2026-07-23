@@ -16,6 +16,7 @@ import { resolvePlatformPath } from "./path-utils.js";
 const {
   getSessionHistoryMock,
   getCodexSessionHistoryMock,
+  getCodexDesktopToolTimelineMock,
   codexThreadToSessionHistoryMock,
   extractMessageImagesMock,
   getAllRecentSessionsMock,
@@ -26,6 +27,7 @@ const {
 } = vi.hoisted(() => ({
   getSessionHistoryMock: vi.fn(),
   getCodexSessionHistoryMock: vi.fn(),
+  getCodexDesktopToolTimelineMock: vi.fn(),
   codexThreadToSessionHistoryMock: vi.fn(),
   extractMessageImagesMock: vi.fn(),
   getAllRecentSessionsMock: vi.fn(),
@@ -38,6 +40,7 @@ const {
 vi.mock("./sessions-index.js", () => ({
   getSessionHistory: getSessionHistoryMock,
   getCodexSessionHistory: getCodexSessionHistoryMock,
+  getCodexDesktopToolTimeline: getCodexDesktopToolTimelineMock,
   codexThreadToSessionHistory: codexThreadToSessionHistoryMock,
   extractMessageImages: extractMessageImagesMock,
   codexUserTurnUuid: (ordinal: number) => `codex:user-turn:${ordinal}`,
@@ -698,6 +701,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     httpServer = createServer();
     getSessionHistoryMock.mockReset();
     getCodexSessionHistoryMock.mockReset();
+    getCodexDesktopToolTimelineMock.mockReset();
     codexThreadToSessionHistoryMock.mockReset();
     extractMessageImagesMock.mockReset();
     getAllRecentSessionsMock.mockReset();
@@ -711,6 +715,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
     getCodexSessionIndexMetadataMock.mockResolvedValue(new Map());
     getCodexSessionHistoryMock.mockResolvedValue([]);
+    getCodexDesktopToolTimelineMock.mockResolvedValue({
+      events: [],
+      callIds: new Set(),
+    });
     codexThreadToSessionHistoryMock.mockReturnValue([]);
     extractMessageImagesMock.mockResolvedValue([]);
     saveCodexSessionProfileMock.mockResolvedValue(undefined);
@@ -4099,6 +4107,21 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
   });
 
   it("serves codex history deltas from canonical thread/read", async () => {
+    const desktopToolTimeline = {
+      callIds: new Set(["call-skill"]),
+      events: [
+        {
+          turnId: "turn-1",
+          callId: "call-skill",
+          afterVisibleMessage: 1,
+          sequence: 1,
+          type: "tool_use",
+          name: "ReadSkill",
+          input: { file_path: "/tmp/pdf/SKILL.md" },
+        },
+      ],
+    };
+    getCodexDesktopToolTimelineMock.mockResolvedValue(desktopToolTimeline);
     codexThreadToSessionHistoryMock.mockReturnValue([
       {
         role: "user",
@@ -4162,6 +4185,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(session.process.readThread).toHaveBeenCalledWith(
       "thr_codex_1",
       true,
+    );
+    expect(getCodexDesktopToolTimelineMock).toHaveBeenCalledWith(
+      "thr_codex_1",
+    );
+    expect(codexThreadToSessionHistoryMock).toHaveBeenCalledWith(
+      { id: "thr_codex_1", turns: [] },
+      { desktopToolTimeline },
     );
     const sends = ws.send.mock.calls.map((c: unknown[]) =>
       JSON.parse(c[0] as string),
