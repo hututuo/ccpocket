@@ -479,3 +479,27 @@
 - The implementation is split across `ca427a89` (Bridge full download and
   capability), `d33aa31c` (Mobile storage/render window and indexed target
   loading), and `253c1ab3` (shared History loading UI).
+
+## Codex Desktop image-reference restoration
+
+- Codex Desktop `view_image` history is a structured tool exchange: the call
+  carries the local path and the result may carry an `input_image` data URI.
+  Bridge must preserve that structure instead of stringifying the image block
+  into transcript text.
+- Prefer the lightweight local path when it is still readable. When only
+  inline data is available, Bridge registers it in the existing bounded
+  `ImageStore` and sends only an opaque `ImageRef`; raw base64 never crosses
+  the client protocol.
+- This is an additive conversion on the existing tool-result and image-ref
+  model, not a protocol-schema fork. Older clients and Bridges retain their
+  previous behavior, while the Mobile companion change ensures an
+  image-owning result is not discarded merely because the corresponding tool
+  call also has a summary.
+- Collapsed tool results do not build or fetch their image preview. The
+  existing preview is created only after explicit disclosure, preserving the
+  bounded first-render behavior of long conversations.
+- The implementation is isolated on
+  `feature/mobile-codex-image-references` as `2108a3a9` (Bridge history/live
+  conversion) and `bdac4e5e` (Mobile lazy disclosure). These commits are not a
+  Bridge deployment, OTA publication, stable promotion, or physical-device
+  installation.
