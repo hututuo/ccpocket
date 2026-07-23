@@ -96,6 +96,33 @@ void main() {
       // (Image.network won't be present)
       expect(find.byType(Image), findsNothing);
     });
+
+    testWidgets('view_image builds its preview only after disclosure', (
+      tester,
+    ) async {
+      final msg = ToolResultMessage(
+        toolUseId: 'test-view-image',
+        content: 'Viewed image',
+        toolName: 'ViewImage',
+        images: const [
+          ImageRef(
+            id: 'img-view',
+            url: '/images/view.png',
+            mimeType: 'image/png',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        _wrap(ToolResultBubble(message: msg, httpBaseUrl: 'http://localhost')),
+      );
+      expect(find.byType(ImagePreviewWidget), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
+      await tester.pump();
+
+      expect(find.byType(ImagePreviewWidget), findsOneWidget);
+    });
   });
 
   group('ToolResultBubble - disclosure and explicit show-more', () {

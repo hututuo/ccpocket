@@ -121,37 +121,37 @@ void main() {
   testWidgets(
     'local Markdown image renders as an attachment, not a broken image',
     (tester) async {
-    const imageArtifact = ArtifactRef(
-      id: 'artifact-image',
-      filename: 'plot.png',
-      mimeType: 'image/png',
-      sizeBytes: 512,
-      kind: 'preview',
-      source: 'assistant_markdown',
-      textContentIndex: 0,
-      originalHref: '/Users/me/plot.png',
-    );
-    await tester.pumpWidget(
-      _wrap(
-        AssistantBubble(
-          message: const AssistantServerMessage(
-            message: AssistantMessage(
-              id: 'message-image',
-              role: 'assistant',
-              content: [TextContent(text: '![Plot](/Users/me/plot.png)')],
-              model: 'codex',
+      const imageArtifact = ArtifactRef(
+        id: 'artifact-image',
+        filename: 'plot.png',
+        mimeType: 'image/png',
+        sizeBytes: 512,
+        kind: 'preview',
+        source: 'assistant_markdown',
+        textContentIndex: 0,
+        originalHref: '/Users/me/plot.png',
+      );
+      await tester.pumpWidget(
+        _wrap(
+          AssistantBubble(
+            message: const AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'message-image',
+                role: 'assistant',
+                content: [TextContent(text: '![Plot](/Users/me/plot.png)')],
+                model: 'codex',
+              ),
+              artifacts: [imageArtifact],
             ),
-            artifacts: [imageArtifact],
+            onArtifactOpen: (_) async {},
           ),
-          onArtifactOpen: (_) async {},
         ),
-      ),
-    );
+      );
 
-    // The local image is represented once at its original Markdown position.
-    expect(find.byType(ArtifactAttachmentChip), findsOneWidget);
-    expect(find.text('plot.png'), findsOneWidget);
-    expect(find.byType(Image), findsNothing);
+      // The local image is represented once at its original Markdown position.
+      expect(find.byType(ArtifactAttachmentChip), findsOneWidget);
+      expect(find.text('plot.png'), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
     },
   );
 
@@ -180,6 +180,9 @@ void main() {
       ),
     );
 
+    expect(find.text('bundle.zip'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
+    await tester.pump();
     expect(find.text('bundle.zip'), findsOneWidget);
     await tester.tap(
       find.byKey(const ValueKey('artifact_attachment_artifact-tool')),
@@ -207,10 +210,10 @@ void main() {
       ),
     );
 
+    await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
+    await tester.pump();
     await tester.tap(
-      find.byKey(
-        const ValueKey('artifact_attachment_artifact-source-safe'),
-      ),
+      find.byKey(const ValueKey('artifact_attachment_artifact-source-safe')),
     );
     await tester.pump();
 
@@ -239,17 +242,13 @@ void main() {
     );
 
     expect(
-      find.byKey(
-        const ValueKey('artifact_attachment_artifact-source-safe'),
-      ),
+      find.byKey(const ValueKey('artifact_attachment_artifact-source-safe')),
       findsNothing,
     );
     await tester.tap(find.byKey(const ValueKey('plain_text_toggle')));
     await tester.pump();
     expect(
-      find.byKey(
-        const ValueKey('artifact_attachment_artifact-source-safe'),
-      ),
+      find.byKey(const ValueKey('artifact_attachment_artifact-source-safe')),
       findsOneWidget,
     );
   });
@@ -307,9 +306,9 @@ void main() {
     expect(opened, _preview);
   });
 
-  testWidgets(
-    'summarized tool result remains visible when it owns artifacts',
-    (tester) async {
+  testWidgets('summarized tool result remains visible when it owns artifacts', (
+    tester,
+  ) async {
     const artifact = ArtifactRef(
       id: 'artifact-summarized',
       filename: 'generated.png',
@@ -331,9 +330,39 @@ void main() {
       ),
     );
 
+    expect(find.text('generated.png'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
+    await tester.pump();
     expect(find.text('generated.png'), findsOneWidget);
-    },
-  );
+  });
+
+  testWidgets('summarized view-image result remains available for disclosure', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _wrap(
+        const ServerMessageWidget(
+          message: ToolResultMessage(
+            toolUseId: 'tool-view-image',
+            toolName: 'ViewImage',
+            content: 'Viewed image',
+            images: [
+              ImageRef(
+                id: 'image-ref',
+                url: '/images/image-ref',
+                mimeType: 'image/png',
+              ),
+            ],
+          ),
+          httpBaseUrl: 'http://localhost',
+          hiddenToolUseIds: {'tool-view-image'},
+        ),
+      ),
+    );
+
+    expect(find.byType(ToolResultBubble), findsOneWidget);
+    expect(find.text('Viewed image'), findsOneWidget);
+  });
 
   testWidgets('unsafe source attachment remains disabled', (tester) async {
     const artifact = ArtifactRef(
@@ -359,11 +388,11 @@ void main() {
       ),
     );
 
+    await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
+    await tester.pump();
     final inkWell = tester.widget<InkWell>(
       find.descendant(
-        of: find.byKey(
-          const ValueKey('artifact_attachment_artifact-source'),
-        ),
+        of: find.byKey(const ValueKey('artifact_attachment_artifact-source')),
         matching: find.byType(InkWell),
       ),
     );

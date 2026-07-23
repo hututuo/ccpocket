@@ -226,7 +226,9 @@ class ServerMessageWidget extends StatelessWidget {
       ),
       // Hide tool results that are summarized by a tool_use_summary
       final ToolResultMessage msg =>
-        hiddenToolUseIds.contains(msg.toolUseId) && msg.artifacts.isEmpty
+        hiddenToolUseIds.contains(msg.toolUseId) &&
+                msg.artifacts.isEmpty &&
+                msg.images.isEmpty
             ? const SizedBox.shrink()
             : ToolResultBubble(
                 message: msg,
