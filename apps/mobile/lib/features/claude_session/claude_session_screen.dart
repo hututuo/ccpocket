@@ -1646,11 +1646,11 @@ void _showUserMessageHistory(
     useSafeArea: true,
     builder: (_) => UserMessageHistoryLoaderSheet(
       messages: messages,
-      onScrollToMessage: (msg) {
-        unawaited(() async {
-          final loaded = await cubit.revealUserMessage(msg);
-          if (loaded != null) scrollToUserEntry.value = loaded;
-        }());
+      onScrollToMessage: (msg) async {
+        final loaded = await cubit.revealUserMessage(msg);
+        if (loaded == null) return false;
+        scrollToUserEntry.value = loaded;
+        return true;
       },
       onRewindMessage: (msg) => _showRewindActionSheet(
         context,
