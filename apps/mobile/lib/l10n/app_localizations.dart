@@ -1944,6 +1944,36 @@ abstract class AppLocalizations {
   /// **'自動レビューで承認'**
   String get guardianApprovalTitle;
 
+  /// No description provided for @guardianApprovalDeniedTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'自動レビューで却下'**
+  String get guardianApprovalDeniedTitle;
+
+  /// No description provided for @guardianApprovalTimedOutTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'自動レビューがタイムアウト'**
+  String get guardianApprovalTimedOutTitle;
+
+  /// No description provided for @guardianApprovalAbortedTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'自動レビューを中止'**
+  String get guardianApprovalAbortedTitle;
+
+  /// No description provided for @guardianApprovalUnknownRisk.
+  ///
+  /// In ja, this message translates to:
+  /// **'リスク未評価'**
+  String get guardianApprovalUnknownRisk;
+
+  /// No description provided for @guardianApprovalLowRisk.
+  ///
+  /// In ja, this message translates to:
+  /// **'低リスク'**
+  String get guardianApprovalLowRisk;
+
   /// No description provided for @guardianApprovalMediumRisk.
   ///
   /// In ja, this message translates to:
@@ -1956,6 +1986,12 @@ abstract class AppLocalizations {
   /// **'高リスク'**
   String get guardianApprovalHighRisk;
 
+  /// No description provided for @guardianApprovalCriticalRisk.
+  ///
+  /// In ja, this message translates to:
+  /// **'重大リスク'**
+  String get guardianApprovalCriticalRisk;
+
   /// No description provided for @guardianApprovalDetails.
   ///
   /// In ja, this message translates to:
@@ -1967,6 +2003,66 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'詳細を閉じる'**
   String get guardianApprovalHideDetails;
+
+  /// No description provided for @guardianApprovalReasonLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'審査理由'**
+  String get guardianApprovalReasonLabel;
+
+  /// No description provided for @guardianApprovalInstructionLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'実行内容'**
+  String get guardianApprovalInstructionLabel;
+
+  /// No description provided for @guardianApprovalInstructionUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'この Codex バージョンでは具体的な実行内容が提供されませんでした。'**
+  String get guardianApprovalInstructionUnavailable;
+
+  /// No description provided for @guardianApprovalWorkingDirectory.
+  ///
+  /// In ja, this message translates to:
+  /// **'作業ディレクトリ: {path}'**
+  String guardianApprovalWorkingDirectory(String path);
+
+  /// No description provided for @guardianApprovalAuthorizationUnknown.
+  ///
+  /// In ja, this message translates to:
+  /// **'不明'**
+  String get guardianApprovalAuthorizationUnknown;
+
+  /// No description provided for @guardianApprovalAuthorizationLow.
+  ///
+  /// In ja, this message translates to:
+  /// **'低'**
+  String get guardianApprovalAuthorizationLow;
+
+  /// No description provided for @guardianApprovalAuthorizationMedium.
+  ///
+  /// In ja, this message translates to:
+  /// **'中'**
+  String get guardianApprovalAuthorizationMedium;
+
+  /// No description provided for @guardianApprovalAuthorizationHigh.
+  ///
+  /// In ja, this message translates to:
+  /// **'高'**
+  String get guardianApprovalAuthorizationHigh;
+
+  /// No description provided for @guardianApprovalLowRiskAllowReason.
+  ///
+  /// In ja, this message translates to:
+  /// **'自動レビューが低リスクと判断し、実行を許可しました。'**
+  String get guardianApprovalLowRiskAllowReason;
+
+  /// No description provided for @guardianApprovalTimedOutReason.
+  ///
+  /// In ja, this message translates to:
+  /// **'自動レビューはこのリクエストの評価中にタイムアウトしました。'**
+  String get guardianApprovalTimedOutReason;
 
   /// No description provided for @guardianApprovalAuthorization.
   ///

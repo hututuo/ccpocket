@@ -1018,18 +1018,16 @@ sealed class ServerMessage {
         toolCalls: json['toolCalls'] as int?,
         fileEdits: json['fileEdits'] as int?,
       ),
-      'guardian_approval' => GuardianApprovalMessage(
-        risk: GuardianApprovalRisk.fromString(json['risk'] as String?),
-        reason: json['reason'] as String? ?? '',
-        authorization: json['authorization'] as String?,
-      ),
-      'error' => ErrorMessage(
-        message: json['message'] as String,
-        errorCode: json['errorCode'] as String?,
-        sessionId: json['sessionId'] as String?,
-        permissionChangeId: json['permissionChangeId'] as String?,
-        goalChangeId: json['goalChangeId'] as String?,
-      ),
+      'guardian_approval' => GuardianApprovalMessage.fromJson(json),
+      'error' =>
+        _guardianReviewFromErrorJson(json) ??
+        ErrorMessage(
+          message: json['message'] as String,
+          errorCode: json['errorCode'] as String?,
+          sessionId: json['sessionId'] as String?,
+          permissionChangeId: json['permissionChangeId'] as String?,
+          goalChangeId: json['goalChangeId'] as String?,
+        ),
       'status' => StatusMessage(
         status: ProcessStatus.fromString(json['status'] as String),
       ),
@@ -1867,24 +1865,125 @@ class ErrorMessage implements ServerMessage {
 }
 
 enum GuardianApprovalRisk {
+  unknown,
+  low,
   medium,
-  high;
+  high,
+  critical;
 
   static GuardianApprovalRisk fromString(String? value) => switch (value) {
+    'low' => GuardianApprovalRisk.low,
+    'medium' => GuardianApprovalRisk.medium,
     'high' => GuardianApprovalRisk.high,
-    _ => GuardianApprovalRisk.medium,
+    'critical' => GuardianApprovalRisk.critical,
+    _ => GuardianApprovalRisk.unknown,
+  };
+}
+
+enum GuardianApprovalStatus {
+  approved,
+  denied,
+  timedOut,
+  aborted;
+
+  static GuardianApprovalStatus fromString(String? value) => switch (value) {
+    'denied' => GuardianApprovalStatus.denied,
+    'timedOut' => GuardianApprovalStatus.timedOut,
+    'aborted' => GuardianApprovalStatus.aborted,
+    _ => GuardianApprovalStatus.approved,
   };
 }
 
 class GuardianApprovalMessage implements ServerMessage {
   final GuardianApprovalRisk risk;
+  final GuardianApprovalStatus status;
   final String reason;
   final String? authorization;
+  final String? reviewId;
+  final String? targetItemId;
+  final Map<String, dynamic>? action;
   const GuardianApprovalMessage({
     required this.risk,
+    this.status = GuardianApprovalStatus.approved,
     required this.reason,
     this.authorization,
+    this.reviewId,
+    this.targetItemId,
+    this.action,
   });
+
+  factory GuardianApprovalMessage.fromJson(Map<String, dynamic> json) {
+    final rawAction = json['action'];
+    return GuardianApprovalMessage(
+      risk: GuardianApprovalRisk.fromString(json['risk'] as String?),
+      status: GuardianApprovalStatus.fromString(json['status'] as String?),
+      reason: json['reason'] as String? ?? '',
+      authorization: json['authorization'] as String?,
+      reviewId: json['reviewId'] as String?,
+      targetItemId: json['targetItemId'] as String?,
+      action: rawAction is Map
+          ? Map<String, dynamic>.from(rawAction)
+          : null,
+    );
+  }
+}
+
+GuardianApprovalMessage? _guardianReviewFromErrorJson(
+  Map<String, dynamic> json,
+) {
+  final rawReview = json['guardianReview'];
+  if (rawReview is Map) {
+    return GuardianApprovalMessage.fromJson(
+      Map<String, dynamic>.from(rawReview),
+    );
+  }
+  if (json['errorCode'] != 'codex_warning') return null;
+  final rawMessage = json['message'];
+  if (rawMessage is! String) return null;
+  return _guardianReviewFromLegacyWarning(rawMessage);
+}
+
+GuardianApprovalMessage? _guardianReviewFromLegacyWarning(String message) {
+  final normalized = message.trim();
+  final match = RegExp(
+    r'^automatic approval review (approved|denied)\s*\(([^)]*)\)\s*:\s*([\s\S]+)$',
+    caseSensitive: false,
+  ).firstMatch(normalized);
+  if (match == null) {
+    if (RegExp(
+      r'^automatic approval review timed out while evaluating the requested approval\.?$',
+      caseSensitive: false,
+    ).hasMatch(normalized)) {
+      return GuardianApprovalMessage(
+        risk: GuardianApprovalRisk.unknown,
+        status: GuardianApprovalStatus.timedOut,
+        reason: normalized,
+      );
+    }
+    return null;
+  }
+
+  final metadata = <String, String>{};
+  for (final field in match.group(2)!.split(',')) {
+    final separator = field.indexOf(':');
+    if (separator == -1) continue;
+    metadata[field.substring(0, separator).trim().toLowerCase()] = field
+        .substring(separator + 1)
+        .trim();
+  }
+  final risk = GuardianApprovalRisk.fromString(
+    metadata['risk']?.toLowerCase(),
+  );
+  final reason = match.group(3)!.trim();
+  if (risk == GuardianApprovalRisk.unknown || reason.isEmpty) return null;
+  return GuardianApprovalMessage(
+    risk: risk,
+    status: match.group(1)!.toLowerCase() == 'denied'
+        ? GuardianApprovalStatus.denied
+        : GuardianApprovalStatus.approved,
+    reason: reason,
+    authorization: metadata['authorization'],
+  );
 }
 
 class StatusMessage implements ServerMessage {

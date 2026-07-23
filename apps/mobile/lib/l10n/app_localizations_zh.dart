@@ -983,16 +983,66 @@ class AppLocalizationsZh extends AppLocalizations {
   String get guardianApprovalTitle => '自动审查已批准';
 
   @override
+  String get guardianApprovalDeniedTitle => '自动审查未批准';
+
+  @override
+  String get guardianApprovalTimedOutTitle => '自动审查已超时';
+
+  @override
+  String get guardianApprovalAbortedTitle => '自动审查已中止';
+
+  @override
+  String get guardianApprovalUnknownRisk => '风险未判定';
+
+  @override
+  String get guardianApprovalLowRisk => '低风险';
+
+  @override
   String get guardianApprovalMediumRisk => '中等风险';
 
   @override
   String get guardianApprovalHighRisk => '高风险';
 
   @override
+  String get guardianApprovalCriticalRisk => '严重风险';
+
+  @override
   String get guardianApprovalDetails => '详细信息';
 
   @override
   String get guardianApprovalHideDetails => '收起详细信息';
+
+  @override
+  String get guardianApprovalReasonLabel => '审批理由';
+
+  @override
+  String get guardianApprovalInstructionLabel => '具体指令';
+
+  @override
+  String get guardianApprovalInstructionUnavailable => '当前 Codex 版本未提供具体指令。';
+
+  @override
+  String guardianApprovalWorkingDirectory(String path) {
+    return '工作目录：$path';
+  }
+
+  @override
+  String get guardianApprovalAuthorizationUnknown => '未知';
+
+  @override
+  String get guardianApprovalAuthorizationLow => '低';
+
+  @override
+  String get guardianApprovalAuthorizationMedium => '中';
+
+  @override
+  String get guardianApprovalAuthorizationHigh => '高';
+
+  @override
+  String get guardianApprovalLowRiskAllowReason => '自动审查判定为低风险并允许执行。';
+
+  @override
+  String get guardianApprovalTimedOutReason => '自动审查在评估这项请求时超时。';
 
   @override
   String guardianApprovalAuthorization(String authorization) {

@@ -397,10 +397,31 @@
   "codexAutoReviewDescription": "Let Codex review approval requests automatically",
   "codexAutoReviewUnavailableDescription": "Unavailable when approvals are disabled",
   "guardianApprovalTitle": "Auto Review approved",
+  "guardianApprovalDeniedTitle": "Auto Review denied",
+  "guardianApprovalTimedOutTitle": "Auto Review timed out",
+  "guardianApprovalAbortedTitle": "Auto Review stopped",
+  "guardianApprovalUnknownRisk": "Risk not rated",
+  "guardianApprovalLowRisk": "Low risk",
   "guardianApprovalMediumRisk": "Medium risk",
   "guardianApprovalHighRisk": "High risk",
+  "guardianApprovalCriticalRisk": "Critical risk",
   "guardianApprovalDetails": "Details",
   "guardianApprovalHideDetails": "Hide details",
+  "guardianApprovalReasonLabel": "Review reason",
+  "guardianApprovalInstructionLabel": "Requested action",
+  "guardianApprovalInstructionUnavailable": "This Codex version did not provide the exact action.",
+  "guardianApprovalWorkingDirectory": "Working directory: {path}",
+  "@guardianApprovalWorkingDirectory": {
+    "placeholders": {
+      "path": {"type": "String"}
+    }
+  },
+  "guardianApprovalAuthorizationUnknown": "Unknown",
+  "guardianApprovalAuthorizationLow": "Low",
+  "guardianApprovalAuthorizationMedium": "Medium",
+  "guardianApprovalAuthorizationHigh": "High",
+  "guardianApprovalLowRiskAllowReason": "Auto Review classified this as low risk and allowed it.",
+  "guardianApprovalTimedOutReason": "Auto Review timed out while evaluating this request.",
   "guardianApprovalAuthorization": "Authorization: {authorization}",
   "@guardianApprovalAuthorization": {
     "placeholders": {

@@ -992,16 +992,69 @@ class AppLocalizationsKo extends AppLocalizations {
   String get guardianApprovalTitle => '자동 리뷰 승인';
 
   @override
+  String get guardianApprovalDeniedTitle => '자동 리뷰 거부';
+
+  @override
+  String get guardianApprovalTimedOutTitle => '자동 리뷰 시간 초과';
+
+  @override
+  String get guardianApprovalAbortedTitle => '자동 리뷰 중단';
+
+  @override
+  String get guardianApprovalUnknownRisk => '위험 미평가';
+
+  @override
+  String get guardianApprovalLowRisk => '낮은 위험';
+
+  @override
   String get guardianApprovalMediumRisk => '중간 위험';
 
   @override
   String get guardianApprovalHighRisk => '높은 위험';
 
   @override
+  String get guardianApprovalCriticalRisk => '심각한 위험';
+
+  @override
   String get guardianApprovalDetails => '세부 정보';
 
   @override
   String get guardianApprovalHideDetails => '세부 정보 숨기기';
+
+  @override
+  String get guardianApprovalReasonLabel => '검토 사유';
+
+  @override
+  String get guardianApprovalInstructionLabel => '실행 내용';
+
+  @override
+  String get guardianApprovalInstructionUnavailable =>
+      '이 Codex 버전은 구체적인 실행 내용을 제공하지 않았습니다.';
+
+  @override
+  String guardianApprovalWorkingDirectory(String path) {
+    return '작업 디렉터리: $path';
+  }
+
+  @override
+  String get guardianApprovalAuthorizationUnknown => '알 수 없음';
+
+  @override
+  String get guardianApprovalAuthorizationLow => '낮음';
+
+  @override
+  String get guardianApprovalAuthorizationMedium => '중간';
+
+  @override
+  String get guardianApprovalAuthorizationHigh => '높음';
+
+  @override
+  String get guardianApprovalLowRiskAllowReason =>
+      '자동 리뷰가 낮은 위험으로 판단하여 실행을 허용했습니다.';
+
+  @override
+  String get guardianApprovalTimedOutReason =>
+      '자동 리뷰가 이 요청을 평가하는 동안 시간 초과되었습니다.';
 
   @override
   String guardianApprovalAuthorization(String authorization) {

@@ -185,12 +185,78 @@ void main() {
               'risk': 'high',
               'reason': 'The command changes files outside the workspace.',
               'authorization': 'high',
+              'reviewId': 'guardian-1',
+              'targetItemId': 'command-1',
+              'action': {
+                'type': 'command',
+                'command': 'git clean -fd',
+                'cwd': '/workspace',
+              },
             })
             as GuardianApprovalMessage;
 
     expect(message.risk, GuardianApprovalRisk.high);
+    expect(message.status, GuardianApprovalStatus.approved);
     expect(message.reason, 'The command changes files outside the workspace.');
     expect(message.authorization, 'high');
+    expect(message.reviewId, 'guardian-1');
+    expect(message.targetItemId, 'command-1');
+    expect(message.action?['command'], 'git clean -fd');
+  });
+
+  test('upgrades a compatible Codex warning into a Guardian review notice', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'error',
+              'errorCode': 'codex_warning',
+              'message':
+                  'Automatic approval review approved (risk: low, authorization: high): reason',
+              'guardianReview': {
+                'status': 'approved',
+                'risk': 'low',
+                'reason': 'The command only reads database metadata.',
+                'authorization': 'high',
+                'action': {
+                  'type': 'command',
+                  'command': 'ls -la simulator.db*',
+                  'cwd': '/tmp',
+                },
+              },
+            })
+            as GuardianApprovalMessage;
+
+    expect(message.risk, GuardianApprovalRisk.low);
+    expect(message.reason, 'The command only reads database metadata.');
+    expect(message.authorization, 'high');
+    expect(message.action?['command'], 'ls -la simulator.db*');
+  });
+
+  test('upgrades a legacy auto-review warning without Bridge metadata', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'error',
+              'errorCode': 'codex_warning',
+              'message':
+                  'Automatic approval review approved (risk: low, authorization: high):\n'
+                  'The command only reads database metadata.',
+            })
+            as GuardianApprovalMessage;
+
+    expect(message.risk, GuardianApprovalRisk.low);
+    expect(message.status, GuardianApprovalStatus.approved);
+    expect(message.reason, 'The command only reads database metadata.');
+    expect(message.authorization, 'high');
+    expect(message.action, isNull);
+  });
+
+  test('keeps unrelated Codex warnings as ordinary errors', () {
+    final message = ServerMessage.fromJson({
+      'type': 'error',
+      'errorCode': 'codex_warning',
+      'message': 'thread/rollback is deprecated',
+    });
+
+    expect(message, isA<ErrorMessage>());
   });
 
   test('ReasoningEffort preserves model-advertised future values', () {

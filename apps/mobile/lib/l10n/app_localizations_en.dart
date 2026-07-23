@@ -1024,16 +1024,69 @@ class AppLocalizationsEn extends AppLocalizations {
   String get guardianApprovalTitle => 'Auto Review approved';
 
   @override
+  String get guardianApprovalDeniedTitle => 'Auto Review denied';
+
+  @override
+  String get guardianApprovalTimedOutTitle => 'Auto Review timed out';
+
+  @override
+  String get guardianApprovalAbortedTitle => 'Auto Review stopped';
+
+  @override
+  String get guardianApprovalUnknownRisk => 'Risk not rated';
+
+  @override
+  String get guardianApprovalLowRisk => 'Low risk';
+
+  @override
   String get guardianApprovalMediumRisk => 'Medium risk';
 
   @override
   String get guardianApprovalHighRisk => 'High risk';
 
   @override
+  String get guardianApprovalCriticalRisk => 'Critical risk';
+
+  @override
   String get guardianApprovalDetails => 'Details';
 
   @override
   String get guardianApprovalHideDetails => 'Hide details';
+
+  @override
+  String get guardianApprovalReasonLabel => 'Review reason';
+
+  @override
+  String get guardianApprovalInstructionLabel => 'Requested action';
+
+  @override
+  String get guardianApprovalInstructionUnavailable =>
+      'This Codex version did not provide the exact action.';
+
+  @override
+  String guardianApprovalWorkingDirectory(String path) {
+    return 'Working directory: $path';
+  }
+
+  @override
+  String get guardianApprovalAuthorizationUnknown => 'Unknown';
+
+  @override
+  String get guardianApprovalAuthorizationLow => 'Low';
+
+  @override
+  String get guardianApprovalAuthorizationMedium => 'Medium';
+
+  @override
+  String get guardianApprovalAuthorizationHigh => 'High';
+
+  @override
+  String get guardianApprovalLowRiskAllowReason =>
+      'Auto Review classified this as low risk and allowed it.';
+
+  @override
+  String get guardianApprovalTimedOutReason =>
+      'Auto Review timed out while evaluating this request.';
 
   @override
   String guardianApprovalAuthorization(String authorization) {

@@ -2849,13 +2849,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return ['error', errorCode, message].join('\u0001');
       case GuardianApprovalMessage(
         :final risk,
+        :final status,
         :final reason,
         :final authorization,
+        :final reviewId,
+        :final targetItemId,
+        :final action,
       ):
         return [
           'guardian_approval',
           risk.name,
+          status.name,
           authorization,
+          reviewId,
+          targetItemId,
+          if (action != null) jsonEncode(action),
           reason,
         ].join('\u0001');
       case ToolUseSummaryMessage(:final summary, :final precedingToolUseIds):

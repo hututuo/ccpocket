@@ -404,10 +404,31 @@
   "codexAutoReviewDescription": "承認リクエストを Codex が自動レビューします",
   "codexAutoReviewUnavailableDescription": "Never Ask では承認リクエストが発生しないため利用できません",
   "guardianApprovalTitle": "自動レビューで承認",
+  "guardianApprovalDeniedTitle": "自動レビューで却下",
+  "guardianApprovalTimedOutTitle": "自動レビューがタイムアウト",
+  "guardianApprovalAbortedTitle": "自動レビューを中止",
+  "guardianApprovalUnknownRisk": "リスク未評価",
+  "guardianApprovalLowRisk": "低リスク",
   "guardianApprovalMediumRisk": "中リスク",
   "guardianApprovalHighRisk": "高リスク",
+  "guardianApprovalCriticalRisk": "重大リスク",
   "guardianApprovalDetails": "詳細",
   "guardianApprovalHideDetails": "詳細を閉じる",
+  "guardianApprovalReasonLabel": "審査理由",
+  "guardianApprovalInstructionLabel": "実行内容",
+  "guardianApprovalInstructionUnavailable": "この Codex バージョンでは具体的な実行内容が提供されませんでした。",
+  "guardianApprovalWorkingDirectory": "作業ディレクトリ: {path}",
+  "@guardianApprovalWorkingDirectory": {
+    "placeholders": {
+      "path": {"type": "String"}
+    }
+  },
+  "guardianApprovalAuthorizationUnknown": "不明",
+  "guardianApprovalAuthorizationLow": "低",
+  "guardianApprovalAuthorizationMedium": "中",
+  "guardianApprovalAuthorizationHigh": "高",
+  "guardianApprovalLowRiskAllowReason": "自動レビューが低リスクと判断し、実行を許可しました。",
+  "guardianApprovalTimedOutReason": "自動レビューはこのリクエストの評価中にタイムアウトしました。",
   "guardianApprovalAuthorization": "承認レベル: {authorization}",
   "@guardianApprovalAuthorization": {
     "placeholders": {
