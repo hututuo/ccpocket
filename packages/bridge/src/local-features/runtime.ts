@@ -1,5 +1,6 @@
 import type { CodexProcess } from "../codex-process.js";
 import type { FileBrowserManager } from "../file-browser-manager.js";
+import type { ImageRef } from "../image-store.js";
 import type { ClientMessage, ServerMessage } from "../parser.js";
 import type {
   LocalFeatureClientMessage,
@@ -72,6 +73,13 @@ export interface LocalFeatureRuntime {
     isStillSafe?: () => boolean,
   ): Promise<boolean>;
   hasCodexQueuedInput?(sessionId: string): boolean;
+  /**
+   * Converts trusted, already-decoded provider image output into opaque HTTP
+   * references. Local features never serialize the raw base64 to a client.
+   */
+  registerInlineImages?(
+    images: Array<{ data: string; mimeType: string }>,
+  ): ImageRef[];
   /** Drain a queued phone turn only after a stale runtime refresh succeeded. */
   drainCodexQueuedInputIfReady?(
     sessionId: string,

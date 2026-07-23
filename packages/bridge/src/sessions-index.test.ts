@@ -339,6 +339,12 @@ describe("codexThreadToSessionHistory", () => {
           toolUseId: "compact-1",
           toolName: "ContextCompaction",
         }),
+        expect.objectContaining({
+          role: "tool_result",
+          toolUseId: "image-1",
+          toolName: "ViewImage",
+          imagePaths: ["/tmp/a.png"],
+        }),
       ]),
     );
   });
@@ -448,6 +454,58 @@ describe("codexThreadToSessionHistory", () => {
           message.role === "tool_result" && message.toolUseId === "call-agent",
       ),
     ).toHaveLength(1);
+  });
+
+  it("preserves a supplemented Desktop view_image as a lightweight image path", () => {
+    const history = codexThreadToSessionHistory(
+      {
+        turns: [
+          {
+            id: "turn-image",
+            items: [
+              {
+                type: "userMessage",
+                content: [{ type: "text", text: "show it" }],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        desktopToolTimeline: {
+          callIds: new Set(["call-image"]),
+          events: [
+            {
+              turnId: "turn-image",
+              callId: "call-image",
+              afterVisibleMessage: 1,
+              sequence: 1,
+              type: "tool_use",
+              name: "ViewImage",
+              input: { path: "/tmp/referenced screenshot.png" },
+              imagePaths: ["/tmp/referenced screenshot.png"],
+            },
+            {
+              turnId: "turn-image",
+              callId: "call-image",
+              afterVisibleMessage: 1,
+              sequence: 2,
+              type: "tool_result",
+              name: "ViewImage",
+              content: "Returned 1 image",
+              imagePaths: ["/tmp/referenced screenshot.png"],
+            },
+          ],
+        },
+      },
+    );
+
+    expect(history.at(-1)).toMatchObject({
+      role: "tool_result",
+      toolUseId: "call-image",
+      toolName: "ViewImage",
+      imagePaths: ["/tmp/referenced screenshot.png"],
+    });
   });
 });
 
@@ -1869,6 +1927,69 @@ describe("codex sessions integration", () => {
         content: "agent started",
       }),
     ]);
+  });
+
+  it("restores the real Codex Desktop view_image shape without base64 text", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68029";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+    const imagePath = "/tmp/project-a/referenced screenshot.png";
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: threadId, cwd: "/tmp/project-a" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "view_image",
+          call_id: "call-image",
+          arguments: JSON.stringify({ path: imagePath, detail: "high" }),
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-image",
+          output: [
+            {
+              type: "input_image",
+              detail: "high",
+              image_url: "data:image/png;base64,aGVsbG8=",
+            },
+          ],
+        },
+      }),
+    ];
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
+      lines.join("\n"),
+    );
+
+    const history = await getCodexSessionHistory(threadId);
+    expect(history).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        uuid: "call-image",
+        content: [
+          expect.objectContaining({
+            type: "tool_use",
+            id: "call-image",
+            name: "ViewImage",
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        role: "tool_result",
+        toolUseId: "call-image",
+        toolName: "ViewImage",
+        content: "Viewed image",
+        imagePaths: [imagePath],
+      }),
+    ]);
+    expect(JSON.stringify(history)).not.toContain("aGVsbG8=");
   });
 
   it("restores codex MCP tool result images from event_msg entries", async () => {

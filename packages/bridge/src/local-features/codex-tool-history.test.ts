@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   CodexDesktopToolTimelineBuilder,
+  codexDesktopToolImagePaths,
   codexDesktopToolOutputText,
   describeCodexDesktopToolCall,
+  normalizeCodexDesktopToolOutput,
 } from "./codex-tool-history.js";
 
 describe("Codex Desktop history tool compatibility", () => {
@@ -144,5 +146,74 @@ describe("Codex Desktop history tool compatibility", () => {
         { type: "input_text", text: "result" },
       ]),
     ).toBe("Script completed\nresult");
+  });
+
+  it("keeps view_image output structured instead of rendering base64 as text", () => {
+    const output = normalizeCodexDesktopToolOutput([
+      {
+        type: "input_image",
+        detail: "high",
+        image_url: "data:image/png;base64,aGVsbG8=",
+      },
+    ]);
+
+    expect(output).toEqual({
+      content: "",
+      imageBase64: [{ data: "aGVsbG8=", mimeType: "image/png" }],
+    });
+    expect(codexDesktopToolOutputText([
+      {
+        type: "input_image",
+        image_url: "data:image/png;base64,aGVsbG8=",
+      },
+    ])).toBe("Returned 1 image");
+    expect(
+      codexDesktopToolImagePaths("ViewImage", {
+        path: "/tmp/screenshot.png",
+      }),
+    ).toEqual(["/tmp/screenshot.png"]);
+  });
+
+  it("carries the lightweight view_image path through the Desktop timeline", () => {
+    const builder = new CodexDesktopToolTimelineBuilder();
+    const meta = { turn_id: "turn-image" };
+    builder.ingest({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "view_image",
+        call_id: "call-image",
+        arguments: '{"path":"/tmp/screenshot.png","detail":"high"}',
+        internal_chat_message_metadata_passthrough: meta,
+      },
+    });
+    builder.ingest({
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call-image",
+        output: [
+          {
+            type: "input_image",
+            image_url: "data:image/png;base64,aGVsbG8=",
+          },
+        ],
+        internal_chat_message_metadata_passthrough: meta,
+      },
+    });
+
+    expect(builder.snapshot().events).toMatchObject([
+      {
+        type: "tool_use",
+        name: "ViewImage",
+        imagePaths: ["/tmp/screenshot.png"],
+      },
+      {
+        type: "tool_result",
+        name: "ViewImage",
+        imagePaths: ["/tmp/screenshot.png"],
+        content: "Viewed image",
+      },
+    ]);
   });
 });

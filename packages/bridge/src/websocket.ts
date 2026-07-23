@@ -1328,6 +1328,25 @@ export class BridgeWebSocketServer {
         ),
       hasCodexQueuedInput: (sessionId) =>
         this.sessionManager.get(sessionId)?.codexQueuedInput != null,
+      registerInlineImages: (images) => {
+        if (!this.imageStore) return [];
+        const refs: ImageRef[] = [];
+        for (const image of images) {
+          if (
+            typeof image.data !== "string" ||
+            typeof image.mimeType !== "string" ||
+            !image.mimeType.startsWith("image/")
+          ) {
+            continue;
+          }
+          const ref = this.imageStore.registerFromBase64(
+            image.data,
+            image.mimeType,
+          );
+          if (ref) refs.push(ref);
+        }
+        return refs;
+      },
       drainCodexQueuedInputIfReady: (sessionId, isStillSafe) =>
         this.sessionManager.drainCodexQueuedInputIfReady(
           sessionId,

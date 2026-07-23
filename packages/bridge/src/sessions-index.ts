@@ -16,9 +16,11 @@ import { isAutoRenamePromptText } from "./auto-rename.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import {
   CodexDesktopToolTimelineBuilder,
+  codexDesktopToolImagePaths,
   codexDesktopToolOutputText,
   describeCodexDesktopToolCall,
   formatCodexFileChanges,
+  normalizeCodexDesktopToolOutput,
   type CodexDesktopToolTimeline,
   type CodexDesktopToolTimelineEvent,
 } from "./local-features/codex-tool-history.js";
@@ -2435,37 +2437,41 @@ export function codexThreadToSessionHistory(
 
         case "dynamicToolCall": {
           const tool = stringValue(item.tool) ?? "tool";
+          const toolInput = parseObjectLike(item.arguments);
           appendToolUseMessage(messages, itemId, tool, {
             arguments: item.arguments ?? {},
             ...(typeof item.status === "string" ? { status: item.status } : {}),
           });
           const contentItems = arrayValue(item.contentItems);
-          const resultText = contentItems
-            .map((entry) => {
-              const contentItem = asObject(entry);
-              if (!contentItem) return "";
-              if (
-                contentItem.type === "inputText" &&
-                typeof contentItem.text === "string"
-              ) {
-                return contentItem.text;
-              }
-              if (
-                contentItem.type === "inputImage" &&
-                typeof contentItem.imageUrl === "string"
-              ) {
-                return contentItem.imageUrl;
-              }
-              return codexToolResultContent(contentItem);
-            })
-            .filter(Boolean)
-            .join("\n");
-          appendCodexOfficialToolResult(
+          const normalized = normalizeCodexDesktopToolOutput(contentItems);
+          const declaredImagePaths = arrayValue(item.imagePaths).filter(
+            (value): value is string =>
+              typeof value === "string" && value.trim().length > 0,
+          );
+          const imagePaths = [
+            ...new Set([
+              ...declaredImagePaths,
+              ...codexDesktopToolImagePaths(tool, toolInput),
+            ]),
+          ];
+          const hasImages =
+            imagePaths.length > 0 || normalized.imageBase64.length > 0;
+          appendToolResultMessage(
             messages,
             itemId,
             tool,
-            resultText,
-            itemTimestamp,
+            normalized.content ||
+              (hasImages
+                ? tool === "ViewImage"
+                  ? "Viewed image"
+                  : "Tool returned an image"
+                : ""),
+            {
+              imagePaths,
+              imageBase64:
+                imagePaths.length > 0 ? [] : normalized.imageBase64,
+              ...(itemTimestamp ? { timestamp: itemTimestamp } : {}),
+            },
           );
           break;
         }
@@ -2571,12 +2577,15 @@ export function codexThreadToSessionHistory(
             "ViewImage",
             path ? { path } : {},
           );
-          appendCodexOfficialToolResult(
+          appendToolResultMessage(
             messages,
             itemId,
             "ViewImage",
             path ? `Viewed image: ${path}` : "Image viewed",
-            itemTimestamp,
+            {
+              ...(path ? { imagePaths: [path] } : {}),
+              ...(itemTimestamp ? { timestamp: itemTimestamp } : {}),
+            },
           );
           break;
         }
@@ -2761,6 +2770,11 @@ function supplementCodexTurnItems(
         result?.content && result.content.length > 0
           ? [{ type: "inputText", text: result.content }]
           : [],
+      ...(result?.imagePaths && result.imagePaths.length > 0
+        ? { imagePaths: result.imagePaths }
+        : use.imagePaths && use.imagePaths.length > 0
+          ? { imagePaths: use.imagePaths }
+          : {}),
       desktopHostTool: true,
     });
     byVisibleMessage.set(use.afterVisibleMessage, bucket);
@@ -3041,6 +3055,7 @@ function appendToolResultMessage(
   name: string | undefined,
   content: string,
   options?: {
+    imagePaths?: string[];
     imageBase64?: Array<{ data: string; mimeType: string }>;
     timestamp?: string;
   },
@@ -3049,14 +3064,22 @@ function appendToolResultMessage(
     return;
   }
 
+  const imagePaths = options?.imagePaths ?? [];
   const imageBase64 = options?.imageBase64 ?? [];
-  if (!content.trim() && imageBase64.length === 0) return;
+  if (
+    !content.trim() &&
+    imagePaths.length === 0 &&
+    imageBase64.length === 0
+  ) {
+    return;
+  }
 
   messages.push({
     role: "tool_result",
     toolUseId: id,
     ...(name ? { toolName: name } : {}),
     content,
+    ...(imagePaths.length > 0 ? { imagePaths } : {}),
     ...(imageBase64.length > 0 ? { imageBase64 } : {}),
     ...(options?.timestamp ? { timestamp: options.timestamp } : {}),
   });
@@ -4234,6 +4257,7 @@ export async function getCodexSessionHistory(
 
   const messages: SessionHistoryMessage[] = [];
   const responseToolNames = new Map<string, string>();
+  const responseToolImagePaths = new Map<string, string[]>();
   let userTurnOrdinal = 0;
 
   try {
@@ -4414,6 +4438,11 @@ export async function getCodexSessionHistory(
         );
         appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
         responseToolNames.set(id, descriptor.name);
+        const imagePaths = codexDesktopToolImagePaths(
+          descriptor.name,
+          descriptor.input,
+        );
+        if (imagePaths.length > 0) responseToolImagePaths.set(id, imagePaths);
         continue;
       }
 
@@ -4427,6 +4456,11 @@ export async function getCodexSessionHistory(
         const descriptor = describeCodexDesktopToolCall(rawName, payload.input);
         appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
         responseToolNames.set(id, descriptor.name);
+        const imagePaths = codexDesktopToolImagePaths(
+          descriptor.name,
+          descriptor.input,
+        );
+        if (imagePaths.length > 0) responseToolImagePaths.set(id, imagePaths);
         continue;
       }
 
@@ -4438,13 +4472,29 @@ export async function getCodexSessionHistory(
           typeof payload.call_id === "string"
             ? payload.call_id
             : `tool-result-${index}`;
+        const toolName = responseToolNames.get(id);
+        const imagePaths = responseToolImagePaths.get(id) ?? [];
+        const normalized = normalizeCodexDesktopToolOutput(payload.output);
+        const imageBase64 =
+          imagePaths.length > 0 ? [] : normalized.imageBase64;
         appendToolResultMessage(
           messages,
           id,
-          responseToolNames.get(id),
-          codexDesktopToolOutputText(payload.output),
-          entryTimestamp ? { timestamp: entryTimestamp } : undefined,
+          toolName,
+          normalized.content ||
+            (imagePaths.length > 0 || imageBase64.length > 0
+              ? toolName === "ViewImage"
+                ? "Viewed image"
+                : "Tool returned an image"
+              : codexDesktopToolOutputText(payload.output)),
+          {
+            imagePaths,
+            imageBase64,
+            ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+          },
         );
+        responseToolNames.delete(id);
+        responseToolImagePaths.delete(id);
         continue;
       }
 
@@ -4562,11 +4612,25 @@ export async function getCodexSessionHistory(
       }
 
       if (payload.type === "image_view") {
+        const id =
+          typeof payload.id === "string" ? payload.id : `image-view-${index}`;
+        const path =
+          typeof payload.path === "string" ? payload.path : undefined;
         appendToolUseMessage(
           messages,
-          typeof payload.id === "string" ? payload.id : `image-view-${index}`,
+          id,
           "ViewImage",
-          typeof payload.path === "string" ? { path: payload.path } : {},
+          path ? { path } : {},
+        );
+        appendToolResultMessage(
+          messages,
+          id,
+          "ViewImage",
+          path ? `Viewed image: ${path}` : "Image viewed",
+          {
+            ...(path ? { imagePaths: [path] } : {}),
+            ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+          },
         );
         continue;
       }

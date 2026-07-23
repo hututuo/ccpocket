@@ -5747,13 +5747,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("keeps codex canonical tool result images in history snapshots", async () => {
+  it("keeps codex ViewImage refs in canonical history snapshots", async () => {
     codexThreadToSessionHistoryMock.mockReturnValue([
       {
         role: "tool_result",
-        toolUseId: "ig-1",
-        toolName: "ImageGeneration",
-        content: "status: completed",
+        toolUseId: "view-image-1",
+        toolName: "ViewImage",
+        content: "Viewed image",
         imageBase64: [{ data: "aGVsbG8=", mimeType: "image/png" }],
       },
     ]);
@@ -5821,8 +5821,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         {
           message: {
             type: "tool_result",
-            toolUseId: "ig-1",
-            toolName: "ImageGeneration",
+            toolUseId: "view-image-1",
+            toolName: "ViewImage",
             images: [
               {
                 id: "img-canonical",

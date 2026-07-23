@@ -23,6 +23,8 @@ export interface CodexDesktopToolTimelineEvent {
   name: string;
   input?: Record<string, unknown>;
   content?: string;
+  /** Local image paths carried only inside the Bridge history pipeline. */
+  imagePaths?: string[];
   timestamp?: string;
 }
 
@@ -34,6 +36,17 @@ export interface CodexDesktopToolTimeline {
 interface PendingDesktopToolCall {
   name: string;
   turnId: string;
+  imagePaths: string[];
+}
+
+export interface CodexDesktopInlineImage {
+  data: string;
+  mimeType: string;
+}
+
+export interface CodexDesktopToolOutput {
+  content: string;
+  imageBase64: CodexDesktopInlineImage[];
 }
 
 /**
@@ -93,9 +106,14 @@ export class CodexDesktopToolTimelineBuilder {
         rawName,
         payloadType === "function_call" ? payload.arguments : payload.input,
       );
+      const imagePaths = codexDesktopToolImagePaths(
+        descriptor.name,
+        descriptor.input,
+      );
       this.pendingCalls.set(callId, {
         name: descriptor.name,
         turnId: payloadTurnId,
+        imagePaths,
       });
       this.push({
         turnId: payloadTurnId,
@@ -105,6 +123,7 @@ export class CodexDesktopToolTimelineBuilder {
         type: "tool_use",
         name: descriptor.name,
         input: limitToolInput(descriptor.input),
+        ...(imagePaths.length > 0 ? { imagePaths } : {}),
         ...(stringValue(record.timestamp)
           ? { timestamp: stringValue(record.timestamp) }
           : {}),
@@ -125,6 +144,7 @@ export class CodexDesktopToolTimelineBuilder {
     const pending = this.pendingCalls.get(callId);
     const turnId = payloadTurnId ?? pending?.turnId;
     if (!turnId || !pending) return;
+    const normalized = normalizeCodexDesktopToolOutput(payload.output);
     this.push({
       turnId,
       callId,
@@ -132,9 +152,19 @@ export class CodexDesktopToolTimelineBuilder {
       type: "tool_result",
       name: pending.name,
       content: truncateText(
-        codexDesktopToolOutputText(payload.output),
+        normalized.content ||
+          (normalized.imageBase64.length > 0
+            ? pending.name === "ViewImage"
+              ? "Viewed image"
+              : normalized.imageBase64.length === 1
+                ? "Returned 1 image"
+                : `Returned ${normalized.imageBase64.length} images`
+            : ""),
         this.maxResultCharacters,
       ),
+      ...(pending.imagePaths.length > 0
+        ? { imagePaths: pending.imagePaths }
+        : {}),
       ...(stringValue(record.timestamp)
         ? { timestamp: stringValue(record.timestamp) }
         : {}),
@@ -216,19 +246,113 @@ export function describeCodexDesktopToolCall(
 }
 
 export function codexDesktopToolOutputText(output: unknown): string {
-  if (typeof output === "string") return output;
-  if (Array.isArray(output)) {
-    return output
-      .map((entry) => {
-        const item = asRecord(entry);
-        if (!item) return typeof entry === "string" ? entry : "";
-        return stringValue(item.text) ?? jsonText(item);
-      })
-      .filter(Boolean)
-      .join("\n");
+  const normalized = normalizeCodexDesktopToolOutput(output);
+  if (normalized.content) return normalized.content;
+  if (normalized.imageBase64.length === 1) return "Returned 1 image";
+  if (normalized.imageBase64.length > 1) {
+    return `Returned ${normalized.imageBase64.length} images`;
   }
-  const item = asRecord(output);
-  return item ? jsonText(item) : String(output ?? "");
+  return "";
+}
+
+/**
+ * Separates structured image blocks from the textual tool result.
+ *
+ * Codex Desktop persists `view_image` results as an `input_image` data URI.
+ * Serializing that block as JSON turns a small tool row into hundreds of
+ * kilobytes of base64 text. Keep the image structured so history/live adapters
+ * can register it with ImageStore and send only an opaque ImageRef to clients.
+ */
+export function normalizeCodexDesktopToolOutput(
+  output: unknown,
+): CodexDesktopToolOutput {
+  const textParts: string[] = [];
+  const imageBase64: CodexDesktopInlineImage[] = [];
+
+  const visit = (value: unknown, depth: number): void => {
+    if (value == null || depth > 6) return;
+    if (typeof value === "string") {
+      textParts.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, depth + 1);
+      return;
+    }
+    const item = asRecord(value);
+    if (!item) {
+      textParts.push(String(value));
+      return;
+    }
+
+    const type = stringValue(item.type)?.replace(/[-\s]/g, "_").toLowerCase();
+    if (
+      type === "input_image" ||
+      type === "inputimage" ||
+      type === "image"
+    ) {
+      const image = codexDesktopInlineImage(item);
+      if (image) imageBase64.push(image);
+      return;
+    }
+    if (
+      (type === "input_text" ||
+        type === "inputtext" ||
+        type === "output_text" ||
+        type === "outputtext" ||
+        type === "text") &&
+      typeof item.text === "string"
+    ) {
+      textParts.push(item.text);
+      return;
+    }
+    if (typeof item.text === "string") {
+      textParts.push(item.text);
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(item, "Ok")) {
+      visit(item.Ok, depth + 1);
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(item, "Err")) {
+      visit(item.Err, depth + 1);
+      return;
+    }
+    if (Array.isArray(item.content)) {
+      visit(item.content, depth + 1);
+      return;
+    }
+    textParts.push(jsonText(item));
+  };
+
+  visit(output, 0);
+  return {
+    content: textParts.filter(Boolean).join("\n").trim(),
+    imageBase64,
+  };
+}
+
+export function codexDesktopToolImagePaths(
+  name: string,
+  input: Record<string, unknown>,
+): string[] {
+  if (name !== "ViewImage") return [];
+  const values = [
+    input.path,
+    input.filePath,
+    input.file_path,
+    input.imagePath,
+    input.image_path,
+  ];
+  if (Array.isArray(input.paths)) values.push(...input.paths);
+  return [
+    ...new Set(
+      values
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 export function formatCodexFileChanges(changes: unknown): string {
@@ -291,6 +415,41 @@ function normalizeCodexToolName(name: string): string {
     }
   }
   return name;
+}
+
+function codexDesktopInlineImage(
+  item: Record<string, unknown>,
+): CodexDesktopInlineImage | undefined {
+  const source = asRecord(item.source);
+  const imageUrl =
+    stringValue(item.image_url) ??
+    stringValue(item.imageUrl) ??
+    stringValue(item.url);
+  const dataUri = imageUrl?.match(/^data:(image\/[^;]+);base64,(.+)$/s);
+  if (dataUri) {
+    return { mimeType: dataUri[1], data: dataUri[2] };
+  }
+
+  const rawData =
+    stringValue(item.data) ??
+    stringValue(item.base64) ??
+    stringValue(source?.data);
+  if (!rawData) return undefined;
+  const inlineDataUri = rawData.match(/^data:(image\/[^;]+);base64,(.+)$/s);
+  if (inlineDataUri) {
+    return { mimeType: inlineDataUri[1], data: inlineDataUri[2] };
+  }
+  const mimeType =
+    stringValue(item.mimeType) ??
+    stringValue(item.mime_type) ??
+    stringValue(item.mediaType) ??
+    stringValue(item.media_type) ??
+    stringValue(source?.mimeType) ??
+    stringValue(source?.mime_type) ??
+    stringValue(source?.media_type);
+  return mimeType?.startsWith("image/")
+    ? { data: rawData, mimeType }
+    : undefined;
 }
 
 function describeShellCommand(

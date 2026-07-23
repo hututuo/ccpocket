@@ -342,6 +342,65 @@ describe("CodexRolloutMonitor", () => {
     monitor.close();
   });
 
+  it("keeps a live view_image result structured for Bridge registration", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-image",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event("event_msg", { type: "task_started", turn_id: "turn-image" }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "desktop-image",
+        message: "show the screenshot",
+      }),
+      event("response_item", {
+        type: "function_call",
+        call_id: "call-image",
+        name: "view_image",
+        arguments: JSON.stringify({
+          path: "/tmp/referenced screenshot.png",
+          detail: "high",
+        }),
+      }),
+      event("response_item", {
+        type: "function_call_output",
+        call_id: "call-image",
+        output: [
+          {
+            type: "input_image",
+            detail: "high",
+            image_url: "data:image/png;base64,aGVsbG8=",
+          },
+        ],
+      }),
+    ]);
+    await monitor.refreshNow();
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "message",
+          itemKey: "tool-result:call-image",
+          message: expect.objectContaining({
+            type: "tool_result",
+            toolUseId: "call-image",
+            toolName: "ViewImage",
+            content: "Viewed image",
+          }),
+          imageBase64: [{ data: "aGVsbG8=", mimeType: "image/png" }],
+        }),
+      ]),
+    );
+    monitor.close();
+  });
+
   it("keeps an older overlapping turn active when a newer turn completes first", async () => {
     const path = await rollout([
       event("event_msg", { type: "task_started", turn_id: "turn-older" }),
@@ -1747,6 +1806,101 @@ describe("CodexRolloutMonitor", () => {
 });
 
 describe("CodexDesktopContinuityHandler", () => {
+  it("replaces live view_image base64 with an opaque ImageRef", async () => {
+    const path = await rollout();
+    const client = {};
+    const sent: any[] = [];
+    const registerInlineImages = vi.fn(() => [
+      {
+        id: "image-ref-1",
+        url: "/images/image-ref-1",
+        mimeType: "image/png",
+      },
+    ]);
+    const session = {
+      id: "runtime-image",
+      provider: "codex",
+      projectPath: "/project",
+      process: { isWaitingForInput: true },
+    };
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => session,
+      getCodexThreadId: () => "thread-image",
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: async () => {
+        throw new Error("not used");
+      },
+      registerInlineImages,
+      send: (_client, message) => sent.push(message),
+      supports: (_client, type) =>
+        type === "codex_desktop_continuity_event_v1",
+    };
+    const handler = new CodexDesktopContinuityHandler(runtime, {
+      resolveRolloutPath: async () => path,
+    });
+    await handler.handle(
+      {
+        type: "codex_desktop_continuity_watch",
+        protocolVersion: 1,
+        requestId: "watch-image",
+        sessionId: session.id,
+        threadId: "thread-image",
+        projectPath: "/project",
+      },
+      { client, signal: new AbortController().signal, runtime },
+    );
+    await appendEntries(path, [
+      event("event_msg", { type: "task_started", turn_id: "turn-image" }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "desktop-image",
+        message: "show it",
+      }),
+      event("response_item", {
+        type: "function_call",
+        call_id: "call-image",
+        name: "view_image",
+        arguments: '{"path":"/project/screenshot.png"}',
+      }),
+      event("response_item", {
+        type: "function_call_output",
+        call_id: "call-image",
+        output: [
+          {
+            type: "input_image",
+            image_url: "data:image/png;base64,aGVsbG8=",
+          },
+        ],
+      }),
+    ]);
+    await (handler as any).monitors.get("thread-image").refreshNow();
+
+    expect(registerInlineImages).toHaveBeenCalledWith([
+      { data: "aGVsbG8=", mimeType: "image/png" },
+    ]);
+    expect(sent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "message",
+          itemKey: "tool-result:call-image",
+          message: expect.objectContaining({
+            type: "tool_result",
+            toolName: "ViewImage",
+            images: [
+              {
+                id: "image-ref-1",
+                url: "/images/image-ref-1",
+                mimeType: "image/png",
+              },
+            ],
+          }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(sent)).not.toContain("aGVsbG8=");
+    handler.close();
+  });
+
   it("isolates same-Bridge watchers per client while sharing one rollout monitor", async () => {
     const path = await rollout();
     const sentByClient = new Map<object, any[]>();

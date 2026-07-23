@@ -4,7 +4,11 @@ import { open, stat, type FileHandle } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 import type { ServerMessage } from "../../parser.js";
 import { resolveCodexSessionJsonlPath } from "../../sessions-index.js";
-import { describeCodexDesktopToolCall } from "../codex-tool-history.js";
+import {
+  describeCodexDesktopToolCall,
+  normalizeCodexDesktopToolOutput,
+  type CodexDesktopInlineImage,
+} from "../codex-tool-history.js";
 import type {
   CodexDesktopContinuityClientMessage,
   CodexDesktopContinuityEventMessage,
@@ -64,6 +68,8 @@ interface MonitorMessageEvent {
   turnId?: string;
   timestamp?: string;
   message: ServerMessage;
+  /** Bridge-internal only; converted to opaque ImageRefs before sending. */
+  imageBase64?: CodexDesktopInlineImage[];
 }
 
 interface MonitorStateEvent {
@@ -736,6 +742,22 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
         }
       }
     }
+    let message =
+      event.kind === "message" ? event.message : undefined;
+    if (
+      event.kind === "message" &&
+      message?.type === "tool_result" &&
+      event.imageBase64 &&
+      event.imageBase64.length > 0
+    ) {
+      const images = this.runtime.registerInlineImages?.(event.imageBase64) ?? [];
+      if (images.length > 0) {
+        const existing = message.images ?? [];
+        const merged = new Map(existing.map((image) => [image.id, image]));
+        for (const image of images) merged.set(image.id, image);
+        message = { ...message, images: [...merged.values()] };
+      }
+    }
     for (const registration of registrations) {
       if (!this.runtime.supports(registration.client, SERVER_MESSAGE_TYPE)) {
         continue;
@@ -747,7 +769,7 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
           itemKey: event.itemKey,
           ...(event.turnId ? { turnId: event.turnId } : {}),
           ...(event.timestamp ? { timestamp: event.timestamp } : {}),
-          message: event.message,
+          message: message ?? event.message,
         });
       } else {
         const handoffQueued =
@@ -1935,21 +1957,27 @@ export class CodexRolloutMonitor {
     if (type === "function_call_output" || type === "custom_tool_call_output") {
       const callId = optionalString(payload.call_id);
       if (!callId) return;
+      const toolName = this.toolNames.get(callId);
+      const normalized = normalizeCodexDesktopToolOutput(payload.output);
       this.emitMessage(
         `tool-result:${callId}`,
         {
           type: "tool_result",
           toolUseId: callId,
           content: boundedText(
-            formatToolOutput(payload.output),
+            normalized.content ||
+              (normalized.imageBase64.length > 0
+                ? toolName === "ViewImage"
+                  ? "Viewed image"
+                  : "Tool returned an image"
+                : formatToolOutput(payload.output)),
             MAX_TEXT_BYTES,
           ),
-          ...(this.toolNames.get(callId)
-            ? { toolName: this.toolNames.get(callId) }
-            : {}),
+          ...(toolName ? { toolName } : {}),
         },
         timestamp,
         turn.turnId,
+        normalized.imageBase64,
       );
     }
   }
@@ -2452,12 +2480,14 @@ export class CodexRolloutMonitor {
     message: ServerMessage,
     timestamp?: string,
     turnId?: string,
+    imageBase64?: CodexDesktopInlineImage[],
   ): void {
     if (!remember(this.emittedKeys, itemKey, MAX_DEDUPE_KEYS)) return;
     this.options.onEvent({
       kind: "message",
       itemKey,
       message,
+      ...(imageBase64 && imageBase64.length > 0 ? { imageBase64 } : {}),
       ...(turnId ? { turnId } : {}),
       ...(timestamp ? { timestamp } : {}),
     });
