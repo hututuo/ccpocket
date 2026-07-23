@@ -2,6 +2,15 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.69.0-compat.6] - 2026-07-23
+
+### Fixed
+- Allow full conversation mirrors above the former 10,000-entry ceiling while keeping transfer planning and Mobile storage checks linear.
+- Send a bounded 200-entry canonical render window to opting-in Mobile clients without changing legacy client responses.
+
+### Compatibility
+- Keep complete downloaded history in the independent conversation mirror; Mobile retains every user-turn index row and loads distant 200-entry windows by stored ordinal.
+
 ## [1.69.0-compat.5] - 2026-07-23
 
 ### Fixed
