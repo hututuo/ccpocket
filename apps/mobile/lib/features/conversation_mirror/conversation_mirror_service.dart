@@ -32,6 +32,18 @@ class ConversationMirrorSyncResult {
   final String? error;
 }
 
+/// A dependency-neutral cancellation seam for bounded mirror work.
+///
+/// The mirror feature intentionally does not depend on iOS background task
+/// types. Callers may adapt any lifecycle or deadline signal to this interface.
+abstract interface class ConversationMirrorCancellation {
+  bool get isCancelled;
+
+  void addListener(VoidCallback listener);
+
+  void removeListener(VoidCallback listener);
+}
+
 /// Coordinates the optional Bridge mirror protocol with an independent local
 /// database. Canonical Codex/app-server history remains authoritative.
 class ConversationMirrorService extends ChangeNotifier {
@@ -83,12 +95,27 @@ class ConversationMirrorService extends ChangeNotifier {
   bool _closed = false;
   bool _storageAvailable = false;
   bool _featureUnsupported = false;
+  bool _automaticWatchRestorationEnabled = true;
+  String? _deferredAutoWatchBridgeInstanceId;
 
   String? get currentBridgeInstanceId =>
       _currentBridgeInstanceId ?? _bridge.promptHistoryBridgeId;
 
   bool get featureUnsupported => _featureUnsupported;
   bool get isAvailable => !_closed && !kIsWeb && _storageAvailable;
+
+  /// Controls whether connection/identity adoption may recreate missing
+  /// resident watches.
+  ///
+  /// Existing watches are intentionally left running. Background refresh
+  /// disables only automatic recreation so a reconnect cannot unexpectedly
+  /// start a large first snapshot inside iOS's short execution budget.
+  Future<void> setAutomaticWatchRestorationEnabled(bool enabled) async {
+    if (_closed) return;
+    _automaticWatchRestorationEnabled = enabled;
+    if (!enabled) return;
+    await _enqueueStorage(_restoreDeferredAutoWatches);
+  }
 
   List<ConversationMirrorMetadata> get residentMetadata {
     final result =
@@ -266,6 +293,101 @@ class ConversationMirrorService extends ChangeNotifier {
     final loaded = await _store.readMetadata(key);
     if (loaded != null) _metadata[key] = loaded;
     return loaded;
+  }
+
+  /// Performs a bounded one-shot reconciliation of resident conversations.
+  ///
+  /// Foreground callers may restore a missing watch. Background refresh callers
+  /// must set [restoreMissingWatches] to false so a disconnected watch cannot
+  /// unexpectedly turn into a large first snapshot inside iOS's short task
+  /// budget.
+  Future<int> reconcileResidents({
+    int maximumConversations = maxResidentConversations,
+    Duration budget = const Duration(seconds: 12),
+    bool restoreMissingWatches = true,
+    ConversationMirrorCancellation? cancellation,
+  }) async {
+    if (!isAvailable ||
+        !_bridge.isConnected ||
+        _closed ||
+        cancellation?.isCancelled == true ||
+        maximumConversations <= 0 ||
+        budget <= Duration.zero) {
+      return 0;
+    }
+    final bridgeId = currentBridgeInstanceId;
+    if (bridgeId == null || bridgeId.isEmpty) return 0;
+    final deadline = DateTime.now().add(budget);
+    final operationCancellation = _ConversationMirrorDeadlineCancellation(
+      parent: cancellation,
+      budget: budget,
+    );
+    final records = residentMetadata
+        .where((record) => record.key.bridgeInstanceId == bridgeId)
+        .take(math.min(maximumConversations, maxResidentConversations))
+        .toList(growable: false);
+    var completed = 0;
+    try {
+      for (final record in records) {
+        if (_closed ||
+            !_bridge.isConnected ||
+            _featureUnsupported ||
+            operationCancellation.isCancelled) {
+          break;
+        }
+        final remaining = deadline.difference(DateTime.now());
+        if (remaining <= Duration.zero) break;
+
+        final logicalKey = _logicalWatchKey(
+          record.key.provider,
+          record.key.providerSessionId,
+        );
+        final existingRequestId =
+            _watchRequestIdsByConversation[logicalKey] ??
+            _watchRequestIds[record.key];
+        final existingWasPending =
+            existingRequestId != null &&
+            _pending.containsKey(existingRequestId);
+        final existing = _existingWatch(
+          provider: record.key.provider,
+          providerSessionId: record.key.providerSessionId,
+          key: record.key,
+          entryCount: record.entryCount,
+        );
+        final Future<ConversationMirrorSyncResult>? operation;
+        if (existing == null) {
+          operation = restoreMissingWatches
+              ? _ensureWatch(
+                  record.key,
+                  projectPath: record.projectPath,
+                  knownRevision: record.revision,
+                )
+              : null;
+        } else if (existingWasPending && restoreMissingWatches) {
+          operation = existing;
+        } else if (existingWasPending) {
+          operation = null;
+        } else {
+          operation = _requestKeySync(
+            record.key,
+            projectPath: record.projectPath,
+            knownRevision: record.revision,
+            cancellation: operationCancellation,
+          );
+        }
+        if (operation == null) continue;
+        try {
+          final result = await operation.timeout(remaining);
+          if (result.success) completed++;
+        } on TimeoutException {
+          operationCancellation.cancel();
+          break;
+        }
+      }
+      return completed;
+    } finally {
+      operationCancellation.dispose();
+    }
   }
 
   ConversationMirrorMetadata? _uniqueCachedMetadata(
@@ -702,7 +824,18 @@ class ConversationMirrorService extends ChangeNotifier {
     ConversationMirrorKey key, {
     required String projectPath,
     String? knownRevision,
+    ConversationMirrorCancellation? cancellation,
   }) {
+    if (cancellation?.isCancelled == true) {
+      return Future.value(
+        const ConversationMirrorSyncResult(
+          success: false,
+          changed: false,
+          errorCode: 'cancelled',
+          error: 'Conversation mirror reconciliation was cancelled.',
+        ),
+      );
+    }
     final requestId = _uuid.v4();
     final pending = _PendingMirrorRequest(
       requestId: requestId,
@@ -718,16 +851,31 @@ class ConversationMirrorService extends ChangeNotifier {
     _registerPending(pending);
     _syncing.add(key);
     _notifyListeners();
-    try {
-      _bridge.send(
-        requestConversationMirrorSync(
-          requestId: requestId,
-          provider: key.provider,
-          providerSessionId: key.providerSessionId,
-          projectPath: projectPath,
-          knownRevision: knownRevision,
+    void cancelPending() {
+      _finishPending(
+        requestId,
+        const ConversationMirrorSyncResult(
+          success: false,
+          changed: false,
+          errorCode: 'cancelled',
+          error: 'Conversation mirror reconciliation was cancelled.',
         ),
       );
+    }
+
+    cancellation?.addListener(cancelPending);
+    try {
+      if (!pending.completer.isCompleted) {
+        _bridge.send(
+          requestConversationMirrorSync(
+            requestId: requestId,
+            provider: key.provider,
+            providerSessionId: key.providerSessionId,
+            projectPath: projectPath,
+            knownRevision: knownRevision,
+          ),
+        );
+      }
     } catch (error) {
       _finishPending(
         requestId,
@@ -739,7 +887,9 @@ class ConversationMirrorService extends ChangeNotifier {
         ),
       );
     }
-    return pending.completer.future;
+    return pending.completer.future.whenComplete(() {
+      cancellation?.removeListener(cancelPending);
+    });
   }
 
   void _registerPending(_PendingMirrorRequest request) {
@@ -2113,15 +2263,37 @@ class ConversationMirrorService extends ChangeNotifier {
     }
     _notifyListeners();
     if (_bridge.isConnected) {
-      await _restoreAutoWatches(bridgeInstanceId, records);
+      if (_automaticWatchRestorationEnabled) {
+        _deferredAutoWatchBridgeInstanceId = null;
+        await _restoreAutoWatches(bridgeInstanceId, records);
+      } else {
+        _deferredAutoWatchBridgeInstanceId = bridgeInstanceId;
+      }
     }
+  }
+
+  Future<void> _restoreDeferredAutoWatches() async {
+    if (_closed || !_automaticWatchRestorationEnabled || !_bridge.isConnected) {
+      return;
+    }
+    final bridgeInstanceId =
+        _deferredAutoWatchBridgeInstanceId ?? currentBridgeInstanceId;
+    if (bridgeInstanceId == null || bridgeInstanceId.isEmpty) return;
+    _deferredAutoWatchBridgeInstanceId = null;
+    await _restoreAutoWatches(
+      bridgeInstanceId,
+      _metadata.values.toList(growable: false),
+    );
   }
 
   Future<void> _restoreAutoWatches(
     String bridgeInstanceId,
     List<ConversationMirrorMetadata> autoSyncRecords,
   ) async {
-    if (_closed) return;
+    if (_closed || !_automaticWatchRestorationEnabled) {
+      _deferredAutoWatchBridgeInstanceId = bridgeInstanceId;
+      return;
+    }
     final records = autoSyncRecords
         .where(
           (record) =>
@@ -2132,6 +2304,10 @@ class ConversationMirrorService extends ChangeNotifier {
         .take(maxResidentConversations);
     for (final record in records) {
       if (!_bridge.isConnected || _closed) return;
+      if (!_automaticWatchRestorationEnabled) {
+        _deferredAutoWatchBridgeInstanceId = bridgeInstanceId;
+        return;
+      }
       unawaited(
         _ensureWatch(
           record.key,
@@ -2291,6 +2467,58 @@ class ConversationMirrorService extends ChangeNotifier {
 }
 
 enum _MirrorPublishResult { published, contentChanged, invalidated }
+
+class _ConversationMirrorDeadlineCancellation
+    implements ConversationMirrorCancellation {
+  _ConversationMirrorDeadlineCancellation({
+    required ConversationMirrorCancellation? parent,
+    required Duration budget,
+  }) : _parent = parent {
+    _parent?.addListener(cancel);
+    if (!_cancelled) {
+      _timer = Timer(budget, cancel);
+    }
+  }
+
+  final ConversationMirrorCancellation? _parent;
+  final Set<VoidCallback> _listeners = {};
+  Timer? _timer;
+  bool _cancelled = false;
+
+  @override
+  bool get isCancelled => _cancelled || _parent?.isCancelled == true;
+
+  @override
+  void addListener(VoidCallback listener) {
+    if (isCancelled) {
+      listener();
+      return;
+    }
+    _listeners.add(listener);
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    _listeners.remove(listener);
+  }
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    _timer?.cancel();
+    final listeners = List<VoidCallback>.from(_listeners);
+    _listeners.clear();
+    for (final listener in listeners) {
+      listener();
+    }
+  }
+
+  void dispose() {
+    _timer?.cancel();
+    _parent?.removeListener(cancel);
+    _listeners.clear();
+  }
+}
 
 class _RuntimeMirrorPageCursor {
   _RuntimeMirrorPageCursor({

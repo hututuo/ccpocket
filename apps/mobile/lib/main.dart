@@ -30,6 +30,8 @@ import 'package:talker_bloc_logger/talker_bloc_logger.dart';
 import 'core/logger.dart';
 import 'l10n/app_localizations.dart';
 import 'features/auto_approval/auto_approval_service.dart';
+import 'features/background_sync/background_sync_coordinator.dart';
+import 'features/background_sync/background_sync_host.dart';
 import 'features/conversation_mirror/conversation_mirror_service.dart';
 import 'features/conversation_mirror/storage/conversation_mirror_storage.dart';
 import 'features/file_browser/file_browser_service.dart';
@@ -221,6 +223,39 @@ void main() async {
     database: conversationMirrorDatabase,
   );
   unawaited(conversationMirrorService.initialize());
+  final backgroundSyncHost = MethodChannelBackgroundSyncHost(
+    supportsContinuation: mobileHostSnapshot.supports(
+      MobileHostCapability.backgroundContinuation,
+    ),
+    supportsAppRefresh: mobileHostSnapshot.supports(
+      MobileHostCapability.backgroundRefreshWarmRuntime,
+    ),
+  );
+  final backgroundSyncCoordinator = MobileBackgroundSyncCoordinator(
+    host: backgroundSyncHost,
+    bridge: BridgeServiceBackgroundSyncGateway(
+      bridge,
+      rebuildConnection: () async {
+        final logicalIdentity = bridge.logicalConnectionIdentity;
+        final machineId = machineIdFromLogicalConnectionIdentity(
+          logicalIdentity,
+        );
+        if (machineId == null) return false;
+        try {
+          final url = await machineManagerService.buildWsUrl(machineId);
+          if (bridge.logicalConnectionIdentity != logicalIdentity) return false;
+          bridge.connect(url, logicalConnectionIdentity: logicalIdentity);
+          return true;
+        } catch (error) {
+          logger.warning(
+            '[background-sync] failed to rebuild the Bridge route: $error',
+          );
+          return false;
+        }
+      },
+    ),
+    mirror: ConversationMirrorBackgroundSyncGateway(conversationMirrorService),
+  )..start(initialLifecycleState: WidgetsBinding.instance.lifecycleState);
   final fcmService = FcmService();
   final draftService = DraftService(prefs);
   final inAppReviewService = InAppReviewService(prefs: prefs);
@@ -387,6 +422,7 @@ void main() async {
         child: CcpocketApp(
           fcmService: fcmService,
           mobileUpdateService: mobileUpdateService,
+          backgroundSyncCoordinator: backgroundSyncCoordinator,
         ),
       ),
     ),
@@ -400,11 +436,13 @@ class CcpocketApp extends StatefulWidget {
   const CcpocketApp({
     required this.fcmService,
     this.mobileUpdateService,
+    this.backgroundSyncCoordinator,
     super.key,
   });
 
   final FcmService fcmService;
   final MobileUpdateService? mobileUpdateService;
+  final MobileBackgroundSyncCoordinator? backgroundSyncCoordinator;
 
   @override
   State<CcpocketApp> createState() => _CcpocketAppState();
@@ -441,6 +479,10 @@ class _CcpocketAppState extends State<CcpocketApp> {
     // Clear stale notifications on launch and whenever the app is resumed.
     _lifecycleListener = AppLifecycleListener(
       onStateChange: (state) {
+        final backgroundSyncCoordinator = widget.backgroundSyncCoordinator;
+        if (backgroundSyncCoordinator != null) {
+          unawaited(backgroundSyncCoordinator.handleLifecycleState(state));
+        }
         if (state == AppLifecycleState.resumed) {
           NotificationService.instance.cancelAll();
           final updateService = widget.mobileUpdateService;
@@ -450,6 +492,13 @@ class _CcpocketAppState extends State<CcpocketApp> {
         }
       },
     );
+    final currentLifecycleState = WidgetsBinding.instance.lifecycleState;
+    final backgroundSyncCoordinator = widget.backgroundSyncCoordinator;
+    if (currentLifecycleState != null && backgroundSyncCoordinator != null) {
+      unawaited(
+        backgroundSyncCoordinator.handleLifecycleState(currentLifecycleState),
+      );
+    }
     NotificationService.instance.cancelAll();
 
     if (!kIsWeb) {
@@ -650,6 +699,10 @@ class _CcpocketAppState extends State<CcpocketApp> {
   @override
   void dispose() {
     _lifecycleListener.dispose();
+    final backgroundSyncCoordinator = widget.backgroundSyncCoordinator;
+    if (backgroundSyncCoordinator != null) {
+      unawaited(backgroundSyncCoordinator.dispose());
+    }
     _linkSub?.cancel();
     _fcmOnMessageSub?.cancel();
     _fcmOnMessageOpenedAppSub?.cancel();

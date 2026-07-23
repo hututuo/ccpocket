@@ -119,6 +119,10 @@ class BridgeService implements BridgeServiceBase {
       StreamController<List<SessionInfo>>.broadcast();
   final _sessionHistoryAvailabilityController =
       StreamController<LocalSessionHistoryAvailabilityChange>.broadcast();
+  final _sessionHistoryReconciledController =
+      StreamController<String>.broadcast();
+  final Map<String, int> _sessionHistoryReconciliationGenerations = {};
+  int _sessionHistoryReconciliationSequence = 0;
   final _codexModelCatalogController = StreamController<int>.broadcast();
   final _sessionStoppedController = StreamController<String>.broadcast();
   final _recentSessionsController =
@@ -231,6 +235,7 @@ class BridgeService implements BridgeServiceBase {
   final Expando<_ExternalSessionHistoryMetadata> _externalSessionHistories =
       Expando<_ExternalSessionHistoryMetadata>('externalSessionHistory');
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
+  final Map<String, bool> _pendingHistoryDeltaAllowsFullFallback = {};
   final Map<String, ClientMessage> _inFlightPendingMessages = {};
   final Map<String, ClientMessage> _inFlightInputMessages = {};
   final Map<String, Timer> _inFlightPendingVisibilityTimers = {};
@@ -281,6 +286,10 @@ class BridgeService implements BridgeServiceBase {
   Stream<LocalSessionHistoryAvailabilityChange>
   get sessionHistoryAvailabilityChanges =>
       _sessionHistoryAvailabilityController.stream;
+  Stream<String> get sessionHistoryReconciliations =>
+      _sessionHistoryReconciledController.stream;
+  int sessionHistoryReconciliationGeneration(String sessionId) =>
+      _sessionHistoryReconciliationGenerations[sessionId] ?? 0;
   Stream<int> get codexModelCatalogChanges =>
       _codexModelCatalogController.stream;
   int get authoritativeSessionListGeneration =>
@@ -361,6 +370,8 @@ class BridgeService implements BridgeServiceBase {
   BridgeConnectionState get currentBridgeConnectionState => _connectionState;
   @override
   bool get isConnected => _connectionState == BridgeConnectionState.connected;
+  bool get isTransportHealthy =>
+      isConnected && _channel != null && _channel?.closeCode == null;
   List<SessionInfo> get sessions => _sessions;
   List<RecentSession> get recentSessions => _recentSessions;
   bool get recentSessionsHasMore => _recentSessionsHasMore;
@@ -1318,6 +1329,9 @@ class BridgeService implements BridgeServiceBase {
                   messages: _runtimeStore.messages(sessionId),
                 );
               }
+              if (msg is HistoryMessage) {
+                _emitSessionHistoryReconciliation(sessionId);
+              }
             }
             _clearDeliveredDeliveryPendingInput(msg, sessionId: sessionId);
             _clearDeliveredInFlightInput(msg, sessionId: sessionId);
@@ -1697,6 +1711,8 @@ class BridgeService implements BridgeServiceBase {
     _promptHistoryBridgeId = null;
     _lastUsageResult = null;
     _pendingHistoryDeltaSinceSeq.clear();
+    _pendingHistoryDeltaAllowsFullFallback.clear();
+    _sessionHistoryReconciliationGenerations.clear();
     _providerSessionBindingByRuntime.clear();
     _respondedToolUseIds.clear();
     _deliveryPendingInputs.clear();
@@ -1766,6 +1782,7 @@ class BridgeService implements BridgeServiceBase {
             (msg.fromSeq <= previousCachedSeq + 1 &&
                 msg.fromSeq <= previousLatestSeq));
     _pendingHistoryDeltaSinceSeq.remove(sessionId);
+    _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
     _runtimeStore.applyServerMessage(sessionId, msg);
 
     if (shouldReplace) {
@@ -1790,10 +1807,12 @@ class BridgeService implements BridgeServiceBase {
       _taggedMessageController.add((statusMessage, sessionId));
       _messageController.add(statusMessage);
     }
+    _emitSessionHistoryReconciliation(sessionId);
   }
 
   void _handleHistorySnapshot(String sessionId, HistorySnapshotMessage msg) {
     _pendingHistoryDeltaSinceSeq.remove(sessionId);
+    _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
     _runtimeStore.applyServerMessage(sessionId, msg);
 
     final history = HistoryMessage(messages: _runtimeStore.messages(sessionId));
@@ -1808,14 +1827,28 @@ class BridgeService implements BridgeServiceBase {
       _taggedMessageController.add((statusMessage, sessionId));
       _messageController.add(statusMessage);
     }
+    _emitSessionHistoryReconciliation(sessionId);
+  }
+
+  void _emitSessionHistoryReconciliation(String sessionId) {
+    _sessionHistoryReconciliationSequence++;
+    _sessionHistoryReconciliationGenerations[sessionId] =
+        _sessionHistoryReconciliationSequence;
+    _sessionHistoryReconciledController.add(sessionId);
   }
 
   void _fallbackPendingHistoryDeltaRequests() {
     if (_pendingHistoryDeltaSinceSeq.isEmpty) return;
     final sessionIds = List<String>.from(_pendingHistoryDeltaSinceSeq.keys);
     _pendingHistoryDeltaSinceSeq.clear();
+    final allowsFullFallback = Map<String, bool>.from(
+      _pendingHistoryDeltaAllowsFullFallback,
+    );
+    _pendingHistoryDeltaAllowsFullFallback.clear();
     for (final sessionId in sessionIds) {
-      send(ClientMessage.getHistory(sessionId));
+      if (allowsFullFallback[sessionId] == true) {
+        send(ClientMessage.getHistory(sessionId));
+      }
     }
   }
 
@@ -2592,9 +2625,32 @@ class BridgeService implements BridgeServiceBase {
 
   @override
   void requestSessionHistory(String sessionId) {
+    _requestSessionHistory(sessionId, allowFullFallback: true);
+  }
+
+  /// Requests only the bounded delta path used by iOS background work.
+  ///
+  /// An older Bridge may reject `get_history_delta`. In that case the request
+  /// intentionally ends without falling back to an unbounded full-history
+  /// payload; the next foreground reconciliation retains the normal fallback.
+  void requestSessionHistoryDeltaOnly(String sessionId) {
+    _requestSessionHistory(sessionId, allowFullFallback: false);
+  }
+
+  void _requestSessionHistory(
+    String sessionId, {
+    required bool allowFullFallback,
+  }) {
     final snapshot = _runtimeStore.snapshot(sessionId);
-    if (snapshot.messages.isNotEmpty) {
+    final canRequestDelta =
+        snapshot.messages.isNotEmpty ||
+        (!allowFullFallback && snapshot.cachedHistorySeq > 0);
+    if (canRequestDelta) {
       _pendingHistoryDeltaSinceSeq[sessionId] = snapshot.cachedHistorySeq;
+      // The latest caller owns the fallback policy. In particular, a bounded
+      // background request must be able to replace a stale foreground
+      // permission left behind by a timed-out delta request.
+      _pendingHistoryDeltaAllowsFullFallback[sessionId] = allowFullFallback;
       send(
         ClientMessage.getHistoryDelta(
           sessionId,
@@ -2603,7 +2659,9 @@ class BridgeService implements BridgeServiceBase {
       );
       return;
     }
-    send(ClientMessage.getHistory(sessionId));
+    if (allowFullFallback) {
+      send(ClientMessage.getHistory(sessionId));
+    }
   }
 
   void refreshBranch(String sessionId) {
@@ -2822,6 +2880,12 @@ class BridgeService implements BridgeServiceBase {
 
   void migrateExplorerHistory(String fromSessionId, String toSessionId) {
     _runtimeStore.migrateSession(fromSessionId, toSessionId);
+    final reconciliationGeneration = _sessionHistoryReconciliationGenerations
+        .remove(fromSessionId);
+    if (reconciliationGeneration != null) {
+      _sessionHistoryReconciliationGenerations[toSessionId] =
+          reconciliationGeneration;
+    }
     final providerBinding = _providerSessionBindingByRuntime.remove(
       fromSessionId,
     );
@@ -2832,6 +2896,7 @@ class BridgeService implements BridgeServiceBase {
 
   void clearExplorerHistory(String sessionId) {
     _runtimeStore.clearSession(sessionId);
+    _sessionHistoryReconciliationGenerations.remove(sessionId);
     _desktopContinuityBacklog.clearSession(sessionId);
     _providerSessionBindingByRuntime.remove(sessionId);
     _respondedToolUseIds.remove(sessionId);
@@ -3811,6 +3876,7 @@ class BridgeService implements BridgeServiceBase {
     _connectionController.close();
     _sessionListController.close();
     _sessionHistoryAvailabilityController.close();
+    _sessionHistoryReconciledController.close();
     _codexModelCatalogController.close();
     _sessionStoppedController.close();
     _recentSessionsController.close();

@@ -266,6 +266,9 @@ void main() {
         bridge.connect('ws://127.0.0.1:${server.port}');
 
         final socket = await socketReady.future;
+        final reconciledSession = bridge.sessionHistoryReconciliations.first;
+        final previousReconciliationGeneration = bridge
+            .sessionHistoryReconciliationGeneration('s1');
         socket.add(
           jsonEncode({
             'type': 'history_delta',
@@ -280,7 +283,11 @@ void main() {
             ],
           }),
         );
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(await reconciledSession, 's1');
+        expect(
+          bridge.sessionHistoryReconciliationGeneration('s1'),
+          previousReconciliationGeneration + 1,
+        );
 
         bridge.requestSessionHistory('s1');
 
@@ -424,6 +431,70 @@ void main() {
           isTrue,
         );
         expect(requests.last, {'type': 'get_history', 'sessionId': 's1'});
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'background delta-only history never falls back to full history',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'status',
+            'status': 'running',
+            'sessionId': 's1',
+            'historySeq': 3,
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        bridge.requestSessionHistoryDeltaOnly('s1');
+        // A stale foreground request must not leave full-history fallback
+        // enabled after the latest bounded background request takes ownership.
+        bridge.requestSessionHistory('s1');
+        bridge.requestSessionHistoryDeltaOnly('s1');
+        socket.add(
+          jsonEncode({
+            'type': 'error',
+            'errorCode': 'unsupported_message',
+            'message': 'get_history_delta',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        final requests = outgoing
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .toList();
+        expect(
+          requests.any(
+            (request) =>
+                request['type'] == 'get_history_delta' &&
+                request['sessionId'] == 's1',
+          ),
+          isTrue,
+        );
+        expect(
+          requests.where((request) => request['type'] == 'get_history'),
+          isEmpty,
+        );
 
         bridge.disconnect();
         await socket.close();

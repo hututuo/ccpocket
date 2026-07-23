@@ -839,6 +839,198 @@ void main() {
   );
 
   test(
+    'bounded background reconcile never restores a missing resident watch',
+    () async {
+      final revision = _hashText('background-resident');
+      await _seedLocalCopy(
+        store,
+        message: const {
+          'type': 'user_input',
+          'text': 'resident cache',
+          'userMessageUuid': 'codex:user-turn:0',
+        },
+        revision: revision,
+      );
+      await service.metadataFor(_recentSession);
+
+      final backgroundCount = await service.reconcileResidents(
+        maximumConversations: 2,
+        budget: const Duration(seconds: 1),
+        restoreMissingWatches: false,
+      );
+
+      expect(backgroundCount, 0);
+      expect(bridge.sent, isEmpty);
+
+      bridge.onSend = (request) {
+        final requestId = request['requestId'] as String;
+        scheduleMicrotask(() {
+          bridge
+            ..emit(
+              _event(
+                requestId: requestId,
+                event: 'watching',
+                revision: revision,
+                threadStatus: 'idle',
+              ),
+            )
+            ..emit(
+              _event(
+                requestId: requestId,
+                event: 'not_modified',
+                revision: revision,
+                threadStatus: 'idle',
+              ),
+            );
+        });
+      };
+
+      final foregroundCount = await service.reconcileResidents(
+        maximumConversations: 2,
+        budget: const Duration(seconds: 1),
+        restoreMissingWatches: true,
+      );
+
+      expect(foregroundCount, 1);
+      expect(bridge.sent.single['type'], 'conversation_mirror_watch');
+      expect(bridge.sent.single['knownRevision'], revision);
+    },
+  );
+
+  test('background cancellation releases an in-flight resident sync', () async {
+    final revision = _hashText('cancelled-background-resident');
+    await _seedLocalCopy(
+      store,
+      message: const {
+        'type': 'user_input',
+        'text': 'resident cache',
+        'userMessageUuid': 'codex:user-turn:0',
+      },
+      revision: revision,
+    );
+    await service.metadataFor(_recentSession);
+    bridge.onSend = (request) {
+      final requestId = request['requestId'] as String;
+      scheduleMicrotask(() {
+        bridge
+          ..emit(
+            _event(
+              requestId: requestId,
+              event: 'watching',
+              revision: revision,
+              threadStatus: 'idle',
+            ),
+          )
+          ..emit(
+            _event(
+              requestId: requestId,
+              event: 'not_modified',
+              revision: revision,
+              threadStatus: 'idle',
+            ),
+          );
+      });
+    };
+    expect(
+      await service.reconcileResidents(
+        maximumConversations: 1,
+        budget: const Duration(seconds: 1),
+        restoreMissingWatches: true,
+      ),
+      1,
+    );
+
+    bridge
+      ..sent.clear()
+      ..onSend = (_) {};
+    final cancellation = _TestMirrorCancellation();
+    final reconciliation = service.reconcileResidents(
+      maximumConversations: 1,
+      budget: const Duration(seconds: 10),
+      restoreMissingWatches: false,
+      cancellation: cancellation,
+    );
+    await _waitUntil(
+      () async => bridge.sent.any(
+        (request) => request['type'] == 'conversation_mirror_sync',
+      ),
+    );
+
+    cancellation.cancel();
+
+    expect(await reconciliation.timeout(const Duration(milliseconds: 200)), 0);
+    expect(service.isSyncing(_recentSession), isFalse);
+
+    bridge.sent.clear();
+    final budgetedReconciliation = service.reconcileResidents(
+      maximumConversations: 1,
+      budget: const Duration(milliseconds: 20),
+      restoreMissingWatches: false,
+    );
+    await _waitUntil(
+      () async => bridge.sent.any(
+        (request) => request['type'] == 'conversation_mirror_sync',
+      ),
+    );
+    final budgetRequestId = bridge.sent.single['requestId'] as String;
+
+    expect(
+      await budgetedReconciliation.timeout(
+        const Duration(milliseconds: 200),
+      ),
+      0,
+    );
+    expect(service.isSyncing(_recentSession), isFalse);
+
+    bridge.emit(
+      _event(
+        requestId: budgetRequestId,
+        event: 'snapshot_begin',
+        revision: _hashText('late-after-budget'),
+        entryCount: 1,
+        pageCount: 1,
+        totalBytes: 16,
+        threadStatus: 'idle',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect((await service.metadataFor(_recentSession))?.revision, revision);
+  });
+
+  test(
+    'background reconnect defers automatic resident watch restoration',
+    () async {
+      final revision = _hashText('deferred-background-watch');
+      await _seedLocalCopy(
+        store,
+        message: const {
+          'type': 'user_input',
+          'text': 'resident cache',
+          'userMessageUuid': 'codex:user-turn:0',
+        },
+        revision: revision,
+      );
+      await service.metadataFor(_recentSession);
+      await service.setAutomaticWatchRestorationEnabled(false);
+
+      bridge
+        ..connected = false
+        ..emitConnection(BridgeConnectionState.disconnected)
+        ..connected = true
+        ..emitConnection(BridgeConnectionState.connected);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(bridge.sent, isEmpty);
+
+      await service.setAutomaticWatchRestorationEnabled(true);
+      await _waitUntil(() async => bridge.sent.isNotEmpty);
+
+      expect(bridge.sent.single['type'], 'conversation_mirror_watch');
+      expect(bridge.sent.single['knownRevision'], revision);
+    },
+  );
+
+  test(
     'not-modified sync restores an invalidated full-history cursor',
     () async {
       final revision = _hashText('not-modified-cursor-rebind');
@@ -2707,4 +2899,36 @@ Future<void> _waitUntil(Future<bool> Function() predicate) async {
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
   fail('Timed out waiting for asynchronous mirror state.');
+}
+
+class _TestMirrorCancellation implements ConversationMirrorCancellation {
+  final Set<void Function()> _listeners = {};
+  bool _cancelled = false;
+
+  @override
+  bool get isCancelled => _cancelled;
+
+  @override
+  void addListener(void Function() listener) {
+    if (_cancelled) {
+      listener();
+      return;
+    }
+    _listeners.add(listener);
+  }
+
+  @override
+  void removeListener(void Function() listener) {
+    _listeners.remove(listener);
+  }
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    final listeners = List<void Function()>.from(_listeners);
+    _listeners.clear();
+    for (final listener in listeners) {
+      listener();
+    }
+  }
 }
