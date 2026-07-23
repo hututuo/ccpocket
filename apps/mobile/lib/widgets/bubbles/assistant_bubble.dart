@@ -91,7 +91,10 @@ class AssistantProcessDetails extends StatelessWidget {
           ThinkingContent(:final thinking) =>
             thinking.trim().isEmpty
                 ? const SizedBox.shrink()
-                : ThinkingBubble(thinking: thinking),
+                : ThinkingBubble(
+                    thinking: thinking,
+                    collapseNotifier: collapseNotifier,
+                  ),
           ToolUseContent(:final id, :final name, :final input) =>
             name == 'ExitPlanMode'
                 ? const SizedBox.shrink()
@@ -262,6 +265,7 @@ class _PlanLayout extends StatelessWidget {
             switch (content) {
               ThinkingContent(:final thinking) => ThinkingBubble(
                 thinking: thinking,
+                collapseNotifier: collapseNotifier,
               ),
               ToolUseContent(:final id, :final name, :final input) =>
                 name == 'ExitPlanMode'
@@ -474,7 +478,10 @@ class _DefaultLayout extends StatelessWidget {
                     ),
             ThinkingContent(:final thinking) =>
               showProcessDetails
-                  ? ThinkingBubble(thinking: thinking)
+                  ? ThinkingBubble(
+                      thinking: thinking,
+                      collapseNotifier: collapseNotifier,
+                    )
                   : const SizedBox.shrink(),
           },
         ArtifactAttachmentGroup(

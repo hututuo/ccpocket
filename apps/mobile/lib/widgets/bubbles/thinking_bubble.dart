@@ -8,6 +8,7 @@ import '../chat_selection_actions.dart';
 class ThinkingBubble extends StatefulWidget {
   final String thinking;
   final bool initiallyExpanded;
+  final ValueNotifier<int>? collapseNotifier;
 
   /// Whether thinking is still streaming (shows animation).
   final bool isStreaming;
@@ -17,6 +18,7 @@ class ThinkingBubble extends StatefulWidget {
     required this.thinking,
     this.initiallyExpanded = false,
     this.isStreaming = false,
+    this.collapseNotifier,
   });
 
   @override
@@ -33,6 +35,7 @@ class _ThinkingBubbleState extends State<ThinkingBubble>
   void initState() {
     super.initState();
     _expanded = widget.initiallyExpanded;
+    widget.collapseNotifier?.addListener(_onCollapseSignal);
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1000),
@@ -48,6 +51,10 @@ class _ThinkingBubbleState extends State<ThinkingBubble>
   @override
   void didUpdateWidget(ThinkingBubble oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.collapseNotifier != widget.collapseNotifier) {
+      oldWidget.collapseNotifier?.removeListener(_onCollapseSignal);
+      widget.collapseNotifier?.addListener(_onCollapseSignal);
+    }
     if (widget.isStreaming && !_pulseController.isAnimating) {
       _pulseController.repeat(reverse: true);
     } else if (!widget.isStreaming && _pulseController.isAnimating) {
@@ -58,8 +65,14 @@ class _ThinkingBubbleState extends State<ThinkingBubble>
 
   @override
   void dispose() {
+    widget.collapseNotifier?.removeListener(_onCollapseSignal);
     _pulseController.dispose();
     super.dispose();
+  }
+
+  void _onCollapseSignal() {
+    if (!_expanded || !mounted) return;
+    setState(() => _expanded = false);
   }
 
   @override
