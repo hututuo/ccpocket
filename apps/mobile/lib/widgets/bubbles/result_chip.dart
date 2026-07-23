@@ -20,7 +20,9 @@ class ResultChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final fileSuffixes = onFileTap != null
-        ? FilePathSyntax.buildSuffixSet(context.watch<FileListCubit>().state)
+        ? FilePathSyntax.buildSuffixSetCached(
+            context.watch<FileListCubit>().state,
+          )
         : const <String>{};
     final parts = <String>[];
     if (message.cost != null) {

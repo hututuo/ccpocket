@@ -41,7 +41,9 @@ class _StreamingBubbleState extends State<StreamingBubble>
   Widget build(BuildContext context) {
     if (widget.text.isEmpty) return const SizedBox.shrink();
     final fileSuffixes = widget.onFileTap != null
-        ? FilePathSyntax.buildSuffixSet(context.watch<FileListCubit>().state)
+        ? FilePathSyntax.buildSuffixSetCached(
+            context.watch<FileListCubit>().state,
+          )
         : const <String>{};
 
     return Padding(

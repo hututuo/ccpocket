@@ -141,7 +141,9 @@ class _PlanBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fileSuffixes = onFileTap != null
-        ? FilePathSyntax.buildSuffixSet(context.watch<FileListCubit>().state)
+        ? FilePathSyntax.buildSuffixSetCached(
+            context.watch<FileListCubit>().state,
+          )
         : const <String>{};
     final markdownWidget = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

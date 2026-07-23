@@ -16,6 +16,7 @@ import '../../theme/markdown_style.dart';
 import '../../utils/structured_error_inference.dart';
 import '../../utils/diff_parser.dart';
 import '../../utils/tool_categories.dart';
+import '../../utils/text_line_preview.dart';
 import '../../utils/codex_plan_update.dart';
 import '../../utils/artifact_link_matcher.dart';
 import '../../features/file_peek/file_path_syntax.dart';
@@ -235,7 +236,9 @@ class _PlanLayout extends StatelessWidget {
       originalPlanText = resolvedPlanText!;
     }
     final fileSuffixes = onFileTap != null
-        ? FilePathSyntax.buildSuffixSet(context.watch<FileListCubit>().state)
+        ? FilePathSyntax.buildSuffixSetCached(
+            context.watch<FileListCubit>().state,
+          )
         : const <String>{};
     final textContentIndexes = <int>[
       for (var i = 0; i < contents.length; i++)
@@ -445,7 +448,9 @@ class _DefaultLayout extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fileSuffixes = onFileTap != null
-        ? FilePathSyntax.buildSuffixSet(context.watch<FileListCubit>().state)
+        ? FilePathSyntax.buildSuffixSetCached(
+            context.watch<FileListCubit>().state,
+          )
         : const <String>{};
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1027,8 +1032,8 @@ class _ToolUseCard extends StatelessWidget {
 
   Widget _buildInputBody(BuildContext context, AppColors appColors) {
     final fullText = getToolFullInput(category, input);
-    final lines = fullText.split('\n');
-    final hasMore = lines.length > _previewLines;
+    final preview = buildTextLinePreview(fullText, maxLines: _previewLines);
+    final hasMore = preview.hasMore;
 
     if (expansion == ToolUseExpansion.expanded) {
       return Column(
@@ -1057,14 +1062,11 @@ class _ToolUseCard extends StatelessWidget {
       );
     }
 
-    final previewText = hasMore
-        ? lines.take(_previewLines).join('\n')
-        : fullText;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          previewText,
+          preview.text,
           style: TextStyle(
             fontSize: 11,
             fontFamily: 'monospace',

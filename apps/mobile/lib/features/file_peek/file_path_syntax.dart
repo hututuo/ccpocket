@@ -14,6 +14,9 @@ typedef FilePathTapCallback = void Function(String filePath);
 /// it as normal inline code.
 class FilePathSyntax extends md.InlineSyntax {
   final Set<String> _knownPathSuffixes;
+  static final Expando<Set<String>> _suffixSetCache = Expando<Set<String>>(
+    'file path suffix index',
+  );
 
   /// Creates a [FilePathSyntax] with a pre-built suffix set.
   ///
@@ -34,12 +37,27 @@ class FilePathSyntax extends md.InlineSyntax {
     final suffixes = <String>{};
     for (final filePath in filePaths) {
       if (filePath.endsWith('/')) continue;
-      final parts = filePath.split('/');
-      for (var i = 0; i < parts.length; i++) {
-        suffixes.add(parts.sublist(i).join('/'));
+      suffixes.add(filePath);
+      for (var index = 0; index < filePath.length; index++) {
+        if (filePath.codeUnitAt(index) == 0x2f) {
+          suffixes.add(filePath.substring(index + 1));
+        }
       }
     }
     return suffixes;
+  }
+
+  /// Returns one shared suffix index for an immutable file-list snapshot.
+  ///
+  /// Message and streaming bubbles receive the same [FileListCubit] list
+  /// instance. Caching by identity prevents every visible bubble (and every
+  /// streaming delta) from rebuilding the complete project-path index. The
+  /// [Expando] keeps the cache weak: an obsolete file-list snapshot can still
+  /// be collected after the Cubit publishes a replacement.
+  static Set<String> buildSuffixSetCached(List<String> filePaths) {
+    return _suffixSetCache[filePaths] ??= Set<String>.unmodifiable(
+      buildSuffixSet(filePaths),
+    );
   }
 
   static final _lineColPattern = RegExp(r'(:\d+){1,2}$');

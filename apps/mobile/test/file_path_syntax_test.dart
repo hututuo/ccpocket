@@ -68,6 +68,19 @@ void main() {
       expect(suffixes, isNot(contains('lib/')));
       expect(suffixes, contains('lib/main.dart'));
     });
+
+    test('reuses the suffix index for the same immutable list snapshot', () {
+      final files = <String>['lib/main.dart', 'pubspec.yaml'];
+
+      final first = FilePathSyntax.buildSuffixSetCached(files);
+      final second = FilePathSyntax.buildSuffixSetCached(files);
+      final equalButDistinct = FilePathSyntax.buildSuffixSetCached([...files]);
+
+      expect(identical(first, second), isTrue);
+      expect(identical(first, equalButDistinct), isFalse);
+      expect(equalButDistinct, first);
+      expect(() => first.add('other.dart'), throwsUnsupportedError);
+    });
   });
 
   group('FilePathSyntax detection', () {

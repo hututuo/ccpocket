@@ -9,6 +9,7 @@ import '../../router/app_router.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/tool_categories.dart';
+import '../../utils/text_line_preview.dart';
 import '../../utils/artifact_link_matcher.dart';
 import '../../features/file_peek/file_path_syntax.dart';
 import '../chat_selection_actions.dart';
@@ -576,11 +577,9 @@ class _ExpandedToolResult extends StatelessWidget {
             zh: Localizations.localeOf(context).languageCode == 'zh',
             phase: ToolDisplayPhase.result,
           );
-    final lines = content.split('\n');
-    final hasMore = lines.length > _previewLines;
-    final previewText = hasMore
-        ? lines.take(_previewLines).join('\n')
-        : content;
+    final preview = buildTextLinePreview(content, maxLines: _previewLines);
+    final hasMore = preview.hasMore;
+    final previewText = preview.text;
 
     return Container(
       margin: const EdgeInsets.symmetric(

@@ -128,7 +128,9 @@ class _PlanViewMode extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fileSuffixes = onFileTap != null
-        ? FilePathSyntax.buildSuffixSet(context.watch<FileListCubit>().state)
+        ? FilePathSyntax.buildSuffixSetCached(
+            context.watch<FileListCubit>().state,
+          )
         : const <String>{};
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
