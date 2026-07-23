@@ -454,3 +454,28 @@
 - The implementation is isolated on `feature/mobile-ota-host` as `46ea8971`,
   `645c694d`, `e9b53b27`, `6b4d4711`, and `22b8a7f1`. Nothing is deployed,
   promoted, installed or merged by these commits.
+
+## Full conversation storage and bounded turn navigation
+
+- A downloaded conversation is durable local data, not permission to mount the
+  entire transcript in Flutter. Bridge and Mobile accept up to 100,000
+  normalized entries / 64 MiB per conversation, while the ordinary live
+  render surface remains a 200-entry window.
+- The History picker indexes every non-synthetic user turn from the complete
+  local mirror, including turns outside the rendered window. Each index row
+  carries its stored ordinal internally so selecting a distant turn can read
+  the 200-entry window beginning at that turn directly.
+- A distant selection keeps the picker visible behind a blocking loading
+  indicator. Mobile swaps in the target window only after the database read
+  completes, then performs the scroll; it must not progressively mount every
+  intervening page. Older drag paging continues immediately before the newly
+  selected window, and another History selection may jump to any newer or
+  older turn even when `hasMore` is false at the current window.
+- `bounded_history_window_v1` is an additive client capability. A new Bridge
+  sends only the latest 200 canonical entries to an opting-in Mobile; legacy
+  clients continue receiving the prior full response. A new Mobile also bounds
+  an unbounded legacy Bridge response locally, while the complete mirror
+  remains available through its independent download path.
+- The implementation is split across `ca427a89` (Bridge full download and
+  capability), `d33aa31c` (Mobile storage/render window and indexed target
+  loading), and `253c1ab3` (shared History loading UI).
