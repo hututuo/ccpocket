@@ -13,6 +13,37 @@
 - In embedded mode the Bridge renders preview content only; Flutter owns back navigation, share, download, hide/reveal, transfer cancellation, and file persistence. Do not add a broad JavaScript-to-native channel for artifact actions.
 - On iOS, Word, Excel, PowerPoint and RTF use a narrow system Quick Look adapter. Reuse the authenticated, bounded artifact download into app-temporary storage; validate that the native path remains inside the app home directory; keep the file until the native dismissal callback; then remove it. Do not upload Office files to an external preview service or move this behavior into the Bridge protocol.
 
+## Mobile background conversation sync
+
+- Background sync extends the existing Flutter runtime and WebSocket; it is not
+  a permanent daemon. An active turn receives one finite
+  `UIBackgroundTask`, followed only by opportunistic `BGAppRefresh` work that
+  iOS may delay or omit. Process reclamation and force-quit converge through
+  the next foreground catch-up.
+- Do not use audio, location, VoIP, or another unrelated background entitlement
+  to prolong execution. Notifications remain a separate feature.
+- Native capability negotiation uses additive
+  `backgroundContinuation` and `backgroundRefreshWarmRuntime` keys. The latter
+  explicitly does not promise a cold/headless Flutter engine; such an engine
+  would require a new capability and a separate compatibility review.
+- Background history is cached-delta-only. An old Bridge rejection must never
+  fall back to an unbounded full transcript while backgrounded; ordinary
+  foreground reconciliation retains the compatibility fallback.
+- Rapid lifecycle changes are generation-fenced. A resume must cancel and end
+  the active continuation before restoring resident watches, and a cancelled
+  resume must retain its pending foreground catch-up for the next definite
+  resume.
+- Conversation Mirror remains optional and rebuildable. Background work may
+  sync an existing watch but may not restore a missing watch or begin a large
+  first snapshot. Deadline and lifecycle cancellation must release the
+  underlying pending request and reject late frames.
+- The native plugin, Xcode registration, `Info.plist`, and capability snapshot
+  require a new base IPA. Later Dart-only tuning may use the `owner` OTA track.
+  This branch does not publish, install, promote to `stable`, replace the live
+  Bridge, or change notification behavior.
+- The detailed compatibility matrix, bounds, and physical-device acceptance
+  gates are maintained in `docs/mobile-background-sync.md`.
+
 ## Session correctness boundaries
 
 - Recent-session stale-response generations are per WebSocket client. A new
