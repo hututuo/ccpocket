@@ -788,7 +788,135 @@ void main() {
   );
 
   test(
-    'canonical mutation during local read forces official fallback',
+    'not-modified sync restores an invalidated full-history cursor',
+    () async {
+      final revision = _hashText('not-modified-cursor-rebind');
+      await _seedLocalConversation(
+        store,
+        entryCount: 3000,
+        revision: revision,
+      );
+      await service.metadataFor(_recentSession);
+      bridge.connected = false;
+
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        ),
+        isTrue,
+      );
+      expect(bridge.hasLocalSessionHistory('runtime-1'), isTrue);
+
+      final availability = <LocalSessionHistoryAvailabilityChange>[];
+      final subscription = bridge.sessionHistoryAvailabilityChanges.listen(
+        availability.add,
+      );
+      addTearDown(subscription.cancel);
+      bridge.invalidateLocalSessionHistoryPaging('runtime-1');
+      expect(bridge.hasLocalSessionHistory('runtime-1'), isFalse);
+
+      bridge
+        ..connected = true
+        ..onSend = (request) {
+          if (request['type'] != 'conversation_mirror_sync') return;
+          final requestId = request['requestId'] as String;
+          scheduleMicrotask(() {
+            bridge
+              ..emit(
+                _event(
+                  requestId: requestId,
+                  event: 'accepted',
+                  revision: revision,
+                  threadStatus: 'idle',
+                ),
+              )
+              ..emit(
+                _event(
+                  requestId: requestId,
+                  event: 'not_modified',
+                  revision: revision,
+                  threadStatus: 'idle',
+                ),
+              );
+          });
+        };
+
+      final result = await service.syncNow(_recentSession);
+
+      expect(result.success, isTrue);
+      expect(result.changed, isFalse);
+      expect(bridge.hasLocalSessionHistory('runtime-1'), isTrue);
+      expect(
+        await bridge.tryLoadLocalSessionUserIndex(
+          runtimeSessionId: 'runtime-1',
+        ),
+        hasLength(3000),
+      );
+      expect(
+        availability.map((event) => event.available),
+        containsAllInOrder([false, true]),
+      );
+    },
+  );
+
+  test('not-modified sync preserves an advanced paging cursor', () async {
+    final revision = _hashText('not-modified-preserves-offset');
+    await _seedLocalConversation(store, entryCount: 600, revision: revision);
+    await service.metadataFor(_recentSession);
+    bridge.connected = false;
+    expect(
+      await bridge.tryBootstrapSessionHistory(
+        runtimeSessionId: 'runtime-1',
+        provider: 'codex',
+        projectPath: '/tmp/project',
+      ),
+      isTrue,
+    );
+    final firstPage = await bridge.tryLoadOlderLocalSessionHistory(
+      runtimeSessionId: 'runtime-1',
+    );
+    expect((firstPage!.messages.first as UserInputMessage).text, 'message-200');
+    expect((firstPage.messages.last as UserInputMessage).text, 'message-399');
+
+    bridge
+      ..connected = true
+      ..onSend = (request) {
+        if (request['type'] != 'conversation_mirror_sync') return;
+        final requestId = request['requestId'] as String;
+        scheduleMicrotask(() {
+          bridge
+            ..emit(
+              _event(
+                requestId: requestId,
+                event: 'accepted',
+                revision: revision,
+                threadStatus: 'idle',
+              ),
+            )
+            ..emit(
+              _event(
+                requestId: requestId,
+                event: 'not_modified',
+                revision: revision,
+                threadStatus: 'idle',
+              ),
+            );
+        });
+      };
+
+    expect((await service.syncNow(_recentSession)).success, isTrue);
+    final secondPage = await bridge.tryLoadOlderLocalSessionHistory(
+      runtimeSessionId: 'runtime-1',
+    );
+    expect((secondPage!.messages.first as UserInputMessage).text, 'message-0');
+    expect((secondPage.messages.last as UserInputMessage).text, 'message-199');
+    expect(secondPage.hasMore, isFalse);
+  });
+
+  test(
+    'canonical mutation during local read preserves local paging while reconciling the live tail',
     () async {
       final message = <String, dynamic>{
         'type': 'user_input',
@@ -804,6 +932,7 @@ void main() {
       store
         ..readStarted = Completer<void>()
         ..readGate = Completer<void>();
+      bridge.connected = false;
 
       final bootstrap = bridge.tryBootstrapSessionHistory(
         runtimeSessionId: 'runtime-1',
@@ -814,8 +943,58 @@ void main() {
       bridge.contentEpoch += 1;
       store.readGate!.complete();
 
-      expect(await bootstrap, isFalse);
-      expect(bridge.sent, isEmpty);
+      expect(await bootstrap, isTrue);
+      expect(bridge.externallyPublishedHistories, isEmpty);
+      expect(bridge.hasLocalSessionHistory('runtime-1'), isTrue);
+      expect(
+        await bridge.tryLoadLocalSessionUserIndex(
+          runtimeSessionId: 'runtime-1',
+        ),
+        hasLength(1),
+      );
+      expect(bridge.sent.map((request) => request['type']), ['get_history']);
+    },
+  );
+
+  test(
+    'a content race aligns the next local page directly before the bounded canonical tail',
+    () async {
+      final revision = _hashText('race-aligns-canonical-tail');
+      await _seedLocalConversation(store, entryCount: 600, revision: revision);
+      await service.metadataFor(_recentSession);
+      bridge
+        ..connected = false
+        ..canonicalMessages = List.generate(
+          50,
+          (index) {
+            final ordinal = index + 550;
+            return UserInputMessage(
+              text: 'message-$ordinal',
+              userMessageUuid: 'codex:user-turn:$ordinal',
+            );
+          },
+        );
+      store
+        ..readStarted = Completer<void>()
+        ..readGate = Completer<void>();
+
+      final bootstrap = bridge.tryBootstrapSessionHistory(
+        runtimeSessionId: 'runtime-1',
+        provider: 'codex',
+        projectPath: '/tmp/project',
+      );
+      await store.readStarted!.future;
+      bridge.contentEpoch += 1;
+      store.readGate!.complete();
+
+      expect(await bootstrap, isTrue);
+      final older = await bridge.tryLoadOlderLocalSessionHistory(
+        runtimeSessionId: 'runtime-1',
+      );
+      expect(older, isNotNull);
+      expect(older!.messages, hasLength(200));
+      expect((older.messages.first as UserInputMessage).text, 'message-350');
+      expect((older.messages.last as UserInputMessage).text, 'message-549');
     },
   );
 
@@ -1117,7 +1296,7 @@ void main() {
   );
 
   test(
-    'canonical mutation after local decode still forces official fallback',
+    'canonical mutation after local decode keeps the full index without publishing stale content',
     () async {
       final message = <String, dynamic>{
         'type': 'user_input',
@@ -1133,8 +1312,9 @@ void main() {
       var epochReads = 0;
       bridge.onReadContentEpoch = () {
         epochReads += 1;
-        return epochReads <= 2 ? 0 : 1;
+        return epochReads <= 1 ? 0 : 1;
       };
+      bridge.connected = false;
       final published = <ServerMessage>[];
       final subscription = bridge
           .messagesForSession('runtime-1')
@@ -1148,9 +1328,16 @@ void main() {
       );
       await Future<void>.delayed(Duration.zero);
 
-      expect(handled, isFalse);
+      expect(handled, isTrue);
       expect(published.whereType<HistoryMessage>(), isEmpty);
-      expect(bridge.sent, isEmpty);
+      expect(bridge.hasLocalSessionHistory('runtime-1'), isTrue);
+      expect(
+        await bridge.tryLoadLocalSessionUserIndex(
+          runtimeSessionId: 'runtime-1',
+        ),
+        hasLength(1),
+      );
+      expect(bridge.sent.map((request) => request['type']), ['get_history']);
     },
   );
 

@@ -78,6 +78,7 @@ typedef SessionHistoryWindowLoader =
     });
 
 typedef SessionHistoryHasMore = bool Function(String runtimeSessionId);
+typedef SessionHistoryAvailable = bool Function(String runtimeSessionId);
 typedef SessionHistoryPageInvalidator = void Function(String runtimeSessionId);
 
 typedef SessionHistoryUserIndexLoader =
@@ -89,6 +90,16 @@ class _ExternalSessionHistoryMetadata {
   const _ExternalSessionHistoryMetadata({this.timestampAnchor});
 
   final DateTime? timestampAnchor;
+}
+
+class LocalSessionHistoryAvailabilityChange {
+  const LocalSessionHistoryAvailabilityChange({
+    required this.runtimeSessionId,
+    required this.available,
+  });
+
+  final String runtimeSessionId;
+  final bool available;
 }
 
 class BridgeService implements BridgeServiceBase {
@@ -106,6 +117,8 @@ class BridgeService implements BridgeServiceBase {
       StreamController<BridgeConnectionState>.broadcast();
   final _sessionListController =
       StreamController<List<SessionInfo>>.broadcast();
+  final _sessionHistoryAvailabilityController =
+      StreamController<LocalSessionHistoryAvailabilityChange>.broadcast();
   final _codexModelCatalogController = StreamController<int>.broadcast();
   final _sessionStoppedController = StreamController<String>.broadcast();
   final _recentSessionsController =
@@ -212,6 +225,7 @@ class BridgeService implements BridgeServiceBase {
   SessionHistoryPageLoader? _sessionHistoryPageLoader;
   SessionHistoryWindowLoader? _sessionHistoryWindowLoader;
   SessionHistoryHasMore? _sessionHistoryHasMore;
+  SessionHistoryAvailable? _sessionHistoryAvailable;
   SessionHistoryPageInvalidator? _sessionHistoryPageInvalidator;
   SessionHistoryUserIndexLoader? _sessionHistoryUserIndexLoader;
   final Expando<_ExternalSessionHistoryMetadata> _externalSessionHistories =
@@ -264,6 +278,9 @@ class BridgeService implements BridgeServiceBase {
       _connectionController.stream;
   @override
   Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
+  Stream<LocalSessionHistoryAvailabilityChange>
+  get sessionHistoryAvailabilityChanges =>
+      _sessionHistoryAvailabilityController.stream;
   Stream<int> get codexModelCatalogChanges =>
       _codexModelCatalogController.stream;
   int get authoritativeSessionListGeneration =>
@@ -2833,11 +2850,13 @@ class BridgeService implements BridgeServiceBase {
     SessionHistoryPageLoader? loader,
     SessionHistoryWindowLoader? windowLoader,
     SessionHistoryHasMore? hasMore,
+    SessionHistoryAvailable? available,
     SessionHistoryPageInvalidator? invalidate,
   }) {
     _sessionHistoryPageLoader = loader;
     _sessionHistoryWindowLoader = windowLoader;
     _sessionHistoryHasMore = hasMore;
+    _sessionHistoryAvailable = available;
     _sessionHistoryPageInvalidator = invalidate;
   }
 
@@ -2862,11 +2881,33 @@ class BridgeService implements BridgeServiceBase {
   bool get hasSessionHistoryWindowLoading =>
       _sessionHistoryWindowLoader != null;
 
+  bool hasLocalSessionHistory(String runtimeSessionId) =>
+      _sessionHistoryAvailable?.call(runtimeSessionId) ??
+      _sessionHistoryPageLoader != null;
+
   bool hasOlderLocalSessionHistory(String runtimeSessionId) =>
       _sessionHistoryHasMore?.call(runtimeSessionId) ?? false;
 
   void invalidateLocalSessionHistoryPaging(String runtimeSessionId) {
     _sessionHistoryPageInvalidator?.call(runtimeSessionId);
+  }
+
+  /// Notifies an already-open chat that its optional local history index or
+  /// paging cursor became available, changed, or was invalidated.
+  ///
+  /// This stays process-local: older Bridges do not need a protocol change,
+  /// and official clients that never configure mirror paging are unaffected.
+  void notifySessionHistoryAvailabilityChanged(
+    String runtimeSessionId, {
+    required bool available,
+  }) {
+    if (_sessionHistoryAvailabilityController.isClosed) return;
+    _sessionHistoryAvailabilityController.add(
+      LocalSessionHistoryAvailabilityChange(
+        runtimeSessionId: runtimeSessionId,
+        available: available,
+      ),
+    );
   }
 
   Future<LocalSessionHistoryPage?> tryLoadOlderLocalSessionHistory({
@@ -3767,6 +3808,7 @@ class BridgeService implements BridgeServiceBase {
     _localFeatureMessageController.close();
     _connectionController.close();
     _sessionListController.close();
+    _sessionHistoryAvailabilityController.close();
     _codexModelCatalogController.close();
     _sessionStoppedController.close();
     _recentSessionsController.close();

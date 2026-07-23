@@ -147,9 +147,9 @@ class ConversationMirrorService extends ChangeNotifier {
     _bridge.configureSessionHistoryPaging(
       loader: _loadOlderRuntimeHistory,
       windowLoader: _loadRuntimeHistoryWindow,
-      hasMore: (runtimeSessionId) =>
-          (_pageCursorsByRuntime[runtimeSessionId]?.nextOffset ?? 0) > 0,
-      invalidate: _pageCursorsByRuntime.remove,
+      hasMore: _hasOlderRuntimeHistory,
+      available: _hasRuntimeHistory,
+      invalidate: _removeRuntimePageCursor,
     );
     _bridge.configureSessionHistoryUserIndex(_loadRuntimeUserIndex);
     if (kIsWeb) return;
@@ -414,7 +414,7 @@ class ConversationMirrorService extends ChangeNotifier {
       await _store.deleteLocalCopy(key);
       _metadata.remove(key);
       _syncing.remove(key);
-      _pageCursorsByRuntime.removeWhere((_, cursor) => cursor.key == key);
+      _removeRuntimePageCursorsWhere((cursor) => cursor.key == key);
     });
     _notifyListeners();
   }
@@ -575,6 +575,7 @@ class ConversationMirrorService extends ChangeNotifier {
     final bootstrapGeneration =
         (_bootstrapGenerationByRuntime[runtimeSessionId] ?? 0) + 1;
     _bootstrapGenerationByRuntime[runtimeSessionId] = bootstrapGeneration;
+    _removeRuntimePageCursor(runtimeSessionId);
     if (!isAvailable || provider != Provider.codex.value) return false;
     final bridgeId = currentBridgeInstanceId;
     if (providerSessionId == null) return false;
@@ -607,7 +608,14 @@ class ConversationMirrorService extends ChangeNotifier {
     );
     if (publishGuard == null) return false;
     final published = await _publishKeyToRuntime(key, publishGuard);
-    if (published != _MirrorPublishResult.published) return false;
+    if (published == _MirrorPublishResult.invalidated) return false;
+    if (published == _MirrorPublishResult.contentChanged &&
+        _publishIdentityMatches(key, publishGuard)) {
+      // The durable cursor is already usable, but replacing the visible live
+      // tail would race a newer canonical event. Reconcile that tail through
+      // the ordinary Bridge history path without discarding local paging.
+      _bridge.requestSessionHistory(runtimeSessionId);
+    }
 
     if (!_bridge.isConnected) return true;
     final effectiveProjectPath = projectPath ?? metadata.projectPath;
@@ -977,12 +985,12 @@ class ConversationMirrorService extends ChangeNotifier {
             break;
           }
           await _refreshMetadata(key);
-          if (event.entries.isNotEmpty || event.deletes.isNotEmpty) {
-            await _publishTransferToBoundRuntimes(
-              key,
-              _transferGuardsByRequestId[event.requestId],
-            );
-          }
+          await _publishTransferToBoundRuntimes(
+            key,
+            _transferGuardsByRequestId[event.requestId],
+            onlyIfCursorStale:
+                event.entries.isEmpty && event.deletes.isEmpty,
+          );
           _finishPending(
             event.requestId,
             ConversationMirrorSyncResult(
@@ -1001,6 +1009,11 @@ class ConversationMirrorService extends ChangeNotifier {
             );
           }
           await _refreshMetadata(key);
+          await _publishTransferToBoundRuntimes(
+            key,
+            _transferGuardsByRequestId[event.requestId],
+            onlyIfCursorStale: true,
+          );
           _finishPending(
             event.requestId,
             ConversationMirrorSyncResult(
@@ -1367,10 +1380,90 @@ class ConversationMirrorService extends ChangeNotifier {
     }
   }
 
+  bool _hasOlderRuntimeHistory(String runtimeSessionId) {
+    final cursor = _pageCursorsByRuntime[runtimeSessionId];
+    if (cursor == null) return false;
+    if (!_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
+      return false;
+    }
+    return cursor.nextOffset > 0;
+  }
+
+  bool _hasRuntimeHistory(String runtimeSessionId) {
+    final cursor = _pageCursorsByRuntime[runtimeSessionId];
+    if (cursor == null) return false;
+    if (!_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
+      return false;
+    }
+    return true;
+  }
+
+  void _setRuntimePageCursor(
+    String runtimeSessionId,
+    _RuntimeMirrorPageCursor cursor,
+  ) {
+    final previous = _pageCursorsByRuntime[runtimeSessionId];
+    _pageCursorsByRuntime[runtimeSessionId] = cursor;
+    final changed =
+        previous == null ||
+        previous.key != cursor.key ||
+        previous.revision != cursor.revision ||
+        previous.activeGeneration != cursor.activeGeneration ||
+        previous.entryCount != cursor.entryCount ||
+        previous.bootstrapGeneration != cursor.bootstrapGeneration ||
+        previous.nextOffset != cursor.nextOffset;
+    if (changed) {
+      _bridge.notifySessionHistoryAvailabilityChanged(
+        runtimeSessionId,
+        available: true,
+      );
+    }
+  }
+
+  void _removeRuntimePageCursor(
+    String runtimeSessionId, {
+    _RuntimeMirrorPageCursor? expected,
+  }) {
+    final existing = _pageCursorsByRuntime[runtimeSessionId];
+    if (existing == null ||
+        (expected != null && !identical(existing, expected))) {
+      return;
+    }
+    _pageCursorsByRuntime.remove(runtimeSessionId);
+    _bridge.notifySessionHistoryAvailabilityChanged(
+      runtimeSessionId,
+      available: false,
+    );
+  }
+
+  void _removeRuntimePageCursorsWhere(
+    bool Function(_RuntimeMirrorPageCursor cursor) test,
+  ) {
+    final runtimeSessionIds = _pageCursorsByRuntime.entries
+        .where((entry) => test(entry.value))
+        .map((entry) => entry.key)
+        .toList(growable: false);
+    for (final runtimeSessionId in runtimeSessionIds) {
+      _removeRuntimePageCursor(runtimeSessionId);
+    }
+  }
+
+  void _clearRuntimePageCursors() {
+    final runtimeSessionIds = _pageCursorsByRuntime.keys.toList(
+      growable: false,
+    );
+    for (final runtimeSessionId in runtimeSessionIds) {
+      _removeRuntimePageCursor(runtimeSessionId);
+    }
+  }
+
   Future<void> _publishTransferToBoundRuntimes(
     ConversationMirrorKey key,
-    _MirrorTransferGuard? transferGuard,
-  ) async {
+    _MirrorTransferGuard? transferGuard, {
+    bool onlyIfCursorStale = false,
+  }) async {
     if (transferGuard == null || !transferGuard.matches(key)) return;
     if (!transferGuard.providerReadGuarded) {
       for (final runtimeGuard in transferGuard.runtimes) {
@@ -1382,6 +1475,10 @@ class ConversationMirrorService extends ChangeNotifier {
     }
     final canonicalFallbacks = <_RuntimePublishGuard>[];
     for (final runtimeGuard in transferGuard.runtimes) {
+      if (onlyIfCursorStale &&
+          _runtimeCursorMatchesMetadata(key, runtimeGuard)) {
+        continue;
+      }
       final result = await _publishKeyToRuntime(key, runtimeGuard);
       if (result == _MirrorPublishResult.contentChanged) {
         canonicalFallbacks.add(runtimeGuard);
@@ -1398,13 +1495,29 @@ class ConversationMirrorService extends ChangeNotifier {
     }
   }
 
+  bool _runtimeCursorMatchesMetadata(
+    ConversationMirrorKey key,
+    _RuntimePublishGuard guard,
+  ) {
+    final cursor = _pageCursorsByRuntime[guard.runtimeSessionId];
+    final metadata = _metadata[key];
+    return cursor != null &&
+        metadata != null &&
+        _publishIdentityMatches(key, guard) &&
+        cursor.key == key &&
+        cursor.revision == metadata.revision &&
+        cursor.activeGeneration == metadata.activeGeneration &&
+        cursor.entryCount == metadata.entryCount &&
+        cursor.bootstrapGeneration == guard.bootstrapGeneration;
+  }
+
   Future<_MirrorPublishResult> _publishKeyToRuntime(
     ConversationMirrorKey key,
     _RuntimePublishGuard guard,
   ) async {
-    final initialFailure = _publishGuardFailure(key, guard);
-    if (initialFailure != null) return initialFailure;
-    _pageCursorsByRuntime.remove(guard.runtimeSessionId);
+    if (!_publishIdentityMatches(key, guard)) {
+      return _MirrorPublishResult.invalidated;
+    }
     final metadataBefore = await _store.readMetadata(key);
     if (metadataBefore == null || !metadataBefore.hasLocalCopy) {
       return _MirrorPublishResult.invalidated;
@@ -1429,8 +1542,9 @@ class ConversationMirrorService extends ChangeNotifier {
       startOffset,
       entries,
     );
-    final postReadFailure = _publishGuardFailure(key, guard);
-    if (postReadFailure != null) return postReadFailure;
+    if (!_publishIdentityMatches(key, guard)) {
+      return _MirrorPublishResult.invalidated;
+    }
     final metadataAfter = await _store.readMetadata(key);
     if (metadataAfter == null ||
         metadataAfter.activeGeneration != metadataBefore.activeGeneration ||
@@ -1447,22 +1561,69 @@ class ConversationMirrorService extends ChangeNotifier {
       mirrorMessages: mirrorMessages,
       canonicalMessages: canonicalMessages,
     );
-    final postDecodeFailure = _publishGuardFailure(key, guard);
-    if (postDecodeFailure != null) return postDecodeFailure;
-    _pageCursorsByRuntime[guard.runtimeSessionId] = _RuntimeMirrorPageCursor(
-      key: key,
-      revision: metadataBefore.revision,
-      activeGeneration: metadataBefore.activeGeneration,
-      entryCount: metadataBefore.entryCount,
-      bootstrapGeneration: guard.bootstrapGeneration,
-      nextOffset: startOffset,
+    if (!_publishIdentityMatches(key, guard)) {
+      return _MirrorPublishResult.invalidated;
+    }
+    final contentChanged =
+        _bridge.cachedSessionContentEpoch(guard.runtimeSessionId) !=
+        guard.contentEpoch;
+    final nextOffset = contentChanged
+        ? _nextOffsetBeforeCanonicalTail(
+            entries: entries,
+            canonicalMessages: canonicalMessages,
+            entryCount: metadataBefore.entryCount,
+          )
+        : startOffset;
+    _setRuntimePageCursor(
+      guard.runtimeSessionId,
+      _RuntimeMirrorPageCursor(
+        key: key,
+        revision: metadataBefore.revision,
+        activeGeneration: metadataBefore.activeGeneration,
+        entryCount: metadataBefore.entryCount,
+        bootstrapGeneration: guard.bootstrapGeneration,
+        nextOffset: nextOffset,
+      ),
     );
+    if (contentChanged) return _MirrorPublishResult.contentChanged;
     _bridge.publishExternalSessionHistory(
       guard.runtimeSessionId,
       messages,
       timestampAnchor: timestampAnchor,
     );
     return _MirrorPublishResult.published;
+  }
+
+  int _nextOffsetBeforeCanonicalTail({
+    required List<ConversationMirrorEntry> entries,
+    required List<ServerMessage> canonicalMessages,
+    required int entryCount,
+  }) {
+    if (canonicalMessages.isEmpty) return entryCount;
+    final mirrorOrdinalByKey = <String, int>{};
+    for (final entry in entries) {
+      try {
+        final message = ServerMessage.fromJson(entry.message);
+        final stableKey = _historyMessageStableKey(message);
+        if (stableKey != null) {
+          mirrorOrdinalByKey[stableKey] = entry.ordinal;
+        }
+      } catch (_) {
+        // Corrupt/future envelopes remain retained in storage but cannot
+        // participate in the visible canonical-tail overlap calculation.
+      }
+    }
+    for (final canonical in canonicalMessages) {
+      final stableKey = _historyMessageStableKey(canonical);
+      final ordinal = stableKey == null
+          ? null
+          : mirrorOrdinalByKey[stableKey];
+      if (ordinal != null) return ordinal;
+    }
+    // No overlap normally means the canonical cache begins after the last
+    // downloaded revision. Page from the local end so no stored range is
+    // skipped between that durable copy and the newer live tail.
+    return entryCount;
   }
 
   List<ServerMessage> _decodeRenderableEntries(
@@ -1576,7 +1737,7 @@ class ConversationMirrorService extends ChangeNotifier {
     }
     if (cursor.loading) return null;
     if (!_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
-      _pageCursorsByRuntime.remove(runtimeSessionId);
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
       return const LocalSessionHistoryPage(messages: [], hasMore: false);
     }
     cursor.loading = true;
@@ -1585,9 +1746,7 @@ class ConversationMirrorService extends ChangeNotifier {
       final startOffset = math.max(0, endOffset - limit);
       final metadataBefore = await _store.readMetadata(cursor.key);
       if (!_pageCursorMetadataMatches(cursor, metadataBefore)) {
-        if (identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
-          _pageCursorsByRuntime.remove(runtimeSessionId);
-        }
+        _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
         return null;
       }
       final entries = await _store.readEntries(
@@ -1604,9 +1763,7 @@ class ConversationMirrorService extends ChangeNotifier {
       if (!_pageCursorMetadataMatches(cursor, metadataAfter) ||
           !_pageCursorIdentityMatches(runtimeSessionId, cursor) ||
           !identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
-        if (identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
-          _pageCursorsByRuntime.remove(runtimeSessionId);
-        }
+        _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
         return null;
       }
       cursor.nextOffset = startOffset;
@@ -1633,16 +1790,14 @@ class ConversationMirrorService extends ChangeNotifier {
       return null;
     }
     if (!_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
-      _pageCursorsByRuntime.remove(runtimeSessionId);
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
       return null;
     }
     cursor.loading = true;
     try {
       final metadataBefore = await _store.readMetadata(cursor.key);
       if (!_pageCursorMetadataMatches(cursor, metadataBefore)) {
-        if (identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
-          _pageCursorsByRuntime.remove(runtimeSessionId);
-        }
+        _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
         return null;
       }
       final boundedLimit = math.min(limit, cursor.entryCount - startOrdinal);
@@ -1660,9 +1815,7 @@ class ConversationMirrorService extends ChangeNotifier {
       if (!_pageCursorMetadataMatches(cursor, metadataAfter) ||
           !_pageCursorIdentityMatches(runtimeSessionId, cursor) ||
           !identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
-        if (identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
-          _pageCursorsByRuntime.remove(runtimeSessionId);
-        }
+        _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
         return null;
       }
       // The displayed mirror prefix now begins at this target. Ordinary
@@ -1685,15 +1838,22 @@ class ConversationMirrorService extends ChangeNotifier {
     final cursor = _pageCursorsByRuntime[runtimeSessionId];
     if (cursor == null ||
         !_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
+      if (cursor != null) {
+        _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
+      }
       return null;
     }
     final metadataBefore = await _store.readMetadata(cursor.key);
-    if (!_pageCursorMetadataMatches(cursor, metadataBefore)) return null;
+    if (!_pageCursorMetadataMatches(cursor, metadataBefore)) {
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
+      return null;
+    }
     final entries = await _store.readUserEntries(cursor.key);
     final metadataAfter = await _store.readMetadata(cursor.key);
     if (!_pageCursorMetadataMatches(cursor, metadataAfter) ||
         !_pageCursorIdentityMatches(runtimeSessionId, cursor) ||
         !identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
       return null;
     }
     final messages = <LocalSessionUserIndexEntry>[];
@@ -1852,20 +2012,6 @@ class ConversationMirrorService extends ChangeNotifier {
     );
   }
 
-  _MirrorPublishResult? _publishGuardFailure(
-    ConversationMirrorKey key,
-    _RuntimePublishGuard guard,
-  ) {
-    if (!_publishIdentityMatches(key, guard)) {
-      return _MirrorPublishResult.invalidated;
-    }
-    if (_bridge.cachedSessionContentEpoch(guard.runtimeSessionId) !=
-        guard.contentEpoch) {
-      return _MirrorPublishResult.contentChanged;
-    }
-    return null;
-  }
-
   bool _publishIdentityMatches(
     ConversationMirrorKey key,
     _RuntimePublishGuard guard,
@@ -1952,7 +2098,7 @@ class ConversationMirrorService extends ChangeNotifier {
       _transferGuardsByRequestId.clear();
       _watchRequestIds.clear();
       _watchRequestIdsByConversation.clear();
-      _pageCursorsByRuntime.clear();
+      _clearRuntimePageCursors();
       for (final requestId in staleRequestIds) {
         _finishPending(
           requestId,
@@ -2129,7 +2275,7 @@ class ConversationMirrorService extends ChangeNotifier {
     _watchRequestIdsByConversation.clear();
     _resetRequestIds.clear();
     _bootstrapGenerationByRuntime.clear();
-    _pageCursorsByRuntime.clear();
+    _clearRuntimePageCursors();
     _transferGuardsByRequestId.clear();
     _entryChunkAssemblies.clear();
     _completedEntryChunkPages.clear();
