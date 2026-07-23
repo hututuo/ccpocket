@@ -75,6 +75,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
   StreamSubscription<List<SessionInfo>>? _codexRuntimeSnapshotSubscription;
   StreamSubscription<int>? _codexModelCatalogSubscription;
+  StreamSubscription<LocalSessionHistoryAvailabilityChange>?
+  _localHistoryAvailabilitySubscription;
   StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
   StreamSubscription<BridgeConnectionState>?
   _desktopContinuityConnectionSubscription;
@@ -137,6 +139,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _discardLocalMirrorOnNextCanonicalHistory = false;
   final ValueNotifier<LocalHistoryPagingState> localHistoryPaging =
       ValueNotifier(const LocalHistoryPagingState());
+  final ValueNotifier<int> localHistoryIndexRevision = ValueNotifier(0);
+  bool _localHistoryUserIndexComplete = false;
+
+  bool get localHistoryUserIndexComplete => _localHistoryUserIndexComplete;
 
   /// Tool use IDs that have already been answered locally.
   static const _maxRespondedToolUseIds = 512;
@@ -286,6 +292,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _respondedToolUseIds.addAll(_bridge.respondedToolUseIds(sessionId));
     // Subscribe to messages for this session
     _subscription = _bridge.messagesForSession(sessionId).listen(_onMessage);
+    _localHistoryAvailabilitySubscription = _bridge
+        .sessionHistoryAvailabilityChanges
+        .listen(_onLocalHistoryAvailabilityChanged);
 
     if (isCodex) {
       _goalConnectionSubscription = _bridge.connectionStatus.listen(
@@ -1202,11 +1211,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     _historyFallbackRequested = false;
-    localHistoryPaging.value = LocalHistoryPagingState(
-      enabled: _bridge.hasSessionHistoryPaging,
-      hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
-    );
+    localHistoryPaging.value = _currentLocalHistoryPagingState();
     _settleStatusFromRuntimeAfterLocalBootstrap();
+  }
+
+  LocalHistoryPagingState _currentLocalHistoryPagingState() {
+    final available =
+        _bridge.hasSessionHistoryPaging &&
+        _bridge.hasLocalSessionHistory(sessionId);
+    return LocalHistoryPagingState(
+      enabled: available,
+      hasMore:
+          available && _bridge.hasOlderLocalSessionHistory(sessionId),
+    );
+  }
+
+  void _onLocalHistoryAvailabilityChanged(
+    LocalSessionHistoryAvailabilityChange change,
+  ) {
+    if (isClosed || change.runtimeSessionId != sessionId) return;
+    _localHistoryUserIndexComplete = false;
+    localHistoryPaging.value = change.available
+        ? _currentLocalHistoryPagingState()
+        : const LocalHistoryPagingState();
+    localHistoryIndexRevision.value += 1;
   }
 
   void _settleStatusFromRuntimeAfterLocalBootstrap() {
@@ -1244,6 +1272,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (expectCanonicalHistory && _localMirrorEntryCount > 0) {
       _discardLocalMirrorOnNextCanonicalHistory = true;
     }
+    if (_localHistoryUserIndexComplete) {
+      _localHistoryUserIndexComplete = false;
+      localHistoryIndexRevision.value += 1;
+    }
     _localHistoryPagingGeneration += 1;
     localHistoryPaging.value = const LocalHistoryPagingState();
     _bridge.invalidateLocalSessionHistoryPaging(sessionId);
@@ -1270,10 +1302,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return false;
       }
       if (page == null) {
-        localHistoryPaging.value = LocalHistoryPagingState(
-          enabled: _bridge.hasSessionHistoryPaging,
-          hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
-        );
+        localHistoryPaging.value = _currentLocalHistoryPagingState();
         return false;
       }
       if (page.messages.isNotEmpty) {
@@ -1463,10 +1492,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (localHistoryPaging.value.enabled) {
         if (isLocalMirrorSnapshot) {
           _localHistoryPagingGeneration += 1;
-          localHistoryPaging.value = LocalHistoryPagingState(
-            enabled: _bridge.hasSessionHistoryPaging,
-            hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
-          );
+          localHistoryPaging.value = _currentLocalHistoryPagingState();
         }
       }
       if (!isLocalMirrorSnapshot && _discardLocalMirrorOnNextCanonicalHistory) {
@@ -4490,6 +4516,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         stackTrace,
       );
     }
+    _localHistoryUserIndexComplete = indexed != null;
     if (indexed == null) return allUserMessages;
     final result = <UserChatEntry>[];
     for (final indexedEntry in indexed) {
@@ -4569,10 +4596,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           return null;
         }
         if (page == null) {
-          localHistoryPaging.value = LocalHistoryPagingState(
-            enabled: _bridge.hasSessionHistoryPaging,
-            hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
-          );
+          localHistoryPaging.value = _currentLocalHistoryPagingState();
           return null;
         }
         _replaceLocalMirrorWindow(page);
@@ -4775,10 +4799,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     _discardLocalMirrorOnNextCanonicalHistory = false;
     _historyFallbackRequested = false;
-    localHistoryPaging.value = LocalHistoryPagingState(
-      enabled: _bridge.hasSessionHistoryPaging,
-      hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
-    );
+    localHistoryPaging.value = _currentLocalHistoryPagingState();
   }
 
   /// Retry a failed user message.
@@ -4944,6 +4965,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _goalSessionListSubscription?.cancel();
     _codexRuntimeSnapshotSubscription?.cancel();
     _codexModelCatalogSubscription?.cancel();
+    _localHistoryAvailabilitySubscription?.cancel();
     codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
     _desktopContinuitySubscription?.cancel();
@@ -4956,6 +4978,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _subscription?.cancel();
     _sideEffectsController.close();
     _bridge.invalidateLocalSessionHistoryPaging(sessionId);
+    localHistoryIndexRevision.dispose();
     localHistoryPaging.dispose();
     return super.close();
   }

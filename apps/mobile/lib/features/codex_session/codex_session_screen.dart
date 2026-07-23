@@ -31,6 +31,8 @@ import '../settings/state/settings_cubit.dart';
 import '../../widgets/new_session_sheet.dart'
     show permissionModeFromRaw, sandboxModeFromRaw;
 import '../session_list/workspace_shell_screen.dart';
+import '../conversation_mirror/conversation_mirror_service.dart';
+import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../local_session_features/host/local_session_feature.dart';
 import '../local_session_features/host/local_session_feature_host.dart';
 import '../../widgets/approval_bar.dart';
@@ -2026,7 +2028,16 @@ void _showUserMessageHistory(
   DraftService draftService,
 ) {
   final cubit = context.read<ChatSessionCubit>();
-  final messages = cubit.loadAllUserMessagesForNavigation();
+  final bridge = context.read<BridgeService>();
+  final mirrorService = context.read<ConversationMirrorService?>();
+  final runtimeSession = bridge.sessions
+      .where((session) => session.id == sessionId)
+      .firstOrNull;
+  final canRequestFullHistory =
+      mirrorService?.isAvailable == true &&
+      mirrorService?.featureUnsupported != true &&
+      runtimeSession?.provider == Provider.codex.value &&
+      runtimeSession?.claudeSessionId?.trim().isNotEmpty == true;
 
   showModalBottomSheet<void>(
     context: context,
@@ -2034,7 +2045,18 @@ void _showUserMessageHistory(
     constraints: macOSModalBottomSheetConstraints(context),
     useSafeArea: true,
     builder: (_) => UserMessageHistoryLoaderSheet(
-      messages: messages,
+      loadMessages: cubit.loadAllUserMessagesForNavigation,
+      isComplete: () => cubit.localHistoryUserIndexComplete,
+      refreshListenable: cubit.localHistoryIndexRevision,
+      onRequestFullHistory: canRequestFullHistory
+          ? () async {
+              await handleConversationMirrorRunningAction(
+                context,
+                runtimeSession!,
+                conversationMirrorDownloadAction,
+              );
+            }
+          : null,
       onScrollToMessage: (msg) async {
         final loaded = await cubit.revealUserMessage(msg);
         if (loaded == null) return false;

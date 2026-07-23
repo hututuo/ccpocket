@@ -1,39 +1,151 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
 import '../../../theme/app_theme.dart';
 
-class UserMessageHistoryLoaderSheet extends StatelessWidget {
-  final Future<List<UserChatEntry>> messages;
+class UserMessageHistoryLoaderSheet extends StatefulWidget {
+  final Future<List<UserChatEntry>> Function() loadMessages;
+  final bool Function() isComplete;
+  final ValueListenable<int>? refreshListenable;
+  final Future<void> Function()? onRequestFullHistory;
   final Future<bool> Function(UserChatEntry message) onScrollToMessage;
   final void Function(UserChatEntry message)? onRewindMessage;
 
   const UserMessageHistoryLoaderSheet({
     super.key,
-    required this.messages,
+    required this.loadMessages,
+    required this.isComplete,
+    this.refreshListenable,
+    this.onRequestFullHistory,
     required this.onScrollToMessage,
     this.onRewindMessage,
   });
 
   @override
+  State<UserMessageHistoryLoaderSheet> createState() =>
+      _UserMessageHistoryLoaderSheetState();
+}
+
+class _UserMessageHistoryLoaderSheetState
+    extends State<UserMessageHistoryLoaderSheet> {
+  List<UserChatEntry>? _messages;
+  Object? _loadError;
+  bool _complete = false;
+  bool _loading = false;
+  bool _requestingFullHistory = false;
+  int _loadGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.refreshListenable?.addListener(_handleRefresh);
+    unawaited(_reload());
+  }
+
+  @override
+  void didUpdateWidget(UserMessageHistoryLoaderSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.refreshListenable != widget.refreshListenable) {
+      oldWidget.refreshListenable?.removeListener(_handleRefresh);
+      widget.refreshListenable?.addListener(_handleRefresh);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.refreshListenable?.removeListener(_handleRefresh);
+    super.dispose();
+  }
+
+  void _handleRefresh() {
+    unawaited(_reload());
+  }
+
+  Future<void> _reload() async {
+    final generation = ++_loadGeneration;
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _loadError = null;
+      });
+    }
+    try {
+      final messages = await widget.loadMessages();
+      final complete = widget.isComplete();
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() {
+        _messages = messages;
+        _complete = complete;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() {
+        _loading = false;
+        _loadError = error;
+        _complete = false;
+      });
+    }
+  }
+
+  Future<void> _requestFullHistory() async {
+    final request = widget.onRequestFullHistory;
+    if (request == null || _requestingFullHistory) return;
+    setState(() => _requestingFullHistory = true);
+    try {
+      await request();
+      await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _loadError = error);
+    } finally {
+      if (mounted) setState(() => _requestingFullHistory = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<UserChatEntry>>(
-      future: messages,
-      builder: (context, snapshot) {
-        final loaded = snapshot.data;
-        if (loaded != null) {
-          return UserMessageHistorySheet(
-            messages: loaded,
-            onScrollToMessage: onScrollToMessage,
-            onRewindMessage: onRewindMessage,
-          );
-        }
-        return const SizedBox(
-          height: 280,
-          child: Center(child: CircularProgressIndicator.adaptive()),
-        );
-      },
+    final messages = _messages;
+    if (messages != null) {
+      return UserMessageHistorySheet(
+        messages: messages,
+        historyComplete: _complete,
+        historyRefreshing: _loading,
+        historyLoadError: _loadError,
+        requestingFullHistory: _requestingFullHistory,
+        onRequestFullHistory: widget.onRequestFullHistory == null
+            ? null
+            : _requestFullHistory,
+        onScrollToMessage: widget.onScrollToMessage,
+        onRewindMessage: widget.onRewindMessage,
+      );
+    }
+    if (_loadError != null && !_loading) {
+      final zh = Localizations.localeOf(context).languageCode == 'zh';
+      return SizedBox(
+        height: 280,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(zh ? '会话轮次加载失败' : 'Could not load turn history'),
+              const SizedBox(height: 12),
+              FilledButton.tonal(
+                onPressed: _reload,
+                child: Text(zh ? '重试' : 'Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return const SizedBox(
+      height: 280,
+      child: Center(child: CircularProgressIndicator.adaptive()),
     );
   }
 }
@@ -45,12 +157,22 @@ class UserMessageHistoryLoaderSheet extends StatelessWidget {
 /// - Tap rewind icon → [onRewindMessage] (only for messages with UUID)
 class UserMessageHistorySheet extends StatefulWidget {
   final List<UserChatEntry> messages;
+  final bool historyComplete;
+  final bool historyRefreshing;
+  final Object? historyLoadError;
+  final bool requestingFullHistory;
+  final VoidCallback? onRequestFullHistory;
   final Future<bool> Function(UserChatEntry message) onScrollToMessage;
   final void Function(UserChatEntry message)? onRewindMessage;
 
   const UserMessageHistorySheet({
     super.key,
     required this.messages,
+    this.historyComplete = true,
+    this.historyRefreshing = false,
+    this.historyLoadError,
+    this.requestingFullHistory = false,
+    this.onRequestFullHistory,
     required this.onScrollToMessage,
     this.onRewindMessage,
   });
@@ -142,6 +264,15 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
                 ),
 
                 const Divider(height: 1),
+
+                if (!widget.historyComplete)
+                  _PartialHistoryBanner(
+                    visibleTurns: widget.messages.length,
+                    refreshing: widget.historyRefreshing,
+                    loadError: widget.historyLoadError,
+                    requestingFullHistory: widget.requestingFullHistory,
+                    onRequestFullHistory: widget.onRequestFullHistory,
+                  ),
 
                 // Message list
                 if (widget.messages.isEmpty)
@@ -243,6 +374,85 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
             ),
           ),
       ],
+    );
+  }
+}
+
+class _PartialHistoryBanner extends StatelessWidget {
+  const _PartialHistoryBanner({
+    required this.visibleTurns,
+    required this.refreshing,
+    required this.loadError,
+    required this.requestingFullHistory,
+    required this.onRequestFullHistory,
+  });
+
+  final int visibleTurns;
+  final bool refreshing;
+  final Object? loadError;
+  final bool requestingFullHistory;
+  final VoidCallback? onRequestFullHistory;
+
+  @override
+  Widget build(BuildContext context) {
+    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final colorScheme = Theme.of(context).colorScheme;
+    final busy = refreshing || requestingFullHistory;
+    final status = loadError != null
+        ? (zh
+              ? '完整历史索引暂时不可用，目前只显示已加载的 $visibleTurns 轮。'
+              : 'The full index is unavailable; showing $visibleTurns loaded turns.')
+        : refreshing
+        ? (zh
+              ? '正在读取完整历史索引，目前先显示 $visibleTurns 轮。'
+              : 'Loading the full index; showing $visibleTurns turns for now.')
+        : (zh
+              ? '目前显示已加载的 $visibleTurns 轮；完整历史索引尚未就绪。'
+              : 'Showing $visibleTurns loaded turns; the full index is not ready.');
+
+    return Container(
+      key: const ValueKey('partial_history_banner'),
+      width: double.infinity,
+      color: colorScheme.secondaryContainer.withValues(alpha: 0.45),
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+      child: Row(
+        children: [
+          if (busy)
+            const SizedBox.square(
+              dimension: 18,
+              child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+            )
+          else
+            Icon(
+              Icons.info_outline,
+              size: 18,
+              color: colorScheme.onSecondaryContainer,
+            ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              status,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSecondaryContainer,
+              ),
+            ),
+          ),
+          if (onRequestFullHistory != null) ...[
+            const SizedBox(width: 8),
+            TextButton(
+              key: const ValueKey('download_full_history_button'),
+              onPressed: busy ? null : onRequestFullHistory,
+              child: Text(
+                requestingFullHistory
+                    ? (zh ? '下载中…' : 'Downloading…')
+                    : (zh
+                          ? '完整下载并常驻'
+                          : 'Download & keep resident'),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

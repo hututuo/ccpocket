@@ -551,6 +551,71 @@ void main() {
   });
 
   test(
+    'an open turn-history view can refresh after the full index becomes available',
+    () async {
+      var historyAvailable = false;
+      bridge.configureSessionHistoryPaging(
+        available: (_) => historyAvailable,
+        hasMore: (_) => historyAvailable,
+        loader: ({required runtimeSessionId, required limit}) async =>
+            const LocalSessionHistoryPage(messages: [], hasMore: false),
+      );
+      bridge.configureSessionHistoryUserIndex(({
+        required runtimeSessionId,
+      }) async {
+        if (!historyAvailable) return null;
+        return List.generate(
+          6,
+          (index) => LocalSessionUserIndexEntry(
+            ordinal: index,
+            message: UserInputMessage(
+              text: 'turn-$index',
+              userMessageUuid: 'turn-$index',
+            ),
+          ),
+        );
+      });
+
+      final cubit = createCubit();
+      bridge.emitMessage(
+        HistoryMessage(
+          messages: List.generate(
+            4,
+            (index) => UserInputMessage(
+              text: 'turn-$index',
+              userMessageUuid: 'turn-$index',
+            ),
+          ),
+        ),
+        sessionId: 's1',
+      );
+      await settleBootstrap();
+
+      final bounded = await cubit.loadAllUserMessagesForNavigation();
+      expect(bounded, hasLength(4));
+      expect(cubit.localHistoryUserIndexComplete, isFalse);
+      expect(cubit.localHistoryIndexRevision.value, 0);
+
+      historyAvailable = true;
+      bridge.notifySessionHistoryAvailabilityChanged('s1', available: true);
+      await Future<void>.microtask(() {});
+
+      expect(cubit.localHistoryIndexRevision.value, 1);
+      expect(cubit.localHistoryPaging.value.enabled, isTrue);
+      final complete = await cubit.loadAllUserMessagesForNavigation();
+      expect(complete.map((entry) => entry.text), [
+        'turn-0',
+        'turn-1',
+        'turn-2',
+        'turn-3',
+        'turn-4',
+        'turn-5',
+      ]);
+      expect(cubit.localHistoryUserIndexComplete, isTrue);
+    },
+  );
+
+  test(
     'a far turn swaps in one target window without mounting skipped pages',
     () async {
       var sequentialLoads = 0;

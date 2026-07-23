@@ -1637,7 +1637,6 @@ void _showUserMessageHistory(
   DraftService draftService,
 ) {
   final cubit = context.read<ChatSessionCubit>();
-  final messages = cubit.loadAllUserMessagesForNavigation();
 
   showModalBottomSheet<void>(
     context: context,
@@ -1645,7 +1644,9 @@ void _showUserMessageHistory(
     constraints: macOSModalBottomSheetConstraints(context),
     useSafeArea: true,
     builder: (_) => UserMessageHistoryLoaderSheet(
-      messages: messages,
+      loadMessages: cubit.loadAllUserMessagesForNavigation,
+      // Claude history does not use the optional Codex phone mirror.
+      isComplete: () => true,
       onScrollToMessage: (msg) async {
         final loaded = await cubit.revealUserMessage(msg);
         if (loaded == null) return false;
