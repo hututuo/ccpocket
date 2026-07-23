@@ -204,7 +204,7 @@ class ChatCurrentProgressHeader extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
             child: Row(
               children: [
-                Icon(Icons.pending_outlined, size: 15, color: color),
+                Icon(Icons.pending_actions_outlined, size: 15, color: color),
                 const SizedBox(width: 7),
                 Text(
                   zh ? '当前进度' : 'Current progress',
