@@ -9,6 +9,7 @@ import {
   ConversationMirrorError,
   ConversationMirrorFeatureHandler,
   diffSnapshots,
+  MAX_CONVERSATION_MIRROR_ENTRIES,
   MAX_CONVERSATION_MIRROR_EVENT_BYTES,
   normalizeConversationMirrorSnapshot,
   type ConversationMirrorSnapshot,
@@ -762,6 +763,25 @@ describe("CodexConversationMirrorReader", () => {
         maxTotalBytes: 1,
       }),
     ).toThrow(/normalized bytes/);
+  });
+
+  it("accepts a default full download above the former 10k ceiling", () => {
+    const itemCount = 10_001;
+    const result = normalizeConversationMirrorSnapshot({
+      turns: [
+        turn(
+          "large-turn",
+          Array.from({ length: itemCount }, (_, index) => ({
+            type: "agentMessage",
+            id: `assistant-${index}`,
+            text: `message ${index}`,
+          })),
+        ),
+      ],
+    });
+
+    expect(MAX_CONVERSATION_MIRROR_ENTRIES).toBe(100_000);
+    expect(result.entries).toHaveLength(itemCount);
   });
 
   it("keeps display user UUID ordinals separate from raw entry identity", () => {

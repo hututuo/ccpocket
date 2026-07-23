@@ -168,6 +168,8 @@ const CODEX_DESKTOP_CONTINUITY_CAPABILITY =
   "codex_desktop_continuity_v1";
 const CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY =
   "codex_resume_preserves_settings_v1";
+const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
+const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
 const KNOWN_CODEX_GOAL_STATUSES = new Set([
@@ -2548,12 +2550,13 @@ export class BridgeWebSocketServer {
     try {
       const entries = await this.codexCanonicalHistoryEntries(session);
       if (!entries) return false;
+      const visibleEntries = this.historyWindowForClient(ws, entries);
       this.send(ws, {
         type: "history_snapshot",
         sessionId,
-        fromSeq: entries[0]?.seq ?? session.historyRevision + 1,
+        fromSeq: visibleEntries[0]?.seq ?? session.historyRevision + 1,
         toSeq: session.historyRevision,
-        messages: entries,
+        messages: visibleEntries,
         status: session.status,
         reason: "reset",
       } satisfies Extract<ServerMessage, { type: "history_snapshot" }>);
@@ -2583,9 +2586,10 @@ export class BridgeWebSocketServer {
     try {
       const entries = await this.codexCanonicalHistoryEntries(session);
       if (!entries) return false;
+      const visibleEntries = this.historyWindowForClient(ws, entries);
       this.send(ws, {
         type: "history",
-        messages: entries.map((entry) => entry.message),
+        messages: visibleEntries.map((entry) => entry.message),
         sessionId,
       } as Record<string, unknown>);
       this.sendCodexCurrentSettings(ws, sessionId, session);
@@ -2607,6 +2611,18 @@ export class BridgeWebSocketServer {
       });
       return true;
     }
+  }
+
+  private historyWindowForClient<T>(ws: WebSocket, values: T[]): T[] {
+    if (
+      values.length <= BOUNDED_HISTORY_WINDOW_ENTRIES ||
+      !this.clientSupportedServerMessages
+        .get(ws)
+        ?.has(BOUNDED_HISTORY_WINDOW_CAPABILITY)
+    ) {
+      return values;
+    }
+    return values.slice(-BOUNDED_HISTORY_WINDOW_ENTRIES);
   }
 
   private shouldResetCodexHistoryDelta(

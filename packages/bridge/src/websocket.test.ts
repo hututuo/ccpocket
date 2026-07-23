@@ -4413,6 +4413,83 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("bounds canonical history only for clients that opt into a render window", async () => {
+    codexThreadToSessionHistoryMock.mockReturnValue(
+      Array.from({ length: 205 }, (_, index) => ({
+        role: "user" as const,
+        uuid: `codex:user-turn:${index + 1}`,
+        content: [{ type: "text" as const, text: `history item ${index}` }],
+      })),
+    );
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-window",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.claudeSessionId = "thr_codex_window";
+    session.process.readThread.mockResolvedValue({
+      id: "thr_codex_window",
+      turns: [],
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+    const legacyHistory = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history");
+    expect(legacyHistory.messages).toHaveLength(205);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["bounded_history_window_v1"],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+    const boundedHistory = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history");
+    expect(boundedHistory.messages).toHaveLength(200);
+    expect(boundedHistory.messages[0]).toMatchObject({
+      type: "user_input",
+      text: "history item 5",
+    });
+    expect(boundedHistory.messages.at(-1)).toMatchObject({
+      type: "user_input",
+      text: "history item 204",
+    });
+
+    bridge.close();
+  });
+
   it("does not publish fallback settings while a resumed thread is unresolved", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

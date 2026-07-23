@@ -34,8 +34,11 @@ const DEFAULT_MAX_CONCURRENT_READS = 2;
 const DEFAULT_MAX_POLL_BACKOFF_MS = 5 * 60_000;
 const DEFAULT_POLL_JITTER_RATIO = 0.2;
 
-export const MAX_CONVERSATION_MIRROR_ENTRIES = 10_000;
-export const MAX_CONVERSATION_MIRROR_TOTAL_BYTES = 32 * 1024 * 1024;
+// Keep the full-download ceiling aligned with the mobile mirror store. The
+// render surface is independently windowed, so increasing this durable-store
+// limit does not permit 100k rows to be mounted in the conversation UI.
+export const MAX_CONVERSATION_MIRROR_ENTRIES = 100_000;
+export const MAX_CONVERSATION_MIRROR_TOTAL_BYTES = 64 * 1024 * 1024;
 export const MAX_CONVERSATION_MIRROR_EVENT_BYTES = 512 * 1024;
 export const MAX_CONVERSATION_MIRROR_CHUNK_RAW_BYTES = 256 * 1024;
 export const MAX_CONVERSATION_MIRROR_PAGE_ENTRIES = 100;
@@ -113,10 +116,13 @@ export class CodexConversationMirrorReader {
       options.rpcTimeoutMs,
       DEFAULT_RPC_TIMEOUT_MS,
     );
-    this.maxPages = positiveInteger(options.maxPages, 100);
     this.maxEntries = positiveInteger(
       options.maxEntries,
       MAX_CONVERSATION_MIRROR_ENTRIES,
+    );
+    this.maxPages = positiveInteger(
+      options.maxPages,
+      Math.ceil(this.maxEntries / HISTORY_PAGE_SIZE),
     );
     this.maxTotalBytes = positiveInteger(
       options.maxTotalBytes,
@@ -706,7 +712,6 @@ interface WatchedThread {
   clients: Map<object, ClientWatch>;
   abortController: AbortController;
   snapshot?: ConversationMirrorSnapshot;
-  previousSnapshot?: ConversationMirrorSnapshot;
   reconcilePromise?: Promise<ConversationMirrorSnapshot>;
   reconcileReadStarted: boolean;
   timer?: ReturnType<typeof setTimeout>;
@@ -993,17 +998,12 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
 
       if (message.knownRevision === snapshot.revision) {
         this.sendNotModified(client, message, snapshot);
-      } else if (
-        message.knownRevision &&
-        state.previousSnapshot?.revision === message.knownRevision
-      ) {
-        this.sendPatchOrSnapshot(
-          client,
-          message,
-          state.previousSnapshot,
-          snapshot,
-        );
       } else {
+        // Only established registrations retain the immediately preceding
+        // snapshot long enough to compute a patch. A newly attached client
+        // with an older revision receives a fresh paged snapshot instead of
+        // keeping a second full conversation resident for every watched
+        // thread.
         this.sendSnapshot(client, message, snapshot);
       }
       registration.lastSnapshot = snapshot;
@@ -1130,7 +1130,6 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
       this.assertThreadPathAllowed(snapshot);
 
       const previous = state.snapshot;
-      state.previousSnapshot = previous;
       state.snapshot = snapshot;
       state.lastFullAt = Date.now();
       for (const [client, registration] of state.clients) {
@@ -1724,23 +1723,28 @@ function planConversationMirrorTransferPages(
   if (snapshot.entries.length === 0) return [];
   const pages: ConversationMirrorTransferPage[] = [];
   let page: ConversationMirrorEntry[] = [];
-
-  const eventBytes = (entries: ConversationMirrorEntry[]): number =>
-    jsonBytes({
-      type: "conversation_mirror_event_v1",
-      event: "snapshot_page",
-      requestId: request.requestId,
-      bridgeInstanceId: runtime.bridgeInstanceId,
-      provider: request.provider,
-      providerSessionId: request.providerSessionId,
-      revision: snapshot.revision,
-      pageIndex: 999_999,
-      pageCount: 999_999,
-      entries,
-    });
+  // JSON byte size of the event with an empty entries array. Replacing `[]`
+  // with `[entry,...]` adds exactly each serialized entry plus separators.
+  // This avoids repeatedly serializing the growing page (quadratic work for
+  // large downloads) while retaining the exact wire-size boundary.
+  const emptyEventBytes = jsonBytes({
+    type: "conversation_mirror_event_v1",
+    event: "snapshot_page",
+    requestId: request.requestId,
+    bridgeInstanceId: runtime.bridgeInstanceId,
+    provider: request.provider,
+    providerSessionId: request.providerSessionId,
+    revision: snapshot.revision,
+    pageIndex: 999_999,
+    pageCount: 999_999,
+    entries: [],
+  });
+  let pageEventBytes = emptyEventBytes;
 
   for (const entry of snapshot.entries) {
-    if (eventBytes([entry]) > MAX_CONVERSATION_MIRROR_EVENT_BYTES) {
+    const entryBytes = jsonBytes(entry);
+    const singleEntryEventBytes = emptyEventBytes + entryBytes;
+    if (singleEntryEventBytes > MAX_CONVERSATION_MIRROR_EVENT_BYTES) {
       if (!runtime.allowEntryChunks) {
         throw new ConversationMirrorError(
           "entry_too_large",
@@ -1750,19 +1754,23 @@ function planConversationMirrorTransferPages(
       if (page.length > 0) {
         pages.push({ kind: "entries", entries: page });
         page = [];
+        pageEventBytes = emptyEventBytes;
       }
       pages.push({ kind: "chunked_entry", entry });
       continue;
     }
-    const candidate = [...page, entry];
+    const appendedEventBytes =
+      pageEventBytes + entryBytes + (page.length > 0 ? 1 : 0);
     if (
       page.length >= MAX_CONVERSATION_MIRROR_PAGE_ENTRIES ||
-      eventBytes(candidate) > MAX_CONVERSATION_MIRROR_EVENT_BYTES
+      appendedEventBytes > MAX_CONVERSATION_MIRROR_EVENT_BYTES
     ) {
       pages.push({ kind: "entries", entries: page });
       page = [entry];
+      pageEventBytes = singleEntryEventBytes;
     } else {
-      page = candidate;
+      page.push(entry);
+      pageEventBytes = appendedEventBytes;
     }
   }
   if (page.length > 0) pages.push({ kind: "entries", entries: page });
