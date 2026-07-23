@@ -33,6 +33,7 @@ bash .claude/skills/shorebird-patch/patch.sh ios <release-version>
 - 配布先は `owner`。
 - RSA 公開鍵と秘密鍵で署名する。
 - `--allow-native-diffs` と `--allow-asset-diffs` を拒否する。
+- Flutter の build flag は base release と同じ既定値を使う。特に icon font の tree shaking を片側だけ変更しない。
 - Native、Swift/Kotlin、entitlement、plugin、asset、Flutter/Xcode、依存関係の差分はパッチにせず、新しい base release にする。
 
 ## 新しい base IPA

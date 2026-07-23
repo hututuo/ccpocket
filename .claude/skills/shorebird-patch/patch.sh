@@ -67,6 +67,6 @@ shorebird patch "$PLATFORM" \
   --track=owner \
   --public-key-path="$SHOREBIRD_PUBLIC_KEY_PATH" \
   --private-key-path="$SHOREBIRD_PRIVATE_KEY_PATH" \
-  -- --no-tree-shake-icons "$@"
+  -- "$@"
 
 echo "Patch published to owner only. Stable promotion still requires explicit confirmation."
