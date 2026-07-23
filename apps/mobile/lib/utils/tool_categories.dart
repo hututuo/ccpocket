@@ -86,6 +86,27 @@ String getToolSummary(ToolCategory category, Map<String, dynamic> input) {
   };
 }
 
+/// Extract metadata that is safe and cheap to show before a tool is expanded.
+///
+/// Commands, search queries, prompts, and arbitrary object keys are deliberately
+/// omitted here. They can be large and may contain code; the transcript only
+/// builds those details after the user opens the disclosure.
+String getToolCollapsedSummary(
+  ToolCategory category,
+  Map<String, dynamic> input,
+) {
+  return switch (category) {
+    ToolCategory.read || ToolCategory.write => _fileSummary(input),
+    ToolCategory.subagent => _agentIdentitySummary(input),
+    ToolCategory.wait => _waitSummary(input),
+    ToolCategory.image => _imageStatusSummary(input),
+    ToolCategory.bash ||
+    ToolCategory.search ||
+    ToolCategory.compact ||
+    ToolCategory.other => '',
+  };
+}
+
 /// Icon for each tool category.
 IconData getToolCategoryIcon(ToolCategory category) {
   return switch (category) {
@@ -347,6 +368,27 @@ String _otherSummary(Map<String, dynamic> input) {
   }
   return _fallbackSummary(input);
 }
+
+String _agentIdentitySummary(Map<String, dynamic> input) {
+  final value =
+      input['agent_name'] ??
+      input['agentName'] ??
+      input['agent_id'] ??
+      input['agentId'];
+  return value?.toString().trim() ?? '';
+}
+
+String _waitSummary(Map<String, dynamic> input) {
+  final value =
+      input['duration'] ??
+      input['duration_ms'] ??
+      input['timeout'] ??
+      input['timeout_ms'];
+  return value?.toString().trim() ?? '';
+}
+
+String _imageStatusSummary(Map<String, dynamic> input) =>
+    input['status']?.toString().replaceAll('_', ' ').trim() ?? '';
 
 String _fallbackSummary(Map<String, dynamic> input) {
   final keys = input.keys.take(3).join(', ');

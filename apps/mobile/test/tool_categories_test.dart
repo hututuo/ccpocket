@@ -136,4 +136,41 @@ void main() {
       expect(result, '{}');
     });
   });
+
+  group('getToolCollapsedSummary', () {
+    test('keeps file and agent identity but hides executable content', () {
+      expect(
+        getToolCollapsedSummary(ToolCategory.read, {
+          'file_path': '/Users/project/lib/main.dart',
+        }),
+        'main.dart',
+      );
+      expect(
+        getToolCollapsedSummary(ToolCategory.subagent, {
+          'agent_id': 'agent-42',
+          'prompt': 'private delegated instructions',
+        }),
+        'agent-42',
+      );
+      expect(
+        getToolCollapsedSummary(ToolCategory.bash, {
+          'command': 'rm -rf private-build-output',
+        }),
+        isEmpty,
+      );
+      expect(
+        getToolCollapsedSummary(ToolCategory.search, {
+          'query': 'secret implementation detail',
+        }),
+        isEmpty,
+      );
+      expect(
+        getToolCollapsedSummary(ToolCategory.compact, {
+          'title': 'Update plan',
+          'todos': const [],
+        }),
+        isEmpty,
+      );
+    });
+  });
 }

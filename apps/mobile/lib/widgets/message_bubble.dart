@@ -222,6 +222,7 @@ class ServerMessageWidget extends StatelessWidget {
             : null,
         onFork: onForkMessage != null ? () => onForkMessage!(msg) : null,
         showProcessDetails: showAssistantProcessDetails,
+        collapseNotifier: collapseToolResults,
       ),
       // Hide tool results that are summarized by a tool_use_summary
       final ToolResultMessage msg =>

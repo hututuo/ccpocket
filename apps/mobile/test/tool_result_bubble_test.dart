@@ -65,11 +65,13 @@ void main() {
       expect(cardFinder, findsNothing);
     });
 
-    testWidgets('collapsed shows summary as plain text', (tester) async {
+    testWidgets('collapsed does not derive a summary from result content', (
+      tester,
+    ) async {
       await tester.pumpWidget(_wrap(ToolResultBubble(message: _msg())));
 
-      // Summary should be "3 lines"
-      expect(find.text('3 lines'), findsOneWidget);
+      expect(find.text('3 lines'), findsNothing);
+      expect(find.text('line1'), findsNothing);
     });
 
     testWidgets('collapsed hides images', (tester) async {
@@ -96,8 +98,8 @@ void main() {
     });
   });
 
-  group('ToolResultBubble - expansion cycle', () {
-    testWidgets('tap cycles collapsed → preview → expanded → collapsed', (
+  group('ToolResultBubble - disclosure and explicit show-more', () {
+    testWidgets('header toggles preview and show-more opens the full result', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -116,17 +118,27 @@ void main() {
       // Tap → preview
       await tester.tap(find.byType(InkWell).first);
       await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.expand_more), findsOneWidget);
-      expect(find.textContaining('more lines'), findsOneWidget);
-
-      // Tap → expanded
-      await tester.tap(find.byType(InkWell).first);
-      await tester.pumpAndSettle();
       expect(find.byIcon(Icons.expand_less), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('tool_result_show_more')),
+        findsOneWidget,
+      );
+      expect(find.byType(SelectableText), findsNothing);
 
-      // Tap → back to collapsed
-      await tester.tap(find.byType(InkWell).first);
+      // The second header tap closes the disclosure.
+      await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
       await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+
+      // Full content is entered only through show more.
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('tool_result_show_more')));
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectableText), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
+      await tester.pump();
       expect(find.byIcon(Icons.chevron_right), findsOneWidget);
     });
 
@@ -188,7 +200,7 @@ void main() {
       // Expand to preview
       await tester.tap(find.byType(InkWell).first);
       await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.expand_more), findsOneWidget);
+      expect(find.byIcon(Icons.expand_less), findsOneWidget);
 
       // Fire notifier
       notifier.value++;
@@ -217,7 +229,7 @@ void main() {
       );
     }
 
-    testWidgets('renders a dedicated image-first card initially', (
+    testWidgets('does not build the generated image until opened', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -228,6 +240,16 @@ void main() {
           ),
         ),
       );
+
+      expect(
+        find.byKey(const ValueKey('image_generation_result_card')),
+        findsNothing,
+      );
+      expect(find.byType(ImagePreviewWidget), findsNothing);
+      expect(find.text('Image generation completed'), findsOneWidget);
+
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
 
       expect(
         find.byKey(const ValueKey('image_generation_result_card')),
@@ -258,6 +280,8 @@ void main() {
 
       expect(find.textContaining('/tmp/generated-image.png'), findsNothing);
 
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
       await tester.tap(
         find.byKey(const ValueKey('image_generation_details_button')),
       );
@@ -267,7 +291,7 @@ void main() {
       expect(find.text('Hide details'), findsOneWidget);
     });
 
-    testWidgets('does not collapse the generated image on notifier updates', (
+    testWidgets('collapse notifier removes generated image details', (
       tester,
     ) async {
       final notifier = ValueNotifier<int>(0);
@@ -282,15 +306,19 @@ void main() {
         ),
       );
 
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
+      expect(find.byType(ImagePreviewWidget), findsOneWidget);
+
       notifier.value++;
       await tester.pump();
 
       expect(
         find.byKey(const ValueKey('image_generation_result_card')),
-        findsOneWidget,
+        findsNothing,
       );
-      expect(find.byType(ImagePreviewWidget), findsOneWidget);
-      expect(find.text('Generated image'), findsOneWidget);
+      expect(find.byType(ImagePreviewWidget), findsNothing);
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
     });
   });
 
@@ -307,14 +335,21 @@ void main() {
         ),
       );
 
-      expect(find.text('+2/-1 lines'), findsOneWidget);
+      expect(find.text('file · +2/-1 lines'), findsOneWidget);
     });
 
-    testWidgets('short single line shows content as summary', (tester) async {
+    testWidgets('short single line stays hidden until expansion', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         _wrap(ToolResultBubble(message: _msg(content: 'OK'))),
       );
 
+      expect(find.text('1 lines'), findsNothing);
+      expect(find.text('OK'), findsNothing);
+
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
       expect(find.text('OK'), findsOneWidget);
     });
   });

@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -13,12 +11,17 @@ const _maxCollapsedItems = 4;
 ///
 /// When there are more than [_maxCollapsedItems] non-in_progress tasks,
 /// the list is truncated with a "... and X more" indicator that can be
-/// tapped to expand. The expanded state is persisted via [PageStorage]
-/// so it survives scrolling off-screen.
+/// tapped to expand. A session-level collapse signal resets it to the compact
+/// form so reactivating a conversation never restores a heavy expanded list.
 class TodoWriteWidget extends StatefulWidget {
   final Map<String, dynamic> input;
+  final ValueNotifier<int>? collapseNotifier;
 
-  const TodoWriteWidget({super.key, required this.input});
+  const TodoWriteWidget({
+    super.key,
+    required this.input,
+    this.collapseNotifier,
+  });
 
   @override
   State<TodoWriteWidget> createState() => _TodoWriteWidgetState();
@@ -26,36 +29,35 @@ class TodoWriteWidget extends StatefulWidget {
 
 class _TodoWriteWidgetState extends State<TodoWriteWidget> {
   bool _expanded = false;
-  bool _restoredFromStorage = false;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_restoredFromStorage) return;
-    _restoredFromStorage = true;
+  void initState() {
+    super.initState();
+    widget.collapseNotifier?.addListener(_onCollapseSignal);
+  }
 
-    final saved = PageStorage.maybeOf(
-      context,
-    )?.readState(context, identifier: _storageKey);
-    if (saved is bool) {
-      _expanded = saved;
+  @override
+  void didUpdateWidget(TodoWriteWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.collapseNotifier != widget.collapseNotifier) {
+      oldWidget.collapseNotifier?.removeListener(_onCollapseSignal);
+      widget.collapseNotifier?.addListener(_onCollapseSignal);
     }
   }
 
-  String get _storageKey {
-    final encoded = const JsonEncoder().convert(widget.input);
-    return 'todo_write:${encoded.hashCode}';
+  @override
+  void dispose() {
+    widget.collapseNotifier?.removeListener(_onCollapseSignal);
+    super.dispose();
   }
 
-  void _persistExpansion() {
-    PageStorage.maybeOf(
-      context,
-    )?.writeState(context, _expanded, identifier: _storageKey);
+  void _onCollapseSignal() {
+    if (!_expanded || !mounted) return;
+    setState(() => _expanded = false);
   }
 
   void _toggleExpanded() {
     setState(() => _expanded = !_expanded);
-    _persistExpansion();
     HapticFeedback.selectionClick();
   }
 

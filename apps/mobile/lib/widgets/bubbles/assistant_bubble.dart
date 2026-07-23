@@ -30,8 +30,6 @@ import 'plan_card.dart';
 import 'thinking_bubble.dart';
 import 'todo_write_widget.dart';
 
-const _imageGenerationToolName = 'ImageGeneration';
-
 class AssistantBubble extends StatefulWidget {
   final AssistantServerMessage message;
 
@@ -48,6 +46,7 @@ class AssistantBubble extends StatefulWidget {
   final String? projectPath;
   final VoidCallback? onFork;
   final bool showProcessDetails;
+  final ValueNotifier<int>? collapseNotifier;
 
   const AssistantBubble({
     super.key,
@@ -59,6 +58,7 @@ class AssistantBubble extends StatefulWidget {
     this.projectPath,
     this.onFork,
     this.showProcessDetails = true,
+    this.collapseNotifier,
   });
 
   @override
@@ -72,9 +72,14 @@ class AssistantBubble extends StatefulWidget {
 /// place them after the disclosure row even when the provider originally sent
 /// `ThinkingContent` before `TextContent` in the same envelope.
 class AssistantProcessDetails extends StatelessWidget {
-  const AssistantProcessDetails({super.key, required this.message});
+  const AssistantProcessDetails({
+    super.key,
+    required this.message,
+    this.collapseNotifier,
+  });
 
   final AssistantServerMessage message;
+  final ValueNotifier<int>? collapseNotifier;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -91,8 +96,16 @@ class AssistantProcessDetails extends StatelessWidget {
             name == 'ExitPlanMode'
                 ? const SizedBox.shrink()
                 : name == 'TodoWrite' || isCodexUpdatePlanTool(name)
-                ? TodoWriteWidget(input: input)
-                : ToolUseTile(toolUseId: id, name: name, input: input),
+                ? TodoWriteWidget(
+                    input: input,
+                    collapseNotifier: collapseNotifier,
+                  )
+                : ToolUseTile(
+                    toolUseId: id,
+                    name: name,
+                    input: input,
+                    collapseNotifier: collapseNotifier,
+                  ),
           TextContent() => const SizedBox.shrink(),
         },
     ],
@@ -148,6 +161,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
         onFileTap: widget.onFileTap,
         artifactContentIndexOffset: widget.message.artifactContentIndexOffset,
         showProcessDetails: widget.showProcessDetails,
+        collapseNotifier: widget.collapseNotifier,
         onTogglePlainText: () {
           setState(() => _plainTextMode = !_plainTextMode);
         },
@@ -165,6 +179,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
       artifactContentIndexOffset: widget.message.artifactContentIndexOffset,
       onFork: widget.onFork,
       showProcessDetails: widget.showProcessDetails,
+      collapseNotifier: widget.collapseNotifier,
       onTogglePlainText: () {
         setState(() => _plainTextMode = !_plainTextMode);
       },
@@ -184,6 +199,7 @@ class _PlanLayout extends StatelessWidget {
   final FilePathTapCallback? onFileTap;
   final int artifactContentIndexOffset;
   final bool showProcessDetails;
+  final ValueNotifier<int>? collapseNotifier;
   final VoidCallback onTogglePlainText;
 
   const _PlanLayout({
@@ -198,6 +214,7 @@ class _PlanLayout extends StatelessWidget {
     this.onFileTap,
     this.artifactContentIndexOffset = 0,
     this.showProcessDetails = true,
+    this.collapseNotifier,
     required this.onTogglePlainText,
   });
 
@@ -249,7 +266,12 @@ class _PlanLayout extends StatelessWidget {
               ToolUseContent(:final id, :final name, :final input) =>
                 name == 'ExitPlanMode'
                     ? const SizedBox.shrink()
-                    : ToolUseTile(toolUseId: id, name: name, input: input),
+                    : ToolUseTile(
+                        toolUseId: id,
+                        name: name,
+                        input: input,
+                        collapseNotifier: collapseNotifier,
+                      ),
               TextContent() => const SizedBox.shrink(),
             },
         PlanCard(
@@ -398,6 +420,7 @@ class _DefaultLayout extends StatelessWidget {
   final int artifactContentIndexOffset;
   final VoidCallback? onFork;
   final bool showProcessDetails;
+  final ValueNotifier<int>? collapseNotifier;
   final VoidCallback onTogglePlainText;
 
   const _DefaultLayout({
@@ -411,6 +434,7 @@ class _DefaultLayout extends StatelessWidget {
     this.artifactContentIndexOffset = 0,
     this.onFork,
     this.showProcessDetails = true,
+    this.collapseNotifier,
     required this.onTogglePlainText,
   });
 
@@ -438,8 +462,16 @@ class _DefaultLayout extends StatelessWidget {
               !showProcessDetails
                   ? const SizedBox.shrink()
                   : name == 'TodoWrite' || isCodexUpdatePlanTool(name)
-                  ? TodoWriteWidget(input: input)
-                  : ToolUseTile(toolUseId: id, name: name, input: input),
+                  ? TodoWriteWidget(
+                      input: input,
+                      collapseNotifier: collapseNotifier,
+                    )
+                  : ToolUseTile(
+                      toolUseId: id,
+                      name: name,
+                      input: input,
+                      collapseNotifier: collapseNotifier,
+                    ),
             ThinkingContent(:final thinking) =>
               showProcessDetails
                   ? ThinkingBubble(thinking: thinking)
@@ -481,7 +513,10 @@ class _DefaultLayout extends StatelessWidget {
   ) {
     final planInput = plainTextMode ? null : codexPlanUpdateInputFromText(text);
     if (planInput != null) {
-      return TodoWriteWidget(input: planInput);
+      return TodoWriteWidget(
+        input: planInput,
+        collapseNotifier: collapseNotifier,
+      );
     }
 
     return Padding(
@@ -664,69 +699,74 @@ class ToolUseTile extends StatefulWidget {
   final String toolUseId;
   final String name;
   final Map<String, dynamic> input;
+  final ValueNotifier<int>? collapseNotifier;
   const ToolUseTile({
     super.key,
     this.toolUseId = '',
     required this.name,
     required this.input,
+    this.collapseNotifier,
   });
 
   @override
   State<ToolUseTile> createState() => _ToolUseTileState();
 }
 
-/// Three-level expansion state for tool use content (non-edit tools).
-/// Edit tools use only [collapsed] and [expanded].
+/// [preview] is entered by the disclosure arrow. Only the explicit "show more"
+/// control can promote a preview to [expanded].
 enum ToolUseExpansion { collapsed, preview, expanded }
 
 class _ToolUseTileState extends State<ToolUseTile> {
-  late ToolUseExpansion _expansion;
-  bool _restoredFromStorage = false;
+  ToolUseExpansion _expansion = ToolUseExpansion.collapsed;
 
-  late final ToolCategory _category = categorizeToolName(widget.name);
-  late final DiffFile? _editDiff = synthesizeEditToolDiff(
-    widget.name,
-    widget.input,
-  );
+  ToolCategory get _category => categorizeToolName(widget.name);
+  DiffFile? _editDiffCache;
+  bool _editDiffResolved = false;
 
-  bool get _isEditTool => _editDiff != null;
+  bool get _supportsEditDiff =>
+      widget.name == 'Edit' ||
+      widget.name == 'MultiEdit' ||
+      widget.name == 'Write';
+
+  DiffFile? get _editDiff {
+    if (!_editDiffResolved) {
+      _editDiffResolved = true;
+      _editDiffCache = synthesizeEditToolDiff(widget.name, widget.input);
+    }
+    return _editDiffCache;
+  }
 
   @override
   void initState() {
     super.initState();
-    _expansion = _defaultExpansion;
+    widget.collapseNotifier?.addListener(_onCollapseSignal);
   }
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_restoredFromStorage) return;
-    _restoredFromStorage = true;
+  void didUpdateWidget(ToolUseTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.collapseNotifier != widget.collapseNotifier) {
+      oldWidget.collapseNotifier?.removeListener(_onCollapseSignal);
+      widget.collapseNotifier?.addListener(_onCollapseSignal);
+    }
+    if (oldWidget.toolUseId != widget.toolUseId ||
+        oldWidget.name != widget.name) {
+      _expansion = ToolUseExpansion.collapsed;
+    }
+    if (!identical(oldWidget.input, widget.input)) {
+      _editDiffResolved = false;
+      _editDiffCache = null;
+    }
+  }
 
-    final saved = PageStorage.maybeOf(
-      context,
-    )?.readState(context, identifier: _storageKey);
-    // Backwards-compat: legacy bool values
-    if (saved is bool) {
-      _expansion = saved
-          ? ToolUseExpansion.expanded
-          : ToolUseExpansion.collapsed;
-      return;
-    }
-    if (saved is String) {
-      for (final value in ToolUseExpansion.values) {
-        if (value.name == saved) {
-          _expansion = value;
-          return;
-        }
-      }
-    }
-    // Unknown saved value (e.g. corrupt storage) → fall back to default
-    _expansion = _defaultExpansion;
+  @override
+  void dispose() {
+    widget.collapseNotifier?.removeListener(_onCollapseSignal);
+    super.dispose();
   }
 
   String _inputSummary() {
-    return getToolSummary(_category, widget.input);
+    return getToolCollapsedSummary(_category, widget.input);
   }
 
   void _copyContent() {
@@ -740,23 +780,31 @@ class _ToolUseTileState extends State<ToolUseTile> {
     );
   }
 
-  void _cycleExpansion() {
+  void _onCollapseSignal() {
+    if (_expansion == ToolUseExpansion.collapsed || !mounted) return;
+    setState(() => _expansion = ToolUseExpansion.collapsed);
+  }
+
+  void _toggleDisclosure() {
     setState(() {
-      if (_isEditTool) {
-        // Edit tools: 2-state toggle (collapsed ↔ expanded)
-        _expansion = _expansion == ToolUseExpansion.collapsed
-            ? ToolUseExpansion.expanded
-            : ToolUseExpansion.collapsed;
-      } else {
-        // Non-edit tools: 3-state cycle
-        _expansion = switch (_expansion) {
-          ToolUseExpansion.collapsed => ToolUseExpansion.preview,
-          ToolUseExpansion.preview => ToolUseExpansion.expanded,
-          ToolUseExpansion.expanded => ToolUseExpansion.collapsed,
-        };
-      }
+      _expansion = _expansion == ToolUseExpansion.collapsed
+          ? (_supportsEditDiff
+                ? ToolUseExpansion.expanded
+                : ToolUseExpansion.preview)
+          : ToolUseExpansion.collapsed;
     });
-    _persistExpandedState();
+    HapticFeedback.selectionClick();
+  }
+
+  void _showMore() {
+    if (_expansion != ToolUseExpansion.preview) return;
+    setState(() => _expansion = ToolUseExpansion.expanded);
+    HapticFeedback.selectionClick();
+  }
+
+  void _showLess() {
+    if (_expansion != ToolUseExpansion.expanded || _supportsEditDiff) return;
+    setState(() => _expansion = ToolUseExpansion.preview);
     HapticFeedback.selectionClick();
   }
 
@@ -767,30 +815,26 @@ class _ToolUseTileState extends State<ToolUseTile> {
       zh: Localizations.localeOf(context).languageCode == 'zh',
       input: widget.input,
     );
-    if (widget.name == _imageGenerationToolName) {
-      return _ImageGenerationToolUseStatus(
-        input: widget.input,
-        onLongPress: _copyContent,
-      );
-    }
-
     if (_expansion == ToolUseExpansion.collapsed) {
       return _ToolUseCollapsed(
         name: displayName,
         category: _category,
         inputSummary: _inputSummary(),
-        onTap: _cycleExpansion,
+        onTap: _toggleDisclosure,
         onLongPress: _copyContent,
       );
     }
+    final editDiff = _supportsEditDiff ? _editDiff : null;
     return _ToolUseCard(
       name: displayName,
       input: widget.input,
       category: _category,
       inputSummary: _inputSummary(),
-      editDiff: _editDiff,
+      editDiff: editDiff,
       expansion: _expansion,
-      onTap: _cycleExpansion,
+      onToggle: _toggleDisclosure,
+      onShowMore: _showMore,
+      onShowLess: _showLess,
       onLongPress: _copyContent,
       onOpenGitScreen: _openGitScreen,
     );
@@ -802,78 +846,6 @@ class _ToolUseTileState extends State<ToolUseTile> {
     final diffText = reconstructUnifiedDiff(diff);
     final filePath = diff.filePath.split('/').lastOrNull ?? diff.filePath;
     context.router.push(GitRoute(initialDiff: diffText, title: filePath));
-  }
-
-  String get _storageKey {
-    if (widget.toolUseId.isNotEmpty) return 'tool_use:${widget.toolUseId}';
-    final encoded = const JsonEncoder().convert(widget.input);
-    return 'tool_use_fallback:${widget.name}:${encoded.hashCode}';
-  }
-
-  ToolUseExpansion get _defaultExpansion =>
-      _isEditTool ? ToolUseExpansion.expanded : ToolUseExpansion.collapsed;
-
-  void _persistExpandedState() {
-    PageStorage.maybeOf(
-      context,
-    )?.writeState(context, _expansion.name, identifier: _storageKey);
-  }
-}
-
-class _ImageGenerationToolUseStatus extends StatelessWidget {
-  final Map<String, dynamic> input;
-  final VoidCallback onLongPress;
-
-  const _ImageGenerationToolUseStatus({
-    required this.input,
-    required this.onLongPress,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final appColors = Theme.of(context).extension<AppColors>()!;
-    final colorScheme = Theme.of(context).colorScheme;
-    final status = input['status']?.toString();
-    final revisedPrompt = input['revisedPrompt']?.toString();
-    final subtitle = revisedPrompt != null && revisedPrompt.isNotEmpty
-        ? revisedPrompt
-        : status?.replaceAll('_', ' ');
-
-    return Padding(
-      key: const ValueKey('image_generation_tool_use_status'),
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.bubbleMarginH,
-        vertical: 1,
-      ),
-      child: InkWell(
-        onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(AppSpacing.cardRadius),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 3),
-          child: Row(
-            children: [
-              Icon(Icons.auto_awesome, size: 13, color: colorScheme.secondary),
-              const SizedBox(width: 7),
-              const Text(
-                'Generating image',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-              ),
-              if (subtitle != null && subtitle.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    subtitle,
-                    style: TextStyle(fontSize: 11, color: appColors.subtleText),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ] else
-                const Spacer(),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -948,7 +920,9 @@ class _ToolUseCard extends StatelessWidget {
   final String inputSummary;
   final DiffFile? editDiff;
   final ToolUseExpansion expansion;
-  final VoidCallback onTap;
+  final VoidCallback onToggle;
+  final VoidCallback onShowMore;
+  final VoidCallback onShowLess;
   final VoidCallback onLongPress;
   final VoidCallback onOpenGitScreen;
 
@@ -961,7 +935,9 @@ class _ToolUseCard extends StatelessWidget {
     required this.inputSummary,
     required this.editDiff,
     required this.expansion,
-    required this.onTap,
+    required this.onToggle,
+    required this.onShowMore,
+    required this.onShowLess,
     required this.onLongPress,
     required this.onOpenGitScreen,
   });
@@ -970,30 +946,27 @@ class _ToolUseCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final diffFile = editDiff;
-    final chevronIcon = expansion == ToolUseExpansion.expanded
-        ? Icons.expand_less
-        : Icons.expand_more;
-
     return Container(
       margin: const EdgeInsets.symmetric(
         vertical: 2,
         horizontal: AppSpacing.bubbleMarginH,
       ),
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(AppSpacing.cardRadius),
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: appColors.toolBubble,
-            borderRadius: BorderRadius.circular(AppSpacing.cardRadius),
-            border: Border.all(color: appColors.toolBubbleBorder),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: appColors.toolBubble,
+          borderRadius: BorderRadius.circular(AppSpacing.cardRadius),
+          border: Border.all(color: appColors.toolBubbleBorder),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            InkWell(
+              key: const ValueKey('tool_use_disclosure'),
+              onTap: onToggle,
+              onLongPress: onLongPress,
+              borderRadius: BorderRadius.circular(AppSpacing.cardRadius),
+              child: Row(
                 children: [
                   Icon(
                     getToolCategoryIcon(category),
@@ -1008,58 +981,75 @@ class _ToolUseCard extends StatelessWidget {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      inputSummary,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: appColors.subtleText,
+                  if (inputSummary.isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        inputSummary,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: appColors.subtleText,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
+                  ] else
+                    const Spacer(),
                   if (diffFile != null) ...[
                     _DiffStatsMini(diffFile: diffFile, appColors: appColors),
                     const SizedBox(width: 4),
                   ],
-                  Icon(chevronIcon, size: 16, color: appColors.subtleText),
+                  Icon(
+                    Icons.expand_less,
+                    size: 16,
+                    color: appColors.subtleText,
+                  ),
                 ],
               ),
-              const SizedBox(height: 6),
-              if (diffFile != null)
-                InlineEditDiff(
-                  diffFile: diffFile,
-                  onTapFullDiff: onOpenGitScreen,
-                )
-              else
-                _buildInputBody(appColors),
-            ],
-          ),
+            ),
+            const SizedBox(height: 6),
+            if (diffFile != null)
+              InlineEditDiff(diffFile: diffFile, onTapFullDiff: onOpenGitScreen)
+            else
+              _buildInputBody(context, appColors),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildInputBody(AppColors appColors) {
+  Widget _buildInputBody(BuildContext context, AppColors appColors) {
     final fullText = getToolFullInput(category, input);
     final lines = fullText.split('\n');
     final hasMore = lines.length > _previewLines;
 
     if (expansion == ToolUseExpansion.expanded) {
-      return SelectableText(
-        fullText,
-        style: TextStyle(
-          fontSize: 11,
-          fontFamily: 'monospace',
-          color: appColors.toolResultTextExpanded,
-          height: 1.4,
-        ),
-        contextMenuBuilder: chatSelectableTextContextMenuBuilder,
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SelectableText(
+            fullText,
+            style: TextStyle(
+              fontSize: 11,
+              fontFamily: 'monospace',
+              color: appColors.toolResultTextExpanded,
+              height: 1.4,
+            ),
+            contextMenuBuilder: chatSelectableTextContextMenuBuilder,
+          ),
+          if (hasMore)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                key: const ValueKey('tool_use_show_less'),
+                onPressed: onShowLess,
+                child: Text(AppLocalizations.of(context).showLess),
+              ),
+            ),
+        ],
       );
     }
 
-    // preview
     final previewText = hasMore
         ? lines.take(_previewLines).join('\n')
         : fullText;
@@ -1078,15 +1068,12 @@ class _ToolUseCard extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         if (hasMore)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              '... ${lines.length - _previewLines} more lines',
-              style: TextStyle(
-                fontSize: 10,
-                fontStyle: FontStyle.italic,
-                color: appColors.subtleText,
-              ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: const ValueKey('tool_use_show_more'),
+              onPressed: onShowMore,
+              child: Text(AppLocalizations.of(context).showMore),
             ),
           ),
       ],

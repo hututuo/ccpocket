@@ -184,8 +184,8 @@ void main() {
     });
   });
 
-  group('TodoWriteWidget - PageStorage persistence', () {
-    testWidgets('expanded state persists across rebuilds', (tester) async {
+  group('TodoWriteWidget - activation folding', () {
+    testWidgets('a remounted checklist starts collapsed', (tester) async {
       final input = _buildInput([
         _todo('Task 1', 'pending'),
         _todo('Task 2', 'pending'),
@@ -217,12 +217,37 @@ void main() {
       await tester.pump();
       expect(find.text('Task 5'), findsOneWidget);
 
-      // Rebuild widget tree (simulates scroll off/on screen)
+      // Remove and remount it with the same PageStorage bucket.
+      await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpWidget(buildWidget());
 
-      // Still expanded after rebuild
+      expect(find.text('Task 5'), findsNothing);
+      expect(find.text('Task 6'), findsNothing);
+      expect(find.textContaining('2 more'), findsOneWidget);
+    });
+
+    testWidgets('collapse notifier resets an expanded checklist', (
+      tester,
+    ) async {
+      final notifier = ValueNotifier<int>(0);
+      final input = _buildInput([
+        _todo('Task 1', 'pending'),
+        _todo('Task 2', 'pending'),
+        _todo('Task 3', 'pending'),
+        _todo('Task 4', 'pending'),
+        _todo('Task 5', 'pending'),
+      ]);
+      await tester.pumpWidget(
+        _wrap(TodoWriteWidget(input: input, collapseNotifier: notifier)),
+      );
+
+      await tester.tap(find.textContaining('1 more'));
+      await tester.pump();
       expect(find.text('Task 5'), findsOneWidget);
-      expect(find.text('Task 6'), findsOneWidget);
+
+      notifier.value++;
+      await tester.pump();
+      expect(find.text('Task 5'), findsNothing);
     });
   });
 }

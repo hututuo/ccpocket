@@ -29,7 +29,9 @@ class ToolResultBubble extends StatefulWidget {
   final ArtifactOpenCallback? onArtifactOpen;
 
   /// When this notifier's value changes, the bubble auto-collapses.
-  /// ClaudeSessionScreen increments it whenever a new assistant message arrives.
+  ///
+  /// Session surfaces also use this for the global "collapse all" command and
+  /// whenever the route is deactivated.
   final ValueNotifier<int>? collapseNotifier;
 
   const ToolResultBubble({
@@ -48,36 +50,16 @@ class ToolResultBubble extends StatefulWidget {
 }
 
 class ToolResultBubbleState extends State<ToolResultBubble> {
-  late ToolResultExpansion _expansion;
-  bool _restoredFromStorage = false;
+  ToolResultExpansion _expansion = ToolResultExpansion.collapsed;
+  String? _summaryContent;
+  _ToolResultSummary? _summaryCache;
 
   static const _previewLines = 5;
 
   @override
   void initState() {
     super.initState();
-    _expansion = _defaultExpansion;
     widget.collapseNotifier?.addListener(_onCollapseSignal);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_restoredFromStorage) return;
-    _restoredFromStorage = true;
-
-    final saved = PageStorage.maybeOf(
-      context,
-    )?.readState(context, identifier: _storageKey);
-    if (saved is String) {
-      for (final value in ToolResultExpansion.values) {
-        if (value.name == saved) {
-          _expansion = value;
-          return;
-        }
-      }
-    }
-    _expansion = _defaultExpansion;
   }
 
   @override
@@ -86,6 +68,13 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
     if (oldWidget.collapseNotifier != widget.collapseNotifier) {
       oldWidget.collapseNotifier?.removeListener(_onCollapseSignal);
       widget.collapseNotifier?.addListener(_onCollapseSignal);
+    }
+    if (oldWidget.message.toolUseId != widget.message.toolUseId ||
+        oldWidget.message.content != widget.message.content ||
+        oldWidget.message.toolName != widget.message.toolName) {
+      _expansion = ToolResultExpansion.collapsed;
+      _summaryContent = null;
+      _summaryCache = null;
     }
   }
 
@@ -98,38 +87,28 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
   void _onCollapseSignal() {
     if (_expansion != ToolResultExpansion.collapsed) {
       setState(() => _expansion = ToolResultExpansion.collapsed);
-      _persistExpansion();
     }
   }
 
-  void _cycleExpansion() {
+  void _toggleDisclosure() {
     setState(() {
-      _expansion = switch (_expansion) {
-        ToolResultExpansion.collapsed => ToolResultExpansion.preview,
-        ToolResultExpansion.preview => ToolResultExpansion.expanded,
-        ToolResultExpansion.expanded => ToolResultExpansion.collapsed,
-      };
+      _expansion = _expansion == ToolResultExpansion.collapsed
+          ? ToolResultExpansion.preview
+          : ToolResultExpansion.collapsed;
     });
-    _persistExpansion();
     HapticFeedback.selectionClick();
   }
 
-  String get _storageKey => 'tool_result:${widget.message.toolUseId}';
-
-  bool get _isCodeEditResult {
-    final toolName = widget.message.toolName;
-    return toolName == 'Edit' ||
-        toolName == 'FileEdit' ||
-        toolName == 'MultiEdit' ||
-        toolName == 'Write' ||
-        toolName == 'NotebookEdit' ||
-        toolName == 'FileChange';
+  void _showMore() {
+    if (_expansion != ToolResultExpansion.preview) return;
+    setState(() => _expansion = ToolResultExpansion.expanded);
+    HapticFeedback.selectionClick();
   }
 
-  bool get _isMcpImageResult {
-    final toolName = widget.message.toolName ?? '';
-    return widget.message.images.isNotEmpty &&
-        (toolName.startsWith('mcp__') || toolName.startsWith('mcp:'));
+  void _showLess() {
+    if (_expansion != ToolResultExpansion.expanded) return;
+    setState(() => _expansion = ToolResultExpansion.preview);
+    HapticFeedback.selectionClick();
   }
 
   bool get _isImageGenerationResult =>
@@ -138,44 +117,23 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
   bool get _hasRenderableImage =>
       widget.message.images.isNotEmpty && widget.httpBaseUrl != null;
 
-  ToolResultExpansion get _defaultExpansion =>
-      (_isCodeEditResult || _isMcpImageResult)
-      ? ToolResultExpansion.preview
-      : ToolResultExpansion.collapsed;
+  ToolCategory get _category =>
+      categorizeToolName(widget.message.toolName ?? '');
 
-  void _persistExpansion() {
-    PageStorage.maybeOf(
-      context,
-    )?.writeState(context, _expansion.name, identifier: _storageKey);
+  _ToolResultSummary get _summary {
+    final content = widget.message.content;
+    if (_summaryContent != content || _summaryCache == null) {
+      _summaryContent = content;
+      _summaryCache = _scanToolResultSummary(content);
+    }
+    return _summaryCache!;
   }
 
-  late final ToolCategory _category = categorizeToolName(
-    widget.message.toolName ?? '',
-  );
-
-  String _buildSummary(String content, String? toolName, AppLocalizations l) {
-    final lines = content.split('\n');
-    final lineCount = lines.length;
-
-    if (toolName == 'Edit' ||
-        toolName == 'FileEdit' ||
-        toolName == 'FileChange') {
-      var added = 0;
-      var removed = 0;
-      for (final line in lines) {
-        if (line.startsWith('+') && !line.startsWith('+++')) added++;
-        if (line.startsWith('-') && !line.startsWith('---')) removed++;
-      }
-      if (added > 0 || removed > 0) {
-        return l.diffSummaryAddedRemoved(added, removed);
-      }
-    }
-
-    if (lineCount == 1 && content.length < 40) {
-      return content;
-    }
-
-    return l.lineCountSummary(lineCount);
+  String _summaryText(AppLocalizations l) {
+    if (!_isFileChangeTool(widget.message.toolName)) return '';
+    final summary = _summary;
+    final counts = l.diffSummaryAddedRemoved(summary.added, summary.removed);
+    return summary.fileName == null ? counts : '${summary.fileName} · $counts';
   }
 
   /// Whether this tool result contains a viewable diff.
@@ -211,16 +169,11 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
 
   void _openGitScreen() {
     context.router.push(
-      GitRoute(initialDiff: widget.message.content, title: _extractFilePath()),
+      GitRoute(
+        initialDiff: widget.message.content,
+        title: _summary.filePath ?? _extractFilePath(),
+      ),
     );
-  }
-
-  void _onTap() {
-    if (_isDiffContent) {
-      _openGitScreen();
-    } else {
-      _cycleExpansion();
-    }
   }
 
   void _copyContent(BuildContext context) {
@@ -260,20 +213,18 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
   @override
   Widget build(BuildContext context) {
     late final Widget result;
-    if (_isImageGenerationResult && _hasRenderableImage) {
+    final l = AppLocalizations.of(context);
+    final summary = _summaryText(l);
+    if (_expansion != ToolResultExpansion.collapsed &&
+        _isImageGenerationResult &&
+        _hasRenderableImage) {
       result = _ImageGenerationResultCard(
         message: widget.message,
         httpBaseUrl: widget.httpBaseUrl!,
         onLongPress: () => _copyContent(context),
+        onCollapse: _toggleDisclosure,
       );
     } else {
-      final l = AppLocalizations.of(context);
-      final summary = _buildSummary(
-        widget.message.content,
-        widget.message.toolName,
-        l,
-      );
-
       if (_expansion == ToolResultExpansion.collapsed) {
         result = _CollapsedToolResult(
           toolName: widget.message.toolName == null
@@ -285,7 +236,7 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
                 ),
           category: _category,
           summary: summary,
-          onTap: _onTap,
+          onTap: _toggleDisclosure,
           onLongPress: () => _copyContent(context),
         );
       } else {
@@ -295,13 +246,19 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
           category: _category,
           summary: summary,
           expansion: _expansion,
-          onTap: _onTap,
+          onToggle: _toggleDisclosure,
+          onShowMore: _showMore,
+          onShowLess: _showLess,
           onLongPress: () => _copyContent(context),
+          onOpenGitScreen: _isDiffContent ? _openGitScreen : null,
         );
       }
     }
 
-    if (widget.message.artifacts.isEmpty) return result;
+    if (widget.message.artifacts.isEmpty ||
+        _expansion == ToolResultExpansion.collapsed) {
+      return result;
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -320,11 +277,13 @@ class _ImageGenerationResultCard extends StatefulWidget {
   final ToolResultMessage message;
   final String httpBaseUrl;
   final VoidCallback onLongPress;
+  final VoidCallback onCollapse;
 
   const _ImageGenerationResultCard({
     required this.message,
     required this.httpBaseUrl,
     required this.onLongPress,
+    required this.onCollapse,
   });
 
   @override
@@ -364,31 +323,41 @@ class _ImageGenerationResultCardState
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              InkWell(
+                key: const ValueKey('image_generation_disclosure'),
+                onTap: widget.onCollapse,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.auto_awesome,
+                      size: 15,
+                      color: colorScheme.secondary,
+                    ),
+                    const SizedBox(width: 7),
+                    const Expanded(
+                      child: Text(
+                        'Generated image',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    if (metadata.status != null)
+                      _ImageGenerationStatusChip(status: metadata.status!),
+                    const SizedBox(width: 4),
+                    Icon(
+                      Icons.expand_less,
+                      size: 16,
+                      color: appColors.subtleText,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
               ImagePreviewWidget(
                 images: widget.message.images,
                 httpBaseUrl: widget.httpBaseUrl,
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Icon(
-                    Icons.auto_awesome,
-                    size: 15,
-                    color: colorScheme.secondary,
-                  ),
-                  const SizedBox(width: 7),
-                  const Expanded(
-                    child: Text(
-                      'Generated image',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  if (metadata.status != null)
-                    _ImageGenerationStatusChip(status: metadata.status!),
-                ],
               ),
               if (metadata.revisedPrompt != null) ...[
                 const SizedBox(height: 6),
@@ -526,6 +495,7 @@ class _CollapsedToolResult extends StatelessWidget {
         vertical: 1,
       ),
       child: InkWell(
+        key: const ValueKey('tool_result_disclosure'),
         onTap: onTap,
         onLongPress: onLongPress,
         child: Padding(
@@ -573,8 +543,11 @@ class _ExpandedToolResult extends StatelessWidget {
   final ToolCategory category;
   final String summary;
   final ToolResultExpansion expansion;
-  final VoidCallback onTap;
+  final VoidCallback onToggle;
+  final VoidCallback onShowMore;
+  final VoidCallback onShowLess;
   final VoidCallback onLongPress;
+  final VoidCallback? onOpenGitScreen;
 
   static const _previewLines = ToolResultBubbleState._previewLines;
 
@@ -584,8 +557,11 @@ class _ExpandedToolResult extends StatelessWidget {
     required this.category,
     required this.summary,
     required this.expansion,
-    required this.onTap,
+    required this.onToggle,
+    required this.onShowMore,
+    required this.onShowLess,
     required this.onLongPress,
+    this.onOpenGitScreen,
   });
 
   @override
@@ -606,37 +582,26 @@ class _ExpandedToolResult extends StatelessWidget {
         ? lines.take(_previewLines).join('\n')
         : content;
 
-    final chevronIcon = expansion == ToolResultExpansion.preview
-        ? Icons.expand_more
-        : Icons.expand_less;
-
     return Container(
       margin: const EdgeInsets.symmetric(
         vertical: 2,
         horizontal: AppSpacing.bubbleMarginH,
       ),
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(AppSpacing.codeRadius),
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: appColors.toolResultBackground,
-            borderRadius: BorderRadius.circular(AppSpacing.codeRadius),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (message.images.isNotEmpty && httpBaseUrl != null) ...[
-                ImagePreviewWidget(
-                  images: message.images,
-                  httpBaseUrl: httpBaseUrl!,
-                ),
-                const SizedBox(height: 8),
-              ],
-              // Header row
-              Row(
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: appColors.toolResultBackground,
+          borderRadius: BorderRadius.circular(AppSpacing.codeRadius),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            InkWell(
+              key: const ValueKey('tool_result_disclosure'),
+              onTap: onToggle,
+              onLongPress: onLongPress,
+              borderRadius: BorderRadius.circular(AppSpacing.codeRadius),
+              child: Row(
                 children: [
                   Icon(
                     getToolCategoryIcon(category),
@@ -662,52 +627,133 @@ class _ExpandedToolResult extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  Icon(chevronIcon, size: 16, color: appColors.subtleText),
+                  Icon(
+                    Icons.expand_less,
+                    size: 16,
+                    color: appColors.subtleText,
+                  ),
                 ],
               ),
-              // Content
-              if (expansion == ToolResultExpansion.preview) ...[
-                const SizedBox(height: 6),
-                Text(
-                  previewText,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'monospace',
-                    color: appColors.toolResultText,
-                    height: 1.4,
-                  ),
-                  maxLines: _previewLines,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (hasMore)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      '... ${lines.length - _previewLines} more lines',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontStyle: FontStyle.italic,
-                        color: appColors.subtleText,
-                      ),
-                    ),
-                  ),
-              ] else if (expansion == ToolResultExpansion.expanded) ...[
-                const SizedBox(height: 6),
-                SelectableText(
-                  content,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'monospace',
-                    color: appColors.toolResultTextExpanded,
-                    height: 1.4,
-                  ),
-                  contextMenuBuilder: chatSelectableTextContextMenuBuilder,
-                ),
-              ],
+            ),
+            if (message.images.isNotEmpty && httpBaseUrl != null) ...[
+              const SizedBox(height: 8),
+              ImagePreviewWidget(
+                images: message.images,
+                httpBaseUrl: httpBaseUrl!,
+              ),
             ],
-          ),
+            const SizedBox(height: 6),
+            if (expansion == ToolResultExpansion.preview) ...[
+              Text(
+                previewText,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  color: appColors.toolResultText,
+                  height: 1.4,
+                ),
+                maxLines: _previewLines,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (hasMore)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    key: const ValueKey('tool_result_show_more'),
+                    onPressed: onShowMore,
+                    child: Text(l.showMore),
+                  ),
+                ),
+            ] else ...[
+              SelectableText(
+                content,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  color: appColors.toolResultTextExpanded,
+                  height: 1.4,
+                ),
+                contextMenuBuilder: chatSelectableTextContextMenuBuilder,
+              ),
+              if (hasMore)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    key: const ValueKey('tool_result_show_less'),
+                    onPressed: onShowLess,
+                    child: Text(l.showLess),
+                  ),
+                ),
+            ],
+            if (onOpenGitScreen != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  key: const ValueKey('tool_result_open_full_diff'),
+                  onPressed: onOpenGitScreen,
+                  icon: const Icon(Icons.difference_outlined, size: 16),
+                  label: Text(
+                    Localizations.localeOf(context).languageCode == 'zh'
+                        ? '查看完整差异'
+                        : 'View full diff',
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
 }
+
+class _ToolResultSummary {
+  const _ToolResultSummary({this.filePath, this.added = 0, this.removed = 0});
+
+  final String? filePath;
+  final int added;
+  final int removed;
+
+  String? get fileName {
+    final path = filePath;
+    if (path == null || path.isEmpty) return null;
+    final normalized = path.replaceAll(r'\', '/');
+    return normalized.substring(normalized.lastIndexOf('/') + 1);
+  }
+}
+
+_ToolResultSummary _scanToolResultSummary(String content) {
+  var added = 0;
+  var removed = 0;
+  String? filePath;
+  var lineStart = 0;
+
+  void inspectLine(int lineEnd) {
+    final line = content.substring(lineStart, lineEnd);
+    if (line.startsWith('+++ b/')) {
+      filePath ??= line.substring(6).trim();
+    } else if (line.startsWith('diff --git ')) {
+      final marker = line.lastIndexOf(' b/');
+      if (marker >= 0) filePath ??= line.substring(marker + 3).trim();
+    } else if (line.startsWith('+') && !line.startsWith('+++')) {
+      added++;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      removed++;
+    }
+  }
+
+  for (var index = 0; index < content.length; index++) {
+    if (content.codeUnitAt(index) != 10) continue;
+    inspectLine(index);
+    lineStart = index + 1;
+  }
+  if (lineStart <= content.length) inspectLine(content.length);
+  return _ToolResultSummary(filePath: filePath, added: added, removed: removed);
+}
+
+bool _isFileChangeTool(String? toolName) =>
+    toolName == 'Edit' ||
+    toolName == 'FileEdit' ||
+    toolName == 'MultiEdit' ||
+    toolName == 'Write' ||
+    toolName == 'NotebookEdit' ||
+    toolName == 'FileChange';

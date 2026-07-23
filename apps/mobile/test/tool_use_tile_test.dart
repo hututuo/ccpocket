@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/bubbles/assistant_bubble.dart';
+import 'package:ccpocket/widgets/bubbles/inline_edit_diff.dart';
 
 Widget _wrap(Widget child) {
   return MaterialApp(
@@ -59,7 +60,9 @@ void main() {
       expect(cardFinder, findsNothing);
     });
 
-    testWidgets('summary uses command key for Bash', (tester) async {
+    testWidgets('hides Bash command until the disclosure is opened', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         _wrap(
           const ToolUseTile(
@@ -69,19 +72,29 @@ void main() {
         ),
       );
 
+      expect(find.text('Run command'), findsOneWidget);
+      expect(find.text('ls -la /project'), findsNothing);
+
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
       expect(find.text('ls -la /project'), findsOneWidget);
     });
 
-    testWidgets('summary truncates long commands', (tester) async {
+    testWidgets('does not build a long command while collapsed', (
+      tester,
+    ) async {
+      final command = 'a' * 100;
       await tester.pumpWidget(
-        _wrap(ToolUseTile(name: 'Bash', input: {'command': 'a' * 100})),
+        _wrap(ToolUseTile(name: 'Bash', input: {'command': command})),
       );
 
-      // Bash category: truncated to 57 chars + '...'
-      expect(find.text('${'a' * 57}...'), findsOneWidget);
+      expect(find.textContaining('aaa'), findsNothing);
+      expect(find.byType(SelectableText), findsNothing);
     });
 
-    testWidgets('summary falls back to key names', (tester) async {
+    testWidgets('does not expose arbitrary structured keys while collapsed', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         _wrap(
           const ToolUseTile(
@@ -91,12 +104,12 @@ void main() {
         ),
       );
 
-      expect(find.text('foo, baz'), findsOneWidget);
+      expect(find.text('foo, baz'), findsNothing);
     });
   });
 
   group('ToolUseTile - ImageGeneration', () {
-    testWidgets('shows compact progress status without expansion controls', (
+    testWidgets('keeps the prompt lazy behind the standard disclosure', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -111,30 +124,33 @@ void main() {
         ),
       );
 
-      expect(
-        find.byKey(const ValueKey('image_generation_tool_use_status')),
-        findsOneWidget,
-      );
-      expect(find.text('Generating image'), findsOneWidget);
-      expect(find.text('A cover image for a mobile agent app'), findsOneWidget);
-      expect(find.text('ImageGeneration'), findsNothing);
-      expect(find.byIcon(Icons.chevron_right), findsNothing);
+      expect(find.text('Generate image'), findsOneWidget);
+      expect(find.text('in progress'), findsOneWidget);
+      expect(find.text('A cover image for a mobile agent app'), findsNothing);
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
       expect(find.byIcon(Icons.expand_more), findsNothing);
       expect(find.byIcon(Icons.expand_less), findsNothing);
+
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
+      expect(
+        find.textContaining('A cover image for a mobile agent app'),
+        findsOneWidget,
+      );
     });
   });
 
-  group('ToolUseTile - 3-state expansion (non-edit tools)', () {
+  group('ToolUseTile - disclosure and explicit show-more', () {
     testWidgets(
-      'tap cycles collapsed → preview → expanded → collapsed for Bash',
+      'header toggles preview while show-more alone opens full Bash input',
       (tester) async {
-        const longCmd =
-            'find /Users/project -name "*.dart" -not -path "*/build/*" '
-            '-not -path "*/.dart_tool/*" | xargs grep -l "ToolUseTile" '
-            '| sort | head -20';
+        final longCmd = List.generate(
+          8,
+          (index) => 'echo "private command line $index"',
+        ).join('\n');
 
         await tester.pumpWidget(
-          _wrap(const ToolUseTile(name: 'Bash', input: {'command': longCmd})),
+          _wrap(ToolUseTile(name: 'Bash', input: {'command': longCmd})),
         );
 
         // --- collapsed ---
@@ -144,11 +160,15 @@ void main() {
         await tester.tap(find.byType(InkWell).first);
         await tester.pumpAndSettle();
 
-        // preview: card with expand_more, full input text visible
-        expect(find.byIcon(Icons.expand_more), findsOneWidget);
+        // Preview details are created only after opening.
+        expect(find.byIcon(Icons.expand_less), findsOneWidget);
         expect(find.byIcon(Icons.chevron_right), findsNothing);
-        // Full command should be visible (not truncated at 60 chars)
-        expect(find.textContaining('xargs grep'), findsOneWidget);
+        expect(find.textContaining('private command line 0'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('tool_use_show_more')),
+          findsOneWidget,
+        );
+        expect(find.byType(SelectableText), findsNothing);
 
         // Card background should exist
         final cardFinder = find.byWidgetPredicate((w) {
@@ -162,16 +182,21 @@ void main() {
         });
         expect(cardFinder, findsOneWidget);
 
-        // Tap → expanded
-        await tester.tap(find.byType(InkWell).first);
+        // A second header tap collapses immediately; it does not open full text.
+        await tester.tap(find.byKey(const ValueKey('tool_use_disclosure')));
         await tester.pumpAndSettle();
+        expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+        expect(find.textContaining('private command line 0'), findsNothing);
 
-        // expanded: expand_less icon, SelectableText with full content
+        // Reopen the preview, then use the dedicated show-more control.
+        await tester.tap(find.byType(InkWell).first);
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('tool_use_show_more')));
+        await tester.pumpAndSettle();
         expect(find.byIcon(Icons.expand_less), findsOneWidget);
         expect(find.byType(SelectableText), findsOneWidget);
 
-        // Tap header area → collapsed (tap tool name to avoid SelectableText)
-        await tester.tap(find.text('Run command'));
+        await tester.tap(find.byKey(const ValueKey('tool_use_disclosure')));
         await tester.pumpAndSettle();
 
         expect(find.byIcon(Icons.chevron_right), findsOneWidget);
@@ -195,8 +220,7 @@ void main() {
       await tester.tap(find.byType(InkWell).first);
       await tester.pumpAndSettle();
 
-      // Should show "... 5 more lines"
-      expect(find.textContaining('5 more lines'), findsOneWidget);
+      expect(find.byKey(const ValueKey('tool_use_show_more')), findsOneWidget);
     });
 
     testWidgets('short command in preview shows no "more lines" indicator', (
@@ -210,8 +234,7 @@ void main() {
       await tester.tap(find.byType(InkWell).first);
       await tester.pumpAndSettle();
 
-      // No "more lines" text
-      expect(find.textContaining('more lines'), findsNothing);
+      expect(find.byKey(const ValueKey('tool_use_show_more')), findsNothing);
     });
 
     testWidgets('Read tool also uses 3-state expansion', (tester) async {
@@ -233,23 +256,18 @@ void main() {
       // Tap → preview (shows full path)
       await tester.tap(find.byType(InkWell).first);
       await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.expand_more), findsOneWidget);
+      expect(find.byIcon(Icons.expand_less), findsOneWidget);
       expect(find.textContaining('assistant_bubble.dart'), findsWidgets);
 
-      // Tap → expanded
-      await tester.tap(find.byType(InkWell).first);
-      await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.expand_less), findsOneWidget);
-
-      // Tap header area → collapsed (tap tool name to avoid SelectableText)
-      await tester.tap(find.text('Read file'));
+      // A second header tap collapses.
+      await tester.tap(find.byKey(const ValueKey('tool_use_disclosure')));
       await tester.pumpAndSettle();
       expect(find.byIcon(Icons.chevron_right), findsOneWidget);
     });
   });
 
-  group('ToolUseTile - Edit tools keep 2-state expansion', () {
-    testWidgets('Edit tool toggles between collapsed and expanded', (
+  group('ToolUseTile - edit details are lazy', () {
+    testWidgets('Edit defaults collapsed and builds diff after opening', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -265,20 +283,43 @@ void main() {
         ),
       );
 
-      // Edit tools default to expanded
-      expect(find.byIcon(Icons.expand_less), findsOneWidget);
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+      expect(find.byType(InlineEditDiff), findsNothing);
 
-      // Tap → collapsed
+      // First tap builds the diff.
       await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.expand_less), findsOneWidget);
+      expect(find.byType(InlineEditDiff), findsOneWidget);
+
+      // Header arrow toggles directly back to collapsed.
+      await tester.tap(find.byKey(const ValueKey('tool_use_disclosure')));
       await tester.pumpAndSettle();
       expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+      expect(find.byType(InlineEditDiff), findsNothing);
+    });
 
-      // Tap → expanded (skip preview, go straight to expanded)
+    testWidgets('collapse notifier closes an open tool invocation', (
+      tester,
+    ) async {
+      final notifier = ValueNotifier<int>(0);
+      await tester.pumpWidget(
+        _wrap(
+          ToolUseTile(
+            name: 'Bash',
+            input: const {'command': 'secret command'},
+            collapseNotifier: notifier,
+          ),
+        ),
+      );
       await tester.tap(find.byType(InkWell).first);
-      await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.expand_less), findsOneWidget);
-      // No expand_more (preview) state for edit tools
-      expect(find.byIcon(Icons.expand_more), findsNothing);
+      await tester.pump();
+      expect(find.text('secret command'), findsOneWidget);
+
+      notifier.value++;
+      await tester.pump();
+      expect(find.text('secret command'), findsNothing);
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
     });
   });
 
