@@ -600,6 +600,47 @@ void main() {
         );
       },
     );
+
+    test(
+      'rejects duplicate identities across pages without scanning the generation',
+      () async {
+        const key = ConversationMirrorKey(
+          bridgeInstanceId: 'bridge-a',
+          provider: 'codex',
+          providerSessionId: 'session-cross-page-duplicate',
+        );
+        final entries = [
+          _entry('cross-page-0', 0, text: 'first'),
+          _entry('cross-page-1', 1, text: 'second'),
+        ];
+        await store.beginShadowGeneration(
+          key: key,
+          generation: 'generation-cross-page',
+          revision: _revision('cross-page'),
+          entryCount: 2,
+          pageCount: 2,
+          totalBytes: _totalBytes(entries),
+        );
+        await store.appendShadowPage(
+          key: key,
+          generation: 'generation-cross-page',
+          pageIndex: 0,
+          pageCount: 2,
+          entries: [entries.first],
+        );
+
+        await expectLater(
+          store.appendShadowPage(
+            key: key,
+            generation: 'generation-cross-page',
+            pageIndex: 1,
+            pageCount: 2,
+            entries: [_entry('cross-page-0', 1, text: 'duplicate')],
+          ),
+          throwsA(isA<ConversationMirrorValidationException>()),
+        );
+      },
+    );
   });
 
   group('incremental patches', () {

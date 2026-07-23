@@ -48,6 +48,8 @@ class LocalHistoryPagingState {
 /// processing to [ChatMessageHandler]. The resulting [ChatStateUpdate] is
 /// applied to the immutable [ChatSessionState].
 class ChatSessionCubit extends Cubit<ChatSessionState> {
+  static const _maxCanonicalTailEntries = 200;
+
   static const codexPermissionApplyStrategyCapability =
       'codex_permission_apply_strategy_v1';
   static const codexDesktopContinuityCapability =
@@ -129,6 +131,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   int _localHistoryPagingGeneration = 0;
   int _localMirrorEntryCount = 0;
+  final Expando<int> _localHistoryOrdinalByNavigationEntry = Expando<int>(
+    'localHistoryOrdinal',
+  );
   bool _discardLocalMirrorOnNextCanonicalHistory = false;
   final ValueNotifier<LocalHistoryPagingState> localHistoryPaging =
       ValueNotifier(const LocalHistoryPagingState());
@@ -1903,6 +1908,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           matchedUserEntry = true;
           if (e.messageUuid != uuid) {
             e.messageUuid = uuid;
+            entries = [...entries];
             didModifyEntries = true;
           }
           break;
@@ -2388,14 +2394,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         );
       }
       if (mirrorIndex != -1) {
-        return canonicalEntries.sublist(canonicalIndex);
+        final boundedStart = canonicalEntries.length - _maxCanonicalTailEntries;
+        return canonicalEntries.sublist(
+          canonicalIndex > boundedStart ? canonicalIndex : boundedStart,
+        );
       }
     }
     // No shared stable envelope normally means the canonical snapshot begins
     // after the last downloaded envelope (for example a newly started turn).
     // Provider-thread identity is already fenced by the Bridge binding, so
     // append it as a live tail instead of discarding the offline copy.
-    return canonicalEntries;
+    final boundedStart = canonicalEntries.length > _maxCanonicalTailEntries
+        ? canonicalEntries.length - _maxCanonicalTailEntries
+        : 0;
+    return canonicalEntries.sublist(boundedStart);
   }
 
   List<ChatEntry> _mergeCanonicalHistoryIntoPagedEntries({
@@ -4466,7 +4478,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Future<List<UserChatEntry>> loadAllUserMessagesForNavigation() async {
-    List<UserInputMessage>? indexed;
+    List<LocalSessionUserIndexEntry>? indexed;
     try {
       indexed = await _bridge.tryLoadLocalSessionUserIndex(
         runtimeSessionId: sessionId,
@@ -4479,7 +4491,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
     }
     if (indexed == null) return allUserMessages;
-    final result = indexed.map(_userEntryFromHistoryIndex).toList();
+    final result = <UserChatEntry>[];
+    for (final indexedEntry in indexed) {
+      final entry = _userEntryFromHistoryIndex(indexedEntry.message);
+      _localHistoryOrdinalByNavigationEntry[entry] = indexedEntry.ordinal;
+      result.add(entry);
+    }
     for (final live in allUserMessages) {
       final index = result.indexWhere((entry) {
         return _entriesEquivalentForTurnBoundary(entry, live);
@@ -4487,8 +4504,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (index == -1) {
         result.add(live);
       } else {
-        result[index] =
-            _mergeCanonicalMirrorEntry(result[index], live) as UserChatEntry;
+        final indexedEntry = result[index];
+        final ordinal = _localHistoryOrdinalByNavigationEntry[indexedEntry];
+        final merged =
+            _mergeCanonicalMirrorEntry(indexedEntry, live) as UserChatEntry;
+        if (ordinal != null) {
+          _localHistoryOrdinalByNavigationEntry[merged] = ordinal;
+        }
+        result[index] = merged;
       }
     }
     return List.unmodifiable(result);
@@ -4518,16 +4541,194 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
 
     var loaded = findLoaded();
+    if (loaded != null) return loaded;
+    final currentPaging = localHistoryPaging.value;
+    if (isClosed || !currentPaging.enabled || currentPaging.loading) {
+      return null;
+    }
+
+    final targetOrdinal = _localHistoryOrdinalByNavigationEntry[target];
+    final canLoadTargetWindow =
+        targetOrdinal != null && _bridge.hasSessionHistoryWindowLoading;
+    if (!canLoadTargetWindow && !currentPaging.hasMore) return null;
+
+    final generation = _localHistoryPagingGeneration;
+    localHistoryPaging.value = currentPaging.copyWith(
+      loading: true,
+      clearError: true,
+    );
+    if (canLoadTargetWindow) {
+      // Let the modal loading barrier paint before the database read starts.
+      await Future<void>.delayed(Duration.zero);
+      try {
+        final page = await _bridge.tryLoadLocalSessionHistoryWindow(
+          runtimeSessionId: sessionId,
+          startOrdinal: targetOrdinal,
+        );
+        if (isClosed || generation != _localHistoryPagingGeneration) {
+          return null;
+        }
+        if (page == null) {
+          localHistoryPaging.value = LocalHistoryPagingState(
+            enabled: _bridge.hasSessionHistoryPaging,
+            hasMore: _bridge.hasOlderLocalSessionHistory(sessionId),
+          );
+          return null;
+        }
+        _replaceLocalMirrorWindow(page);
+        loaded = findLoaded();
+        localHistoryPaging.value = LocalHistoryPagingState(
+          enabled: true,
+          hasMore: page.hasMore,
+        );
+        return loaded;
+      } catch (error, stackTrace) {
+        if (isClosed || generation != _localHistoryPagingGeneration) {
+          return null;
+        }
+        logger.warning(
+          '[session:$sessionId] Failed to load target history window',
+          error,
+          stackTrace,
+        );
+        localHistoryPaging.value = localHistoryPaging.value.copyWith(
+          loading: false,
+          error: error,
+        );
+        return null;
+      }
+    }
+
+    // Compatibility fallback for a paging provider without random-access
+    // windows: buffer sequential pages and publish only once the target page
+    // is available, avoiding a full conversation rebuild after every page.
+    final pages = <LocalSessionHistoryPage>[];
+    var pagesPublished = false;
+    void publishBufferedPages() {
+      if (pagesPublished || pages.isEmpty) return;
+      final bufferedMessages = <ServerMessage>[
+        for (final page in pages.reversed) ...page.messages,
+      ];
+      final history = HistoryMessage(messages: bufferedMessages);
+      final decoded = _handler.handle(
+        history,
+        isBackground: true,
+        isCodex: isCodex,
+        ignoredToolUseIds: _respondedToolUseIds,
+        historyTimestampAnchor: pages.last.timestampAnchor,
+      );
+      _applyUpdate(
+        ChatStateUpdate(
+          entriesToPrepend: decoded.entriesToAdd,
+          toolUseIdsToHide: decoded.toolUseIdsToHide,
+          localHistoryPage: true,
+        ),
+        history,
+      );
+      pagesPublished = true;
+    }
+
     var remainingPages = 500;
-    while (loaded == null &&
-        localHistoryPaging.value.enabled &&
-        localHistoryPaging.value.hasMore &&
-        remainingPages-- > 0) {
-      final progressed = await loadOlderLocalHistory();
+    var hasMore = currentPaging.hasMore;
+    try {
+      var targetBuffered = false;
+      while (!targetBuffered && hasMore && remainingPages-- > 0) {
+        final page = await _bridge.tryLoadOlderLocalSessionHistory(
+          runtimeSessionId: sessionId,
+        );
+        if (isClosed || generation != _localHistoryPagingGeneration) {
+          return null;
+        }
+        if (page == null) break;
+        pages.add(page);
+        hasMore = page.hasMore;
+        targetBuffered = page.messages.whereType<UserInputMessage>().any(
+          (message) => _entriesEquivalentForTurnBoundary(
+            _userEntryFromHistoryIndex(message),
+            target,
+          ),
+        );
+        // Give the loading overlay a frame between database pages.
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      publishBufferedPages();
       loaded = findLoaded();
-      if (loaded != null || !progressed) break;
+      localHistoryPaging.value = LocalHistoryPagingState(
+        enabled: true,
+        hasMore: hasMore,
+      );
+    } catch (error, stackTrace) {
+      if (isClosed || generation != _localHistoryPagingGeneration) {
+        return null;
+      }
+      try {
+        publishBufferedPages();
+        loaded = findLoaded();
+      } catch (_) {
+        // Preserve the original read/decode error below.
+      }
+      logger.warning(
+        '[session:$sessionId] Failed to preload history target',
+        error,
+        stackTrace,
+      );
+      localHistoryPaging.value = localHistoryPaging.value.copyWith(
+        loading: false,
+        error: error,
+      );
     }
     return loaded;
+  }
+
+  void _replaceLocalMirrorWindow(LocalSessionHistoryPage page) {
+    if (page.messages.isEmpty) return;
+    final history = HistoryMessage(messages: page.messages);
+    final decoded = _handler.handle(
+      history,
+      isBackground: true,
+      isCodex: isCodex,
+      ignoredToolUseIds: _respondedToolUseIds,
+      historyTimestampAnchor: page.timestampAnchor,
+    );
+    final mirrorEntries = decoded.entriesToAdd
+        .where((entry) => entry is! StreamingChatEntry)
+        .toList(growable: false);
+    if (mirrorEntries.isEmpty) return;
+
+    final pastEntries = state.entries
+        .take(_pastEntryCount)
+        .toList(growable: false);
+    final allExistingNonPast = state.entries
+        .skip(_pastEntryCount)
+        .toList(growable: false);
+    final existingMirrorPrefix = _localMirrorEntryCount.clamp(
+      0,
+      allExistingNonPast.length,
+    );
+    final canonicalTail = allExistingNonPast
+        .skip(existingMirrorPrefix)
+        .toList(growable: false);
+    final merged = _mergeCanonicalHistoryIntoPagedEntries(
+      existingEntries: mirrorEntries,
+      canonicalEntries: canonicalTail,
+    );
+    _localMirrorEntryCount = mirrorEntries.length;
+    var nextEntries = <ChatEntry>[...pastEntries, ...merged];
+    if (_dismissedCodexWarningKeys.isNotEmpty) {
+      nextEntries = nextEntries
+          .where((entry) => !_isDismissedCodexWarningEntry(entry))
+          .toList(growable: false);
+    }
+    emit(
+      state.copyWith(
+        entries: nextEntries,
+        hiddenToolUseIds: {
+          ...state.hiddenToolUseIds,
+          ...decoded.toolUseIdsToHide,
+        },
+      ),
+    );
   }
 
   /// Re-fetch session history from the bridge server.

@@ -407,6 +407,65 @@ void main() {
     },
   );
 
+  test(
+    'an unbounded canonical refresh keeps only a 200-entry live tail',
+    () async {
+      bridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'running',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ];
+      bridge.configureSessionHistoryBootstrap(({
+        required runtimeSessionId,
+        required provider,
+        required providerSessionId,
+        required projectPath,
+        required force,
+      }) async {
+        bridge.publishExternalSessionHistory(runtimeSessionId, const [
+          UserInputMessage(
+            text: 'mirror recent window',
+            userMessageUuid: 'mirror-only-user',
+          ),
+        ]);
+        return true;
+      });
+      bridge.configureSessionHistoryPaging(
+        hasMore: (_) => true,
+        loader: ({required runtimeSessionId, required limit}) async =>
+            const LocalSessionHistoryPage(messages: [], hasMore: true),
+      );
+
+      final cubit = createCubit();
+      await settleBootstrap();
+      bridge.emitMessage(
+        HistoryMessage(
+          messages: List.generate(
+            600,
+            (index) => UserInputMessage(
+              text: 'canonical-$index',
+              userMessageUuid: 'canonical-user-$index',
+            ),
+          ),
+        ),
+        sessionId: 's1',
+      );
+      await Future<void>.microtask(() {});
+
+      final visibleUsers = cubit.state.entries.whereType<UserChatEntry>();
+      expect(visibleUsers, hasLength(201));
+      expect(visibleUsers.first.text, 'mirror recent window');
+      expect(visibleUsers.elementAt(1).text, 'canonical-400');
+      expect(visibleUsers.last.text, 'canonical-599');
+      expect(cubit.localHistoryPaging.value.hasMore, isTrue);
+    },
+  );
+
   test('full prompt index reveals an unloaded turn by paging to it', () async {
     var hasMore = true;
     bridge.sessionSnapshot = const [
@@ -453,13 +512,19 @@ void main() {
       required runtimeSessionId,
     }) async {
       return const [
-        UserInputMessage(
-          text: 'old unloaded prompt',
-          userMessageUuid: 'old-user',
+        LocalSessionUserIndexEntry(
+          ordinal: 0,
+          message: UserInputMessage(
+            text: 'old unloaded prompt',
+            userMessageUuid: 'old-user',
+          ),
         ),
-        UserInputMessage(
-          text: 'recent visible prompt',
-          userMessageUuid: 'recent-user',
+        LocalSessionUserIndexEntry(
+          ordinal: 1,
+          message: UserInputMessage(
+            text: 'recent visible prompt',
+            userMessageUuid: 'recent-user',
+          ),
         ),
       ];
     });
@@ -484,6 +549,143 @@ void main() {
     );
     expect(cubit.localHistoryPaging.value.hasMore, isFalse);
   });
+
+  test(
+    'a far turn swaps in one target window without mounting skipped pages',
+    () async {
+      var sequentialLoads = 0;
+      var targetWindowLoads = 0;
+      bridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ];
+      bridge.configureSessionHistoryBootstrap(({
+        required runtimeSessionId,
+        required provider,
+        required providerSessionId,
+        required projectPath,
+        required force,
+      }) async {
+        bridge.publishExternalSessionHistory(runtimeSessionId, const [
+          UserInputMessage(
+            text: 'recent visible',
+            userMessageUuid: 'recent-visible',
+          ),
+        ]);
+        return true;
+      });
+      bridge.configureSessionHistoryPaging(
+        hasMore: (_) => true,
+        loader: ({required runtimeSessionId, required limit}) async {
+          sequentialLoads += 1;
+          return const LocalSessionHistoryPage(messages: [], hasMore: false);
+        },
+        windowLoader:
+            ({
+              required runtimeSessionId,
+              required startOrdinal,
+              required limit,
+            }) async {
+              targetWindowLoads += 1;
+              expect(limit, 200);
+              if (startOrdinal == 1800) {
+                return const LocalSessionHistoryPage(
+                  messages: [
+                    UserInputMessage(
+                      text: 'recent visible',
+                      userMessageUuid: 'recent-visible',
+                    ),
+                  ],
+                  hasMore: true,
+                );
+              }
+              expect(startOrdinal, 0);
+              return const LocalSessionHistoryPage(
+                messages: [
+                  UserInputMessage(
+                    text: 'far target',
+                    userMessageUuid: 'far-target',
+                  ),
+                  UserInputMessage(
+                    text: 'next turn in target window',
+                    userMessageUuid: 'next-target-window',
+                  ),
+                ],
+                hasMore: false,
+              );
+            },
+      );
+      bridge.configureSessionHistoryUserIndex(({
+        required runtimeSessionId,
+      }) async {
+        return const [
+          LocalSessionUserIndexEntry(
+            ordinal: 0,
+            message: UserInputMessage(
+              text: 'far target',
+              userMessageUuid: 'far-target',
+            ),
+          ),
+          LocalSessionUserIndexEntry(
+            ordinal: 600,
+            message: UserInputMessage(
+              text: 'middle older',
+              userMessageUuid: 'middle-older',
+            ),
+          ),
+          LocalSessionUserIndexEntry(
+            ordinal: 1200,
+            message: UserInputMessage(
+              text: 'middle newer',
+              userMessageUuid: 'middle-newer',
+            ),
+          ),
+          LocalSessionUserIndexEntry(
+            ordinal: 1800,
+            message: UserInputMessage(
+              text: 'recent visible',
+              userMessageUuid: 'recent-visible',
+            ),
+          ),
+        ];
+      });
+
+      final cubit = createCubit();
+      await settleBootstrap();
+      final visibleUserCounts = <int>[];
+      final subscription = cubit.stream.listen((state) {
+        visibleUserCounts.add(state.entries.whereType<UserChatEntry>().length);
+      });
+      addTearDown(subscription.cancel);
+
+      final index = await cubit.loadAllUserMessagesForNavigation();
+      final revealed = await cubit.revealUserMessage(index.first);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(revealed?.messageUuid, 'far-target');
+      expect(
+        cubit.state.entries.whereType<UserChatEntry>().map(
+          (entry) => entry.text,
+        ),
+        ['far target', 'next turn in target window'],
+      );
+      expect(sequentialLoads, 0);
+      expect(targetWindowLoads, 1);
+      expect(visibleUserCounts.where((count) => count > 1), [2]);
+      expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+
+      final recent = await cubit.revealUserMessage(index.last);
+      expect(recent?.messageUuid, 'recent-visible');
+      expect(targetWindowLoads, 2);
+      expect(cubit.localHistoryPaging.value.hasMore, isTrue);
+    },
+  );
 
   test(
     'waiting mirror restores approval and reconciles canonical runtime',

@@ -99,6 +99,8 @@ class ChatProcessTurnLayout {
   const ChatProcessTurnLayout({
     required this.key,
     required this.segments,
+    required this.intermediateSegments,
+    required this.intermediateDetailCount,
     required this.intermediateEntryIndices,
     required this.intermediateAssistantEntryIndices,
     required this.intermediateSummaryEntryIndex,
@@ -112,6 +114,8 @@ class ChatProcessTurnLayout {
 
   final String key;
   final List<ChatProcessSegmentLayout> segments;
+  final List<ChatProcessSegmentLayout> intermediateSegments;
+  final int intermediateDetailCount;
   final Set<int> intermediateEntryIndices;
   final Set<int> intermediateAssistantEntryIndices;
   final int? intermediateSummaryEntryIndex;
@@ -124,29 +128,7 @@ class ChatProcessTurnLayout {
 
   int get intermediateOutputCount => intermediateAssistantEntryIndices.length;
 
-  int get intermediateDetailCount => segments
-      .where(
-        (segment) =>
-            (segment.assistantEntryIndex != null &&
-                intermediateEntryIndices.contains(
-                  segment.assistantEntryIndex,
-                )) ||
-            segment.processEntryIndices.any(intermediateEntryIndices.contains),
-      )
-      .fold<int>(0, (count, segment) => count + segment.detailCount);
-
   bool get hasIntermediateEntries => intermediateEntryIndices.isNotEmpty;
-
-  List<ChatProcessSegmentLayout> get intermediateSegments => segments
-      .where(
-        (segment) =>
-            (segment.assistantEntryIndex != null &&
-                intermediateAssistantEntryIndices.contains(
-                  segment.assistantEntryIndex,
-                )) ||
-            segment.processEntryIndices.any(intermediateEntryIndices.contains),
-      )
-      .toList(growable: false);
 
   ChatProcessSegmentLayout? segmentForIntermediateEntry(int index) {
     for (final segment in intermediateSegments) {
@@ -459,9 +441,15 @@ ChatProcessLayout buildChatProcessLayout(
         : intermediateEntries.reduce(
             (left, right) => left < right ? left : right,
           );
+    final intermediateDetailCount = intermediateSegments.fold<int>(
+      0,
+      (count, segment) => count + segment.detailCount,
+    );
     final turn = ChatProcessTurnLayout(
       key: turnKey,
       segments: List.unmodifiable(segments),
+      intermediateSegments: List.unmodifiable(intermediateSegments),
+      intermediateDetailCount: intermediateDetailCount,
       intermediateEntryIndices: Set.unmodifiable(intermediateEntries),
       intermediateAssistantEntryIndices: Set.unmodifiable(
         intermediateAssistants,

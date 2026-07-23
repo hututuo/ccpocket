@@ -132,6 +132,10 @@ class ChatMessageList extends StatefulWidget {
 
 class _ChatMessageListState extends State<ChatMessageList> {
   ChatSessionCubit? _pagingCubit;
+  List<ChatEntry>? _processLayoutEntries;
+  bool? _processLayoutLatestTurnIsActive;
+  bool? _processLayoutHasTransientCurrentOutput;
+  ChatProcessLayout? _cachedProcessLayout;
   final Set<String> _expandedProcessSegments = {};
   final Set<String> _expandedIntermediateTurns = {};
   final Set<String> _expandedCurrentProgress = {};
@@ -186,6 +190,30 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
   Widget _anchoredDisclosure(String id, Widget child) =>
       KeyedSubtree(key: _anchorKey(id), child: child);
+
+  ChatProcessLayout _processLayoutFor(
+    List<ChatEntry> entries, {
+    required bool latestTurnIsActive,
+    required bool hasTransientCurrentOutput,
+  }) {
+    final cached = _cachedProcessLayout;
+    if (cached != null &&
+        identical(entries, _processLayoutEntries) &&
+        latestTurnIsActive == _processLayoutLatestTurnIsActive &&
+        hasTransientCurrentOutput == _processLayoutHasTransientCurrentOutput) {
+      return cached;
+    }
+    final layout = buildChatProcessLayout(
+      entries,
+      latestTurnIsActive: latestTurnIsActive,
+      hasTransientCurrentOutput: hasTransientCurrentOutput,
+    );
+    _processLayoutEntries = entries;
+    _processLayoutLatestTurnIsActive = latestTurnIsActive;
+    _processLayoutHasTransientCurrentOutput = hasTransientCurrentOutput;
+    _cachedProcessLayout = layout;
+    return layout;
+  }
 
   /// Keeps a user-triggered height change inside the viewport's layout pass.
   /// The custom scroll position corrects the anchor before paint; the callback
@@ -653,7 +681,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
         chatState.status == ProcessStatus.compacting ||
         chatState.externalDesktopTurnActive ||
         hasStreaming;
-    final processLayout = buildChatProcessLayout(
+    final processLayout = _processLayoutFor(
       allEntries,
       latestTurnIsActive: latestTurnIsActive,
       hasTransientCurrentOutput: hasStreaming,

@@ -234,11 +234,24 @@ class ConversationMirrorStore {
         );
       }
 
+      // The primary key and ordinal index already enforce generation-wide
+      // uniqueness. Query only the at-most-100 candidates from this page so
+      // appending page N does not rescan all entries from pages 0...N-1.
+      final entryIdPlaceholders = List.filled(prepared.length, '?').join(', ');
+      final ordinalPlaceholders = List.filled(prepared.length, '?').join(', ');
       final existingEntries = await txn.query(
         ConversationMirrorDatabase.entriesTable,
         columns: ['entry_id', 'ordinal'],
-        where: '$_keyWhere AND generation = ?',
-        whereArgs: [..._keyArgs(key), generation],
+        where:
+            '$_keyWhere AND generation = ? AND '
+            '(entry_id IN ($entryIdPlaceholders) OR '
+            'ordinal IN ($ordinalPlaceholders))',
+        whereArgs: [
+          ..._keyArgs(key),
+          generation,
+          ...prepared.map((entry) => entry.input.entryId),
+          ...prepared.map((entry) => entry.input.ordinal),
+        ],
       );
       final existingIds = {
         for (final row in existingEntries) row['entry_id'] as String,
@@ -283,8 +296,9 @@ class ConversationMirrorStore {
         );
       }
 
+      final batch = txn.batch();
       for (final entry in prepared) {
-        await txn.insert(ConversationMirrorDatabase.entriesTable, {
+        batch.insert(ConversationMirrorDatabase.entriesTable, {
           ..._keyColumns(key),
           'generation': generation,
           'entry_id': entry.input.entryId,
@@ -294,6 +308,7 @@ class ConversationMirrorStore {
           'entry_bytes': entry.bytes,
         });
       }
+      await batch.commit(noResult: true);
       await txn.insert(ConversationMirrorDatabase.stagingPagesTable, {
         ..._keyColumns(key),
         'generation': generation,
@@ -730,16 +745,13 @@ class ConversationMirrorStore {
       final args = [..._keyArgs(key), generation];
       late final List<Map<String, Object?>> rows;
       try {
-        rows = await txn.rawQuery(
-          '''
+        rows = await txn.rawQuery('''
           SELECT * FROM ${ConversationMirrorDatabase.entriesTable}
           WHERE $_keyWhere
             AND generation = ?
             AND json_extract(message_json, '\$.type') = 'user_input'
           ORDER BY ordinal ASC
-          ''',
-          args,
-        );
+          ''', args);
       } on DatabaseException {
         final candidates = await txn.query(
           ConversationMirrorDatabase.entriesTable,
@@ -747,14 +759,16 @@ class ConversationMirrorStore {
           whereArgs: args,
           orderBy: 'ordinal ASC',
         );
-        rows = candidates.where((row) {
-          try {
-            final decoded = jsonDecode(row['message_json'] as String);
-            return decoded is Map && decoded['type'] == 'user_input';
-          } catch (_) {
-            return false;
-          }
-        }).toList(growable: false);
+        rows = candidates
+            .where((row) {
+              try {
+                final decoded = jsonDecode(row['message_json'] as String);
+                return decoded is Map && decoded['type'] == 'user_input';
+              } catch (_) {
+                return false;
+              }
+            })
+            .toList(growable: false);
       }
       return rows.map(_entryFromRow).toList(growable: false);
     });
@@ -916,8 +930,15 @@ class ConversationMirrorStore {
 
   Future<int> _databasePayloadBytes(DatabaseExecutor db) async {
     final rows = await db.rawQuery(
-      'SELECT COALESCE(SUM(entry_bytes), 0) AS total_bytes '
-      'FROM ${ConversationMirrorDatabase.entriesTable}',
+      'SELECT '
+      'COALESCE(('
+      '  SELECT SUM(bytes) '
+      '  FROM ${ConversationMirrorDatabase.metadataTable}'
+      '), 0) + '
+      'COALESCE(('
+      '  SELECT SUM(actual_bytes) '
+      '  FROM ${ConversationMirrorDatabase.stagingTable}'
+      '), 0) AS total_bytes',
     );
     final value = rows.single['total_bytes'];
     if (value is int) return value;

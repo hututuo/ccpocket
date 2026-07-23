@@ -54,9 +54,26 @@ class LocalSessionHistoryPage {
   final DateTime? timestampAnchor;
 }
 
+class LocalSessionUserIndexEntry {
+  const LocalSessionUserIndexEntry({
+    required this.message,
+    required this.ordinal,
+  });
+
+  final UserInputMessage message;
+  final int ordinal;
+}
+
 typedef SessionHistoryPageLoader =
     Future<LocalSessionHistoryPage?> Function({
       required String runtimeSessionId,
+      required int limit,
+    });
+
+typedef SessionHistoryWindowLoader =
+    Future<LocalSessionHistoryPage?> Function({
+      required String runtimeSessionId,
+      required int startOrdinal,
       required int limit,
     });
 
@@ -64,7 +81,7 @@ typedef SessionHistoryHasMore = bool Function(String runtimeSessionId);
 typedef SessionHistoryPageInvalidator = void Function(String runtimeSessionId);
 
 typedef SessionHistoryUserIndexLoader =
-    Future<List<UserInputMessage>?> Function({
+    Future<List<LocalSessionUserIndexEntry>?> Function({
       required String runtimeSessionId,
     });
 
@@ -193,6 +210,7 @@ class BridgeService implements BridgeServiceBase {
   _providerSessionBindingByRuntime = {};
   SessionHistoryBootstrapHandler? _sessionHistoryBootstrapHandler;
   SessionHistoryPageLoader? _sessionHistoryPageLoader;
+  SessionHistoryWindowLoader? _sessionHistoryWindowLoader;
   SessionHistoryHasMore? _sessionHistoryHasMore;
   SessionHistoryPageInvalidator? _sessionHistoryPageInvalidator;
   SessionHistoryUserIndexLoader? _sessionHistoryUserIndexLoader;
@@ -1273,6 +1291,16 @@ class BridgeService implements BridgeServiceBase {
                     _readHistorySeq(json['historySeq']) ??
                     (msg is InputAckMessage ? msg.acceptedSeq : null),
               );
+              // History from an older Bridge may still contain an unbounded
+              // canonical transcript. Keep durable/full history in the
+              // conversation mirror, but publish only the runtime store's
+              // bounded tail into the render pipeline.
+              if (msg is HistoryMessage &&
+                  msg.messages.length > _runtimeStore.maxMessagesPerSession) {
+                msg = HistoryMessage(
+                  messages: _runtimeStore.messages(sessionId),
+                );
+              }
             }
             _clearDeliveredDeliveryPendingInput(msg, sessionId: sessionId);
             _clearDeliveredInFlightInput(msg, sessionId: sessionId);
@@ -1751,9 +1779,7 @@ class BridgeService implements BridgeServiceBase {
     _pendingHistoryDeltaSinceSeq.remove(sessionId);
     _runtimeStore.applyServerMessage(sessionId, msg);
 
-    final history = HistoryMessage(
-      messages: msg.entries.map((entry) => entry.message).toList(),
-    );
+    final history = HistoryMessage(messages: _runtimeStore.messages(sessionId));
     _taggedMessageController.add((history, sessionId));
     _messageController.add(history);
 
@@ -2805,10 +2831,12 @@ class BridgeService implements BridgeServiceBase {
 
   void configureSessionHistoryPaging({
     SessionHistoryPageLoader? loader,
+    SessionHistoryWindowLoader? windowLoader,
     SessionHistoryHasMore? hasMore,
     SessionHistoryPageInvalidator? invalidate,
   }) {
     _sessionHistoryPageLoader = loader;
+    _sessionHistoryWindowLoader = windowLoader;
     _sessionHistoryHasMore = hasMore;
     _sessionHistoryPageInvalidator = invalidate;
   }
@@ -2822,7 +2850,7 @@ class BridgeService implements BridgeServiceBase {
   bool get hasSessionHistoryUserIndex =>
       _sessionHistoryUserIndexLoader != null;
 
-  Future<List<UserInputMessage>?> tryLoadLocalSessionUserIndex({
+  Future<List<LocalSessionUserIndexEntry>?> tryLoadLocalSessionUserIndex({
     required String runtimeSessionId,
   }) {
     final loader = _sessionHistoryUserIndexLoader;
@@ -2831,6 +2859,8 @@ class BridgeService implements BridgeServiceBase {
   }
 
   bool get hasSessionHistoryPaging => _sessionHistoryPageLoader != null;
+  bool get hasSessionHistoryWindowLoading =>
+      _sessionHistoryWindowLoader != null;
 
   bool hasOlderLocalSessionHistory(String runtimeSessionId) =>
       _sessionHistoryHasMore?.call(runtimeSessionId) ?? false;
@@ -2847,6 +2877,20 @@ class BridgeService implements BridgeServiceBase {
     if (loader == null) return Future.value();
     return loader(
       runtimeSessionId: runtimeSessionId,
+      limit: limit.clamp(1, 200),
+    );
+  }
+
+  Future<LocalSessionHistoryPage?> tryLoadLocalSessionHistoryWindow({
+    required String runtimeSessionId,
+    required int startOrdinal,
+    int limit = 200,
+  }) {
+    final loader = _sessionHistoryWindowLoader;
+    if (loader == null) return Future.value();
+    return loader(
+      runtimeSessionId: runtimeSessionId,
+      startOrdinal: startOrdinal,
       limit: limit.clamp(1, 200),
     );
   }

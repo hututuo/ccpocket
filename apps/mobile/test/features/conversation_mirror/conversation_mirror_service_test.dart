@@ -863,6 +863,59 @@ void main() {
   );
 
   test(
+    'a distant turn loads one 200-entry target window and resets older paging',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 3000,
+        revision: _hashText('target-window-3000-entry-history'),
+      );
+      bridge.connected = false;
+
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        ),
+        isTrue,
+      );
+      final index = await bridge.tryLoadLocalSessionUserIndex(
+        runtimeSessionId: 'runtime-1',
+      );
+      expect(index, hasLength(3000));
+      expect(index![100].ordinal, 100);
+      expect(index[100].message.text, 'message-100');
+
+      final targetWindow = await bridge.tryLoadLocalSessionHistoryWindow(
+        runtimeSessionId: 'runtime-1',
+        startOrdinal: index[100].ordinal,
+      );
+
+      expect(targetWindow, isNotNull);
+      expect(targetWindow!.messages, hasLength(200));
+      expect(
+        (targetWindow.messages.first as UserInputMessage).text,
+        'message-100',
+      );
+      expect(
+        (targetWindow.messages.last as UserInputMessage).text,
+        'message-299',
+      );
+      expect(targetWindow.hasMore, isTrue);
+
+      final older = await bridge.tryLoadOlderLocalSessionHistory(
+        runtimeSessionId: 'runtime-1',
+      );
+      expect(older, isNotNull);
+      expect(older!.messages, hasLength(100));
+      expect((older.messages.first as UserInputMessage).text, 'message-0');
+      expect((older.messages.last as UserInputMessage).text, 'message-99');
+      expect(older.hasMore, isFalse);
+    },
+  );
+
+  test(
     'a bounded canonical cache keeps the complete local mirror pageable',
     () async {
       await _seedLocalConversation(

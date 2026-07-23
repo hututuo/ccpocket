@@ -4266,6 +4266,7 @@ class ClientMessage {
           'guardian_approval',
           'history_delta',
           'history_snapshot',
+          'bounded_history_window_v1',
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',

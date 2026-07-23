@@ -146,6 +146,7 @@ class ConversationMirrorService extends ChangeNotifier {
     _bridge.configureSessionHistoryBootstrap(_bootstrapRuntimeSession);
     _bridge.configureSessionHistoryPaging(
       loader: _loadOlderRuntimeHistory,
+      windowLoader: _loadRuntimeHistoryWindow,
       hasMore: (runtimeSessionId) =>
           (_pageCursorsByRuntime[runtimeSessionId]?.nextOffset ?? 0) > 0,
       invalidate: _pageCursorsByRuntime.remove,
@@ -1619,7 +1620,66 @@ class ConversationMirrorService extends ChangeNotifier {
     }
   }
 
-  Future<List<UserInputMessage>?> _loadRuntimeUserIndex({
+  Future<LocalSessionHistoryPage?> _loadRuntimeHistoryWindow({
+    required String runtimeSessionId,
+    required int startOrdinal,
+    required int limit,
+  }) async {
+    final cursor = _pageCursorsByRuntime[runtimeSessionId];
+    if (cursor == null ||
+        cursor.loading ||
+        startOrdinal < 0 ||
+        startOrdinal >= cursor.entryCount) {
+      return null;
+    }
+    if (!_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
+      _pageCursorsByRuntime.remove(runtimeSessionId);
+      return null;
+    }
+    cursor.loading = true;
+    try {
+      final metadataBefore = await _store.readMetadata(cursor.key);
+      if (!_pageCursorMetadataMatches(cursor, metadataBefore)) {
+        if (identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+          _pageCursorsByRuntime.remove(runtimeSessionId);
+        }
+        return null;
+      }
+      final boundedLimit = math.min(limit, cursor.entryCount - startOrdinal);
+      final entries = await _store.readEntries(
+        cursor.key,
+        offset: startOrdinal,
+        limit: boundedLimit,
+      );
+      final timestampAnchor = await _timestampAnchorBeforePage(
+        cursor.key,
+        startOrdinal,
+        entries,
+      );
+      final metadataAfter = await _store.readMetadata(cursor.key);
+      if (!_pageCursorMetadataMatches(cursor, metadataAfter) ||
+          !_pageCursorIdentityMatches(runtimeSessionId, cursor) ||
+          !identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+        if (identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+          _pageCursorsByRuntime.remove(runtimeSessionId);
+        }
+        return null;
+      }
+      // The displayed mirror prefix now begins at this target. Ordinary
+      // upward paging continues immediately before it instead of walking
+      // through every skipped page.
+      cursor.nextOffset = startOrdinal;
+      return LocalSessionHistoryPage(
+        messages: List.unmodifiable(_decodeRenderableEntries(entries)),
+        hasMore: startOrdinal > 0,
+        timestampAnchor: timestampAnchor,
+      );
+    } finally {
+      cursor.loading = false;
+    }
+  }
+
+  Future<List<LocalSessionUserIndexEntry>?> _loadRuntimeUserIndex({
     required String runtimeSessionId,
   }) async {
     final cursor = _pageCursorsByRuntime[runtimeSessionId];
@@ -1636,14 +1696,19 @@ class ConversationMirrorService extends ChangeNotifier {
         !identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
       return null;
     }
-    final messages = <UserInputMessage>[];
+    final messages = <LocalSessionUserIndexEntry>[];
     for (final entry in entries) {
       try {
         final message = ServerMessage.fromJson(entry.message);
         if (message is UserInputMessage &&
             !message.isSynthetic &&
             !message.isMeta) {
-          messages.add(message);
+          messages.add(
+            LocalSessionUserIndexEntry(
+              message: message,
+              ordinal: entry.ordinal,
+            ),
+          );
         }
       } catch (error) {
         debugPrint(
