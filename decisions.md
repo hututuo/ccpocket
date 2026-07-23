@@ -503,3 +503,31 @@
   conversion) and `bdac4e5e` (Mobile lazy disclosure). These commits are not a
   Bridge deployment, OTA publication, stable promotion, or physical-device
   installation.
+
+## Self-signed notification preferences v1
+
+- Local notifications remain available in a self-signed build after the user
+  grants iOS notification permission. Delivery while iOS has fully suspended
+  the app is a separate APNs/FCM gate: it works only when the final AltStore
+  provisioning profile preserves the APS entitlement and the build contains
+  the real Firebase configuration. Source entitlements alone are not proof of
+  the re-signed IPA's runtime capability.
+- Mobile keeps notification preferences locally and exposes one dedicated
+  settings screen. Action-required, successful completion and failure are on
+  by default; intermediate tool-stage progress is off by default and is
+  limited by Bridge to one changed stage per session every 45 seconds.
+  Foreground banners are independently configurable and remain suppressed for
+  the session currently being viewed.
+- `enabledEventTypes` on `push_register` and
+  `push_notification_preferences_v1` are additive protocol extensions. An old
+  Bridge ignores the extra registration field and retains established
+  notifications. A new relay preserves established notifications for legacy
+  tokens but never opts them into intermediate progress. A new Bridge also
+  refuses to generate progress unless at least one token explicitly subscribed.
+- Release order is Cloud Function, Bridge, then Mobile/OTA. This branch adds no
+  native dependency, entitlement or asset; its Mobile portion is Dart-only and
+  may be delivered by Shorebird against a base IPA that already contains the
+  existing Firebase and local-notification plugins. If the installed AltStore
+  base lacks usable APS provisioning or Firebase configuration, remote
+  lock-screen delivery requires a newly signed base IPA; local/in-app behavior
+  remains available.
