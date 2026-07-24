@@ -1655,6 +1655,19 @@ export class BridgeWebSocketServer {
       provider === "codex"
         ? withDerivedCodexPermissionsMode(session?.codexSettings)
         : session?.codexSettings;
+    const inferredExecutionMode =
+      provider === "codex" && derivedCodexSettings?.approvalPolicy !== undefined
+        ? derivedCodexSettings.approvalPolicy === "never"
+          ? "fullAccess"
+          : "default"
+        : session?.process instanceof SdkProcess
+          ? session.process.permissionMode === "bypassPermissions"
+            ? "fullAccess"
+            : session.process.permissionMode === "acceptEdits"
+              ? "acceptEdits"
+              : "default"
+          : undefined;
+    const resolvedExecutionMode = executionMode ?? inferredExecutionMode;
 
     const msg: SystemServerMessage = {
       type: "system",
@@ -1681,31 +1694,10 @@ export class BridgeWebSocketServer {
               "default" | "autoReview" | "fullAccess" | "custom",
           }
         : {}),
-      ...((executionMode ??
-      (session?.process instanceof SdkProcess
-        ? session.process.permissionMode === "bypassPermissions"
-          ? "fullAccess"
-          : session.process.permissionMode === "acceptEdits"
-            ? "acceptEdits"
-            : "default"
-        : session?.process instanceof CodexProcess
-          ? session.process.approvalPolicy === "never"
-            ? "fullAccess"
-            : "default"
-          : undefined))
+      ...(resolvedExecutionMode
         ? {
-            executionMode: (executionMode ??
-              (session?.process instanceof SdkProcess
-                ? session.process.permissionMode === "bypassPermissions"
-                  ? "fullAccess"
-                  : session.process.permissionMode === "acceptEdits"
-                    ? "acceptEdits"
-                    : "default"
-                : session?.process instanceof CodexProcess
-                  ? session.process.approvalPolicy === "never"
-                    ? "fullAccess"
-                    : "default"
-                  : undefined)) as "default" | "acceptEdits" | "fullAccess",
+            executionMode: resolvedExecutionMode as
+              "default" | "acceptEdits" | "fullAccess",
           }
         : {}),
       ...((planMode ??
@@ -2491,11 +2483,14 @@ export class BridgeWebSocketServer {
     resumeRequestId?: string,
   ): SystemServerMessage {
     const process = session.process as CodexProcess;
-    const executionMode = deriveExecutionMode({
-      provider: "codex",
-      approvalPolicy:
-        session.codexSettings?.approvalPolicy ?? process.approvalPolicy,
-    });
+    const approvalPolicy = session.codexSettings?.approvalPolicy;
+    const executionMode =
+      approvalPolicy === undefined
+        ? undefined
+        : deriveExecutionMode({
+            provider: "codex",
+            approvalPolicy,
+          });
     const planMode = process.collaborationMode === "plan";
     const cached = this.sessionManager.getCachedCommands(
       "codex",
@@ -2509,11 +2504,11 @@ export class BridgeWebSocketServer {
       sandboxMode: session.codexSettings?.sandboxMode
         ? sandboxModeToExternal(session.codexSettings.sandboxMode)
         : undefined,
-      permissionMode: modesToLegacyPermissionMode(
-        "codex",
-        executionMode,
-        planMode,
-      ),
+      permissionMode: planMode
+        ? "plan"
+        : executionMode === undefined
+          ? undefined
+          : modesToLegacyPermissionMode("codex", executionMode, false),
       executionMode,
       planMode,
       approvalsReviewer: session.codexSettings?.approvalsReviewer,
@@ -7206,11 +7201,7 @@ export class BridgeWebSocketServer {
                 profile: effectiveProfile,
                 approvalPolicy: codexPermissionSettings
                   ? codexPermissionSettings.approvalPolicy
-                  : (codexApprovalPolicy ??
-                    savedApprovalPolicy ??
-                    normalizeCodexApprovalPolicy(
-                      executionMode === "fullAccess" ? "never" : "on-request",
-                    )),
+                  : (codexApprovalPolicy ?? savedApprovalPolicy),
                 approvalsReviewer: codexPermissionSettings
                   ? codexPermissionSettings.approvalsReviewer
                   : ((msg.approvalsReviewer ??
@@ -7221,7 +7212,7 @@ export class BridgeWebSocketServer {
                   ? codexPermissionSettings.sandboxMode
                   : msg.sandboxMode !== undefined
                     ? sandboxModeToInternal(msg.sandboxMode)
-                    : (savedSandboxMode ?? sandboxModeToInternal(undefined)),
+                    : savedSandboxMode,
                 model: msg.model ?? indexedSettings?.model,
                 modelReasoningEffort:
                   (msg.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]) ??

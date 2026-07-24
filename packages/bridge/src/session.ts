@@ -307,6 +307,34 @@ function mergeCodexSettings(
     : current;
 }
 
+function equalCodexSettings(
+  left: SessionInfo["codexSettings"],
+  right: SessionInfo["codexSettings"],
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const leftRoots = left.additionalWritableRoots;
+  const rightRoots = right.additionalWritableRoots;
+  return (
+    left.profile === right.profile &&
+    left.approvalPolicy === right.approvalPolicy &&
+    left.approvalsReviewer === right.approvalsReviewer &&
+    left.codexPermissionsMode === right.codexPermissionsMode &&
+    left.sandboxMode === right.sandboxMode &&
+    left.model === right.model &&
+    left.modelReasoningEffort === right.modelReasoningEffort &&
+    left.serviceTier === right.serviceTier &&
+    left.networkAccessEnabled === right.networkAccessEnabled &&
+    left.webSearchMode === right.webSearchMode &&
+    left.autoReviewDisabledByPolicy === right.autoReviewDisabledByPolicy &&
+    (leftRoots === rightRoots ||
+      (leftRoots !== undefined &&
+        rightRoots !== undefined &&
+        leftRoots.length === rightRoots.length &&
+        leftRoots.every((root, index) => root === rightRoots[index])))
+  );
+}
+
 function sanitizeCodexModel(model: unknown): string | undefined {
   if (typeof model !== "string") return undefined;
   const normalized = model.trim();
@@ -741,6 +769,7 @@ export class SessionManager {
         try {
           session.lastActivityAt = new Date();
           const previousProviderSessionId = session.claudeSessionId;
+          let codexSettingsChanged = false;
 
           if (msg.type === "goal_state") {
             const advancesGoalSequence =
@@ -865,25 +894,36 @@ export class SessionManager {
               }
             }
             if (msg.type === "system") {
-              session.codexSettings = mergeCodexSettings(
+              const nextCodexSettings = mergeCodexSettings(
                 session.codexSettings,
                 msg,
               );
+              codexSettingsChanged = !equalCodexSettings(
+                session.codexSettings,
+                nextCodexSettings,
+              );
+              session.codexSettings = nextCodexSettings;
             }
             const messageModel = sanitizeCodexModel(
               msg.type === "assistant" ? msg.message.model : undefined,
             );
             if (msg.type === "assistant" && messageModel) {
-              session.codexSettings = {
+              const nextCodexSettings = {
                 ...(session.codexSettings ?? {}),
                 model: messageModel,
               };
+              codexSettingsChanged ||= !equalCodexSettings(
+                session.codexSettings,
+                nextCodexSettings,
+              );
+              session.codexSettings = nextCodexSettings;
             }
           }
 
           if (
-            session.claudeSessionId &&
-            session.claudeSessionId !== previousProviderSessionId
+            (session.claudeSessionId &&
+              session.claudeSessionId !== previousProviderSessionId) ||
+            codexSettingsChanged
           ) {
             this.onSessionUpdated?.(session.id);
           }
@@ -1326,10 +1366,11 @@ export class SessionManager {
               ? "acceptEdits"
               : "default"
           : s.process instanceof CodexProcess
-            ? (codexSettings?.approvalPolicy ?? s.process.approvalPolicy) ===
-              "never"
-              ? "fullAccess"
-              : "default"
+            ? codexSettings?.approvalPolicy === undefined
+              ? undefined
+              : codexSettings.approvalPolicy === "never"
+                ? "fullAccess"
+                : "default"
             : undefined;
       const planMode =
         s.process instanceof SdkProcess
@@ -1358,10 +1399,11 @@ export class SessionManager {
             : s.process instanceof CodexProcess
               ? s.process.collaborationMode === "plan"
                 ? "plan"
-                : (codexSettings?.approvalPolicy ??
-                      s.process.approvalPolicy) === "never"
-                  ? "bypassPermissions"
-                  : "acceptEdits"
+                : codexSettings?.approvalPolicy === undefined
+                  ? undefined
+                  : codexSettings.approvalPolicy === "never"
+                    ? "bypassPermissions"
+                    : "acceptEdits"
               : undefined,
         executionMode,
         planMode,

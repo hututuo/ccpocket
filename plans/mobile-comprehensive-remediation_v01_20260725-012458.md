@@ -185,8 +185,16 @@ Mobile rebuildable store
 
 - 会话权限同时受新会话默认值、recent factual settings、runtime
   `session_created`、permission restart、Mobile 本地持久化和 reconnect 更新；
-  “变回 on request”不是单一 Switch 的问题。尚缺一次真实复现的完整事件顺序，
-  所以计划采用 factual/desired/revision 模型而不是先改 UI。
+  “变回 on request”不是单一 Switch 的问题。
+- 已通过源码调用链和 live Bridge 只读快照确认根因：`SessionManager.list()`
+  会把尚未知晓的 Codex approval policy 通过 process 默认 getter 发布成
+  `on-request`；resume 在 Mobile 未传 override 且本地 JSONL 索引缺权限时，又会
+  实际向官方 `thread/resume` 补入 `on-request + workspace-write`。当时 12 个
+  active Codex runtime 中有 8 个缺索引权限，其中一个真实为 full access，因此
+  这条回退既会污染 UI，也可能改变 thread 的生效权限。
+- 已采用“显式 Mobile override > factual JSONL metadata > 不传、由官方 runtime
+  解析”的顺序；bootstrap 的 session list/session_created 不再发明权限，官方
+  init 返回真实设置后再广播。Mobile 对缺失权限信号保持既有状态。
 - Plan 首次退出后审批消失最可能是 pending interaction 只附着当前 runtime/UI，
   又被 history/session replacement 清理；必须以 Bridge pending ledger 和真实
   事件序列验证。
@@ -479,17 +487,23 @@ Mobile rebuildable store
 
 ### 8.1 权限回到 on request
 
-- 建立一次真实复现的事件时间线，追踪：
-  - recent session factual settings；
-  - session resume 请求；
-  - `session_created`/session list；
-  - Bridge permission restart；
-  - Mobile settings persistence；
-  - reconnect 和 lifecycle。
+- 已完成源码事件链和 live runtime/index 对照，确认两处最早错误状态：
+  - session list 在 runtime bootstrap 未知时把 `CodexProcess` 的展示 fallback
+    当成事实；
+  - resume 在显式 override 和 indexed settings 都缺失时写入安全默认值，而不是
+    让官方 runtime 保留/解析 thread 配置。
+- 修复后的权威顺序：
+  - 新/旧 Mobile 显式传来的设置最高；
+  - JSONL 中确实存在的 per-thread 设置其次；
+  - 两者都没有时不发送 approval/sandbox 字段；
+  - 官方 `system/init` 的 resolved settings 到达后更新 SessionInfo 并广播；
+  - bootstrap snapshot 缺字段时，Mobile 保留当前 toolbar 状态。
 - session 当前生效配置、下一轮期望配置和默认新会话配置必须是三个字段；
 - 当前配置只能由 authoritative session event 更新，不能被全局默认或迟到 history
   覆盖；
 - 每次修改带 revision/effectiveFromTurn，断线后以 Bridge 确认值收敛。
+- 兼容边界：旧 Mobile 的显式 legacy override 仍优先；有 factual index 的旧
+  thread 仍精确恢复；新 Mobile + 新 Bridge 才获得 unknown-preserving 行为。
 
 ### 8.2 Plan 审批不应消失
 

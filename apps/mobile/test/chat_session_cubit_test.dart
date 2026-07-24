@@ -1618,6 +1618,46 @@ void main() {
     });
 
     test(
+      'unknown bootstrap snapshot preserves initial Codex full access',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'starting',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+        final cubit = ChatSessionCubit(
+          sessionId: 's1',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          initialPermissionMode: PermissionMode.bypassPermissions,
+          initialSandboxMode: SandboxMode.off,
+          initialCodexApprovalPolicy: CodexApprovalPolicy.never,
+          initialCodexApprovalsReviewer: 'user',
+          initialCodexPermissionsMode: CodexPermissionsMode.fullAccess,
+          initialProjectPath: '/project',
+        );
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+        expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.fullAccess,
+        );
+        expect(cubit.state.sandboxMode, SandboxMode.off);
+      },
+    );
+
+    test(
       'pending next-turn permissions fence stale session snapshots',
       () async {
         mockBridge.sessionSnapshot = const [

@@ -179,6 +179,56 @@ describe("SessionManager codex path", () => {
     );
   });
 
+  it("keeps unknown Codex permissions non-authoritative until runtime init", async () => {
+    const onSessionUpdated = vi.fn();
+    const manager = new SessionManager(
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      onSessionUpdated,
+    );
+    manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-bootstrap" },
+    );
+
+    expect(manager.list()[0]).toMatchObject({
+      provider: "codex",
+      claudeSessionId: "thread-bootstrap",
+    });
+    expect(manager.list()[0].permissionMode).toBeUndefined();
+    expect(manager.list()[0].executionMode).toBeUndefined();
+    expect(manager.list()[0].codexSettings?.approvalPolicy).toBeUndefined();
+
+    codexInstances[0].emit("message", {
+      type: "system",
+      subtype: "init",
+      sessionId: "thread-bootstrap",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+    });
+    await Promise.resolve();
+
+    expect(manager.list()[0]).toMatchObject({
+      permissionMode: "bypassPermissions",
+      executionMode: "fullAccess",
+      codexSettings: {
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandboxMode: "danger-full-access",
+        codexPermissionsMode: "fullAccess",
+      },
+    });
+    expect(onSessionUpdated).toHaveBeenCalledWith(manager.list()[0].id);
+  });
+
   it("keeps ephemeral side chats out of the durable catalog and destroys them with the parent", () => {
     const manager = new SessionManager(() => {});
     const parentSessionId = manager.create(

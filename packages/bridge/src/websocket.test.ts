@@ -3906,6 +3906,47 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("leaves missing Codex resume permissions to the official runtime", async () => {
+    getCodexSessionIndexMetadataMock.mockResolvedValueOnce(new Map());
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "thr_runtime_owned_permissions",
+        projectPath: "/tmp/project-a",
+        provider: "codex",
+      },
+      ws,
+    );
+
+    const session = (bridge as any).sessionManager.get("s-1");
+    expect(session.codexOptions).toMatchObject({
+      threadId: "thr_runtime_owned_permissions",
+    });
+    expect(session.codexOptions.approvalPolicy).toBeUndefined();
+    expect(session.codexOptions.sandboxMode).toBeUndefined();
+
+    const resumed = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" &&
+          message.subtype === "session_created" &&
+          message.sessionId === session.id,
+      );
+    expect(resumed.permissionMode).toBeUndefined();
+    expect(resumed.executionMode).toBeUndefined();
+    expect(resumed.approvalPolicy).toBeUndefined();
+    expect(resumed.sandboxMode).toBeUndefined();
+
+    bridge.close();
+  });
+
   it("keeps explicit legacy Mobile resume overrides ahead of indexed settings", async () => {
     getCodexSessionIndexMetadataMock.mockResolvedValueOnce(
       new Map([
