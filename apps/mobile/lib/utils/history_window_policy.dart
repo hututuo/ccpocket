@@ -103,6 +103,37 @@ List<int> selectTurnAwareServerMessageWindowIndexes(
   return selectedIndexes.reversed.toList(growable: false);
 }
 
+List<int> selectTurnAwareChatEntryWindowIndexes(
+  List<ChatEntry> entries, {
+  int rootTurns = turnAwareHistoryRootTurns,
+  int toolCalls = turnAwareHistoryToolCalls,
+  int envelopeEntries = turnAwareHistoryEnvelopeEntries,
+  int maxRetainedEntries = turnAwareHistoryMaxRetainedEntries,
+}) {
+  final messages = <ServerMessage>[
+    for (var index = 0; index < entries.length; index++)
+      switch (entries[index]) {
+        ServerChatEntry(:final message) => message,
+        UserChatEntry(:final text) => UserInputMessage(text: text),
+        StreamingChatEntry(:final text) => AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'streaming-window-$index',
+            role: 'assistant',
+            content: [TextContent(text: text)],
+            model: '',
+          ),
+        ),
+      },
+  ];
+  return selectTurnAwareServerMessageWindowIndexes(
+    messages,
+    rootTurns: rootTurns,
+    toolCalls: toolCalls,
+    envelopeEntries: envelopeEntries,
+    maxRetainedEntries: maxRetainedEntries,
+  );
+}
+
 int _startOfLatestRootTurns<T>(
   List<T> values, {
   required int rootTurns,

@@ -773,6 +773,30 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("parses bounded history page requests", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_page","requestId":"page-1","sessionId":"s2","beforeSeq":42,"beforeCursor":"user:turn-42"}',
+      ),
+    ).toEqual({
+      type: "get_history_page",
+      requestId: "page-1",
+      sessionId: "s2",
+      beforeSeq: 42,
+      beforeCursor: "user:turn-42",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_page","requestId":"page-1","sessionId":"s2","beforeSeq":0}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_page","requestId":"page-1","sessionId":"s2","beforeSeq":42,"beforeCursor":""}',
+      ),
+    ).toBeNull();
+  });
+
   it("keeps official usage parsing unchanged", () => {
     expect(parseClientMessage('{"type":"get_usage"}')).toEqual({
       type: "get_usage",

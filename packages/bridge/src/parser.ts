@@ -286,6 +286,13 @@ export type ClientMessage =
   | { type: "get_history"; sessionId: string }
   | { type: "get_history_delta"; sessionId: string; sinceSeq: number }
   | {
+      type: "get_history_page";
+      requestId: string;
+      sessionId: string;
+      beforeSeq: number;
+      beforeCursor?: string;
+    }
+  | {
       type: "resolve_artifact";
       requestId: string;
       sessionId: string;
@@ -697,7 +704,27 @@ export type ServerMessage =
       recentSession?: Record<string, unknown>;
     }
   | { type: "status"; status: ProcessStatus }
-  | { type: "history"; messages: ServerMessage[] }
+  | {
+      type: "history";
+      messages: ServerMessage[];
+      historyWindow?: {
+        capability: "turn_aware_history_window_v1";
+        fromSeq: number;
+        hasMore: boolean;
+        cursor?: string;
+      };
+    }
+  | {
+      type: "history_page";
+      requestId: string;
+      sessionId: string;
+      beforeSeq: number;
+      nextBeforeSeq: number;
+      nextBeforeCursor?: string;
+      hasMore: boolean;
+      messages: Array<{ seq: number; message: ServerMessage }>;
+      error?: string;
+    }
   | {
       type: "history_delta";
       sessionId?: string;
@@ -714,6 +741,12 @@ export type ServerMessage =
       messages: Array<{ seq: number; message: ServerMessage }>;
       status?: ProcessStatus;
       reason: "compacted" | "reset";
+      historyWindow?: {
+        capability: "turn_aware_history_window_v1";
+        fromSeq: number;
+        hasMore: boolean;
+        cursor?: string;
+      };
     }
   | {
       type: "conversation_queue";
@@ -1564,6 +1597,27 @@ export function parseClientMessage(data: string): ClientMessage | null {
           typeof msg.sinceSeq !== "number" ||
           !Number.isInteger(msg.sinceSeq) ||
           msg.sinceSeq < 0
+        )
+          return null;
+        break;
+      case "get_history_page":
+        if (
+          typeof msg.requestId !== "string" ||
+          msg.requestId.length === 0 ||
+          msg.requestId.length > 128 ||
+          typeof msg.sessionId !== "string" ||
+          msg.sessionId.length === 0 ||
+          msg.sessionId.length > 256 ||
+          typeof msg.beforeSeq !== "number" ||
+          !Number.isSafeInteger(msg.beforeSeq) ||
+          msg.beforeSeq <= 0
+        )
+          return null;
+        if (
+          msg.beforeCursor !== undefined &&
+          (typeof msg.beforeCursor !== "string" ||
+            msg.beforeCursor.length === 0 ||
+            msg.beforeCursor.length > 512)
         )
           return null;
         break;

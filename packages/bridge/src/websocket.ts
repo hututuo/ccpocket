@@ -1,5 +1,5 @@
 import type { IncomingMessage, Server as HttpServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import {
@@ -170,6 +170,7 @@ import {
   isUnsupportedCodexGoalRpc,
 } from "./codex-goal-controller.js";
 import {
+  HISTORY_PAGE_CAPABILITY,
   selectTurnAwareHistoryWindow,
   TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
 } from "./history-window.js";
@@ -2636,6 +2637,11 @@ export class BridgeWebSocketServer {
       const entries = await this.codexCanonicalHistoryEntries(session);
       if (!entries) return false;
       const visibleEntries = this.historyWindowForClient(ws, entries);
+      const historyWindow = this.historyWindowMetadataForClient(
+        ws,
+        entries,
+        visibleEntries,
+      );
       this.send(ws, {
         type: "history_snapshot",
         sessionId,
@@ -2644,6 +2650,7 @@ export class BridgeWebSocketServer {
         messages: visibleEntries,
         status: session.status,
         reason: "reset",
+        ...(historyWindow ? { historyWindow } : {}),
       } satisfies Extract<ServerMessage, { type: "history_snapshot" }>);
       this.sendCodexCurrentSettings(ws, sessionId, session);
       this.sendCodexQueueState(ws, sessionId, session);
@@ -2672,10 +2679,16 @@ export class BridgeWebSocketServer {
       const entries = await this.codexCanonicalHistoryEntries(session);
       if (!entries) return false;
       const visibleEntries = this.historyWindowForClient(ws, entries);
+      const historyWindow = this.historyWindowMetadataForClient(
+        ws,
+        entries,
+        visibleEntries,
+      );
       this.send(ws, {
         type: "history",
         messages: visibleEntries.map((entry) => entry.message),
         sessionId,
+        ...(historyWindow ? { historyWindow } : {}),
       } as Record<string, unknown>);
       this.sendCodexCurrentSettings(ws, sessionId, session);
       this.send(ws, {
@@ -2713,6 +2726,87 @@ export class BridgeWebSocketServer {
       return values;
     }
     return values.slice(-BOUNDED_HISTORY_WINDOW_ENTRIES);
+  }
+
+  private historyWindowMetadataForClient(
+    ws: WebSocket,
+    values: HistoryEntry[],
+    visibleValues: HistoryEntry[],
+  ):
+    | {
+        capability: typeof TURN_AWARE_HISTORY_WINDOW_CAPABILITY;
+        fromSeq: number;
+        hasMore: boolean;
+        cursor?: string;
+      }
+    | undefined {
+    if (
+      !this.clientSupportedServerMessages
+        .get(ws)
+        ?.has(TURN_AWARE_HISTORY_WINDOW_CAPABILITY)
+    ) {
+      return undefined;
+    }
+    const fromSeq =
+      visibleValues[0]?.seq ?? values.at(-1)?.seq ?? Number.MAX_SAFE_INTEGER;
+    const firstVisibleIndex =
+      visibleValues[0] === undefined ? -1 : values.indexOf(visibleValues[0]);
+    return {
+      capability: TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
+      fromSeq,
+      hasMore: firstVisibleIndex > 0,
+      ...(visibleValues[0]
+        ? { cursor: this.historyPageCursor(visibleValues[0]) }
+        : {}),
+    };
+  }
+
+  private historyPageCursor(entry: HistoryEntry): string {
+    return `v1:${entry.seq}:${this.historyPageIdentityDigest(entry)}`;
+  }
+
+  private historyPageIdentityDigest(entry: HistoryEntry): string {
+    const identity =
+      this.codexHistoryMessageIdentityKeys(entry.message)[0] ??
+      `seq:${entry.seq}`;
+    return createHash("sha256")
+      .update(identity)
+      .digest("hex")
+      .slice(0, 24);
+  }
+
+  private historyPageCursorIndex(
+    entries: HistoryEntry[],
+    cursor: string,
+  ): number {
+    const parsed = /^v1:(\d+):([a-f0-9]{24})$/.exec(cursor);
+    if (parsed) {
+      const seq = Number(parsed[1]);
+      const digest = parsed[2];
+      const likelyIndex = entries.findIndex((entry) => entry.seq === seq);
+      if (
+        likelyIndex >= 0 &&
+        this.historyPageIdentityDigest(entries[likelyIndex]) === digest
+      ) {
+        return likelyIndex;
+      }
+      let nearestIndex = -1;
+      let nearestDistance = Number.MAX_SAFE_INTEGER;
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index];
+        if (this.historyPageIdentityDigest(entry) !== digest) continue;
+        const distance = Math.abs(entry.seq - seq);
+        if (distance < nearestDistance) {
+          nearestIndex = index;
+          nearestDistance = distance;
+        }
+      }
+      if (nearestIndex >= 0) return nearestIndex;
+    }
+    return entries.findIndex(
+      (entry) =>
+        this.codexHistoryMessageIdentityKeys(entry.message)[0] === cursor,
+    );
   }
 
   private shouldResetCodexHistoryDelta(
@@ -6200,6 +6294,81 @@ export class BridgeWebSocketServer {
         break;
       }
 
+      case "get_history_page": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "history_page",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            beforeSeq: msg.beforeSeq,
+            nextBeforeSeq: msg.beforeSeq,
+            hasMore: false,
+            messages: [],
+            error: `Session ${msg.sessionId} not found`,
+          });
+          break;
+        }
+        try {
+          const entries =
+            session.provider === "codex"
+              ? await this.codexCanonicalHistoryEntries(session)
+              : session.historyEntries;
+          if (!entries) {
+            this.send(ws, {
+              type: "history_page",
+              requestId: msg.requestId,
+              sessionId: msg.sessionId,
+              beforeSeq: msg.beforeSeq,
+              nextBeforeSeq: msg.beforeSeq,
+              hasMore: false,
+              messages: [],
+            });
+            break;
+          }
+          const cursorIndex = msg.beforeCursor
+            ? this.historyPageCursorIndex(entries, msg.beforeCursor)
+            : -1;
+          const eligible =
+            cursorIndex >= 0
+              ? entries.slice(0, cursorIndex)
+              : entries.filter((entry) => entry.seq < msg.beforeSeq);
+          const visibleEntries = selectTurnAwareHistoryWindow(eligible);
+          const nextBeforeSeq =
+            visibleEntries[0]?.seq ?? eligible[0]?.seq ?? msg.beforeSeq;
+          const firstVisibleIndex =
+            visibleEntries[0] === undefined
+              ? -1
+              : eligible.indexOf(visibleEntries[0]);
+          this.send(ws, {
+            type: "history_page",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            beforeSeq: msg.beforeSeq,
+            nextBeforeSeq,
+            ...(visibleEntries[0]
+              ? { nextBeforeCursor: this.historyPageCursor(visibleEntries[0]) }
+              : {}),
+            hasMore: firstVisibleIndex > 0,
+            messages: visibleEntries,
+          });
+        } catch (error) {
+          this.send(ws, {
+            type: "history_page",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            beforeSeq: msg.beforeSeq,
+            nextBeforeSeq: msg.beforeSeq,
+            hasMore: false,
+            messages: [],
+            error: `Failed to read history page: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          });
+        }
+        break;
+      }
+
       case "refresh_branch": {
         const session = this.sessionManager.get(msg.sessionId);
         if (session) {
@@ -8884,6 +9053,7 @@ export class BridgeWebSocketServer {
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
+        HISTORY_PAGE_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -8933,6 +9103,7 @@ export class BridgeWebSocketServer {
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
+        HISTORY_PAGE_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],

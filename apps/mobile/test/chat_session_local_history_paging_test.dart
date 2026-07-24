@@ -408,7 +408,7 @@ void main() {
   );
 
   test(
-    'an unbounded canonical refresh keeps only a 200-entry live tail',
+    'an unbounded canonical refresh keeps the latest five root turns',
     () async {
       bridge.sessionSnapshot = const [
         SessionInfo(
@@ -458,9 +458,9 @@ void main() {
       await Future<void>.microtask(() {});
 
       final visibleUsers = cubit.state.entries.whereType<UserChatEntry>();
-      expect(visibleUsers, hasLength(201));
+      expect(visibleUsers, hasLength(6));
       expect(visibleUsers.first.text, 'mirror recent window');
-      expect(visibleUsers.elementAt(1).text, 'canonical-400');
+      expect(visibleUsers.elementAt(1).text, 'canonical-595');
       expect(visibleUsers.last.text, 'canonical-599');
       expect(cubit.localHistoryPaging.value.hasMore, isTrue);
     },

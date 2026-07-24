@@ -255,6 +255,7 @@ class ServerMessageWidget extends StatelessWidget {
       SessionLinkResolutionMessage() => const SizedBox.shrink(),
       final StatusMessage msg => StatusChip(message: msg),
       HistoryMessage() => const SizedBox.shrink(),
+      HistoryPageMessage() => const SizedBox.shrink(),
       HistoryDeltaMessage() => const SizedBox.shrink(),
       HistorySnapshotMessage() => const SizedBox.shrink(),
       final PermissionRequestMessage msg =>

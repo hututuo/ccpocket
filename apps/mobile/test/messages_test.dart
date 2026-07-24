@@ -648,6 +648,7 @@ void main() {
         'history_snapshot',
         'bounded_history_window_v1',
         turnAwareHistoryWindowCapability,
+        historyPageCapability,
         'git_status_result',
         'prompt_history_status',
         'artifact_resolved',
@@ -704,6 +705,23 @@ void main() {
         'type': 'get_history_delta',
         'sessionId': 's1',
         'sinceSeq': 42,
+      });
+    });
+
+    test('ClientMessage.getHistoryPage serializes a bounded cursor', () {
+      final msg = ClientMessage.getHistoryPage(
+        requestId: 'page-1',
+        sessionId: 's1',
+        beforeSeq: 42,
+        beforeCursor: 'user:turn-42',
+      );
+
+      expect(jsonDecode(msg.toJson()), {
+        'type': 'get_history_page',
+        'requestId': 'page-1',
+        'sessionId': 's1',
+        'beforeSeq': 42,
+        'beforeCursor': 'user:turn-42',
       });
     });
 
@@ -814,6 +832,12 @@ void main() {
         'fromSeq': 10,
         'toSeq': 12,
         'reason': 'compacted',
+        'historyWindow': {
+          'capability': turnAwareHistoryWindowCapability,
+          'fromSeq': 10,
+          'hasMore': true,
+          'cursor': 'user:turn-10',
+        },
         'messages': [
           {
             'seq': 12,
@@ -827,7 +851,36 @@ void main() {
       expect(snapshot.fromSeq, 10);
       expect(snapshot.toSeq, 12);
       expect(snapshot.reason, 'compacted');
+      expect(snapshot.historyWindow?.fromSeq, 10);
+      expect(snapshot.historyWindow?.hasMore, isTrue);
+      expect(snapshot.historyWindow?.cursor, 'user:turn-10');
       expect(snapshot.entries.single.message, isA<StatusMessage>());
+    });
+
+    test('ServerMessage parses a correlated history page', () {
+      final msg = ServerMessage.fromJson({
+        'type': 'history_page',
+        'requestId': 'page-1',
+        'sessionId': 's1',
+        'beforeSeq': 10,
+        'nextBeforeSeq': 5,
+        'nextBeforeCursor': 'user:older',
+        'hasMore': true,
+        'messages': [
+          {
+            'seq': 5,
+            'message': {'type': 'user_input', 'text': 'older'},
+          },
+        ],
+      });
+
+      expect(msg, isA<HistoryPageMessage>());
+      final page = msg as HistoryPageMessage;
+      expect(page.requestId, 'page-1');
+      expect(page.nextBeforeSeq, 5);
+      expect(page.nextBeforeCursor, 'user:older');
+      expect(page.hasMore, isTrue);
+      expect(page.entries.single.message, isA<UserInputMessage>());
     });
 
     test('ClientMessage.start serializes codex thread options', () {

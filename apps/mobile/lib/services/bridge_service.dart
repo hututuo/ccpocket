@@ -106,6 +106,18 @@ class LocalSessionHistoryAvailabilityChange {
   final bool available;
 }
 
+class _RemoteHistoryCursor {
+  _RemoteHistoryCursor({
+    required this.beforeSeq,
+    required this.hasMore,
+    this.beforeCursor,
+  });
+
+  int beforeSeq;
+  bool hasMore;
+  String? beforeCursor;
+}
+
 enum SessionLinkResolveSupport { resolved, unsupported, unavailable }
 
 class SessionLinkResolveResult {
@@ -276,6 +288,12 @@ class BridgeService implements BridgeServiceBase {
       Expando<_ExternalSessionHistoryMetadata>('externalSessionHistory');
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
   final Map<String, bool> _pendingHistoryDeltaAllowsFullFallback = {};
+  final Map<String, _RemoteHistoryCursor> _remoteHistoryCursors = {};
+  final Map<String, Completer<HistoryPageMessage>>
+      _pendingRemoteHistoryPages = {};
+  final Map<String, Future<LocalSessionHistoryPage?>>
+      _remoteHistoryPageFlights = {};
+  int _nextRemoteHistoryPageRequestId = 0;
   final Map<String, ClientMessage> _inFlightPendingMessages = {};
   final Map<String, ClientMessage> _inFlightInputMessages = {};
   final Map<String, Timer> _inFlightPendingVisibilityTimers = {};
@@ -1288,6 +1306,7 @@ class BridgeService implements BridgeServiceBase {
         (!_sameBridgeTarget(previousUrl, url) ||
             _logicalConnectionIdentity != nextLogicalIdentity);
     _connectionEpoch++;
+    _failPendingRemoteHistoryPages(clearCursors: false);
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
     final epoch = _connectionEpoch;
@@ -1318,6 +1337,10 @@ class BridgeService implements BridgeServiceBase {
             if (_shouldSuppressBackgroundWireMessage(json)) return;
             var sessionId = json['sessionId'] as String?;
             var msg = ServerMessage.fromJson(json);
+            if (msg is HistoryPageMessage) {
+              _completeRemoteHistoryPage(msg);
+              return;
+            }
             if (msg is ClientDeliveryModeStateMessage) {
               _completeDeliveryModeRequest(msg);
               return;
@@ -1374,8 +1397,13 @@ class BridgeService implements BridgeServiceBase {
             }
             if (sessionId != null) {
               if (msg is HistoryMessage) {
+                _rememberRemoteHistoryWindow(
+                  sessionId,
+                  msg.historyWindow,
+                );
                 msg = HistoryMessage(
                   messages: selectTurnAwareServerMessageWindow(msg.messages),
+                  historyWindow: msg.historyWindow,
                 );
               }
               _cacheAcceptedInFlightInput(msg, sessionId: sessionId);
@@ -1393,6 +1421,7 @@ class BridgeService implements BridgeServiceBase {
               if (msg is HistoryMessage && historyProjectionChanged) {
                 msg = HistoryMessage(
                   messages: _runtimeStore.messages(sessionId),
+                  historyWindow: msg.historyWindow,
                 );
               }
               if (msg is HistoryMessage) {
@@ -1691,6 +1720,7 @@ class BridgeService implements BridgeServiceBase {
         onError: (error, stackTrace) {
           if (epoch != _connectionEpoch) return;
           logger.error('WS stream error', error, stackTrace);
+          _failPendingRemoteHistoryPages(clearCursors: false);
           _clearPendingLocalFeatureRequests();
           _goalRequestRouter.clear();
           _failPendingPermissionChanges(
@@ -1711,6 +1741,7 @@ class BridgeService implements BridgeServiceBase {
         onDone: () {
           if (epoch != _connectionEpoch) return;
           _channel = null;
+          _failPendingRemoteHistoryPages(clearCursors: false);
           _clearPendingLocalFeatureRequests();
           _goalRequestRouter.clear();
           _failPendingPermissionChanges(
@@ -1794,6 +1825,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _clearBridgeScopedState({required bool clearOfflineQueue}) {
+    _failPendingRemoteHistoryPages(clearCursors: true);
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
     _failPendingArtifactResolutions(
@@ -1932,9 +1964,13 @@ class BridgeService implements BridgeServiceBase {
   void _handleHistorySnapshot(String sessionId, HistorySnapshotMessage msg) {
     _pendingHistoryDeltaSinceSeq.remove(sessionId);
     _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
+    _rememberRemoteHistoryWindow(sessionId, msg.historyWindow);
     _runtimeStore.applyServerMessage(sessionId, msg);
 
-    final history = HistoryMessage(messages: _runtimeStore.messages(sessionId));
+    final history = HistoryMessage(
+      messages: _runtimeStore.messages(sessionId),
+      historyWindow: msg.historyWindow,
+    );
     _taggedMessageController.add((history, sessionId));
     _messageController.add(history);
 
@@ -1947,6 +1983,43 @@ class BridgeService implements BridgeServiceBase {
       _messageController.add(statusMessage);
     }
     _emitSessionHistoryReconciliation(sessionId);
+  }
+
+  void _rememberRemoteHistoryWindow(
+    String sessionId,
+    HistoryWindowInfo? window,
+  ) {
+    if (window == null ||
+        window.capability != turnAwareHistoryWindowCapability ||
+        window.fromSeq <= 0) {
+      return;
+    }
+    _remoteHistoryCursors[sessionId] = _RemoteHistoryCursor(
+      beforeSeq: window.fromSeq,
+      hasMore: window.hasMore,
+      beforeCursor: window.cursor,
+    );
+  }
+
+  void _completeRemoteHistoryPage(HistoryPageMessage message) {
+    final completer = _pendingRemoteHistoryPages[message.requestId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(message);
+    }
+  }
+
+  void _failPendingRemoteHistoryPages({required bool clearCursors}) {
+    final completers = _pendingRemoteHistoryPages.values.toList();
+    _pendingRemoteHistoryPages.clear();
+    _remoteHistoryPageFlights.clear();
+    if (clearCursors) _remoteHistoryCursors.clear();
+    for (final completer in completers) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          StateError('Bridge disconnected while loading older history.'),
+        );
+      }
+    }
   }
 
   void _emitSessionHistoryReconciliation(String sessionId) {
@@ -3316,8 +3389,17 @@ class BridgeService implements BridgeServiceBase {
   bool hasOlderLocalSessionHistory(String runtimeSessionId) =>
       _sessionHistoryHasMore?.call(runtimeSessionId) ?? false;
 
+  bool hasRemoteSessionHistoryPaging(String runtimeSessionId) =>
+      _bridgeCapabilities.contains(historyPageCapability) &&
+      _remoteHistoryCursors.containsKey(runtimeSessionId);
+
+  bool hasOlderRemoteSessionHistory(String runtimeSessionId) =>
+      hasRemoteSessionHistoryPaging(runtimeSessionId) &&
+      (_remoteHistoryCursors[runtimeSessionId]?.hasMore ?? false);
+
   void invalidateLocalSessionHistoryPaging(String runtimeSessionId) {
     _sessionHistoryPageInvalidator?.call(runtimeSessionId);
+    _remoteHistoryPageFlights.remove(runtimeSessionId);
   }
 
   /// Notifies an already-open chat that its optional local history index or
@@ -3343,11 +3425,101 @@ class BridgeService implements BridgeServiceBase {
     int limit = 200,
   }) {
     final loader = _sessionHistoryPageLoader;
-    if (loader == null) return Future.value();
-    return loader(
-      runtimeSessionId: runtimeSessionId,
-      limit: limit.clamp(1, 200),
+    final localAvailable =
+        loader != null &&
+        (_sessionHistoryAvailable?.call(runtimeSessionId) ?? true);
+    if (localAvailable) {
+      return loader(
+        runtimeSessionId: runtimeSessionId,
+        limit: limit.clamp(1, 200),
+      );
+    }
+    return _loadOlderRemoteSessionHistory(runtimeSessionId);
+  }
+
+  Future<LocalSessionHistoryPage?> _loadOlderRemoteSessionHistory(
+    String runtimeSessionId, {
+    Duration timeout = const Duration(seconds: 12),
+  }) {
+    final existing = _remoteHistoryPageFlights[runtimeSessionId];
+    if (existing != null) return existing;
+    final cursor = _remoteHistoryCursors[runtimeSessionId];
+    if (cursor == null ||
+        !cursor.hasMore ||
+        !_bridgeCapabilities.contains(historyPageCapability) ||
+        !isTransportHealthy) {
+      return Future.value(
+        cursor == null
+            ? null
+            : const LocalSessionHistoryPage(messages: [], hasMore: false),
+      );
+    }
+    final flight = _requestRemoteHistoryPage(
+      runtimeSessionId,
+      cursor,
+      timeout: timeout,
     );
+    _remoteHistoryPageFlights[runtimeSessionId] = flight;
+    return flight.whenComplete(() {
+      if (identical(_remoteHistoryPageFlights[runtimeSessionId], flight)) {
+        _remoteHistoryPageFlights.remove(runtimeSessionId);
+      }
+    });
+  }
+
+  Future<LocalSessionHistoryPage?> _requestRemoteHistoryPage(
+    String runtimeSessionId,
+    _RemoteHistoryCursor cursor, {
+    required Duration timeout,
+  }) async {
+    final requestId =
+        'history-page-${++_nextRemoteHistoryPageRequestId}-${cursor.beforeSeq}';
+    final completer = Completer<HistoryPageMessage>();
+    _pendingRemoteHistoryPages[requestId] = completer;
+    try {
+      sendEphemeralRpc(
+        ClientMessage.getHistoryPage(
+          requestId: requestId,
+          sessionId: runtimeSessionId,
+          beforeSeq: cursor.beforeSeq,
+          beforeCursor: cursor.beforeCursor,
+        ),
+      );
+      final response = await completer.future.timeout(timeout);
+      if (response.error != null) {
+        logger.warning(response.error!);
+        return null;
+      }
+      if (!identical(_remoteHistoryCursors[runtimeSessionId], cursor)) {
+        return null;
+      }
+      cursor
+        ..beforeSeq = response.nextBeforeSeq
+        ..beforeCursor = response.nextBeforeCursor
+        ..hasMore = response.hasMore;
+      return LocalSessionHistoryPage(
+        messages: List.unmodifiable(
+          response.entries.map((entry) => entry.message),
+        ),
+        hasMore: response.hasMore,
+      );
+    } on TimeoutException catch (error, stackTrace) {
+      logger.warning(
+        '[history:$runtimeSessionId] Older history page timed out',
+        error,
+        stackTrace,
+      );
+      return null;
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[history:$runtimeSessionId] Older history page failed',
+        error,
+        stackTrace,
+      );
+      return null;
+    } finally {
+      _pendingRemoteHistoryPages.remove(requestId);
+    }
   }
 
   Future<LocalSessionHistoryPage?> tryLoadLocalSessionHistoryWindow({
@@ -4208,6 +4380,7 @@ class BridgeService implements BridgeServiceBase {
 
   void dispose() {
     _intentionalDisconnect = true;
+    _failPendingRemoteHistoryPages(clearCursors: true);
     _completePendingSessionLinkResolutionsAsUnsupported();
     _reconnectTimer?.cancel();
     _cancelPendingPermissionChanges();

@@ -773,6 +773,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           "codex_resume_preserves_settings_v1",
           "persisted_side_chat_v1",
           "turn_aware_history_window_v1",
+          "history_page_v1",
         ]),
       }),
     );
@@ -5193,6 +5194,103 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       type: "user_input",
       text: "history item 204",
     });
+    expect(turnAwareHistory.historyWindow).toMatchObject({
+      capability: "turn_aware_history_window_v1",
+      hasMore: true,
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_page",
+        requestId: "history-page-1",
+        sessionId,
+        beforeSeq: turnAwareHistory.historyWindow.fromSeq,
+        beforeCursor: turnAwareHistory.historyWindow.cursor,
+      },
+      ws,
+    );
+    const olderPage = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history_page");
+    expect(olderPage).toMatchObject({
+      requestId: "history-page-1",
+      sessionId,
+      hasMore: true,
+    });
+    expect(olderPage.nextBeforeCursor).toMatch(/^v1:\d+:[a-f0-9]{24}$/);
+    expect(olderPage.nextBeforeCursor.length).toBeLessThan(64);
+    expect(olderPage.messages).toHaveLength(5);
+    expect(olderPage.messages[0].message).toMatchObject({
+      type: "user_input",
+      text: "history item 195",
+    });
+    expect(olderPage.messages.at(-1).message).toMatchObject({
+      type: "user_input",
+      text: "history item 199",
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_page",
+        requestId: "history-page-2",
+        sessionId,
+        beforeSeq: olderPage.nextBeforeSeq,
+        beforeCursor: olderPage.nextBeforeCursor,
+      },
+      ws,
+    );
+    const nextOlderPage = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history_page");
+    expect(nextOlderPage.messages).toHaveLength(5);
+    expect(nextOlderPage.messages[0].message).toMatchObject({
+      type: "user_input",
+      text: "history item 190",
+    });
+    expect(nextOlderPage.messages.at(-1).message).toMatchObject({
+      type: "user_input",
+      text: "history item 194",
+    });
+
+    bridge.close();
+  });
+
+  it("keeps history page cursors bounded across canonical sequence drift", () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const message = {
+      type: "assistant",
+      message: {
+        id: "",
+        role: "assistant",
+        model: "test",
+        content: [{ type: "text", text: "x".repeat(4096) }],
+      },
+    } as any;
+    const cursor = (bridge as any).historyPageCursor({
+      seq: 400,
+      message,
+    });
+
+    expect(cursor).toMatch(/^v1:400:[a-f0-9]{24}$/);
+    expect(cursor.length).toBeLessThan(64);
+    expect(
+      (bridge as any).historyPageCursorIndex(
+        [
+          {
+            seq: 400,
+            message: {
+              type: "user_input",
+              text: "other",
+              userMessageUuid: "other",
+            },
+          },
+          { seq: 401, message },
+        ],
+        cursor,
+      ),
+    ).toBe(1);
 
     bridge.close();
   });

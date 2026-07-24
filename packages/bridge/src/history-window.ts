@@ -2,6 +2,7 @@ import type { ServerMessage } from "./parser.js";
 
 export const TURN_AWARE_HISTORY_WINDOW_CAPABILITY =
   "turn_aware_history_window_v1";
+export const HISTORY_PAGE_CAPABILITY = "history_page_v1";
 export const TURN_AWARE_HISTORY_ROOT_TURNS = 5;
 export const TURN_AWARE_HISTORY_TOOL_CALLS = 200;
 export const TURN_AWARE_HISTORY_ENVELOPE_ENTRIES = 300;

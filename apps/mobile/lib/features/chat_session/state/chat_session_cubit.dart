@@ -49,8 +49,6 @@ class LocalHistoryPagingState {
 /// processing to [ChatMessageHandler]. The resulting [ChatStateUpdate] is
 /// applied to the immutable [ChatSessionState].
 class ChatSessionCubit extends Cubit<ChatSessionState> {
-  static const _maxCanonicalTailEntries = turnAwareHistoryMaxRetainedEntries;
-
   static const codexPermissionApplyStrategyCapability =
       'codex_permission_apply_strategy_v1';
   static const codexDesktopContinuityCapability =
@@ -1217,13 +1215,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   LocalHistoryPagingState _currentLocalHistoryPagingState() {
-    final available =
+    final localAvailable =
         _bridge.hasSessionHistoryPaging &&
         _bridge.hasLocalSessionHistory(sessionId);
+    final remoteAvailable = _bridge.hasRemoteSessionHistoryPaging(sessionId);
+    final available = localAvailable || remoteAvailable;
     return LocalHistoryPagingState(
       enabled: available,
-      hasMore:
-          available && _bridge.hasOlderLocalSessionHistory(sessionId),
+      hasMore: localAvailable
+          ? _bridge.hasOlderLocalSessionHistory(sessionId)
+          : remoteAvailable &&
+                _bridge.hasOlderRemoteSessionHistory(sessionId),
     );
   }
 
@@ -1496,6 +1498,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     if (msg is HistoryMessage) {
       isLocalMirrorSnapshot = _bridge.isExternalSessionHistory(msg);
+      if (!isLocalMirrorSnapshot && msg.historyWindow != null) {
+        localHistoryPaging.value = _currentLocalHistoryPagingState();
+      }
       if (localHistoryPaging.value.enabled) {
         if (isLocalMirrorSnapshot) {
           _localHistoryPagingGeneration += 1;
@@ -2405,7 +2410,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Keeps the downloaded mirror as a progressively pageable prefix while a
   /// canonical runtime snapshot refreshes the overlapping/live tail.
   ///
-  /// A canonical history can be wider than the 200-entry render window. When
+  /// A canonical history can be wider than the turn-aware render window. When
   /// it overlaps the local prefix, entries before the first stable overlap are
   /// older than the rendered mirror window and must remain available only via
   /// paging; appending them at the live tail would reorder the conversation.
@@ -2413,12 +2418,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> mirrorEntries,
     required List<ChatEntry> canonicalEntries,
   }) {
+    final projectedCanonicalEntries = [
+      for (final index in selectTurnAwareChatEntryWindowIndexes(
+        canonicalEntries,
+      ))
+        canonicalEntries[index],
+    ];
     for (
       var canonicalIndex = 0;
-      canonicalIndex < canonicalEntries.length;
+      canonicalIndex < projectedCanonicalEntries.length;
       canonicalIndex++
     ) {
-      final canonical = canonicalEntries[canonicalIndex];
+      final canonical = projectedCanonicalEntries[canonicalIndex];
       var mirrorIndex = _indexOfEquivalentEntry(mirrorEntries, canonical);
       if (mirrorIndex == -1 && _isCanonicalAssistantEntry(canonical)) {
         mirrorIndex = _indexOfProvisionalAssistantAlias(
@@ -2427,20 +2438,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         );
       }
       if (mirrorIndex != -1) {
-        final boundedStart = canonicalEntries.length - _maxCanonicalTailEntries;
-        return canonicalEntries.sublist(
-          canonicalIndex > boundedStart ? canonicalIndex : boundedStart,
-        );
+        return projectedCanonicalEntries.sublist(canonicalIndex);
       }
     }
     // No shared stable envelope normally means the canonical snapshot begins
     // after the last downloaded envelope (for example a newly started turn).
     // Provider-thread identity is already fenced by the Bridge binding, so
     // append it as a live tail instead of discarding the offline copy.
-    final boundedStart = canonicalEntries.length > _maxCanonicalTailEntries
-        ? canonicalEntries.length - _maxCanonicalTailEntries
-        : 0;
-    return canonicalEntries.sublist(boundedStart);
+    return projectedCanonicalEntries;
   }
 
   List<ChatEntry> _mergeCanonicalHistoryIntoPagedEntries({

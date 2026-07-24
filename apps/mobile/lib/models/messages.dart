@@ -1071,6 +1071,22 @@ sealed class ServerMessage {
         messages: (json['messages'] as List)
             .map((m) => ServerMessage.fromJson(m as Map<String, dynamic>))
             .toList(),
+        historyWindow: switch (json['historyWindow']) {
+          final Map<String, dynamic> value => HistoryWindowInfo.fromJson(value),
+          _ => null,
+        },
+      ),
+      'history_page' => HistoryPageMessage(
+        requestId: json['requestId'] as String,
+        sessionId: json['sessionId'] as String,
+        beforeSeq: json['beforeSeq'] as int,
+        nextBeforeSeq: json['nextBeforeSeq'] as int,
+        nextBeforeCursor: json['nextBeforeCursor'] as String?,
+        hasMore: json['hasMore'] as bool? ?? false,
+        error: json['error'] as String?,
+        entries: (json['messages'] as List)
+            .map((m) => HistoryEntry.fromJson(m as Map<String, dynamic>))
+            .toList(),
       ),
       'history_delta' => HistoryDeltaMessage(
         sessionId: json['sessionId'] as String?,
@@ -1094,6 +1110,10 @@ sealed class ServerMessage {
             ? ProcessStatus.fromString(json['status'] as String)
             : null,
         reason: json['reason'] as String? ?? 'compacted',
+        historyWindow: switch (json['historyWindow']) {
+          final Map<String, dynamic> value => HistoryWindowInfo.fromJson(value),
+          _ => null,
+        },
       ),
       'conversation_queue' => ConversationQueueMessage(
         sessionId: json['sessionId'] as String?,
@@ -2125,7 +2145,30 @@ class StatusMessage implements ServerMessage {
 
 class HistoryMessage implements ServerMessage {
   final List<ServerMessage> messages;
-  const HistoryMessage({required this.messages});
+  final HistoryWindowInfo? historyWindow;
+  const HistoryMessage({required this.messages, this.historyWindow});
+}
+
+class HistoryWindowInfo {
+  final String capability;
+  final int fromSeq;
+  final bool hasMore;
+  final String? cursor;
+
+  const HistoryWindowInfo({
+    required this.capability,
+    required this.fromSeq,
+    required this.hasMore,
+    this.cursor,
+  });
+
+  factory HistoryWindowInfo.fromJson(Map<String, dynamic> json) =>
+      HistoryWindowInfo(
+        capability: json['capability'] as String? ?? '',
+        fromSeq: json['fromSeq'] as int? ?? 0,
+        hasMore: json['hasMore'] as bool? ?? false,
+        cursor: json['cursor'] as String?,
+      );
 }
 
 class HistoryEntry {
@@ -2157,6 +2200,28 @@ class HistoryDeltaMessage implements ServerMessage {
   });
 }
 
+class HistoryPageMessage implements ServerMessage {
+  final String requestId;
+  final String sessionId;
+  final int beforeSeq;
+  final int nextBeforeSeq;
+  final String? nextBeforeCursor;
+  final bool hasMore;
+  final List<HistoryEntry> entries;
+  final String? error;
+
+  const HistoryPageMessage({
+    required this.requestId,
+    required this.sessionId,
+    required this.beforeSeq,
+    required this.nextBeforeSeq,
+    this.nextBeforeCursor,
+    required this.hasMore,
+    required this.entries,
+    this.error,
+  });
+}
+
 class HistorySnapshotMessage implements ServerMessage {
   final String? sessionId;
   final int fromSeq;
@@ -2164,6 +2229,7 @@ class HistorySnapshotMessage implements ServerMessage {
   final List<HistoryEntry> entries;
   final ProcessStatus? status;
   final String reason;
+  final HistoryWindowInfo? historyWindow;
 
   const HistorySnapshotMessage({
     this.sessionId,
@@ -2172,6 +2238,7 @@ class HistorySnapshotMessage implements ServerMessage {
     required this.entries,
     this.status,
     required this.reason,
+    this.historyWindow,
   });
 }
 
@@ -4471,6 +4538,7 @@ class SessionInfo {
 enum ClientMessageDelivery { queued, ephemeral }
 
 const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
+const historyPageCapability = 'history_page_v1';
 
 class ClientMessage {
   final Map<String, dynamic> _json;
@@ -4503,6 +4571,7 @@ class ClientMessage {
           'history_snapshot',
           'bounded_history_window_v1',
           turnAwareHistoryWindowCapability,
+          historyPageCapability,
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',
@@ -4892,6 +4961,19 @@ class ClientMessage {
     'type': 'get_history_delta',
     'sessionId': sessionId,
     'sinceSeq': sinceSeq,
+  });
+
+  factory ClientMessage.getHistoryPage({
+    required String requestId,
+    required String sessionId,
+    required int beforeSeq,
+    String? beforeCursor,
+  }) => ClientMessage._({
+    'type': 'get_history_page',
+    'requestId': requestId,
+    'sessionId': sessionId,
+    'beforeSeq': beforeSeq,
+    'beforeCursor': ?beforeCursor,
   });
 
   factory ClientMessage.resolveSessionLink({

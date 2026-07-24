@@ -356,6 +356,107 @@ void main() {
       },
     );
 
+    test(
+      'remote history paging is correlated, single-flight, and bounded',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        var pageRequestCount = 0;
+
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+          socket.listen((data) {
+            final request =
+                jsonDecode(data as String) as Map<String, dynamic>;
+            if (request['type'] != 'get_history_page') return;
+            pageRequestCount++;
+            Future<void>.delayed(const Duration(milliseconds: 20), () {
+              socket.add(
+                jsonEncode({
+                  'type': 'history_page',
+                  'requestId': request['requestId'],
+                  'sessionId': 's1',
+                  'beforeSeq': 101,
+                  'nextBeforeSeq': 96,
+                  'hasMore': false,
+                  'messages': [
+                    {
+                      'seq': 96,
+                      'message': {
+                        'type': 'user_input',
+                        'text': 'older question',
+                      },
+                    },
+                  ],
+                }),
+              );
+            });
+          });
+        });
+
+        final bridge = BridgeService();
+        final historyReceived = bridge.messages
+            .where((message) => message is HistoryMessage)
+            .cast<HistoryMessage>()
+            .first;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': const [],
+            'bridgeCapabilities': const [
+              historyPageCapability,
+              turnAwareHistoryWindowCapability,
+            ],
+          }),
+        );
+        socket.add(
+          jsonEncode({
+            'type': 'history',
+            'sessionId': 's1',
+            'messages': [
+              {'type': 'user_input', 'text': 'latest question'},
+            ],
+            'historyWindow': {
+              'capability': turnAwareHistoryWindowCapability,
+              'fromSeq': 101,
+              'hasMore': true,
+            },
+          }),
+        );
+        await historyReceived.timeout(const Duration(seconds: 2));
+        expect(bridge.hasRemoteSessionHistoryPaging('s1'), isTrue);
+        expect(bridge.hasOlderRemoteSessionHistory('s1'), isTrue);
+
+        final first = bridge.tryLoadOlderLocalSessionHistory(
+          runtimeSessionId: 's1',
+        );
+        final second = bridge.tryLoadOlderLocalSessionHistory(
+          runtimeSessionId: 's1',
+        );
+        final pages = await Future.wait([first, second]);
+
+        expect(pageRequestCount, 1);
+        expect(pages[0]?.messages, hasLength(1));
+        expect(
+          pages[0]?.messages.single,
+          isA<UserInputMessage>().having(
+            (message) => message.text,
+            'text',
+            'older question',
+          ),
+        );
+        expect(pages[0]?.hasMore, isFalse);
+        expect(bridge.hasOlderRemoteSessionHistory('s1'), isFalse);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
     test('requestSessionHistory uses last complete cached sequence', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();
