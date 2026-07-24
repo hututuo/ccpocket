@@ -772,6 +772,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           "codex_desktop_continuity_v1",
           "codex_resume_preserves_settings_v1",
           "persisted_side_chat_v1",
+          "turn_aware_history_window_v1",
         ]),
       }),
     );
@@ -5164,6 +5165,31 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       text: "history item 5",
     });
     expect(boundedHistory.messages.at(-1)).toMatchObject({
+      type: "user_input",
+      text: "history item 204",
+    });
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["turn_aware_history_window_v1"],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+    const turnAwareHistory = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history");
+    expect(turnAwareHistory.messages).toHaveLength(5);
+    expect(turnAwareHistory.messages[0]).toMatchObject({
+      type: "user_input",
+      text: "history item 200",
+    });
+    expect(turnAwareHistory.messages.at(-1)).toMatchObject({
       type: "user_input",
       text: "history item 204",
     });

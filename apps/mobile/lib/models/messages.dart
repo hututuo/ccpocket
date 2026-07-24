@@ -4470,6 +4470,8 @@ class SessionInfo {
 
 enum ClientMessageDelivery { queued, ephemeral }
 
+const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
+
 class ClientMessage {
   final Map<String, dynamic> _json;
   final ClientMessageDelivery delivery;
@@ -4500,6 +4502,7 @@ class ClientMessage {
           'history_delta',
           'history_snapshot',
           'bounded_history_window_v1',
+          turnAwareHistoryWindowCapability,
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',

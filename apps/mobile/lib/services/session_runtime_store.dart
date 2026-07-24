@@ -1,4 +1,5 @@
 import '../models/messages.dart';
+import '../utils/history_window_policy.dart';
 
 class ExplorerHistorySnapshot {
   const ExplorerHistorySnapshot({
@@ -55,7 +56,9 @@ class SessionRuntimeState {
 }
 
 class SessionRuntimeStore {
-  SessionRuntimeStore({this.maxMessagesPerSession = 200});
+  SessionRuntimeStore({
+    this.maxMessagesPerSession = turnAwareHistoryMaxRetainedEntries,
+  });
 
   final int maxMessagesPerSession;
   final Map<String, SessionRuntimeState> _sessions = {};
@@ -84,7 +87,7 @@ class SessionRuntimeStore {
   int cachedHistorySeq(String sessionId) =>
       snapshot(sessionId).cachedHistorySeq;
 
-  void applyServerMessage(
+  bool applyServerMessage(
     String sessionId,
     ServerMessage message, {
     int? historySeq,
@@ -92,7 +95,7 @@ class SessionRuntimeStore {
     final state = _stateFor(sessionId);
     if (_shouldIgnore(message)) {
       _recordLatestSeq(state, historySeq);
-      return;
+      return false;
     }
     state.contentEpoch = ++_contentEpochCounter;
     if (message is HistoryMessage) {
@@ -104,8 +107,7 @@ class SessionRuntimeStore {
         ..addAll(List<int?>.filled(state._messages.length, null));
       state.historySeq = 0;
       state.cachedHistorySeq = 0;
-      _trim(state);
-      return;
+      return _trim(state);
     }
     if (message is HistorySnapshotMessage) {
       state._messages
@@ -124,8 +126,7 @@ class SessionRuntimeStore {
         );
       state.historySeq = message.toSeq;
       state.cachedHistorySeq = message.toSeq;
-      _trim(state);
-      return;
+      return _trim(state);
     }
     if (message is HistoryDeltaMessage) {
       final previousCachedSeq = state.cachedHistorySeq;
@@ -140,8 +141,7 @@ class SessionRuntimeStore {
         state.cachedHistorySeq = message.toSeq;
         _advanceCachedHistorySeq(state);
       }
-      _trim(state);
-      return;
+      return _trim(state);
     }
 
     final messageSeq = _representsHistoryEntry(message) ? historySeq : null;
@@ -153,7 +153,7 @@ class SessionRuntimeStore {
       }
       _advanceCachedHistorySeq(state);
     }
-    _trim(state);
+    return _trim(state);
   }
 
   ExplorerHistorySnapshot getExplorerHistory(String sessionId) =>
@@ -319,16 +319,30 @@ class SessionRuntimeStore {
     return true;
   }
 
-  void _trim(SessionRuntimeState state) {
+  bool _trim(SessionRuntimeState state) {
     if (maxMessagesPerSession <= 0) {
+      final changed = state._messages.isNotEmpty;
       _clearMessages(state);
-      return;
+      return changed;
     }
-    final overflow = state._messages.length - maxMessagesPerSession;
-    if (overflow > 0) {
-      state._messages.removeRange(0, overflow);
-      state._messageSeqs.removeRange(0, overflow);
-    }
+    final selectedIndexes = selectTurnAwareServerMessageWindowIndexes(
+      state._messages,
+      maxRetainedEntries: maxMessagesPerSession,
+    );
+    if (selectedIndexes.length == state._messages.length) return false;
+    final selectedMessages = [
+      for (final index in selectedIndexes) state._messages[index],
+    ];
+    final selectedSeqs = [
+      for (final index in selectedIndexes) state._messageSeqs[index],
+    ];
+    state._messages
+      ..clear()
+      ..addAll(selectedMessages);
+    state._messageSeqs
+      ..clear()
+      ..addAll(selectedSeqs);
+    return true;
   }
 
   void _removeIfEmpty(SessionRuntimeState state) {

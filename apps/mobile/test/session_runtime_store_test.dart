@@ -333,5 +333,42 @@ void main() {
       expect(messages.first.status, ProcessStatus.running);
       expect(messages.last.status, ProcessStatus.idle);
     });
+
+    test('keeps the latest five root turns after incremental updates', () {
+      final store = SessionRuntimeStore();
+
+      for (var index = 0; index < 6; index++) {
+        store.applyServerMessage(
+          's1',
+          UserInputMessage(text: 'question $index'),
+          historySeq: index * 2 + 1,
+        );
+        store.applyServerMessage(
+          's1',
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-$index',
+              role: 'assistant',
+              model: 'codex',
+              content: [TextContent(text: 'answer $index')],
+            ),
+          ),
+          historySeq: index * 2 + 2,
+        );
+      }
+
+      final messages = store.messages('s1');
+      expect(messages, hasLength(10));
+      expect(
+        messages.first,
+        isA<UserInputMessage>().having(
+          (message) => message.text,
+          'text',
+          'question 1',
+        ),
+      );
+      expect(store.latestHistorySeq('s1'), 12);
+      expect(store.cachedHistorySeq('s1'), 12);
+    });
   });
 }

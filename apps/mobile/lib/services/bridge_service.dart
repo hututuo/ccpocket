@@ -13,6 +13,7 @@ import '../core/logger.dart';
 import '../models/messages.dart';
 import '../models/offline_pending_action.dart';
 import '../utils/codex_plan_update.dart';
+import '../utils/history_window_policy.dart';
 import '../utils/network_endpoint.dart';
 import 'bridge_service_base.dart';
 import 'codex_goal_request_router.dart';
@@ -1372,8 +1373,13 @@ class BridgeService implements BridgeServiceBase {
               return;
             }
             if (sessionId != null) {
+              if (msg is HistoryMessage) {
+                msg = HistoryMessage(
+                  messages: selectTurnAwareServerMessageWindow(msg.messages),
+                );
+              }
               _cacheAcceptedInFlightInput(msg, sessionId: sessionId);
-              _runtimeStore.applyServerMessage(
+              final historyProjectionChanged = _runtimeStore.applyServerMessage(
                 sessionId,
                 msg,
                 historySeq:
@@ -1384,8 +1390,7 @@ class BridgeService implements BridgeServiceBase {
               // canonical transcript. Keep durable/full history in the
               // conversation mirror, but publish only the runtime store's
               // bounded tail into the render pipeline.
-              if (msg is HistoryMessage &&
-                  msg.messages.length > _runtimeStore.maxMessagesPerSession) {
+              if (msg is HistoryMessage && historyProjectionChanged) {
                 msg = HistoryMessage(
                   messages: _runtimeStore.messages(sessionId),
                 );
@@ -1894,9 +1899,12 @@ class BridgeService implements BridgeServiceBase {
                 msg.fromSeq <= previousLatestSeq));
     _pendingHistoryDeltaSinceSeq.remove(sessionId);
     _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
-    _runtimeStore.applyServerMessage(sessionId, msg);
+    final historyProjectionChanged = _runtimeStore.applyServerMessage(
+      sessionId,
+      msg,
+    );
 
-    if (shouldReplace) {
+    if (shouldReplace || historyProjectionChanged) {
       final history = HistoryMessage(
         messages: _runtimeStore.messages(sessionId),
       );

@@ -12,6 +12,7 @@ import '../../../models/messages.dart';
 import '../../../services/bridge_service.dart';
 import '../../../services/chat_message_handler.dart';
 import '../../../services/desktop_continuity_backlog.dart';
+import '../../../utils/history_window_policy.dart';
 import 'chat_session_state.dart';
 import 'streaming_state_cubit.dart';
 
@@ -48,7 +49,7 @@ class LocalHistoryPagingState {
 /// processing to [ChatMessageHandler]. The resulting [ChatStateUpdate] is
 /// applied to the immutable [ChatSessionState].
 class ChatSessionCubit extends Cubit<ChatSessionState> {
-  static const _maxCanonicalTailEntries = 200;
+  static const _maxCanonicalTailEntries = turnAwareHistoryMaxRetainedEntries;
 
   static const codexPermissionApplyStrategyCapability =
       'codex_permission_apply_strategy_v1';

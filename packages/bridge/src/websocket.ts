@@ -169,6 +169,10 @@ import {
   CodexGoalController,
   isUnsupportedCodexGoalRpc,
 } from "./codex-goal-controller.js";
+import {
+  selectTurnAwareHistoryWindow,
+  TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
+} from "./history-window.js";
 
 type SystemServerMessage = Extract<ServerMessage, { type: "system" }>;
 type InputClientMessage = Extract<ClientMessage, { type: "input" }>;
@@ -2694,12 +2698,17 @@ export class BridgeWebSocketServer {
     }
   }
 
-  private historyWindowForClient<T>(ws: WebSocket, values: T[]): T[] {
+  private historyWindowForClient(
+    ws: WebSocket,
+    values: HistoryEntry[],
+  ): HistoryEntry[] {
+    const capabilities = this.clientSupportedServerMessages.get(ws);
+    if (capabilities?.has(TURN_AWARE_HISTORY_WINDOW_CAPABILITY)) {
+      return selectTurnAwareHistoryWindow(values);
+    }
     if (
       values.length <= BOUNDED_HISTORY_WINDOW_ENTRIES ||
-      !this.clientSupportedServerMessages
-        .get(ws)
-        ?.has(BOUNDED_HISTORY_WINDOW_CAPABILITY)
+      !capabilities?.has(BOUNDED_HISTORY_WINDOW_CAPABILITY)
     ) {
       return values;
     }
@@ -8874,6 +8883,7 @@ export class BridgeWebSocketServer {
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
+        TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -8922,6 +8932,7 @@ export class BridgeWebSocketServer {
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
+        TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
