@@ -199,8 +199,9 @@ Mobile rebuildable store
   被 `waiting_approval` 状态快照额外门控；Mobile 又会先恢复 runtime pending，
   随后被缓存或 canonical history 的 idle/stale 尾部清空。Plan 拒绝路径还会
   错误退出 Plan，并把其他待处理问题一并隐藏。
-- Guardian risk 当前作为普通 transcript/system row 进入渲染，因此会跑到过程
-  外层并累积；目标是按 tool-use identity 归属，而不是用 CSS/Widget 绝对定位。
+- 已确认 Guardian risk 虽然 Bridge 已携带 `targetItemId`，Mobile 仍把它当普通
+  transcript row，process layout 完全没有消费该关联，所以会跑到过程外层并
+  永久累积；修复应按 tool-use identity 归属，而不是用 CSS/Widget 绝对定位。
 - 原生通知 category/actions 目前不存在；“长按通知 Allow/Reject”不能靠普通
   Flutter local notification payload 自动获得。
 
@@ -519,10 +520,15 @@ Mobile rebuildable store
 
 ### 8.3 Guardian 风险提示
 
-- 风险附着在对应 tool/approval 下方，属于中间过程；
-- 外层只显示当前最新一条，3 秒后仅视觉隐藏，不删除审计记录；
+- Bridge 的结构化 `targetItemId` 关联到发起工具；迟到 review 仍回到原工具所在
+  segment，不能被错误归到后来出现的工具；
+- 风险附着在对应 tool/approval 下方，属于中间过程；当前进度只显示最新工具的
+  最新一条；
+- 当前外层提示使用单个按事件创建的 Timer，3 秒后仅视觉隐藏，不删除 transcript
+  审计记录，也不引入常驻 ticker；
 - 不在会话最底部累积多个永久卡片；
-- 结构化 risk/authorization 信息继续可展开查看。
+- 当前详情展开时排除已内联的 risk row，避免同一条显示两遍；历史 segment 内仍
+  可展开查看结构化 risk/authorization 信息。
 
 ### 8.4 Goal 新建错误
 

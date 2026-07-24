@@ -571,6 +571,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     required bool transcriptTailComplete,
     required Map<int, List<GeneratedImagePreviewItem>> imageItemsByAnchor,
     required Set<int> imageGroupMemberIndices,
+    Set<int> excludedProcessEntryIndices = const {},
   }) {
     final details = <Widget>[];
     if (segment.assistantEntryIndex case final assistantIndex?
@@ -588,6 +589,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     }
     final processIndices = segment.processEntryIndices.toList()..sort();
     for (final processIndex in processIndices) {
+      if (excludedProcessEntryIndices.contains(processIndex)) continue;
       details.add(
         KeyedSubtree(
           key: ValueKey('chat_process_entry_${segment.key}_$processIndex'),
@@ -718,6 +720,8 @@ class _ChatMessageListState extends State<ChatMessageList> {
             transcriptTailComplete: transcriptTailComplete,
             imageItemsByAnchor: imageItemsByAnchor,
             imageGroupMemberIndices: imageGroupMemberIndices,
+            excludedProcessEntryIndices:
+                segment.attachedGuardianEntryIndices,
           ),
         ),
       );

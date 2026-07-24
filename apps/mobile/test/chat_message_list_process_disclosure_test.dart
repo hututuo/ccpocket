@@ -11,6 +11,7 @@ import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/bubbles/assistant_bubble.dart'
     show ToolUseTile;
+import 'package:ccpocket/widgets/bubbles/guardian_approval_notice.dart';
 import 'package:ccpocket/widgets/bubbles/streaming_bubble.dart';
 import 'package:ccpocket/widgets/bubbles/todo_write_widget.dart';
 import 'package:ccpocket/widgets/bubbles/tool_result_bubble.dart';
@@ -996,6 +997,74 @@ void main() {
   );
 
   testWidgets(
+    'current Guardian review appears once below its tool and hides after three seconds',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-guardian',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-guardian',
+        ),
+      );
+
+      bridge.emit(
+        HistoryMessage(messages: _guardianActiveHistory()),
+        'session-guardian',
+      );
+      await tester.pump();
+
+      final toolLine = find.byType(ChatCurrentToolActivityLine);
+      final toolRow = find.byKey(
+        const ValueKey('chat_current_tool_guardian-tool'),
+      );
+      final guardian = find.byType(GuardianApprovalNotice);
+      expect(toolLine, findsOneWidget);
+      expect(toolRow, findsOneWidget);
+      expect(guardian, findsOneWidget);
+      expect(find.text('Auto Review approved'), findsOneWidget);
+      expect(
+        tester.getTopLeft(guardian).dy,
+        greaterThanOrEqualTo(tester.getBottomLeft(toolRow).dy),
+      );
+
+      final currentHeader = find.byKey(
+        const ValueKey('chat_current_progress_entry:client:turn-guardian'),
+      );
+      await tester.tap(currentHeader);
+      await tester.pump();
+      expect(find.byType(GuardianApprovalNotice), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 2900));
+      expect(find.byType(GuardianApprovalNotice), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.byType(GuardianApprovalNotice), findsNothing);
+      expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'live stream stays outside the historical fold and reveals only its live details',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 900));
@@ -1410,6 +1479,37 @@ List<ServerMessage> _activeHistory() => [
       ],
       model: 'codex',
     ),
+  ),
+  const StatusMessage(status: ProcessStatus.running),
+];
+
+List<ServerMessage> _guardianActiveHistory() => [
+  const UserInputMessage(text: 'run it', clientMessageId: 'turn-guardian'),
+  AssistantServerMessage(
+    message: const AssistantMessage(
+      id: 'guardian-current',
+      role: 'assistant',
+      content: [
+        TextContent(text: 'The command has been reviewed.'),
+        ToolUseContent(
+          id: 'guardian-tool',
+          name: 'Bash',
+          input: {'command': 'git status --short'},
+        ),
+      ],
+      model: 'codex',
+    ),
+  ),
+  const ToolResultMessage(
+    toolUseId: 'guardian-tool',
+    toolName: 'Bash',
+    content: 'clean',
+  ),
+  const GuardianApprovalMessage(
+    risk: GuardianApprovalRisk.medium,
+    reason: 'The command inspects repository state.',
+    reviewId: 'guardian-review-1',
+    targetItemId: 'guardian-tool',
   ),
   const StatusMessage(status: ProcessStatus.running),
 ];

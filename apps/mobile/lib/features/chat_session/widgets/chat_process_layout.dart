@@ -14,6 +14,8 @@ class ChatProcessToolActivity {
     required this.entryIndex,
     this.output,
     this.completed = false,
+    this.guardianReview,
+    this.guardianEntryIndex,
   });
 
   final String toolUseId;
@@ -22,6 +24,8 @@ class ChatProcessToolActivity {
   final int entryIndex;
   final String? output;
   final bool completed;
+  final GuardianApprovalMessage? guardianReview;
+  final int? guardianEntryIndex;
 
   ChatProcessToolActivity completedWith({
     required String output,
@@ -35,6 +39,24 @@ class ChatProcessToolActivity {
       entryIndex: entryIndex,
       output: output,
       completed: true,
+      guardianReview: guardianReview,
+      guardianEntryIndex: guardianEntryIndex,
+    );
+  }
+
+  ChatProcessToolActivity reviewedBy(
+    GuardianApprovalMessage review, {
+    required int entryIndex,
+  }) {
+    return ChatProcessToolActivity(
+      toolUseId: toolUseId,
+      name: name,
+      input: input,
+      entryIndex: this.entryIndex,
+      output: output,
+      completed: completed,
+      guardianReview: review,
+      guardianEntryIndex: entryIndex,
     );
   }
 }
@@ -57,6 +79,7 @@ class ChatProcessSegmentLayout {
     required this.hasInlineAssistantProcess,
     required this.firstEntryIndex,
     required this.lastEntryIndex,
+    required this.attachedGuardianEntryIndices,
     this.latestTool,
   });
 
@@ -71,6 +94,7 @@ class ChatProcessSegmentLayout {
   final bool hasInlineAssistantProcess;
   final int firstEntryIndex;
   final int lastEntryIndex;
+  final Set<int> attachedGuardianEntryIndices;
   final ChatProcessToolActivity? latestTool;
 
   int get detailCount {
@@ -256,6 +280,7 @@ ChatProcessLayout buildChatProcessLayout(
 
     var activeAccumulator = accumulators.first;
     final toolAccumulatorById = <String, _SegmentAccumulator>{};
+    final toolActivityById = <String, ChatProcessToolActivity>{};
     final activeToolById = <String, ChatProcessToolActivity>{};
     final activeToolOrder = <String>[];
     final planToolUseIds = <String>{};
@@ -277,6 +302,7 @@ ChatProcessLayout buildChatProcessLayout(
       accumulator.toolCalls++;
       accumulator.latestTool = activity;
       toolAccumulatorById[tool.id] = accumulator;
+      toolActivityById[tool.id] = activity;
       activeToolById[tool.id] = activity;
       activeToolOrder.remove(tool.id);
       activeToolOrder.add(tool.id);
@@ -342,7 +368,10 @@ ChatProcessLayout buildChatProcessLayout(
         accumulator.noteEntry(index);
         accumulator.processEntryIndices.add(index);
         accumulator.toolResults++;
-        final prior = activeToolById.remove(message.toolUseId);
+        final prior =
+            toolActivityById[message.toolUseId] ??
+            activeToolById.remove(message.toolUseId);
+        activeToolById.remove(message.toolUseId);
         activeToolOrder.remove(message.toolUseId);
         final activity =
             (prior ??
@@ -361,7 +390,32 @@ ChatProcessLayout buildChatProcessLayout(
                       ? message.toolName!.trim()
                       : null,
                 );
+        toolActivityById[message.toolUseId] = activity;
         accumulator.latestTool = activity;
+        continue;
+      }
+
+      if (message is GuardianApprovalMessage) {
+        final targetItemId = message.targetItemId?.trim();
+        final target = targetItemId?.isNotEmpty == true ? targetItemId : null;
+        final accumulator = target == null
+            ? activeAccumulator
+            : (toolAccumulatorById[target] ?? activeAccumulator);
+        accumulator.noteEntry(index);
+        accumulator.processEntryIndices.add(index);
+
+        final prior = target == null
+            ? accumulator.latestTool
+            : toolActivityById[target];
+        if (prior != null) {
+          final reviewed = prior.reviewedBy(message, entryIndex: index);
+          toolActivityById[prior.toolUseId] = reviewed;
+          if (activeToolById.containsKey(prior.toolUseId)) {
+            activeToolById[prior.toolUseId] = reviewed;
+          }
+          accumulator.latestTool = reviewed;
+          accumulator.attachedGuardianEntryIndices.add(index);
+        }
         continue;
       }
 
@@ -403,6 +457,9 @@ ChatProcessLayout buildChatProcessLayout(
         hasInlineAssistantProcess: hasInlineProcess,
         firstEntryIndex: accumulator.firstEntryIndex!,
         lastEntryIndex: accumulator.lastEntryIndex!,
+        attachedGuardianEntryIndices: Set.unmodifiable(
+          accumulator.attachedGuardianEntryIndices,
+        ),
         latestTool: accumulator.latestTool,
       );
       segments.add(segment);
@@ -545,6 +602,7 @@ class _SegmentAccumulator {
 
   final int? assistantEntryIndex;
   final Set<int> processEntryIndices = <int>{};
+  final Set<int> attachedGuardianEntryIndices = <int>{};
   int thinkingBlocks = 0;
   int toolCalls = 0;
   int toolResults = 0;

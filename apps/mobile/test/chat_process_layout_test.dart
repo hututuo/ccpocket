@@ -80,6 +80,93 @@ void main() {
     },
   );
 
+  test('attaches Guardian review to its tool by target item id', () {
+    final entries = <ChatEntry>[
+      UserChatEntry('run it', clientMessageId: 'turn-guardian'),
+      ServerChatEntry(
+        _assistant('guardian-update', const [
+          TextContent(text: 'Running the command.'),
+          ToolUseContent(
+            id: 'guardian-tool',
+            name: 'Bash',
+            input: {'command': 'git status --short'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'guardian-tool',
+          toolName: 'Bash',
+          content: 'clean',
+        ),
+      ),
+      ServerChatEntry(
+        const GuardianApprovalMessage(
+          risk: GuardianApprovalRisk.medium,
+          reason: 'The command inspects repository state.',
+          reviewId: 'review-guardian',
+          targetItemId: 'guardian-tool',
+        ),
+      ),
+    ];
+
+    final layout = buildChatProcessLayout(entries, latestTurnIsActive: true);
+    final turn = layout.turnForEntry(1)!;
+    final segment = layout.segmentForEntry(3)!;
+
+    expect(segment.processEntryIndices, {2, 3});
+    expect(segment.attachedGuardianEntryIndices, {3});
+    expect(turn.currentTool?.toolUseId, 'guardian-tool');
+    expect(turn.currentTool?.completed, isTrue);
+    expect(turn.currentTool?.guardianEntryIndex, 3);
+    expect(turn.currentTool?.guardianReview?.reviewId, 'review-guardian');
+  });
+
+  test('late Guardian review stays with the tool segment that issued it', () {
+    final entries = <ChatEntry>[
+      UserChatEntry('inspect both', clientMessageId: 'turn-guardian-late'),
+      ServerChatEntry(
+        _assistant('guardian-earlier', const [
+          TextContent(text: 'Inspecting the first item.'),
+          ToolUseContent(
+            id: 'guardian-old-tool',
+            name: 'Read',
+            input: {'file_path': 'first.txt'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        _assistant('guardian-current', const [
+          TextContent(text: 'Inspecting the second item.'),
+          ToolUseContent(
+            id: 'guardian-current-tool',
+            name: 'Read',
+            input: {'file_path': 'second.txt'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        const GuardianApprovalMessage(
+          risk: GuardianApprovalRisk.low,
+          reason: 'The first read is safe.',
+          targetItemId: 'guardian-old-tool',
+        ),
+      ),
+    ];
+
+    final turn = buildChatProcessLayout(
+      entries,
+      latestTurnIsActive: true,
+    ).turnForEntry(1)!;
+    final reviewedSegment = turn.segmentForIntermediateEntry(3)!;
+
+    expect(reviewedSegment.assistantEntryIndex, 1);
+    expect(reviewedSegment.latestTool?.toolUseId, 'guardian-old-tool');
+    expect(reviewedSegment.attachedGuardianEntryIndices, {3});
+    expect(turn.currentTool?.toolUseId, 'guardian-current-tool');
+    expect(turn.currentTool?.guardianReview, isNull);
+  });
+
   test(
     'keeps only the latest persisted interval outside while a turn is active',
     () {
