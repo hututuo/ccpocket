@@ -1552,6 +1552,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ignoredToolUseIds: _respondedToolUseIds,
       );
       _applyUpdate(update, history);
+      final runtime = _runtimeSessionFrom(_bridge.sessions);
+      if (runtime != null) _restoreRuntimeInteractions(runtime);
     } catch (e, st) {
       logger.error(
         '[session:$sessionId] Failed to restore cached runtime messages',
@@ -1655,10 +1657,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _discardLocalMirrorOnNextCanonicalHistory = false;
       }
       _replacePendingPermissionsFromHistory(msg.messages);
-      if (isLocalMirrorSnapshot) {
-        final runtime = _runtimeSessionFrom(_bridge.sessions);
-        if (runtime != null) _restoreRuntimeInteractions(runtime);
-      }
     } else if (msg is PermissionRequestMessage &&
         !_respondedToolUseIds.contains(msg.toolUseId)) {
       _pendingPermissionRequests[msg.toolUseId] = msg;
@@ -1700,6 +1698,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         isLocalMirrorSnapshot: isLocalMirrorSnapshot,
         discardLocalMirrorEntries: discardLocalMirrorEntries,
       );
+      if (msg is HistoryMessage) {
+        // Canonical and mirror history are durable snapshots, while pending
+        // approvals/questions live only in the active runtime. Re-apply the
+        // authoritative runtime interaction after history has rebuilt state so
+        // a stale idle tail cannot dismiss a still-pending Plan approval.
+        final runtime = _runtimeSessionFrom(_bridge.sessions);
+        if (runtime != null) _restoreRuntimeInteractions(runtime);
+      }
       if (msg is StatusMessage) {
         _statusFromHistoryFallback = false;
         _statusFromSessionSnapshot = false;
@@ -4034,16 +4040,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _bridge.send(
       ClientMessage.reject(toolUseId, message: message, sessionId: sessionId),
     );
-    emit(
-      state.copyWith(approval: const ApprovalState.none(), inPlanMode: false),
-    );
+    // Rejecting ExitPlanMode means "continue planning"; it does not resolve
+    // Plan mode. Also advance to any other live interaction instead of hiding
+    // the entire pending queue.
+    _emitNextApprovalOrNone(toolUseId);
   }
 
   /// Answer an AskUserQuestion.
   void answer(String toolUseId, String result) {
     _markToolUseResponded(toolUseId);
     _bridge.send(ClientMessage.answer(toolUseId, result, sessionId: sessionId));
-    emit(state.copyWith(approval: const ApprovalState.none()));
+    _emitNextApprovalOrNone(toolUseId);
   }
 
   /// Interrupt the current operation.

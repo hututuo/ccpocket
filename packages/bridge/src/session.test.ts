@@ -179,6 +179,32 @@ describe("SessionManager codex path", () => {
     );
   });
 
+  it("surfaces a pending runtime interaction before status catches up", () => {
+    const manager = new SessionManager(() => {});
+    manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const pendingPermission = {
+      toolUseId: "plan-approval-1",
+      toolName: "ExitPlanMode",
+      input: { plan: "Implement the change" },
+    };
+    (
+      codexInstances[0] as unknown as {
+        getPendingPermission: () => typeof pendingPermission;
+      }
+    ).getPendingPermission = vi.fn(() => pendingPermission);
+
+    expect(manager.list()[0]).toMatchObject({
+      status: "starting",
+      pendingPermission,
+    });
+  });
+
   it("keeps unknown Codex permissions non-authoritative until runtime init", async () => {
     const onSessionUpdated = vi.fn();
     const manager = new SessionManager(

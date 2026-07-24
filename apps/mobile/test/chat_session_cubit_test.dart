@@ -2514,6 +2514,147 @@ void main() {
       expect(perm.request.toolName, 'bash');
     });
 
+    test(
+      'runtime Plan approval survives cached and canonical idle history',
+      () async {
+        const pendingPlan = PermissionRequestMessage(
+          toolUseId: 'runtime-plan',
+          toolName: 'ExitPlanMode',
+          input: {'plan': 'Implement the change'},
+        );
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            claudeSessionId: 'thread-1',
+            status: 'running',
+            createdAt: '',
+            lastActivityAt: '',
+            planMode: true,
+            pendingPermission: pendingPlan,
+          ),
+        ];
+        mockBridge.cachedMessagesBySession['s1'] = const [
+          StatusMessage(status: ProcessStatus.idle),
+        ];
+
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+        expect(
+          (cubit.state.approval as ApprovalPermission).toolUseId,
+          'runtime-plan',
+        );
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [StatusMessage(status: ProcessStatus.idle)],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+        expect(
+          (cubit.state.approval as ApprovalPermission).toolUseId,
+          'runtime-plan',
+        );
+      },
+    );
+
+    test(
+      'rejecting ExitPlanMode keeps Plan active and restores another question',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'set_permission_mode',
+            provider: 'codex',
+            permissionMode: 'plan',
+            executionMode: 'default',
+            planMode: true,
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'question-before-reject',
+            toolName: 'AskUserQuestion',
+            input: {
+              'questions': [
+                {'question': 'Choose one'},
+              ],
+            },
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'plan-to-reject',
+            toolName: 'ExitPlanMode',
+            input: {'plan': 'Not ready yet'},
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        cubit.reject('plan-to-reject', message: 'Continue planning');
+
+        expect(cubit.state.approval, isA<ApprovalAskUser>());
+        expect(
+          (cubit.state.approval as ApprovalAskUser).toolUseId,
+          'question-before-reject',
+        );
+        expect(cubit.state.planMode, isTrue);
+        expect(cubit.state.inPlanMode, isTrue);
+      },
+    );
+
+    test(
+      'answering one question advances to the next pending approval',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'command-after-question',
+            toolName: 'Bash',
+            input: {'command': 'pwd'},
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'question-to-answer',
+            toolName: 'AskUserQuestion',
+            input: {
+              'questions': [
+                {'question': 'Continue?'},
+              ],
+            },
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        cubit.answer('question-to-answer', 'Yes');
+
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+        expect(
+          (cubit.state.approval as ApprovalPermission).toolUseId,
+          'command-after-question',
+        );
+      },
+    );
+
     test('automatic tool result restores an earlier manual question', () async {
       final cubit = createCubit('s1', provider: Provider.codex);
       addTearDown(cubit.close);

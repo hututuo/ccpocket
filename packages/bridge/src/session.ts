@@ -1354,10 +1354,11 @@ export class SessionManager {
             }
           | undefined;
       };
-      const pendingPermission =
-        s.status === "waiting_approval"
-          ? processWithPending.getPendingPermission?.()
-          : undefined;
+      // The process-owned ledger is the authority for transient interactions.
+      // Status and the ledger are emitted on separate event paths, so gating
+      // this read on a status snapshot can briefly hide a still-actionable
+      // Plan approval or question from a reconnecting Mobile client.
+      const pendingPermission = processWithPending.getPendingPermission?.();
       const executionMode =
         s.process instanceof SdkProcess
           ? s.process.permissionMode === "bypassPermissions"

@@ -195,9 +195,10 @@ Mobile rebuildable store
 - 已采用“显式 Mobile override > factual JSONL metadata > 不传、由官方 runtime
   解析”的顺序；bootstrap 的 session list/session_created 不再发明权限，官方
   init 返回真实设置后再广播。Mobile 对缺失权限信号保持既有状态。
-- Plan 首次退出后审批消失最可能是 pending interaction 只附着当前 runtime/UI，
-  又被 history/session replacement 清理；必须以 Bridge pending ledger 和真实
-  事件序列验证。
+- 已确认 Plan 首次退出后审批消失的两处竞态：Bridge 的真实 pending ledger
+  被 `waiting_approval` 状态快照额外门控；Mobile 又会先恢复 runtime pending，
+  随后被缓存或 canonical history 的 idle/stale 尾部清空。Plan 拒绝路径还会
+  错误退出 Plan，并把其他待处理问题一并隐藏。
 - Guardian risk 当前作为普通 transcript/system row 进入渲染，因此会跑到过程
   外层并累积；目标是按 tool-use identity 归属，而不是用 CSS/Widget 绝对定位。
 - 原生通知 category/actions 目前不存在；“长按通知 Allow/Reject”不能靠普通
@@ -508,8 +509,12 @@ Mobile rebuildable store
 ### 8.2 Plan 审批不应消失
 
 - pending interaction 由 Bridge ledger 权威保存，不能只存在于一次弹窗 State；
+- Bridge 发布 ledger 时不再依赖异步 status 快照；Mobile 在缓存、mirror 和
+  canonical history 重建完成后重新叠加当前 runtime pending；
 - 页面退出、首次未选择、history refresh、rotation 和 reconnect 后仍可恢复；
 - resolved/rejected/expired 必须有明确终态和 generation；
+- Reject `ExitPlanMode` 的官方语义是继续 Plan，不能把 `inPlanMode` 清零；批准、
+  拒绝或回答一个 interaction 后都应推进到下一条真实 pending；
 - 同一 interaction 只显示一处，避免底部卡片和过程卡片并存。
 
 ### 8.3 Guardian 风险提示
