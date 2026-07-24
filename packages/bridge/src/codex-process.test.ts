@@ -38,6 +38,7 @@ vi.mock("node:child_process", () => ({
 
 import {
   buildCodexSpawnSpec,
+  codexErrorMessage,
   CodexCoreActionPreconditionError,
   CodexProcess,
   CodexRpcError,
@@ -402,11 +403,7 @@ describe("CodexProcess (app-server)", () => {
     const request = vi
       .spyOn(proc as any, "request")
       .mockRejectedValue(
-        new CodexRpcError(
-          "thread/settings/update",
-          "Method not found",
-          -32601,
-        ),
+        new CodexRpcError("thread/settings/update", "Method not found", -32601),
       );
 
     await expect(
@@ -559,9 +556,9 @@ describe("CodexProcess (app-server)", () => {
       proc.setServiceTier("fast");
 
       await expect(proc.persistRuntimeModelForNextTurn()).resolves.toBe(false);
-      await expect(
-        proc.persistRuntimeServiceTierForNextTurn(),
-      ).resolves.toBe(false);
+      await expect(proc.persistRuntimeServiceTierForNextTurn()).resolves.toBe(
+        false,
+      );
 
       expect(request).toHaveBeenCalledTimes(2);
       expect(proc.model).toBe("gpt-5.6-sol");
@@ -592,9 +589,7 @@ describe("CodexProcess (app-server)", () => {
     (proc as any)._threadId = "thread-probe";
     const messages: unknown[] = [];
     proc.on("message", (message) => messages.push(message));
-    const request = vi
-      .spyOn(proc as any, "request")
-      .mockResolvedValueOnce({});
+    const request = vi.spyOn(proc as any, "request").mockResolvedValueOnce({});
 
     await (proc as any).probeNextTurnPermissionUpdates();
 
@@ -625,9 +620,9 @@ describe("CodexProcess (app-server)", () => {
       ],
     });
 
-    await expect(
-      (proc as any).probeNativePlanModeSupport(),
-    ).resolves.toBe(true);
+    await expect((proc as any).probeNativePlanModeSupport()).resolves.toBe(
+      true,
+    );
 
     expect(request).toHaveBeenCalledWith(
       "collaborationMode/list",
@@ -798,13 +793,11 @@ describe("CodexProcess (app-server)", () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
     proc.on("message", (message) => messages.push(message));
-    const request = vi.spyOn(proc as any, "request").mockRejectedValue(
-      new CodexRpcError(
-        "collaborationMode/list",
-        "Method not found",
-        -32601,
-      ),
-    );
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockRejectedValue(
+        new CodexRpcError("collaborationMode/list", "Method not found", -32601),
+      );
 
     await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
     await expect(proc.probeNativePlanModeSupport()).resolves.toBe(false);
@@ -827,11 +820,7 @@ describe("CodexProcess (app-server)", () => {
     [
       "RPC internal error",
       () =>
-        new CodexRpcError(
-          "collaborationMode/list",
-          "Internal error",
-          -32603,
-        ),
+        new CodexRpcError("collaborationMode/list", "Internal error", -32603),
     ],
     ["transport failure", () => new Error("transport closed")],
     [
@@ -885,9 +874,7 @@ describe("CodexProcess (app-server)", () => {
     (proc as any)._threadId = "thread-interrupt";
     (proc as any).pendingTurnId = "turn-interrupt";
     (proc as any)._status = "running";
-    const request = vi
-      .spyOn(proc as any, "request")
-      .mockResolvedValueOnce({});
+    const request = vi.spyOn(proc as any, "request").mockResolvedValueOnce({});
     let settled = false;
 
     const interrupt = proc.interruptCurrentTurnAndWait(500).then((result) => {
@@ -1043,6 +1030,46 @@ describe("CodexProcess (app-server)", () => {
       createdAt: 1,
       updatedAt: 1,
     });
+  });
+
+  it("preserves structured JSON-RPC error details", () => {
+    const proc = new CodexProcess("linux");
+    let rejected: Error | undefined;
+    (proc as any).pendingRpc.set(42, {
+      resolve: vi.fn(),
+      reject: (error: Error) => {
+        rejected = error;
+      },
+      method: "thread/resume",
+    });
+
+    (proc as any).handleRpcResponse({
+      id: 42,
+      error: {
+        code: -32600,
+        message: "thread thread-1 already has an active writer",
+        data: { threadId: "thread-1" },
+      },
+    });
+
+    expect(rejected).toBeInstanceOf(CodexRpcError);
+    expect(rejected).toMatchObject({
+      method: "thread/resume",
+      code: -32600,
+      message: "thread thread-1 already has an active writer",
+      data: { threadId: "thread-1" },
+    });
+    expect(codexErrorMessage(rejected)).toBe(
+      "This Codex thread is already open in another client. Close it there and try again.",
+    );
+  });
+
+  it("keeps non-writer JSON-RPC error messages unchanged", () => {
+    expect(
+      codexErrorMessage(
+        new CodexRpcError("thread/resume", "invalid thread id", -32600),
+      ),
+    ).toBe("invalid thread id");
   });
 
   it("finalizes streamed agent text before turn completion", () => {
@@ -1220,6 +1247,258 @@ describe("CodexProcess (app-server)", () => {
           content: [{ type: "text", text: "New runtime response" }],
         }),
       }),
+    );
+  });
+
+  it("repairs truncated streamed text from the turn completion summary", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-repair" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      itemId: "agent-message-summary",
+      delta: "Partial response",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-repair",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-summary",
+            type: "agentMessage",
+            text: "Complete response from summary",
+          },
+        ],
+      },
+    });
+
+    const assistants = messages.filter(
+      (message) => message.type === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({
+      message: {
+        id: "agent-message-summary",
+        content: [{ type: "text", text: "Complete response from summary" }],
+      },
+    });
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Complete response from summary" },
+    );
+  });
+
+  it("does not duplicate an agent message confirmed before the turn summary", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-dedupe" },
+    });
+    (proc as any).handleNotification("item/completed", {
+      item: {
+        id: "agent-message-confirmed",
+        type: "agentMessage",
+        text: "Confirmed response",
+      },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-dedupe",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-confirmed",
+            type: "agentMessage",
+            text: "Confirmed response",
+          },
+        ],
+      },
+    });
+
+    expect(
+      messages.filter((message) => message.type === "assistant"),
+    ).toHaveLength(1);
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Confirmed response" },
+    );
+  });
+
+  it("keeps canonical item text when the completion summary differs", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-canonical" },
+    });
+    (proc as any).handleNotification("item/completed", {
+      item: {
+        id: "agent-message-canonical",
+        type: "agentMessage",
+        text: "Canonical response",
+      },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-canonical",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-canonical",
+            type: "agentMessage",
+            text: "Different fallback summary",
+          },
+        ],
+      },
+    });
+
+    expect(
+      messages.filter((message) => message.type === "assistant"),
+    ).toHaveLength(1);
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Canonical response" },
+    );
+  });
+
+  it("correlates an unknown-id delta with a matching completion summary", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-unknown-id" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      delta: "Response prefix",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-unknown-id",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-known",
+            type: "agentMessage",
+            text: "Response prefix and completed suffix",
+          },
+        ],
+      },
+    });
+
+    const assistants = messages.filter(
+      (message) => message.type === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({
+      message: {
+        id: "agent-message-known",
+        content: [
+          { type: "text", text: "Response prefix and completed suffix" },
+        ],
+      },
+    });
+  });
+
+  it("does not duplicate an unknown-id delta confirmed by item/completed", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-unknown-id-completed" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      delta: "Complete response",
+    });
+    (proc as any).handleNotification("item/completed", {
+      item: {
+        id: "agent-message-known",
+        type: "agentMessage",
+        text: "Complete response",
+      },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-unknown-id-completed",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-known",
+            type: "agentMessage",
+            text: "Complete response",
+          },
+        ],
+      },
+    });
+
+    expect(
+      messages.filter((message) => message.type === "assistant"),
+    ).toHaveLength(1);
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Complete response" },
+    );
+  });
+
+  it("ignores completion summaries for interrupted turns", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-interrupted" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      itemId: "agent-message-interrupted",
+      delta: "Interrupted partial",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-interrupted",
+        status: "interrupted",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-interrupted",
+            type: "agentMessage",
+            text: "Unexpected completed summary",
+          },
+        ],
+      },
+    });
+
+    expect(
+      messages.find((message) => message.type === "assistant"),
+    ).toMatchObject({
+      message: {
+        content: [{ type: "text", text: "Interrupted partial" }],
+      },
+    });
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      {
+        subtype: "interrupted",
+      },
     );
   });
 
@@ -1535,9 +1814,7 @@ describe("CodexProcess (app-server)", () => {
     expect(request).toHaveBeenCalledWith("thread/goal/get", {
       threadId: "thread-lease",
     });
-    expect(messages).toEqual([
-      { type: "goal_state", goal: replacementGoal },
-    ]);
+    expect(messages).toEqual([{ type: "goal_state", goal: replacementGoal }]);
   });
 
   it("resumes the same paused Goal from a strict restart lease", async () => {
@@ -2510,15 +2787,25 @@ describe("CodexProcess (app-server)", () => {
   it("exposes one generic, read-only RPC seam for optional modules", async () => {
     const proc = new CodexProcess("linux");
     const response = { rateLimits: { limitId: "codex" } };
-    const request = vi.spyOn(proc as any, "request").mockResolvedValue(response);
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValue(response);
     await expect(
-      proc.requestReadOnlyRpc("account/rateLimits/read", {}, {
-        timeoutMs: 10_000,
-      }),
+      proc.requestReadOnlyRpc(
+        "account/rateLimits/read",
+        {},
+        {
+          timeoutMs: 10_000,
+        },
+      ),
     ).resolves.toBe(response);
-    expect(request).toHaveBeenCalledWith("account/rateLimits/read", {}, {
-      timeoutMs: 10_000,
-    });
+    expect(request).toHaveBeenCalledWith(
+      "account/rateLimits/read",
+      {},
+      {
+        timeoutMs: 10_000,
+      },
+    );
     await expect(
       proc.requestReadOnlyRpc("thread/archive", { threadId: "unsafe" }),
     ).rejects.toThrow("Refusing non-read-only RPC method");
@@ -2821,7 +3108,9 @@ describe("CodexProcess (app-server)", () => {
       data: [{ name: "filesystem", authStatus: "unsupported" }],
       nextCursor: "next-page",
     };
-    const request = vi.spyOn(proc as any, "request").mockResolvedValue(response);
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValue(response);
     const options = { timeoutMs: 10_000 };
 
     await expect(proc.listMcpServerStatus(options)).resolves.toEqual(response);
@@ -2854,6 +3143,50 @@ describe("CodexProcess (app-server)", () => {
     await expect(proc.listMcpServerStatus()).rejects.toMatchObject({
       method: "mcpServerStatus/list",
     });
+  });
+
+  it("reads Browser Use auto-review policy without RPC params", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    const requirementsPromise = proc.readConfigRequirements();
+    const request = nextOutgoingRequest(child);
+    expect(request).toMatchObject({
+      method: "configRequirements/read",
+    });
+    expect(request).not.toHaveProperty("params");
+
+    (proc as any).handleRpcResponse({
+      id: request.id,
+      result: {
+        requirements: {
+          browserUse: { disableAutoReview: true },
+        },
+      },
+    });
+    await expect(requirementsPromise).resolves.toEqual({
+      autoReviewDisabled: true,
+    });
+    proc.stop();
+  });
+
+  it("treats missing configRequirements/read as an old Codex fallback", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    const requirementsPromise = proc.readConfigRequirements();
+    const request = nextOutgoingRequest(child);
+    (proc as any).handleRpcResponse({
+      id: request.id,
+      error: { code: -32601, message: "Method not found" },
+    });
+
+    await expect(requirementsPromise).resolves.toEqual({
+      autoReviewDisabled: false,
+    });
+    proc.stop();
   });
 
   it("ignores placeholder codex model names from resume state", async () => {
@@ -3031,9 +3364,13 @@ describe("CodexProcess (app-server)", () => {
     });
 
     const abort = new AbortController();
-    const pending = proc.requestReadOnlyRpc("thread/read", {}, {
-      signal: abort.signal,
-    });
+    const pending = proc.requestReadOnlyRpc(
+      "thread/read",
+      {},
+      {
+        signal: abort.signal,
+      },
+    );
     nextOutgoingRequest(child);
     abort.abort(new Error("client closed"));
     await expect(pending).rejects.toThrow("client closed");
@@ -4308,20 +4645,17 @@ describe("CodexProcess (app-server)", () => {
           "Automatic approval review approved (risk: medium, authorization: high): " +
           reason,
       });
-      (proc as any).handleNotification(
-        "item/autoApprovalReview/completed",
-        {
-          reviewId: "guardian-1",
-          targetItemId: "command-1",
-          review: {
-            status: "approved",
-            riskLevel: null,
-            userAuthorization: null,
-            rationale: null,
-          },
-          action,
+      (proc as any).handleNotification("item/autoApprovalReview/completed", {
+        reviewId: "guardian-1",
+        targetItemId: "command-1",
+        review: {
+          status: "approved",
+          riskLevel: null,
+          userAuthorization: null,
+          rationale: null,
         },
-      );
+        action,
+      });
       await vi.runAllTimersAsync();
 
       expect(messages).toEqual([
@@ -4356,25 +4690,22 @@ describe("CodexProcess (app-server)", () => {
           "Automatic approval review approved (risk: medium, authorization: high): " +
           reason,
       });
-      (proc as any).handleNotification(
-        "item/autoApprovalReview/completed",
-        {
-          threadId: "thread-other",
-          reviewId: "guardian-other",
-          review: {
-            status: "approved",
-            riskLevel: "medium",
-            userAuthorization: "high",
-            rationale: reason,
-          },
-          action: {
-            type: "command",
-            command: "ls -la",
-            cwd: "/tmp",
-            source: "shell",
-          },
+      (proc as any).handleNotification("item/autoApprovalReview/completed", {
+        threadId: "thread-other",
+        reviewId: "guardian-other",
+        review: {
+          status: "approved",
+          riskLevel: "medium",
+          userAuthorization: "high",
+          rationale: reason,
         },
-      );
+        action: {
+          type: "command",
+          command: "ls -la",
+          cwd: "/tmp",
+          source: "shell",
+        },
+      });
       await vi.runAllTimersAsync();
 
       expect(messages).toEqual([]);
@@ -4395,25 +4726,22 @@ describe("CodexProcess (app-server)", () => {
       reason;
     try {
       (proc as any).handleNotification("guardianWarning", { message });
-      (proc as any).handleNotification(
-        "item/autoApprovalReview/completed",
-        {
-          reviewId: "guardian-denied",
-          review: {
-            status: "denied",
-            riskLevel: "high",
-            userAuthorization: "low",
-            rationale: reason,
-          },
-          action: {
-            type: "networkAccess",
-            protocol: "https",
-            host: "example.com",
-            port: 443,
-            target: "https://example.com/upload",
-          },
+      (proc as any).handleNotification("item/autoApprovalReview/completed", {
+        reviewId: "guardian-denied",
+        review: {
+          status: "denied",
+          riskLevel: "high",
+          userAuthorization: "low",
+          rationale: reason,
         },
-      );
+        action: {
+          type: "networkAccess",
+          protocol: "https",
+          host: "example.com",
+          port: 443,
+          target: "https://example.com/upload",
+        },
+      });
       await vi.runAllTimersAsync();
 
       expect(messages).toEqual([
@@ -4617,9 +4945,7 @@ describe("CodexProcess (app-server)", () => {
       },
     );
 
-    const installation = proc.installToolSuggestion(
-      "req-tool-suggestion-auth",
-    );
+    const installation = proc.installToolSuggestion("req-tool-suggestion-auth");
     const installRequest = nextOutgoingRequest(child);
     (proc as any).handleRpcEnvelope({
       id: installRequest.id,
@@ -5476,7 +5802,9 @@ describe("CodexProcess (app-server)", () => {
         expect.objectContaining({
           id: "multi-command-1",
           name: "MultiCommand",
-          input: expect.objectContaining({ commands: ["git status", "rg TODO"] }),
+          input: expect.objectContaining({
+            commands: ["git status", "rg TODO"],
+          }),
         }),
         expect.objectContaining({ id: "spawn-agent-1", name: "SpawnAgent" }),
         expect.objectContaining({
@@ -5839,9 +6167,7 @@ describe("CodexProcess (app-server)", () => {
         typeof msg === "object" &&
         msg !== null &&
         (msg as { subtype?: unknown }).subtype === "supported_commands" &&
-        Array.isArray(
-          (msg as { pluginMetadata?: unknown }).pluginMetadata,
-        ) &&
+        Array.isArray((msg as { pluginMetadata?: unknown }).pluginMetadata) &&
         (msg as { pluginMetadata: unknown[] }).pluginMetadata.length > 0,
     );
     expect(supportedCommands?.pluginMetadata[0]?.composerIcon).toBeUndefined();

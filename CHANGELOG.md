@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.109.2] - 2026-07-24
+
+### Changed
+- Require Bridge 1.69.4 for external session-link resolution and recent-session resume.
+
+### Fixed
+- Open session deep links and notification taps by attaching matching live Claude or Codex sessions, or by resuming the exact recent session.
+- Show a friendly unavailable state for unknown session links without repeated history errors or duplicate navigation.
+
+## [1.109.1] - 2026-07-24
+
+### Changed
+- Cache generated images on disk for up to seven days using stable image references.
+- Require Bridge 1.69.3 for resilient session restore progress, retry handling, and optimized image delivery.
+
+### Fixed
+- Keep image-heavy session restores in a clear restoring state instead of surfacing transient Bridge connection errors.
+- Preserve and retry pending session actions safely across reconnects, and report restore failures with actionable status.
+
+## [1.109.0] - 2026-07-24
+
+### Added
+- Group generated images in chat and open them in a full-screen gallery with navigation and prompt, status, and saved-file details.
+
+### Changed
+- Require Bridge 1.69.1 for managed Codex auto-review policy enforcement and the latest app-server reliability fixes.
+
+### Fixed
+- Disable Codex Auto Review in the new-session flow when an organization's Browser Use policy prohibits it.
+
 ## [1.108.1] - 2026-07-23
 
 ### Changed

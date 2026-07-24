@@ -16,6 +16,10 @@ import '../../../widgets/bubbles/todo_write_widget.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import '../../../widgets/message_bubble.dart';
 import '../../artifact_preview/artifact_preview_entry.dart';
+import '../../generated_image_preview/generated_image_preview_mapper.dart';
+import '../../generated_image_preview/generated_image_preview_item.dart';
+import '../../generated_image_preview/generated_image_response_grouping.dart';
+import '../../generated_image_preview/widgets/generated_image_chat_group.dart';
 import '../../file_peek/file_peek_sheet.dart';
 import '../../message_images/message_images_screen.dart';
 import '../state/chat_session_cubit.dart';
@@ -143,6 +147,8 @@ class _ChatMessageListState extends State<ChatMessageList>
   final Set<String> _expandedCurrentProgress = {};
   final Map<String, GlobalKey> _disclosureAnchorKeys = {};
   bool? _tickerEnabled;
+  final _generatedImageItemCache =
+      <GeneratedImageItemCacheKey, GeneratedImagePreviewItem>{};
 
   @override
   void initState() {
@@ -556,6 +562,7 @@ class _ChatMessageListState extends State<ChatMessageList>
   Widget _buildAssistantProcessDetails(
     List<ChatEntry> entries,
     int entryIndex,
+    Set<String> hiddenToolUseIds,
   ) {
     final entry = entries[entryIndex];
     if (entry case ServerChatEntry(
@@ -564,6 +571,7 @@ class _ChatMessageListState extends State<ChatMessageList>
       return AssistantProcessDetails(
         message: message,
         collapseNotifier: widget.collapseToolResults,
+        hiddenToolUseIds: hiddenToolUseIds,
       );
     }
     return const SizedBox.shrink();
@@ -574,6 +582,8 @@ class _ChatMessageListState extends State<ChatMessageList>
     required List<ChatEntry> entries,
     required Set<String> hiddenToolUseIds,
     required bool transcriptTailComplete,
+    required Map<int, List<GeneratedImagePreviewItem>> imageItemsByAnchor,
+    required Set<int> imageGroupMemberIndices,
   }) {
     final details = <Widget>[];
     if (segment.assistantEntryIndex case final assistantIndex?
@@ -581,7 +591,11 @@ class _ChatMessageListState extends State<ChatMessageList>
       details.add(
         KeyedSubtree(
           key: ValueKey('chat_process_inline_${segment.key}'),
-          child: _buildAssistantProcessDetails(entries, assistantIndex),
+          child: _buildAssistantProcessDetails(
+            entries,
+            assistantIndex,
+            hiddenToolUseIds,
+          ),
         ),
       );
     }
@@ -590,13 +604,18 @@ class _ChatMessageListState extends State<ChatMessageList>
       details.add(
         KeyedSubtree(
           key: ValueKey('chat_process_entry_${segment.key}_$processIndex'),
-          child: _buildTranscriptEntry(
-            entries: entries,
-            entryIndex: processIndex,
-            hiddenToolUseIds: hiddenToolUseIds,
-            transcriptTailComplete: transcriptTailComplete,
-            showAssistantProcessDetails: true,
-          ),
+          child: switch (imageItemsByAnchor[processIndex]) {
+            final items? => GeneratedImageChatGroup(items: items),
+            _ when imageGroupMemberIndices.contains(processIndex) =>
+              const SizedBox.shrink(),
+            _ => _buildTranscriptEntry(
+              entries: entries,
+              entryIndex: processIndex,
+              hiddenToolUseIds: hiddenToolUseIds,
+              transcriptTailComplete: transcriptTailComplete,
+              showAssistantProcessDetails: true,
+            ),
+          },
         ),
       );
     }
@@ -608,6 +627,8 @@ class _ChatMessageListState extends State<ChatMessageList>
     required List<ChatEntry> entries,
     required Set<String> hiddenToolUseIds,
     required bool transcriptTailComplete,
+    required Map<int, List<GeneratedImagePreviewItem>> imageItemsByAnchor,
+    required Set<int> imageGroupMemberIndices,
   }) {
     final expanded = _expandedProcessSegments.contains(segment.key);
     final children = <Widget>[];
@@ -640,6 +661,8 @@ class _ChatMessageListState extends State<ChatMessageList>
             entries: entries,
             hiddenToolUseIds: hiddenToolUseIds,
             transcriptTailComplete: transcriptTailComplete,
+            imageItemsByAnchor: imageItemsByAnchor,
+            imageGroupMemberIndices: imageGroupMemberIndices,
           ),
         );
       }
@@ -658,6 +681,8 @@ class _ChatMessageListState extends State<ChatMessageList>
     required List<ChatEntry> entries,
     required Set<String> hiddenToolUseIds,
     required bool transcriptTailComplete,
+    required Map<int, List<GeneratedImagePreviewItem>> imageItemsByAnchor,
+    required Set<int> imageGroupMemberIndices,
   }) {
     final expanded = _expandedCurrentProgress.contains(progressKey);
     final currentTool = turn.currentTool;
@@ -699,6 +724,8 @@ class _ChatMessageListState extends State<ChatMessageList>
           entries: entries,
           hiddenToolUseIds: hiddenToolUseIds,
           transcriptTailComplete: transcriptTailComplete,
+          imageItemsByAnchor: imageItemsByAnchor,
+          imageGroupMemberIndices: imageGroupMemberIndices,
         ),
       );
     }
@@ -740,6 +767,23 @@ class _ChatMessageListState extends State<ChatMessageList>
     );
     final messageCount = allEntries.length + (hasStreaming ? 1 : 0);
     final streamingCubit = context.read<StreamingStateCubit>();
+    final imageGroups = groupGeneratedImageResponses(allEntries);
+    final imageGroupMemberIndices = <int>{};
+    final imageItemsByAnchor = <int, List<GeneratedImagePreviewItem>>{};
+    for (final group in imageGroups) {
+      final items = generatedImageItemsFromToolResults(
+        group.messages,
+        httpBaseUrl: widget.httpBaseUrl,
+        itemCache: _generatedImageItemCache,
+      );
+      if (items.isEmpty) continue;
+      imageItemsByAnchor[group.anchorEntryIndex] = items;
+      imageGroupMemberIndices.addAll(group.memberEntryIndices);
+    }
+    final effectiveHiddenToolUseIds = {
+      ...hiddenToolUseIds,
+      ...completedGeneratedImageToolUseIds(allEntries),
+    };
 
     final paging = chatCubit.localHistoryPaging.value;
     final content = NotificationListener<ScrollNotification>(
@@ -937,16 +981,24 @@ class _ChatMessageListState extends State<ChatMessageList>
                 segmentBuilder: (segment) => _buildHistoricalProcessGroup(
                   segment: segment,
                   entries: allEntries,
-                  hiddenToolUseIds: hiddenToolUseIds,
+                  hiddenToolUseIds: effectiveHiddenToolUseIds,
                   transcriptTailComplete: transcriptTailComplete,
+                  imageItemsByAnchor: imageItemsByAnchor,
+                  imageGroupMemberIndices: imageGroupMemberIndices,
                 ),
-                auxiliaryEntryBuilder: (entryIndex) => _buildTranscriptEntry(
-                  entries: allEntries,
-                  entryIndex: entryIndex,
-                  hiddenToolUseIds: hiddenToolUseIds,
-                  transcriptTailComplete: transcriptTailComplete,
-                  showAssistantProcessDetails: true,
-                ),
+                auxiliaryEntryBuilder: (entryIndex) =>
+                    switch (imageItemsByAnchor[entryIndex]) {
+                      final items? => GeneratedImageChatGroup(items: items),
+                      _ when imageGroupMemberIndices.contains(entryIndex) =>
+                        const SizedBox.shrink(),
+                      _ => _buildTranscriptEntry(
+                        entries: allEntries,
+                        entryIndex: entryIndex,
+                        hiddenToolUseIds: effectiveHiddenToolUseIds,
+                        transcriptTailComplete: transcriptTailComplete,
+                        showAssistantProcessDetails: true,
+                      ),
+                    },
               ),
             );
           }
@@ -969,8 +1021,10 @@ class _ChatMessageListState extends State<ChatMessageList>
                 segment: currentSegment,
                 progressKey: progressKey,
                 entries: allEntries,
-                hiddenToolUseIds: hiddenToolUseIds,
+                hiddenToolUseIds: effectiveHiddenToolUseIds,
                 transcriptTailComplete: transcriptTailComplete,
+                imageItemsByAnchor: imageItemsByAnchor,
+                imageGroupMemberIndices: imageGroupMemberIndices,
               ),
             );
           }
@@ -988,22 +1042,29 @@ class _ChatMessageListState extends State<ChatMessageList>
               child: _buildHistoricalProcessGroup(
                 segment: processSegment,
                 entries: allEntries,
-                hiddenToolUseIds: hiddenToolUseIds,
+                hiddenToolUseIds: effectiveHiddenToolUseIds,
                 transcriptTailComplete: transcriptTailComplete,
+                imageItemsByAnchor: imageItemsByAnchor,
+                imageGroupMemberIndices: imageGroupMemberIndices,
               ),
             );
           }
 
+          final imageItems = imageItemsByAnchor[entryIndex];
           return _timelineItem(
             key: _entryKey(entry, entryIndex),
             entryIndex: entryIndex,
-            child: _buildTranscriptEntry(
-              entries: allEntries,
-              entryIndex: entryIndex,
-              hiddenToolUseIds: hiddenToolUseIds,
-              transcriptTailComplete: transcriptTailComplete,
-              showAssistantProcessDetails: true,
-            ),
+            child: imageItems != null
+                ? GeneratedImageChatGroup(items: imageItems)
+                : imageGroupMemberIndices.contains(entryIndex)
+                ? const SizedBox.shrink()
+                : _buildTranscriptEntry(
+                    entries: allEntries,
+                    entryIndex: entryIndex,
+                    hiddenToolUseIds: effectiveHiddenToolUseIds,
+                    transcriptTailComplete: transcriptTailComplete,
+                    showAssistantProcessDetails: true,
+                  ),
           );
         },
       ),

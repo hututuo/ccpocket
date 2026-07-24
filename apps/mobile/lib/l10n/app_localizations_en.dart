@@ -1017,6 +1017,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'Let Codex review approval requests automatically';
 
   @override
+  String get codexAutoReviewDisabledByPolicy =>
+      'Disabled by your organization\'s Browser Use policy';
+
+  @override
   String get codexAutoReviewUnavailableDescription =>
       'Unavailable when approvals are disabled';
 
@@ -1158,15 +1162,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get tooltipCancelQueuedMessage => 'Cancel queued message';
 
   @override
-  String get reconnecting => 'Reconnecting...';
+  String get reconnecting =>
+      'Bridge connection was interrupted. Reconnecting automatically...';
 
   @override
   String get reconnectingQueuedMessages =>
-      'Reconnecting... queued messages will be sent automatically';
+      'Bridge connection was interrupted. Reconnecting automatically; queued messages are safe.';
 
   @override
   String get disconnectedMessagesQueued =>
-      'Disconnected - messages can be queued for reconnect';
+      'Bridge is unavailable. Actions are saved on this device and sent after reconnecting.';
 
   @override
   String get sessionQueuedForReconnect => 'Session queued for reconnect';
@@ -1189,10 +1194,33 @@ class AppLocalizationsEn extends AppLocalizations {
   String get pendingActionStatus => 'Pending';
 
   @override
+  String get pendingActionProcessingStatus => 'Restoring';
+
+  @override
+  String get pendingActionProcessingStartStatus => 'Preparing';
+
+  @override
+  String get pendingActionProcessingStartDescription =>
+      'Bridge is preparing the session';
+
+  @override
+  String get pendingActionProcessingResumeDescription =>
+      'Sessions with many images may take longer';
+
+  @override
+  String get pendingActionProcessingStartTitle => 'Creating new session';
+
+  @override
+  String get pendingActionProcessingResumeTitle => 'Loading session history';
+
+  @override
   String get tooltipCancelPendingAction => 'Cancel pending action';
 
   @override
   String get queuedLocally => 'Queued locally';
+
+  @override
+  String get processingOnBridge => 'Processing on Bridge';
 
   @override
   String get offlinePendingNewSessionTitle => 'New session pending';
@@ -1577,6 +1605,22 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get creatingSession => 'Creating session...';
+
+  @override
+  String get resolvingLinkedSession => 'Finding session...';
+
+  @override
+  String get resumingLinkedSession => 'Resuming session...';
+
+  @override
+  String get sessionUnavailableTitle => 'Session unavailable';
+
+  @override
+  String get sessionUnavailableDescription =>
+      'This session isn\'t available on this Bridge. Open Recent Sessions to find another session.';
+
+  @override
+  String get openRecentSessions => 'Open Recent Sessions';
 
   @override
   String get copyForAgent => 'Copy for Agent';
@@ -2112,6 +2156,32 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get failedToLoadImage => 'Failed to load image';
+
+  @override
+  String get generatedImagePromptLabel => 'Prompt';
+
+  @override
+  String get generatedImageDetailsLabel => 'Details';
+
+  @override
+  String get generatedImageHideDetailsLabel => 'Hide details';
+
+  @override
+  String get generatedImageStatusLabel => 'Status';
+
+  @override
+  String get generatedImageSavedPathLabel => 'Saved file';
+
+  @override
+  String get previousImage => 'Previous image';
+
+  @override
+  String get nextImage => 'Next image';
+
+  @override
+  String generatedImagePositionLabel(int current, int total) {
+    return 'Generated image $current of $total';
+  }
 
   @override
   String get noImageInClipboard => 'No image in clipboard';

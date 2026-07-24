@@ -727,6 +727,26 @@ describe("parseClientMessage", () => {
     expect(msg).toEqual({ type: "get_history", sessionId: "s2" });
   });
 
+  it("parses resolve_session_link message", () => {
+    const msg = parseClientMessage(
+      '{"type":"resolve_session_link","requestId":"req-1","sessionId":"session-1","provider":"claude"}',
+    );
+    expect(msg).toEqual({
+      type: "resolve_session_link",
+      requestId: "req-1",
+      sessionId: "session-1",
+      provider: "claude",
+    });
+  });
+
+  it("rejects resolve_session_link without requestId", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"resolve_session_link","sessionId":"session-1"}',
+      ),
+    ).toBeNull();
+  });
+
   it("rejects get_history without sessionId", () => {
     expect(parseClientMessage('{"type":"get_history"}')).toBeNull();
   });
@@ -827,7 +847,7 @@ describe("parseClientMessage", () => {
 
   it("parses resume_session with provider", () => {
     const msg = parseClientMessage(
-      '{"type":"resume_session","sessionId":"s3","projectPath":"/p","provider":"codex","profile":"ccpocket","approvalsReviewer":"auto_review","additionalWritableRoots":["/tmp/extra"]}',
+      '{"type":"resume_session","sessionId":"s3","projectPath":"/p","provider":"codex","profile":"ccpocket","approvalsReviewer":"auto_review","additionalWritableRoots":["/tmp/extra"],"resumeRequestId":"link-request-1"}',
     );
     expect(msg).toEqual({
       type: "resume_session",
@@ -837,7 +857,16 @@ describe("parseClientMessage", () => {
       profile: "ccpocket",
       approvalsReviewer: "auto_review",
       additionalWritableRoots: ["/tmp/extra"],
+      resumeRequestId: "link-request-1",
     });
+  });
+
+  it("rejects resume_session with a non-string resumeRequestId", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"resume_session","sessionId":"s3","projectPath":"/p","resumeRequestId":42}',
+      ),
+    ).toBeNull();
   });
 
   it("parses resume_session with advanced Claude options", () => {

@@ -72,6 +72,7 @@ abstract class ChatSessionState with _$ChatSessionState {
     @Default(false) bool bulkLoading,
     @Default(false) bool inPlanMode,
     @Default(false) bool collapseToolResults,
+    @Default(false) bool sessionUnavailable,
 
     // True only while the same Codex thread is owned by Codex Desktop's
     // independent app-server. The effective status remains `running`, while

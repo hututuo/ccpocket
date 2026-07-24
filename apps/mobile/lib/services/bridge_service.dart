@@ -105,6 +105,25 @@ class LocalSessionHistoryAvailabilityChange {
   final bool available;
 }
 
+enum SessionLinkResolveSupport { resolved, unsupported, unavailable }
+
+class SessionLinkResolveResult {
+  final SessionLinkResolveSupport support;
+  final SessionLinkResolutionMessage? resolution;
+
+  const SessionLinkResolveResult._(this.support, this.resolution);
+
+  const SessionLinkResolveResult.resolved(
+    SessionLinkResolutionMessage resolution,
+  ) : this._(SessionLinkResolveSupport.resolved, resolution);
+
+  const SessionLinkResolveResult.unsupported()
+    : this._(SessionLinkResolveSupport.unsupported, null);
+
+  const SessionLinkResolveResult.unavailable()
+    : this._(SessionLinkResolveSupport.unavailable, null);
+}
+
 class BridgeService implements BridgeServiceBase {
   void Function(ClientMessage message)? onOutgoingMessage;
   FutureOr<void> Function()? onDisconnect;
@@ -141,6 +160,7 @@ class BridgeService implements BridgeServiceBase {
   final _fileListMessageController =
       StreamController<FileListMessage>.broadcast();
   final _projectHistoryController = StreamController<List<String>>.broadcast();
+  final _codexAutoReviewPolicyController = StreamController<bool>.broadcast();
   final _diffResultController = StreamController<DiffResultMessage>.broadcast();
   final _diffImageResultController =
       StreamController<DiffImageResultMessage>.broadcast();
@@ -219,6 +239,7 @@ class BridgeService implements BridgeServiceBase {
   int _codexModelCatalogRevision = 0;
   List<String> _codexProfiles = [];
   String? _defaultCodexProfile;
+  bool _codexAutoReviewDisabled = false;
   String? _bridgeVersion;
   Set<String> _bridgeCapabilities = const {};
   BridgeClientDeliveryMode _desiredClientDeliveryMode =
@@ -260,6 +281,9 @@ class BridgeService implements BridgeServiceBase {
   final Set<String> _visibleInFlightPendingKeys = {};
   final Map<String, _DeliveryPendingInputState> _deliveryPendingInputs = {};
   final Map<String, Timer> _deliveryPendingVisibilityTimers = {};
+  final Map<String, Completer<SessionLinkResolveResult>>
+  _pendingSessionLinkResolutions = {};
+  int _nextSessionLinkRequestId = 0;
   final Map<String, Set<String>> _respondedToolUseIds = {};
   final Map<String, Completer<ArtifactResolvedMessage>>
       _pendingArtifactResolutions = {};
@@ -321,6 +345,8 @@ class BridgeService implements BridgeServiceBase {
   Stream<List<GalleryImage>> get galleryStream => _galleryController.stream;
   Stream<List<String>> get projectHistoryStream =>
       _projectHistoryController.stream;
+  Stream<bool> get codexAutoReviewPolicyStream =>
+      _codexAutoReviewPolicyController.stream;
   @override
   Stream<List<String>> get fileList => _fileListController.stream;
   Stream<FileListMessage> get fileListMessages =>
@@ -415,6 +441,7 @@ class BridgeService implements BridgeServiceBase {
   int get codexModelCatalogRevision => _codexModelCatalogRevision;
   List<String> get codexProfiles => _codexProfiles;
   String? get defaultCodexProfile => _defaultCodexProfile;
+  bool get codexAutoReviewDisabled => _codexAutoReviewDisabled;
   String? get bridgeVersion => _bridgeVersion;
   Set<String> get bridgeCapabilities => _bridgeCapabilities;
   bool get supportsBackgroundNotificationDelivery => _bridgeCapabilities
@@ -1280,19 +1307,9 @@ class BridgeService implements BridgeServiceBase {
 
     _setBridgeConnectionState(BridgeConnectionState.connecting);
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(url));
-      _setBridgeConnectionState(BridgeConnectionState.connected);
-      _reconnectAttempt = 0;
-      send(
-        ClientMessage.clientCapabilities(
-          appVersion: clientAppVersion,
-          fileTransferSupported: fileTransferClientSupported,
-          mobileRuntime: clientMobileRuntime,
-        ),
-      );
-      _flushMessageQueue();
-
-      _channelSub = _channel!.stream.listen(
+      final channel = WebSocketChannel.connect(Uri.parse(url));
+      _channel = channel;
+      _channelSub = channel.stream.listen(
         (data) {
           if (epoch != _connectionEpoch) return;
           try {
@@ -1390,6 +1407,7 @@ class BridgeService implements BridgeServiceBase {
                 :final codexModelServiceTiers,
                 :final codexProfiles,
                 :final defaultCodexProfile,
+                :final codexAutoReviewDisabled,
                 :final bridgeVersion,
                 :final bridgeCapabilities,
               ):
@@ -1416,6 +1434,8 @@ class BridgeService implements BridgeServiceBase {
                 _codexModelServiceTiers = codexModelServiceTiers;
                 _codexProfiles = codexProfiles;
                 _defaultCodexProfile = defaultCodexProfile;
+                _codexAutoReviewDisabled = codexAutoReviewDisabled;
+                _codexAutoReviewPolicyController.add(codexAutoReviewDisabled);
                 _bridgeVersion = bridgeVersion;
                 _bridgeCapabilities = bridgeCapabilities.toSet();
                 // Catalog metadata belongs to the same authoritative
@@ -1583,6 +1603,10 @@ class BridgeService implements BridgeServiceBase {
               case SystemMessage(:final permissionMode):
                 if (msg.subtype == 'session_created') {
                   _clearPendingSessionActionFor(msg);
+                } else if (msg.subtype == 'session_resume_started') {
+                  _markPendingSessionActionProcessing(msg);
+                } else if (msg.subtype == 'session_resume_failed') {
+                  _clearFailedResumeAction(msg);
                 }
                 if (sessionId != null && permissionMode != null) {
                   _patchSessionPermissionMode(
@@ -1626,15 +1650,28 @@ class BridgeService implements BridgeServiceBase {
                     message == 'get_history_delta') {
                   _fallbackPendingHistoryDeltaRequests();
                 }
-                logger.error('Bridge error: $message');
-                if (sessionId == null && _isUnscopedGoalProtocolError(msg)) {
-                  logger.warning(
-                    'Ignoring an unscoped Goal error with no live request owner.',
-                  );
+                if (msg.errorCode == 'unsupported_message' &&
+                    message == 'resolve_session_link') {
+                  _completePendingSessionLinkResolutionsAsUnsupported();
                 } else {
-                  _taggedMessageController.add((msg, sessionId));
+                  logger.error('Bridge error: $message');
+                  if (sessionId == null && _isUnscopedGoalProtocolError(msg)) {
+                    logger.warning(
+                      'Ignoring an unscoped Goal error with no live request '
+                      'owner.',
+                    );
+                  } else {
+                    _taggedMessageController.add((msg, sessionId));
+                  }
+                  _messageController.add(msg);
                 }
-                _messageController.add(msg);
+              case SessionLinkResolutionMessage(:final requestId):
+                final completer = _pendingSessionLinkResolutions.remove(
+                  requestId,
+                );
+                if (completer != null && !completer.isCompleted) {
+                  completer.complete(SessionLinkResolveResult.resolved(msg));
+                }
               default:
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
@@ -1664,9 +1701,6 @@ class BridgeService implements BridgeServiceBase {
           );
           _requeueInFlightInputMessages();
           _requeueInFlightPendingMessages();
-          _messageController.add(
-            ErrorMessage(message: 'WebSocket error: $error'),
-          );
           _scheduleReconnect();
         },
         onDone: () {
@@ -1694,10 +1728,38 @@ class BridgeService implements BridgeServiceBase {
           }
         },
       );
-      if (_desiredClientDeliveryMode ==
-          BridgeClientDeliveryMode.notificationsOnly) {
-        unawaited(_reassertDesiredClientDeliveryMode());
-      }
+      unawaited(
+        channel.ready
+            .then((_) {
+              if (epoch != _connectionEpoch ||
+                  !identical(_channel, channel) ||
+                  _intentionalDisconnect) {
+                return;
+              }
+              _setBridgeConnectionState(BridgeConnectionState.connected);
+              _reconnectAttempt = 0;
+              send(
+                ClientMessage.clientCapabilities(
+                  appVersion: clientAppVersion,
+                  fileTransferSupported: fileTransferClientSupported,
+                  mobileRuntime: clientMobileRuntime,
+                ),
+              );
+              _flushMessageQueue();
+              if (_desiredClientDeliveryMode ==
+                  BridgeClientDeliveryMode.notificationsOnly) {
+                unawaited(_reassertDesiredClientDeliveryMode());
+              }
+            })
+            .catchError((Object error, StackTrace stackTrace) {
+              if (epoch != _connectionEpoch || _intentionalDisconnect) return;
+              logger.error('WS handshake failed', error, stackTrace);
+              _setBridgeConnectionState(BridgeConnectionState.disconnected);
+              _requeueInFlightInputMessages();
+              _requeueInFlightPendingMessages();
+              _scheduleReconnect();
+            }),
+      );
     } catch (e, st) {
       logger.error('WS connect failed', e, st);
       _clearPendingLocalFeatureRequests();
@@ -1707,7 +1769,6 @@ class BridgeService implements BridgeServiceBase {
       );
       _invalidatePermissionApplyCapabilities();
       _setBridgeConnectionState(BridgeConnectionState.disconnected);
-      _messageController.add(ErrorMessage(message: 'Connection failed: $e'));
       _scheduleReconnect();
     }
   }
@@ -1736,6 +1797,7 @@ class BridgeService implements BridgeServiceBase {
         message: 'Bridge changed while preparing the file.',
       ),
     );
+    _completePendingSessionLinkResolutionsAsUnsupported();
     _sessions = const [];
     _recentSessions = const [];
     _lastRecentSessionsMessage = null;
@@ -1754,6 +1816,7 @@ class BridgeService implements BridgeServiceBase {
     _codexModelCatalogController.add(_codexModelCatalogRevision);
     _codexProfiles = const [];
     _defaultCodexProfile = null;
+    _codexAutoReviewDisabled = false;
     _bridgeVersion = null;
     _bridgeCapabilities = const {};
     _promptHistoryBridgeId = null;
@@ -1902,6 +1965,10 @@ class BridgeService implements BridgeServiceBase {
 
   void _scheduleReconnect() {
     if (_intentionalDisconnect || _lastUrl == null) return;
+    if (_reconnectTimer?.isActive ?? false) {
+      _setBridgeConnectionState(BridgeConnectionState.reconnecting);
+      return;
+    }
 
     _reconnectAttempt++;
     final delay = min(pow(2, _reconnectAttempt).toInt(), _maxReconnectDelay);
@@ -2417,6 +2484,9 @@ class BridgeService implements BridgeServiceBase {
     if (projectPath == null || projectPath.isEmpty) return null;
     final provider = json['provider'] as String? ?? Provider.claude.value;
     final createdAt = DateTime.now();
+    final state = canCancel
+        ? OfflinePendingActionState.queuedForReconnect
+        : OfflinePendingActionState.processing;
     return switch (message.type) {
       'start' => OfflinePendingAction(
         id: _offlinePendingActionId(message),
@@ -2424,6 +2494,7 @@ class BridgeService implements BridgeServiceBase {
         projectPath: projectPath,
         provider: provider,
         createdAt: createdAt,
+        state: state,
         canCancel: canCancel,
       ),
       'resume_session' => OfflinePendingAction(
@@ -2432,6 +2503,7 @@ class BridgeService implements BridgeServiceBase {
         projectPath: projectPath,
         provider: provider,
         createdAt: createdAt,
+        state: state,
         canCancel: canCancel,
         sessionId: json['sessionId'] as String?,
       ),
@@ -2547,6 +2619,68 @@ class BridgeService implements BridgeServiceBase {
         return true;
       });
       removed = before != _messageQueue.length;
+      if (removed) {
+        unawaited(_persistOfflinePendingMessages());
+      }
+    }
+    if (removed) {
+      _publishOfflinePendingActions();
+    }
+  }
+
+  void _markPendingSessionActionProcessing(SystemMessage message) {
+    final sourceSessionId = message.sourceSessionId;
+    if (sourceSessionId == null || sourceSessionId.isEmpty) return;
+    final provider = message.provider ?? Provider.claude.value;
+    final projectPath = message.projectPath;
+
+    for (final entry in _inFlightPendingMessages.entries) {
+      final action = _offlinePendingActionFor(entry.value, canCancel: false);
+      if (action == null ||
+          action.kind != OfflinePendingActionKind.resume ||
+          action.provider != provider ||
+          action.sessionId != sourceSessionId) {
+        continue;
+      }
+      if (projectPath != null &&
+          !_compatiblePendingProjectPath(action.projectPath, projectPath)) {
+        continue;
+      }
+
+      _inFlightPendingVisibilityTimers.remove(entry.key)?.cancel();
+      _visibleInFlightPendingKeys.add(entry.key);
+      _publishOfflinePendingActions();
+      return;
+    }
+  }
+
+  void _clearFailedResumeAction(SystemMessage message) {
+    final sourceSessionId = message.sourceSessionId;
+    if (sourceSessionId == null || sourceSessionId.isEmpty) return;
+    final provider = message.provider ?? Provider.claude.value;
+
+    bool matches(ClientMessage pending) {
+      final action = _offlinePendingActionFor(pending);
+      return action?.kind == OfflinePendingActionKind.resume &&
+          action?.provider == provider &&
+          action?.sessionId == sourceSessionId;
+    }
+
+    var removed = false;
+    for (final entry in List.of(_inFlightPendingMessages.entries)) {
+      if (!matches(entry.value)) continue;
+      _clearInFlightPendingMessage(entry.key);
+      removed = true;
+      break;
+    }
+    if (!removed) {
+      var didRemove = false;
+      _messageQueue.removeWhere((pending) {
+        if (didRemove || !matches(pending)) return false;
+        didRemove = true;
+        return true;
+      });
+      removed = didRemove;
       if (removed) {
         unawaited(_persistOfflinePendingMessages());
       }
@@ -2702,6 +2836,64 @@ class BridgeService implements BridgeServiceBase {
   @override
   void requestSessionList() {
     send(ClientMessage.listSessions());
+  }
+
+  Future<SessionLinkResolveResult> resolveSessionLink(
+    String sessionId, {
+    String provider = 'claude',
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    if (!isConnected) {
+      try {
+        await connectionStatus
+            .firstWhere((state) => state == BridgeConnectionState.connected)
+            .timeout(timeout);
+      } on TimeoutException {
+        return const SessionLinkResolveResult.unavailable();
+      }
+      if (!isConnected) {
+        return const SessionLinkResolveResult.unavailable();
+      }
+    }
+
+    final remaining = deadline.difference(DateTime.now());
+    if (remaining <= Duration.zero) {
+      return const SessionLinkResolveResult.unavailable();
+    }
+    final requestId = 'session-link-${++_nextSessionLinkRequestId}';
+    final completer = Completer<SessionLinkResolveResult>();
+    _pendingSessionLinkResolutions[requestId] = completer;
+    send(
+      ClientMessage.resolveSessionLink(
+        requestId: requestId,
+        sessionId: sessionId,
+        provider: provider,
+      ),
+    );
+    try {
+      return await completer.future.timeout(
+        remaining,
+        onTimeout: () => const SessionLinkResolveResult.unavailable(),
+      );
+    } finally {
+      _pendingSessionLinkResolutions.remove(requestId);
+      _messageQueue.removeWhere((message) {
+        final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+        return json['type'] == 'resolve_session_link' &&
+            json['requestId'] == requestId;
+      });
+    }
+  }
+
+  void _completePendingSessionLinkResolutionsAsUnsupported() {
+    final pending = _pendingSessionLinkResolutions.values.toList();
+    _pendingSessionLinkResolutions.clear();
+    for (final completer in pending) {
+      if (!completer.isCompleted) {
+        completer.complete(const SessionLinkResolveResult.unsupported());
+      }
+    }
   }
 
   void requestRecentSessions({int? limit, int? offset, String? projectPath}) {
@@ -2865,6 +3057,7 @@ class BridgeService implements BridgeServiceBase {
     bool? networkAccessEnabled,
     String? webSearchMode,
     List<String>? additionalWritableRoots,
+    String? resumeRequestId,
   }) {
     send(
       ClientMessage.resumeSession(
@@ -2891,6 +3084,7 @@ class BridgeService implements BridgeServiceBase {
         networkAccessEnabled: networkAccessEnabled,
         webSearchMode: webSearchMode,
         additionalWritableRoots: additionalWritableRoots,
+        resumeRequestId: resumeRequestId,
       ),
     );
   }
@@ -4006,6 +4200,7 @@ class BridgeService implements BridgeServiceBase {
 
   void dispose() {
     _intentionalDisconnect = true;
+    _completePendingSessionLinkResolutionsAsUnsupported();
     _reconnectTimer?.cancel();
     _cancelPendingPermissionChanges();
     _clearPendingLocalFeatureRequests();
@@ -4049,6 +4244,7 @@ class BridgeService implements BridgeServiceBase {
     _fileListController.close();
     _fileListMessageController.close();
     _projectHistoryController.close();
+    _codexAutoReviewPolicyController.close();
     _diffResultController.close();
     _diffImageResultController.close();
     _worktreeListController.close();

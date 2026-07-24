@@ -18,6 +18,63 @@ void main() {
     });
   });
 
+  test('serializes and parses session link resolution messages', () {
+    expect(
+      jsonDecode(
+        ClientMessage.resolveSessionLink(
+          requestId: 'link-1',
+          sessionId: 'claude-uuid',
+          provider: 'claude',
+        ).toJson(),
+      ),
+      {
+        'type': 'resolve_session_link',
+        'requestId': 'link-1',
+        'sessionId': 'claude-uuid',
+        'provider': 'claude',
+      },
+    );
+
+    final message =
+        ServerMessage.fromJson({
+              'type': 'session_link_resolution',
+              'requestId': 'link-1',
+              'sourceSessionId': 'claude-uuid',
+              'status': 'recent',
+              'provider': 'claude',
+              'recentSession': {
+                'sessionId': 'claude-uuid',
+                'provider': 'claude',
+                'projectPath': '/workspace/app',
+                'gitBranch': 'main',
+                'firstPrompt': 'Continue this task',
+                'created': '2026-07-24T00:00:00Z',
+                'modified': '2026-07-24T01:00:00Z',
+                'isSidechain': false,
+              },
+            })
+            as SessionLinkResolutionMessage;
+
+    expect(message.requestId, 'link-1');
+    expect(message.status, SessionLinkResolutionStatus.recent);
+    expect(message.recentSession?.sessionId, 'claude-uuid');
+    expect(message.recentSession?.projectPath, '/workspace/app');
+  });
+
+  test('parses a scoped session-not-found error', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'error',
+              'message': 'Session missing not found',
+              'errorCode': 'session_not_found',
+              'sessionId': 'missing',
+            })
+            as ErrorMessage;
+
+    expect(message.errorCode, 'session_not_found');
+    expect(message.sessionId, 'missing');
+  });
+
   test('serializes tool suggestion installation action', () {
     expect(
       jsonDecode(
@@ -453,6 +510,19 @@ void main() {
   });
 
   group('SystemMessage', () {
+    test('parses resume request correlation', () {
+      final message =
+          ServerMessage.fromJson({
+                'type': 'system',
+                'subtype': 'session_created',
+                'sessionId': 'bridge-1',
+                'resumeRequestId': 'link-request-1',
+              })
+              as SystemMessage;
+
+      expect(message.resumeRequestId, 'link-request-1');
+    });
+
     test('parses Codex CLI join target', () {
       final msg = ServerMessage.fromJson({
         'type': 'system',
@@ -580,6 +650,9 @@ void main() {
         'git_status_result',
         'prompt_history_status',
         'artifact_resolved',
+        'client_delivery_mode_state_v1',
+        'background_notification_v1',
+        'background_activity_state_v1',
         'archived_sessions_result',
         'unarchive_result',
         'delete_session_result',
@@ -783,12 +856,14 @@ void main() {
         '/tmp/project',
         provider: 'codex',
         additionalWritableRoots: const ['/tmp/shared', '/tmp/tools'],
+        resumeRequestId: 'link-request-1',
       );
 
       final json = jsonDecode(msg.toJson()) as Map<String, dynamic>;
       expect(json['type'], 'resume_session');
       expect(json['sessionId'], 'session-1');
       expect(json['additionalWritableRoots'], ['/tmp/shared', '/tmp/tools']);
+      expect(json['resumeRequestId'], 'link-request-1');
     });
 
     test('ClientMessage.steerQueuedInput serializes codex queued item', () {
@@ -866,6 +941,7 @@ void main() {
         'codexProfiles': ['ccpocket', 'research'],
         'defaultCodexProfile': 'ccpocket',
         'bridgeCapabilities': ['codex_permission_apply_strategy_v1'],
+        'codexAutoReviewDisabled': true,
       });
 
       expect(msg, isA<SessionListMessage>());
@@ -899,6 +975,7 @@ void main() {
       );
       expect(sessionList.sessions.single.codexNativePlanModeSupported, isTrue);
       expect(sessionList.defaultCodexProfile, 'ccpocket');
+      expect(sessionList.codexAutoReviewDisabled, isTrue);
     });
 
     test(

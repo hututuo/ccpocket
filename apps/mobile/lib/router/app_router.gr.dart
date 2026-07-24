@@ -262,6 +262,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
     ValueNotifier<SystemMessage?>? pendingSessionCreated,
     VoidCallback? onBackToSessions,
     bool hideSessionBackButton = false,
+    bool allowMessageFork = true,
     List<PageRouteInfo>? children,
   }) : super(
          CodexSessionRoute.name,
@@ -279,6 +280,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
            pendingSessionCreated: pendingSessionCreated,
            onBackToSessions: onBackToSessions,
            hideSessionBackButton: hideSessionBackButton,
+           allowMessageFork: allowMessageFork,
          ),
          initialChildren: children,
        );
@@ -303,6 +305,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
         pendingSessionCreated: args.pendingSessionCreated,
         onBackToSessions: args.onBackToSessions,
         hideSessionBackButton: args.hideSessionBackButton,
+        allowMessageFork: args.allowMessageFork,
       );
     },
   );
@@ -323,6 +326,7 @@ class CodexSessionRouteArgs {
     this.pendingSessionCreated,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.allowMessageFork = true,
   });
 
   final Key? key;
@@ -351,9 +355,11 @@ class CodexSessionRouteArgs {
 
   final bool hideSessionBackButton;
 
+  final bool allowMessageFork;
+
   @override
   String toString() {
-    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, initialApprovalsReviewer: $initialApprovalsReviewer, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton}';
+    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, initialApprovalsReviewer: $initialApprovalsReviewer, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton, allowMessageFork: $allowMessageFork}';
   }
 
   @override
@@ -372,7 +378,8 @@ class CodexSessionRouteArgs {
         initialApprovalsReviewer == other.initialApprovalsReviewer &&
         pendingSessionCreated == other.pendingSessionCreated &&
         onBackToSessions == other.onBackToSessions &&
-        hideSessionBackButton == other.hideSessionBackButton;
+        hideSessionBackButton == other.hideSessionBackButton &&
+        allowMessageFork == other.allowMessageFork;
   }
 
   @override
@@ -389,7 +396,8 @@ class CodexSessionRouteArgs {
       initialApprovalsReviewer.hashCode ^
       pendingSessionCreated.hashCode ^
       onBackToSessions.hashCode ^
-      hideSessionBackButton.hashCode;
+      hideSessionBackButton.hashCode ^
+      allowMessageFork.hashCode;
 }
 
 /// generated route for
@@ -782,6 +790,70 @@ class QrScanRoute extends PageRouteInfo<void> {
       return const QrScanScreen();
     },
   );
+}
+
+/// generated route for
+/// [SessionLinkScreen]
+class SessionLinkRoute extends PageRouteInfo<SessionLinkRouteArgs> {
+  SessionLinkRoute({
+    Key? key,
+    required String sessionId,
+    String provider = 'claude',
+    List<PageRouteInfo>? children,
+  }) : super(
+         SessionLinkRoute.name,
+         args: SessionLinkRouteArgs(
+           key: key,
+           sessionId: sessionId,
+           provider: provider,
+         ),
+         initialChildren: children,
+       );
+
+  static const String name = 'SessionLinkRoute';
+
+  static PageInfo page = PageInfo(
+    name,
+    builder: (data) {
+      final args = data.argsAs<SessionLinkRouteArgs>();
+      return SessionLinkScreen(
+        key: args.key,
+        sessionId: args.sessionId,
+        provider: args.provider,
+      );
+    },
+  );
+}
+
+class SessionLinkRouteArgs {
+  const SessionLinkRouteArgs({
+    this.key,
+    required this.sessionId,
+    this.provider = 'claude',
+  });
+
+  final Key? key;
+
+  final String sessionId;
+
+  final String provider;
+
+  @override
+  String toString() {
+    return 'SessionLinkRouteArgs{key: $key, sessionId: $sessionId, provider: $provider}';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! SessionLinkRouteArgs) return false;
+    return key == other.key &&
+        sessionId == other.sessionId &&
+        provider == other.provider;
+  }
+
+  @override
+  int get hashCode => key.hashCode ^ sessionId.hashCode ^ provider.hashCode;
 }
 
 /// generated route for

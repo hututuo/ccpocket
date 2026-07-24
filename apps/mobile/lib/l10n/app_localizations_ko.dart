@@ -986,6 +986,9 @@ class AppLocalizationsKo extends AppLocalizations {
   String get codexAutoReviewDescription => 'Codex가 승인 요청을 자동으로 검토';
 
   @override
+  String get codexAutoReviewDisabledByPolicy => '조직의 Browser Use 정책에 의해 비활성화됨';
+
+  @override
   String get codexAutoReviewUnavailableDescription => '승인이 비활성화되어 있으면 사용할 수 없음';
 
   @override
@@ -1123,13 +1126,15 @@ class AppLocalizationsKo extends AppLocalizations {
   String get tooltipCancelQueuedMessage => '대기 중인 메시지 취소';
 
   @override
-  String get reconnecting => '재연결 중...';
+  String get reconnecting => 'Bridge 연결이 일시적으로 끊겼습니다. 자동으로 다시 연결하는 중...';
 
   @override
-  String get reconnectingQueuedMessages => '재연결 중... 대기 중인 메시지는 자동으로 전송됩니다';
+  String get reconnectingQueuedMessages =>
+      'Bridge 연결이 일시적으로 끊겼습니다. 자동으로 다시 연결 중이며 대기 메시지는 안전하게 보관됩니다.';
 
   @override
-  String get disconnectedMessagesQueued => '연결 끊김 - 메시지를 재연결 대기열에 추가할 수 있습니다';
+  String get disconnectedMessagesQueued =>
+      'Bridge를 사용할 수 없습니다. 작업은 이 기기에 저장되며 재연결 후 전송됩니다.';
 
   @override
   String get sessionQueuedForReconnect => '세션을 재연결 대기열에 추가했습니다';
@@ -1150,10 +1155,33 @@ class AppLocalizationsKo extends AppLocalizations {
   String get pendingActionStatus => '대기 중';
 
   @override
+  String get pendingActionProcessingStatus => '복원 중';
+
+  @override
+  String get pendingActionProcessingStartStatus => '준비 중';
+
+  @override
+  String get pendingActionProcessingStartDescription =>
+      'Bridge에서 세션을 준비하고 있습니다';
+
+  @override
+  String get pendingActionProcessingResumeDescription =>
+      '이미지가 많은 세션은 시간이 더 걸릴 수 있습니다';
+
+  @override
+  String get pendingActionProcessingStartTitle => '새 세션을 만드는 중';
+
+  @override
+  String get pendingActionProcessingResumeTitle => '세션 기록을 불러오는 중';
+
+  @override
   String get tooltipCancelPendingAction => '대기 중인 작업 취소';
 
   @override
   String get queuedLocally => '로컬에서 대기 중';
+
+  @override
+  String get processingOnBridge => 'Bridge에서 처리 중';
 
   @override
   String get offlinePendingNewSessionTitle => '새 세션 대기 중';
@@ -1529,6 +1557,22 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get creatingSession => '세션 생성 중...';
+
+  @override
+  String get resolvingLinkedSession => '세션을 찾는 중...';
+
+  @override
+  String get resumingLinkedSession => '세션을 재개하는 중...';
+
+  @override
+  String get sessionUnavailableTitle => '세션을 사용할 수 없음';
+
+  @override
+  String get sessionUnavailableDescription =>
+      '현재 Bridge에서 이 세션을 사용할 수 없습니다. 최근 세션에서 다른 세션을 선택해 주세요.';
+
+  @override
+  String get openRecentSessions => '최근 세션 열기';
 
   @override
   String get copyForAgent => '에이전트용 복사';
@@ -2053,6 +2097,32 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get failedToLoadImage => '이미지 로드 실패';
+
+  @override
+  String get generatedImagePromptLabel => '프롬프트';
+
+  @override
+  String get generatedImageDetailsLabel => '세부정보';
+
+  @override
+  String get generatedImageHideDetailsLabel => '세부정보 닫기';
+
+  @override
+  String get generatedImageStatusLabel => '상태';
+
+  @override
+  String get generatedImageSavedPathLabel => '저장된 파일';
+
+  @override
+  String get previousImage => '이전 이미지';
+
+  @override
+  String get nextImage => '다음 이미지';
+
+  @override
+  String generatedImagePositionLabel(int current, int total) {
+    return '생성된 이미지 $current / $total';
+  }
 
   @override
   String get noImageInClipboard => '클립보드에 이미지가 없습니다';

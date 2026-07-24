@@ -1932,6 +1932,12 @@ abstract class AppLocalizations {
   /// **'承認リクエストを Codex が自動レビューします'**
   String get codexAutoReviewDescription;
 
+  /// No description provided for @codexAutoReviewDisabledByPolicy.
+  ///
+  /// In ja, this message translates to:
+  /// **'組織の Browser Use ポリシーにより無効です'**
+  String get codexAutoReviewDisabledByPolicy;
+
   /// No description provided for @codexAutoReviewUnavailableDescription.
   ///
   /// In ja, this message translates to:
@@ -2175,19 +2181,19 @@ abstract class AppLocalizations {
   /// No description provided for @reconnecting.
   ///
   /// In ja, this message translates to:
-  /// **'再接続中...'**
+  /// **'Bridge との接続が一時的に切れました。自動で再接続しています...'**
   String get reconnecting;
 
   /// No description provided for @reconnectingQueuedMessages.
   ///
   /// In ja, this message translates to:
-  /// **'再接続中... キュー内のメッセージは自動送信されます'**
+  /// **'Bridge との接続が一時的に切れました。自動で再接続しています。待機中のメッセージは保持されています。'**
   String get reconnectingQueuedMessages;
 
   /// No description provided for @disconnectedMessagesQueued.
   ///
   /// In ja, this message translates to:
-  /// **'切断中 - メッセージは再接続待ちキューに入れられます'**
+  /// **'Bridge に接続できません。操作は端末に保存され、再接続後に送信されます。'**
   String get disconnectedMessagesQueued;
 
   /// No description provided for @sessionQueuedForReconnect.
@@ -2226,6 +2232,42 @@ abstract class AppLocalizations {
   /// **'待機中'**
   String get pendingActionStatus;
 
+  /// No description provided for @pendingActionProcessingStatus.
+  ///
+  /// In ja, this message translates to:
+  /// **'復元中'**
+  String get pendingActionProcessingStatus;
+
+  /// No description provided for @pendingActionProcessingStartStatus.
+  ///
+  /// In ja, this message translates to:
+  /// **'準備中'**
+  String get pendingActionProcessingStartStatus;
+
+  /// No description provided for @pendingActionProcessingStartDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge でセッションを準備しています'**
+  String get pendingActionProcessingStartDescription;
+
+  /// No description provided for @pendingActionProcessingResumeDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'画像が多いセッションは時間がかかることがあります'**
+  String get pendingActionProcessingResumeDescription;
+
+  /// No description provided for @pendingActionProcessingStartTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'新規セッションを作成中'**
+  String get pendingActionProcessingStartTitle;
+
+  /// No description provided for @pendingActionProcessingResumeTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッション履歴を読み込んでいます'**
+  String get pendingActionProcessingResumeTitle;
+
   /// No description provided for @tooltipCancelPendingAction.
   ///
   /// In ja, this message translates to:
@@ -2237,6 +2279,12 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'ローカルでキュー中'**
   String get queuedLocally;
+
+  /// No description provided for @processingOnBridge.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge で処理中'**
+  String get processingOnBridge;
 
   /// No description provided for @offlinePendingNewSessionTitle.
   ///
@@ -2879,6 +2927,36 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'セッション作成中...'**
   String get creatingSession;
+
+  /// No description provided for @resolvingLinkedSession.
+  ///
+  /// In ja, this message translates to:
+  /// **'リンク先のセッションを検索しています...'**
+  String get resolvingLinkedSession;
+
+  /// No description provided for @resumingLinkedSession.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッションを再開しています...'**
+  String get resumingLinkedSession;
+
+  /// No description provided for @sessionUnavailableTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッションを利用できません'**
+  String get sessionUnavailableTitle;
+
+  /// No description provided for @sessionUnavailableDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'このセッションは現在の Bridge では利用できません。最近のセッションから開いてください。'**
+  String get sessionUnavailableDescription;
+
+  /// No description provided for @openRecentSessions.
+  ///
+  /// In ja, this message translates to:
+  /// **'最近のセッションを開く'**
+  String get openRecentSessions;
 
   /// No description provided for @copyForAgent.
   ///
@@ -3857,6 +3935,54 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'画像の読み込みに失敗しました'**
   String get failedToLoadImage;
+
+  /// No description provided for @generatedImagePromptLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'プロンプト'**
+  String get generatedImagePromptLabel;
+
+  /// No description provided for @generatedImageDetailsLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'詳細'**
+  String get generatedImageDetailsLabel;
+
+  /// No description provided for @generatedImageHideDetailsLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'詳細を閉じる'**
+  String get generatedImageHideDetailsLabel;
+
+  /// No description provided for @generatedImageStatusLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'ステータス'**
+  String get generatedImageStatusLabel;
+
+  /// No description provided for @generatedImageSavedPathLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'保存先'**
+  String get generatedImageSavedPathLabel;
+
+  /// No description provided for @previousImage.
+  ///
+  /// In ja, this message translates to:
+  /// **'前の画像'**
+  String get previousImage;
+
+  /// No description provided for @nextImage.
+  ///
+  /// In ja, this message translates to:
+  /// **'次の画像'**
+  String get nextImage;
+
+  /// No description provided for @generatedImagePositionLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'生成画像 {current} / {total}'**
+  String generatedImagePositionLabel(int current, int total);
 
   /// No description provided for @noImageInClipboard.
   ///

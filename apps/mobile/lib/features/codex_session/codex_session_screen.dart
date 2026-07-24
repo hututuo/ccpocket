@@ -35,6 +35,7 @@ import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../local_session_features/host/local_session_feature.dart';
 import '../local_session_features/host/local_session_feature_host.dart';
+import '../session_link/widgets/session_unavailable_view.dart';
 import '../../widgets/approval_bar.dart';
 import '../../widgets/bubbles/ask_user_question_widget.dart';
 import '../../widgets/screenshot_sheet.dart';
@@ -1441,7 +1442,15 @@ class _CodexChatBody extends HookWidget {
                     ],
                   ),
                 ),
-                body: child,
+                body: sessionState.sessionUnavailable
+                    ? SessionUnavailableView(
+                        onOpenRecentSessions:
+                            onBackToSessions ??
+                            () {
+                              context.router.replaceAll([AdaptiveHomeRoute()]);
+                            },
+                      )
+                    : child,
               );
             },
             child: Column(

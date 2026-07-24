@@ -293,6 +293,12 @@ export type ClientMessage =
       artifactId: string;
     }
   | {
+      type: "resolve_session_link";
+      requestId: string;
+      sessionId: string;
+      provider?: Provider;
+    }
+  | {
       type: "list_recent_sessions";
       limit?: number;
       offset?: number;
@@ -327,6 +333,7 @@ export type ClientMessage =
       networkAccessEnabled?: boolean;
       webSearchMode?: string;
       additionalWritableRoots?: string[];
+      resumeRequestId?: string;
     }
   | { type: "list_gallery"; project?: string; sessionId?: string }
   | {
@@ -609,6 +616,7 @@ export type ServerMessage =
       sourceSessionId?: string;
       forkedFromSessionId?: string;
       forkedFromThreadId?: string;
+      resumeRequestId?: string;
       tipCode?: string;
       permissionChangeId?: string;
       codexCliJoin?: CodexCliJoinTarget;
@@ -678,6 +686,15 @@ export type ServerMessage =
        * remain backward compatible.
        */
       guardianReview?: GuardianReviewDetails;
+    }
+  | {
+      type: "session_link_resolution";
+      requestId: string;
+      sourceSessionId: string;
+      status: "live" | "recent" | "unavailable";
+      bridgeSessionId?: string;
+      provider?: Provider;
+      recentSession?: Record<string, unknown>;
     }
   | { type: "status"; status: ProcessStatus }
   | { type: "history"; messages: ServerMessage[] }
@@ -1577,12 +1594,38 @@ export function parseClientMessage(data: string): ClientMessage | null {
         )
           return null;
         break;
+      case "resolve_session_link":
+        if (
+          !hasOnlyKeys(["type", "requestId", "sessionId", "provider"])
+        )
+          return null;
+        if (
+          typeof msg.requestId !== "string" ||
+          msg.requestId.length === 0 ||
+          msg.requestId.length > 128 ||
+          typeof msg.sessionId !== "string" ||
+          msg.sessionId.length === 0 ||
+          msg.sessionId.length > 256
+        )
+          return null;
+        if (
+          msg.provider !== undefined &&
+          msg.provider !== "claude" &&
+          msg.provider !== "codex"
+        )
+          return null;
+        break;
       case "list_recent_sessions":
         break;
       case "resume_session":
         if (
           typeof msg.sessionId !== "string" ||
           typeof msg.projectPath !== "string"
+        )
+          return null;
+        if (
+          msg.resumeRequestId !== undefined &&
+          typeof msg.resumeRequestId !== "string"
         )
           return null;
         if (

@@ -68,6 +68,11 @@ export interface CodexStartOptions {
   continueInterruptedTurnAfterStart?: boolean;
   /** Compatibility fallback when this app-server rejects an empty turn. */
   continuationFallbackText?: string;
+  /**
+   * Managed Browser Use policy cached by Bridge metadata loading.
+   * `null` means app-server must read the policy before starting the thread.
+   */
+  autoReviewDisabledByPolicy?: boolean | null;
 }
 
 /** Stable identity and pause watermark for a restart-owned Goal pause. */
@@ -217,8 +222,7 @@ export class CodexNativePlanModeProbeRetryError extends Error {
 }
 
 export type CodexCoreActionPreconditionCode =
-  | "thread_unavailable"
-  | "session_busy";
+  "thread_unavailable" | "session_busy";
 
 export class CodexCoreActionPreconditionError extends Error {
   constructor(
@@ -410,6 +414,21 @@ interface RpcError {
   };
 }
 
+export function isCodexThreadWriterConflict(error: unknown): boolean {
+  return (
+    error instanceof CodexRpcError &&
+    error.code === -32600 &&
+    /\b(active|live local)\s+writer\b/i.test(error.message)
+  );
+}
+
+export function codexErrorMessage(error: unknown): string {
+  if (isCodexThreadWriterConflict(error)) {
+    return "This Codex thread is already open in another client. Close it there and try again.";
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 interface JsonRpcEnvelope {
   id?: number | string;
   method?: string;
@@ -437,6 +456,10 @@ interface CodexResolvedSettings {
 export interface CodexProfileConfig {
   profiles: string[];
   defaultProfile?: string;
+}
+
+export interface CodexConfigRequirements {
+  autoReviewDisabled: boolean;
 }
 
 export interface CodexModelMetadata {
@@ -489,9 +512,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private inputResolve: ((input: PendingInput) => void) | null = null;
   private pendingTurnId: string | null = null;
-  private lastCompletedTurn:
-    | { turnId: string; status: string }
-    | null = null;
+  private lastCompletedTurn: { turnId: string; status: string } | null = null;
   private pendingTurnCompletion: PendingTurnCompletion | null = null;
   private pendingCoreAction: PendingCoreAction | null = null;
   private activeCoreActionTurnId: string | null = null;
@@ -568,14 +589,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private _threadSettingsUpdateTail: Promise<void> = Promise.resolve();
   private _supportsNextTurnPermissionUpdates = false;
   private _threadSettingsUpdateMethodSupport:
-    | "unknown"
-    | "supported"
-    | "unsupported" = "unknown";
+    "unknown" | "supported" | "unsupported" = "unknown";
+  private _autoReviewDisabledByPolicy = false;
   private _collaborationMode: "plan" | "default" = "default";
-  private _nativePlanModeSupport:
-    | "unknown"
-    | "supported"
-    | "unsupported" = "unknown";
+  private _nativePlanModeSupport: "unknown" | "supported" | "unsupported" =
+    "unknown";
   private _nativePlanModeProbe: Promise<boolean> | null = null;
   private _runtimeGeneration = 0;
   private _runtimeModel: string | undefined;
@@ -587,7 +605,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private lastResultText: string | null = null;
   private readonly agentTurnTracker = new CodexAgentTurnTracker();
   /** Tool descriptors already emitted at item/started, keyed by stable item id. */
-  private readonly startedToolItems = new Map<string, CodexItemToolDescriptor>();
+  private readonly startedToolItems = new Map<
+    string,
+    CodexItemToolDescriptor
+  >();
   private pendingPlanCompletion: {
     toolUseId: string;
     planText: string;
@@ -793,9 +814,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
    * Takes effect on the next `turn/start` RPC call.
    */
   setApprovalsReviewer(reviewer: string): void {
-    this._approvalsReviewer = normalizeApprovalsReviewerForAppServer(
-      reviewer as CodexStartOptions["approvalsReviewer"],
-    );
+    this._approvalsReviewer = this._autoReviewDisabledByPolicy
+      ? "user"
+      : normalizeApprovalsReviewerForAppServer(
+          reviewer as CodexStartOptions["approvalsReviewer"],
+        );
     console.log(
       `[codex-process] Approvals reviewer changed to: ${this.approvalsReviewer}`,
     );
@@ -1161,8 +1184,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       writableRoots,
       networkAccess:
         cachedWorkspacePolicy?.networkAccess ?? this._networkAccessEnabled,
-      excludeTmpdirEnvVar:
-        cachedWorkspacePolicy?.excludeTmpdirEnvVar ?? false,
+      excludeTmpdirEnvVar: cachedWorkspacePolicy?.excludeTmpdirEnvVar ?? false,
       excludeSlashTmp: cachedWorkspacePolicy?.excludeSlashTmp ?? false,
     };
   }
@@ -1458,7 +1480,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     return {
       data: response.data,
       nextCursor:
-        typeof response.nextCursor === "string" && response.nextCursor.length > 0
+        typeof response.nextCursor === "string" &&
+        response.nextCursor.length > 0
           ? response.nextCursor
           : null,
     };
@@ -1625,7 +1648,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   ): Promise<T> {
     if (!method.endsWith("/read") && !method.endsWith("/list")) {
       return Promise.reject(
-        new CodexRpcError(method, `Refusing non-read-only RPC method: ${method}`),
+        new CodexRpcError(
+          method,
+          `Refusing non-read-only RPC method: ${method}`,
+        ),
       );
     }
     return this.request(method, params, options) as Promise<T>;
@@ -1887,6 +1913,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._threadSettingsUpdateTail = Promise.resolve();
     this._supportsNextTurnPermissionUpdates = false;
     this._threadSettingsUpdateMethodSupport = "unknown";
+    this._autoReviewDisabledByPolicy =
+      options?.autoReviewDisabledByPolicy === true;
     this._collaborationMode = options?.collaborationMode ?? "default";
     this._nativePlanModeSupport = "unknown";
     this._nativePlanModeProbe = null;
@@ -2566,6 +2594,29 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     try {
       await this.initializeRpcConnection();
 
+      const autoReviewDisabled =
+        options?.autoReviewDisabledByPolicy === null
+          ? (await this.readConfigRequirements()).autoReviewDisabled
+          : options?.autoReviewDisabledByPolicy === true;
+      this._autoReviewDisabledByPolicy = autoReviewDisabled;
+      const effectiveApprovalsReviewer = autoReviewDisabled
+        ? "user"
+        : options?.approvalsReviewer;
+      const effectiveCodexPermissionsMode =
+        autoReviewDisabled && options?.codexPermissionsMode === "autoReview"
+          ? "default"
+          : options?.codexPermissionsMode;
+      if (autoReviewDisabled) {
+        console.warn(
+          "[codex-process] Auto-review disabled by managed Browser Use policy",
+        );
+      }
+      this._approvalsReviewer =
+        effectiveApprovalsReviewer === undefined
+          ? undefined
+          : normalizeApprovalsReviewerForAppServer(effectiveApprovalsReviewer);
+      this._codexPermissionsMode = effectiveCodexPermissionsMode;
+
       // A requested Plan session must never silently run as an ordinary turn.
       // Block only that path on the experimental capability probe; default
       // sessions continue immediately and probe in the background below.
@@ -2585,11 +2636,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         ? normalizeApprovalPolicy(options.approvalPolicy)
         : undefined;
       const requestedApprovalsReviewer =
-        options?.approvalsReviewer === undefined
+        effectiveApprovalsReviewer === undefined
           ? undefined
-          : normalizeApprovalsReviewerForAppServer(options.approvalsReviewer);
+          : normalizeApprovalsReviewerForAppServer(effectiveApprovalsReviewer);
       const requestedClientApprovalsReviewer =
-        normalizeApprovalsReviewerForClient(options?.approvalsReviewer);
+        normalizeApprovalsReviewerForClient(effectiveApprovalsReviewer);
       const requestedSandboxMode = options?.sandboxMode
         ? normalizeSandboxMode(options.sandboxMode)
         : undefined;
@@ -2726,15 +2777,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       const resolvedSandboxPolicy = normalizeSandboxPolicyFromRpc(
         response.sandbox,
       );
+      const resolvedApprovalsReviewer = autoReviewDisabled
+        ? "user"
+        : resolvedSettings.approvalsReviewer;
       if (resolvedSettings.model) {
         this.startModel = resolvedSettings.model;
       }
       if (resolvedSettings.approvalPolicy) {
         this._approvalPolicy = resolvedSettings.approvalPolicy;
       }
-      if (resolvedSettings.approvalsReviewer) {
+      if (resolvedApprovalsReviewer) {
         this._approvalsReviewer = normalizeApprovalsReviewerForAppServer(
-          resolvedSettings.approvalsReviewer as CodexStartOptions["approvalsReviewer"],
+          resolvedApprovalsReviewer as CodexStartOptions["approvalsReviewer"],
         );
       }
       if (resolvedSettings.sandboxMode) {
@@ -2782,11 +2836,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
                 resolvedSettings.approvalPolicy ?? requestedApprovalPolicy,
             }
           : {}),
-        ...((resolvedSettings.approvalsReviewer ?? options?.approvalsReviewer)
+        ...((resolvedApprovalsReviewer ?? effectiveApprovalsReviewer)
           ? {
-              approvalsReviewer: resolvedSettings.approvalsReviewer
+              approvalsReviewer: resolvedApprovalsReviewer
                 ? normalizeApprovalsReviewerForClient(
-                    resolvedSettings.approvalsReviewer as CodexStartOptions["approvalsReviewer"],
+                    resolvedApprovalsReviewer as CodexStartOptions["approvalsReviewer"],
                   )
                 : requestedClientApprovalsReviewer,
             }
@@ -2796,8 +2850,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
               sandboxMode: resolvedSettings.sandboxMode ?? requestedSandboxMode,
             }
           : {}),
-        ...(options?.codexPermissionsMode
-          ? { codexPermissionsMode: options.codexPermissionsMode }
+        ...(effectiveCodexPermissionsMode
+          ? { codexPermissionsMode: effectiveCodexPermissionsMode }
           : {}),
         ...(resolvedSettings.modelReasoningEffort
           ? { modelReasoningEffort: resolvedSettings.modelReasoningEffort }
@@ -2841,7 +2895,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       await this.runInputLoop(options);
     } catch (err) {
       if (!this.stopped) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = codexErrorMessage(err);
         console.error("[codex-process] bootstrap error:", err);
         const nativePlanModeError =
           err instanceof CodexNativePlanModeUnsupportedError ||
@@ -2931,14 +2985,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
     const fallback = options.continuationFallbackText?.trim() || "继续";
     try {
-      await this.runBootstrapContinuation([
-        { type: "text", text: fallback },
-      ]);
+      await this.runBootstrapContinuation([{ type: "text", text: fallback }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(
-        `[codex-process] Restart continuation failed: ${message}`,
-      );
+      console.warn(`[codex-process] Restart continuation failed: ${message}`);
       this.emitMessage({
         type: "error",
         errorCode: "permission_restart_continuation_failed",
@@ -2968,14 +3018,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       })
         .then((result) => {
           const turn = (result as Record<string, unknown>).turn as
-            | Record<string, unknown>
-            | undefined;
+            Record<string, unknown> | undefined;
           // app-server may emit turn/completed before replying to turn/start.
           // Never resurrect a turn that the notification path already settled.
-          if (
-            this.pendingTurnCompletion &&
-            typeof turn?.id === "string"
-          ) {
+          if (this.pendingTurnCompletion && typeof turn?.id === "string") {
             this.pendingTurnId = turn.id;
           }
         })
@@ -3051,6 +3097,28 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           ? config.profile.trim()
           : undefined,
     };
+  }
+
+  async readConfigRequirements(): Promise<CodexConfigRequirements> {
+    try {
+      const response = (await this.request(
+        "configRequirements/read",
+      )) as Record<string, unknown>;
+      const requirements = asRecord(response.requirements);
+      const browserUse = asRecord(
+        requirements?.browserUse ?? requirements?.browser_use,
+      );
+      return {
+        autoReviewDisabled:
+          (browserUse?.disableAutoReview ?? browserUse?.disable_auto_review) ===
+          true,
+      };
+    } catch (err) {
+      if (err instanceof CodexRpcError && err.code === -32601) {
+        return { autoReviewDisabled: false };
+      }
+      throw err;
+    }
   }
 
   private async fetchCompletionEntities(projectPath: string): Promise<void> {
@@ -3201,8 +3269,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           if (this.stopped || appsResult === null) return;
           this._apps = (appsResult.data ?? [])
             .filter(
-              (app) =>
-                (app.isAccessible ?? true) && (app.isEnabled ?? true),
+              (app) => (app.isAccessible ?? true) && (app.isEnabled ?? true),
             )
             .map((app) => ({
               id: app.id,
@@ -3294,10 +3361,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       const pendingInput = await new Promise<PendingInput>((resolve) => {
         this.inputResolve = resolve;
         // If plan approval arrived before inputResolve was ready, drain it now.
-        if (
-          this._pendingPlanInput &&
-          !this.hasPendingInteractiveRequest()
-        ) {
+        if (this._pendingPlanInput && !this.hasPendingInteractiveRequest()) {
           const text = this._pendingPlanInput;
           this._pendingPlanInput = null;
           this.inputResolve = null;
@@ -3532,9 +3596,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     try {
       this.handleGoalRpcSuccess(pending, result);
     } catch (error) {
-      pending.reject(
-        error instanceof Error ? error : new Error(String(error)),
-      );
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
     pending.resolve(result);
@@ -3881,10 +3943,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     review: GuardianReviewDetails,
     legacyMessage?: string,
   ): void {
-    if (
-      review.reviewId &&
-      this.emittedGuardianReviewIds.has(review.reviewId)
-    ) {
+    if (review.reviewId && this.emittedGuardianReviewIds.has(review.reviewId)) {
       return;
     }
     if (
@@ -3910,9 +3969,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           : {}),
         status: "approved",
         ...(review.reviewId ? { reviewId: review.reviewId } : {}),
-        ...(review.targetItemId
-          ? { targetItemId: review.targetItemId }
-          : {}),
+        ...(review.targetItemId ? { targetItemId: review.targetItemId } : {}),
         ...(review.action ? { action: review.action } : {}),
       });
       return;
@@ -4005,8 +4062,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
 
       case "thread/goal/cleared": {
-        const expected =
-          this.consumeExpectedGoalNotification("cleared");
+        const expected = this.consumeExpectedGoalNotification("cleared");
         this.goalOrderingGeneration += 1;
         if (expected !== undefined) {
           if (expected.interveningGoalEvent) {
@@ -4227,6 +4283,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     const turnId = stringValue(turn?.id) ?? this.pendingTurnId;
     this.observeCoreActionTurnCompleted(turnId);
     const status = String(turn?.status ?? "completed");
+    if (status === "completed") {
+      this.prepareTurnCompletionAgentSummary(turn, turnId);
+    }
     if (turnId) this.lastCompletedTurn = { turnId, status };
     this.finalizePendingAgentText(turnId);
 
@@ -4301,6 +4360,33 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.pendingTurnCompletion = null;
     }
     this.cleanupSteerTempPaths();
+  }
+
+  private prepareTurnCompletionAgentSummary(
+    turn: Record<string, unknown> | undefined,
+    turnId: string | null,
+  ): void {
+    if (turn?.itemsView !== "summary" || !Array.isArray(turn.items)) return;
+
+    const summaryItem = [...turn.items]
+      .reverse()
+      .find(
+        (item): item is Record<string, unknown> =>
+          typeof item === "object" &&
+          item !== null &&
+          normalizeItemType((item as Record<string, unknown>).type) ===
+            "agentmessage" &&
+          Boolean(extractAgentText(item as Record<string, unknown>)?.trim()),
+      );
+    if (!summaryItem) return;
+
+    const summaryText = extractAgentText(summaryItem);
+    if (!summaryText?.trim()) return;
+    this.agentTurnTracker.seedTurnFallback({
+      turnId,
+      itemId: stringOrNull(summaryItem.id),
+      text: summaryText,
+    });
   }
 
   private finalizePendingAgentText(turnId: string | null): void {
@@ -4725,11 +4811,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private request(
     method: string,
-    params: Record<string, unknown>,
+    params?: Record<string, unknown>,
     options: CodexRpcRequestOptions = {},
   ): Promise<unknown> {
     const id = this.rpcSeq++;
-    const envelope = { id, method, params };
+    const envelope =
+      params === undefined ? { id, method } : { id, method, params };
     const timeoutMs =
       typeof options.timeoutMs === "number" &&
       Number.isFinite(options.timeoutMs) &&
@@ -4752,9 +4839,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         resolve,
         reject,
         method,
-        ...((method === "thread/goal/get" ||
-          method === "thread/goal/set" ||
-          method === "thread/goal/clear")
+        ...(method === "thread/goal/get" ||
+        method === "thread/goal/set" ||
+        method === "thread/goal/clear"
           ? { goalOrderingGeneration: this.goalOrderingGeneration }
           : {}),
       };
@@ -5451,9 +5538,7 @@ function describeCommandExecution(
         name: "Search",
         input: {
           ...baseInput,
-          ...(typeof action.query === "string"
-            ? { query: action.query }
-            : {}),
+          ...(typeof action.query === "string" ? { query: action.query } : {}),
           ...(typeof action.path === "string" ? { path: action.path } : {}),
         },
       };
@@ -5497,7 +5582,9 @@ function completedCodexItemSummary(
         : "Image viewed";
     case "sleep": {
       const durationMs = numberOrUndefined(item.durationMs ?? item.duration_ms);
-      return durationMs === undefined ? "Wait completed" : `Waited ${durationMs} ms`;
+      return durationMs === undefined
+        ? "Wait completed"
+        : `Waited ${durationMs} ms`;
     }
     case "subagentactivity":
       return typeof item.kind === "string"
@@ -5569,8 +5656,7 @@ export function parseCodexGoal(value: unknown): CodexGoal {
     threadId: goal.threadId,
     objective: goal.objective,
     status: goal.status,
-    tokenBudget:
-      typeof goal.tokenBudget === "number" ? goal.tokenBudget : null,
+    tokenBudget: typeof goal.tokenBudget === "number" ? goal.tokenBudget : null,
     tokensUsed: goal.tokensUsed as number,
     timeUsedSeconds: goal.timeUsedSeconds as number,
     createdAt: goal.createdAt as number,
@@ -5628,6 +5714,24 @@ function toToolUseInput(value: unknown): Record<string, unknown> {
     return {};
   }
   return { value };
+}
+
+function commandExecutionToolUseInput(
+  item: Record<string, unknown>,
+): Record<string, unknown> {
+  const command =
+    typeof item.command === "string"
+      ? item.command
+      : Array.isArray(item.command)
+        ? item.command.map((part) => String(part)).join(" ")
+        : "";
+  const pluginId = stringOrNull(item.pluginId ?? item.plugin_id);
+  const scriptPath = stringOrNull(item.scriptPath ?? item.script_path);
+  return {
+    command,
+    ...(pluginId ? { pluginId } : {}),
+    ...(scriptPath ? { scriptPath } : {}),
+  };
 }
 
 function toImageGenerationToolInput(
@@ -6159,9 +6263,7 @@ function guardianReviewsCompatible(
     return false;
   }
   const pendingAuthorization = pending.authorization?.trim().toLowerCase();
-  const completedAuthorization = completed.authorization
-    ?.trim()
-    .toLowerCase();
+  const completedAuthorization = completed.authorization?.trim().toLowerCase();
   if (
     completedAuthorization &&
     pendingAuthorization !== completedAuthorization
@@ -6271,7 +6373,10 @@ function buildElicitationResponse(
   for (const question of pending.questions) {
     const candidate =
       parsed.byId[question.id] ?? parsed.byQuestion[question.question];
-    const value = coerceElicitationValue(candidate, asRecord(properties[question.id]));
+    const value = coerceElicitationValue(
+      candidate,
+      asRecord(properties[question.id]),
+    );
     if (value !== undefined) {
       content[question.id] = value;
     }
@@ -6591,7 +6696,7 @@ function buildElicitationFieldOptions(
   description: string,
 ): Array<{ label: string; value: string; description: string }> {
   const type = stringValue(field.type);
-  const source = type === "array" ? asRecord(field.items) ?? {} : field;
+  const source = type === "array" ? (asRecord(field.items) ?? {}) : field;
   const rawOptions = Array.isArray(source.oneOf)
     ? source.oneOf
     : Array.isArray(source.anyOf)

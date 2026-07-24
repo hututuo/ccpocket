@@ -991,6 +991,7 @@ sealed class ServerMessage {
         sourceSessionId: json['sourceSessionId'] as String?,
         forkedFromSessionId: json['forkedFromSessionId'] as String?,
         forkedFromThreadId: json['forkedFromThreadId'] as String?,
+        resumeRequestId: json['resumeRequestId'] as String?,
         tipCode: json['tipCode'] as String?,
         permissionChangeId: json['permissionChangeId'] as String?,
         codexCliJoin: json['codexCliJoin'] is Map<String, dynamic>
@@ -1050,6 +1051,19 @@ sealed class ServerMessage {
           permissionChangeId: json['permissionChangeId'] as String?,
           goalChangeId: json['goalChangeId'] as String?,
         ),
+      'session_link_resolution' => SessionLinkResolutionMessage(
+        requestId: json['requestId'] as String,
+        sourceSessionId: json['sourceSessionId'] as String,
+        status: SessionLinkResolutionStatus.fromString(
+          json['status'] as String?,
+        ),
+        bridgeSessionId: json['bridgeSessionId'] as String?,
+        provider: json['provider'] as String?,
+        recentSession: switch (json['recentSession']) {
+          final Map<String, dynamic> value => RecentSession.fromJson(value),
+          _ => null,
+        },
+      ),
       'status' => StatusMessage(
         status: ProcessStatus.fromString(json['status'] as String),
       ),
@@ -1154,6 +1168,8 @@ sealed class ServerMessage {
                 .toList() ??
             const [],
         defaultCodexProfile: json['defaultCodexProfile'] as String?,
+        codexAutoReviewDisabled:
+            json['codexAutoReviewDisabled'] as bool? ?? false,
         bridgeVersion: json['bridgeVersion'] as String?,
         bridgeCapabilities:
             (json['bridgeCapabilities'] as List?)
@@ -1788,6 +1804,7 @@ class SystemMessage implements ServerMessage {
   final String? sourceSessionId;
   final String? forkedFromSessionId;
   final String? forkedFromThreadId;
+  final String? resumeRequestId;
   final String? tipCode;
   final String? permissionChangeId;
   final CodexCliJoinTarget? codexCliJoin;
@@ -1822,6 +1839,7 @@ class SystemMessage implements ServerMessage {
     this.sourceSessionId,
     this.forkedFromSessionId,
     this.forkedFromThreadId,
+    this.resumeRequestId,
     this.tipCode,
     this.permissionChangeId,
     this.codexCliJoin,
@@ -1936,12 +1954,45 @@ class ErrorMessage implements ServerMessage {
   final String? sessionId;
   final String? permissionChangeId;
   final String? goalChangeId;
+
   const ErrorMessage({
     required this.message,
     this.errorCode,
     this.sessionId,
     this.permissionChangeId,
     this.goalChangeId,
+  });
+}
+
+enum SessionLinkResolutionStatus {
+  live,
+  recent,
+  unavailable;
+
+  static SessionLinkResolutionStatus fromString(String? value) {
+    return switch (value) {
+      'live' => live,
+      'recent' => recent,
+      _ => unavailable,
+    };
+  }
+}
+
+class SessionLinkResolutionMessage implements ServerMessage {
+  final String requestId;
+  final String sourceSessionId;
+  final SessionLinkResolutionStatus status;
+  final String? bridgeSessionId;
+  final String? provider;
+  final RecentSession? recentSession;
+
+  const SessionLinkResolutionMessage({
+    required this.requestId,
+    required this.sourceSessionId,
+    required this.status,
+    this.bridgeSessionId,
+    this.provider,
+    this.recentSession,
   });
 }
 
@@ -2780,6 +2831,7 @@ class SessionListMessage implements ServerMessage {
   final Map<String, List<String>> codexModelServiceTiers;
   final List<String> codexProfiles;
   final String? defaultCodexProfile;
+  final bool codexAutoReviewDisabled;
   final String? bridgeVersion;
   final List<String> bridgeCapabilities;
   const SessionListMessage({
@@ -2792,6 +2844,7 @@ class SessionListMessage implements ServerMessage {
     this.codexModelServiceTiers = const {},
     this.codexProfiles = const [],
     this.defaultCodexProfile,
+    this.codexAutoReviewDisabled = false,
     this.bridgeVersion,
     this.bridgeCapabilities = const [],
   });
@@ -4838,6 +4891,17 @@ class ClientMessage {
     'sinceSeq': sinceSeq,
   });
 
+  factory ClientMessage.resolveSessionLink({
+    required String requestId,
+    required String sessionId,
+    String? provider,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'resolve_session_link',
+    'requestId': requestId,
+    'sessionId': sessionId,
+    'provider': ?provider,
+  });
+
   factory ClientMessage.refreshBranch(String sessionId) =>
       ClientMessage._({'type': 'refresh_branch', 'sessionId': sessionId});
 
@@ -4922,6 +4986,7 @@ class ClientMessage {
     bool? networkAccessEnabled,
     String? webSearchMode,
     List<String>? additionalWritableRoots,
+    String? resumeRequestId,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'resume_session',
@@ -4947,6 +5012,7 @@ class ClientMessage {
       'serviceTier': ?serviceTier,
       'networkAccessEnabled': ?networkAccessEnabled,
       'webSearchMode': ?webSearchMode,
+      'resumeRequestId': ?resumeRequestId,
       if (additionalWritableRoots != null && additionalWritableRoots.isNotEmpty)
         'additionalWritableRoots': additionalWritableRoots,
     });

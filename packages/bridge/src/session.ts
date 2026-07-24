@@ -61,6 +61,12 @@ export interface SessionInfo {
   historyLowWatermark: number;
   /** Past conversation loaded from disk on resume (SessionHistoryMessage[]). */
   pastMessages?: unknown[];
+  /**
+   * True until the first Codex history response consumes the history already
+   * loaded during resume. This also distinguishes a loaded empty history from
+   * a session that has not loaded canonical history yet.
+   */
+  codexInitialHistoryPending?: boolean;
   projectPath: string;
   claudeSessionId?: string;
   /** Bridge runtime that was forked, when it is still known locally. */
@@ -90,6 +96,7 @@ export interface SessionInfo {
     networkAccessEnabled?: boolean;
     webSearchMode?: string;
     additionalWritableRoots?: string[];
+    autoReviewDisabledByPolicy?: boolean | null;
   };
   /** Claude sandbox enabled state (for resume). */
   sandboxEnabled?: boolean;
@@ -208,6 +215,7 @@ export interface SessionSummary {
     networkAccessEnabled?: boolean;
     webSearchMode?: string;
     additionalWritableRoots?: string[];
+    autoReviewDisabledByPolicy?: boolean | null;
   };
   agentNickname?: string;
   agentRole?: string;
@@ -315,9 +323,7 @@ function publicQueuedInput(
   };
 }
 
-function structuredImagePaths(
-  candidates: ArtifactCandidate[],
-): string[] {
+function structuredImagePaths(candidates: ArtifactCandidate[]): string[] {
   return [
     ...new Set(
       candidates
@@ -406,7 +412,10 @@ export class SessionManager {
       messageId = cleanMessage.message.id;
       if (detachedCandidates === undefined) {
         try {
-          for (const [index, content] of cleanMessage.message.content.entries()) {
+          for (const [
+            index,
+            content,
+          ] of cleanMessage.message.content.entries()) {
             if (content.type !== "text") continue;
             candidates.push(
               ...extractArtifactCandidates(content.text, {
@@ -722,164 +731,158 @@ export class SessionManager {
       }
 
       const processMessage = async (): Promise<void> => {
-      try {
-        session.lastActivityAt = new Date();
-        const previousProviderSessionId = session.claudeSessionId;
+        try {
+          session.lastActivityAt = new Date();
+          const previousProviderSessionId = session.claudeSessionId;
 
-        if (msg.type === "goal_state") {
-          const advancesGoalSequence =
-            msg.goalOperationSequence !== undefined &&
-            (session.codexGoalOperationSequence === undefined ||
-              msg.goalOperationSequence > session.codexGoalOperationSequence);
-          if (
-            msg.goalOperationSequence !== undefined &&
-            session.codexGoalOperationSequence !== undefined &&
-            msg.goalOperationSequence < session.codexGoalOperationSequence
-          ) {
+          if (msg.type === "goal_state") {
+            const advancesGoalSequence =
+              msg.goalOperationSequence !== undefined &&
+              (session.codexGoalOperationSequence === undefined ||
+                msg.goalOperationSequence > session.codexGoalOperationSequence);
+            if (
+              msg.goalOperationSequence !== undefined &&
+              session.codexGoalOperationSequence !== undefined &&
+              msg.goalOperationSequence < session.codexGoalOperationSequence
+            ) {
+              return;
+            }
+            if (msg.goalOperationSequence !== undefined) {
+              session.codexGoalOperationSequence = msg.goalOperationSequence;
+            }
+            const merged = mergeCodexGoalState(
+              session.codexGoal,
+              msg.goal,
+              session.codexGoalUpdatedAt,
+              advancesGoalSequence,
+            );
+            session.codexGoalUpdatedAt = merged.updatedAt;
+            if (!merged.accepted) return;
+            session.codexGoal = merged.goal;
+            this.onMessage(id, { ...msg, goal: merged.goal });
             return;
           }
-          if (msg.goalOperationSequence !== undefined) {
-            session.codexGoalOperationSequence = msg.goalOperationSequence;
-          }
-          const merged = mergeCodexGoalState(
-            session.codexGoal,
-            msg.goal,
-            session.codexGoalUpdatedAt,
-            advancesGoalSequence,
-          );
-          session.codexGoalUpdatedAt = merged.updatedAt;
-          if (!merged.accepted) return;
-          session.codexGoal = merged.goal;
-          this.onMessage(id, { ...msg, goal: merged.goal });
-          return;
-        }
 
-        if (isLocalFeatureServerMessage(msg)) {
-          this.onMessage(id, msg);
-          return;
-        }
-
-        if (
-          msg.type === "system" &&
-          (msg.subtype === "init" || msg.subtype === "supported_commands") &&
-          (msg.slashCommands ||
-            msg.skills ||
-            msg.skillMetadata ||
-            msg.apps ||
-            msg.appMetadata ||
-            msg.plugins ||
-            msg.pluginMetadata)
-        ) {
-          const commandCacheKey = this.commandCacheKey(
-            effectiveProvider,
-            effectiveCwd,
-          );
-          const previousCommands = this.commandCache.get(commandCacheKey);
-          this.commandCache.set(commandCacheKey, {
-            slashCommands:
-              msg.slashCommands ?? previousCommands?.slashCommands ?? [],
-            skills: msg.skills ?? previousCommands?.skills ?? [],
-            skillMetadata:
-              (msg.skillMetadata as
-                | Array<Record<string, unknown>>
-                | undefined) ??
-              previousCommands?.skillMetadata,
-            apps: msg.apps ?? previousCommands?.apps ?? [],
-            appMetadata:
-              (msg.appMetadata as
-                | Array<Record<string, unknown>>
-                | undefined) ??
-              previousCommands?.appMetadata,
-            plugins: msg.plugins ?? previousCommands?.plugins ?? [],
-            pluginMetadata:
-              (msg.pluginMetadata as
-                | Array<Record<string, unknown>>
-                | undefined) ??
-              previousCommands?.pluginMetadata,
-          });
-        }
-
-        if (effectiveProvider === "claude") {
-          // Capture Claude session_id from result events
-          if (msg.type === "result" && "sessionId" in msg && msg.sessionId) {
-            session.claudeSessionId = msg.sessionId;
-            this.saveWorktreeMapping(session);
-          }
-          if (msg.type === "system" && "sessionId" in msg && msg.sessionId) {
-            session.claudeSessionId = msg.sessionId;
-            this.saveWorktreeMapping(session);
+          if (isLocalFeatureServerMessage(msg)) {
+            this.onMessage(id, msg);
+            return;
           }
 
-          // Cache tool_use names from assistant messages
+          if (
+            msg.type === "system" &&
+            (msg.subtype === "init" || msg.subtype === "supported_commands") &&
+            (msg.slashCommands ||
+              msg.skills ||
+              msg.skillMetadata ||
+              msg.apps ||
+              msg.appMetadata ||
+              msg.plugins ||
+              msg.pluginMetadata)
+          ) {
+            const commandCacheKey = this.commandCacheKey(
+              effectiveProvider,
+              effectiveCwd,
+            );
+            const previousCommands = this.commandCache.get(commandCacheKey);
+            this.commandCache.set(commandCacheKey, {
+              slashCommands:
+                msg.slashCommands ?? previousCommands?.slashCommands ?? [],
+              skills: msg.skills ?? previousCommands?.skills ?? [],
+              skillMetadata:
+                (msg.skillMetadata as
+                  Array<Record<string, unknown>> | undefined) ??
+                previousCommands?.skillMetadata,
+              apps: msg.apps ?? previousCommands?.apps ?? [],
+              appMetadata:
+                (msg.appMetadata as
+                  Array<Record<string, unknown>> | undefined) ??
+                previousCommands?.appMetadata,
+              plugins: msg.plugins ?? previousCommands?.plugins ?? [],
+              pluginMetadata:
+                (msg.pluginMetadata as
+                  Array<Record<string, unknown>> | undefined) ??
+                previousCommands?.pluginMetadata,
+            });
+          }
+
+          if (effectiveProvider === "claude") {
+            // Capture Claude session_id from result events
+            if (msg.type === "result" && "sessionId" in msg && msg.sessionId) {
+              session.claudeSessionId = msg.sessionId;
+              this.saveWorktreeMapping(session);
+            }
+            if (msg.type === "system" && "sessionId" in msg && msg.sessionId) {
+              session.claudeSessionId = msg.sessionId;
+              this.saveWorktreeMapping(session);
+            }
+
+            // Cache tool_use names from assistant messages
             if (
               msg.type === "assistant" &&
               Array.isArray(msg.message.content)
             ) {
-            for (const content of msg.message.content) {
-              if (content.type === "tool_use") {
-                const toolUse = content as AssistantToolUseContent;
-                toolUseNames.set(toolUse.id, toolUse.name);
+              for (const content of msg.message.content) {
+                if (content.type === "tool_use") {
+                  const toolUse = content as AssistantToolUseContent;
+                  toolUseNames.set(toolUse.id, toolUse.name);
+                }
               }
             }
-          }
 
-          // Enrich tool_result with toolName
-          if (msg.type === "tool_result") {
-            const cachedName = toolUseNames.get(msg.toolUseId);
-            if (cachedName) {
-              msg = { ...msg, toolName: cachedName };
+            // Enrich tool_result with toolName
+            if (msg.type === "tool_result") {
+              const cachedName = toolUseNames.get(msg.toolUseId);
+              if (cachedName) {
+                msg = { ...msg, toolName: cachedName };
+              }
             }
-          }
-        } else {
-          // Codex: capture thread_id for session tracking and worktree restore.
-          if (msg.type === "system" && "sessionId" in msg && msg.sessionId) {
-            session.claudeSessionId = msg.sessionId;
-            this.saveWorktreeMapping(session);
-            if (session.codexSettings?.profile) {
-              void saveCodexSessionProfile(
-                msg.sessionId,
-                session.codexSettings.profile,
+          } else {
+            // Codex: capture thread_id for session tracking and worktree restore.
+            if (msg.type === "system" && "sessionId" in msg && msg.sessionId) {
+              session.claudeSessionId = msg.sessionId;
+              this.saveWorktreeMapping(session);
+              if (session.codexSettings?.profile) {
+                void saveCodexSessionProfile(
+                  msg.sessionId,
+                  session.codexSettings.profile,
+                );
+              }
+              if (session.codexSettings?.additionalWritableRoots) {
+                void saveCodexSessionAdditionalWritableRoots(
+                  msg.sessionId,
+                  session.codexSettings.additionalWritableRoots,
+                );
+              }
+            }
+            if (msg.type === "system") {
+              session.codexSettings = mergeCodexSettings(
+                session.codexSettings,
+                msg,
               );
             }
-            if (session.codexSettings?.additionalWritableRoots) {
-              void saveCodexSessionAdditionalWritableRoots(
-                msg.sessionId,
-                session.codexSettings.additionalWritableRoots,
-              );
-            }
-          }
-          if (msg.type === "system") {
-            session.codexSettings = mergeCodexSettings(
-              session.codexSettings,
-              msg,
+            const messageModel = sanitizeCodexModel(
+              msg.type === "assistant" ? msg.message.model : undefined,
             );
+            if (msg.type === "assistant" && messageModel) {
+              session.codexSettings = {
+                ...(session.codexSettings ?? {}),
+                model: messageModel,
+              };
+            }
           }
-          const messageModel = sanitizeCodexModel(
-            msg.type === "assistant" ? msg.message.model : undefined,
-          );
-          if (msg.type === "assistant" && messageModel) {
-            session.codexSettings = {
-              ...(session.codexSettings ?? {}),
-              model: messageModel,
-            };
-          }
-        }
 
-        if (
-          session.claudeSessionId &&
-          session.claudeSessionId !== previousProviderSessionId
-        ) {
-          this.onSessionUpdated?.(session.id);
-        }
-        if (
-          msg.type === "system" &&
-          msg.subtype === "runtime_capabilities"
-        ) {
-          // Capability probes finish after the initial session_created frame.
-          // Re-broadcast the session list so clients learn the capability for
-          // this exact Codex runtime instead of relying on a global guess.
-          this.onSessionUpdated?.(session.id);
-        }
+          if (
+            session.claudeSessionId &&
+            session.claudeSessionId !== previousProviderSessionId
+          ) {
+            this.onSessionUpdated?.(session.id);
+          }
+          if (msg.type === "system" && msg.subtype === "runtime_capabilities") {
+            // Capability probes finish after the initial session_created frame.
+            // Re-broadcast the session list so clients learn the capability for
+            // this exact Codex runtime instead of relying on a global guess.
+            this.onSessionUpdated?.(session.id);
+          }
 
           const providerSessionId =
             session.claudeSessionId ?? proc.sessionId ?? undefined;
@@ -909,8 +912,8 @@ export class SessionManager {
             }
           }
 
-        // Extract images from tool_result content for both Claude and Codex.
-        if (msg.type === "tool_result" && this.imageStore) {
+          // Extract images from tool_result content for both Claude and Codex.
+          if (msg.type === "tool_result" && this.imageStore) {
             const rawGeneratedPaths = new Set(
               structuredImagePaths(artifactCandidates),
             );
@@ -925,87 +928,87 @@ export class SessionManager {
                 ...materializedGeneratedPaths,
               ]),
             ];
-          if (paths.length > 0) {
-            const images = await this.imageStore.registerImages(
-              paths,
+            if (paths.length > 0) {
+              const images = await this.imageStore.registerImages(
+                paths,
                 session.worktreePath ?? session.projectPath,
-            );
-            if (images.length > 0) {
-              msg = { ...msg, images };
-            }
-
-            // Also register in GalleryStore (disk-persistent)
-            if (this.galleryStore) {
-              for (const p of paths) {
-                const meta = await this.galleryStore.addImage(
-                  p,
-                    session.worktreePath ?? session.projectPath,
-                  session.id,
-                    providerSessionId,
-                );
-                if (meta && this.onGalleryImage) {
-                  this.onGalleryImage(meta);
-                }
+              );
+              if (images.length > 0) {
+                msg = { ...msg, images };
               }
-            }
-          }
 
-          // Extract base64 images from content blocks (e.g., MCP screenshots)
-          if (msg.rawContentBlocks) {
-            const imageBlocks = (
-              msg.rawContentBlocks as Array<Record<string, unknown>>
-            ).filter(
-              (c) =>
-                c.type === "image" &&
-                (c.source as Record<string, unknown>)?.type === "base64",
-            );
-
-            if (imageBlocks.length > 0) {
-              const existingImages = msg.images ?? [];
-              const newImages: ImageRef[] = [];
-
-              for (const block of imageBlocks) {
-                const source = block.source as Record<string, unknown>;
-                if (
-                  typeof source?.data !== "string" ||
-                  typeof source?.media_type !== "string"
-                )
-                  continue;
-                const b64Data = source.data as string;
-                const mimeType = source.media_type as string;
-                const ref = this.imageStore.registerFromBase64(
-                  b64Data,
-                  mimeType,
-                );
-                if (ref) {
-                  newImages.push(ref);
-
-                  // Also persist to GalleryStore
-                  if (this.galleryStore) {
-                    const meta = await this.galleryStore.addImageFromBase64(
-                      b64Data,
-                      mimeType,
-                      session.projectPath,
-                      session.id,
-                        providerSessionId,
-                    );
-                    if (meta && this.onGalleryImage) {
-                      this.onGalleryImage(meta);
-                    }
+              // Also register in GalleryStore (disk-persistent)
+              if (this.galleryStore) {
+                for (const p of paths) {
+                  const meta = await this.galleryStore.addImage(
+                    p,
+                    session.worktreePath ?? session.projectPath,
+                    session.id,
+                    providerSessionId,
+                  );
+                  if (meta && this.onGalleryImage) {
+                    this.onGalleryImage(meta);
                   }
                 }
               }
-
-              if (newImages.length > 0) {
-                msg = { ...msg, images: [...existingImages, ...newImages] };
-              }
             }
 
-            // Strip transient rawContentBlocks before sending to client
-            const { rawContentBlocks: _, ...cleanMsg } = msg;
-            msg = cleanMsg as typeof msg;
+            // Extract base64 images from content blocks (e.g., MCP screenshots)
+            if (msg.rawContentBlocks) {
+              const imageBlocks = (
+                msg.rawContentBlocks as Array<Record<string, unknown>>
+              ).filter(
+                (c) =>
+                  c.type === "image" &&
+                  (c.source as Record<string, unknown>)?.type === "base64",
+              );
+
+              if (imageBlocks.length > 0) {
+                const existingImages = msg.images ?? [];
+                const newImages: ImageRef[] = [];
+
+                for (const block of imageBlocks) {
+                  const source = block.source as Record<string, unknown>;
+                  if (
+                    typeof source?.data !== "string" ||
+                    typeof source?.media_type !== "string"
+                  )
+                    continue;
+                  const b64Data = source.data as string;
+                  const mimeType = source.media_type as string;
+                  const ref = this.imageStore.registerFromBase64(
+                    b64Data,
+                    mimeType,
+                  );
+                  if (ref) {
+                    newImages.push(ref);
+
+                    // Also persist to GalleryStore
+                    if (this.galleryStore) {
+                      const meta = await this.galleryStore.addImageFromBase64(
+                        b64Data,
+                        mimeType,
+                        session.projectPath,
+                        session.id,
+                        providerSessionId,
+                      );
+                      if (meta && this.onGalleryImage) {
+                        this.onGalleryImage(meta);
+                      }
+                    }
+                  }
+                }
+
+                if (newImages.length > 0) {
+                  msg = { ...msg, images: [...existingImages, ...newImages] };
+                }
+              }
+
+              // Strip transient rawContentBlocks before sending to client
+              const { rawContentBlocks: _, ...cleanMsg } = msg;
+              msg = cleanMsg as typeof msg;
+            }
           }
-        }
 
           const enrichedMessage = this.enrichArtifactsForSession(
             session,
@@ -1017,42 +1020,42 @@ export class SessionManager {
               ? await enrichedMessage
               : enrichedMessage;
 
-        // Don't add streaming deltas to history
-        let mergedUserInput = false;
-        let historyMsg: ServerMessage = msg;
-        if (msg.type !== "stream_delta" && msg.type !== "thinking_delta") {
-          if (this.shouldSuppressCodexCanonicalUserEcho(session, msg)) {
-            return;
+          // Don't add streaming deltas to history
+          let mergedUserInput = false;
+          let historyMsg: ServerMessage = msg;
+          if (msg.type !== "stream_delta" && msg.type !== "thinking_delta") {
+            if (this.shouldSuppressCodexCanonicalUserEcho(session, msg)) {
+              return;
+            }
+            const mergedMsg = this.mergeUserInputIntoHistory(session, msg);
+            if (mergedMsg) {
+              mergedUserInput = true;
+              historyMsg = mergedMsg;
+            } else {
+              historyMsg = this.buildHistoryProcessMessage(session, msg);
+              this.appendHistoryToSession(session, historyMsg);
+            }
           }
-          const mergedMsg = this.mergeUserInputIntoHistory(session, msg);
-          if (mergedMsg) {
-            mergedUserInput = true;
-            historyMsg = mergedMsg;
-          } else {
-            historyMsg = this.buildHistoryProcessMessage(session, msg);
-            this.appendHistoryToSession(session, historyMsg);
+
+          this.onMessage(
+            id,
+            this.buildLiveProcessMessage(session, historyMsg, mergedUserInput),
+          );
+
+          // After a result (turn complete), backfill UUIDs from disk.
+          // The SDK does not echo user messages via the stream, so
+          // in-memory user_input entries lack UUIDs.  The disk
+          // conversation file always has them.
+          if (msg.type === "result") {
+            this.backfillUserUuidsFromDisk(session);
+            this.scheduleAutoRename(session);
           }
+        } catch (err) {
+          console.error(
+            `[session] Error processing message for session ${id}:`,
+            err,
+          );
         }
-
-        this.onMessage(
-          id,
-          this.buildLiveProcessMessage(session, historyMsg, mergedUserInput),
-        );
-
-        // After a result (turn complete), backfill UUIDs from disk.
-        // The SDK does not echo user messages via the stream, so
-        // in-memory user_input entries lack UUIDs.  The disk
-        // conversation file always has them.
-        if (msg.type === "result") {
-          this.backfillUserUuidsFromDisk(session);
-          this.scheduleAutoRename(session);
-        }
-      } catch (err) {
-        console.error(
-          `[session] Error processing message for session ${id}:`,
-          err,
-        );
-      }
       };
 
       // Preserve the existing synchronous fast path until an operation really
@@ -1100,16 +1103,16 @@ export class SessionManager {
         return;
       }
       const finish = (): void => {
-      session.status = "idle";
-      session.codexQueuedInput = undefined;
+        session.status = "idle";
+        session.codexQueuedInput = undefined;
         // Add status after every already-emitted provider message.
-      this.appendHistoryToSession(session, {
-        type: "status",
-        status: "idle",
-      } as ServerMessage);
-      if (session.provider === "codex") {
-        this.broadcastCodexQueue(session);
-      }
+        this.appendHistoryToSession(session, {
+          type: "status",
+          status: "idle",
+        } as ServerMessage);
+        if (session.provider === "codex") {
+          this.broadcastCodexQueue(session);
+        }
         this.evictStaleIdleSessions();
       };
       if (messageProcessing) {
@@ -1162,6 +1165,7 @@ export class SessionManager {
         networkAccessEnabled: codexOptions.networkAccessEnabled,
         webSearchMode: codexOptions.webSearchMode,
         additionalWritableRoots: codexOptions.additionalWritableRoots,
+        autoReviewDisabledByPolicy: codexOptions.autoReviewDisabledByPolicy,
       };
       // Resume starts know the thread id up front.
       if (codexOptions.threadId) {
@@ -1279,13 +1283,13 @@ export class SessionManager {
     return Array.from(this.sessions.values()).map((s) => {
       const codexSettings =
         s.process instanceof CodexProcess
-        ? withDerivedCodexPermissionsMode(
-            s.codexSettings ??
-              (s.process.codexPermissionsMode
-                ? { codexPermissionsMode: s.process.codexPermissionsMode }
-                : undefined),
-          )
-        : s.codexSettings;
+          ? withDerivedCodexPermissionsMode(
+              s.codexSettings ??
+                (s.process.codexPermissionsMode
+                  ? { codexPermissionsMode: s.process.codexPermissionsMode }
+                  : undefined),
+            )
+          : s.codexSettings;
       const processWithPending = s.process as {
         getPendingPermission?: () =>
           | {
@@ -1340,7 +1344,7 @@ export class SessionManager {
               ? s.process.collaborationMode === "plan"
                 ? "plan"
                 : (codexSettings?.approvalPolicy ??
-                    s.process.approvalPolicy) === "never"
+                      s.process.approvalPolicy) === "never"
                   ? "bypassPermissions"
                   : "acceptEdits"
               : undefined,

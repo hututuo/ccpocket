@@ -45,9 +45,12 @@ export type CodexAgentItemCompletion =
 /**
  * Tracks Codex agent-message streaming by turn and item identity.
  *
- * Text is deliberately never used as an identity key. Ambiguous anonymous
- * deltas remain separate and are emitted at turn completion (fail-open), while
- * identified fallbacks leave bounded tombstones for delayed completions.
+ * Text is not a general identity key. One narrow exception correlates an
+ * otherwise unclaimed anonymous delta when it is an exact prefix of the sole
+ * authoritative item completion/turn summary in the same turn. Ambiguous
+ * anonymous deltas remain separate and are emitted at turn completion
+ * (fail-open), while identified fallbacks leave bounded tombstones for delayed
+ * completions.
  */
 export class CodexAgentTurnTracker {
   private readonly retainedTurnCount: number;
@@ -124,6 +127,34 @@ export class CodexAgentTurnTracker {
     state.anonymousPendingText += input.text;
   }
 
+  /**
+   * Seeds the authoritative assistant summary returned by turn/completed.
+   *
+   * Some app-server builds omit item/completed after streaming deltas and put
+   * the final agent item only in the turn summary. Existing item tombstones
+   * still win, so an item already emitted through item/completed is never
+   * duplicated.
+   */
+  seedTurnFallback(input: {
+    turnId?: string | null;
+    itemId?: string | null;
+    text: string;
+  }): void {
+    const text = nonBlank(input.text);
+    const turnId = this.resolveTurnId(input.turnId);
+    if (!text || !turnId) return;
+    const state = this.getOrCreateTurn(turnId);
+    const itemId = nonEmpty(input.itemId);
+    if (itemId) {
+      if (state.tombstonedItemIds.has(itemId)) return;
+      this.consumeMatchingAnonymousPrefix(state, itemId, text);
+      state.openItemIds.add(itemId);
+      state.pendingTextByItemId.set(itemId, text);
+      return;
+    }
+    state.anonymousPendingText = text;
+  }
+
   completeAgentItem(input: {
     turnId?: string | null;
     itemId?: string | null;
@@ -157,6 +188,9 @@ export class CodexAgentTurnTracker {
 
     const completedText = nonBlank(input.completedText);
     const pendingText = state.pendingTextByItemId.get(itemId) ?? null;
+    if (completedText && !nonBlank(pendingText)) {
+      this.consumeMatchingAnonymousPrefix(state, itemId, completedText);
+    }
     state.pendingTextByItemId.delete(itemId);
     state.openItemIds.delete(itemId);
 
@@ -272,6 +306,20 @@ export class CodexAgentTurnTracker {
     };
     this.turns.set(turnId, state);
     return state;
+  }
+
+  private consumeMatchingAnonymousPrefix(
+    state: AgentTurnState,
+    itemId: string,
+    authoritativeText: string,
+  ): void {
+    const anonymousText = nonBlank(state.anonymousPendingText);
+    if (!anonymousText || !authoritativeText.startsWith(anonymousText)) return;
+    const hasCompetingItem =
+      [...state.pendingTextByItemId.keys()].some((id) => id !== itemId) ||
+      [...state.openItemIds].some((id) => id !== itemId);
+    if (hasCompetingItem) return;
+    state.anonymousPendingText = "";
   }
 
   private addTombstone(state: AgentTurnState, itemId: string): void {

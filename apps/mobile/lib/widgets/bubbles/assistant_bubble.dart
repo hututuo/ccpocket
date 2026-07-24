@@ -31,6 +31,8 @@ import 'plan_card.dart';
 import 'thinking_bubble.dart';
 import 'todo_write_widget.dart';
 
+const _imageGenerationToolName = 'ImageGeneration';
+
 class AssistantBubble extends StatefulWidget {
   final AssistantServerMessage message;
 
@@ -48,6 +50,7 @@ class AssistantBubble extends StatefulWidget {
   final VoidCallback? onFork;
   final bool showProcessDetails;
   final ValueNotifier<int>? collapseNotifier;
+  final Set<String> hiddenToolUseIds;
 
   const AssistantBubble({
     super.key,
@@ -60,6 +63,7 @@ class AssistantBubble extends StatefulWidget {
     this.onFork,
     this.showProcessDetails = true,
     this.collapseNotifier,
+    this.hiddenToolUseIds = const {},
   });
 
   @override
@@ -77,10 +81,12 @@ class AssistantProcessDetails extends StatelessWidget {
     super.key,
     required this.message,
     this.collapseNotifier,
+    this.hiddenToolUseIds = const {},
   });
 
   final AssistantServerMessage message;
   final ValueNotifier<int>? collapseNotifier;
+  final Set<String> hiddenToolUseIds;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -97,7 +103,9 @@ class AssistantProcessDetails extends StatelessWidget {
                     collapseNotifier: collapseNotifier,
                   ),
           ToolUseContent(:final id, :final name, :final input) =>
-            name == 'ExitPlanMode'
+            name == 'ExitPlanMode' ||
+                    name == _imageGenerationToolName &&
+                        hiddenToolUseIds.contains(id)
                 ? const SizedBox.shrink()
                 : name == 'TodoWrite' || isCodexUpdatePlanTool(name)
                 ? TodoWriteWidget(
@@ -166,6 +174,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
         artifactContentIndexOffset: widget.message.artifactContentIndexOffset,
         showProcessDetails: widget.showProcessDetails,
         collapseNotifier: widget.collapseNotifier,
+        hiddenToolUseIds: widget.hiddenToolUseIds,
         onTogglePlainText: () {
           setState(() => _plainTextMode = !_plainTextMode);
         },
@@ -184,6 +193,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
       onFork: widget.onFork,
       showProcessDetails: widget.showProcessDetails,
       collapseNotifier: widget.collapseNotifier,
+      hiddenToolUseIds: widget.hiddenToolUseIds,
       onTogglePlainText: () {
         setState(() => _plainTextMode = !_plainTextMode);
       },
@@ -205,6 +215,7 @@ class _PlanLayout extends StatelessWidget {
   final bool showProcessDetails;
   final ValueNotifier<int>? collapseNotifier;
   final VoidCallback onTogglePlainText;
+  final Set<String> hiddenToolUseIds;
 
   const _PlanLayout({
     required this.contents,
@@ -219,6 +230,7 @@ class _PlanLayout extends StatelessWidget {
     this.artifactContentIndexOffset = 0,
     this.showProcessDetails = true,
     this.collapseNotifier,
+    this.hiddenToolUseIds = const {},
     required this.onTogglePlainText,
   });
 
@@ -271,7 +283,9 @@ class _PlanLayout extends StatelessWidget {
                 collapseNotifier: collapseNotifier,
               ),
               ToolUseContent(:final id, :final name, :final input) =>
-                name == 'ExitPlanMode'
+                name == 'ExitPlanMode' ||
+                        name == _imageGenerationToolName &&
+                            hiddenToolUseIds.contains(id)
                     ? const SizedBox.shrink()
                     : ToolUseTile(
                         toolUseId: id,
@@ -429,6 +443,7 @@ class _DefaultLayout extends StatelessWidget {
   final bool showProcessDetails;
   final ValueNotifier<int>? collapseNotifier;
   final VoidCallback onTogglePlainText;
+  final Set<String> hiddenToolUseIds;
 
   const _DefaultLayout({
     required this.contents,
@@ -442,6 +457,7 @@ class _DefaultLayout extends StatelessWidget {
     this.onFork,
     this.showProcessDetails = true,
     this.collapseNotifier,
+    this.hiddenToolUseIds = const {},
     required this.onTogglePlainText,
   });
 
@@ -469,6 +485,9 @@ class _DefaultLayout extends StatelessWidget {
             ),
             ToolUseContent(:final id, :final name, :final input) =>
               !showProcessDetails
+                  ? const SizedBox.shrink()
+                  : name == _imageGenerationToolName &&
+                        hiddenToolUseIds.contains(id)
                   ? const SizedBox.shrink()
                   : name == 'TodoWrite' || isCodexUpdatePlanTool(name)
                   ? TodoWriteWidget(

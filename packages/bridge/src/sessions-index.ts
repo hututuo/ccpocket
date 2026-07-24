@@ -84,6 +84,8 @@ export interface GetRecentSessionsOptions {
   limit?: number;       // default 20
   offset?: number;      // default 0
   projectPath?: string; // filter by project
+  /** Exact provider session ID lookup (used by deep-link resolution). */
+  sessionId?: string;
   /** Session IDs to exclude (archived sessions). */
   archivedSessionIds?: ReadonlySet<string>;
   /** Provider-scoped identities (`provider\0sessionId`) to exclude safely. */
@@ -1164,6 +1166,12 @@ export async function getAllRecentSessions(
     filtered = filtered.filter((e) => e.provider === options.provider);
   }
   perfStats.counts.afterProvider = filtered.length;
+
+  // Exact provider session lookup. Apply before pagination so old sessions
+  // remain resolvable even when they are outside the first recent page.
+  if (options.sessionId) {
+    filtered = filtered.filter((e) => e.sessionId === options.sessionId);
+  }
 
   // Filter named only
   if (options.namedOnly) {
@@ -3138,6 +3146,16 @@ function describeCodexHistoryCommand(payload: Record<string, unknown>): {
   const baseInput: Record<string, unknown> = {
     command,
     ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}),
+    ...(typeof payload.pluginId === "string"
+      ? { pluginId: payload.pluginId }
+      : typeof payload.plugin_id === "string"
+        ? { pluginId: payload.plugin_id }
+        : {}),
+    ...(typeof payload.scriptPath === "string"
+      ? { scriptPath: payload.scriptPath }
+      : typeof payload.script_path === "string"
+        ? { scriptPath: payload.script_path }
+        : {}),
     ...(actions.length > 0 ? { commandActions: actions } : {}),
     ...(typeof payload.status === "string" ? { status: payload.status } : {}),
     ...(typeof payload.exitCode === "number"

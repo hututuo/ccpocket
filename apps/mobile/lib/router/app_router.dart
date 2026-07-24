@@ -10,6 +10,7 @@ import '../features/explore/state/explore_state.dart';
 import '../features/git/git_screen.dart';
 import '../features/gallery/gallery_screen.dart';
 import '../features/session_list/workspace_shell_screen.dart';
+import '../features/session_link/session_link_screen.dart';
 import '../features/settings/auth_help_screen.dart';
 import '../features/settings/changelog_screen.dart';
 import '../features/settings/licenses_screen.dart';
@@ -31,6 +32,7 @@ class AppRouter extends RootStackRouter {
   List<AutoRoute> get routes => [
     AutoRoute(page: AdaptiveHomeRoute.page, path: '/', initial: true),
     AutoRoute(page: ClaudeSessionRoute.page, path: '/session/:sessionId'),
+    AutoRoute(page: SessionLinkRoute.page, path: '/session-link/:sessionId'),
     AutoRoute(page: CodexSessionRoute.page, path: '/codex-session/:sessionId'),
     AutoRoute(page: ExploreRoute.page, path: '/explore'),
     AutoRoute(page: GalleryRoute.page, path: '/gallery'),

@@ -42,6 +42,7 @@ import '../session_archive/session_archive_strings.dart';
 import '../settings/state/settings_cubit.dart';
 import '../settings/state/settings_state.dart';
 import 'desktop_session_list_continuity_tracker.dart';
+import 'services/session_resume_coordinator.dart';
 import 'state/session_list_cubit.dart';
 import 'state/session_list_state.dart';
 import 'widgets/connect_form.dart';
@@ -50,9 +51,14 @@ import 'widgets/machine_edit_sheet.dart';
 import 'widgets/session_list_app_bar.dart';
 import 'workspace_shell_screen.dart';
 
+export 'services/session_resume_coordinator.dart'
+    show
+        CodexRecentResumeSettings,
+        bridgePreservesCodexResumeSettings,
+        codexResumePreservesSettingsCapability,
+        factualCodexResumeSettings;
+
 const _sessionArchiveRequestUuid = Uuid();
-const codexResumePreservesSettingsCapability =
-    'codex_resume_preserves_settings_v1';
 
 // ---- Testable helpers (top-level) ----
 
@@ -170,94 +176,6 @@ List<RecentSession> preserveFactualRecentSessions(
   List<RecentSession> sessions,
 ) => sessions;
 
-class CodexRecentResumeSettings {
-  final String? permissionMode;
-  final String? executionMode;
-  final String? approvalPolicy;
-  final String? approvalsReviewer;
-  final String? codexPermissionsMode;
-  final String? sandboxMode;
-  final String? model;
-  final String? modelReasoningEffort;
-  final String? serviceTier;
-  final bool? networkAccessEnabled;
-  final String? webSearchMode;
-  final List<String>? additionalWritableRoots;
-
-  const CodexRecentResumeSettings({
-    this.permissionMode,
-    this.executionMode,
-    this.approvalPolicy,
-    this.approvalsReviewer,
-    this.codexPermissionsMode,
-    this.sandboxMode,
-    this.model,
-    this.modelReasoningEffort,
-    this.serviceTier,
-    this.networkAccessEnabled,
-    this.webSearchMode,
-    this.additionalWritableRoots,
-  });
-}
-
-CodexRecentResumeSettings factualCodexResumeSettings(
-  RecentSession session,
-  List<String> availableCodexModels,
-) {
-  final useCodexProfile = session.codexProfile?.isNotEmpty ?? false;
-  final approvalPolicy = session.codexApprovalPolicy;
-  final permissionsMode = codexPermissionsModeFromRaw(
-    session.codexPermissionsMode,
-  );
-  final useCustomPermissions =
-      permissionsMode == CodexPermissionsMode.custom || useCodexProfile;
-  final model =
-      normalizeCodexModelForAvailableList(
-        session.codexModel,
-        availableCodexModels,
-      ) ??
-      sanitizeCodexModelName(session.codexModel);
-  final permissionMode = useCodexProfile || approvalPolicy == null
-      ? null
-      : (approvalPolicy == CodexApprovalPolicy.never.value
-            ? PermissionMode.bypassPermissions.value
-            : PermissionMode.acceptEdits.value);
-  final executionMode = useCodexProfile || approvalPolicy == null
-      ? null
-      : deriveExecutionMode(
-          provider: Provider.codex.value,
-          executionMode: session.executionMode,
-          permissionMode: session.permissionMode,
-          approvalPolicy: approvalPolicy,
-        ).value;
-
-  return CodexRecentResumeSettings(
-    permissionMode: permissionMode,
-    executionMode: executionMode,
-    approvalPolicy: useCustomPermissions ? null : approvalPolicy,
-    approvalsReviewer: useCustomPermissions
-        ? null
-        : session.codexApprovalsReviewer,
-    codexPermissionsMode: useCodexProfile ? null : permissionsMode?.value,
-    sandboxMode: useCustomPermissions ? null : session.codexSandboxMode,
-    model: useCodexProfile ? null : model,
-    modelReasoningEffort: useCodexProfile
-        ? null
-        : session.codexModelReasoningEffort,
-    serviceTier: session.codexServiceTier,
-    networkAccessEnabled: useCustomPermissions
-        ? null
-        : session.codexNetworkAccessEnabled,
-    webSearchMode: useCodexProfile ? null : session.codexWebSearchMode,
-    additionalWritableRoots: useCustomPermissions
-        ? null
-        : session.codexAdditionalWritableRoots,
-  );
-}
-
-bool bridgePreservesCodexResumeSettings(Iterable<String> capabilities) =>
-    capabilities.contains(codexResumePreservesSettingsCapability);
-
 NewSessionParams? mergeCodexDefaultsIntoInitialSessionDefaults(
   NewSessionParams? defaults,
   NewSessionParams? codexDefaults,
@@ -374,7 +292,9 @@ class _SessionListScreenState extends State<SessionListScreen>
         // Clear-context recreation and session restarts (permission mode /
         // sandbox mode / rewind) are handled inside the active chat screen.
         // Navigating from the hidden session list stacks a second chat route.
-        if (msg.clearContext || msg.sourceSessionId != null) {
+        if (msg.clearContext ||
+            msg.sourceSessionId != null ||
+            msg.resumeRequestId != null) {
           return;
         }
         if (msg.sessionId != null) {
@@ -1607,7 +1527,11 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _resumeSession(RecentSession session) async {
     final bridge = context.read<BridgeService>();
-    if (_isResumePending(bridge, session)) {
+    final result = await SessionResumeCoordinator(
+      bridge: bridge,
+    ).resume(session);
+    if (!mounted) return;
+    if (result.disposition == SessionResumeDisposition.alreadyQueued) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(AppLocalizations.of(context).resumeAlreadyQueued),
@@ -1615,143 +1539,13 @@ class _SessionListScreenState extends State<SessionListScreen>
       );
       return;
     }
-    final resumeProjectPath = session.resumeCwd ?? session.projectPath;
-    _pendingResumeProjectPath = resumeProjectPath;
-    _pendingResumeGitBranch = session.gitBranch;
-
-    final isCodex = session.provider == Provider.codex.value;
-    final useCodexProfile =
-        isCodex && (session.codexProfile?.isNotEmpty ?? false);
-
-    // For Claude sessions, prefer per-session settings over global defaults.
-    Map<String, dynamic>? sessionSettings;
-    NewSessionParams? claudeDefaults;
-    if (!isCodex) {
-      sessionSettings = await loadClaudeSessionSettings(session.sessionId);
-      final defaults = await _loadSessionStartDefaults(
-        provider: Provider.claude,
-      );
-      if (!mounted) return;
-      claudeDefaults = defaults;
-    }
-
-    // Resolve each setting: per-session > global defaults > null
-    final sandboxMode =
-        sessionSettings?['sandboxMode'] as String? ??
-        claudeDefaults?.sandboxMode?.value;
-    final permissionMode =
-        sessionSettings?['permissionMode'] as String? ??
-        session.effectivePermissionMode;
-    final effort =
-        sessionSettings?['claudeEffort'] as String? ??
-        claudeDefaults?.claudeEffort?.value;
-    final claudeModel =
-        sessionSettings?['claudeModel'] as String? ??
-        claudeDefaults?.claudeModel;
-    final fallbackModel =
-        sessionSettings?['claudeFallbackModel'] as String? ??
-        claudeDefaults?.claudeFallbackModel;
-    final forkSession =
-        sessionSettings?['claudeForkSession'] as bool? ??
-        claudeDefaults?.claudeForkSession;
-    final persistSession =
-        sessionSettings?['claudePersistSession'] as bool? ??
-        claudeDefaults?.claudePersistSession;
-    final bridgePreservesCodexSettings =
-        isCodex &&
-        bridgePreservesCodexResumeSettings(bridge.bridgeCapabilities);
-    final codexResumeSettings = isCodex && !bridgePreservesCodexSettings
-        ? factualCodexResumeSettings(session, bridge.codexModels)
-        : null;
-
-    bridge.resumeSession(
-      session.sessionId,
-      resumeProjectPath,
-      permissionMode: isCodex
-          ? codexResumeSettings?.permissionMode
-          : permissionMode,
-      executionMode: isCodex
-          ? codexResumeSettings?.executionMode
-          : deriveExecutionMode(
-              provider: Provider.claude.value,
-              executionMode: sessionSettings?['executionMode'] as String?,
-              permissionMode: permissionMode,
-            ).value,
-      approvalPolicy: isCodex ? codexResumeSettings?.approvalPolicy : null,
-      approvalsReviewer: isCodex
-          ? codexResumeSettings?.approvalsReviewer
-          : null,
-      codexPermissionsMode: isCodex
-          ? codexResumeSettings?.codexPermissionsMode
-          : null,
-      planMode: isCodex
-          ? (bridgePreservesCodexSettings || useCodexProfile
-                ? null
-                : session.planMode)
-          : derivePlanMode(
-              planMode: sessionSettings?['planMode'] as bool?,
-              permissionMode: permissionMode,
-            ),
-      effort: !isCodex ? effort : null,
-      maxTurns: !isCodex ? claudeDefaults?.claudeMaxTurns : null,
-      maxBudgetUsd: !isCodex ? claudeDefaults?.claudeMaxBudgetUsd : null,
-      fallbackModel: !isCodex ? fallbackModel : null,
-      forkSession: !isCodex ? forkSession : null,
-      persistSession: !isCodex ? persistSession : null,
-      profile: isCodex && !bridgePreservesCodexSettings
-          ? session.codexProfile
-          : null,
-      provider: session.provider,
-      sandboxMode: isCodex ? codexResumeSettings?.sandboxMode : sandboxMode,
-      model: isCodex ? codexResumeSettings?.model : claudeModel,
-      modelReasoningEffort: isCodex
-          ? codexResumeSettings?.modelReasoningEffort
-          : null,
-      serviceTier: isCodex ? codexResumeSettings?.serviceTier : null,
-      networkAccessEnabled: isCodex
-          ? codexResumeSettings?.networkAccessEnabled
-          : null,
-      webSearchMode: isCodex ? codexResumeSettings?.webSearchMode : null,
-      additionalWritableRoots: isCodex
-          ? codexResumeSettings?.additionalWritableRoots
-          : null,
-    );
+    _pendingResumeProjectPath = result.projectPath;
+    _pendingResumeGitBranch = result.gitBranch;
     if (!bridge.isConnected) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(AppLocalizations.of(context).resumeQueuedForReconnect),
         ),
-      );
-    }
-
-    // Persist settings for this session (so the next resume uses them too).
-    if (!isCodex) {
-      final derivedExecutionMode = deriveExecutionMode(
-        provider: Provider.claude.value,
-        executionMode: sessionSettings?['executionMode'] as String?,
-        permissionMode: permissionMode,
-      ).value;
-      final derivedPlanMode = derivePlanMode(
-        planMode: sessionSettings?['planMode'] as bool?,
-        permissionMode: permissionMode,
-      );
-      final settings = <String, dynamic>{
-        'permissionMode': permissionMode,
-        'executionMode': derivedExecutionMode,
-        'planMode': derivedPlanMode,
-        'sandboxMode': ?sandboxMode,
-        'claudeEffort': ?effort,
-        'claudeModel': ?claudeModel,
-        'claudeFallbackModel': ?fallbackModel,
-        'claudeForkSession': ?forkSession,
-        'claudePersistSession': ?persistSession,
-      };
-      if (settings.isNotEmpty) {
-        unawaited(saveClaudeSessionSettings(session.sessionId, settings));
-      }
-    } else {
-      unawaited(
-        _saveProjectCodexProfile(session.projectPath, session.codexProfile),
       );
     }
   }

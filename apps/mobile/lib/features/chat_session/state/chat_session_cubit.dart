@@ -1455,6 +1455,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (isCodex && _handleGoalError(msg)) {
         return;
       }
+      if (_isSessionNotFound(msg)) {
+        _statusRefreshTimer?.cancel();
+        _statusRefreshTimer = null;
+        emit(state.copyWith(sessionUnavailable: true));
+        return;
+      }
     }
     if (msg is SystemMessage && msg.subtype == 'set_permission_mode') {
       _clearPendingPermissionModeRollback(msg.permissionChangeId);
@@ -4426,6 +4432,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       '$acknowledgedChangeId while $pendingChangeId is pending',
     );
     return true;
+  }
+
+  bool _isSessionNotFound(ErrorMessage msg) {
+    if (msg.errorCode == 'session_not_found') {
+      return msg.sessionId == sessionId;
+    }
+    // Compatibility with Bridges released before structured error codes.
+    return msg.message == 'Session $sessionId not found';
   }
 
   bool _isPermissionModeFailure(ErrorMessage msg) {

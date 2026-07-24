@@ -73,6 +73,8 @@ describe("codexThreadToSessionHistory", () => {
               id: "cmd1",
               command: "git status",
               cwd: "/tmp/repo",
+              pluginId: "openai.browser",
+              scriptPath: "/tmp/openai.browser/run.sh",
               status: "completed",
               aggregatedOutput: "clean",
               exitCode: 0,
@@ -102,7 +104,12 @@ describe("codexThreadToSessionHistory", () => {
             type: "tool_use",
             id: "cmd1",
             name: "Bash",
-            input: { command: "git status", cwd: "/tmp/repo" },
+            input: {
+              command: "git status",
+              cwd: "/tmp/repo",
+              pluginId: "openai.browser",
+              scriptPath: "/tmp/openai.browser/run.sh",
+            },
           },
         ],
       },
@@ -2852,6 +2859,56 @@ describe("claude namedOnly optimization", () => {
     expect(result.sessions).toHaveLength(1);
     expect(result.sessions[0].sessionId).toBe("named-s1");
     expect(result.sessions[0].name).toBe("My named session");
+  });
+
+  it("finds an exact Claude session outside the first recent page", async () => {
+    const projectDir = join(tempHome, ".claude", "projects", "-tmp-project-a");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "sessions-index.json"),
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            sessionId: "newer-s1",
+            fullPath: join(projectDir, "newer-s1.jsonl"),
+            fileMtime: Date.now(),
+            firstPrompt: "newer prompt",
+            messageCount: 2,
+            created: "2026-02-13T12:00:00.000Z",
+            modified: "2026-02-13T12:00:00.000Z",
+            gitBranch: "main",
+            projectPath: "/tmp/project-a",
+            isSidechain: false,
+          },
+          {
+            sessionId: "target-s2",
+            fullPath: join(projectDir, "target-s2.jsonl"),
+            fileMtime: Date.now() - 1000,
+            firstPrompt: "target prompt",
+            messageCount: 2,
+            created: "2026-02-13T10:00:00.000Z",
+            modified: "2026-02-13T10:00:00.000Z",
+            gitBranch: "feature",
+            projectPath: "/tmp/project-a",
+            isSidechain: false,
+          },
+        ],
+      }),
+    );
+
+    const result = await getAllRecentSessions({
+      provider: "claude",
+      sessionId: "target-s2",
+      limit: 1,
+    });
+
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]).toMatchObject({
+      sessionId: "target-s2",
+      projectPath: "/tmp/project-a",
+      gitBranch: "feature",
+    });
   });
 
   it("excludes indexed Claude auto-rename helper sessions", async () => {

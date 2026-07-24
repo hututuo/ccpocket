@@ -213,6 +213,7 @@ class ServerMessageWidget extends StatelessWidget {
       final AssistantServerMessage msg => AssistantBubble(
         message: msg,
         resolvedPlanText: resolvedPlanText,
+        hiddenToolUseIds: hiddenToolUseIds,
         onFileTap: onFileTap,
         sessionId: sessionId,
         projectPath: projectPath,
@@ -251,6 +252,7 @@ class ServerMessageWidget extends StatelessWidget {
             ? () => onDismissCodexWarning!(msg)
             : null,
       ),
+      SessionLinkResolutionMessage() => const SizedBox.shrink(),
       final StatusMessage msg => StatusChip(message: msg),
       HistoryMessage() => const SizedBox.shrink(),
       HistoryDeltaMessage() => const SizedBox.shrink(),

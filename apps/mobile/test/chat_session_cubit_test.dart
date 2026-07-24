@@ -5073,6 +5073,67 @@ void main() {
       },
     );
 
+    test(
+      'session-not-found stops history refresh and marks session unavailable',
+      () async {
+        final cubit = createCubit('missing-session');
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        expect(mockBridge.requestSessionHistoryCallCount, 1);
+        mockBridge.emitMessage(
+          const ErrorMessage(
+            message: 'Session missing-session not found',
+            errorCode: 'session_not_found',
+            sessionId: 'missing-session',
+          ),
+          sessionId: 'missing-session',
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 3100));
+
+        expect(cubit.state.sessionUnavailable, isTrue);
+        expect(mockBridge.requestSessionHistoryCallCount, 1);
+      },
+    );
+
+    test(
+      'ignores session-not-found errors scoped to another session',
+      () async {
+        final cubit = createCubit('s1');
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        mockBridge.emitMessage(
+          const ErrorMessage(
+            message: 'Session s2 not found',
+            errorCode: 'session_not_found',
+            sessionId: 's2',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.sessionUnavailable, isFalse);
+      },
+    );
+
+    test('ignores unscoped structured session-not-found errors', () async {
+      final cubit = createCubit('s1');
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      mockBridge.emitMessage(
+        const ErrorMessage(
+          message: 'Session s1 not found',
+          errorCode: 'session_not_found',
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.sessionUnavailable, isFalse);
+    });
+
     test('ignores duplicate past history messages in same session', () async {
       final cubit = createCubit('s1');
       addTearDown(cubit.close);

@@ -25,6 +25,7 @@ import '../../utils/diff_parser.dart';
 import '../../utils/network_endpoint.dart';
 import '../../utils/terminal_launcher.dart';
 import '../session_list/workspace_shell_screen.dart';
+import '../session_link/widgets/session_unavailable_view.dart';
 import '../settings/state/settings_cubit.dart';
 import '../../widgets/approval_bar.dart';
 import '../../widgets/bubbles/ask_user_question_widget.dart';
@@ -1150,7 +1151,15 @@ class _ChatScreenBody extends HookWidget {
                     ],
                   ),
                 ),
-                body: child,
+                body: sessionState.sessionUnavailable
+                    ? SessionUnavailableView(
+                        onOpenRecentSessions:
+                            onBackToSessions ??
+                            () {
+                              context.router.replaceAll([AdaptiveHomeRoute()]);
+                            },
+                      )
+                    : child,
               );
             },
             child: Column(

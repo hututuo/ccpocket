@@ -674,11 +674,9 @@ class _CcpocketAppState extends State<CcpocketApp> {
     final sessionId = data['sessionId']?.toString();
     if (sessionId == null || sessionId.isEmpty) return;
     final provider = _normalizeProvider(data['provider']?.toString());
-    if (provider == 'codex') {
-      _appRouter.navigate(CodexSessionRoute(sessionId: sessionId));
-      return;
-    }
-    _appRouter.navigate(ClaudeSessionRoute(sessionId: sessionId));
+    _appRouter.navigate(
+      SessionLinkRoute(sessionId: sessionId, provider: provider),
+    );
   }
 
   String _normalizeProvider(String? provider) {
@@ -727,7 +725,9 @@ class _CcpocketAppState extends State<CcpocketApp> {
       case ConnectionParams():
         _deepLinkNotifier.value = params;
       case SessionLinkParams(:final sessionId):
-        _appRouter.push(ClaudeSessionRoute(sessionId: sessionId));
+        _appRouter.navigate(
+          SessionLinkRoute(sessionId: sessionId, provider: 'claude'),
+        );
     }
   }
 

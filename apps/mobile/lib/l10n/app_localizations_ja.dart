@@ -987,6 +987,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get codexAutoReviewDescription => '承認リクエストを Codex が自動レビューします';
 
   @override
+  String get codexAutoReviewDisabledByPolicy => '組織の Browser Use ポリシーにより無効です';
+
+  @override
   String get codexAutoReviewUnavailableDescription =>
       'Never Ask では承認リクエストが発生しないため利用できません';
 
@@ -1123,13 +1126,15 @@ class AppLocalizationsJa extends AppLocalizations {
   String get tooltipCancelQueuedMessage => 'キュー中のメッセージをキャンセル';
 
   @override
-  String get reconnecting => '再接続中...';
+  String get reconnecting => 'Bridge との接続が一時的に切れました。自動で再接続しています...';
 
   @override
-  String get reconnectingQueuedMessages => '再接続中... キュー内のメッセージは自動送信されます';
+  String get reconnectingQueuedMessages =>
+      'Bridge との接続が一時的に切れました。自動で再接続しています。待機中のメッセージは保持されています。';
 
   @override
-  String get disconnectedMessagesQueued => '切断中 - メッセージは再接続待ちキューに入れられます';
+  String get disconnectedMessagesQueued =>
+      'Bridge に接続できません。操作は端末に保存され、再接続後に送信されます。';
 
   @override
   String get sessionQueuedForReconnect => 'セッションを再接続待ちキューに追加しました';
@@ -1150,10 +1155,32 @@ class AppLocalizationsJa extends AppLocalizations {
   String get pendingActionStatus => '待機中';
 
   @override
+  String get pendingActionProcessingStatus => '復元中';
+
+  @override
+  String get pendingActionProcessingStartStatus => '準備中';
+
+  @override
+  String get pendingActionProcessingStartDescription => 'Bridge でセッションを準備しています';
+
+  @override
+  String get pendingActionProcessingResumeDescription =>
+      '画像が多いセッションは時間がかかることがあります';
+
+  @override
+  String get pendingActionProcessingStartTitle => '新規セッションを作成中';
+
+  @override
+  String get pendingActionProcessingResumeTitle => 'セッション履歴を読み込んでいます';
+
+  @override
   String get tooltipCancelPendingAction => '待機中の操作をキャンセル';
 
   @override
   String get queuedLocally => 'ローカルでキュー中';
+
+  @override
+  String get processingOnBridge => 'Bridge で処理中';
 
   @override
   String get offlinePendingNewSessionTitle => '新規セッション待機中';
@@ -1513,6 +1540,22 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get creatingSession => 'セッション作成中...';
+
+  @override
+  String get resolvingLinkedSession => 'リンク先のセッションを検索しています...';
+
+  @override
+  String get resumingLinkedSession => 'セッションを再開しています...';
+
+  @override
+  String get sessionUnavailableTitle => 'セッションを利用できません';
+
+  @override
+  String get sessionUnavailableDescription =>
+      'このセッションは現在の Bridge では利用できません。最近のセッションから開いてください。';
+
+  @override
+  String get openRecentSessions => '最近のセッションを開く';
 
   @override
   String get copyForAgent => 'エージェント用にコピー';
@@ -2038,6 +2081,32 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get failedToLoadImage => '画像の読み込みに失敗しました';
+
+  @override
+  String get generatedImagePromptLabel => 'プロンプト';
+
+  @override
+  String get generatedImageDetailsLabel => '詳細';
+
+  @override
+  String get generatedImageHideDetailsLabel => '詳細を閉じる';
+
+  @override
+  String get generatedImageStatusLabel => 'ステータス';
+
+  @override
+  String get generatedImageSavedPathLabel => '保存先';
+
+  @override
+  String get previousImage => '前の画像';
+
+  @override
+  String get nextImage => '次の画像';
+
+  @override
+  String generatedImagePositionLabel(int current, int total) {
+    return '生成画像 $current / $total';
+  }
 
   @override
   String get noImageInClipboard => 'クリップボードに画像がありません';
