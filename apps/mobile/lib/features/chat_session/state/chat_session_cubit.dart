@@ -136,7 +136,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   Timer? _desktopContinuityRetryTimer;
   int _desktopContinuityRetryAttempt = 0;
   bool _goalReadPending = false;
+  bool _goalReadAwaitingThread = false;
   bool _goalUserRefreshPending = false;
+  bool _codexGoalThreadReady = false;
   final Map<String, Timer> _deliveryPendingTimers = {};
   final Map<String, QueuedInputItem> _deliveryPendingInputs = {};
   final Set<String> _desktopContinuityItemKeys = {};
@@ -370,6 +372,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               (message) =>
                   message is SystemMessage && message.subtype == 'init',
             )) {
+      final runtime = _runtimeSessionFrom(_bridge.sessions);
+      if (runtime != null &&
+          ProcessStatus.fromString(runtime.status) != ProcessStatus.starting &&
+          state.claudeSessionId?.trim().isNotEmpty == true) {
+        _codexGoalThreadReady = true;
+      }
       requestGoal();
     }
 
@@ -416,7 +424,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _goalReadTimer?.cancel();
     _goalReadTimer = null;
     _goalReadPending = false;
+    _goalReadAwaitingThread = false;
     _goalUserRefreshPending = false;
+    _codexGoalThreadReady = false;
     if (state.codexNativePlanModeSupport !=
             CodexNativePlanModeSupport.unknown ||
         state.goalSupport != CodexGoalSupport.unknown ||
@@ -907,6 +917,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final snapshotStatus = ProcessStatus.fromString(snapshot.status);
     final threadId = snapshot.claudeSessionId?.trim();
     final projectPath = snapshot.projectPath.trim();
+    final previousThreadId = state.claudeSessionId?.trim();
+    final hasRuntimeThread =
+        threadId?.isNotEmpty == true &&
+        snapshotStatus != ProcessStatus.starting;
+    if (threadId?.isNotEmpty == true && threadId != previousThreadId) {
+      _codexGoalThreadReady = hasRuntimeThread;
+    } else if (hasRuntimeThread) {
+      _codexGoalThreadReady = true;
+    }
     _sessionSnapshotOwnsThreadId |= threadId?.isNotEmpty == true;
     _sessionSnapshotOwnsProjectPath |= projectPath.isNotEmpty;
     final nextThreadId = threadId == null || threadId.isEmpty
@@ -1050,8 +1069,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         nextModel == state.codexModel &&
         nextEffort == state.codexModelReasoningEffort &&
         nextSpeed == state.codexSpeed) {
+      _flushDeferredGoalRead();
       return;
     }
+    final goalThreadChanged =
+        nextThreadId?.trim().isNotEmpty == true &&
+        nextThreadId?.trim() != previousThreadId;
     emit(
       state.copyWith(
         claudeSessionId: nextThreadId,
@@ -1068,8 +1091,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         codexModel: nextModel,
         codexModelReasoningEffort: nextEffort,
         codexSpeed: nextSpeed,
+        goal: goalThreadChanged ? null : state.goal,
+        goalStateLoaded: goalThreadChanged ? false : state.goalStateLoaded,
+        goalOperationSequence: goalThreadChanged
+            ? null
+            : state.goalOperationSequence,
       ),
     );
+    _flushDeferredGoalRead();
   }
 
   void _synchronizeCodexRuntimeSnapshot(List<SessionInfo> sessions) {
@@ -1622,10 +1651,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _bridge.patchSessionSandboxMode(sessionId, incomingSandbox.value);
       }
     }
-    if (isCodex && msg is SystemMessage && msg.subtype == 'init') {
-      requestGoal();
-    }
-
     // Prevent duplicate past_history processing
     if (msg is PastHistoryMessage) {
       if (_pastHistoryLoaded) return;
@@ -1705,6 +1730,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         // a stale idle tail cannot dismiss a still-pending Plan approval.
         final runtime = _runtimeSessionFrom(_bridge.sessions);
         if (runtime != null) _restoreRuntimeInteractions(runtime);
+      }
+      if (isCodex && msg is SystemMessage && msg.subtype == 'init') {
+        final threadId = state.claudeSessionId?.trim();
+        _codexGoalThreadReady = threadId?.isNotEmpty == true;
+        requestGoal();
       }
       if (msg is StatusMessage) {
         _statusFromHistoryFallback = false;
@@ -1818,7 +1848,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _goalReadTimer?.cancel();
     _goalReadTimer = null;
     _goalReadPending = false;
+    _goalReadAwaitingThread = false;
     _goalUserRefreshPending = false;
+  }
+
+  void _flushDeferredGoalRead() {
+    if (!_goalReadAwaitingThread ||
+        !_codexGoalThreadReady ||
+        state.claudeSessionId?.trim().isNotEmpty != true) {
+      return;
+    }
+    requestGoal();
   }
 
   void _applyGoalState(GoalStateMessage message) {
@@ -3447,15 +3487,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void requestGoal({bool userInitiated = false}) {
     if (!isCodex || state.goalMutation != null) return;
-    if (state.goalSupport == CodexGoalSupport.unsupported && !userInitiated) {
+    final effectiveUserInitiated =
+        userInitiated ||
+        (_goalReadAwaitingThread && _goalUserRefreshPending);
+    if (state.goalSupport == CodexGoalSupport.unsupported &&
+        !effectiveUserInitiated) {
       return;
     }
     if (_goalReadPending) {
-      _goalUserRefreshPending = _goalUserRefreshPending || userInitiated;
+      _goalUserRefreshPending =
+          _goalUserRefreshPending || effectiveUserInitiated;
       return;
     }
     if (!_bridge.isConnected) {
-      if (userInitiated) {
+      if (effectiveUserInitiated) {
         _setGoalOperationError(
           'Connect to the Bridge before managing this goal.',
           kind: CodexGoalErrorKind.connectRequired,
@@ -3472,9 +3517,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       return;
     }
+    if (!_codexGoalThreadReady ||
+        state.claudeSessionId?.trim().isNotEmpty != true) {
+      // A resumed session can publish its durable id before app-server has
+      // actually bound that thread. Keep one coalesced read intent and retry
+      // only after system/init or a non-starting authoritative SessionInfo.
+      _goalReadAwaitingThread = true;
+      _goalUserRefreshPending =
+          _goalUserRefreshPending || effectiveUserInitiated;
+      return;
+    }
     try {
+      _goalReadAwaitingThread = false;
       _goalReadPending = true;
-      _goalUserRefreshPending = userInitiated;
+      _goalUserRefreshPending = effectiveUserInitiated;
       _goalReadTimer?.cancel();
       _goalReadTimer = Timer(_goalReadTimeout, () {
         if (!_goalReadPending || isClosed) return;
@@ -3512,8 +3568,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           goalStateLoaded: false,
           goalSupport: CodexGoalSupport.unknown,
           goalLoadErrorKind: CodexGoalErrorKind.readFailed,
-          goalMutationError: userInitiated ? error.toString() : null,
-          goalMutationErrorKind: userInitiated
+          goalMutationError: effectiveUserInitiated ? error.toString() : null,
+          goalMutationErrorKind: effectiveUserInitiated
               ? CodexGoalErrorKind.readFailed
               : null,
         ),

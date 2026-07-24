@@ -526,9 +526,17 @@ Mobile rebuildable store
 
 ### 8.4 Goal 新建错误
 
-- `thread/goal/get` 只有在 durable provider thread ID 已确定后发送；
-- 新会话创建阶段由 correlation router 等待匹配的 thread binding；
+- 已确认根因不仅是空 ID：resume 会在官方 app-server 完成
+  `thread/resume` 前预填 durable ID，原实现又会在 socket connected、缓存 init
+  和 live init 的 state 更新前分别触发读取，因此仍可能撞上
+  `No thread ID available for goal lookup`；
+- `thread/goal/get` 只有在 durable provider thread ID 已确定，并且收到当前
+  `system/init` 或非 `starting` 的 authoritative runtime snapshot 后发送；
+- 新会话创建阶段合并重复读取意图，等待匹配的 thread binding；用户主动刷新
+  意图保留到就绪后，但不会提前显示底层错误；
 - 缺 ID 时不请求、不显示原始 `No thread ID available` 错误；
+- thread identity 发生变化时先清除旧 Goal/sequence，再读取新线程，避免跨会话
+  短暂串值；
 - 旧 Bridge 回退必须有界且不能把另一会话的 Goal 路由过来。
 
 ## 9. 导航、状态、额度和时间

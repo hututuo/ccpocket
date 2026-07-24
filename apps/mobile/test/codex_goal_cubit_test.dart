@@ -85,7 +85,27 @@ void main() {
     mockBridge.dispose();
   });
 
-  ChatSessionCubit createCubit(String sessionId, {Provider? provider}) {
+  ChatSessionCubit createCubit(
+    String sessionId, {
+    Provider? provider,
+    bool threadReady = true,
+  }) {
+    if (provider == Provider.codex &&
+        threadReady &&
+        !mockBridge.sessionSnapshot.any((session) => session.id == sessionId)) {
+      mockBridge.sessionSnapshot = [
+        ...mockBridge.sessionSnapshot,
+        SessionInfo(
+          id: sessionId,
+          provider: 'codex',
+          projectPath: '/tmp/project',
+          claudeSessionId: 'thread-$sessionId',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ];
+    }
     return ChatSessionCubit(
       sessionId: sessionId,
       provider: provider,
@@ -95,6 +115,93 @@ void main() {
   }
 
   group('Codex Goal mobile control', () {
+    test(
+      'new session defers Goal lookup until app-server binds its thread',
+      () async {
+        final cubit = createCubit(
+          's-new',
+          provider: Provider.codex,
+          threadReady: false,
+        );
+        addTearDown(cubit.close);
+
+        cubit.requestGoal(userInitiated: true);
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        await pumpEventQueue();
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'get_goal',
+          ),
+          isEmpty,
+        );
+
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-new',
+            provider: 'codex',
+          ),
+          sessionId: 's-new',
+        );
+        await pumpEventQueue();
+
+        final requests = mockBridge.sentMessages.where(
+          (message) => message.type == 'get_goal',
+        );
+        expect(requests, hasLength(1));
+        expect(
+          jsonDecode(requests.single.toJson()),
+          {'type': 'get_goal', 'sessionId': 's-new'},
+        );
+      },
+    );
+
+    test(
+      'prebound resume id waits for a non-starting runtime snapshot',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's-resume',
+            provider: 'codex',
+            projectPath: '/tmp/project',
+            claudeSessionId: 'thread-resume',
+            status: 'starting',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+        final cubit = createCubit(
+          's-resume',
+          provider: Provider.codex,
+          threadReady: false,
+        );
+        addTearDown(cubit.close);
+
+        cubit.requestGoal();
+        expect(mockBridge.sentMessages, isEmpty);
+
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's-resume',
+            provider: 'codex',
+            projectPath: '/tmp/project',
+            claudeSessionId: 'thread-resume',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await pumpEventQueue();
+
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'get_goal',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
     test(
       'Codex /goal command sets goal without creating a chat turn',
       () async {
