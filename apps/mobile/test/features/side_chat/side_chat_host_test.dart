@@ -1,13 +1,15 @@
 import 'package:ccpocket/features/local_session_features/host/local_session_feature.dart';
 import 'package:ccpocket/features/local_session_features/host/local_session_feature_host.dart';
+import 'package:ccpocket/features/side_chat/state/ephemeral_side_chat_registry_service.dart';
 import 'package:ccpocket/features/side_chat/state/side_chat_controller.dart';
-import 'package:ccpocket/features/side_chat/widgets/persisted_side_chat_pane.dart';
+import 'package:ccpocket/features/side_chat/widgets/ephemeral_side_chat_pane.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/draft_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _Bridge extends BridgeService {
@@ -27,12 +29,14 @@ class _HostHarness {
     required this.context,
     required this.bridge,
     required this.draftService,
+    required this.registryService,
     required this.openedPanes,
   });
 
   final CodexSessionFeatureContext context;
   final _Bridge bridge;
   final DraftService draftService;
+  final EphemeralSideChatRegistryService registryService;
   final List<_OpenedPane> openedPanes;
 }
 
@@ -42,42 +46,50 @@ Future<_HostHarness> _pumpHost(WidgetTester tester) async {
   });
   final draftService = DraftService(await SharedPreferences.getInstance());
   final bridge = _Bridge();
+  final registryService = EphemeralSideChatRegistryService(
+    bridge: BridgeServiceEphemeralSideChatGateway(bridge),
+  );
   final inputController = TextEditingController(text: 'main composer');
   final openedPanes = <_OpenedPane>[];
   late CodexSessionFeatureContext featureContext;
 
   await tester.pumpWidget(
-    RepositoryProvider<DraftService>.value(
-      value: draftService,
-      child: MaterialApp(
-        home: Builder(
-          builder: (context) {
-            featureContext = CodexSessionFeatureContext(
-              context: context,
-              sessionId: 'parent-1',
-              bridge: bridge,
-              inputController: inputController,
-              draftService: draftService,
-              openPane: (featureId, {arguments = const {}}) async {
-                openedPanes.add((
-                  featureId: featureId,
-                  arguments: Map.unmodifiable(arguments),
-                ));
-              },
-            );
-            return const SizedBox();
-          },
+    ChangeNotifierProvider<EphemeralSideChatRegistryService>.value(
+      value: registryService,
+      child: RepositoryProvider<DraftService>.value(
+        value: draftService,
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) {
+              featureContext = CodexSessionFeatureContext(
+                context: context,
+                sessionId: 'parent-1',
+                bridge: bridge,
+                inputController: inputController,
+                draftService: draftService,
+                openPane: (featureId, {arguments = const {}}) async {
+                  openedPanes.add((
+                    featureId: featureId,
+                    arguments: Map.unmodifiable(arguments),
+                  ));
+                },
+              );
+              return const SizedBox();
+            },
+          ),
         ),
       ),
     ),
   );
 
   addTearDown(inputController.dispose);
+  addTearDown(registryService.dispose);
   addTearDown(bridge.dispose);
   return _HostHarness(
     context: featureContext,
     bridge: bridge,
     draftService: draftService,
+    registryService: registryService,
     openedPanes: openedPanes,
   );
 }
@@ -163,10 +175,11 @@ void main() {
       ),
     );
 
-    expect(pane, isA<PersistedSideChatPane>());
-    final panel = pane as PersistedSideChatPane;
+    expect(pane, isA<EphemeralSideChatPane>());
+    final panel = pane as EphemeralSideChatPane;
     expect(panel.parentSessionId, 'parent-1');
     expect(panel.bridgeService, same(harness.bridge));
+    expect(panel.registryService, same(harness.registryService));
     expect(panel.draftService, same(harness.draftService));
     expect(panel.initialSelection, 'prefill from host');
     expect(panel.selectionRevision, 42);

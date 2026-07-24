@@ -50,6 +50,7 @@ import 'features/git/state/git_status_cubit.dart';
 import 'features/git/state/git_view_cache_service.dart';
 import 'features/settings/state/settings_cubit.dart';
 import 'features/settings/state/settings_state.dart';
+import 'features/side_chat/state/ephemeral_side_chat_registry_service.dart';
 import 'models/code_font_family.dart';
 import 'models/messages.dart';
 import 'providers/bridge_cubits.dart';
@@ -189,6 +190,9 @@ void main() async {
     ),
   );
   bridge.onDisconnect = sshBridgeTunnelService?.closeAll;
+  final ephemeralSideChatRegistry = EphemeralSideChatRegistryService(
+    bridge: BridgeServiceEphemeralSideChatGateway(bridge),
+  );
   final fileTransferService = FileTransferService(
     bridge: BridgeServiceFileTransferGateway(bridge),
     storage: FileTransferStorage(
@@ -350,6 +354,10 @@ void main() async {
         ),
         ChangeNotifierProvider<FileBrowserService>(
           create: (_) => fileBrowserService,
+          lazy: false,
+        ),
+        ChangeNotifierProvider<EphemeralSideChatRegistryService>(
+          create: (_) => ephemeralSideChatRegistry,
           lazy: false,
         ),
         ChangeNotifierProvider<ConversationMirrorService>(

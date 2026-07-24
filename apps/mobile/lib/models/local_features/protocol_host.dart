@@ -113,6 +113,7 @@ class LocalFeatureProtocolHost {
     addToConversationProtocolSlot,
     sideChatProtocolSlot,
     persistedSideChatProtocolSlot,
+    ephemeralSideChatProtocolSlot,
     conversationMirrorProtocolSlot,
     codexCoreActionsProtocolSlot,
     codexDesktopContinuityProtocolSlot,

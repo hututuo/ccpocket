@@ -36,6 +36,8 @@ import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../local_session_features/host/local_session_feature.dart';
 import '../local_session_features/host/local_session_feature_host.dart';
+import '../side_chat/state/ephemeral_side_chat_registry_service.dart';
+import '../side_chat/widgets/auxiliary_floating_dock.dart';
 import '../session_link/widgets/session_unavailable_view.dart';
 import '../../widgets/approval_bar.dart';
 import '../../widgets/bubbles/ask_user_question_widget.dart';
@@ -102,7 +104,7 @@ class CodexSessionScreen extends StatefulWidget {
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
 
-  /// Persisted child conversations reuse the full Codex screen, but can
+  /// Auxiliary child conversations reuse the full Codex screen, but can
   /// selectively hide operations that the child-session workflow does not
   /// support. All ordinary session screens keep Fork enabled by default.
   final bool allowMessageFork;
@@ -643,6 +645,11 @@ class _CodexChatBody extends HookWidget {
     useEffect(() => chatInputController.dispose, [chatInputController]);
     final planFeedbackController = useTextEditingController();
     final draftService = context.read<DraftService>();
+    EphemeralSideChatRegistryService? ephemeralSideChatRegistry;
+    try {
+      ephemeralSideChatRegistry = context
+          .read<EphemeralSideChatRegistryService>();
+    } catch (_) {}
     final localFeatureContext = CodexSessionFeatureContext(
       context: context,
       sessionId: sessionId,
@@ -1508,8 +1515,11 @@ class _CodexChatBody extends HookWidget {
                     : child,
               );
             },
-            child: Column(
+            child: Stack(
               children: [
+                Positioned.fill(
+                  child: Column(
+                    children: [
                 if (bridgeState == BridgeConnectionState.reconnecting ||
                     bridgeState == BridgeConnectionState.disconnected)
                   ReconnectBanner(bridgeState: bridgeState),
@@ -1781,6 +1791,29 @@ class _CodexChatBody extends HookWidget {
                             onFilePeekOpened: handleFilePeekOpened,
                           )
                         : null,
+                  ),
+                    ],
+                  ),
+                ),
+                if (ephemeralSideChatRegistry != null)
+                  Positioned.fill(
+                    child: AuxiliaryFloatingDock(
+                      key: ValueKey('auxiliary_dock_$sessionId'),
+                      sessionId: sessionId,
+                      bridgeService: bridge,
+                      registryService: ephemeralSideChatRegistry,
+                      onOpenSideChat: (parentSessionId, entry) =>
+                          _openLocalFeaturePaneOrSheet(
+                            context,
+                            featureId: 'side_chat',
+                            sessionId: parentSessionId,
+                            arguments: entry == null
+                                ? const {}
+                                : {
+                                    'childSessionId': entry.childSessionId,
+                                  },
+                          ),
+                    ),
                   ),
               ],
             ),

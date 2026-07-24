@@ -446,10 +446,19 @@ Mobile rebuildable store
 ### 7.1 Side Chat
 
 - 取消本地持久 Side Chat 产品类型。
-- 通过 Codex app-server 当前实际支持的官方临时 thread/fork 接口创建；
+- 已用当前安装的 Codex app-server schema 复核：官方可实现原语是
+  `thread/fork` 并显式传 `ephemeral: true`；成功响应还必须满足
+  `thread.ephemeral == true` 且 `thread.path == null`，即运行时内存线程而非
+  另一条落盘会话；
 - 生命周期和过期由官方运行时决定，Mobile/Bridge 不硬编码用户口述的“半小时”；
-- capability 不可用时隐藏或明确提示，不伪造另一种持久会话；
-- 复用现有原生 Side Chat 前端外壳、输入、消息、审批和滚动组件，不重造对话框。
+- 新 Bridge 以 `ephemeral_side_chat_v1` 暴露 live-only child registry：
+  child 不进入 durable session list、不写 worktree/profile/additional-root 映射，
+  仅在用户明确结束、父 runtime 被销毁或 Bridge 关闭时销毁；关闭/隐藏手机面板
+  只移除 UI，不结束 child；
+- capability 不可用时回退现有隔离式 ephemeral Side Chat 面板，不请求旧的
+  persisted Side Chat，也不伪造另一种持久会话；
+- 新路径直接复用普通 `CodexSessionScreen` 的输入、消息、审批、折叠和滚动套件；
+  原有独立 Side Chat 面板只保留为旧 Bridge 兼容回退，不再造第三套界面。
 
 ### 7.2 App 内悬浮窗
 
@@ -459,6 +468,9 @@ Mobile rebuildable store
   - 待处理审批/问题；
   - 必要的未读完成状态。
 - 浮窗可拖拽、吸附屏幕边缘、半隐藏并可拉出；
+- 浮窗挂在真实手机 Codex 会话页而非仅宽屏 Workspace；第一版提供临时会话
+  registry 和原有 `SubagentsPanel` 两个页签，点击存活 child 可重新打开普通
+  会话界面，明确“结束”才向 Bridge 发销毁请求；
 - 关闭面板不销毁 registry 中仍存活的官方临时线程；
 - 避免昂贵阴影、持续离屏合成和常驻 ticker；Reduce Motion/TickerMode 下停动画；
 - registry 与具体 UI 解耦，后续 iPad 布局可替换而不改变会话协议。
