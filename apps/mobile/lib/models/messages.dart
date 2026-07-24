@@ -991,7 +991,9 @@ sealed class ServerMessage {
         sourceSessionId: json['sourceSessionId'] as String?,
         forkedFromSessionId: json['forkedFromSessionId'] as String?,
         forkedFromThreadId: json['forkedFromThreadId'] as String?,
+        startRequestId: json['startRequestId'] as String?,
         resumeRequestId: json['resumeRequestId'] as String?,
+        errorMessage: json['errorMessage'] as String?,
         tipCode: json['tipCode'] as String?,
         permissionChangeId: json['permissionChangeId'] as String?,
         codexCliJoin: json['codexCliJoin'] is Map<String, dynamic>
@@ -1851,7 +1853,9 @@ class SystemMessage implements ServerMessage {
   final String? sourceSessionId;
   final String? forkedFromSessionId;
   final String? forkedFromThreadId;
+  final String? startRequestId;
   final String? resumeRequestId;
+  final String? errorMessage;
   final String? tipCode;
   final String? permissionChangeId;
   final CodexCliJoinTarget? codexCliJoin;
@@ -1886,7 +1890,9 @@ class SystemMessage implements ServerMessage {
     this.sourceSessionId,
     this.forkedFromSessionId,
     this.forkedFromThreadId,
+    this.startRequestId,
     this.resumeRequestId,
+    this.errorMessage,
     this.tipCode,
     this.permissionChangeId,
     this.codexCliJoin,
@@ -4692,6 +4698,7 @@ const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
 const historyPageCapability = 'history_page_v1';
 const historyToolDetailCapability = 'history_tool_detail_v1';
 const sessionActivityAtCapability = 'session_activity_at_v1';
+const sessionRequestCorrelationCapability = 'session_request_correlation_v1';
 
 class ClientMessage {
   final Map<String, dynamic> _json;
@@ -4727,6 +4734,7 @@ class ClientMessage {
           historyPageCapability,
           historyToolDetailCapability,
           sessionActivityAtCapability,
+          sessionRequestCorrelationCapability,
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',
@@ -4813,6 +4821,7 @@ class ClientMessage {
     String? webSearchMode,
     List<String>? additionalWritableRoots,
     bool? autoRename,
+    String? startRequestId,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'start',
@@ -4846,6 +4855,7 @@ class ClientMessage {
       if (additionalWritableRoots != null && additionalWritableRoots.isNotEmpty)
         'additionalWritableRoots': additionalWritableRoots,
       'autoRename': ?autoRename,
+      'startRequestId': ?startRequestId,
     });
   }
 

@@ -315,12 +315,16 @@ class SessionResumeCoordinator {
   }
 
   bool _isQueued(String sessionId, String provider) {
-    return _bridge.offlinePendingActions.any(
-      (action) =>
-          action.kind == OfflinePendingActionKind.resume &&
-          action.sessionId == sessionId &&
-          action.provider == provider,
-    );
+    return _bridge.hasPendingSessionResume(
+          sessionId: sessionId,
+          provider: provider,
+        ) ||
+        _bridge.offlinePendingActions.any(
+          (action) =>
+              action.kind == OfflinePendingActionKind.resume &&
+              action.sessionId == sessionId &&
+              action.provider == provider,
+        );
   }
 
   Future<void> _saveCodexProfile(String projectPath, String? profile) async {

@@ -482,6 +482,35 @@ class BridgeService implements BridgeServiceBase {
   List<OfflinePendingAction> get offlinePendingActions =>
       _offlinePendingActions;
 
+  bool hasPendingSessionStart({
+    required String projectPath,
+    required String provider,
+  }) {
+    return _allPendingSessionMessages().any((message) {
+      final action = _offlinePendingActionFor(message);
+      return action?.kind == OfflinePendingActionKind.start &&
+          action?.provider == provider &&
+          _samePendingProjectPath(action!.projectPath, projectPath);
+    });
+  }
+
+  bool hasPendingSessionResume({
+    required String sessionId,
+    required String provider,
+  }) {
+    return _allPendingSessionMessages().any((message) {
+      final action = _offlinePendingActionFor(message);
+      return action?.kind == OfflinePendingActionKind.resume &&
+          action?.provider == provider &&
+          action?.sessionId == sessionId;
+    });
+  }
+
+  Iterable<ClientMessage> _allPendingSessionMessages() sync* {
+    yield* _messageQueue;
+    yield* _inFlightPendingMessages.values;
+  }
+
   BridgeService({
     this.permissionChangeTimeout = const Duration(seconds: 30),
     this.fileTransferClientSupported = false,
@@ -1655,7 +1684,8 @@ class BridgeService implements BridgeServiceBase {
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
               case SystemMessage(:final permissionMode):
-                if (msg.subtype == 'session_created') {
+                if (msg.subtype == 'session_created' ||
+                    msg.subtype == 'session_start_failed') {
                   _clearPendingSessionActionFor(msg);
                 } else if (msg.subtype == 'session_resume_started') {
                   _markPendingSessionActionProcessing(msg);
@@ -2560,7 +2590,10 @@ class BridgeService implements BridgeServiceBase {
         'input:${json['sessionId'] ?? ''}:${json['clientMessageId']}',
       'resume_session' =>
         'resume:${json['provider'] ?? 'claude'}:${json['sessionId']}',
-      'start' => 'start:${_canonicalJson(json)}',
+      'start' =>
+        'start:${_canonicalJson(
+          Map<String, dynamic>.from(json)..remove('startRequestId'),
+        )}',
       _ => null,
     };
   }
@@ -2697,11 +2730,17 @@ class BridgeService implements BridgeServiceBase {
     final projectPath = message.projectPath;
     final claudeSessionId = message.claudeSessionId;
     final sourceSessionId = message.sourceSessionId;
+    final resumeRequestId = message.resumeRequestId;
 
     bool matches(ClientMessage pending) {
       final action = _offlinePendingActionFor(pending);
       if (action == null || action.provider != provider) return false;
       if (action.kind == OfflinePendingActionKind.start) return false;
+      if (resumeRequestId != null) {
+        final json =
+            jsonDecode(pending.toJson()) as Map<String, dynamic>;
+        return json['resumeRequestId'] == resumeRequestId;
+      }
       if (projectPath != null &&
           !_samePendingProjectPath(action.projectPath, projectPath)) {
         return false;
@@ -2717,6 +2756,7 @@ class BridgeService implements BridgeServiceBase {
         entry.value,
         provider: provider,
         projectPath: projectPath,
+        startRequestId: message.startRequestId,
       )) {
         if (!matches(entry.value)) continue;
       }
@@ -2733,6 +2773,7 @@ class BridgeService implements BridgeServiceBase {
           pending,
           provider: provider,
           projectPath: projectPath,
+          startRequestId: message.startRequestId,
         )) {
           if (!matches(pending)) return false;
         }
@@ -2754,6 +2795,7 @@ class BridgeService implements BridgeServiceBase {
     if (sourceSessionId == null || sourceSessionId.isEmpty) return;
     final provider = message.provider ?? Provider.claude.value;
     final projectPath = message.projectPath;
+    final resumeRequestId = message.resumeRequestId;
 
     for (final entry in _inFlightPendingMessages.entries) {
       final action = _offlinePendingActionFor(entry.value, canCancel: false);
@@ -2762,6 +2804,11 @@ class BridgeService implements BridgeServiceBase {
           action.provider != provider ||
           action.sessionId != sourceSessionId) {
         continue;
+      }
+      if (resumeRequestId != null) {
+        final json =
+            jsonDecode(entry.value.toJson()) as Map<String, dynamic>;
+        if (json['resumeRequestId'] != resumeRequestId) continue;
       }
       if (projectPath != null &&
           !_compatiblePendingProjectPath(action.projectPath, projectPath)) {
@@ -2779,12 +2826,18 @@ class BridgeService implements BridgeServiceBase {
     final sourceSessionId = message.sourceSessionId;
     if (sourceSessionId == null || sourceSessionId.isEmpty) return;
     final provider = message.provider ?? Provider.claude.value;
+    final resumeRequestId = message.resumeRequestId;
 
     bool matches(ClientMessage pending) {
       final action = _offlinePendingActionFor(pending);
-      return action?.kind == OfflinePendingActionKind.resume &&
-          action?.provider == provider &&
-          action?.sessionId == sourceSessionId;
+      if (action?.kind != OfflinePendingActionKind.resume ||
+          action?.provider != provider ||
+          action?.sessionId != sourceSessionId) {
+        return false;
+      }
+      if (resumeRequestId == null) return true;
+      final json = jsonDecode(pending.toJson()) as Map<String, dynamic>;
+      return json['resumeRequestId'] == resumeRequestId;
     }
 
     var removed = false;
@@ -2815,12 +2868,17 @@ class BridgeService implements BridgeServiceBase {
     ClientMessage pending, {
     required String provider,
     required String? projectPath,
+    required String? startRequestId,
   }) {
     final action = _offlinePendingActionFor(pending);
     if (action == null ||
         action.kind != OfflinePendingActionKind.start ||
         action.provider != provider) {
       return false;
+    }
+    if (startRequestId != null) {
+      final json = jsonDecode(pending.toJson()) as Map<String, dynamic>;
+      return json['startRequestId'] == startRequestId;
     }
     if (projectPath == null || projectPath.isEmpty) {
       return true;
@@ -2832,6 +2890,9 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _clearPendingStartActionsForSessions(List<SessionInfo> sessions) {
+    if (_bridgeCapabilities.contains(sessionRequestCorrelationCapability)) {
+      return;
+    }
     if (sessions.isEmpty ||
         (_messageQueue.isEmpty && _inFlightPendingMessages.isEmpty)) {
       return;

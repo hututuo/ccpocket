@@ -30,6 +30,7 @@ import '../../utils/terminal_launcher.dart';
 import '../settings/state/settings_cubit.dart';
 import '../../widgets/new_session_sheet.dart'
     show permissionModeFromRaw, sandboxModeFromRaw;
+import '../session_list/pending_session_binding.dart';
 import '../session_list/workspace_shell_screen.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
@@ -225,6 +226,23 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _listenForSessionCreated() {
+    final pendingBinding = widget.pendingSessionCreated;
+    if (pendingBinding is PendingSessionBinding) {
+      final buffered = pendingBinding.value;
+      if (buffered != null && buffered.sessionId != null) {
+        _resolveSession(buffered);
+        return;
+      }
+      pendingBinding.addListener(_onPendingSessionCreated);
+      pendingBinding.failure.addListener(_onPendingSessionFailed);
+      if (pendingBinding.failure.value != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _onPendingSessionFailed();
+        });
+      }
+      return;
+    }
+
     // Check if session_list_screen already captured the message (race fix).
     final buffered = widget.pendingSessionCreated?.value;
     if (buffered != null && buffered.sessionId != null) {
@@ -254,6 +272,31 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (msg != null && msg.sessionId != null && mounted && _isPending) {
       _resolveSession(msg);
     }
+  }
+
+  void _onPendingSessionFailed() {
+    final binding = widget.pendingSessionCreated;
+    if (binding is! PendingSessionBinding ||
+        binding.failure.value == null ||
+        !mounted ||
+        !_isPending) {
+      return;
+    }
+    binding.removeListener(_onPendingSessionCreated);
+    binding.failure.removeListener(_onPendingSessionFailed);
+    _pendingSub?.cancel();
+    _pendingSub = null;
+    final messenger = ScaffoldMessenger.of(context);
+    final text =
+        binding.failure.value?.errorMessage ??
+        AppLocalizations.of(context).failedToStartServer;
+    final onBack = widget.onBackToSessions;
+    if (onBack != null) {
+      onBack();
+    } else {
+      context.router.maybePop();
+    }
+    messenger.showSnackBar(SnackBar(content: Text(text)));
   }
 
   /// Listen for sandbox mode restart events.
@@ -307,6 +350,10 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
   void _resolveSession(SystemMessage msg) {
     widget.pendingSessionCreated?.removeListener(_onPendingSessionCreated);
+    final binding = widget.pendingSessionCreated;
+    if (binding is PendingSessionBinding) {
+      binding.failure.removeListener(_onPendingSessionFailed);
+    }
     final oldId = _sessionId;
     final newId = msg.sessionId!;
     // Migrate draft from pending ID to real session ID
@@ -399,6 +446,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   @override
   void dispose() {
     widget.pendingSessionCreated?.removeListener(_onPendingSessionCreated);
+    final binding = widget.pendingSessionCreated;
+    if (binding is PendingSessionBinding) {
+      binding.failure.removeListener(_onPendingSessionFailed);
+      binding.dispose();
+    }
     _pendingSub?.cancel();
     _sandboxRestartSub?.cancel();
     _sessionStoppedSub?.cancel();
@@ -431,13 +483,16 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             ),
           ),
         ),
-        body: const Center(
+        body: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator.adaptive(),
-              SizedBox(height: 16),
-              Text('Creating session...', style: TextStyle(fontSize: 16)),
+              const CircularProgressIndicator.adaptive(),
+              const SizedBox(height: 16),
+              Text(
+                AppLocalizations.of(context).creatingSession,
+                style: const TextStyle(fontSize: 16),
+              ),
             ],
           ),
         ),

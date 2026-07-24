@@ -203,6 +203,7 @@ export type ClientMessage =
       worktreeBranch?: string;
       existingWorktreePath?: string;
       autoRename?: boolean;
+      startRequestId?: string;
     }
   | {
       type: "input";
@@ -648,7 +649,9 @@ export type ServerMessage =
       sourceSessionId?: string;
       forkedFromSessionId?: string;
       forkedFromThreadId?: string;
+      startRequestId?: string;
       resumeRequestId?: string;
+      errorMessage?: string;
       tipCode?: string;
       permissionChangeId?: string;
       codexCliJoin?: CodexCliJoinTarget;
@@ -1219,6 +1222,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "start":
         if (typeof msg.projectPath !== "string") return null;
+        if (
+          msg.startRequestId !== undefined &&
+          (typeof msg.startRequestId !== "string" ||
+            msg.startRequestId.length === 0 ||
+            msg.startRequestId.length > 128)
+        )
+          return null;
         if (msg.model !== undefined && typeof msg.model !== "string")
           return null;
         if (
@@ -1734,7 +1744,9 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         if (
           msg.resumeRequestId !== undefined &&
-          typeof msg.resumeRequestId !== "string"
+          (typeof msg.resumeRequestId !== "string" ||
+            msg.resumeRequestId.length === 0 ||
+            msg.resumeRequestId.length > 128)
         )
           return null;
         if (

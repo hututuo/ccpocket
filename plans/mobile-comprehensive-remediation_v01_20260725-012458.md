@@ -322,8 +322,23 @@ Mobile rebuildable store
   Bridge 电脑时间，不新增每条 delta 的独立消息；Mobile 只在至少前进 1 秒时发布
   session-list 更新，避免流式输出每 32 ms 重建首页。旧客户端不收到字段，旧 Bridge
   下继续使用最近一次 authoritative session list 时间。
-- 本节尚未宣称完成“任意 recent 点击即进”和“全持久会话 metadata-only catalog”；
-  两者仍须分别完成 request correlation 与文件目录变更监听后再关闭 Phase 2。
+- “任意 recent 点击即进”的请求所有权已经按真实代码落地：Mobile 在发送前为每次
+  新建/恢复建立独立 binding，新 Bridge/Mobile 通过
+  `session_request_correlation_v1` 协商 `startRequestId` 和既有
+  `resumeRequestId`；Bridge 在成功和失败事件中回显对应 ID。两个同项目请求、
+  Desktop 自己创建的会话或上一条连接的迟到事件不再能抢占 pending 页面。
+- pending 页面现在会在一次点击后立即打开，但前提是当前 WebSocket 已连接且已收到
+  本代 authoritative `session_list`。连接选择页、重连早期或离线队列只登记请求，
+  不自动进入消息页；全局 `session_created` 监听只分派事件，不再主动导航。
+- 新 Bridge 的精确失败只关闭自己的 pending 页面并只清理对应 in-flight action；
+  错误 request ID 不影响另一个请求。旧 Bridge 仍按 provider、project 和 durable
+  provider session identity 做“唯一候选”兼容回退；若旧 Bridge 只返回无关联的
+  全局启动错误，页面不会猜测归属，用户可返回首页后重试。
+- 同一 start 的离线/重连去重会忽略 `startRequestId`，避免同一业务动作仅因重试
+  UUID 不同而重复创建；Mobile 还会同时检查 queue 和尚未进入可见 action 列表的
+  in-flight 请求，关闭原先约 650 ms 的重复点击窗口。
+- 本节仍未宣称完成“全持久会话 metadata-only catalog”；该部分须完成 provider
+  目录/索引变更监听、紧凑 revision 推送和有界前台追平后再关闭 Phase 2。
 
 ## 5. 分层历史和渐进披露
 

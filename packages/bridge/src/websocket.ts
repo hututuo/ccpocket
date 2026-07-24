@@ -260,6 +260,7 @@ const PUSH_PROGRESS_EVENT = "session_progress";
 const PUSH_PROGRESS_MIN_INTERVAL_MS = 45_000;
 const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
 const SESSION_ACTIVITY_AT_CAPABILITY = "session_activity_at_v1";
+const SESSION_REQUEST_CORRELATION_CAPABILITY = "session_request_correlation_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
@@ -1592,6 +1593,7 @@ export class BridgeWebSocketServer {
     /** Durable provider id already known by an explicit resume request. */
     providerSessionId?: string;
     sourceSessionId?: string;
+    startRequestId?: string;
     resumeRequestId?: string;
   }): SystemServerMessage {
     const {
@@ -1614,6 +1616,7 @@ export class BridgeWebSocketServer {
       pluginMetadata,
       providerSessionId,
       sourceSessionId,
+      startRequestId,
       resumeRequestId,
     } = params;
     const derivedCodexSettings =
@@ -1731,6 +1734,7 @@ export class BridgeWebSocketServer {
       ...(session?.forkedFromThreadId
         ? { forkedFromThreadId: session.forkedFromThreadId }
         : {}),
+      ...(startRequestId ? { startRequestId } : {}),
       ...(resumeRequestId ? { resumeRequestId } : {}),
     };
 
@@ -3696,11 +3700,18 @@ export class BridgeWebSocketServer {
     switch (msg.type) {
       case "start": {
         const projectPath = resolvePlatformPath(msg.projectPath, this.platform);
+        const provider = msg.provider ?? "claude";
         if (!this.isPathAllowed(projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          const pathError = this.buildPathNotAllowedError(msg.projectPath);
+          this.sendStartFailed(ws, {
+            provider,
+            projectPath,
+            startRequestId: msg.startRequestId,
+            errorMessage: pathError.message,
+          });
+          this.send(ws, pathError);
           break;
         }
-        const provider = msg.provider ?? "claude";
         if (provider === "codex" && msg.sessionId) {
           // Older clients resume Codex threads through start(sessionId). Keep
           // that wire shape compatible, but admit it through the same
@@ -3732,6 +3743,7 @@ export class BridgeWebSocketServer {
               networkAccessEnabled: msg.networkAccessEnabled,
               webSearchMode: msg.webSearchMode,
               additionalWritableRoots: msg.additionalWritableRoots,
+              resumeRequestId: msg.startRequestId,
             },
             ws,
           );
@@ -3796,9 +3808,16 @@ export class BridgeWebSocketServer {
               msg.profile &&
               !(await this.validateCodexProfile(msg.profile, projectPath))
             ) {
+              const message = `Codex profile not found: ${msg.profile}`;
+              this.sendStartFailed(ws, {
+                provider,
+                projectPath,
+                startRequestId: msg.startRequestId,
+                errorMessage: message,
+              });
               this.send(ws, {
                 type: "error",
-                message: `Codex profile not found: ${msg.profile}`,
+                message,
               });
               break;
             }
@@ -3811,10 +3830,16 @@ export class BridgeWebSocketServer {
                 )
               : {};
           if (additionalWritableRoots.deniedRoot) {
-            this.send(
-              ws,
-              this.buildPathNotAllowedError(additionalWritableRoots.deniedRoot),
+            const pathError = this.buildPathNotAllowedError(
+              additionalWritableRoots.deniedRoot,
             );
+            this.sendStartFailed(ws, {
+              provider,
+              projectPath,
+              startRequestId: msg.startRequestId,
+              errorMessage: pathError.message,
+            });
+            this.send(ws, pathError);
             break;
           }
           const {
@@ -3936,6 +3961,7 @@ export class BridgeWebSocketServer {
                   createdSession?.codexSettings?.codexPermissionsMode,
                 approvalsReviewer:
                   createdSession?.codexSettings?.approvalsReviewer,
+                startRequestId: msg.startRequestId,
                 ...(cached
                   ? {
                       slashCommands: cached.slashCommands,
@@ -3989,6 +4015,12 @@ export class BridgeWebSocketServer {
           this.projectHistory?.addProject(projectPath);
         } catch (err) {
           console.error(`[ws] Failed to start session:`, err);
+          this.sendStartFailed(ws, {
+            provider,
+            projectPath,
+            startRequestId: msg.startRequestId,
+            errorMessage: (err as Error).message,
+          });
           this.send(ws, {
             type: "error",
             message: `Failed to start session: ${(err as Error).message}`,
@@ -9100,6 +9132,26 @@ export class BridgeWebSocketServer {
     });
   }
 
+  private sendStartFailed(
+    ws: WebSocket,
+    start: {
+      provider: Provider;
+      projectPath: string;
+      startRequestId?: string;
+      errorMessage: string;
+    },
+  ): void {
+    if (!start.startRequestId) return;
+    this.send(ws, {
+      type: "system",
+      subtype: "session_start_failed",
+      provider: start.provider,
+      projectPath: start.projectPath,
+      startRequestId: start.startRequestId,
+      errorMessage: start.errorMessage,
+    });
+  }
+
   private flushPendingClaudeResumeInputs(
     ws: WebSocket,
     sourceSessionId: string,
@@ -9282,6 +9334,7 @@ export class BridgeWebSocketServer {
         HISTORY_PAGE_CAPABILITY,
         HISTORY_TOOL_DETAIL_CAPABILITY,
         SESSION_ACTIVITY_AT_CAPABILITY,
+        SESSION_REQUEST_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -9334,6 +9387,7 @@ export class BridgeWebSocketServer {
         HISTORY_PAGE_CAPABILITY,
         HISTORY_TOOL_DETAIL_CAPABILITY,
         SESSION_ACTIVITY_AT_CAPABILITY,
+        SESSION_REQUEST_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],

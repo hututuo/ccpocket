@@ -1515,8 +1515,27 @@ void main() {
       final socket = await socketReady.future;
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      bridge.send(ClientMessage.start('/home/user/app', provider: 'codex'));
-      bridge.send(ClientMessage.start('/home/user/app', provider: 'codex'));
+      bridge.send(
+        ClientMessage.start(
+          '/home/user/app',
+          provider: 'codex',
+          startRequestId: 'start-request-1',
+        ),
+      );
+      bridge.send(
+        ClientMessage.start(
+          '/home/user/app',
+          provider: 'codex',
+          startRequestId: 'start-request-2',
+        ),
+      );
+      expect(
+        bridge.hasPendingSessionStart(
+          projectPath: '/home/user/app',
+          provider: 'codex',
+        ),
+        isTrue,
+      );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       expect(bridge.offlinePendingActions, isEmpty);
@@ -1536,15 +1555,67 @@ void main() {
 
       socket.add(
         jsonEncode({
+          'type': 'session_list',
+          'bridgeCapabilities': [sessionRequestCorrelationCapability],
+          'sessions': [
+            {
+              'id': 'running-before-created',
+              'provider': 'codex',
+              'projectPath': '/home/user/app',
+              'status': 'starting',
+            },
+          ],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(bridge.offlinePendingActions, hasLength(1));
+
+      socket.add(
+        jsonEncode({
+          'type': 'system',
+          'subtype': 'session_start_failed',
+          'provider': 'codex',
+          'projectPath': '/home/user/app',
+          'startRequestId': 'another-request',
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(bridge.offlinePendingActions, hasLength(1));
+
+      socket.add(
+        jsonEncode({
           'type': 'system',
           'subtype': 'session_created',
           'sessionId': 'running-1',
           'provider': 'codex',
           'projectPath': '/home/user/app',
+          'startRequestId': 'start-request-1',
         }),
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
+      expect(bridge.offlinePendingActions, isEmpty);
+
+      bridge.send(
+        ClientMessage.start(
+          '/home/user/app',
+          provider: 'codex',
+          startRequestId: 'start-request-failed',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+      expect(bridge.offlinePendingActions, hasLength(1));
+
+      socket.add(
+        jsonEncode({
+          'type': 'system',
+          'subtype': 'session_start_failed',
+          'provider': 'codex',
+          'projectPath': '/home/user/app',
+          'startRequestId': 'start-request-failed',
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(bridge.offlinePendingActions, isEmpty);
 
       bridge.disconnect();
@@ -1573,6 +1644,7 @@ void main() {
             'thread-with-images',
             '/home/user/app',
             provider: 'codex',
+            resumeRequestId: 'resume-request-1',
           ),
         );
         await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -1585,6 +1657,7 @@ void main() {
             'sourceSessionId': 'thread-with-images',
             'provider': 'codex',
             'projectPath': '/home/user/app',
+            'resumeRequestId': 'resume-request-1',
           }),
         );
         await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -1603,6 +1676,20 @@ void main() {
             'sourceSessionId': 'thread-with-images',
             'provider': 'codex',
             'projectPath': '/home/user/app',
+            'resumeRequestId': 'another-request',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(bridge.offlinePendingActions, hasLength(1));
+
+        socket.add(
+          jsonEncode({
+            'type': 'system',
+            'subtype': 'session_resume_failed',
+            'sourceSessionId': 'thread-with-images',
+            'provider': 'codex',
+            'projectPath': '/home/user/app',
+            'resumeRequestId': 'resume-request-1',
           }),
         );
         await Future<void>.delayed(const Duration(milliseconds: 50));

@@ -277,7 +277,7 @@ describe("parseClientMessage", () => {
 
   it("parses start with optional fields", () => {
     const msg = parseClientMessage(
-      '{"type":"start","projectPath":"/p","sessionId":"s1","continue":true,"permissionMode":"acceptEdits","profile":"ccpocket","approvalPolicy":"on-request","approvalsReviewer":"auto_review","codexPermissionsMode":"autoReview","additionalWritableRoots":["/tmp/extra"],"autoRename":true}',
+      '{"type":"start","projectPath":"/p","sessionId":"s1","continue":true,"permissionMode":"acceptEdits","profile":"ccpocket","approvalPolicy":"on-request","approvalsReviewer":"auto_review","codexPermissionsMode":"autoReview","additionalWritableRoots":["/tmp/extra"],"autoRename":true,"startRequestId":"start-request-1"}',
     );
     expect(msg).toEqual({
       type: "start",
@@ -291,6 +291,7 @@ describe("parseClientMessage", () => {
       codexPermissionsMode: "autoReview",
       additionalWritableRoots: ["/tmp/extra"],
       autoRename: true,
+      startRequestId: "start-request-1",
     });
   });
 
@@ -325,6 +326,23 @@ describe("parseClientMessage", () => {
   it("rejects start with invalid maxTurns", () => {
     expect(
       parseClientMessage('{"type":"start","projectPath":"/p","maxTurns":0}'),
+    ).toBeNull();
+  });
+
+  it("rejects empty or oversized start request ids", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"start","projectPath":"/p","startRequestId":""}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "start",
+          projectPath: "/p",
+          startRequestId: "x".repeat(129),
+        }),
+      ),
     ).toBeNull();
   });
 
@@ -919,6 +937,21 @@ describe("parseClientMessage", () => {
         '{"type":"resume_session","sessionId":"s3","projectPath":"/p","resumeRequestId":42}',
       ),
     ).toBeNull();
+  });
+
+  it("rejects empty or oversized resume request ids", () => {
+    for (const resumeRequestId of ["", "x".repeat(129)]) {
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type: "resume_session",
+            sessionId: "s3",
+            projectPath: "/p",
+            resumeRequestId,
+          }),
+        ),
+      ).toBeNull();
+    }
   });
 
   it("parses resume_session with advanced Claude options", () => {

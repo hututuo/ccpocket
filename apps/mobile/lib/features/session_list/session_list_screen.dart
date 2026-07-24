@@ -42,6 +42,7 @@ import '../session_archive/session_archive_strings.dart';
 import '../settings/state/settings_cubit.dart';
 import '../settings/state/settings_state.dart';
 import 'desktop_session_list_continuity_tracker.dart';
+import 'pending_session_binding.dart';
 import 'services/session_resume_coordinator.dart';
 import 'state/session_list_cubit.dart';
 import 'state/session_list_state.dart';
@@ -58,9 +59,21 @@ export 'services/session_resume_coordinator.dart'
         codexResumePreservesSettingsCapability,
         factualCodexResumeSettings;
 
-const _sessionArchiveRequestUuid = Uuid();
+const _sessionRequestUuid = Uuid();
 
 // ---- Testable helpers (top-level) ----
+
+bool _sameSessionRequestProject(String expected, String? actual) {
+  if (actual == null || actual.isEmpty) return false;
+
+  String normalize(String value) {
+    final trimmed = value.trim();
+    if (trimmed == '/') return trimmed;
+    return trimmed.replaceAll(RegExp(r'/+$'), '');
+  }
+
+  return normalize(expected) == normalize(actual);
+}
 
 /// Project name → session count, preserving first-seen order.
 Map<String, int> projectCounts(List<RecentSession> sessions) {
@@ -228,20 +241,11 @@ class _SessionListScreenState extends State<SessionListScreen>
   int _debugTapCount = 0;
   DateTime? _lastDebugTapTime;
 
-  // Cache for resume navigation
-  String? _pendingResumeProjectPath;
-  String? _pendingResumeGitBranch;
-  NewSessionParams? _pendingClaudeDefaultsCorrection;
+  final _pendingSessionBindings = <PendingSessionBinding>{};
+  final _pendingClaudeDefaultsCorrections = <String, NewSessionParams>{};
 
-  // Flag: already navigated to chat for pending session creation
-  bool _pendingNavigation = false;
-
-  // Notifier for session_created that fires before chat screen listens.
-  // When session_created arrives while _pendingNavigation is true,
-  // we store the message here so the chat screen can replay it.
-  final _pendingSessionCreated = ValueNotifier<SystemMessage?>(null);
-
-  // Only subscription that remains: session_created navigation
+  // Session-created and correlated failure events are routed only to the
+  // pending operation that owns them. This listener never navigates by itself.
   StreamSubscription<ServerMessage>? _messageSub;
   StreamSubscription<BridgeConnectionState>? _archiveConnectionSub;
   late final SessionArchivePendingRequests _archivePendingRequests;
@@ -286,56 +290,36 @@ class _SessionListScreenState extends State<SessionListScreen>
       }
     });
     _messageSub = bridge.messages.listen((msg) {
-      if (msg is SystemMessage && msg.subtype == 'session_created') {
-        unawaited(_syncPendingClaudeDefaultsWithSessionCreated(msg));
-        bridge.requestSessionList();
-        // Clear-context recreation and session restarts (permission mode /
-        // sandbox mode / rewind) are handled inside the active chat screen.
-        // Navigating from the hidden session list stacks a second chat route.
-        if (msg.clearContext ||
-            msg.sourceSessionId != null ||
-            msg.resumeRequestId != null) {
-          return;
+      if (msg is SystemMessage &&
+          (msg.subtype == 'session_created' ||
+              msg.subtype == 'session_start_failed' ||
+              msg.subtype == 'session_resume_failed')) {
+        final owner = dispatchPendingSessionMessage(
+          _pendingSessionBindings,
+          msg,
+        );
+        if (owner != null) {
+          _pendingSessionBindings.remove(owner);
         }
-        if (msg.sessionId != null) {
-          // Mark the newly created session as seen so it doesn't
-          // appear as unseen when the user returns to the list.
-          _unseenCubit.markSeen(msg.sessionId!);
-          if (_pendingNavigation) {
-            // Chat screen may not have its listener yet — store for replay.
-            _pendingNavigation = false;
-            _pendingSessionCreated.value = msg;
-          } else {
-            _navigateToChat(
-              msg.sessionId!,
-              projectPath: msg.projectPath ?? _pendingResumeProjectPath,
-              gitBranch: _pendingResumeGitBranch,
-              worktreePath: msg.worktreePath,
-              provider: Provider.values
-                  .where((p) => p.value == msg.provider)
-                  .firstOrNull,
-              permissionMode: msg.permissionMode,
-              sandboxMode: msg.sandboxMode,
-              approvalPolicy: msg.approvalPolicy,
-              approvalsReviewer: msg.approvalsReviewer,
-            );
+        if (msg.subtype == 'session_created') {
+          bridge.requestSessionList();
+          unawaited(
+            _syncPendingClaudeDefaultsWithSessionCreated(
+              msg,
+              ownedRequestId: owner?.requestId,
+            ),
+          );
+          final sessionId = msg.sessionId;
+          if (owner != null && sessionId != null) {
+            _unseenCubit.markSeen(sessionId);
           }
-          _pendingResumeProjectPath = null;
-          _pendingResumeGitBranch = null;
+        } else {
+          _clearPendingClaudeDefaultsCorrection(
+            msg,
+            ownedRequestId: owner?.requestId,
+          );
         }
         return;
-      }
-
-      if (msg is ErrorMessage &&
-          _pendingClaudeDefaultsCorrection != null &&
-          (msg.message.startsWith('Failed to start session:') ||
-              msg.message.startsWith(
-                'Failed to load Claude session history:',
-              ))) {
-        _pendingClaudeDefaultsCorrection = null;
-        _pendingResumeProjectPath = null;
-        _pendingResumeGitBranch = null;
-        _pendingNavigation = false;
       }
 
       if (msg is ArchiveResultMessage) {
@@ -606,6 +590,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     _archivePendingRequests.dispose();
     _activeSessionsSub?.cancel();
     _desktopContinuityTracker.close();
+    for (final binding in _pendingSessionBindings.toList()) {
+      binding.dispose();
+    }
+    _pendingSessionBindings.clear();
     _unseenCubit.close();
     super.dispose();
   }
@@ -761,7 +749,6 @@ class _SessionListScreenState extends State<SessionListScreen>
     final result = await _openNewSessionSheet(initialParams: defaults);
     if (result == null || !mounted) return;
     await _saveSessionStartDefaults(result);
-    _trackPendingClaudeDefaultsCorrection(result);
     await _saveProjectCodexProfileFromParams(result);
     if (!mounted) return;
     _startNewSession(result);
@@ -791,8 +778,22 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _startNewSession(NewSessionParams result) {
     final bridge = context.read<BridgeService>();
+    if (_hasPendingStart(bridge, result)) return;
+
     final settings = context.read<SettingsCubit>().state;
     final isOffline = !bridge.isConnected;
+    final canOpenPending =
+        bridge.hasAuthoritativeSessionListForCurrentConnection;
+    final requestId = _sessionRequestUuid.v4();
+    final pendingBinding = canOpenPending
+        ? _registerPendingSessionBinding(
+            kind: PendingSessionRequestKind.start,
+            requestId: requestId,
+            provider: result.provider,
+            projectPath: result.projectPath,
+          )
+        : null;
+    _trackPendingClaudeDefaultsCorrection(requestId, result);
     final useCodexProfile =
         result.provider == Provider.codex &&
         (result.codexProfile?.isNotEmpty ?? false);
@@ -800,8 +801,6 @@ class _SessionListScreenState extends State<SessionListScreen>
         result.provider == Provider.codex &&
         (useCodexProfile ||
             result.codexPermissionsMode == CodexPermissionsMode.custom);
-    _pendingResumeProjectPath = result.projectPath;
-    _pendingResumeGitBranch = result.worktreeBranch;
     bridge.send(
       ClientMessage.start(
         result.projectPath,
@@ -875,9 +874,11 @@ class _SessionListScreenState extends State<SessionListScreen>
             ? result.additionalWritableRoots
             : null,
         autoRename: autoRenameForProvider(settings, result.provider),
+        startRequestId: requestId,
       ),
     );
     if (isOffline) {
+      pendingBinding?.dispose();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(AppLocalizations.of(context).sessionQueuedForReconnect),
@@ -885,12 +886,14 @@ class _SessionListScreenState extends State<SessionListScreen>
       );
       return;
     }
-    if (_hasPendingStart(bridge, result)) {
+    if (!bridge.hasAuthoritativeSessionListForCurrentConnection ||
+        pendingBinding == null) {
+      pendingBinding?.dispose();
       return;
     }
-    // Navigate immediately to chat with pending state
-    final pendingId = 'pending_${DateTime.now().millisecondsSinceEpoch}';
-    _pendingNavigation = true;
+    // The binding was registered before the wire send, so a very fast Bridge
+    // response can be replayed by the pending page without global matching.
+    final pendingId = 'pending_start_$requestId';
     _navigateToChat(
       pendingId,
       projectPath: result.projectPath,
@@ -906,6 +909,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       approvalsReviewer: result.provider == Provider.codex
           ? result.codexApprovalsReviewer
           : null,
+      pendingSessionCreated: pendingBinding,
     );
   }
 
@@ -982,19 +986,34 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
   }
 
-  void _trackPendingClaudeDefaultsCorrection(NewSessionParams params) {
-    _pendingClaudeDefaultsCorrection = params.provider == Provider.claude
-        ? params
-        : null;
+  void _trackPendingClaudeDefaultsCorrection(
+    String requestId,
+    NewSessionParams params,
+  ) {
+    if (params.provider != Provider.claude ||
+        params.permissionMode != PermissionMode.auto) {
+      return;
+    }
+    if (_pendingClaudeDefaultsCorrections.length >= 32) {
+      _pendingClaudeDefaultsCorrections.remove(
+        _pendingClaudeDefaultsCorrections.keys.first,
+      );
+    }
+    _pendingClaudeDefaultsCorrections[requestId] = params;
   }
 
   Future<void> _syncPendingClaudeDefaultsWithSessionCreated(
-    SystemMessage msg,
-  ) async {
-    final pending = _pendingClaudeDefaultsCorrection;
-    _pendingClaudeDefaultsCorrection = null;
-    if (pending == null || pending.provider != Provider.claude) return;
-    if (pending.permissionMode != PermissionMode.auto) return;
+    SystemMessage msg, {
+    String? ownedRequestId,
+  }) async {
+    final requestId =
+        ownedRequestId ??
+        msg.startRequestId ??
+        msg.resumeRequestId ??
+        _singleLegacyClaudeDefaultsRequestId(msg);
+    if (requestId == null) return;
+    final pending = _pendingClaudeDefaultsCorrections.remove(requestId);
+    if (pending == null) return;
 
     final actualMode =
         permissionModeFromRaw(msg.permissionMode) ?? PermissionMode.defaultMode;
@@ -1003,6 +1022,38 @@ class _SessionListScreenState extends State<SessionListScreen>
     await _saveSessionStartDefaults(
       pending.copyWith(claudePermissionMode: actualMode),
     );
+  }
+
+  void _clearPendingClaudeDefaultsCorrection(
+    SystemMessage msg, {
+    String? ownedRequestId,
+  }) {
+    final requestId =
+        ownedRequestId ??
+        msg.startRequestId ??
+        msg.resumeRequestId ??
+        _singleLegacyClaudeDefaultsRequestId(msg);
+    if (requestId != null) {
+      _pendingClaudeDefaultsCorrections.remove(requestId);
+    }
+  }
+
+  String? _singleLegacyClaudeDefaultsRequestId(SystemMessage msg) {
+    final candidates = _pendingClaudeDefaultsCorrections.entries.where((
+      entry,
+    ) {
+      final messageProvider = msg.provider;
+      if (messageProvider != null &&
+          messageProvider.isNotEmpty &&
+          messageProvider != Provider.claude.value) {
+        return false;
+      }
+      return _sameSessionRequestProject(
+        entry.value.projectPath,
+        msg.projectPath,
+      );
+    }).toList();
+    return candidates.length == 1 ? candidates.single.key : null;
   }
 
   Future<NewSessionParams?> _loadInitialNewSessionDefaults() async {
@@ -1367,7 +1418,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       );
       if (edited == null || !mounted) return;
       await _saveSessionStartDefaults(edited);
-      _trackPendingClaudeDefaultsCorrection(edited);
       await _saveProjectCodexProfileFromParams(edited);
       if (!mounted) return;
       _resumeSessionWithParams(session, edited);
@@ -1413,6 +1463,30 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
   }
 
+  PendingSessionBinding _registerPendingSessionBinding({
+    required PendingSessionRequestKind kind,
+    required String requestId,
+    required Provider provider,
+    required String projectPath,
+    String? providerSessionId,
+  }) {
+    late final PendingSessionBinding binding;
+    binding = PendingSessionBinding(
+      kind: kind,
+      requestId: requestId,
+      provider: provider.value,
+      projectPath: projectPath,
+      providerSessionId: providerSessionId,
+      allowLegacyFallback: !context
+          .read<BridgeService>()
+          .bridgeCapabilities
+          .contains(sessionRequestCorrelationCapability),
+      onDisposed: () => _pendingSessionBindings.remove(binding),
+    );
+    _pendingSessionBindings.add(binding);
+    return binding;
+  }
+
   void _archiveSession(RecentSession session) {
     final provider = session.provider ?? Provider.claude.value;
     final identityKey = providerSessionIdentityKey(provider, session.sessionId);
@@ -1422,7 +1496,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         _archivePendingRequests.hasSessionId(session.sessionId)) {
       return;
     }
-    final requestId = _sessionArchiveRequestUuid.v4();
+    final requestId = _sessionRequestUuid.v4();
     final registered = _archivePendingRequests.register(
       requestId: requestId,
       sessionId: session.sessionId,
@@ -1463,14 +1537,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     String? sandboxMode,
     String? approvalPolicy,
     String? approvalsReviewer,
+    ValueNotifier<SystemMessage?>? pendingSessionCreated,
   }) {
-    // Mark session as seen when navigating into it.
-    _unseenCubit.markSeen(sessionId);
-    // Reset the notifier for this navigation.
-    if (isPending) {
-      _pendingSessionCreated.value = null;
+    if (!isPending) {
+      _unseenCubit.markSeen(sessionId);
     }
-    final pendingNotifier = isPending ? _pendingSessionCreated : null;
+    final pendingNotifier = isPending ? pendingSessionCreated : null;
     if (widget.embedded) {
       widget.onSelectWorkspaceSession?.call(
         WorkspaceSessionSelection(
@@ -1527,11 +1599,32 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _resumeSession(RecentSession session) async {
     final bridge = context.read<BridgeService>();
+    final provider = session.provider == Provider.codex.value
+        ? Provider.codex
+        : Provider.claude;
+    final resumeProjectPath = session.resumeCwd?.isNotEmpty == true
+        ? session.resumeCwd!
+        : session.projectPath;
+    final requestId = _sessionRequestUuid.v4();
+    final pendingBinding =
+        bridge.hasAuthoritativeSessionListForCurrentConnection
+        ? _registerPendingSessionBinding(
+            kind: PendingSessionRequestKind.resume,
+            requestId: requestId,
+            provider: provider,
+            projectPath: resumeProjectPath,
+            providerSessionId: session.sessionId,
+          )
+        : null;
     final result = await SessionResumeCoordinator(
       bridge: bridge,
-    ).resume(session);
-    if (!mounted) return;
+    ).resume(session, resumeRequestId: requestId);
+    if (!mounted) {
+      pendingBinding?.dispose();
+      return;
+    }
     if (result.disposition == SessionResumeDisposition.alreadyQueued) {
+      pendingBinding?.dispose();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(AppLocalizations.of(context).resumeAlreadyQueued),
@@ -1539,15 +1632,29 @@ class _SessionListScreenState extends State<SessionListScreen>
       );
       return;
     }
-    _pendingResumeProjectPath = result.projectPath;
-    _pendingResumeGitBranch = result.gitBranch;
-    if (!bridge.isConnected) {
+    if (!bridge.hasAuthoritativeSessionListForCurrentConnection ||
+        pendingBinding == null) {
+      pendingBinding?.dispose();
+      if (bridge.isConnected) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(AppLocalizations.of(context).resumeQueuedForReconnect),
         ),
       );
+      return;
     }
+    _navigateToChat(
+      'pending_resume_$requestId',
+      projectPath: result.projectPath,
+      gitBranch: result.gitBranch,
+      isPending: true,
+      provider: provider,
+      permissionMode: session.effectivePermissionMode,
+      sandboxMode: session.codexSandboxMode,
+      approvalPolicy: session.codexApprovalPolicy,
+      approvalsReviewer: session.codexApprovalsReviewer,
+      pendingSessionCreated: pendingBinding,
+    );
   }
 
   /// Resume session with user-edited settings (from "Edit settings then start")
@@ -1564,11 +1671,22 @@ class _SessionListScreenState extends State<SessionListScreen>
       );
       return;
     }
-    final resumeProjectPath = session.resumeCwd ?? session.projectPath;
-    _pendingResumeProjectPath = resumeProjectPath;
-    _pendingResumeGitBranch = session.gitBranch;
-
+    final resumeProjectPath = session.resumeCwd?.isNotEmpty == true
+        ? session.resumeCwd!
+        : session.projectPath;
     final isCodex = edited.provider == Provider.codex;
+    final requestId = _sessionRequestUuid.v4();
+    final pendingBinding =
+        bridge.hasAuthoritativeSessionListForCurrentConnection
+        ? _registerPendingSessionBinding(
+            kind: PendingSessionRequestKind.resume,
+            requestId: requestId,
+            provider: edited.provider,
+            projectPath: resumeProjectPath,
+            providerSessionId: session.sessionId,
+          )
+        : null;
+    _trackPendingClaudeDefaultsCorrection(requestId, edited);
     final useCodexProfile =
         isCodex && (edited.codexProfile?.isNotEmpty ?? false);
     final useCodexCustomPermissions =
@@ -1631,12 +1749,34 @@ class _SessionListScreenState extends State<SessionListScreen>
       additionalWritableRoots: isCodex && !useCodexCustomPermissions
           ? edited.additionalWritableRoots
           : null,
+      resumeRequestId: requestId,
     );
-    if (!bridge.isConnected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(AppLocalizations.of(context).resumeQueuedForReconnect),
-        ),
+    if (!bridge.hasAuthoritativeSessionListForCurrentConnection ||
+        pendingBinding == null) {
+      pendingBinding?.dispose();
+      // The request is still valid when connected but not authoritative; stay
+      // on Home instead of opening a page owned by a stale connection.
+      if (!bridge.isConnected) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              AppLocalizations.of(context).resumeQueuedForReconnect,
+            ),
+          ),
+        );
+      }
+    } else {
+      _navigateToChat(
+        'pending_resume_$requestId',
+        projectPath: resumeProjectPath,
+        gitBranch: session.gitBranch,
+        isPending: true,
+        provider: edited.provider,
+        permissionMode: edited.permissionMode.value,
+        sandboxMode: edited.sandboxMode?.value,
+        approvalPolicy: isCodex ? edited.codexApprovalPolicy.value : null,
+        approvalsReviewer: isCodex ? edited.codexApprovalsReviewer : null,
+        pendingSessionCreated: pendingBinding,
       );
     }
 
@@ -1655,19 +1795,29 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   bool _isResumePending(BridgeService bridge, RecentSession session) {
     final provider = session.provider ?? Provider.claude.value;
-    return bridge.offlinePendingActions.any((action) {
-      return action.kind == OfflinePendingActionKind.resume &&
-          action.sessionId == session.sessionId &&
-          action.provider == provider;
-    });
+    return _pendingSessionBindings.any(
+          (binding) =>
+              binding.kind == PendingSessionRequestKind.resume &&
+              binding.providerSessionId == session.sessionId &&
+              binding.provider == provider,
+        ) ||
+        bridge.hasPendingSessionResume(
+          sessionId: session.sessionId,
+          provider: provider,
+        );
   }
 
   bool _hasPendingStart(BridgeService bridge, NewSessionParams params) {
-    return bridge.offlinePendingActions.any((action) {
-      return action.kind == OfflinePendingActionKind.start &&
-          action.projectPath == params.projectPath &&
-          action.provider == params.provider.value;
-    });
+    return _pendingSessionBindings.any(
+          (binding) =>
+              binding.kind == PendingSessionRequestKind.start &&
+              binding.projectPath == params.projectPath &&
+              binding.provider == params.provider.value,
+        ) ||
+        bridge.hasPendingSessionStart(
+          projectPath: params.projectPath,
+          provider: params.provider.value,
+        );
   }
 
   void _stopSession(String sessionId) {

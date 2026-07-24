@@ -523,6 +523,20 @@ void main() {
       expect(message.resumeRequestId, 'link-request-1');
     });
 
+    test('parses start request correlation failure', () {
+      final message =
+          ServerMessage.fromJson({
+                'type': 'system',
+                'subtype': 'session_start_failed',
+                'startRequestId': 'start-request-1',
+                'errorMessage': 'profile missing',
+              })
+              as SystemMessage;
+
+      expect(message.startRequestId, 'start-request-1');
+      expect(message.errorMessage, 'profile missing');
+    });
+
     test('parses Codex CLI join target', () {
       final msg = ServerMessage.fromJson({
         'type': 'system',
@@ -650,6 +664,8 @@ void main() {
         turnAwareHistoryWindowCapability,
         historyPageCapability,
         historyToolDetailCapability,
+        sessionActivityAtCapability,
+        sessionRequestCorrelationCapability,
         'git_status_result',
         'prompt_history_status',
         'artifact_resolved',
@@ -969,6 +985,7 @@ void main() {
         webSearchMode: 'live',
         additionalWritableRoots: const ['/tmp/shared'],
         autoRename: true,
+        startRequestId: 'start-request-1',
       );
 
       final json = jsonDecode(msg.toJson()) as Map<String, dynamic>;
@@ -978,6 +995,7 @@ void main() {
       expect(json['webSearchMode'], 'live');
       expect(json['additionalWritableRoots'], ['/tmp/shared']);
       expect(json['autoRename'], true);
+      expect(json['startRequestId'], 'start-request-1');
     });
 
     test('ClientMessage.resumeSession serializes codex add-dir roots', () {

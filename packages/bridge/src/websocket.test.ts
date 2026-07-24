@@ -774,6 +774,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           "persisted_side_chat_v1",
           "turn_aware_history_window_v1",
           "history_page_v1",
+          "session_request_correlation_v1",
         ]),
       }),
     );
@@ -3550,6 +3551,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         projectPath: "/tmp/project-a",
         provider: "codex",
         profile: "missing",
+        startRequestId: "start-request-missing-profile",
       },
       ws,
     );
@@ -3563,6 +3565,14 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       expect.objectContaining({
         type: "error",
         message: "Codex profile not found: missing",
+      }),
+    );
+    expect(sends).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "session_start_failed",
+        startRequestId: "start-request-missing-profile",
+        errorMessage: "Codex profile not found: missing",
       }),
     );
 
@@ -3665,6 +3675,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         projectPath: "/tmp/project-a",
         provider: "codex",
         additionalWritableRoots: ["/tmp/other"],
+        startRequestId: "start-request-denied-root",
       },
       ws,
     );
@@ -3679,6 +3690,14 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       expect.objectContaining({
         type: "error",
         errorCode: "path_not_allowed",
+      }),
+    );
+    expect(sends).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "session_start_failed",
+        startRequestId: "start-request-denied-root",
+        errorMessage: expect.stringContaining("not in the allowed directories"),
       }),
     );
 
@@ -11079,6 +11098,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         provider: "codex",
         permissionMode: "bypassPermissions",
         serviceTier: "fast",
+        startRequestId: "start-request-1",
       },
       ws,
     );
@@ -11094,7 +11114,94 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       provider: "codex",
       permissionMode: "bypassPermissions",
       serviceTier: "fast",
+      startRequestId: "start-request-1",
     });
+
+    bridge.close();
+  });
+
+  it("correlates a failed start without relying on the global error", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    vi.spyOn((bridge as any).sessionManager, "create").mockImplementationOnce(
+      () => {
+        throw new Error("profile missing");
+      },
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+        startRequestId: "start-request-failed",
+      },
+      ws,
+    );
+
+    const sends = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(sends).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "session_start_failed",
+        provider: "codex",
+        startRequestId: "start-request-failed",
+        errorMessage: "profile missing",
+      }),
+    );
+    expect(sends).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        message: "Failed to start session: profile missing",
+      }),
+    );
+
+    bridge.close();
+  });
+
+  it("correlates a start rejected before session construction", async () => {
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: ["/tmp/allowed"],
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/denied",
+        provider: "codex",
+        startRequestId: "start-request-denied",
+      },
+      ws,
+    );
+
+    const sends = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(sends).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "session_start_failed",
+        provider: "codex",
+        startRequestId: "start-request-denied",
+        errorMessage: expect.stringContaining("not in the allowed directories"),
+      }),
+    );
+    expect(sends).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        errorCode: "path_not_allowed",
+      }),
+    );
 
     bridge.close();
   });
