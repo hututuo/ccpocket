@@ -186,8 +186,12 @@ void main() {
       addTearDown(subscriptionA.cancel);
       addTearDown(subscriptionB.cancel);
 
+      final connected = bridge.connectionStatus.firstWhere(
+        (state) => state == BridgeConnectionState.connected,
+      );
       bridge.connect('ws://127.0.0.1:${server.port}');
       final socket = await socketReady.future;
+      await connected;
       bridge.send(ClientMessage.getGoal('session-a'));
       await socket.firstWhere((data) {
         final json = jsonDecode(data as String) as Map<String, dynamic>;

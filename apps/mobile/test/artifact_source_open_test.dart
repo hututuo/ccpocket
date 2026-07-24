@@ -171,7 +171,7 @@ void main() {
     await tester.tap(
       find.byKey(
         const ValueKey(
-          'chat_process_disclosure_partial:tool:tool-source:segment:leading:0',
+          'chat_process_disclosure_partial:tool:tool-source:segment:leading:tool-result:tool-source',
         ),
       ),
     );

@@ -455,11 +455,41 @@ Future<void> expandTranscriptProcess(
   WidgetTester tester, {
   bool expandToolResults = false,
 }) async {
-  await _tapAll(tester, find.byType(ChatIntermediateOutputsDisclosure));
-  await _tapAll(tester, find.byType(ChatProcessDisclosure));
-  await _tapAll(tester, find.byType(ChatCurrentProgressHeader));
+  await _tapUntilNone(
+    tester,
+    find.byWidgetPredicate(
+      (widget) =>
+          widget is ChatIntermediateOutputsDisclosure && !widget.expanded,
+    ),
+  );
+  await _tapUntilNone(
+    tester,
+    find.byWidgetPredicate(
+      (widget) => widget is ChatProcessDisclosure && !widget.expanded,
+    ),
+  );
+  await _tapUntilNone(
+    tester,
+    find.byWidgetPredicate(
+      (widget) => widget is ChatCurrentProgressHeader && !widget.expanded,
+    ),
+  );
   if (expandToolResults) {
     await _tapAll(tester, find.byKey(const ValueKey('tool_result_disclosure')));
+  }
+}
+
+Future<void> _tapUntilNone(WidgetTester tester, Finder finder) async {
+  var taps = 0;
+  while (finder.evaluate().isNotEmpty) {
+    if (taps++ >= 128) {
+      throw StateError('Disclosure expansion did not converge.');
+    }
+    final target = finder.first;
+    await tester.ensureVisible(target);
+    await tester.pump();
+    await tester.tap(target);
+    await tester.pump();
   }
 }
 
