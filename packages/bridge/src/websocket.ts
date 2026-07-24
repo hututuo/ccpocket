@@ -2659,6 +2659,10 @@ export class BridgeWebSocketServer {
         continue;
       }
 
+      const receivedAt = liveEntry.message.receivedAt;
+      if (receivedAt) {
+        canonicalEntries[matchIndex].message.receivedAt ??= receivedAt;
+      }
       appendCanonicalUntil(matchIndex + 1);
     }
     appendCanonicalUntil(canonicalEntries.length);
@@ -3226,6 +3230,7 @@ export class BridgeWebSocketServer {
           ? { imageCount: Math.max(item.imageCount ?? 0, images.length) }
           : {}),
         ...(item.timestamp ? { timestamp: item.timestamp } : {}),
+        ...(item.timestamp ? { sourceTimestamp: item.timestamp } : {}),
         ...(images.length > 0 ? { images } : {}),
       };
     }
@@ -3246,6 +3251,7 @@ export class BridgeWebSocketServer {
           model: session.codexSettings?.model ?? "",
         },
         ...(item.uuid ? { messageUuid: item.uuid } : {}),
+        ...(item.timestamp ? { sourceTimestamp: item.timestamp } : {}),
       };
       return await this.sessionManager.enrichArtifactsForSession(
         session,
@@ -3302,6 +3308,7 @@ export class BridgeWebSocketServer {
       toolUseId,
       content,
       ...(item.toolName ? { toolName: item.toolName } : {}),
+      ...(item.timestamp ? { sourceTimestamp: item.timestamp } : {}),
       ...(images.length > 0 ? { images } : {}),
       ...(artifactCandidates.length > 0 ? { artifactCandidates } : {}),
     };

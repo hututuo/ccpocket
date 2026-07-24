@@ -74,8 +74,10 @@ class ChatEntryWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        if (_shouldShowTimestamp())
-          _TimestampWidget(timestamp: entry.timestamp),
+        _TimestampWidget(
+          timestamp: entry.timestamp,
+          approximate: !entry.timestampIsAuthoritative,
+        ),
         switch (entry) {
           ServerChatEntry(:final message) => ServerMessageWidget(
             message: message,
@@ -126,26 +128,21 @@ class ChatEntryWidget extends StatelessWidget {
       ],
     );
   }
-
-  bool _shouldShowTimestamp() {
-    if (previous == null) return true;
-    // Show if sender type changed
-    if (entry.runtimeType != previous.runtimeType) return true;
-    // Show if more than 2 minutes apart
-    final diff = entry.timestamp.difference(previous!.timestamp);
-    return diff.inMinutes >= 2;
-  }
 }
 
 class _TimestampWidget extends StatelessWidget {
   final DateTime timestamp;
-  const _TimestampWidget({required this.timestamp});
+  final bool approximate;
+  const _TimestampWidget({required this.timestamp, required this.approximate});
 
   @override
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final time =
-        '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+        '${approximate ? '~' : ''}'
+        '${timestamp.hour.toString().padLeft(2, '0')}:'
+        '${timestamp.minute.toString().padLeft(2, '0')}:'
+        '${timestamp.second.toString().padLeft(2, '0')}';
     return Padding(
       padding: const EdgeInsets.only(top: 12, bottom: 6),
       child: Center(

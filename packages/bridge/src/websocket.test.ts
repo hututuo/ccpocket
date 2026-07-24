@@ -514,6 +514,7 @@ vi.mock("./session.js", async () => {
     appendHistory(id: string, msg: any) {
       const session = this.sessions.get(id);
       if (!session) return undefined;
+      msg.receivedAt = new Date().toISOString();
       const entry = {
         seq: session.historyRevision + 1,
         message: msg,
@@ -4810,6 +4811,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ],
       status: "idle",
     });
+    const receivedAt = delta.messages[0].message.receivedAt;
+    expect(receivedAt).toEqual(expect.any(String));
+    expect(Number.isNaN(Date.parse(receivedAt))).toBe(false);
 
     bridge.close();
   });

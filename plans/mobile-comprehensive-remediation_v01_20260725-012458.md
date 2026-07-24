@@ -236,8 +236,20 @@ Mobile rebuildable store
 - progress 偏好默认关闭；没有显式开启就不会生成中间进度。
 - 当前未读状态主要依赖 active runtime/页面状态，缺少 durable
   thread+revision ledger，不能可靠跨 App 重启和多会话同步。
-- 当前部分时间戳来自手机收到/重建时 fallback 或父项继承，尚未把电脑 Bridge
-  首次接收时间作为稳定字段贯穿 history/Mirror。
+- 已确认旧时间显示不是单纯格式问题：`ChatEntry` 默认使用手机当前时间，
+  canonical history 又只给用户项提供 provider timestamp，助手/工具项会继承
+  上一个用户时间；因此旧 UI 的 `HH:mm` 可能同时混入手机同步时间、provider
+  时间和父项时间。
+- 已将 Bridge 首次接收实时 transcript 事件的墙钟时间作为 additive
+  `receivedAt` 写入内存 history，并通过 live、delta/snapshot 和 canonical
+  对账保留；provider history/Mirror 只写 `sourceTimestamp`，明确作为近似
+  fallback。字段不要求能力协商，旧 Mobile 会安全忽略，旧 Bridge 仍可由新
+  Mobile 按近似时间显示。
+- Mobile 在解码层以 out-of-band metadata 保存来源，不扩散修改所有消息模型；
+  optimistic 用户消息在 Bridge echo 到达后升级为电脑接收时间。每条可见消息
+  均显示到秒，近似时间加 `~`，不再用“同发送者/两分钟”规则隐藏。
+- Bridge 重启前未持久化的旧实时接收时间无法被事后精确恢复；此时只使用
+  provider/Mirror timestamp 并保留近似标记，不能伪造精确电脑接收时间。
 
 ### 2A.6 文件和预览
 
@@ -587,10 +599,20 @@ Mobile rebuildable store
 
 ### 9.3 消息时间
 
-- Bridge 在首次接收 provider 消息时写入 `receivedAt`，精确到毫秒并原样保留；
-- Mobile 显示到秒 `HH:mm:ss`，必要时可展开日期；
-- history replay、Mirror 写入和手机同步不得覆盖原始时间；
-- 旧消息缺时间时使用明确 fallback，并不得伪称为电脑首次收到时间。
+- 已实现 Bridge 在首次接收实时 provider/transcript 消息时写入 `receivedAt`，
+  精确到毫秒；SDK user echo 合并保留第一次时间，canonical history 与 live
+  项匹配时继承该时间，delta/snapshot 原样发送。
+- provider canonical history 和 Mirror 使用独立 `sourceTimestamp`，不会把
+  provider 文件时间伪装成 Bridge 接收时间，也不会因每次同步生成新时间而让
+  Mirror revision 抖动。
+- Mobile 解码后保留时间值与 provenance；实时用户 echo 会替换 optimistic
+  手机时间，历史窗口裁剪、Mirror 合并、重试和状态变更复制均保留 provenance。
+- 每条可见消息显示本地时区 `HH:mm:ss`；精确 Bridge 时间无前缀，provider、
+  旧 Bridge 或手机 fallback 显示 `~HH:mm:ss`。旧字段全部 additive，新旧
+  Mobile/Bridge 可混用。
+- 已补 Bridge history/delta 协议断言、Mobile 解码/handler/Cubit/widget 回归；
+  timestamp 定向 Mobile 343 项和 Bridge 定向 2 项通过。Bridge 重启前没有
+  持久记录的旧事件只能近似恢复，这是明确兼容边界而不是伪造精度。
 
 ### 9.4 运行与同步动效
 

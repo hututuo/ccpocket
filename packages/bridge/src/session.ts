@@ -1455,6 +1455,7 @@ export class SessionManager {
     session: SessionInfo,
     msg: ServerMessage,
   ): HistoryEntry {
+    msg.receivedAt = new Date().toISOString();
     const entry = {
       seq: session.historyRevision + 1,
       message: msg,
@@ -1484,6 +1485,7 @@ export class SessionManager {
       const mergedMsg = {
         ...current,
         userMessageUuid: this.mergeUserMessageUuid(current, msg),
+        receivedAt: current.receivedAt ?? msg.receivedAt,
         timestamp:
           ("timestamp" in current && current.timestamp) ||
           ("timestamp" in msg ? msg.timestamp : undefined),

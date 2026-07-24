@@ -141,6 +141,7 @@ List<ChatEntry> selectTurnAwareChatEntryWindow(
         final ServerChatEntry entry => ServerChatEntry(
           value.message,
           timestamp: entry.timestamp,
+          timestampIsAuthoritative: entry.timestampIsAuthoritative,
         ),
         final UserChatEntry entry => entry,
         final StreamingChatEntry entry => entry,

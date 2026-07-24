@@ -608,6 +608,7 @@ function mirrorHistoryMessageToServerMessages(
         ...(history.isMeta ? { isMeta: true } : {}),
         ...(history.imageCount ? { imageCount: history.imageCount } : {}),
         ...(history.timestamp ? { timestamp: history.timestamp } : {}),
+        ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
       },
     ];
   }
@@ -622,6 +623,7 @@ function mirrorHistoryMessageToServerMessages(
           history.toolUseId ?? history.uuid ?? `mirror-history-tool-${index}`,
         content,
         ...(history.toolName ? { toolName: history.toolName } : {}),
+        ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
       },
     ];
   }
@@ -634,6 +636,7 @@ function mirrorHistoryMessageToServerMessages(
       type: "assistant",
       message: { id, role: "assistant", content, model: "" },
       ...(history.uuid ? { messageUuid: history.uuid } : {}),
+      ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
     },
   ];
 }

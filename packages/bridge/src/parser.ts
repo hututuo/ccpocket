@@ -580,7 +580,7 @@ export interface CodexCliJoinTarget {
   command: string;
 }
 
-export type ServerMessage =
+export type ServerMessage = (
   | BackgroundDeliveryServerMessage
   | {
       type: "system";
@@ -1064,7 +1064,15 @@ export type ServerMessage =
       hasUpstream: boolean;
     }
   | LocalFeatureServerMessage
-  | FileTransferServerMessage;
+  | FileTransferServerMessage
+) & {
+  /** Bridge-owned wall time when this live transcript event was first seen. */
+  receivedAt?: string;
+  /** Provider timestamp used only as an approximate legacy-history fallback. */
+  sourceTimestamp?: string;
+  /** Bridge-local sequence metadata retained on in-memory transcript entries. */
+  historySeq?: number;
+};
 
 export interface UsageWindowPayload {
   utilization: number;

@@ -85,7 +85,8 @@ class ChatStateUpdate {
     String? clientMessageId,
     int imageCount,
     List<String> imageUrls,
-    String? timestamp,
+    DateTime? timestamp,
+    bool timestampIsAuthoritative,
   })?
   userUuidUpdate;
 
@@ -297,6 +298,12 @@ class ChatMessageHandler {
         // Skip synthetic and meta messages (e.g. plan approval, Task agent
         // prompts, skill loading prompts).
         if (isSynthetic || isMeta) return const ChatStateUpdate();
+        final messageTimestamp = serverMessageTimestamp(msg);
+        final displayTimestamp =
+            messageTimestamp?.value.toLocal() ??
+            (timestamp == null
+                ? null
+                : DateTime.tryParse(timestamp)?.toLocal());
         if (userMessageUuid != null) {
           // SDK echoed user message with UUID — update existing entry's UUID
           // so it becomes rewindable, instead of adding a duplicate.
@@ -307,7 +314,9 @@ class ChatMessageHandler {
               clientMessageId: clientMessageId,
               imageCount: imageCount,
               imageUrls: imageUrls,
-              timestamp: timestamp,
+              timestamp: displayTimestamp,
+              timestampIsAuthoritative:
+                  messageTimestamp?.isBridgeReceived ?? false,
             ),
           );
         }
@@ -318,6 +327,9 @@ class ChatMessageHandler {
               text,
               clientMessageId: clientMessageId,
               status: MessageStatus.sent,
+              timestamp: displayTimestamp,
+              timestampIsAuthoritative:
+                  messageTimestamp?.isBridgeReceived ?? false,
             ),
           ],
         );
@@ -463,7 +475,12 @@ class ChatMessageHandler {
     }
 
     // Build entry — replace streaming if present
-    final entry = ServerChatEntry(displayMsg);
+    final messageTimestamp = serverMessageTimestamp(msg);
+    final entry = ServerChatEntry(
+      displayMsg,
+      timestamp: messageTimestamp?.value.toLocal(),
+      timestampIsAuthoritative: messageTimestamp?.isBridgeReceived ?? false,
+    );
     final replaceStreaming = currentStreaming;
     currentStreaming = null;
 
@@ -638,9 +655,12 @@ class ChatMessageHandler {
         // Skip synthetic and meta messages
         if (m.isSynthetic || m.isMeta) continue;
         // Convert user_input to UserChatEntry with UUID and timestamp
-        final ts = m.timestamp != null
-            ? DateTime.tryParse(m.timestamp!)?.toLocal()
-            : null;
+        final messageTimestamp = serverMessageTimestamp(m);
+        final ts =
+            messageTimestamp?.value.toLocal() ??
+            (m.timestamp != null
+                ? DateTime.tryParse(m.timestamp!)?.toLocal()
+                : null);
         if (ts != null) lastKnownTs = ts;
         entries.add(
           UserChatEntry(
@@ -651,13 +671,25 @@ class ChatMessageHandler {
             imageCount: m.imageCount,
             imageUrls: m.imageUrls,
             timestamp: ts,
+            timestampIsAuthoritative:
+                messageTimestamp?.isBridgeReceived ?? false,
           ),
         );
       } else {
         // Don't add internal metadata messages as visible entries.
         // codex_settings is re-sent after every history sync.
         if (m is! SystemMessage || shouldDisplaySystemMessage(m)) {
-          entries.add(ServerChatEntry(m, timestamp: lastKnownTs));
+          final messageTimestamp = serverMessageTimestamp(m);
+          final timestamp = messageTimestamp?.value.toLocal() ?? lastKnownTs;
+          if (timestamp != null) lastKnownTs = timestamp;
+          entries.add(
+            ServerChatEntry(
+              m,
+              timestamp: timestamp,
+              timestampIsAuthoritative:
+                  messageTimestamp?.isBridgeReceived ?? false,
+            ),
+          );
         }
         // Restore slash commands from history (init, supported_commands, or
         // session_created with cached commands)

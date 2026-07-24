@@ -679,6 +679,10 @@ describe("SessionManager codex path", () => {
       seq: second?.seq,
       message: { type: "assistant" },
     });
+    const receivedAt = result?.entries[0]?.message.receivedAt;
+    expect(receivedAt).toBe(second?.message.receivedAt);
+    expect(receivedAt).toEqual(expect.any(String));
+    expect(Number.isNaN(Date.parse(receivedAt ?? ""))).toBe(false);
   });
 
   it("returns a history snapshot when the requested sequence was compacted", () => {

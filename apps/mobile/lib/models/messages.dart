@@ -905,11 +905,57 @@ class ArtifactRef {
 
 // ---- Server messages ----
 
+class ServerMessageTimestamp {
+  final DateTime value;
+  final bool isBridgeReceived;
+
+  const ServerMessageTimestamp({
+    required this.value,
+    required this.isBridgeReceived,
+  });
+}
+
+final Expando<ServerMessageTimestamp> _serverMessageTimestamps =
+    Expando<ServerMessageTimestamp>('ccpocket.server_message_timestamp');
+
+ServerMessageTimestamp? serverMessageTimestamp(ServerMessage message) =>
+    _serverMessageTimestamps[message];
+
+void _attachServerMessageTimestamp(
+  ServerMessage message,
+  Map<String, dynamic> json,
+) {
+  final receivedAt = DateTime.tryParse(json['receivedAt'] as String? ?? '');
+  if (receivedAt != null) {
+    _serverMessageTimestamps[message] = ServerMessageTimestamp(
+      value: receivedAt,
+      isBridgeReceived: true,
+    );
+    return;
+  }
+  final sourceTimestamp = DateTime.tryParse(
+    json['sourceTimestamp'] as String? ?? '',
+  );
+  final legacyUserTimestamp = json['type'] == 'user_input'
+      ? DateTime.tryParse(json['timestamp'] as String? ?? '')
+      : null;
+  final fallback = sourceTimestamp ?? legacyUserTimestamp;
+  if (fallback != null) {
+    _serverMessageTimestamps[message] = ServerMessageTimestamp(
+      value: fallback,
+      isBridgeReceived: false,
+    );
+  }
+}
+
 sealed class ServerMessage {
   factory ServerMessage.fromJson(Map<String, dynamic> json) {
     final localFeatureMessage = LocalFeatureProtocolHost.tryDecode(json);
-    if (localFeatureMessage != null) return localFeatureMessage;
-    return switch (json['type'] as String) {
+    if (localFeatureMessage != null) {
+      _attachServerMessageTimestamp(localFeatureMessage, json);
+      return localFeatureMessage;
+    }
+    final message = switch (json['type'] as String) {
       'client_delivery_mode_state_v1' => ClientDeliveryModeStateMessage(
         mode: BridgeClientDeliveryMode.fromWire(json['mode'] as String?),
         requestId: json['requestId'] as String? ?? '',
@@ -1604,6 +1650,8 @@ sealed class ServerMessage {
       ),
       _ => ErrorMessage(message: 'Unknown message type: ${json['type']}'),
     };
+    _attachServerMessageTimestamp(message, json);
+    return message;
   }
 }
 
@@ -5705,14 +5753,27 @@ class ClientMessage {
 
 sealed class ChatEntry {
   DateTime get timestamp;
+  bool get timestampIsAuthoritative;
 }
 
 class ServerChatEntry implements ChatEntry {
   final ServerMessage message;
   @override
   final DateTime timestamp;
-  ServerChatEntry(this.message, {DateTime? timestamp})
-    : timestamp = timestamp ?? DateTime.now();
+  @override
+  final bool timestampIsAuthoritative;
+  ServerChatEntry(
+    this.message, {
+    DateTime? timestamp,
+    bool? timestampIsAuthoritative,
+  }) : timestamp =
+           timestamp ??
+           serverMessageTimestamp(message)?.value.toLocal() ??
+           DateTime.now(),
+       timestampIsAuthoritative =
+           timestampIsAuthoritative ??
+           (timestamp == null &&
+               (serverMessageTimestamp(message)?.isBridgeReceived ?? false));
 }
 
 class UserChatEntry implements ChatEntry {
@@ -5730,9 +5791,12 @@ class UserChatEntry implements ChatEntry {
   String? messageUuid;
   @override
   final DateTime timestamp;
+  @override
+  final bool timestampIsAuthoritative;
   UserChatEntry(
     this.text, {
     DateTime? timestamp,
+    this.timestampIsAuthoritative = false,
     this.sessionId,
     this.clientMessageId,
     List<Uint8List>? imageBytesList,
@@ -5749,6 +5813,8 @@ class StreamingChatEntry implements ChatEntry {
   String text;
   @override
   final DateTime timestamp;
+  @override
+  final bool timestampIsAuthoritative = false;
   StreamingChatEntry({this.text = '', DateTime? timestamp})
     : timestamp = timestamp ?? DateTime.now();
 }

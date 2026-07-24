@@ -3149,6 +3149,41 @@ void main() {
       },
     );
 
+    test('Bridge echo upgrades the optimistic user timestamp', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      mockBridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.idle),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      cubit.sendMessage('Timestamped input');
+      final payload =
+          jsonDecode(mockBridge.sentMessages.single.toJson())
+              as Map<String, dynamic>;
+      final optimistic = cubit.state.entries.whereType<UserChatEntry>().single;
+      expect(optimistic.timestampIsAuthoritative, isFalse);
+
+      final receivedAt = DateTime.parse('2026-07-25T03:04:05.678Z');
+      mockBridge.emitMessage(
+        ServerMessage.fromJson({
+          'type': 'user_input',
+          'text': 'Timestamped input',
+          'clientMessageId': payload['clientMessageId'],
+          'userMessageUuid': 'codex:user-turn:timestamped',
+          'receivedAt': receivedAt.toIso8601String(),
+        }),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      final upgraded = cubit.state.entries.whereType<UserChatEntry>().single;
+      expect(upgraded.timestamp, receivedAt.toLocal());
+      expect(upgraded.timestampIsAuthoritative, isTrue);
+      expect(upgraded.messageUuid, 'codex:user-turn:timestamped');
+    });
+
     test(
       'codex user_input with UUID and no local entry is displayed',
       () async {

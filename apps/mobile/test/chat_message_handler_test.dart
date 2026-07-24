@@ -2016,6 +2016,26 @@ void main() {
       expect(update.userUuidUpdate!.uuid, 'uuid-1');
     });
 
+    test('user_input exposes the exact Bridge receipt time', () {
+      final message =
+          ServerMessage.fromJson({
+                'type': 'user_input',
+                'text': 'Hello from Mac',
+                'userMessageUuid': 'uuid-mac',
+                'receivedAt': '2026-07-25T03:04:05.678Z',
+                'timestamp': '2026-07-25T01:02:03.000Z',
+              })
+              as UserInputMessage;
+      final update = handler.handle(message, isBackground: false);
+
+      expect(update.userUuidUpdate, isNotNull);
+      expect(
+        update.userUuidUpdate!.timestamp,
+        DateTime.parse('2026-07-25T03:04:05.678Z').toLocal(),
+      );
+      expect(update.userUuidUpdate!.timestampIsAuthoritative, isTrue);
+    });
+
     test('synthetic user_input is skipped', () {
       final update = handler.handle(
         const UserInputMessage(text: 'synthetic', isSynthetic: true),

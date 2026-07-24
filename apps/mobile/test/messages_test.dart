@@ -3,6 +3,63 @@ import 'package:ccpocket/models/messages.dart';
 import 'dart:convert';
 
 void main() {
+  test('preserves exact Bridge receipt time and approximate source time', () {
+    final exact = ServerMessage.fromJson({
+      'type': 'assistant',
+      'message': {
+        'id': 'assistant-exact',
+        'role': 'assistant',
+        'content': [
+          {'type': 'text', 'text': 'exact'},
+        ],
+        'model': 'test',
+      },
+      'receivedAt': '2026-07-25T03:04:05.678Z',
+      'sourceTimestamp': '2026-07-25T01:02:03.000Z',
+    });
+    final approximate = ServerMessage.fromJson({
+      'type': 'assistant',
+      'message': {
+        'id': 'assistant-source',
+        'role': 'assistant',
+        'content': [
+          {'type': 'text', 'text': 'source'},
+        ],
+        'model': 'test',
+      },
+      'sourceTimestamp': '2026-07-25T01:02:03.000Z',
+    });
+
+    expect(
+      serverMessageTimestamp(exact),
+      isA<ServerMessageTimestamp>()
+          .having(
+            (value) => value.value,
+            'value',
+            DateTime.parse('2026-07-25T03:04:05.678Z'),
+          )
+          .having(
+            (value) => value.isBridgeReceived,
+            'isBridgeReceived',
+            isTrue,
+          ),
+    );
+    expect(
+      serverMessageTimestamp(approximate),
+      isA<ServerMessageTimestamp>()
+          .having(
+            (value) => value.value,
+            'value',
+            DateTime.parse('2026-07-25T01:02:03.000Z'),
+          )
+          .having(
+            (value) => value.isBridgeReceived,
+            'isBridgeReceived',
+            isFalse,
+          ),
+    );
+  });
+
   test('serializes persisted Codex fork requests for the session list', () {
     final json = jsonDecode(
       ClientMessage.forkRecentSession(
@@ -666,6 +723,7 @@ void main() {
         historyToolDetailCapability,
         sessionActivityAtCapability,
         sessionRequestCorrelationCapability,
+        sessionCatalogChangedMessageType,
         'git_status_result',
         'prompt_history_status',
         'artifact_resolved',

@@ -2075,6 +2075,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           status: targetStatus,
           messageUuid: entry.messageUuid,
           timestamp: entry.timestamp,
+          timestampIsAuthoritative: entry.timestampIsAuthoritative,
         );
         entries = [...entries];
         entries[targetIndex] = updatedEntry;
@@ -2102,6 +2103,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             status: MessageStatus.failed,
             messageUuid: e.messageUuid,
             timestamp: e.timestamp,
+            timestampIsAuthoritative: e.timestampIsAuthoritative,
           );
         }
         return e;
@@ -2121,6 +2123,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :imageCount,
         :imageUrls,
         :timestamp,
+        :timestampIsAuthoritative,
       ) = update.userUuidUpdate!;
       var matchedUserEntry = false;
       for (int i = entries.length - 1; i >= 0; i--) {
@@ -2133,9 +2136,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                     clientMessageId == null &&
                     e.text == text))) {
           matchedUserEntry = true;
-          if (e.messageUuid != uuid) {
-            e.messageUuid = uuid;
+          final shouldReplaceTimestamp =
+              timestamp != null &&
+              ((timestampIsAuthoritative &&
+                      (!e.timestampIsAuthoritative ||
+                          e.timestamp != timestamp)) ||
+                  (!timestampIsAuthoritative &&
+                      !e.timestampIsAuthoritative &&
+                      e.timestamp != timestamp));
+          if (e.messageUuid != uuid || shouldReplaceTimestamp) {
             entries = [...entries];
+            entries[i] = UserChatEntry(
+              e.text,
+              sessionId: e.sessionId,
+              clientMessageId: e.clientMessageId ?? clientMessageId,
+              imageBytesList: e.imageBytesList,
+              imageUrls: imageUrls.isNotEmpty ? imageUrls : e.imageUrls,
+              imageCount: imageCount > 0 ? imageCount : e.imageCount,
+              status: MessageStatus.sent,
+              messageUuid: uuid,
+              timestamp: shouldReplaceTimestamp ? timestamp : e.timestamp,
+              timestampIsAuthoritative: shouldReplaceTimestamp
+                  ? timestampIsAuthoritative
+                  : e.timestampIsAuthoritative,
+            );
             didModifyEntries = true;
           }
           break;
@@ -2152,9 +2176,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             imageUrls: imageUrls,
             status: MessageStatus.sent,
             messageUuid: uuid,
-            timestamp: timestamp == null
-                ? null
-                : DateTime.tryParse(timestamp)?.toLocal(),
+            timestamp: timestamp,
+            timestampIsAuthoritative: timestampIsAuthoritative,
           ),
         ];
         didModifyEntries = true;
@@ -2248,7 +2271,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             if (existing == null) continue;
             final needsImages =
                 e.imageBytesList.isEmpty && existing.imageBytesList.isNotEmpty;
-            final needsTimestamp = existing.timestamp != e.timestamp;
+            final existingTimestampIsPreferred =
+                existing.timestampIsAuthoritative &&
+                !e.timestampIsAuthoritative;
+            final needsTimestamp =
+                existingTimestampIsPreferred ||
+                (!e.timestampIsAuthoritative &&
+                    existing.timestamp != e.timestamp);
             if (needsImages || needsTimestamp) {
               entries[i] = UserChatEntry(
                 e.text,
@@ -2261,7 +2290,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 imageCount: e.imageCount,
                 status: e.status,
                 messageUuid: e.messageUuid,
-                timestamp: existing.timestamp,
+                timestamp: needsTimestamp ? existing.timestamp : e.timestamp,
+                timestampIsAuthoritative: needsTimestamp
+                    ? existing.timestampIsAuthoritative
+                    : e.timestampIsAuthoritative,
               );
             }
           }
@@ -2681,6 +2713,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     ChatEntry canonical,
   ) {
     if (existing is UserChatEntry && canonical is UserChatEntry) {
+      final preferredTimestamp = _preferredTimestamp(existing, canonical);
       return UserChatEntry(
         canonical.text.isNotEmpty ? canonical.text : existing.text,
         sessionId: canonical.sessionId ?? existing.sessionId,
@@ -2698,7 +2731,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             ? MessageStatus.sent
             : existing.status,
         messageUuid: canonical.messageUuid ?? existing.messageUuid,
-        timestamp: canonical.timestamp,
+        timestamp: preferredTimestamp?.value,
+        timestampIsAuthoritative:
+            preferredTimestamp?.isAuthoritative ?? false,
       );
     }
     return _mergeEquivalentEntry(existing, canonical);
@@ -3103,6 +3138,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   ChatEntry _mergeEquivalentEntry(ChatEntry existing, ChatEntry incoming) {
     if (existing is UserChatEntry && incoming is UserChatEntry) {
+      final preferredTimestamp = _preferredTimestamp(existing, incoming);
       final imageBytes = existing.imageBytesList.isNotEmpty
           ? existing.imageBytesList
           : incoming.imageBytesList;
@@ -3123,10 +3159,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             ? MessageStatus.sent
             : existing.status,
         messageUuid: existing.messageUuid ?? incoming.messageUuid,
-        timestamp: existing.timestamp,
+        timestamp: preferredTimestamp?.value,
+        timestampIsAuthoritative:
+            preferredTimestamp?.isAuthoritative ?? false,
       );
     }
     if (existing is ServerChatEntry && incoming is ServerChatEntry) {
+      final preferredTimestamp = _preferredTimestamp(existing, incoming);
       final existingMessage = existing.message;
       final incomingMessage = incoming.message;
       if (existingMessage is AssistantServerMessage &&
@@ -3188,7 +3227,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 ? incomingMessage.artifactContentIndexOffset
                 : existingMessage.artifactContentIndexOffset,
           ),
-          timestamp: existing.timestamp,
+          timestamp: preferredTimestamp?.value,
+          timestampIsAuthoritative:
+              preferredTimestamp?.isAuthoritative ?? false,
         );
       }
       if (existingMessage is ToolResultMessage &&
@@ -3213,11 +3254,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               incomingMessage.artifacts,
             ),
           ),
-          timestamp: existing.timestamp,
+          timestamp: preferredTimestamp?.value,
+          timestampIsAuthoritative:
+              preferredTimestamp?.isAuthoritative ?? false,
         );
       }
     }
     return existing;
+  }
+
+  ({DateTime value, bool isAuthoritative})? _preferredTimestamp(
+    ChatEntry existing,
+    ChatEntry incoming,
+  ) {
+    if (incoming.timestampIsAuthoritative ||
+        !existing.timestampIsAuthoritative) {
+      return (
+        value: incoming.timestamp,
+        isAuthoritative: incoming.timestampIsAuthoritative,
+      );
+    }
+    return (
+      value: existing.timestamp,
+      isAuthoritative: existing.timestampIsAuthoritative,
+    );
   }
 
   int _assistantContentWeight(List<AssistantContent> content) {
@@ -4782,6 +4842,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   UserChatEntry _userEntryFromHistoryIndex(UserInputMessage message) {
+    final messageTimestamp = serverMessageTimestamp(message);
     return UserChatEntry(
       message.text,
       sessionId: sessionId,
@@ -4790,9 +4851,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       imageCount: message.imageCount,
       status: MessageStatus.sent,
       messageUuid: message.userMessageUuid,
-      timestamp: message.timestamp == null
-          ? null
-          : DateTime.tryParse(message.timestamp!)?.toLocal(),
+      timestamp:
+          messageTimestamp?.value.toLocal() ??
+          (message.timestamp == null
+              ? null
+              : DateTime.tryParse(message.timestamp!)?.toLocal()),
+      timestampIsAuthoritative:
+          messageTimestamp?.isBridgeReceived ?? false,
     );
   }
 
@@ -5058,6 +5123,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               status: isOffline ? MessageStatus.queued : MessageStatus.sending,
               messageUuid: entry.messageUuid,
               timestamp: entry.timestamp,
+              timestampIsAuthoritative: entry.timestampIsAuthoritative,
             );
           }
           return e;
