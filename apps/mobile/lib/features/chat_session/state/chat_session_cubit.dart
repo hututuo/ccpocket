@@ -107,6 +107,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<int>? _codexModelCatalogSubscription;
   StreamSubscription<LocalSessionHistoryAvailabilityChange>?
   _localHistoryAvailabilitySubscription;
+  StreamSubscription<String>? _historySyncSubscription;
   StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
   StreamSubscription<BridgeConnectionState>?
   _desktopContinuityConnectionSubscription;
@@ -171,6 +172,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _discardLocalMirrorOnNextCanonicalHistory = false;
   final ValueNotifier<LocalHistoryPagingState> localHistoryPaging =
       ValueNotifier(const LocalHistoryPagingState());
+  final ValueNotifier<bool> historySyncing = ValueNotifier(false);
   final ValueNotifier<int> historyToolDetailRevision = ValueNotifier(0);
   final Map<String, HistoryToolDetailLoadState> _historyToolDetailStates = {};
   final Map<String, Future<bool>> _historyToolDetailFlights = {};
@@ -330,6 +332,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _localHistoryAvailabilitySubscription = _bridge
         .sessionHistoryAvailabilityChanges
         .listen(_onLocalHistoryAvailabilityChanged);
+    historySyncing.value = _bridge.isSessionHistorySyncing(sessionId);
+    _historySyncSubscription = _bridge.sessionHistorySyncChanges.listen((
+      changedSessionId,
+    ) {
+      if (changedSessionId != sessionId || isClosed) return;
+      historySyncing.value = _bridge.isSessionHistorySyncing(sessionId);
+    });
 
     if (isCodex) {
       _goalConnectionSubscription = _bridge.connectionStatus.listen(
@@ -5269,6 +5278,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _codexRuntimeSnapshotSubscription?.cancel();
     _codexModelCatalogSubscription?.cancel();
     _localHistoryAvailabilitySubscription?.cancel();
+    _historySyncSubscription?.cancel();
     codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
     _desktopContinuitySubscription?.cancel();
@@ -5286,6 +5296,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _historyToolDetailStates.clear();
     _historyToolDetailFlights.clear();
     localHistoryPaging.dispose();
+    historySyncing.dispose();
     return super.close();
   }
 }

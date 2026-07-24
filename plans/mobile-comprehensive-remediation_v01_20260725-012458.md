@@ -271,6 +271,19 @@ Mobile rebuildable store
   对账”拆成两个权威状态。
 - 当前旋转/光晕若直接监听大对象会造成无关重建；应使用小 selector、单一 ticker
   和不可见停机。
+- 实施期已确认原旋转边框实际绑定 `inPlanMode && isActive`，而前台恢复路径会由
+  `BackgroundSyncCoordinator` 对所有活动 session 发起有界 canonical/delta
+  reconciliation；两者此前没有任何数据关联。
+- 已在 `BridgeService` 增加会话级 foreground history sync transaction：
+  只有请求真正写入健康 WebSocket 后才进入 syncing；history delta/snapshot/
+  legacy history 应用完毕后退出。断线、Bridge 切换、旧 Bridge
+  `get_history_delta` fallback、后台 delta-only 覆盖、重复请求和 20 秒失联超时
+  均有明确收束；排队中的离线请求不会伪装为正在同步。
+- `ChatSessionCubit` 用独立 `ValueNotifier<bool>` 接收当前会话的小粒度变化，不把
+  动画状态塞入大 Freezed chat state；顶栏旋转边框改为蓝色 sync 信号，Plan
+  仍由文字 chip 表示。任务横条只在严格 `running` 时蓝色脉冲，其余状态统一
+  静态灰色。两处 painter 均加 `RepaintBoundary`，并在 Reduce Motion 与
+  `TickerMode` 停机。
 - 已重放的五组性能提交分别覆盖：
   流式 delta 合并、消息路径/工具预览、Mirror 清理与尾页、首帧/顶层 rebuild、
   Prompt History single-flight。官方 1.109.2 又修改图片恢复、Bridge
@@ -621,6 +634,11 @@ Mobile rebuildable store
 - transport reconnect、普通 Widget rebuild 和任务运行不能冒充“消息正在刷新”；
 - 两种动画使用隔离 selector、RepaintBoundary、单一 ticker，并在不可见/
   Reduce Motion/TickerMode 时停用。
+- 已按上述语义实现并验证：前台请求开始/完成、离线排队后真实发送、旧 Bridge
+  增量不支持时保持到 full-history 完成、后台 delta-only 不点亮、断线收束；
+  状态/模式栏、Bridge、ChatSessionCubit 和后台协调定向测试共 229 项通过，
+  相关 analyze 只剩
+  `ChatSessionCubit` 两条既有 initializing-formal info。
 
 ## 10. 通知、未读与本地化
 

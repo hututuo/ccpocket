@@ -29,12 +29,6 @@ class SessionModeBar extends StatelessWidget {
     final chatCubit = context.watch<ChatSessionCubit>();
     final executionMode = chatCubit.state.executionMode;
     final planMode = chatCubit.state.planMode;
-    final inPlanMode = chatCubit.state.inPlanMode;
-    final status = chatCubit.state.status;
-    final isActive =
-        status == ProcessStatus.running ||
-        status == ProcessStatus.waitingApproval ||
-        status == ProcessStatus.compacting;
     final sandboxMode = chatCubit.state.sandboxMode;
     final permissionMode = chatCubit.state.permissionMode;
     final isCodex = chatCubit.provider == Provider.codex;
@@ -65,7 +59,7 @@ class SessionModeBar extends StatelessWidget {
                 if (isCodex) ...[
                   ValueListenableBuilder<int>(
                     valueListenable: chatCubit.codexModelCatalogRevision,
-                    builder: (context, _, __) {
+                    builder: (context, _, _) {
                       final codexModel = _currentCodexModel(chatCubit);
                       final codexReasoningEffort =
                           _effectiveCodexReasoningEffort(
@@ -178,31 +172,37 @@ class SessionModeBar extends StatelessWidget {
     );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: _PulsingModeBarSurface(
-        inPlanMode: inPlanMode && isActive,
+      child: ValueListenableBuilder<bool>(
+        valueListenable: chatCubit.historySyncing,
         child: bar,
+        builder: (context, historySyncing, child) => _HistorySyncModeBarSurface(
+          isSyncing: historySyncing,
+          child: child!,
+        ),
       ),
     );
   }
 }
 
-class _PulsingModeBarSurface extends StatefulWidget {
-  final bool inPlanMode;
+class _HistorySyncModeBarSurface extends StatefulWidget {
+  final bool isSyncing;
   final Widget child;
 
-  const _PulsingModeBarSurface({
-    super.key,
-    required this.inPlanMode,
+  const _HistorySyncModeBarSurface({
+    required this.isSyncing,
     required this.child,
   });
 
   @override
-  State<_PulsingModeBarSurface> createState() => _PulsingModeBarSurfaceState();
+  State<_HistorySyncModeBarSurface> createState() =>
+      _HistorySyncModeBarSurfaceState();
 }
 
-class _PulsingModeBarSurfaceState extends State<_PulsingModeBarSurface>
+class _HistorySyncModeBarSurfaceState extends State<_HistorySyncModeBarSurface>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  bool _tickerEnabled = true;
+  bool _reduceMotion = false;
 
   @override
   void initState() {
@@ -211,17 +211,32 @@ class _PulsingModeBarSurfaceState extends State<_PulsingModeBarSurface>
       duration: const Duration(milliseconds: 2500),
       vsync: this,
     );
-    if (widget.inPlanMode) {
-      _controller.repeat();
-    }
   }
 
   @override
-  void didUpdateWidget(_PulsingModeBarSurface oldWidget) {
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _tickerEnabled = TickerMode.valuesOf(context).enabled;
+    final media = MediaQuery.maybeOf(context);
+    _reduceMotion =
+        media?.disableAnimations == true || media?.accessibleNavigation == true;
+    _synchronizeAnimation();
+  }
+
+  @override
+  void didUpdateWidget(_HistorySyncModeBarSurface oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.inPlanMode && !_controller.isAnimating) {
+    _synchronizeAnimation();
+  }
+
+  void _synchronizeAnimation() {
+    if (widget.isSyncing &&
+        _tickerEnabled &&
+        !_reduceMotion &&
+        !_controller.isAnimating) {
       _controller.repeat();
-    } else if (!widget.inPlanMode && _controller.isAnimating) {
+    } else if ((!widget.isSyncing || !_tickerEnabled || _reduceMotion) &&
+        (_controller.isAnimating || _controller.value != 0)) {
       _controller.stop();
       _controller.reset();
     }
@@ -238,26 +253,33 @@ class _PulsingModeBarSurfaceState extends State<_PulsingModeBarSurface>
     final appColors = Theme.of(context).extension<AppColors>()!;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    if (!widget.inPlanMode) {
+    if (!widget.isSyncing) {
       return widget.child;
     }
 
-    return AnimatedBuilder(
-      animation: _controller,
-      child: widget.child,
-      builder: (context, child) {
-        return CustomPaint(
-          painter: _RotatingBorderPainter(
-            progress: _controller.value,
-            color: appColors.statusPlan,
-            glowColor: appColors.statusPlanGlow,
-            borderRadius: 12,
-            strokeWidth: 1.5,
-            isDark: isDark,
-          ),
-          child: child,
-        );
-      },
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _controller,
+        child: widget.child,
+        builder: (context, child) {
+          return CustomPaint(
+            key: const ValueKey('session_history_sync_glow'),
+            painter: _RotatingBorderPainter(
+              progress: _controller.value,
+              color: appColors.statusRunning,
+              glowColor: Color.lerp(
+                appColors.statusRunning,
+                Colors.white,
+                0.35,
+              )!,
+              borderRadius: 12,
+              strokeWidth: 1.5,
+              isDark: isDark,
+            ),
+            child: child,
+          );
+        },
+      ),
     );
   }
 }
@@ -351,7 +373,12 @@ class _RotatingBorderPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_RotatingBorderPainter oldDelegate) =>
-      oldDelegate.progress != progress;
+      oldDelegate.progress != progress ||
+      oldDelegate.color != color ||
+      oldDelegate.glowColor != glowColor ||
+      oldDelegate.borderRadius != borderRadius ||
+      oldDelegate.strokeWidth != strokeWidth ||
+      oldDelegate.isDark != isDark;
 }
 
 String _currentCodexModel(ChatSessionCubit chatCubit) {
@@ -1315,9 +1342,20 @@ class PlanModeChip extends StatelessWidget {
 
     if (!activeGlow) return chip;
 
-    return _PulsingModeBarSurface(
+    return DecoratedBox(
       key: const ValueKey('plan_mode_chip_glow'),
-      inPlanMode: true,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: appColors.statusPlanGlow.withValues(alpha: 0.65),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: appColors.statusPlanGlow.withValues(alpha: 0.22),
+            blurRadius: 6,
+          ),
+        ],
+      ),
       child: chip,
     );
   }

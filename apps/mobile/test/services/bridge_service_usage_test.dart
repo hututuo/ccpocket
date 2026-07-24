@@ -606,6 +606,87 @@ void main() {
     );
 
     test(
+      'foreground history sync activity follows actual transport reconciliation',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final bridge = BridgeService();
+        final connected = bridge.connectionStatus.firstWhere(
+          (state) => state == BridgeConnectionState.connected,
+        );
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        await connected.timeout(const Duration(seconds: 2));
+
+        final changes = <String>[];
+        final activitySubscription = bridge.sessionHistorySyncChanges.listen(
+          changes.add,
+        );
+        bridge.requestSessionHistory('s1');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(bridge.isSessionHistorySyncing('s1'), isTrue);
+        expect(changes, ['s1']);
+
+        final reconciled = bridge.sessionHistoryReconciliations.first;
+        socket.add(
+          jsonEncode({
+            'type': 'history',
+            'sessionId': 's1',
+            'messages': const [
+              {'type': 'status', 'status': 'idle'},
+            ],
+          }),
+        );
+        expect(await reconciled.timeout(const Duration(seconds: 2)), 's1');
+        await Future<void>.delayed(Duration.zero);
+
+        expect(bridge.isSessionHistorySyncing('s1'), isFalse);
+        expect(changes, ['s1', 's1']);
+
+        await activitySubscription.cancel();
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'queued foreground history only becomes active after reconnect send',
+      () async {
+        final bridge = BridgeService();
+        bridge.requestSessionHistory('queued-session');
+        expect(bridge.isSessionHistorySyncing('queued-session'), isFalse);
+
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+        final becameActive = bridge.sessionHistorySyncChanges.first;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+
+        expect(
+          await becameActive.timeout(const Duration(seconds: 2)),
+          'queued-session',
+        );
+        expect(bridge.isSessionHistorySyncing('queued-session'), isTrue);
+
+        bridge.disconnect();
+        expect(bridge.isSessionHistorySyncing('queued-session'), isFalse);
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'remote history paging is correlated, single-flight, and bounded',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -970,6 +1051,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
 
         bridge.requestSessionHistory('s1');
+        expect(bridge.isSessionHistorySyncing('s1'), isTrue);
         socket.add(
           jsonEncode({
             'type': 'error',
@@ -993,6 +1075,18 @@ void main() {
           isTrue,
         );
         expect(requests.last, {'type': 'get_history', 'sessionId': 's1'});
+        expect(bridge.isSessionHistorySyncing('s1'), isTrue);
+
+        final reconciled = bridge.sessionHistoryReconciliations.first;
+        socket.add(
+          jsonEncode({
+            'type': 'history',
+            'sessionId': 's1',
+            'messages': const [],
+          }),
+        );
+        await reconciled.timeout(const Duration(seconds: 2));
+        expect(bridge.isSessionHistorySyncing('s1'), isFalse);
 
         bridge.disconnect();
         await socket.close();
@@ -1027,9 +1121,11 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
 
         bridge.requestSessionHistoryDeltaOnly('s1');
+        expect(bridge.isSessionHistorySyncing('s1'), isFalse);
         // A stale foreground request must not leave full-history fallback
         // enabled after the latest bounded background request takes ownership.
         bridge.requestSessionHistory('s1');
+        expect(bridge.isSessionHistorySyncing('s1'), isTrue);
         bridge.requestSessionHistoryDeltaOnly('s1');
         socket.add(
           jsonEncode({
@@ -1057,6 +1153,7 @@ void main() {
           requests.where((request) => request['type'] == 'get_history'),
           isEmpty,
         );
+        expect(bridge.isSessionHistorySyncing('s1'), isFalse);
 
         bridge.disconnect();
         await socket.close();

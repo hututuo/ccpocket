@@ -170,6 +170,11 @@ class BridgeService implements BridgeServiceBase {
       StreamController<String>.broadcast();
   final Map<String, int> _sessionHistoryReconciliationGenerations = {};
   int _sessionHistoryReconciliationSequence = 0;
+  final _sessionHistorySyncChangedController =
+      StreamController<String>.broadcast();
+  final Set<String> _activeSessionHistorySyncs = {};
+  final Set<String> _pendingForegroundHistorySyncs = {};
+  final Map<String, Timer> _sessionHistorySyncTimeouts = {};
   final _codexModelCatalogController = StreamController<int>.broadcast();
   final _sessionStoppedController = StreamController<String>.broadcast();
   final _recentSessionsController =
@@ -346,6 +351,7 @@ class BridgeService implements BridgeServiceBase {
   static const _sessionCatalogRefreshRequestTimeout = Duration(seconds: 15);
   static const _sessionCatalogRefreshMinLimit = 20;
   static const _sessionCatalogRefreshMaxLimit = 200;
+  static const _sessionHistorySyncTimeout = Duration(seconds: 20);
 
   // Auto-reconnect
   String? _lastUrl;
@@ -370,6 +376,10 @@ class BridgeService implements BridgeServiceBase {
       _sessionHistoryReconciledController.stream;
   int sessionHistoryReconciliationGeneration(String sessionId) =>
       _sessionHistoryReconciliationGenerations[sessionId] ?? 0;
+  Stream<String> get sessionHistorySyncChanges =>
+      _sessionHistorySyncChangedController.stream;
+  bool isSessionHistorySyncing(String sessionId) =>
+      _activeSessionHistorySyncs.contains(sessionId);
   Stream<int> get codexModelCatalogChanges =>
       _codexModelCatalogController.stream;
   int get authoritativeSessionListGeneration =>
@@ -1940,6 +1950,7 @@ class BridgeService implements BridgeServiceBase {
     _pendingHistoryDeltaSinceSeq.clear();
     _pendingHistoryDeltaAllowsFullFallback.clear();
     _sessionHistoryReconciliationGenerations.clear();
+    _clearSessionHistorySyncTracking();
     _providerSessionBindingByRuntime.clear();
     _respondedToolUseIds.clear();
     _deliveryPendingInputs.clear();
@@ -2095,6 +2106,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _failPendingHistoryRequests({required bool clearCursors}) {
+    _finishActiveSessionHistorySyncs();
     final completers = _pendingRemoteHistoryPages.values.toList();
     final toolCompleters = _pendingHistoryToolDetails.values.toList();
     _pendingRemoteHistoryPages.clear();
@@ -2118,6 +2130,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _emitSessionHistoryReconciliation(String sessionId) {
+    _finishSessionHistorySync(sessionId);
     _sessionHistoryReconciliationSequence++;
     _sessionHistoryReconciliationGenerations[sessionId] =
         _sessionHistoryReconciliationSequence;
@@ -2134,9 +2147,63 @@ class BridgeService implements BridgeServiceBase {
     _pendingHistoryDeltaAllowsFullFallback.clear();
     for (final sessionId in sessionIds) {
       if (allowsFullFallback[sessionId] == true) {
+        _pendingForegroundHistorySyncs.add(sessionId);
         send(ClientMessage.getHistory(sessionId));
+      } else {
+        _finishSessionHistorySync(sessionId);
       }
     }
+  }
+
+  String? _beginPendingSessionHistorySync(ClientMessage message) {
+    if (_pendingForegroundHistorySyncs.isEmpty ||
+        (message.type != 'get_history' &&
+            message.type != 'get_history_delta')) {
+      return null;
+    }
+    final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+    final sessionId = json['sessionId'] as String?;
+    if (sessionId == null ||
+        !_pendingForegroundHistorySyncs.remove(sessionId)) {
+      return null;
+    }
+    final wasActive = _activeSessionHistorySyncs.contains(sessionId);
+    _activeSessionHistorySyncs.add(sessionId);
+    _sessionHistorySyncTimeouts.remove(sessionId)?.cancel();
+    _sessionHistorySyncTimeouts[sessionId] = Timer(
+      _sessionHistorySyncTimeout,
+      () => _finishSessionHistorySync(sessionId),
+    );
+    if (!wasActive) {
+      _sessionHistorySyncChangedController.add(sessionId);
+    }
+    return sessionId;
+  }
+
+  void _finishSessionHistorySync(String sessionId) {
+    _pendingForegroundHistorySyncs.remove(sessionId);
+    _sessionHistorySyncTimeouts.remove(sessionId)?.cancel();
+    if (_activeSessionHistorySyncs.remove(sessionId)) {
+      _sessionHistorySyncChangedController.add(sessionId);
+    }
+  }
+
+  void _finishActiveSessionHistorySyncs() {
+    if (_activeSessionHistorySyncs.isEmpty) return;
+    final sessionIds = _activeSessionHistorySyncs.toList(growable: false);
+    _activeSessionHistorySyncs.clear();
+    for (final timer in _sessionHistorySyncTimeouts.values) {
+      timer.cancel();
+    }
+    _sessionHistorySyncTimeouts.clear();
+    for (final sessionId in sessionIds) {
+      _sessionHistorySyncChangedController.add(sessionId);
+    }
+  }
+
+  void _clearSessionHistorySyncTracking() {
+    _pendingForegroundHistorySyncs.clear();
+    _finishActiveSessionHistorySyncs();
   }
 
   void _scheduleReconnect() {
@@ -2204,9 +2271,14 @@ class BridgeService implements BridgeServiceBase {
     if (_channel != null && isConnected) {
       if (!_trackInFlightPendingMessage(message)) return;
       _trackInFlightInputMessage(message);
+      final historySyncSessionId = _beginPendingSessionHistorySync(message);
       try {
         _channel!.sink.add(message.toJson());
       } catch (error, stackTrace) {
+        if (historySyncSessionId != null) {
+          _finishSessionHistorySync(historySyncSessionId);
+          _pendingForegroundHistorySyncs.add(historySyncSessionId);
+        }
         logger.warning('WS send failed; queued message', error, stackTrace);
         _queueOfflineMessage(message);
         _setBridgeConnectionState(BridgeConnectionState.disconnected);
@@ -3276,6 +3348,7 @@ class BridgeService implements BridgeServiceBase {
 
   @override
   void requestSessionHistory(String sessionId) {
+    _pendingForegroundHistorySyncs.add(sessionId);
     _requestSessionHistory(sessionId, allowFullFallback: true);
   }
 
@@ -4774,6 +4847,7 @@ class BridgeService implements BridgeServiceBase {
     _intentionalDisconnect = true;
     _resetSessionCatalogRefresh();
     _failPendingHistoryRequests(clearCursors: true);
+    _clearSessionHistorySyncTracking();
     _completePendingSessionLinkResolutionsAsUnsupported();
     _reconnectTimer?.cancel();
     _cancelPendingPermissionChanges();
@@ -4811,6 +4885,7 @@ class BridgeService implements BridgeServiceBase {
     _sessionListController.close();
     _sessionHistoryAvailabilityController.close();
     _sessionHistoryReconciledController.close();
+    _sessionHistorySyncChangedController.close();
     _codexModelCatalogController.close();
     _sessionStoppedController.close();
     _recentSessionsController.close();

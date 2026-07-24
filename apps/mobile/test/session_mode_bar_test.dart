@@ -22,6 +22,7 @@ class _MockBridgeService extends BridgeService {
   final _sessionListController =
       StreamController<List<SessionInfo>>.broadcast();
   final _modelCatalogController = StreamController<int>.broadcast();
+  final _historySyncController = StreamController<String>.broadcast();
   final sentMessages = <ClientMessage>[];
   int _modelCatalogRevision = 0;
   List<String> availableCodexModels = const [];
@@ -33,6 +34,7 @@ class _MockBridgeService extends BridgeService {
   bool runtimePermissionApplyStrategySupported = true;
   bool? runtimeNativePlanModeSupported;
   String? runtimeServiceTier;
+  bool historySyncing = false;
 
   @override
   bool get isConnected => true;
@@ -56,6 +58,12 @@ class _MockBridgeService extends BridgeService {
 
   @override
   Stream<int> get codexModelCatalogChanges => _modelCatalogController.stream;
+
+  @override
+  Stream<String> get sessionHistorySyncChanges => _historySyncController.stream;
+
+  @override
+  bool isSessionHistorySyncing(String sessionId) => historySyncing;
 
   @override
   Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
@@ -92,6 +100,11 @@ class _MockBridgeService extends BridgeService {
   void emitModelCatalog() {
     _modelCatalogRevision++;
     _modelCatalogController.add(_modelCatalogRevision);
+  }
+
+  void emitHistorySync(bool syncing) {
+    historySyncing = syncing;
+    _historySyncController.add('codex-session');
   }
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
@@ -135,6 +148,7 @@ class _MockBridgeService extends BridgeService {
     _taggedController.close();
     _sessionListController.close();
     _modelCatalogController.close();
+    _historySyncController.close();
     super.dispose();
   }
 }
@@ -226,6 +240,47 @@ void main() {
     );
 
     expect(find.byType(VerticalDivider), findsNWidgets(2));
+  });
+
+  testWidgets('mode bar glow tracks history sync instead of active Plan mode', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_wrap(cubit));
+
+    bridge.emitMessage(
+      const SystemMessage(
+        subtype: 'set_permission_mode',
+        permissionMode: 'plan',
+      ),
+      sessionId: 'codex-session',
+    );
+    bridge.emitMessage(
+      const StatusMessage(status: ProcessStatus.running),
+      sessionId: 'codex-session',
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('session_history_sync_glow')),
+      findsNothing,
+    );
+
+    bridge.emitHistorySync(true);
+    await tester.pump();
+    await tester.pump();
+    expect(cubit.historySyncing.value, isTrue);
+    expect(
+      find.byKey(const ValueKey('session_history_sync_glow')),
+      findsOneWidget,
+    );
+
+    bridge.emitHistorySync(false);
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('session_history_sync_glow')),
+      findsNothing,
+    );
   });
 
   test('Codex Fast mode supports current and legacy metadata', () {
