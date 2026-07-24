@@ -177,7 +177,11 @@ codex exec resume \
 ## 8. 文件、预览和传输
 
 - Codex 正常输出真实文件路径；Bridge 负责识别、安全映射并发出 Mobile 可点击的结构化链接。
-- Mobile 优先应用内预览；不支持时提供系统预览、下载和分享。预览关闭后返回页仍要可左滑返回。
+- Agent 路径提取、Bridge artifact 映射、手动文件管理与 Agent 引用共用的
+  `ArtifactPreviewScreen`、以及 Flutter 分享/下载都已经存在，不得重复实现。
+  iOS 预览改为由设备上的 `QLPreviewController.canPreview` 做系统优先分流；
+  JSON 属于 `public.text` 路线。Quick Look 不支持或启动失败时自动回落到有界
+  本地预览器，未知二进制仍保留下载和分享。预览关闭后返回页仍要可左滑返回。
 - owner 自用部署允许在 macOS 实际授权范围内全盘浏览、读取、预览和下载；
   文件入口明确分为手动文件管理和 Agent 文件引用两套。Agent 的原有工具机制
   不改，但它引用的本地路径由 Bridge 转成超链接后，预览和下载必须复用手动

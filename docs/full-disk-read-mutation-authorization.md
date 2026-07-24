@@ -52,6 +52,51 @@ Codex/Claude 根据用户任务读取文件。
 只负责产生真实文件引用；Bridge 负责把引用安全映射为 Mobile 可预览的只读
 capability；Mobile 文件管理器负责用户主动浏览和所有直接文件变更交互。
 
+### 2.3 统一预览路由，复用现有实现
+
+实现前的源码核对已经确认，下列能力不是待重写功能：
+
+- Bridge 已能从 Agent 回复中提取本地绝对路径、相对 session cwd 的路径和
+  Markdown 文件链接，登记 artifact 并向 Mobile 返回结构化引用；
+- Agent 文件引用和手动文件管理最终都进入同一个
+  `ArtifactPreviewScreen`；
+- iOS 已有原生 `QLPreviewController` adapter，且 native 层已经调用
+  `QLPreviewController.canPreview`；
+- Flutter 预览外壳已经统一提供返回、分享、下载、传输进度、取消和错误提示。
+  embedded Bridge 页面不应再复制一套 JavaScript-to-native 操作栏。
+
+现存问题是路由方式，而不是缺少上述能力。当前 Dart 只根据 Office/RTF
+扩展名决定是否调用 Quick Look；JSON、PDF、图片、音视频和普通文本仍固定进入
+本地 WebView。Quick Look 返回 `unsupported` 时，当前页面也只显示重试，不会
+自动切换到本地预览。
+
+后续实现采用一个共享的 preview coordinator：
+
+1. Agent 引用和手动文件管理都把同一份 artifact/read capability 交给统一预览页；
+2. iOS 在完成认证、大小限制、可取消的临时文件准备后，先由设备当前系统版本的
+   `QLPreviewController.canPreview` 判断并尝试系统预览；
+3. Quick Look 明确不支持、原生 adapter 不可用或预览启动失败时，自动切换到
+   本地只读预览器，不要求用户退回后重新选择；
+4. 本地预览器继续承担文本/代码、JSON、XML、YAML、CSV、日志、DOCX 等兜底，
+   采用有界读取；JSON 合法时可格式化展示，失败时保留原始文本，不能因为解析
+   失败阻止下载或分享；
+5. 未识别的二进制格式显示文件名、类型、大小和“不支持直接预览”，仍保留下载
+   与分享，不猜测编码、不把任意二进制交给文本解码器；
+6. 分享和下载继续由 Flutter 外壳统一实现，对 Quick Look 与本地预览使用同一
+   组按钮、同一传输取消/进度和安全文件名规则；不另造第二套按钮或下载协议。
+
+[Apple 将 JSON 声明为 `public.json`](https://developer.apple.com/documentation/uniformtypeidentifiers/uttype-swift.struct/json)，
+并明确它符合 `public.text`；
+[Quick Look 支持符合 `public.text` 的文本文件](https://developer.apple.com/documentation/quicklook/qlpreviewcontroller)。
+因此 JSON 应进入系统优先路线。但 Apple 也说明 Quick Look 的支持范围可能随
+系统版本变化，不能把“JSON 永远可预览”或任何固定扩展名表当作最终事实，设备
+上的 `canPreview` 结果才是权威分流。
+
+系统优先不改变访问权限：Quick Look 和本地预览器都只能消费 Bridge 签发的
+短期 opaque read capability，不能接受 Mobile 提交的任意 Mac 路径。临时文件
+必须位于 App sandbox，关闭系统预览后删除；下载到用户可见位置与临时预览文件
+仍是两个不同动作。
+
 ## 3. 权限分层
 
 ### 3.1 不需要二次授权
@@ -200,12 +245,14 @@ Face ID 路径属于新基础 IPA 边界，不能用 Shorebird 成功结果冒�
 1. 收紧连接和全部私有 HTTP 入口，修复 Gallery 绕过与无界上传；
 2. 建立手动文件管理与 Agent 引用共用的 owner 全盘只读 authority，将本地
    路径安全映射为短期只读 capability；
-3. 实现 Bridge 本地密码设置、Argon2id verifier、挑战和一次性操作授权；
-4. 将所有 Mobile 直接文件变更 RPC 接入统一授权器；
-5. 实现 iOS Secure Enclave + Face ID 设备登记和签名；
-6. 再启用 owner 全盘只读配置和稳定 TCC 宿主；
-7. 最后做旧/新 App 与 Bridge 兼容、project 外 Agent 引用、断线重放、
+3. 在现有 `ArtifactPreviewScreen` 和 Quick Look adapter 上实现系统优先、
+   本地自动降级的统一 preview coordinator，并复用现有分享/下载；
+4. 实现 Bridge 本地密码设置、Argon2id verifier、挑战和一次性操作授权；
+5. 将所有 Mobile 直接文件变更 RPC 接入统一授权器；
+6. 实现 iOS Secure Enclave + Face ID 设备登记和签名；
+7. 再启用 owner 全盘只读配置和稳定 TCC 宿主；
+8. 最后做旧/新 App 与 Bridge 兼容、project 外 Agent 引用、断线重放、
    symlink/TOCTOU、失败锁定、删除恢复和物理 iPhone Face ID 验收。
 
-在步骤 1 至 6 完成并验证前，不把当前运行 Bridge 改成全盘开放，也不把本设计
+在步骤 1 至 7 完成并验证前，不把当前运行 Bridge 改成全盘开放，也不把本设计
 描述为已经部署。
