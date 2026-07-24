@@ -19,13 +19,48 @@ Codex/Claude 根据用户任务读取文件。
 两种方式任选其一。Face ID 不是把 `faceIdPassed: true` 发送给 Bridge；Bridge
 必须验证与本次具体操作绑定的密码证明或设备签名。
 
-## 2. 权限分层
+## 2. 两套文件入口，共享全盘只读权限
 
-### 2.1 不需要二次授权
+产品保留两套清晰独立的文件入口。它们不共用交互界面和写入语义，但必须复用
+同一个 Bridge 全盘只读授权、canonical path 校验和预览/下载基础设施。
+
+### 2.1 手动文件管理
+
+- 用户从 Mobile 文件管理器主动浏览目录、搜索、固定常用位置、查看 metadata、
+  预览或下载文件；
+- owner 模式不再用项目目录或 `BRIDGE_ALLOWED_DIRS` 阻止只读访问；
+- 只读操作不需要文件变更密码或 Face ID；
+- 从手动文件管理器发起的任何写入仍按本文的二次授权方案执行。
+
+### 2.2 Agent 文件引用与超链接
+
+- Codex/Claude 的原有工具、输出格式、文件写入和 provider 权限机制保持不变；
+- 当 Agent 回复引用本地绝对路径或相对 session cwd 的文件路径时，Bridge 继续
+  将它识别为结构化文件引用，Mobile 继续显示为可点击超链接；
+- 用户点击 Agent 文件引用后的预览、Quick Look、下载或 Mac 到手机传输属于
+  只读访问，必须使用与手动文件管理相同的 owner 全盘只读权限；
+- owner 模式下，Agent 引用的文件即使位于当前 project、session cwd 或旧
+  `BRIDGE_ALLOWED_DIRS` 之外，也不能返回 `path_not_allowed`。Bridge 应解析
+  canonical path、验证文件身份和读取能力，然后签发短期 opaque read
+  capability；HTTP 端不能直接接受未经授权的任意本地路径；
+- macOS TCC、Unix 权限、文件已删除或目标不是普通文件等真实失败必须返回
+  独立错误，不能把它们伪装成项目目录权限错误；
+- 从 Agent 预览页继续执行重命名、移动、覆盖或删除时，操作从只读引用链路
+  转入手动文件变更链路，并要求密码或 Face ID。
+
+这两套入口共享读取权限，不意味着把 Agent 机制重写成第二套文件管理器。Agent
+只负责产生真实文件引用；Bridge 负责把引用安全映射为 Mobile 可预览的只读
+capability；Mobile 文件管理器负责用户主动浏览和所有直接文件变更交互。
+
+## 3. 权限分层
+
+### 3.1 不需要二次授权
 
 - 列目录、读取 metadata、搜索和读取文件内容；
 - 应用内预览、Quick Look、下载到手机、从 Mac 发送到手机；
 - Gallery、Artifact 和文件管理器中的只读访问；
+- Agent 本地文件超链接的解析、预览和下载，即使目标位于 session project
+  或旧允许目录之外；
 - Codex/Claude provider 运行时根据用户任务进行的文件读取；
 - Codex/Claude 自己的工具写入。Agent 工具行为继续由 provider 的 sandbox、
   permission mode、审批和现有 Bridge 自动审批规则管理，不能被本方案改造成
@@ -33,7 +68,7 @@ Codex/Claude 根据用户任务读取文件。
 
 连接认证仍是独立的第一层门禁。无需二次授权不等于允许未认证设备访问。
 
-### 2.2 必须二次授权
+### 3.2 必须二次授权
 
 本节只约束 Mobile 或 Bridge 文件管理 RPC 直接发起的变更：
 
@@ -47,7 +82,7 @@ Codex/Claude 根据用户任务读取文件。
 默认删除优先进入可恢复的废纸篓。永久删除必须显示不可恢复提示，并使用一次
 新的操作授权；不能复用此前的普通写入授权。
 
-## 3. 密码方案
+## 4. 密码方案
 
 - 密码只能在 Mac 上通过 Bridge 的本地管理入口设置、修改或清除。
 - Bridge 不保存明文密码，只保存独立 salt、Argon2id verifier 和版本化参数。
@@ -64,9 +99,9 @@ Codex/Claude 根据用户任务读取文件。
 执行 Argon2id 校验。若未来允许非 Tailscale 网络，再单独引入应用层 TLS 或
 PAKE；不能把当前自用边界误写成公网密码协议已经完成。
 
-## 4. Face ID 的后端可验证方案
+## 5. Face ID 的后端可验证方案
 
-### 4.1 设备登记
+### 5.1 设备登记
 
 1. 用户先通过文件变更密码完成一次登记授权；
 2. iPhone 在 Secure Enclave 生成不可导出的签名私钥，并使用
@@ -78,7 +113,7 @@ PAKE；不能把当前自用边界误写成公网密码协议已经完成。
 Face ID 集合变化、App 重装、Keychain/Secure Enclave 密钥失效或设备被撤销
 后，原登记必须 fail closed，并要求使用密码重新登记。
 
-### 4.2 操作挑战
+### 5.2 操作挑战
 
 Bridge 在执行变更前先完成 canonical path、允许的 owner 全盘策略、symlink、
 目标存在性、文件身份和冲突检查，然后生成一次性挑战。挑战至少绑定：
@@ -94,7 +129,7 @@ Mobile 展示人能理解的操作摘要。Face ID 成功后，Secure Enclave �
 挑战；Bridge 验证签名、设备状态、连接 generation、内容摘要、时效和 nonce，
 不能只相信 Mobile 自报结果。
 
-## 5. 一次性操作授权
+## 6. 一次性操作授权
 
 - 密码或 Face ID 成功只授权挑战中列明的一个操作或一个明确批次。
 - 授权默认 60 秒过期、只能消费一次，并绑定当前 Bridge 实例、连接 generation、
@@ -106,7 +141,7 @@ Mobile 展示人能理解的操作摘要。Face ID 成功后，Secure Enclave �
 - 执行结果通过关联 request ID 返回。超时、断线、重连、Bridge 重启、重复帧和
   晚到签名一律不得执行变更。
 
-## 6. 连接安全与全盘读取前置条件
+## 7. 连接安全与全盘读取前置条件
 
 owner 配置可以使用 `BRIDGE_ALLOWED_DIRS=*` 表达全盘只读意图，但在实际启用前
 必须先满足：
@@ -123,21 +158,25 @@ owner 配置可以使用 `BRIDGE_ALLOWED_DIRS=*` 表达全盘只读意图，但�
 全盘读取只覆盖 macOS 实际允许当前宿主读取的资源，不宣称能够绕过 TCC、
 FileVault、Keychain、其他用户权限或系统完整性保护。
 
-## 7. 协议与兼容
+## 8. 协议与兼容
 
 建议使用 additive capabilities：
 
 - `full_disk_read_v1`
+- `full_disk_reference_preview_v1`
 - `file_mutation_step_up_v1`
 - `biometric_device_signature_v1`
 
 兼容行为：
 
-- 新 Bridge + 新 Mobile：只读全盘，直接文件变更要求密码或 Face ID 签名；
+- 新 Bridge + 新 Mobile：手动文件管理和 Agent 文件引用均可只读全盘，直接
+  文件变更要求密码或 Face ID 签名；
 - 新 Bridge + 旧 Mobile：旧 Mobile 保持可用的只读能力；需要二次授权的文件
-  变更入口 fail closed 并提示更新，不能回退为无授权写入；
+  变更入口 fail closed 并提示更新，不能回退为无授权写入；旧 Mobile
+  无法消费的新引用 capability 继续使用其明确降级；
 - 旧 Bridge + 新 Mobile：没有 step-up capability 时不展示或不执行直接文件
-  变更；普通会话、预览和旧文件读取继续降级；
+  变更；普通会话和旧文件读取继续降级。Agent 引用若仍被旧允许目录拒绝，
+  Mobile 显示“需要更新 Bridge”，不能误报文件不存在；
 - 旧 Bridge + 旧 Mobile：行为不变。
 
 Secure Enclave 签名是否可由现有基础 IPA 的原生能力完成，必须在实现前现场核对。
@@ -146,7 +185,7 @@ Face ID 路径属于新基础 IPA 边界，不能用 Shorebird 成功结果冒�
 密码路径和 Bridge 权威授权可以先作为独立阶段实现，但不得因此削弱最终兼容
 门禁。
 
-## 8. 审计与恢复
+## 9. 审计与恢复
 
 - Bridge 记录设备、时间、操作类型、规范化路径摘要、授权方式、结果和 request
   ID；不记录密码、Face ID 数据、文件正文、签名私钥或完整敏感响应。
@@ -156,15 +195,17 @@ Face ID 路径属于新基础 IPA 边界，不能用 Shorebird 成功结果冒�
 - 文件变更日志只是审计证据，不是 canonical 文件状态；实际执行结果仍需重新
   stat/读取确认。
 
-## 9. 实现顺序与验收
+## 10. 实现顺序与验收
 
 1. 收紧连接和全部私有 HTTP 入口，修复 Gallery 绕过与无界上传；
-2. 实现 Bridge 本地密码设置、Argon2id verifier、挑战和一次性操作授权；
-3. 将所有 Mobile 直接文件变更 RPC 接入统一授权器；
-4. 实现 iOS Secure Enclave + Face ID 设备登记和签名；
-5. 再启用 owner 全盘只读配置和稳定 TCC 宿主；
-6. 最后做旧/新 App 与 Bridge 兼容、断线重放、symlink/TOCTOU、失败锁定、
-   删除恢复和物理 iPhone Face ID 验收。
+2. 建立手动文件管理与 Agent 引用共用的 owner 全盘只读 authority，将本地
+   路径安全映射为短期只读 capability；
+3. 实现 Bridge 本地密码设置、Argon2id verifier、挑战和一次性操作授权；
+4. 将所有 Mobile 直接文件变更 RPC 接入统一授权器；
+5. 实现 iOS Secure Enclave + Face ID 设备登记和签名；
+6. 再启用 owner 全盘只读配置和稳定 TCC 宿主；
+7. 最后做旧/新 App 与 Bridge 兼容、project 外 Agent 引用、断线重放、
+   symlink/TOCTOU、失败锁定、删除恢复和物理 iPhone Face ID 验收。
 
-在步骤 1 至 5 完成并验证前，不把当前运行 Bridge 改成全盘开放，也不把本设计
+在步骤 1 至 6 完成并验证前，不把当前运行 Bridge 改成全盘开放，也不把本设计
 描述为已经部署。

@@ -610,11 +610,20 @@
 
 ## Full-disk read and Bridge-verified file mutation authorization
 
-- This accepted design applies to the owner's self-hosted deployment. Bridge
-  may browse, search, read, preview and download every file that its macOS host
-  can actually access. Codex and Claude provider tools remain governed by their
-  existing sandbox, permission and approval systems; this decision does not
-  add a biometric prompt to every agent-authored code edit.
+- This accepted design applies to the owner's self-hosted deployment and has
+  two file entry surfaces: user-driven manual file management, and Agent
+  local-file references rendered as hyperlinks. They keep separate UI and
+  mutation semantics but share one Bridge-owned full-disk read authority and
+  preview/download pipeline.
+- Bridge may browse, search, read, preview and download every file that its
+  macOS host can actually access. Codex and Claude provider tools remain
+  governed by their existing sandbox, permission and approval systems; this
+  decision does not add a biometric prompt to every agent-authored code edit.
+  When an Agent references a local file outside the current project, session
+  cwd or legacy allowed directories, Bridge canonicalizes it and issues a
+  short-lived opaque read capability instead of returning `path_not_allowed`.
+  Real TCC, Unix permission, missing-file and non-regular-file failures remain
+  distinct.
 - Every filesystem mutation initiated directly by Mobile or a Bridge file
   management RPC requires step-up authorization. This includes create, write,
   append, overwrite, rename, move, phone-to-Mac upload, replace and delete.
@@ -644,11 +653,13 @@
   firewall rule. macOS Full Disk Access belongs to a stable Bridge host or
   narrow helper, not a version-changing Node runtime path.
 - The protocol remains additive through capabilities such as
-  `full_disk_read_v1`, `file_mutation_step_up_v1` and
-  `biometric_device_signature_v1`. Old peers retain read/session behavior but
-  must fail closed for mutations they cannot authorize. Secure Enclave support
-  may require a new base IPA and must be checked before claiming an OTA-only
-  delivery.
+  `full_disk_read_v1`, `full_disk_reference_preview_v1`,
+  `file_mutation_step_up_v1` and `biometric_device_signature_v1`. Old peers
+  retain read/session behavior but must fail closed for mutations they cannot
+  authorize. A new Mobile with an old Bridge reports that a project-external
+  Agent reference needs a Bridge update instead of pretending the file is
+  absent. Secure Enclave support may require a new base IPA and must be checked
+  before claiming an OTA-only delivery.
 - The complete accepted design, sequencing and verification matrix is in
   `docs/full-disk-read-mutation-authorization.md`. No source implementation,
   runtime configuration, Bridge deployment, IPA, OTA or physical-device
