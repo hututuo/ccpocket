@@ -27,6 +27,9 @@ import 'session_runtime_store.dart';
 typedef SessionPermissionRequestObserver =
     void Function(String sessionId, PermissionRequestMessage request);
 
+const backgroundNotificationDeliveryBridgeCapability =
+    'background_notification_delivery_v1';
+
 class _PermissionRequestObserverRegistration {
   const _PermissionRequestObserverRegistration(this.observer);
 
@@ -115,6 +118,12 @@ class BridgeService implements BridgeServiceBase {
       StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
   final _connectionController =
       StreamController<BridgeConnectionState>.broadcast();
+  final _clientDeliveryModeStateController =
+      StreamController<ClientDeliveryModeStateMessage>.broadcast();
+  final _backgroundNotificationController =
+      StreamController<BackgroundNotificationMessage>.broadcast();
+  final _backgroundActivityStateController =
+      StreamController<BackgroundActivityStateMessage>.broadcast();
   final _sessionListController =
       StreamController<List<SessionInfo>>.broadcast();
   final _sessionHistoryAvailabilityController =
@@ -212,6 +221,15 @@ class BridgeService implements BridgeServiceBase {
   String? _defaultCodexProfile;
   String? _bridgeVersion;
   Set<String> _bridgeCapabilities = const {};
+  BridgeClientDeliveryMode _desiredClientDeliveryMode =
+      BridgeClientDeliveryMode.interactive;
+  String _deliveryLocale = 'en';
+  bool _deliveryPrivacyMode = false;
+  List<String> _deliveryEnabledEventTypes = const [];
+  int _deliveryModeRequestSequence = 0;
+  String? _latestDeliveryModeRequestId;
+  final Map<String, Completer<ClientDeliveryModeStateMessage>>
+      _pendingDeliveryModeRequests = {};
   final Map<String, _PendingPermissionChange> _pendingPermissionChanges = {};
   final CodexGoalRequestRouter _goalRequestRouter = CodexGoalRequestRouter();
   final Duration permissionChangeTimeout;
@@ -338,6 +356,12 @@ class BridgeService implements BridgeServiceBase {
       _promptHistoryStatusController.stream;
   Stream<LocalFeatureServerMessage> get localFeatureMessages =>
       _localFeatureMessageController.stream.map((pair) => pair.$1);
+  Stream<ClientDeliveryModeStateMessage> get clientDeliveryModeStates =>
+      _clientDeliveryModeStateController.stream;
+  Stream<BackgroundNotificationMessage> get backgroundNotifications =>
+      _backgroundNotificationController.stream;
+  Stream<BackgroundActivityStateMessage> get backgroundActivityStates =>
+      _backgroundActivityStateController.stream;
   // Git Operations
   Stream<GitStageResultMessage> get gitStageResults =>
       _gitStageResultController.stream;
@@ -393,6 +417,10 @@ class BridgeService implements BridgeServiceBase {
   String? get defaultCodexProfile => _defaultCodexProfile;
   String? get bridgeVersion => _bridgeVersion;
   Set<String> get bridgeCapabilities => _bridgeCapabilities;
+  bool get supportsBackgroundNotificationDelivery => _bridgeCapabilities
+      .contains(backgroundNotificationDeliveryBridgeCapability);
+  BridgeClientDeliveryMode get desiredClientDeliveryMode =>
+      _desiredClientDeliveryMode;
   String? get promptHistoryBridgeId => _promptHistoryBridgeId;
   UsageResultMessage? get lastUsageResult => _lastUsageResult;
   List<OfflinePendingAction> get offlinePendingActions =>
@@ -1269,8 +1297,24 @@ class BridgeService implements BridgeServiceBase {
           if (epoch != _connectionEpoch) return;
           try {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
+            if (_shouldSuppressBackgroundWireMessage(json)) return;
             var sessionId = json['sessionId'] as String?;
             var msg = ServerMessage.fromJson(json);
+            if (msg is ClientDeliveryModeStateMessage) {
+              _completeDeliveryModeRequest(msg);
+              return;
+            }
+            if (msg is BackgroundNotificationMessage) {
+              _backgroundNotificationController.add(msg);
+              return;
+            }
+            if (msg is BackgroundActivityStateMessage) {
+              _backgroundActivityStateController.add(msg);
+              return;
+            }
+            if (msg is ErrorMessage && _isDeliveryModeProtocolError(msg)) {
+              _failPendingDeliveryModeRequests(resetDesiredMode: true);
+            }
             final routedGoalSessionId = _goalRequestRouter.route(
               msg,
               wireSessionId: sessionId,
@@ -1650,6 +1694,10 @@ class BridgeService implements BridgeServiceBase {
           }
         },
       );
+      if (_desiredClientDeliveryMode ==
+          BridgeClientDeliveryMode.notificationsOnly) {
+        unawaited(_reassertDesiredClientDeliveryMode());
+      }
     } catch (e, st) {
       logger.error('WS connect failed', e, st);
       _clearPendingLocalFeatureRequests();
@@ -1924,6 +1972,116 @@ class BridgeService implements BridgeServiceBase {
     } else {
       _queueOfflineMessage(message);
     }
+  }
+
+  Future<ClientDeliveryModeStateMessage?> setClientDeliveryMode({
+    required BridgeClientDeliveryMode mode,
+    String locale = 'en',
+    bool privacyMode = false,
+    List<String> enabledEventTypes = const [],
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final requestId = 'delivery-${++_deliveryModeRequestSequence}';
+    _desiredClientDeliveryMode = mode;
+    _deliveryLocale = locale;
+    _deliveryPrivacyMode = privacyMode;
+    _deliveryEnabledEventTypes = List.unmodifiable(enabledEventTypes);
+    _latestDeliveryModeRequestId = requestId;
+    final completer = Completer<ClientDeliveryModeStateMessage>();
+    _pendingDeliveryModeRequests[requestId] = completer;
+    try {
+      send(
+        ClientMessage.setClientDeliveryMode(
+          mode: mode,
+          requestId: requestId,
+          locale: locale,
+          privacyMode: privacyMode,
+          enabledEventTypes: enabledEventTypes,
+        ),
+      );
+      return await completer.future.timeout(timeout);
+    } catch (error, stackTrace) {
+      if (_latestDeliveryModeRequestId == requestId &&
+          mode == BridgeClientDeliveryMode.notificationsOnly) {
+        _desiredClientDeliveryMode = BridgeClientDeliveryMode.interactive;
+      }
+      logger.warning(
+        'Client delivery mode was not acknowledged',
+        error,
+        stackTrace,
+      );
+      return null;
+    } finally {
+      _pendingDeliveryModeRequests.remove(requestId);
+    }
+  }
+
+  Future<void> _reassertDesiredClientDeliveryMode() async {
+    if (_desiredClientDeliveryMode !=
+        BridgeClientDeliveryMode.notificationsOnly) {
+      return;
+    }
+    await setClientDeliveryMode(
+      mode: BridgeClientDeliveryMode.notificationsOnly,
+      locale: _deliveryLocale,
+      privacyMode: _deliveryPrivacyMode,
+      enabledEventTypes: _deliveryEnabledEventTypes,
+    );
+  }
+
+  bool _shouldSuppressBackgroundWireMessage(Map<String, dynamic> json) {
+    if (_desiredClientDeliveryMode !=
+        BridgeClientDeliveryMode.notificationsOnly) {
+      return false;
+    }
+    final wireType = json['type'] as String?;
+    if (wireType == 'client_delivery_mode_state_v1' ||
+        wireType == 'background_notification_v1' ||
+        wireType == 'background_activity_state_v1') {
+      return false;
+    }
+    if (wireType != 'error') return true;
+    return !_isRawDeliveryModeProtocolError(json);
+  }
+
+  bool _isRawDeliveryModeProtocolError(Map<String, dynamic> json) {
+    return json['errorCode'] == 'background_delivery_client_unsupported' ||
+        (json['errorCode'] == 'unsupported_message' &&
+            json['message'] == 'set_client_delivery_mode');
+  }
+
+  void _completeDeliveryModeRequest(ClientDeliveryModeStateMessage message) {
+    _clientDeliveryModeStateController.add(message);
+    _backgroundActivityStateController.add(
+      BackgroundActivityStateMessage(
+        activeWorkCount: message.activeWorkCount,
+        occurredAt: DateTime.now(),
+      ),
+    );
+    final completer = _pendingDeliveryModeRequests[message.requestId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(message);
+    }
+  }
+
+  bool _isDeliveryModeProtocolError(ErrorMessage message) {
+    return message.errorCode == 'background_delivery_client_unsupported' ||
+        (message.errorCode == 'unsupported_message' &&
+            message.message == 'set_client_delivery_mode');
+  }
+
+  void _failPendingDeliveryModeRequests({required bool resetDesiredMode}) {
+    if (resetDesiredMode) {
+      _desiredClientDeliveryMode = BridgeClientDeliveryMode.interactive;
+    }
+    for (final completer in _pendingDeliveryModeRequests.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          StateError('Background delivery mode is unavailable.'),
+        );
+      }
+    }
+    _pendingDeliveryModeRequests.clear();
   }
 
   /// Sends a one-shot artifact RPC only on the current socket. Unlike regular
@@ -3849,6 +4007,7 @@ class BridgeService implements BridgeServiceBase {
     _cancelPendingPermissionChanges();
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
+    _failPendingDeliveryModeRequests(resetDesiredMode: true);
     _permissionRequestObservers.clear();
     for (final timer in _inFlightPendingVisibilityTimers.values) {
       timer.cancel();
@@ -3874,6 +4033,9 @@ class BridgeService implements BridgeServiceBase {
     _taggedMessageController.close();
     _localFeatureMessageController.close();
     _connectionController.close();
+    _clientDeliveryModeStateController.close();
+    _backgroundNotificationController.close();
+    _backgroundActivityStateController.close();
     _sessionListController.close();
     _sessionHistoryAvailabilityController.close();
     _sessionHistoryReconciledController.close();

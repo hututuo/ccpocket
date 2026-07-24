@@ -9,6 +9,7 @@ import 'package:flutter/widgets.dart';
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
+import 'background_notification_mode_controller.dart';
 import 'background_sync_host.dart';
 
 enum BackgroundSyncTrigger { enteringBackground, appRefresh, resumed }
@@ -163,6 +164,7 @@ class MobileBackgroundSyncCoordinator {
     required BackgroundSyncHost host,
     required BackgroundSyncBridgeGateway bridge,
     required BackgroundSyncMirrorGateway mirror,
+    BackgroundNotificationModeLifecycle? backgroundNotificationMode,
     Duration connectionTimeout = const Duration(seconds: 4),
     Duration sessionListTimeout = const Duration(seconds: 5),
     Duration historyResponseTimeout = const Duration(seconds: 4),
@@ -171,6 +173,7 @@ class MobileBackgroundSyncCoordinator {
   }) : _host = host,
        _bridge = bridge,
        _mirror = mirror,
+       _backgroundNotificationMode = backgroundNotificationMode,
        _connectionTimeout = connectionTimeout,
        _sessionListTimeout = sessionListTimeout,
        _historyResponseTimeout = historyResponseTimeout,
@@ -180,6 +183,7 @@ class MobileBackgroundSyncCoordinator {
   final BackgroundSyncHost _host;
   final BackgroundSyncBridgeGateway _bridge;
   final BackgroundSyncMirrorGateway _mirror;
+  final BackgroundNotificationModeLifecycle? _backgroundNotificationMode;
   final Duration _connectionTimeout;
   final Duration _sessionListTimeout;
   final Duration _historyResponseTimeout;
@@ -225,6 +229,7 @@ class MobileBackgroundSyncCoordinator {
     final nextMode = _lifecycleModeFor(state);
     if (nextMode == _lifecycleMode) return Future<void>.value();
 
+    final previousMode = _lifecycleMode;
     _lifecycleCancellation?.cancel();
     final transitionCancellation = _SyncCancellationToken();
     _lifecycleCancellation = transitionCancellation;
@@ -249,7 +254,15 @@ class MobileBackgroundSyncCoordinator {
         );
       case _BackgroundSyncLifecycleMode.unknown:
         final continuation = _takeActiveContinuation();
-        return _enterUnknownLifecycle(continuation);
+        final prepareForBackground =
+            state == AppLifecycleState.inactive &&
+            previousMode == _BackgroundSyncLifecycleMode.foreground;
+        return _enterUnknownLifecycle(
+          continuation,
+          transitionGeneration: transitionGeneration,
+          cancellation: transitionCancellation,
+          prepareForBackground: prepareForBackground,
+        );
     }
   }
 
@@ -264,6 +277,20 @@ class MobileBackgroundSyncCoordinator {
       cancellation,
     )) {
       return;
+    }
+    final notificationMode = _backgroundNotificationMode;
+    if (notificationMode != null) {
+      final handled = await notificationMode.enterBackground(
+        hasBackgroundWork: _bridge.hasBackgroundWork,
+      );
+      if (handled ||
+          !_isCurrentLifecycleTransition(
+            transitionGeneration,
+            _BackgroundSyncLifecycleMode.background,
+            cancellation,
+          )) {
+        return;
+      }
     }
     unawaited(
       _publishDartReadyForLifecycle(transitionGeneration, Future<void>.value()),
@@ -326,6 +353,14 @@ class MobileBackgroundSyncCoordinator {
     )) {
       return;
     }
+    await _backgroundNotificationMode?.enterForeground();
+    if (!_isCurrentLifecycleTransition(
+      transitionGeneration,
+      _BackgroundSyncLifecycleMode.foreground,
+      cancellation,
+    )) {
+      return;
+    }
     await _setAutomaticWatchRestorationEnabled(true);
     if (!_isCurrentLifecycleTransition(
       transitionGeneration,
@@ -361,10 +396,31 @@ class MobileBackgroundSyncCoordinator {
     }
   }
 
-  Future<void> _enterUnknownLifecycle(_ContinuationLease? continuation) async {
+  Future<void> _enterUnknownLifecycle(
+    _ContinuationLease? continuation, {
+    required int transitionGeneration,
+    required _SyncCancellationToken cancellation,
+    required bool prepareForBackground,
+  }) async {
     final disabled = _setAutomaticWatchRestorationEnabled(false);
     await _endContinuation(continuation);
     await disabled;
+    if (!_isCurrentLifecycleTransition(
+      transitionGeneration,
+      _BackgroundSyncLifecycleMode.unknown,
+      cancellation,
+    )) {
+      return;
+    }
+    final notificationMode = _backgroundNotificationMode;
+    if (notificationMode == null) return;
+    if (prepareForBackground) {
+      await notificationMode.prepareForBackground(
+        hasBackgroundWork: _bridge.hasBackgroundWork,
+      );
+    } else {
+      await notificationMode.leaveLifecycle();
+    }
   }
 
   Future<void> _publishDartReadyForLifecycle(
@@ -453,6 +509,12 @@ class MobileBackgroundSyncCoordinator {
 
   Future<bool> _performAppRefresh(BackgroundRefreshRequest request) async {
     if (_disposed || request.isExpired) return false;
+    if (_backgroundNotificationMode?.ownsBackgroundTransport == true) {
+      // Location-backed notification mode deliberately owns the background
+      // transport. Do not parse, reconcile, or render conversation data until
+      // foreground restoration switches the Bridge back to interactive mode.
+      return true;
+    }
     await _setAutomaticWatchRestorationEnabled(false);
     try {
       if (_host.supportsAppRefresh) {

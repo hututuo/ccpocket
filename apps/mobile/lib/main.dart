@@ -30,6 +30,8 @@ import 'package:talker_bloc_logger/talker_bloc_logger.dart';
 import 'core/logger.dart';
 import 'l10n/app_localizations.dart';
 import 'features/auto_approval/auto_approval_service.dart';
+import 'features/background_sync/background_location_keep_alive_host.dart';
+import 'features/background_sync/background_notification_mode_controller.dart';
 import 'features/background_sync/background_sync_coordinator.dart';
 import 'features/background_sync/background_sync_host.dart';
 import 'features/conversation_mirror/conversation_mirror_service.dart';
@@ -42,6 +44,7 @@ import 'features/file_transfer/ios_file_transfer_gateway.dart';
 import 'features/mobile_host/mobile_host_service.dart';
 import 'features/mobile_update/mobile_update_restart_prompt.dart';
 import 'features/mobile_update/mobile_update_service.dart';
+import 'features/permission_management/permission_host_service.dart';
 import 'features/session_list/state/session_list_cubit.dart';
 import 'features/git/state/git_status_cubit.dart';
 import 'features/git/state/git_view_cache_service.dart';
@@ -231,6 +234,23 @@ void main() async {
       MobileHostCapability.backgroundRefreshWarmRuntime,
     ),
   );
+  final backgroundLocationKeepAliveHost =
+      MethodChannelBackgroundLocationKeepAliveHost(
+        supportedByInstalledHost: mobileHostSnapshot.supports(
+          MobileHostCapability.backgroundLocationKeepAlive,
+        ),
+      );
+  final backgroundNotificationModeController =
+      BackgroundNotificationModeController(
+        preferences: prefs,
+        locationHost: backgroundLocationKeepAliveHost,
+        delivery: BridgeServiceBackgroundNotificationDeliveryGateway(bridge),
+        permissionHost: PermissionHostService.instance,
+        notifications: NotificationServiceBackgroundPresenter(
+          NotificationService.instance,
+        ),
+      );
+  await backgroundNotificationModeController.initialize();
   final backgroundSyncCoordinator = MobileBackgroundSyncCoordinator(
     host: backgroundSyncHost,
     bridge: BridgeServiceBackgroundSyncGateway(
@@ -255,6 +275,7 @@ void main() async {
       },
     ),
     mirror: ConversationMirrorBackgroundSyncGateway(conversationMirrorService),
+    backgroundNotificationMode: backgroundNotificationModeController,
   )..start(initialLifecycleState: WidgetsBinding.instance.lifecycleState);
   final fcmService = FcmService();
   final draftService = DraftService(prefs);
@@ -286,6 +307,13 @@ void main() async {
     fcmService: fcmService,
     revenueCatService: revenueCatService,
     appIconService: appIconService,
+  );
+  backgroundNotificationModeController.updatePolicy(
+    preferences: settingsCubit.state.notificationPreferences,
+    locale: settingsCubit.state.appLocaleId.isEmpty
+        ? WidgetsBinding.instance.platformDispatcher.locale.toLanguageTag()
+        : settingsCubit.state.appLocaleId,
+    privacyMode: settingsCubit.state.fcmPrivacy,
   );
   final gitStatusCubit = GitStatusCubit(
     bridge: bridge,
@@ -327,6 +355,9 @@ void main() async {
         ChangeNotifierProvider<ConversationMirrorService>(
           create: (_) => conversationMirrorService,
           lazy: false,
+        ),
+        ChangeNotifierProvider<BackgroundNotificationModeController>.value(
+          value: backgroundNotificationModeController,
         ),
         RepositoryProvider<MobileHostService>.value(value: mobileHostService),
         ChangeNotifierProvider<MobileUpdateService>.value(
@@ -423,6 +454,8 @@ void main() async {
           fcmService: fcmService,
           mobileUpdateService: mobileUpdateService,
           backgroundSyncCoordinator: backgroundSyncCoordinator,
+          backgroundNotificationModeController:
+              backgroundNotificationModeController,
         ),
       ),
     ),
@@ -437,12 +470,14 @@ class CcpocketApp extends StatefulWidget {
     required this.fcmService,
     this.mobileUpdateService,
     this.backgroundSyncCoordinator,
+    this.backgroundNotificationModeController,
     super.key,
   });
 
   final FcmService fcmService;
   final MobileUpdateService? mobileUpdateService;
   final MobileBackgroundSyncCoordinator? backgroundSyncCoordinator;
+  final BackgroundNotificationModeController? backgroundNotificationModeController;
 
   @override
   State<CcpocketApp> createState() => _CcpocketAppState();
@@ -703,6 +738,11 @@ class _CcpocketAppState extends State<CcpocketApp> {
     if (backgroundSyncCoordinator != null) {
       unawaited(backgroundSyncCoordinator.dispose());
     }
+    final backgroundNotificationModeController =
+        widget.backgroundNotificationModeController;
+    if (backgroundNotificationModeController != null) {
+      unawaited(backgroundNotificationModeController.dispose());
+    }
     _linkSub?.cancel();
     _fcmOnMessageSub?.cancel();
     _fcmOnMessageOpenedAppSub?.cancel();
@@ -720,10 +760,21 @@ class _CcpocketAppState extends State<CcpocketApp> {
           previous.fcmAvailable != current.fcmAvailable ||
           previous.fcmEnabledMachines.isEmpty !=
               current.fcmEnabledMachines.isEmpty ||
-          previous.notificationPreferences != current.notificationPreferences,
+          previous.notificationPreferences != current.notificationPreferences ||
+          previous.appLocaleId != current.appLocaleId ||
+          previous.activeMachineId != current.activeMachineId ||
+          previous.fcmPrivacyMachines != current.fcmPrivacyMachines,
       listener: (context, settings) {
         NotificationService.instance.configure(
           settings.notificationPreferences,
+        );
+        widget.backgroundNotificationModeController?.updatePolicy(
+          preferences: settings.notificationPreferences,
+          locale: settings.appLocaleId.isEmpty
+              ? WidgetsBinding.instance.platformDispatcher.locale
+                    .toLanguageTag()
+              : settings.appLocaleId,
+          privacyMode: settings.fcmPrivacy,
         );
         if (settings.fcmEnabledMachines.isNotEmpty && settings.fcmAvailable) {
           _initFcmHandlers();

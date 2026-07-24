@@ -909,6 +909,28 @@ sealed class ServerMessage {
     final localFeatureMessage = LocalFeatureProtocolHost.tryDecode(json);
     if (localFeatureMessage != null) return localFeatureMessage;
     return switch (json['type'] as String) {
+      'client_delivery_mode_state_v1' => ClientDeliveryModeStateMessage(
+        mode: BridgeClientDeliveryMode.fromWire(json['mode'] as String?),
+        requestId: json['requestId'] as String? ?? '',
+        activeWorkCount: json['activeWorkCount'] as int? ?? 0,
+      ),
+      'background_notification_v1' => BackgroundNotificationMessage(
+        eventType: json['eventType'] as String? ?? '',
+        sessionId: json['sessionId'] as String? ?? '',
+        provider: json['provider'] as String? ?? 'claude',
+        title: json['title'] as String? ?? 'CC Pocket',
+        body: json['body'] as String? ?? '',
+        occurredAt: DateTime.tryParse(json['occurredAt'] as String? ?? ''),
+        data:
+            (json['data'] as Map?)?.map(
+              (key, value) => MapEntry(key.toString(), value.toString()),
+            ) ??
+            const <String, String>{},
+      ),
+      'background_activity_state_v1' => BackgroundActivityStateMessage(
+        activeWorkCount: json['activeWorkCount'] as int? ?? 0,
+        occurredAt: DateTime.tryParse(json['occurredAt'] as String? ?? ''),
+      ),
       'system' => SystemMessage(
         subtype: json['subtype'] as String? ?? '',
         sessionId: json['sessionId'] as String?,
@@ -1671,6 +1693,65 @@ String? _firstString(dynamic value) {
     if (text != null) return text;
   }
   return null;
+}
+
+enum BridgeClientDeliveryMode {
+  interactive('interactive'),
+  notificationsOnly('notifications_only');
+
+  const BridgeClientDeliveryMode(this.wireValue);
+
+  final String wireValue;
+
+  static BridgeClientDeliveryMode fromWire(String? value) {
+    return value == notificationsOnly.wireValue
+        ? notificationsOnly
+        : interactive;
+  }
+}
+
+class ClientDeliveryModeStateMessage implements ServerMessage {
+  const ClientDeliveryModeStateMessage({
+    required this.mode,
+    required this.requestId,
+    required this.activeWorkCount,
+  });
+
+  final BridgeClientDeliveryMode mode;
+  final String requestId;
+  final int activeWorkCount;
+}
+
+class BackgroundNotificationMessage implements ServerMessage {
+  const BackgroundNotificationMessage({
+    required this.eventType,
+    required this.sessionId,
+    required this.provider,
+    required this.title,
+    required this.body,
+    required this.occurredAt,
+    required this.data,
+  });
+
+  final String eventType;
+  final String sessionId;
+  final String provider;
+  final String title;
+  final String body;
+  final DateTime? occurredAt;
+  final Map<String, String> data;
+}
+
+class BackgroundActivityStateMessage implements ServerMessage {
+  const BackgroundActivityStateMessage({
+    required this.activeWorkCount,
+    required this.occurredAt,
+  });
+
+  final int activeWorkCount;
+  final DateTime? occurredAt;
+
+  bool get hasActiveWork => activeWorkCount > 0;
 }
 
 class SystemMessage implements ServerMessage {
@@ -4369,6 +4450,9 @@ class ClientMessage {
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',
+          'client_delivery_mode_state_v1',
+          'background_notification_v1',
+          'background_activity_state_v1',
           'archived_sessions_result',
           'unarchive_result',
           'delete_session_result',
@@ -4389,6 +4473,21 @@ class ClientMessage {
       'mobileRuntime': ?mobileRuntime,
     });
   }
+
+  factory ClientMessage.setClientDeliveryMode({
+    required BridgeClientDeliveryMode mode,
+    required String requestId,
+    String? locale,
+    bool? privacyMode,
+    List<String>? enabledEventTypes,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'set_client_delivery_mode',
+    'mode': mode.wireValue,
+    'requestId': requestId,
+    'locale': ?locale,
+    'privacyMode': ?privacyMode,
+    'enabledEventTypes': ?enabledEventTypes,
+  }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.resolveArtifact({
     required String requestId,

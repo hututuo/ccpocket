@@ -110,6 +110,117 @@ class NotificationSettingsStrings {
     en: 'Local alerts do not require App Store signing. Remote delivery after iOS fully suspends the app depends on whether the AltStore signing profile preserves APNs entitlement.',
   );
 
+  String get backgroundConnectionSection => _pick(
+    zh: '实验性后台连接',
+    ja: '試験的バックグラウンド接続',
+    ko: '실험적 백그라운드 연결',
+    en: 'Experimental background connection',
+  );
+
+  String get backgroundKeepAliveTitle => _pick(
+    zh: '任务运行时保持本地通知',
+    ja: 'タスク実行中のローカル通知を維持',
+    ko: '작업 중 로컬 알림 연결 유지',
+    en: 'Keep local alerts during active tasks',
+  );
+
+  String get backgroundKeepAliveExplanation => _pick(
+    zh: '需要“始终”定位权限。后台只接收轻量通知事件，不解析流式正文、不刷新会话界面；重新打开 App 后才按序号增量追平。坐标不会被读取、保存或上传。低电量模式、严重温控、任务结束或断线超过两分钟时会自动停止。',
+    ja: '「常に」位置情報が必要です。バックグラウンドでは軽量通知だけを受信し、ストリーム本文や会話 UI は更新しません。App を開いた後に差分を取得します。座標は読み取り・保存・送信されず、低電力、熱負荷、完了、長時間の切断時は自動停止します。',
+    ko: '“항상” 위치 권한이 필요합니다. 백그라운드에서는 가벼운 알림만 받고 스트림 본문이나 대화 UI를 갱신하지 않으며, 앱을 열면 증분 동기화합니다. 좌표는 읽거나 저장하거나 업로드하지 않고 저전력, 열 압력, 작업 완료 또는 장시간 연결 끊김 시 자동 중지됩니다.',
+    en: 'Requires Always Location. In the background, CC Pocket receives only lightweight alert events and does not parse streamed text or refresh chat UI; reopening the app performs an incremental catch-up. Coordinates are never read, stored, or uploaded. Low Power Mode, thermal pressure, completion, or a two-minute disconnect stops it automatically.',
+  );
+
+  String get grantAlwaysLocation => _pick(
+    zh: '授权“始终”定位',
+    ja: '位置情報を「常に許可」',
+    ko: '위치 “항상 허용”',
+    en: 'Grant Always Location',
+  );
+
+  String get openSystemSettings => _pick(
+    zh: '打开系统设置',
+    ja: 'システム設定を開く',
+    ko: '시스템 설정 열기',
+    en: 'Open System Settings',
+  );
+
+  String backgroundKeepAliveStatus(String phase) => switch (phase) {
+    'initializing' => _pick(
+      zh: '正在检测宿主能力',
+      ja: 'ホスト機能を確認中',
+      ko: '호스트 기능 확인 중',
+      en: 'Checking host support',
+    ),
+    'disabled' => _pick(zh: '已关闭', ja: 'オフ', ko: '꺼짐', en: 'Off'),
+    'base_app_update_required' => _pick(
+      zh: '需要安装包含后台定位宿主的新基础 IPA',
+      ja: '新しいベース IPA が必要です',
+      ko: '새 기본 IPA 설치 필요',
+      en: 'A newer base IPA with the native host is required',
+    ),
+    'bridge_update_required' || 'bridge_mode_unavailable' => _pick(
+      zh: '需要更新 Bridge 后端',
+      ja: 'Bridge の更新が必要です',
+      ko: 'Bridge 업데이트 필요',
+      en: 'A newer Bridge is required',
+    ),
+    'location_always_required' || 'updating_permission' => _pick(
+      zh: '等待“始终”定位与通知权限',
+      ja: '位置情報「常に許可」と通知の権限待ち',
+      ko: '위치 항상 허용 및 알림 권한 필요',
+      en: 'Waiting for Always Location and notification permission',
+    ),
+    'ready' => _pick(
+      zh: '已就绪；仅在有运行中任务并进入后台时启动',
+      ja: '準備完了。実行中タスクでのみ開始します',
+      ko: '준비됨. 실행 중인 작업에서만 시작',
+      en: 'Ready; starts only for an active task in the background',
+    ),
+    'prepared' => _pick(
+      zh: '正在准备进入后台',
+      ja: 'バックグラウンド移行を準備中',
+      ko: '백그라운드 전환 준비 중',
+      en: 'Preparing for background delivery',
+    ),
+    'receiving_notifications_only' => _pick(
+      zh: '后台仅接收轻量通知',
+      ja: 'バックグラウンドで軽量通知のみ受信中',
+      ko: '백그라운드에서 가벼운 알림만 수신 중',
+      en: 'Receiving lightweight notifications only',
+    ),
+    'waiting_for_active_task' => _pick(
+      zh: '没有运行中任务，已停止以节省电量',
+      ja: '実行中タスクがないため停止中',
+      ko: '실행 중인 작업이 없어 절전 중',
+      en: 'Stopped to save power until a task is active',
+    ),
+    'low_power_mode' => _pick(
+      zh: '低电量模式下已暂停',
+      ja: '低電力モードで一時停止中',
+      ko: '저전력 모드에서 일시 중지',
+      en: 'Paused in Low Power Mode',
+    ),
+    'thermal_pressure' => _pick(
+      zh: '设备温度较高，已暂停',
+      ja: '熱負荷のため一時停止中',
+      ko: '열 압력으로 일시 중지',
+      en: 'Paused due to thermal pressure',
+    ),
+    'bridge_disconnected' || 'bridge_disconnected_power_pause' => _pick(
+      zh: 'Bridge 未连接，已停止后台常驻',
+      ja: 'Bridge 未接続のため停止中',
+      ko: 'Bridge 연결이 없어 중지됨',
+      en: 'Stopped because the Bridge is disconnected',
+    ),
+    _ => _pick(
+      zh: '等待下一次后台任务',
+      ja: '次のバックグラウンドタスクを待機中',
+      ko: '다음 백그라운드 작업 대기 중',
+      en: 'Waiting for the next background task',
+    ),
+  };
+
   String get typesSection =>
       _pick(zh: '通知类型', ja: '通知タイプ', ko: '알림 유형', en: 'Notification types');
 

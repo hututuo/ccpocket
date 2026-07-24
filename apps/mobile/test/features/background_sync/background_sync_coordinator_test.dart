@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:ccpocket/features/background_sync/background_notification_mode_controller.dart';
 import 'package:ccpocket/features/background_sync/background_sync_coordinator.dart';
 import 'package:ccpocket/features/background_sync/background_sync_host.dart';
 import 'package:ccpocket/features/conversation_mirror/conversation_mirror_service.dart';
@@ -513,6 +514,92 @@ void main() {
     },
   );
 
+  test(
+    'notification-only mode owns background transport and skips legacy streaming',
+    () async {
+      final events = <String>[];
+      final host = _FakeHost(supportsContinuation: true);
+      final bridge = _FakeBridge(
+        hasBackgroundWork: true,
+        sessionIds: const ['active'],
+        cachedSessionIds: const {'active'},
+        events: events,
+      );
+      final mirror = _FakeMirror();
+      final notificationMode = _FakeBackgroundNotificationLifecycle(
+        handlesBackground: true,
+        events: events,
+      );
+      final coordinator = MobileBackgroundSyncCoordinator(
+        host: host,
+        bridge: bridge,
+        mirror: mirror,
+        backgroundNotificationMode: notificationMode,
+        historyResponseTimeout: const Duration(milliseconds: 50),
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      await coordinator.handleLifecycleState(AppLifecycleState.inactive);
+      await coordinator.handleLifecycleState(AppLifecycleState.hidden);
+
+      expect(notificationMode.prepareCalls, [true]);
+      expect(notificationMode.backgroundCalls, [true]);
+      expect(host.beginGenerations, isEmpty);
+      expect(bridge.historyRequests, isEmpty);
+      expect(mirror.calls, isEmpty);
+
+      expect(await host.performRefresh('notification-mode-active'), isTrue);
+      expect(bridge.historyRequests, isEmpty);
+      expect(mirror.calls, isEmpty);
+
+      await coordinator.handleLifecycleState(AppLifecycleState.resumed);
+
+      expect(notificationMode.foregroundCount, 1);
+      expect(bridge.historyRequests, ['active']);
+      expect(
+        events.indexOf('mode:interactive'),
+        lessThan(events.indexOf('history:active')),
+      );
+
+      await coordinator.dispose();
+      await bridge.dispose();
+    },
+  );
+
+  test(
+    'unavailable notification-only mode preserves the old finite continuation',
+    () async {
+      final host = _FakeHost(supportsContinuation: true);
+      final bridge = _FakeBridge(
+        hasBackgroundWork: true,
+        sessionIds: const ['active'],
+        cachedSessionIds: const {'active'},
+      );
+      final mirror = _FakeMirror();
+      final notificationMode = _FakeBackgroundNotificationLifecycle(
+        handlesBackground: false,
+      );
+      final coordinator = MobileBackgroundSyncCoordinator(
+        host: host,
+        bridge: bridge,
+        mirror: mirror,
+        backgroundNotificationMode: notificationMode,
+        historyResponseTimeout: const Duration(milliseconds: 50),
+        continuationTrackingWindow: Duration.zero,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      await coordinator.handleLifecycleState(AppLifecycleState.hidden);
+
+      expect(notificationMode.backgroundCalls, [true]);
+      expect(host.beginGenerations, [1]);
+      expect(host.endGenerations, [1]);
+      expect(bridge.historyRequests, ['active']);
+      expect(bridge.historyFullFallbackPermissions, [false]);
+
+      await coordinator.dispose();
+      await bridge.dispose();
+    },
+  );
+
   test('machine identity parser accepts only canonical machine identities', () {
     expect(
       machineIdFromLogicalConnectionIdentity('machine:device-1'),
@@ -708,6 +795,7 @@ class _FakeBridge implements BackgroundSyncBridgeGateway {
     this.autoRespondToSessionList = true,
     this.respondAfterRebuild = false,
     this.autoRespondToHistory = true,
+    this.events,
     List<String> sessionIds = const [],
     Set<String> cachedSessionIds = const {},
   }) : activeSessionIds = List.of(sessionIds),
@@ -732,6 +820,7 @@ class _FakeBridge implements BackgroundSyncBridgeGateway {
   bool autoRespondToSessionList;
   final bool respondAfterRebuild;
   final bool autoRespondToHistory;
+  final List<String>? events;
   int ensureConnectedCount = 0;
   int rebuildCount = 0;
   int sessionListRequestCount = 0;
@@ -787,6 +876,7 @@ class _FakeBridge implements BackgroundSyncBridgeGateway {
     String sessionId, {
     required bool allowFullFallback,
   }) {
+    events?.add('history:$sessionId');
     historyRequests.add(sessionId);
     historyFullFallbackPermissions.add(allowFullFallback);
     if (autoRespondToHistory) {
@@ -812,6 +902,53 @@ class _FakeBridge implements BackgroundSyncBridgeGateway {
     await _connectionController.close();
     await _sessionController.close();
     await _historyController.close();
+  }
+}
+
+class _FakeBackgroundNotificationLifecycle
+    implements BackgroundNotificationModeLifecycle {
+  _FakeBackgroundNotificationLifecycle({
+    required this.handlesBackground,
+    this.events,
+  });
+
+  final bool handlesBackground;
+  final List<String>? events;
+  final prepareCalls = <bool>[];
+  final backgroundCalls = <bool>[];
+  int foregroundCount = 0;
+  int leaveCount = 0;
+  bool _ownsBackgroundTransport = false;
+
+  @override
+  bool get ownsBackgroundTransport => _ownsBackgroundTransport;
+
+  @override
+  Future<void> prepareForBackground({required bool hasBackgroundWork}) async {
+    prepareCalls.add(hasBackgroundWork);
+    events?.add('mode:prepare');
+  }
+
+  @override
+  Future<bool> enterBackground({required bool hasBackgroundWork}) async {
+    backgroundCalls.add(hasBackgroundWork);
+    events?.add('mode:notifications_only');
+    _ownsBackgroundTransport = handlesBackground;
+    return handlesBackground;
+  }
+
+  @override
+  Future<void> enterForeground() async {
+    _ownsBackgroundTransport = false;
+    foregroundCount++;
+    events?.add('mode:interactive');
+  }
+
+  @override
+  Future<void> leaveLifecycle() async {
+    _ownsBackgroundTransport = false;
+    leaveCount++;
+    events?.add('mode:leave');
   }
 }
 

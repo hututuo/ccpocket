@@ -7,6 +7,8 @@ import '../../l10n/app_localizations.dart';
 import '../../models/notification_preferences.dart';
 import '../../services/bridge_service.dart';
 import '../../services/notification_service.dart';
+import '../background_sync/background_location_keep_alive_host.dart';
+import '../background_sync/background_notification_mode_controller.dart';
 import '../permission_management/l10n/permission_management_strings.dart';
 import '../permission_management/permission_management_screen.dart';
 import '../settings/state/settings_cubit.dart';
@@ -62,6 +64,8 @@ class _NotificationSettingsScreenState
         builder: (context, state) {
           final preferences = state.notificationPreferences;
           final bridge = context.read<BridgeService>();
+          final backgroundMode = context
+              .watch<BackgroundNotificationModeController?>();
 
           return ListView(
             padding: const EdgeInsets.only(bottom: 32),
@@ -148,6 +152,13 @@ class _NotificationSettingsScreenState
                   ),
                 ),
               ),
+              if (backgroundMode != null) ...[
+                _SectionHeader(strings.backgroundConnectionSection),
+                _BackgroundKeepAliveCard(
+                  controller: backgroundMode,
+                  strings: strings,
+                ),
+              ],
               _SectionHeader(strings.typesSection),
               Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16),
@@ -297,6 +308,99 @@ class _NotificationSettingsScreenState
           success ? l.notificationLanguageUpdated : l.fcmTokenFailed,
         ),
         duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+}
+
+class _BackgroundKeepAliveCard extends StatelessWidget {
+  const _BackgroundKeepAliveCard({
+    required this.controller,
+    required this.strings,
+  });
+
+  final BackgroundNotificationModeController controller;
+  final NotificationSettingsStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = controller.state;
+    final authorization = state.hostSnapshot.authorization;
+    final blocked =
+        authorization == BackgroundLocationAuthorization.denied ||
+        authorization == BackgroundLocationAuthorization.restricted;
+    final canToggle =
+        state.initialized &&
+        !state.busy &&
+        (!state.requiresBaseAppUpdate || state.enabled);
+
+    return Card(
+      key: const ValueKey('background_keep_alive_card'),
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SwitchListTile(
+            key: const ValueKey('background_keep_alive_toggle'),
+            secondary: state.busy
+                ? const SizedBox.square(
+                    dimension: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.notifications_active_outlined),
+            title: Text(strings.backgroundKeepAliveTitle),
+            subtitle: Text(strings.backgroundKeepAliveStatus(state.phase)),
+            value: state.enabled,
+            onChanged: canToggle
+                ? (value) => controller.setEnabledFromUserAction(value)
+                : null,
+          ),
+          if (state.enabled && !state.hasAlwaysAuthorization) ...[
+            const Divider(height: 1, indent: 16, endIndent: 16),
+            Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: TextButton.icon(
+                  key: const ValueKey(
+                    'background_keep_alive_permission_action',
+                  ),
+                  onPressed: state.busy
+                      ? null
+                      : () {
+                          if (blocked) {
+                            controller.openSystemSettings();
+                          } else {
+                            controller.setEnabledFromUserAction(true);
+                          }
+                        },
+                  icon: Icon(
+                    blocked
+                        ? Icons.open_in_new
+                        : Icons.location_searching_outlined,
+                    size: 18,
+                  ),
+                  label: Text(
+                    blocked
+                        ? strings.openSystemSettings
+                        : strings.grantAlwaysLocation,
+                  ),
+                ),
+              ),
+            ),
+          ],
+          const Divider(height: 1, indent: 16, endIndent: 16),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Text(
+              strings.backgroundKeepAliveExplanation,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
