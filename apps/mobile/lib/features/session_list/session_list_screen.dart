@@ -63,6 +63,63 @@ const _sessionRequestUuid = Uuid();
 
 // ---- Testable helpers (top-level) ----
 
+/// Keeps the connected home visible only after this exact Bridge target has
+/// produced an authoritative session snapshot.
+///
+/// A WebSocket upgrade is transport readiness, not application readiness. The
+/// latch survives a same-target reconnect so an already-open home does not
+/// flash back to the connection picker, but a new target must prove itself
+/// independently.
+class SessionHomeConnectionGate {
+  bool _hasReadyTarget = false;
+  String? _readyTargetKey;
+
+  bool get hasReadyTarget => _hasReadyTarget;
+
+  bool update({
+    required BridgeConnectionState state,
+    required String targetKey,
+    required bool hasAuthoritativeSessionList,
+  }) {
+    final previousReady = _hasReadyTarget;
+    final previousKey = _readyTargetKey;
+    if (_readyTargetKey != null &&
+        targetKey != _readyTargetKey &&
+        state != BridgeConnectionState.disconnected) {
+      _hasReadyTarget = false;
+      _readyTargetKey = null;
+    }
+    if (state == BridgeConnectionState.connected &&
+        hasAuthoritativeSessionList) {
+      _hasReadyTarget = true;
+      _readyTargetKey = targetKey;
+    }
+    return previousReady != _hasReadyTarget || previousKey != _readyTargetKey;
+  }
+
+  BridgeConnectionState presentationState({
+    required BridgeConnectionState transportState,
+    required bool hasAuthoritativeSessionList,
+  }) {
+    if (transportState == BridgeConnectionState.connected &&
+        !hasAuthoritativeSessionList) {
+      return _hasReadyTarget
+          ? BridgeConnectionState.reconnecting
+          : BridgeConnectionState.connecting;
+    }
+    return transportState;
+  }
+
+  bool shouldShowConnectedUi(BridgeConnectionState presentationState) =>
+      _hasReadyTarget &&
+      presentationState != BridgeConnectionState.disconnected;
+
+  void reset() {
+    _hasReadyTarget = false;
+    _readyTargetKey = null;
+  }
+}
+
 bool _sameSessionRequestProject(String expected, String? actual) {
   if (actual == null || actual.isEmpty) return false;
 
@@ -233,6 +290,7 @@ class SessionListScreen extends StatefulWidget {
 class _SessionListScreenState extends State<SessionListScreen>
     with WidgetsBindingObserver {
   bool _isAutoConnecting = false;
+  final _connectionUiGate = SessionHomeConnectionGate();
 
   /// Key to access HomeContent state for programmatic search (Cmd+K).
   final _homeContentKey = GlobalKey<HomeContentState>();
@@ -280,6 +338,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     WidgetsBinding.instance.addObserver(this);
     // session_created navigation (the only manual subscription)
     final bridge = context.read<BridgeService>();
+    _connectionUiGate.update(
+      state: bridge.currentBridgeConnectionState,
+      targetKey: _connectionUiTargetKey(bridge),
+      hasAuthoritativeSessionList:
+          bridge.hasAuthoritativeSessionListForCurrentConnection,
+    );
     _desktopContinuityTracker = DesktopSessionListContinuityTracker(bridge);
     _archivePendingRequests = SessionArchivePendingRequests(
       onResultUnknown: _handleArchiveResultUnknown,
@@ -288,6 +352,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       if (status != BridgeConnectionState.connected) {
         _archivePendingRequests.connectionLost();
       }
+      _syncConnectionUiGate(bridge, status);
     });
     _messageSub = bridge.messages.listen((msg) {
       if (msg is SystemMessage &&
@@ -332,7 +397,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     // Feed active session updates to the unseen tracker.
     final activeCubit = context.read<ActiveSessionsCubit>();
     _unseenCubit.updateSessions(activeCubit.state);
-    _activeSessionsSub = activeCubit.stream.listen(_unseenCubit.updateSessions);
+    _activeSessionsSub = activeCubit.stream.listen((sessions) {
+      _unseenCubit.updateSessions(sessions);
+      _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+    });
     unawaited(_loadMacOSNativeAppBannerState());
     _checkAppUpdate();
   }
@@ -613,6 +681,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   void _disconnect() {
+    _connectionUiGate.reset();
     context.read<BridgeService>().disconnect();
     final tunnelService = context.read<SshBridgeTunnelService?>();
     if (tunnelService != null) {
@@ -620,6 +689,44 @@ class _SessionListScreenState extends State<SessionListScreen>
     }
     WorkspaceShellScreen.maybeOf(context)?.resetWorkspace();
     context.read<SessionListCubit>().resetFilters();
+  }
+
+  void _syncConnectionUiGate(
+    BridgeService bridge,
+    BridgeConnectionState state,
+  ) {
+    final changed = _connectionUiGate.update(
+      state: state,
+      targetKey: _connectionUiTargetKey(bridge),
+      hasAuthoritativeSessionList:
+          bridge.hasAuthoritativeSessionListForCurrentConnection,
+    );
+    final stopAutoConnecting =
+        _isAutoConnecting &&
+        (bridge.hasAuthoritativeSessionListForCurrentConnection ||
+            state == BridgeConnectionState.disconnected);
+    if (!mounted || (!changed && !stopAutoConnecting)) return;
+    setState(() {
+      if (stopAutoConnecting) _isAutoConnecting = false;
+    });
+  }
+
+  String _connectionUiTargetKey(BridgeService bridge) {
+    final logicalIdentity = bridge.logicalConnectionIdentity?.trim();
+    if (logicalIdentity != null && logicalIdentity.isNotEmpty) {
+      return 'logical:$logicalIdentity';
+    }
+    final url = bridge.lastUrl;
+    final uri = url == null ? null : Uri.tryParse(url);
+    if (uri == null) return 'url:${url ?? ''}';
+    final port = uri.hasPort
+        ? uri.port
+        : switch (uri.scheme.toLowerCase()) {
+            'wss' => 443,
+            _ => 80,
+          };
+    return 'url:${uri.scheme.toLowerCase()}://'
+        '${uri.host.toLowerCase()}:$port${uri.path}';
   }
 
   Future<void> _openSettings() async {
@@ -1881,18 +1988,28 @@ class _SessionListScreenState extends State<SessionListScreen>
   Widget build(BuildContext context) {
     // Read state from cubits
     final slState = context.watch<SessionListCubit>().state;
-    final connectionState = widget.debugRecentSessions != null
+    final transportConnectionState = widget.debugRecentSessions != null
         ? BridgeConnectionState.connected
         : context.watch<ConnectionCubit>().state;
+    final bridge = context.read<BridgeService>();
+    final hasAuthoritativeSessionList =
+        widget.debugRecentSessions != null ||
+        bridge.hasAuthoritativeSessionListForCurrentConnection;
+    final connectionState = widget.debugRecentSessions != null
+        ? BridgeConnectionState.connected
+        : _connectionUiGate.presentationState(
+            transportState: transportConnectionState,
+            hasAuthoritativeSessionList: hasAuthoritativeSessionList,
+          );
     final sessions = context.watch<ActiveSessionsCubit>().state;
     final recentSessionsList = _factualRecentSessions(
       widget.debugRecentSessions ?? slState.sessions,
     );
     final discoveredServers = context.watch<ServerDiscoveryCubit>().state;
 
-    final isConnected = connectionState == BridgeConnectionState.connected;
     final showConnectedUI =
-        isConnected || connectionState == BridgeConnectionState.reconnecting;
+        widget.debugRecentSessions != null ||
+        _connectionUiGate.shouldShowConnectedUi(connectionState);
     final homeFileDropAvailable = context.select<FileTransferService?, bool>(
       (service) =>
           service != null &&
@@ -1917,10 +2034,6 @@ class _SessionListScreenState extends State<SessionListScreen>
         builder: (context, unseenSessionIds) =>
             BlocListener<ConnectionCubit, BridgeConnectionState>(
               listener: (context, nextState) {
-                // Clear auto-connecting spinner once we get any connection state update
-                if (_isAutoConnecting) {
-                  setState(() => _isAutoConnecting = false);
-                }
                 if (nextState == BridgeConnectionState.connected) {
                   context.read<SessionListCubit>().refresh();
                 }

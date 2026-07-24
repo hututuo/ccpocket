@@ -55,6 +55,108 @@ void main() {
     _session(projectPath: '/home/user/cli-tool', sessionId: 's6'),
   ];
 
+  group('SessionHomeConnectionGate', () {
+    test('does not enter the session UI on transport readiness alone', () {
+      final gate = SessionHomeConnectionGate();
+
+      gate.update(
+        state: BridgeConnectionState.connected,
+        targetKey: 'machine:a',
+        hasAuthoritativeSessionList: false,
+      );
+
+      expect(gate.hasReadyTarget, isFalse);
+      final presentation = gate.presentationState(
+        transportState: BridgeConnectionState.connected,
+        hasAuthoritativeSessionList: false,
+      );
+      expect(presentation, BridgeConnectionState.connecting);
+      expect(gate.shouldShowConnectedUi(presentation), isFalse);
+    });
+
+    test('latches only after the current Bridge publishes its session list', () {
+      final gate = SessionHomeConnectionGate();
+
+      expect(
+        gate.update(
+          state: BridgeConnectionState.connected,
+          targetKey: 'machine:a',
+          hasAuthoritativeSessionList: true,
+        ),
+        isTrue,
+      );
+      expect(gate.hasReadyTarget, isTrue);
+      expect(
+        gate.shouldShowConnectedUi(BridgeConnectionState.connected),
+        isTrue,
+      );
+    });
+
+    test('keeps a ready same-target reconnect in the existing home', () {
+      final gate = SessionHomeConnectionGate()
+        ..update(
+          state: BridgeConnectionState.connected,
+          targetKey: 'machine:a',
+          hasAuthoritativeSessionList: true,
+        );
+
+      gate.update(
+        state: BridgeConnectionState.reconnecting,
+        targetKey: 'machine:a',
+        hasAuthoritativeSessionList: false,
+      );
+      expect(
+        gate.shouldShowConnectedUi(BridgeConnectionState.reconnecting),
+        isTrue,
+      );
+
+      final upgradedButNotReady = gate.presentationState(
+        transportState: BridgeConnectionState.connected,
+        hasAuthoritativeSessionList: false,
+      );
+      expect(upgradedButNotReady, BridgeConnectionState.reconnecting);
+      expect(gate.shouldShowConnectedUi(upgradedButNotReady), isTrue);
+    });
+
+    test('a different Bridge target must become authoritative again', () {
+      final gate = SessionHomeConnectionGate()
+        ..update(
+          state: BridgeConnectionState.connected,
+          targetKey: 'machine:a',
+          hasAuthoritativeSessionList: true,
+        );
+
+      expect(
+        gate.update(
+          state: BridgeConnectionState.connecting,
+          targetKey: 'machine:b',
+          hasAuthoritativeSessionList: false,
+        ),
+        isTrue,
+      );
+      expect(gate.hasReadyTarget, isFalse);
+      expect(
+        gate.shouldShowConnectedUi(BridgeConnectionState.connecting),
+        isFalse,
+      );
+    });
+
+    test('an initial failed reconnect never opens the session UI', () {
+      final gate = SessionHomeConnectionGate();
+
+      gate.update(
+        state: BridgeConnectionState.reconnecting,
+        targetKey: 'machine:a',
+        hasAuthoritativeSessionList: false,
+      );
+
+      expect(
+        gate.shouldShowConnectedUi(BridgeConnectionState.reconnecting),
+        isFalse,
+      );
+    });
+  });
+
   group('projectCounts', () {
     test('counts sessions per project name', () {
       final counts = projectCounts(sessions);

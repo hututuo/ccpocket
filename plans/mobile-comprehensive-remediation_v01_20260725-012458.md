@@ -155,6 +155,13 @@ Mobile rebuildable store
 - `BridgeService.connect()` 在 WebSocket channel 建立后、收到 Bridge handshake
   和 authoritative session list 前就发布 `connected`。依赖该状态的 connection
   UI 可能提前离开选 IP 页面。
+- 已确认首页原先直接以 transport `connected/reconnecting` 切换整页内容：
+  WebSocket HTTP upgrade 成功就进入会话首页，首次失败后进入自动重连也会进入，
+  因此确实可能出现“还没有拿到 Bridge 数据就跳进去”。
+- 已增加按规范化连接目标隔离的 session-home readiness gate：首次连接必须收到
+  当前连接 epoch 的 authoritative `session_list` 才允许进入；同一目标已经成功
+  进入过后，短暂 connecting/reconnecting 保留现有首页并显示重连状态；切换
+  machine/URL 会清空 gate，不能借用上一台 Bridge 的就绪状态。
 - 旧 session-created 消费缺少完整 request correlation；官方 1.109.2 新增的
   `resumeRequestId` 和 session-link coordinator 是应保留的修复基础。
 - `Failed to get goal: No thread ID available for goal lookup` 是 Goal 请求在
@@ -555,11 +562,16 @@ Mobile rebuildable store
 
 ### 9.1 不自动进入消息页
 
-- WebSocket TCP open 只表示 transport connected，不表示 Bridge handshake、
-  machine identity、session list 或目标 session ready；
-- connection picker 不因 `connected` 字段提前跳转；
-- 仅用户选择的连接请求和匹配 correlation 的 ready/handshake 可推进导航；
-- 自动重连只更新状态，不抢占当前页面。
+- 已将 transport 与首页就绪拆开：
+  - WebSocket upgrade 只保留为传输层 `connected`，不直接推进 UI；
+  - 首次连接只有收到当前 Bridge 的 authoritative `session_list` 后才从 IP/
+    machine 选择页进入会话首页；
+  - 首次连接失败后的 `reconnecting` 不会伪装成已经连接；
+  - 已经进入首页的同一 Bridge 重连继续留在首页，并把“upgrade 完成但新
+    session_list 未到”的间隙继续呈现为 reconnecting；
+  - 目标 machine/URL 变化会清空 readiness latch，必须由新目标重新证明就绪；
+  - 显式断开回到连接页，existing new/resume request correlation 继续负责
+    chat 页面导航，连接状态本身不打开任何会话。
 
 ### 9.2 额度
 
