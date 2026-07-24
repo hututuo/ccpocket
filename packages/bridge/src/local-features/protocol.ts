@@ -41,6 +41,12 @@ import {
   type PersistedSideChatOpenedMessage,
 } from "./slots/persisted-side-chat-protocol.js";
 import {
+  EPHEMERAL_SIDE_CHAT_CAPABILITY,
+  ephemeralSideChatProtocolContribution,
+  type EphemeralSideChatClientMessage,
+  type EphemeralSideChatServerMessage,
+} from "./slots/ephemeral-side-chat-protocol.js";
+import {
   subagentsProtocolContribution,
   type SubagentsClientMessage,
   type SubagentsServerMessage,
@@ -92,6 +98,12 @@ export type {
   PersistedSideChatOpenedMessage,
 } from "./slots/persisted-side-chat-protocol.js";
 export { PERSISTED_SIDE_CHAT_CAPABILITY } from "./slots/persisted-side-chat-protocol.js";
+export type {
+  EphemeralSideChatClientMessage,
+  EphemeralSideChatEntry,
+  EphemeralSideChatServerMessage,
+} from "./slots/ephemeral-side-chat-protocol.js";
+export { EPHEMERAL_SIDE_CHAT_CAPABILITY } from "./slots/ephemeral-side-chat-protocol.js";
 export type { CodexSubagentInfo } from "./slots/subagents-protocol.js";
 export type {
   ConversationMirrorClientMessage,
@@ -150,7 +162,8 @@ export type LocalFeatureClientMessage =
   | SessionInsightsClientMessage
   | SubagentsClientMessage
   | SideChatClientMessage
-  | OpenPersistedSideChatMessage;
+  | OpenPersistedSideChatMessage
+  | EphemeralSideChatClientMessage;
 
 export type LocalFeatureServerMessage =
   | AutoApprovalStateMessage
@@ -161,7 +174,8 @@ export type LocalFeatureServerMessage =
   | SessionInsightsServerMessage
   | SubagentsServerMessage
   | SideChatEventMessage
-  | PersistedSideChatOpenedMessage;
+  | PersistedSideChatOpenedMessage
+  | EphemeralSideChatServerMessage;
 
 const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   autoApprovalProtocolContribution,
@@ -173,6 +187,7 @@ const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   subagentsProtocolContribution,
   sideChatProtocolContribution,
   persistedSideChatProtocolContribution,
+  ephemeralSideChatProtocolContribution,
 ];
 
 const LOCAL_CLIENT_TYPES = new Set<string>(

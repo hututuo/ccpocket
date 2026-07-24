@@ -179,6 +179,48 @@ describe("SessionManager codex path", () => {
     );
   });
 
+  it("keeps ephemeral side chats out of the durable catalog and destroys them with the parent", () => {
+    const manager = new SessionManager(() => {});
+    const parentSessionId = manager.create(
+      "/tmp/project-side-chat",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const childSessionId = manager.create(
+      "/tmp/project-side-chat",
+      undefined,
+      [],
+      undefined,
+      "codex",
+      {
+        ephemeralForkFromThreadId: "parent-thread",
+        excludeTurnsOnOpen: true,
+        threadSource: "ccpocket_side_chat",
+      },
+      {
+        auxiliary: {
+          kind: "ephemeral_side_chat",
+          parentSessionId,
+        },
+      },
+    );
+
+    expect(manager.list().map((session) => session.id)).toEqual([
+      parentSessionId,
+    ]);
+    expect(
+      manager.listEphemeralSideChats().map((session) => session.id),
+    ).toEqual([childSessionId]);
+
+    expect(manager.destroy(parentSessionId)).toBe(true);
+    expect(manager.get(parentSessionId)).toBeUndefined();
+    expect(manager.get(childSessionId)).toBeUndefined();
+    expect(codexInstances[0].stop).toHaveBeenCalledOnce();
+    expect(codexInstances[1].stop).toHaveBeenCalledOnce();
+  });
+
   it("replaces a Codex runtime under a stable session id only after input_ready", async () => {
     const manager = new SessionManager(() => {});
     const sessionId = manager.create(

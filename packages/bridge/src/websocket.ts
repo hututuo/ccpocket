@@ -155,8 +155,8 @@ import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import {
+  EPHEMERAL_SIDE_CHAT_CAPABILITY,
   FILE_BROWSER_CAPABILITY,
-  PERSISTED_SIDE_CHAT_CAPABILITY,
   isLocalFeatureServerMessageType,
 } from "./local-features/protocol.js";
 import type { FileTransferManager } from "./file-transfer-manager.js";
@@ -1379,7 +1379,10 @@ export class BridgeWebSocketServer {
         }
       },
       this.worktreeStore,
-      () => this.broadcastSessionList(),
+      () => {
+        this.broadcastSessionList();
+        this.broadcastEphemeralSideChatRegistry();
+      },
       artifactManager,
       {
         canDrain: (session) =>
@@ -1409,6 +1412,12 @@ export class BridgeWebSocketServer {
       createDedicatedCodexProcess: () => new CodexProcess(this.platform),
       createPersistedCodexChildSession: (parentSessionId, childOptions) =>
         this.createPersistedCodexChildSession(parentSessionId, childOptions),
+      createEphemeralCodexChildSession: (parentSessionId, childOptions) =>
+        this.createEphemeralCodexChildSession(parentSessionId, childOptions),
+      listEphemeralCodexChildSessions: () =>
+        this.listEphemeralCodexChildSessions(),
+      closeEphemeralCodexChildSession: (childSessionId) =>
+        this.closeEphemeralCodexChildSession(childSessionId),
       isProjectPathAllowed: (projectPath) =>
         this.isPathAllowed(resolvePlatformPath(projectPath, this.platform)),
       isSessionProjectPath: (rawSession, projectPath) => {
@@ -2239,6 +2248,154 @@ export class BridgeWebSocketServer {
         ? { approvalsReviewer: settings.approvalsReviewer }
         : {}),
     };
+  }
+
+  private async createEphemeralCodexChildSession(
+    parentSessionId: string,
+    childOptions: { threadSource: string; excludeTurnsOnOpen: boolean },
+  ): Promise<{
+    childSessionId: string;
+    parentSessionId: string;
+    projectPath: string;
+    worktreePath?: string;
+    worktreeBranch?: string;
+    permissionMode?: string;
+    sandboxMode?: string;
+    approvalPolicy?: string;
+    approvalsReviewer?: string;
+    status: string;
+    createdAt: string;
+    lastActivityAt: string;
+  }> {
+    const parent = this.sessionManager.get(parentSessionId);
+    if (
+      !parent ||
+      parent.provider !== "codex" ||
+      parent.auxiliary ||
+      !(parent.process instanceof CodexProcess)
+    ) {
+      throw new Error("The parent Codex session is no longer active");
+    }
+    const parentThreadId = this.codexThreadIdForSession(parent);
+    if (!parentThreadId) {
+      throw new Error("The parent Codex thread is not ready yet");
+    }
+    const allChildren = this.sessionManager.listEphemeralSideChats();
+    if (allChildren.length >= 8) {
+      throw new Error("Bridge has reached the ephemeral side chat limit");
+    }
+    if (
+      allChildren.filter(
+        (child) => child.auxiliary?.parentSessionId === parentSessionId,
+      ).length >= 4
+    ) {
+      throw new Error("This conversation has reached the side chat limit");
+    }
+
+    const settings = parent.codexSettings ?? {};
+    const process = parent.process;
+    const worktreeOptions: WorktreeOptions | undefined = parent.worktreePath
+      ? {
+          existingWorktreePath: parent.worktreePath,
+          worktreeBranch: parent.worktreeBranch,
+        }
+      : undefined;
+    const childSessionId = this.sessionManager.create(
+      parent.projectPath,
+      undefined,
+      [],
+      worktreeOptions,
+      "codex",
+      {
+        ephemeralForkFromThreadId: parentThreadId,
+        excludeTurnsOnOpen: childOptions.excludeTurnsOnOpen,
+        threadSource: childOptions.threadSource,
+        profile: settings.profile,
+        approvalPolicy:
+          settings.approvalPolicy as CodexStartOptions["approvalPolicy"],
+        approvalsReviewer:
+          settings.approvalsReviewer as CodexStartOptions["approvalsReviewer"],
+        codexPermissionsMode:
+          settings.codexPermissionsMode as CodexStartOptions["codexPermissionsMode"],
+        sandboxMode: settings.sandboxMode as CodexStartOptions["sandboxMode"],
+        model: settings.model ?? process.knownModel,
+        modelReasoningEffort:
+          settings.modelReasoningEffort ?? process.modelReasoningEffort,
+        serviceTier: settings.serviceTier ?? process.knownServiceTier,
+        networkAccessEnabled: settings.networkAccessEnabled,
+        webSearchMode:
+          settings.webSearchMode as CodexStartOptions["webSearchMode"],
+        additionalWritableRoots: settings.additionalWritableRoots,
+        collaborationMode: "default",
+      },
+      {
+        auxiliary: {
+          kind: "ephemeral_side_chat",
+          parentSessionId,
+        },
+      },
+    );
+    const child = this.sessionManager.get(childSessionId);
+    if (!child) {
+      throw new Error("The ephemeral side chat was not registered");
+    }
+    this.broadcastEphemeralSideChatRegistry();
+    return this.ephemeralSideChatDescriptor(child);
+  }
+
+  private listEphemeralCodexChildSessions() {
+    return this.sessionManager
+      .listEphemeralSideChats()
+      .map((session) => this.ephemeralSideChatDescriptor(session));
+  }
+
+  private closeEphemeralCodexChildSession(childSessionId: string): boolean {
+    const child = this.sessionManager.get(childSessionId);
+    if (child?.auxiliary?.kind !== "ephemeral_side_chat") return false;
+    this.flushSessionDeltaBatches(childSessionId);
+    const closed = this.sessionManager.destroy(childSessionId);
+    if (closed) this.broadcastEphemeralSideChatRegistry();
+    return closed;
+  }
+
+  private ephemeralSideChatDescriptor(session: SessionInfo) {
+    const parentSessionId = session.auxiliary?.parentSessionId;
+    if (!parentSessionId) {
+      throw new Error("Session is not an ephemeral side chat");
+    }
+    const settings = session.codexSettings ?? {};
+    return {
+      childSessionId: session.id,
+      parentSessionId,
+      projectPath: session.projectPath,
+      ...(session.worktreePath
+        ? { worktreePath: session.worktreePath }
+        : {}),
+      ...(session.worktreeBranch
+        ? { worktreeBranch: session.worktreeBranch }
+        : {}),
+      permissionMode:
+        settings.approvalPolicy === "never"
+          ? "bypassPermissions"
+          : "acceptEdits",
+      ...(settings.sandboxMode ? { sandboxMode: settings.sandboxMode } : {}),
+      ...(settings.approvalPolicy
+        ? { approvalPolicy: settings.approvalPolicy }
+        : {}),
+      ...(settings.approvalsReviewer
+        ? { approvalsReviewer: settings.approvalsReviewer }
+        : {}),
+      status: session.status,
+      createdAt: session.createdAt.toISOString(),
+      lastActivityAt: session.lastActivityAt.toISOString(),
+    };
+  }
+
+  private broadcastEphemeralSideChatRegistry(): void {
+    this.broadcast({
+      type: "ephemeral_side_chat_registry",
+      entries: this.listEphemeralCodexChildSessions(),
+    });
   }
 
   private sendTip(
@@ -9357,7 +9514,7 @@ export class BridgeWebSocketServer {
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
-        PERSISTED_SIDE_CHAT_CAPABILITY,
+        EPHEMERAL_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
         HISTORY_TOOL_DETAIL_CAPABILITY,
@@ -9411,7 +9568,7 @@ export class BridgeWebSocketServer {
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
-        PERSISTED_SIDE_CHAT_CAPABILITY,
+        EPHEMERAL_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
         HISTORY_TOOL_DETAIL_CAPABILITY,
@@ -9606,6 +9763,7 @@ export class BridgeWebSocketServer {
   private destroySession(sessionId: string): void {
     this.flushSessionDeltaBatches(sessionId);
     this.sessionManager.destroy(sessionId);
+    this.broadcastEphemeralSideChatRegistry();
   }
 
   /**

@@ -202,6 +202,12 @@ vi.mock("./session.js", async () => {
       _worktreeOptions?: unknown,
       provider: "claude" | "codex" = "claude",
       codexOptions?: unknown,
+      internal?: {
+        auxiliary?: {
+          kind: "ephemeral_side_chat";
+          parentSessionId: string;
+        };
+      },
     ): string {
       const id = `s-${++this.seq}`;
       const process = {
@@ -336,6 +342,7 @@ vi.mock("./session.js", async () => {
         createdAt: new Date(),
         lastActivityAt: new Date(),
         process,
+        auxiliary: internal?.auxiliary,
       });
       return id;
     }
@@ -559,32 +566,40 @@ vi.mock("./session.js", async () => {
     }
 
     list() {
-      return Array.from(this.sessions.values()).map((s) => ({
-        id: s.id,
-        provider: s.provider,
-        projectPath: s.projectPath,
-        claudeSessionId: s.claudeSessionId,
-        forkedFromSessionId: s.forkedFromSessionId,
-        forkedFromThreadId: s.forkedFromThreadId,
-        status: s.status,
-        createdAt: "",
-        lastActivityAt: "",
-        gitBranch: "",
-        lastMessage: "",
-        codexSettings: s.codexSettings,
-        codexPermissionApplyStrategySupported:
-          s.process.supportsNextTurnPermissionUpdates ?? false,
-        ...(s.process.nativePlanModeCapabilityKnown
-          ? {
-              codexNativePlanModeSupported:
-                s.process.supportsNativePlanMode ?? false,
-            }
-          : {}),
-        ...(s.codexGoalControlSupported !== undefined
-          ? { codexGoalControlSupported: s.codexGoalControlSupported }
-          : {}),
-        queuedInput: s.codexQueuedInput,
-      }));
+      return Array.from(this.sessions.values())
+        .filter((session) => session.auxiliary == null)
+        .map((s) => ({
+          id: s.id,
+          provider: s.provider,
+          projectPath: s.projectPath,
+          claudeSessionId: s.claudeSessionId,
+          forkedFromSessionId: s.forkedFromSessionId,
+          forkedFromThreadId: s.forkedFromThreadId,
+          status: s.status,
+          createdAt: "",
+          lastActivityAt: "",
+          gitBranch: "",
+          lastMessage: "",
+          codexSettings: s.codexSettings,
+          codexPermissionApplyStrategySupported:
+            s.process.supportsNextTurnPermissionUpdates ?? false,
+          ...(s.process.nativePlanModeCapabilityKnown
+            ? {
+                codexNativePlanModeSupported:
+                  s.process.supportsNativePlanMode ?? false,
+              }
+            : {}),
+          ...(s.codexGoalControlSupported !== undefined
+            ? { codexGoalControlSupported: s.codexGoalControlSupported }
+            : {}),
+          queuedInput: s.codexQueuedInput,
+        }));
+    }
+
+    listEphemeralSideChats() {
+      return Array.from(this.sessions.values()).filter(
+        (session) => session.auxiliary?.kind === "ephemeral_side_chat",
+      );
     }
 
     getCachedCommands() {
@@ -592,7 +607,16 @@ vi.mock("./session.js", async () => {
     }
 
     destroy(id: string) {
+      const session = this.sessions.get(id);
+      if (!session) return false;
+      for (const child of this.listEphemeralSideChats()) {
+        if (child.auxiliary.parentSessionId === id) {
+          this.destroy(child.id);
+        }
+      }
       this.sessions.delete(id);
+      session.process.stop();
+      return true;
     }
 
     destroyAll() {}
@@ -771,7 +795,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           "file_transfer_v2",
           "codex_desktop_continuity_v1",
           "codex_resume_preserves_settings_v1",
-          "persisted_side_chat_v1",
+          "ephemeral_side_chat_v1",
           "turn_aware_history_window_v1",
           "history_page_v1",
           "session_request_correlation_v1",
@@ -13338,6 +13362,127 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       projectPath: "/tmp/project-codex",
       permissionMode: "bypassPermissions",
     });
+
+    bridge.close();
+  });
+
+  it("opens, lists, and closes an official ephemeral side chat without catalog persistence", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const parentSessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-codex",
+      undefined,
+      [],
+      undefined,
+      "codex",
+      {
+        threadId: "thread-side-parent",
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+        serviceTier: "fast",
+        approvalPolicy: "never",
+        sandboxMode: "danger-full-access",
+      },
+    );
+    const parent = (bridge as any).sessionManager.get(parentSessionId);
+    Object.setPrototypeOf(parent.process, CodexProcess.prototype);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "ephemeral_side_chat_opened",
+          "ephemeral_side_chat_registry",
+        ],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "open_ephemeral_side_chat",
+        parentSessionId,
+        requestId: "request-open",
+      },
+      ws,
+    );
+
+    const openMessage = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "ephemeral_side_chat_opened");
+    expect(openMessage).toMatchObject({
+      parentSessionId,
+      requestId: "request-open",
+      entry: {
+        parentSessionId,
+        projectPath: "/tmp/project-codex",
+        permissionMode: "bypassPermissions",
+      },
+    });
+    const childSessionId = openMessage.entry.childSessionId;
+    const child = (bridge as any).sessionManager.get(childSessionId);
+    expect(child.auxiliary).toEqual({
+      kind: "ephemeral_side_chat",
+      parentSessionId,
+    });
+    expect(child.codexOptions).toMatchObject({
+      ephemeralForkFromThreadId: "thread-side-parent",
+      excludeTurnsOnOpen: true,
+      threadSource: "ccpocket_side_chat",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
+    expect(
+      (bridge as any).sessionManager
+        .list()
+        .map((session: { id: string }) => session.id),
+    ).toEqual([parentSessionId]);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "list_ephemeral_side_chats",
+        requestId: "request-list",
+      },
+      ws,
+    );
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find(
+          (message: any) =>
+            message.type === "ephemeral_side_chat_registry" &&
+            message.requestId === "request-list",
+        ),
+    ).toMatchObject({
+      entries: [{ childSessionId, parentSessionId }],
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "close_ephemeral_side_chat",
+        childSessionId,
+        requestId: "request-close",
+      },
+      ws,
+    );
+    expect((bridge as any).sessionManager.get(childSessionId)).toBeUndefined();
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find(
+          (message: any) =>
+            message.type === "ephemeral_side_chat_registry" &&
+            message.requestId === "request-close",
+        ),
+    ).toMatchObject({ entries: [] });
 
     bridge.close();
   });

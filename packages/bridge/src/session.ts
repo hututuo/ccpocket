@@ -73,6 +73,11 @@ export interface SessionInfo {
   forkedFromSessionId?: string;
   /** Durable Codex thread that this session was forked from. */
   forkedFromThreadId?: string;
+  /** Live-only auxiliary runtime omitted from the durable session catalog. */
+  auxiliary?: {
+    kind: "ephemeral_side_chat";
+    parentSessionId: string;
+  };
   /** User-assigned session name (via /rename or mobile rename). */
   name?: string;
   status: ProcessStatus;
@@ -241,6 +246,7 @@ interface SessionCreateInternalOptions {
   replacementStillValid?: () => boolean;
   onReplacementReady?: () => void;
   onReplacementFailed?: (error: Error) => void;
+  auxiliary?: SessionInfo["auxiliary"];
 }
 
 export const MAX_HISTORY_PER_SESSION = 100;
@@ -584,6 +590,7 @@ export class SessionManager {
       claudeSessionId: options?.sessionId,
       forkedFromSessionId: replacementSession?.forkedFromSessionId,
       forkedFromThreadId: replacementSession?.forkedFromThreadId,
+      auxiliary: internal?.auxiliary,
     };
     const ownsRuntimeSlot = (): boolean =>
       replacementSession === undefined || this.sessions.get(id) === session;
@@ -840,14 +847,17 @@ export class SessionManager {
             // Codex: capture thread_id for session tracking and worktree restore.
             if (msg.type === "system" && "sessionId" in msg && msg.sessionId) {
               session.claudeSessionId = msg.sessionId;
-              this.saveWorktreeMapping(session);
-              if (session.codexSettings?.profile) {
+              if (!session.auxiliary) this.saveWorktreeMapping(session);
+              if (!session.auxiliary && session.codexSettings?.profile) {
                 void saveCodexSessionProfile(
                   msg.sessionId,
                   session.codexSettings.profile,
                 );
               }
-              if (session.codexSettings?.additionalWritableRoots) {
+              if (
+                !session.auxiliary &&
+                session.codexSettings?.additionalWritableRoots
+              ) {
                 void saveCodexSessionAdditionalWritableRoots(
                   msg.sessionId,
                   session.codexSettings.additionalWritableRoots,
@@ -1073,6 +1083,7 @@ export class SessionManager {
     proc.on("status", (status) => {
       if (!ownsRuntimeSlot()) return;
       session.status = status;
+      if (session.auxiliary) this.onSessionUpdated?.(id);
       if (status === "idle") {
         this.evictStaleIdleSessions();
       }
@@ -1113,6 +1124,7 @@ export class SessionManager {
         if (session.provider === "codex") {
           this.broadcastCodexQueue(session);
         }
+        if (session.auxiliary) this.onSessionUpdated?.(id);
         this.evictStaleIdleSessions();
       };
       if (messageProcessing) {
@@ -1280,7 +1292,10 @@ export class SessionManager {
   }
 
   list(): SessionSummary[] {
-    return Array.from(this.sessions.values()).map((s) => {
+    const sessions = Array.from(this.sessions.values()).filter(
+      (session) => session.auxiliary == null,
+    );
+    return sessions.map((s) => {
       const codexSettings =
         s.process instanceof CodexProcess
           ? withDerivedCodexPermissionsMode(
@@ -1380,6 +1395,17 @@ export class SessionManager {
             : undefined,
       };
     });
+  }
+
+  listEphemeralSideChats(): SessionInfo[] {
+    return Array.from(this.sessions.values())
+      .filter(
+        (session) => session.auxiliary?.kind === "ephemeral_side_chat",
+      )
+      .sort(
+        (left, right) =>
+          right.lastActivityAt.getTime() - left.lastActivityAt.getTime(),
+      );
   }
 
   private appendHistoryToSession(
@@ -2026,6 +2052,7 @@ export class SessionManager {
   /** Save worktree mapping when a provider session ID is available. */
   private saveWorktreeMapping(session: SessionInfo): void {
     if (
+      !session.auxiliary &&
       this.worktreeStore &&
       session.claudeSessionId &&
       session.worktreePath &&
@@ -2288,6 +2315,14 @@ export class SessionManager {
   destroy(id: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
+    const childIds = Array.from(this.sessions.values())
+      .filter(
+        (candidate) =>
+          candidate.auxiliary?.kind === "ephemeral_side_chat" &&
+          candidate.auxiliary.parentSessionId === id,
+      )
+      .map((candidate) => candidate.id);
+    for (const childId of childIds) this.destroy(childId);
     // Remove first so synchronous status/exit events from stop() cannot try to
     // evict the same session recursively.
     this.sessions.delete(id);
@@ -2299,7 +2334,7 @@ export class SessionManager {
 
   private evictStaleIdleSessions(): void {
     const staleIdleSessions = Array.from(this.sessions.values())
-      .filter((session) => session.status === "idle")
+      .filter((session) => session.status === "idle" && !session.auxiliary)
       .sort(
         (left, right) =>
           left.lastActivityAt.getTime() - right.lastActivityAt.getTime(),
@@ -2320,7 +2355,7 @@ export class SessionManager {
   private idleSessionCount(): number {
     let count = 0;
     for (const session of this.sessions.values()) {
-      if (session.status === "idle") count += 1;
+      if (session.status === "idle" && !session.auxiliary) count += 1;
     }
     return count;
   }

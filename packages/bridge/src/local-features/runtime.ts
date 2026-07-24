@@ -37,6 +37,21 @@ export interface PersistedCodexChildSession {
   approvalsReviewer?: string;
 }
 
+export interface EphemeralCodexChildSession {
+  childSessionId: string;
+  parentSessionId: string;
+  projectPath: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
+  permissionMode?: string;
+  sandboxMode?: string;
+  approvalPolicy?: string;
+  approvalsReviewer?: string;
+  status: string;
+  createdAt: string;
+  lastActivityAt: string;
+}
+
 export interface LocalFeatureRuntime {
   /** Stable installation identity; persisted by the Bridge host when available. */
   readonly bridgeInstanceId?: string;
@@ -55,6 +70,13 @@ export interface LocalFeatureRuntime {
     parentSessionId: string,
     options: { threadSource: string; excludeTurnsOnOpen: boolean },
   ): Promise<PersistedCodexChildSession>;
+  /** Register an official in-memory Codex fork in the ordinary session runtime. */
+  createEphemeralCodexChildSession?(
+    parentSessionId: string,
+    options: { threadSource: string; excludeTurnsOnOpen: boolean },
+  ): Promise<EphemeralCodexChildSession>;
+  listEphemeralCodexChildSessions?(): EphemeralCodexChildSession[];
+  closeEphemeralCodexChildSession?(childSessionId: string): boolean;
   /** Host-owned authorization seam for optional features that accept a cwd. */
   isProjectPathAllowed?(projectPath: string): boolean;
   /** Host-owned identity check between a runtime session and a claimed cwd. */
