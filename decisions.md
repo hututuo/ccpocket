@@ -1,5 +1,28 @@
 # ccPocket Compatibility Decisions
 
+## 2026-07-25 comprehensive remediation execution
+
+- 当前 active 执行方案是
+  `plans/mobile-comprehensive-remediation_v01_20260725-012458.md`。它把本轮
+  全部会话、历史、折叠、临时会话、文件、通知、安全和性能需求整理为同一份
+  requirement ledger；后续实现和完成审计以该清单为入口。
+- 实施基线必须先语义合并官方
+  `upstream/main@aa215a3b98a8035cba0e6bdd8005803f76041d66`
+  （Mobile `1.109.2+201` / Bridge `1.69.4`）或开工时更高的官方 HEAD，再保留
+  本地兼容行为。官方 session resume、image restore 和 app-server 加固不得被
+  本地整文件覆盖。
+- 本地 opt-in Always Location notification-only 方案是 owner 兼容栈功能，
+  不是官方功能，也不是 APNs 等价物。它在用户显式授权、存在 active work、
+  新基础 IPA 和新 Bridge 均具备 capability 时才可工作；iOS 回收或 force-quit
+  后仍依靠前台增量追平。此前“不要用 location”的一般后台同步决定不再用于
+  禁止这条用户明确选择的 owner 可选通知路径，但普通后台同步仍不得伪称永久
+  daemon。
+- 持久 Side Chat 产品方向废弃。后续只接官方 app-server 支持的临时
+  thread/fork 生命周期，并复用现有原生前端；不从脏的
+  `feature/mobile-session-tools` 工作树带入另一套持久会话实现。
+- 固定 UI 与确定性错误继续中文化；本轮不加入运行时翻译模型、云翻译 API 或
+  自动翻译 provider 内容。旧系统通过显示原文保持兼容。
+
 ## Upstream-compatible local fixes
 
 - Local compatibility fixes must preserve the official protocol and data model wherever possible.

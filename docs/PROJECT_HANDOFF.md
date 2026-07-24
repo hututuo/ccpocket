@@ -13,6 +13,7 @@
 | 长期产品决策 | `decisions.md` | 已采纳、废弃和待迁移的项目决策 |
 | 本手册 | `docs/PROJECT_HANDOFF.md` | Agent 分工、兼容、发布、验证和核心产品约束 |
 | owner 文件、统一会话与本地翻译实施参考 | `docs/owner-file-access-preview-and-local-translation-plan.md` | 合并全盘只读、统一预览、文件变更二次授权、固定中文化、Apple 本地翻译，以及统一会话列表和前台全会话轻量增量同步；内容完整但实现前必须重新核对源码 |
+| 1.109.2 全面修复与性能收束主方案 | `plans/mobile-comprehensive-remediation_v01_20260725-012458.md` | 当前 active 执行清单；覆盖官方更新、会话/历史/折叠/临时会话、文件安全与预览、通知、未读、本地化、完整审计和性能优化 |
 
 ### 0.1 发布会话的使用规则
 
