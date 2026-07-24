@@ -20,8 +20,11 @@
   `UIBackgroundTask`, followed only by opportunistic `BGAppRefresh` work that
   iOS may delay or omit. Process reclamation and force-quit converge through
   the next foreground catch-up.
-- Do not use audio, location, VoIP, or another unrelated background entitlement
-  to prolong execution. Notifications remain a separate feature.
+- The default finite-sync path must not use audio, location, VoIP, or another
+  unrelated background entitlement to prolong execution. The later optional
+  notification-only extension is the sole location exception: it requires
+  explicit Always Location authorization, never consumes coordinates, and may
+  not synchronize conversation data while backgrounded.
 - Native capability negotiation uses additive
   `backgroundContinuation` and `backgroundRefreshWarmRuntime` keys. The latter
   explicitly does not promise a cold/headless Flutter engine; such an engine
@@ -40,9 +43,37 @@
 - The native plugin, Xcode registration, `Info.plist`, and capability snapshot
   require a new base IPA. Later Dart-only tuning may use the `owner` OTA track.
   This branch does not publish, install, promote to `stable`, replace the live
-  Bridge, or change notification behavior.
+  Bridge, or change behavior on an already installed phone by itself.
 - The detailed compatibility matrix, bounds, and physical-device acceptance
   gates are maintained in `docs/mobile-background-sync.md`.
+
+## Optional background local-notification keep-alive
+
+- This section supersedes the earlier blanket location prohibition only for the
+  explicitly enabled notification-only extension. The existing finite
+  continuation and `BGAppRefresh` behavior remains the compatibility fallback.
+- Mobile may pre-arm a coarse location lease during the iOS inactive transition
+  only when a task is active and every native, Bridge, permission, power and
+  thermal gate passes. Coordinates must never be read, stored, logged or sent,
+  and the iOS background indicator must remain visible.
+- Once backgrounded, the Bridge socket is either `notifications_only` or the
+  feature is considered unavailable. Both Bridge and Mobile independently drop
+  full stream, history, Mirror, file and tool payloads; a warm `BGAppRefresh`
+  must not reintroduce background conversation synchronization.
+- Task completion, user disable, foreground resume, Low Power Mode, serious
+  thermal pressure, permission loss, location error, or a two-minute Bridge
+  disconnect stops the native lease. Intermediate progress remains opt-in and
+  rate-limited.
+- Foreground restoration must request `interactive` delivery before watches,
+  session lists or history. Canonical history remains authoritative and the
+  existing sequence-based reconciliation fills the background gap.
+- The native host and `UIBackgroundModes/location` require a new base IPA.
+  `permissionHost` v3 adds `locationAlways`, while Dart keeps v2 as its minimum
+  so existing permissions on old base IPAs continue to work. The additive
+  Bridge capability is `background_notification_delivery_v1`; old clients
+  never opt in and new clients fall back when it is absent.
+- Detailed ownership, privacy, compatibility and physical-iPhone gates live in
+  `docs/mobile-background-notification-keepalive.md`.
 
 ## Session correctness boundaries
 

@@ -2,7 +2,8 @@
 
 ## Scope
 
-CC Pocket extends an already-running iOS conversation in two bounded ways:
+CC Pocket extends an already-running iOS conversation in two bounded default
+ways:
 
 1. When the app leaves the foreground during an active turn, a finite
    `UIBackgroundTask` keeps the existing Flutter runtime and WebSocket alive.
@@ -12,13 +13,18 @@ CC Pocket extends an already-running iOS conversation in two bounded ways:
    Delivery time is controlled by iOS. The task handles only cached
    conversations and never starts an unbounded full-history transfer.
 
-This feature does **not** use audio, location, VoIP, or any other misleading
-background mode. It does not promise a permanently running process. If iOS
-reclaims the process, the user force-quits the app, or no ready Flutter runtime
-is available before the task deadline, the operation fails closed and the next
-foreground resume performs the authoritative catch-up.
+The default finite-sync path does **not** use audio, location, VoIP, or another
+unrelated background mode. It does not promise a permanently running process.
+If iOS reclaims the process, the user force-quits the app, or no ready Flutter
+runtime is available before the task deadline, the operation fails closed and
+the next foreground resume performs the authoritative catch-up.
 
-Notifications are outside this module.
+An explicitly enabled, capability-gated extension may instead use Always
+Location solely to keep a notification-only Bridge connection alive during an
+active task. It never consumes coordinates and never performs background
+conversation synchronization. Its separate ownership, compatibility and power
+contract is documented in
+[`mobile-background-notification-keepalive.md`](mobile-background-notification-keepalive.md).
 
 ## Ownership boundaries
 
@@ -51,10 +57,15 @@ changing this contract.
 | New IPA / old Dart / any Bridge | The native host stays dormant because old Dart never performs the readiness handshake. A task scheduled before an OTA rollback may fail once, but native code does not reschedule it indefinitely. |
 | New IPA / new Dart / old Bridge | Background history uses delta-only requests. If the Bridge rejects `get_history_delta`, Mobile does not fall back to a potentially unbounded full history until foreground resume. Optional mirror requests fail closed. |
 | New IPA / new Dart / current Bridge | Finite live continuation, bounded cached delta reconciliation, resident mirror reconciliation, and opportunistic refresh are enabled. |
-| Any old Mobile / current Bridge | Unchanged because no Bridge wire or persistent schema was added. |
+| Any old Mobile / current Bridge | Unchanged. Additive notification-only messages are opt-in and old clients never advertise or request them. |
 
 Capability fields are additive. Older Bridges ignore the new
 `client_capabilities.mobileRuntime.nativeCapabilities` entries.
+
+This table describes the default finite-sync path. The optional
+notification-only path has its own additive capability matrix and falls back to
+this behavior whenever its native host, permission or Bridge capability is
+unavailable.
 
 ## Resource bounds
 
