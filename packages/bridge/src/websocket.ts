@@ -9884,8 +9884,7 @@ export class BridgeWebSocketServer {
       if (
         msg.type !== CLIENT_DELIVERY_MODE_STATE_MESSAGE &&
         msg.type !== BACKGROUND_NOTIFICATION_MESSAGE &&
-        msg.type !== BACKGROUND_ACTIVITY_STATE_MESSAGE &&
-        msg.type !== "error"
+        msg.type !== BACKGROUND_ACTIVITY_STATE_MESSAGE
       ) {
         return null;
       }

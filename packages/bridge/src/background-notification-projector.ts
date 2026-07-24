@@ -86,6 +86,11 @@ export function projectBackgroundNotification(
       lastToolKey: toolKey,
     });
     const titleBase = t(policy.locale, "progress_title");
+    const data: Record<string, string> = { sessionId, provider };
+    if (!privacy) {
+      data.toolUseId = toolUse.id;
+      data.toolName = toolUse.name;
+    }
     return {
       type: "background_notification_v1",
       eventType: "session_progress",
@@ -96,12 +101,7 @@ export function projectBackgroundNotification(
         ? t(policy.locale, "progress_body_private")
         : t(policy.locale, "progress_body", { toolName: toolUse.name }),
       occurredAt,
-      data: {
-        sessionId,
-        provider,
-        toolUseId: toolUse.id,
-        toolName: toolUse.name,
-      },
+      data,
     };
   }
 
@@ -150,6 +150,11 @@ export function projectBackgroundNotification(
         ? t(policy.locale, "approval_body_private")
         : t(policy.locale, "approval_body", { toolName: msg.toolName });
     }
+    const data: Record<string, string> = { sessionId, provider };
+    if (!privacy) {
+      data.toolUseId = msg.toolUseId;
+      data.toolName = msg.toolName;
+    }
     return {
       type: "background_notification_v1",
       eventType,
@@ -158,12 +163,7 @@ export function projectBackgroundNotification(
       title,
       body,
       occurredAt,
-      data: {
-        sessionId,
-        provider,
-        toolUseId: msg.toolUseId,
-        toolName: msg.toolName,
-      },
+      data,
     };
   }
 
@@ -216,13 +216,12 @@ export function projectBackgroundNotification(
       : t(policy.locale, "session_failed");
   }
 
-  const data: Record<string, string> = {
-    sessionId,
-    provider,
-    subtype: msg.subtype,
-  };
-  if (msg.stopReason) data.stopReason = msg.stopReason;
-  if (msg.sessionId) data.providerSessionId = msg.sessionId;
+  const data: Record<string, string> = { sessionId, provider };
+  if (!privacy) {
+    data.subtype = msg.subtype;
+    if (msg.stopReason) data.stopReason = msg.stopReason;
+    if (msg.sessionId) data.providerSessionId = msg.sessionId;
+  }
 
   return {
     type: "background_notification_v1",

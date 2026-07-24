@@ -10440,6 +10440,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     ]);
 
     ws.send.mockClear();
+    (bridge as any).send(ws, {
+      type: "error",
+      errorCode: "session_runtime_error",
+      message: "sensitive background failure detail",
+    });
     (bridge as any).broadcastSessionMessage("session-1", {
       type: "stream_delta",
       text: "large streaming payload",

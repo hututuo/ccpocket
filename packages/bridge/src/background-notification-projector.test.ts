@@ -133,4 +133,41 @@ describe("background notification projector", () => {
     });
     expect(JSON.stringify(message)).not.toContain("sensitive");
   });
+
+  it("removes tool metadata in privacy mode", () => {
+    const policy = createBackgroundNotificationPolicy({
+      locale: "zh",
+      privacyMode: true,
+      enabledEventTypes: ["session_progress"],
+    });
+    const message = projectBackgroundNotification(
+      {
+        type: "assistant",
+        message: {
+          id: "message-private",
+          role: "assistant",
+          model: "gpt-5.6",
+          content: [
+            {
+              type: "tool_use",
+              id: "private-tool-id",
+              name: "SensitiveToolName",
+              input: { ignoredValue: "not-forwarded" },
+            },
+          ],
+        },
+      },
+      context,
+      policy,
+      createBackgroundNotificationProjectionState(),
+    );
+
+    expect(message?.data).toEqual({
+      sessionId: "session-1",
+      provider: "codex",
+    });
+    expect(JSON.stringify(message)).not.toContain("SensitiveToolName");
+    expect(JSON.stringify(message)).not.toContain("private-tool-id");
+    expect(JSON.stringify(message)).not.toContain("not-forwarded");
+  });
 });
