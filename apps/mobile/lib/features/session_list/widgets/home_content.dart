@@ -21,10 +21,11 @@ import '../../../router/app_router.dart';
 import '../../../widgets/pin_toggle_button.dart';
 import '../../../widgets/session_card.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
-import '../../conversation_mirror/conversation_mirror_resident_section.dart';
 import '../../conversation_mirror/conversation_mirror_service.dart';
+import '../../conversation_mirror/conversation_mirror_target.dart';
 import '../../file_transfer/file_transfer_service.dart';
 import '../../file_transfer/received_file_inbox_banner.dart';
+import '../session_list_projection.dart';
 import '../state/session_list_cubit.dart';
 import '../state/session_list_state.dart';
 import '../workspace_shell_screen.dart';
@@ -40,7 +41,7 @@ import 'support_banner.dart';
 class _ProjectSessionGroup {
   final String projectPath;
   final String projectName;
-  final List<RecentSession> sessions;
+  final List<UnifiedSessionListItem> sessions;
 
   const _ProjectSessionGroup({
     required this.projectPath,
@@ -51,14 +52,14 @@ class _ProjectSessionGroup {
 
 List<_ProjectSessionGroup> _groupSessionsByProject({
   required Iterable<String> projectPaths,
-  required List<RecentSession> sessions,
+  required List<UnifiedSessionListItem> sessions,
 }) {
-  final grouped = <String, List<RecentSession>>{
+  final grouped = <String, List<UnifiedSessionListItem>>{
     for (final path in projectPaths)
-      if (path.isNotEmpty) path: <RecentSession>[],
+      if (path.isNotEmpty) path: <UnifiedSessionListItem>[],
   };
   for (final session in sessions) {
-    grouped.putIfAbsent(session.projectPath, () => <RecentSession>[]);
+    grouped.putIfAbsent(session.projectPath, () => <UnifiedSessionListItem>[]);
     grouped[session.projectPath]!.add(session);
   }
   return [
@@ -489,14 +490,6 @@ class HomeContentState extends State<HomeContent> {
     final hasPendingActions = widget.offlinePendingActions.isNotEmpty;
     final mirrorService = context.watch<ConversationMirrorService?>();
     final mirrorBridgeId = mirrorService?.currentBridgeInstanceId;
-    final hasResidentConversations =
-        mirrorService?.residentMetadata.any(
-          (metadata) =>
-              mirrorBridgeId == null ||
-              metadata.key.bridgeInstanceId == mirrorBridgeId,
-        ) ==
-        true;
-    final hasRunningSessions = widget.sessions.isNotEmpty || hasPendingActions;
     final hasKnownProjects = widget.accumulatedProjectPaths.isNotEmpty;
     final isReconnecting =
         widget.connectionState == BridgeConnectionState.reconnecting;
@@ -517,54 +510,60 @@ class HomeContentState extends State<HomeContent> {
     final connectedBridgeBanner = _buildConnectedBridgeBanner(context);
     final fileTransferService = context.read<FileTransferService?>();
     final receivedFileBanner =
-        fileTransferService != null && fileTransferService.unreadReceivedCount > 0
+        fileTransferService != null &&
+            fileTransferService.unreadReceivedCount > 0
         ? ReceivedFileInboxBanner(service: fileTransferService)
         : null;
 
-    // Compute derived state
-    // Exclude running sessions from recent list to avoid duplicates
-    final runningSessionIds = widget.sessions
-        .expand(
-          (s) => [s.id, if (s.claudeSessionId != null) s.claudeSessionId!],
-        )
-        .toSet();
+    // Keep a single conversation identity across live runtimes, the provider
+    // catalog, and phone-resident mirror fallbacks. The richer provider entry
+    // is appended last so it wins when a local fallback has the same identity.
+    final catalogSessions =
+        <RecentSession>[
+          if (mirrorService != null)
+            for (final metadata in mirrorService.residentMetadata)
+              if (mirrorBridgeId == null ||
+                  metadata.key.bridgeInstanceId == mirrorBridgeId)
+                ConversationMirrorTarget.fromMetadata(
+                  metadata,
+                ).toRecentSession(),
+          ...widget.recentSessions,
+        ].where(
+          (session) => recentSessionMatchesListFilters(
+            session,
+            providerFilter: widget.providerFilter,
+            projectPath: widget.currentProjectFilter,
+            namedOnly: widget.namedOnly,
+            searchQuery: widget.searchQuery,
+          ),
+        );
+    final runningSessions = widget.sessions.where(
+      (session) => runningSessionMatchesListFilters(
+        session,
+        providerFilter: widget.providerFilter,
+        projectPath: widget.currentProjectFilter,
+        namedOnly: widget.namedOnly,
+        searchQuery: widget.searchQuery,
+      ),
+    );
     final pendingResumeSessionIds = widget.offlinePendingActions
         .where((action) => action.kind == OfflinePendingActionKind.resume)
         .map((action) => action.sessionId)
         .whereType<String>()
         .toSet();
-
-    // Fallback for Codex sessions which use a short proxy ID instead of UUID
-    bool isDuplicate(RecentSession rs) {
-      if (pendingResumeSessionIds.contains(rs.sessionId)) return true;
-      if (runningSessionIds.contains(rs.sessionId)) return true;
-      for (final s in widget.sessions) {
-        if (s.provider == rs.provider &&
-            s.projectPath == rs.projectPath &&
-            s.createdAt == rs.created) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    // All filtering (project, provider, namedOnly, searchQuery) is applied
-    // server-side. Only deduplicate running sessions here.
-    final filteredSessions = prioritizePinned(
-      widget.recentSessions.where(
-        (session) =>
-            !isDuplicate(session) && mirrorService?.isResident(session) != true,
-      ),
-      isPinned: (session) =>
-          widget.pinnedSessionKeys.contains(recentSessionPinKey(session)),
-      isProjectPinned: (session) =>
-          widget.pinnedProjectPaths.contains(session.projectPath),
+    final unifiedSessions = buildUnifiedSessionList(
+      runningSessions: runningSessions,
+      recentSessions: catalogSessions,
+      pendingResumeSessionIds: pendingResumeSessionIds,
+      pinnedSessionKeys: widget.pinnedSessionKeys,
+      pinnedProjectPaths: widget.pinnedProjectPaths,
     );
-    final hasRecentSessions = filteredSessions.isNotEmpty;
-    final projectPathsWithPinnedSessions = filteredSessions
+    final hasConversationSessions = unifiedSessions.isNotEmpty;
+    final projectPathsWithPinnedSessions = unifiedSessions
         .where(
           (session) =>
-              widget.pinnedSessionKeys.contains(recentSessionPinKey(session)),
+              session.pinKey != null &&
+              widget.pinnedSessionKeys.contains(session.pinKey),
         )
         .map((session) => session.projectPath)
         .toSet();
@@ -572,25 +571,16 @@ class HomeContentState extends State<HomeContent> {
       <String>{
         if (widget.currentProjectFilter != null) widget.currentProjectFilter!,
         if (widget.currentProjectFilter == null)
-          ...widget.accumulatedProjectPaths,
+          ...unifiedSessions.map((session) => session.projectPath),
         if (widget.currentProjectFilter == null)
-          ...filteredSessions.map((session) => session.projectPath),
+          ...widget.accumulatedProjectPaths,
       }.where((path) => path.isNotEmpty),
       isPinned: projectPathsWithPinnedSessions.contains,
       isProjectPinned: widget.pinnedProjectPaths.contains,
     );
-    final groupedRecentSessions = _groupSessionsByProject(
+    final groupedSessions = _groupSessionsByProject(
       projectPaths: allProjectPaths,
-      sessions: filteredSessions,
-    );
-    final runningSessions = prioritizePinned(
-      widget.sessions,
-      isPinned: (session) {
-        final key = runningSessionPinKey(session);
-        return key != null && widget.pinnedSessionKeys.contains(key);
-      },
-      isProjectPinned: (session) =>
-          widget.pinnedProjectPaths.contains(session.projectPath),
+      sessions: unifiedSessions,
     );
 
     final hasActiveFilter =
@@ -599,9 +589,87 @@ class HomeContentState extends State<HomeContent> {
         widget.namedOnly ||
         widget.searchQuery.isNotEmpty;
 
-    if (!hasRunningSessions &&
-        !hasRecentSessions &&
-        !hasResidentConversations &&
+    Widget buildUnifiedSessionRow(UnifiedSessionListItem item) {
+      final running = item.running;
+      if (running == null) {
+        final recent = item.recent!;
+        return _RecentSessionSlidable(
+          session: recent,
+          isPinned:
+              item.pinKey != null &&
+              widget.pinnedSessionKeys.contains(item.pinKey),
+          displayMode: _displayMode,
+          archivingSessionIds: widget.archivingSessionIds,
+          onArchiveSession: widget.onArchiveSession,
+          onResumeSession: widget.onResumeSession,
+          onTogglePinned: widget.onToggleRecentSessionPinned == null
+              ? null
+              : () => widget.onToggleRecentSessionPinned!(recent),
+          onLongPressRecentSession: widget.onLongPressRecentSession,
+        );
+      }
+
+      return Slidable(
+        key: ValueKey('running_session_${running.id}'),
+        endActionPane: ActionPane(
+          motion: const BehindMotion(),
+          extentRatio: 0.18,
+          children: [
+            CustomSlidableAction(
+              onPressed: (_) => widget.onStopSession(running.id),
+              backgroundColor: Colors.transparent,
+              padding: EdgeInsets.zero,
+              child: Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.error,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.stop_circle_outlined,
+                  color: Colors.white,
+                  size: 22,
+                ),
+              ),
+            ),
+          ],
+        ),
+        child: RunningSessionCard(
+          session: running,
+          isPinned:
+              item.pinKey != null &&
+              widget.pinnedSessionKeys.contains(item.pinKey),
+          onTogglePinned:
+              item.pinKey == null || widget.onToggleRunningSessionPinned == null
+              ? null
+              : () => widget.onToggleRunningSessionPinned!(running),
+          isUnseen: widget.unseenSessionIds.contains(running.id),
+          isSelected:
+              selectedSessionId == running.id &&
+              selectedSessionProvider == running.provider,
+          onLongPress: () => widget.onLongPressRunningSession(running, null),
+          onShowActions: (position) =>
+              widget.onLongPressRunningSession(running, position),
+          onStop: showInlineStopButton
+              ? () => widget.onStopSession(running.id)
+              : null,
+          onTap: () => _openRunningSession(running),
+          onApprove: (toolUseId, {bool clearContext = false}) => widget
+              .onApprovePermission
+              ?.call(running.id, toolUseId, clearContext: clearContext),
+          onApproveAlways: (toolUseId) =>
+              widget.onApproveAlways?.call(running.id, toolUseId),
+          onReject: (toolUseId, {String? message}) => widget.onRejectPermission
+              ?.call(running.id, toolUseId, message: message),
+          onAnswer: (toolUseId, result) =>
+              widget.onAnswerQuestion?.call(running.id, toolUseId, result),
+        ),
+      );
+    }
+
+    if (!hasPendingActions &&
+        !hasConversationSessions &&
         !hasKnownProjects &&
         !hasActiveFilter) {
       // Show skeleton while initial data is loading
@@ -657,98 +725,9 @@ class HomeContentState extends State<HomeContent> {
         ?updateBanner,
         ?supportBanner,
         ?macOSNativeAppBanner,
-        ConversationMirrorResidentSection(
-          runningSessions: runningSessions,
-          recentSessions: widget.recentSessions,
-          onOpenRunning: _openRunningSession,
-          onOpenRecent: widget.onResumeSession,
-        ),
-        if (hasRunningSessions) ...[
-          SectionHeader(
-            icon: Icons.play_circle_filled,
-            label: l.running,
-            color: appColors.statusOnline,
-          ),
-          const SizedBox(height: 4),
-          for (final action in widget.offlinePendingActions)
-            OfflinePendingSessionCard(
-              key: ValueKey('pending_session_${action.id}'),
-              action: action,
-              onCancel:
-                  widget.onCancelOfflinePendingAction == null ||
-                      !action.canCancel
-                  ? null
-                  : () => widget.onCancelOfflinePendingAction!(action.id),
-            ),
-          for (final session in runningSessions)
-            Slidable(
-              key: ValueKey('running_session_${session.id}'),
-              endActionPane: ActionPane(
-                motion: const BehindMotion(),
-                extentRatio: 0.18,
-                children: [
-                  CustomSlidableAction(
-                    onPressed: (_) => widget.onStopSession(session.id),
-                    backgroundColor: Colors.transparent,
-                    padding: EdgeInsets.zero,
-                    child: Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.error,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.stop_circle_outlined,
-                        color: Colors.white,
-                        size: 22,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              child: RunningSessionCard(
-                session: session,
-                isPinned: switch (runningSessionPinKey(session)) {
-                  final key? => widget.pinnedSessionKeys.contains(key),
-                  null => false,
-                },
-                onTogglePinned:
-                    runningSessionPinKey(session) == null ||
-                        widget.onToggleRunningSessionPinned == null
-                    ? null
-                    : () => widget.onToggleRunningSessionPinned!(session),
-                isUnseen: widget.unseenSessionIds.contains(session.id),
-                isSelected:
-                    selectedSessionId == session.id &&
-                    selectedSessionProvider == session.provider,
-                onLongPress: () =>
-                    widget.onLongPressRunningSession(session, null),
-                onShowActions: (position) =>
-                    widget.onLongPressRunningSession(session, position),
-                onStop: showInlineStopButton
-                    ? () => widget.onStopSession(session.id)
-                    : null,
-                onTap: () => _openRunningSession(session),
-                onApprove: (toolUseId, {bool clearContext = false}) => widget
-                    .onApprovePermission
-                    ?.call(session.id, toolUseId, clearContext: clearContext),
-                onApproveAlways: (toolUseId) =>
-                    widget.onApproveAlways?.call(session.id, toolUseId),
-                onReject: (toolUseId, {String? message}) => widget
-                    .onRejectPermission
-                    ?.call(session.id, toolUseId, message: message),
-                onAnswer: (toolUseId, result) => widget.onAnswerQuestion?.call(
-                  session.id,
-                  toolUseId,
-                  result,
-                ),
-              ),
-            ),
-          const SizedBox(height: 16),
-        ],
         if (widget.isInitialLoading ||
-            hasRecentSessions ||
+            hasPendingActions ||
+            hasConversationSessions ||
             hasKnownProjects ||
             hasActiveFilter) ...[
           SectionHeader(
@@ -827,11 +806,25 @@ class HomeContentState extends State<HomeContent> {
             onToggleNamed: widget.onToggleNamed,
           ),
           const SizedBox(height: 8),
-          if (widget.isInitialLoading)
-            const _SessionListSkeleton()
-          else ...[
-            if ((!_groupRecentSessions && filteredSessions.isEmpty) ||
-                (_groupRecentSessions && groupedRecentSessions.isEmpty))
+          for (final action in widget.offlinePendingActions)
+            OfflinePendingSessionCard(
+              key: ValueKey('pending_session_${action.id}'),
+              action: action,
+              onCancel:
+                  widget.onCancelOfflinePendingAction == null ||
+                      !action.canCancel
+                  ? null
+                  : () => widget.onCancelOfflinePendingAction!(action.id),
+            ),
+          if (widget.isInitialLoading) ...[
+            for (final item in unifiedSessions.where(
+              (item) => item.running != null,
+            ))
+              buildUnifiedSessionRow(item),
+            const _SessionListSkeleton(),
+          ] else ...[
+            if ((!_groupRecentSessions && unifiedSessions.isEmpty) ||
+                (_groupRecentSessions && groupedSessions.isEmpty))
               _RecentSessionsEmptyResult(
                 title: hasActiveFilter
                     ? l.noSessionsMatchFilters
@@ -839,21 +832,7 @@ class HomeContentState extends State<HomeContent> {
                 subtitle: hasActiveFilter ? l.adjustFiltersAndSearch : null,
               )
             else if (!_groupRecentSessions) ...[
-              for (final session in filteredSessions)
-                _RecentSessionSlidable(
-                  session: session,
-                  isPinned: widget.pinnedSessionKeys.contains(
-                    recentSessionPinKey(session),
-                  ),
-                  displayMode: _displayMode,
-                  archivingSessionIds: widget.archivingSessionIds,
-                  onArchiveSession: widget.onArchiveSession,
-                  onResumeSession: widget.onResumeSession,
-                  onTogglePinned: widget.onToggleRecentSessionPinned == null
-                      ? null
-                      : () => widget.onToggleRecentSessionPinned!(session),
-                  onLongPressRecentSession: widget.onLongPressRecentSession,
-                ),
+              for (final item in unifiedSessions) buildUnifiedSessionRow(item),
               if (widget.hasMoreSessions) ...[
                 const SizedBox(height: 8),
                 _LoadMoreRecentSessionsButton(
@@ -863,10 +842,9 @@ class HomeContentState extends State<HomeContent> {
                 const SizedBox(height: 8),
               ],
             ] else
-              for (final group in groupedRecentSessions)
+              for (final group in groupedSessions)
                 _ProjectRecentSessionGroup(
                   group: group,
-                  displayMode: _displayMode,
                   isCollapsed: widget.collapsedProjectPaths.contains(
                     group.projectPath,
                   ),
@@ -879,8 +857,6 @@ class HomeContentState extends State<HomeContent> {
                   canLoadFromBridge:
                       widget.currentProjectFilter == null &&
                       !widget.exhaustedProjectPaths.contains(group.projectPath),
-                  archivingSessionIds: widget.archivingSessionIds,
-                  pinnedSessionKeys: widget.pinnedSessionKeys,
                   isPinned: widget.pinnedProjectPaths.contains(
                     group.projectPath,
                   ),
@@ -891,10 +867,7 @@ class HomeContentState extends State<HomeContent> {
                       : () => widget.onToggleProjectPinned!(group.projectPath),
                   onLoadMore: () =>
                       widget.onLoadMoreProject?.call(group.projectPath),
-                  onArchiveSession: widget.onArchiveSession,
-                  onResumeSession: widget.onResumeSession,
-                  onToggleSessionPinned: widget.onToggleRecentSessionPinned,
-                  onLongPressRecentSession: widget.onLongPressRecentSession,
+                  itemBuilder: buildUnifiedSessionRow,
                 ),
             if (widget.currentProjectFilter != null &&
                 widget.hasMoreSessions) ...[
@@ -1061,40 +1034,27 @@ class _RecentSessionsEmptyResult extends StatelessWidget {
 
 class _ProjectRecentSessionGroup extends StatelessWidget {
   final _ProjectSessionGroup group;
-  final SessionDisplayMode displayMode;
   final bool isCollapsed;
   final bool isLoadingMore;
   final int displayLimit;
   final bool canLoadFromBridge;
-  final Set<String> archivingSessionIds;
-  final Set<String> pinnedSessionKeys;
   final bool isPinned;
   final VoidCallback onToggleCollapsed;
   final VoidCallback? onTogglePinned;
   final VoidCallback onLoadMore;
-  final ValueChanged<RecentSession> onArchiveSession;
-  final ValueChanged<RecentSession> onResumeSession;
-  final ValueChanged<RecentSession>? onToggleSessionPinned;
-  final void Function(RecentSession session, Offset? position)
-  onLongPressRecentSession;
+  final Widget Function(UnifiedSessionListItem item) itemBuilder;
 
   const _ProjectRecentSessionGroup({
     required this.group,
-    required this.displayMode,
     required this.isCollapsed,
     required this.isLoadingMore,
     required this.displayLimit,
     required this.canLoadFromBridge,
-    required this.archivingSessionIds,
-    required this.pinnedSessionKeys,
     required this.isPinned,
     required this.onToggleCollapsed,
     required this.onTogglePinned,
     required this.onLoadMore,
-    required this.onArchiveSession,
-    required this.onResumeSession,
-    required this.onToggleSessionPinned,
-    required this.onLongPressRecentSession,
+    required this.itemBuilder,
   });
 
   @override
@@ -1117,21 +1077,7 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
           ),
           if (!isCollapsed) ...[
             const SizedBox(height: 4),
-            for (final session in visibleSessions)
-              _RecentSessionSlidable(
-                session: session,
-                isPinned: pinnedSessionKeys.contains(
-                  recentSessionPinKey(session),
-                ),
-                displayMode: displayMode,
-                archivingSessionIds: archivingSessionIds,
-                onArchiveSession: onArchiveSession,
-                onResumeSession: onResumeSession,
-                onTogglePinned: onToggleSessionPinned == null
-                    ? null
-                    : () => onToggleSessionPinned!(session),
-                onLongPressRecentSession: onLongPressRecentSession,
-              ),
+            for (final session in visibleSessions) itemBuilder(session),
             if (isLoadingMore)
               const Center(
                 child: Padding(

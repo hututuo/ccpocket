@@ -138,10 +138,20 @@ Mobile rebuildable store
 
 ### 2A.2 会话列表、导航和 Goal
 
-- Recent session 当前保留服务端/插入顺序，没有统一按 authoritative
-  `lastActivityAt` 降序，所以最近使用项可能落在底部。
+- 实施期进一步核对后修正早期判断：Bridge 的 recent provider 列表已经按
+  `modified` 降序；真正导致“最近使用的会话跑到底部”的是 running 列表来自
+  `SessionManager` 的 `Map` 插入顺序，而 Mobile 的 `prioritizePinned()` 只分
+  pin tier、不在 tier 内按 `lastActivityAt` 排序。
+- 首页当前不是一套列表，而是三个互斥分类：顶部 resident/downloaded 区、
+  running 区和 recent 区；recent 还会显式排除 running identity 与 resident
+  identity。因此同一个 durable thread 会在三个区域之间移动，不能仅靠调整
+  Section 顺序解决。
 - 点击 recent session 当前先调用 resume，再等待 runtime/session created 后
   导航；这正是“先激活才能用”的用户可见步骤。
+- 现有 `session-link` 已经实现 `resumeRequestId` correlation，但首页 recent
+  点击仍没有复用该边界；新建会话的 pending chat shell 可以复用，不过其当前
+  只按 project path 接收 `session_created`，同项目并发时仍可能串绑，实施时必须
+  将 request ID 传到 pending screen 并只消费精确匹配事件。
 - `BridgeService.connect()` 在 WebSocket channel 建立后、收到 Bridge handshake
   和 authoritative session list 前就发布 `connected`。依赖该状态的 connection
   UI 可能提前离开选 IP 页面。
@@ -149,8 +159,15 @@ Mobile rebuildable store
   `resumeRequestId` 和 session-link coordinator 是应保留的修复基础。
 - `Failed to get goal: No thread ID available for goal lookup` 是 Goal 请求在
   durable provider thread ID 尚未绑定前发出，不应在 UI 隐藏英文错误了事。
-- 当前 active/continuity tracker 只覆盖有限 running/resident 会话，并未形成
-  Desktop 风格的全会话 compact delta catalog。
+- 当前 `DesktopSessionListContinuityTracker` 会为已有 Codex runtime 建立 rollout
+  watch；Bridge 也会把所有 active runtime 的流式增量广播到连接中的 Mobile，
+  所以“后台同步”不是从零开始。但 tracker 在 Desktop 回合结束后会请求 canonical
+  history，且最多只覆盖 Bridge 保留的 30 个 idle runtime；Conversation Mirror
+  又是最多 8 个 full resident watch。两者都不能直接扩展成全会话机制。
+- 全会话连续性应另加 metadata-only catalog change：只携带 durable
+  provider identity、电脑侧修改时间、轻量状态/revision，触发 Mobile 合并和
+  有界 recent 首屏刷新；未打开会话不请求 history、不解析工具、不启动第二个
+  app-server。现有 active runtime message path 和打开后的 history delta 继续复用。
 
 ### 2A.3 Side Chat、辅助会话与配额
 
@@ -288,6 +305,25 @@ Mobile rebuildable store
   revision/sequence 追平。
 - watcher 必须有总量、并发、速率和退避门槛，避免 N 会话 fanout 形成 N 个
   无界 app-server 读取。
+
+### 4.4 实施期校正与已落地边界（2026-07-25）
+
+- Mobile 已建立统一 projection：以 `provider + durable thread ID` 合并 running、
+  recent 和 resident fallback；仅在新 runtime 尚未获得 thread ID 时保留一个临时
+  runtime 行。同一 pin tier 内按电脑侧活动时间降序，时间相同按稳定 identity
+  排序，不再继承 Bridge runtime `Map` 的插入顺序。
+- 首页已移除独立 resident 与 running 分类；运行状态、未读、审批、停止、下载和
+  同步能力继续使用原卡片行为，只是作为同一列表内的行内状态。resident metadata
+  仍作为离线 fallback 合入列表，不会因取消顶部分类而失去入口；普通本地副本图标
+  已改为勾，resident 自动同步仍保留独立 pin 状态。
+- running 也执行 provider/project/named/search 过滤，避免 unified UI 在筛选时泄漏
+  不匹配的 active row；pending resume 继续用专用占位卡，并隐藏其重复 catalog 行。
+- 新 Bridge/Mobile 通过 `session_activity_at_v1` 协商，在既有 session frame 上附加
+  Bridge 电脑时间，不新增每条 delta 的独立消息；Mobile 只在至少前进 1 秒时发布
+  session-list 更新，避免流式输出每 32 ms 重建首页。旧客户端不收到字段，旧 Bridge
+  下继续使用最近一次 authoritative session list 时间。
+- 本节尚未宣称完成“任意 recent 点击即进”和“全持久会话 metadata-only catalog”；
+  两者仍须分别完成 request correlation 与文件目录变更监听后再关闭 Phase 2。
 
 ## 5. 分层历史和渐进披露
 

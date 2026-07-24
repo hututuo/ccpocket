@@ -227,8 +227,7 @@ function boundedHistoryToolDetailInput(
     };
   }
   if (
-    Buffer.byteLength(encoded, "utf8") <=
-    HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES
+    Buffer.byteLength(encoded, "utf8") <= HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES
   ) {
     return value;
   }
@@ -239,10 +238,7 @@ function boundedHistoryToolDetailInput(
 }
 
 function boundedHistoryToolDetailText(value: string): string {
-  if (
-    Buffer.byteLength(value, "utf8") <=
-    HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES
-  ) {
+  if (Buffer.byteLength(value, "utf8") <= HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES) {
     return value;
   }
   const bytes = Buffer.from(value, "utf8");
@@ -263,6 +259,7 @@ const PUSH_NOTIFICATION_PREFERENCES_CAPABILITY =
 const PUSH_PROGRESS_EVENT = "session_progress";
 const PUSH_PROGRESS_MIN_INTERVAL_MS = 45_000;
 const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
+const SESSION_ACTIVITY_AT_CAPABILITY = "session_activity_at_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
@@ -2734,10 +2731,12 @@ export class BridgeWebSocketServer {
         ...(historyWindow ? { historyWindow } : {}),
       } as Record<string, unknown>);
       this.sendCodexCurrentSettings(ws, sessionId, session);
+      const activityAt = this.sessionActivityAtForClient(ws, sessionId);
       this.send(ws, {
         type: "status",
         status: session.status,
         sessionId,
+        ...(activityAt ? { activityAt } : {}),
       } as Record<string, unknown>);
       this.sendCodexQueueState(ws, sessionId, session);
       this.sendCodexGoalState(ws, sessionId, session);
@@ -2812,10 +2811,7 @@ export class BridgeWebSocketServer {
     const identity =
       this.codexHistoryMessageIdentityKeys(entry.message)[0] ??
       `seq:${entry.seq}`;
-    return createHash("sha256")
-      .update(identity)
-      .digest("hex")
-      .slice(0, 24);
+    return createHash("sha256").update(identity).digest("hex").slice(0, 24);
   }
 
   private historyPageCursorIndex(
@@ -2862,10 +2858,7 @@ export class BridgeWebSocketServer {
       const message = entry.message;
       if (message.type === "assistant") {
         for (const content of message.message.content) {
-          if (
-            content.type !== "tool_use" ||
-            !requested.has(content.id)
-          ) {
+          if (content.type !== "tool_use" || !requested.has(content.id)) {
             continue;
           }
           const existing = details.get(content.id);
@@ -2878,10 +2871,7 @@ export class BridgeWebSocketServer {
         }
         continue;
       }
-      if (
-        message.type !== "tool_result" ||
-        !requested.has(message.toolUseId)
-      ) {
+      if (message.type !== "tool_result" || !requested.has(message.toolUseId)) {
         continue;
       }
       const existing = details.get(message.toolUseId);
@@ -2927,8 +2917,7 @@ export class BridgeWebSocketServer {
       ...session.historyEntries,
     ];
     const cachedDetails = this.historyToolDetails(cachedEntries, toolUseIds);
-    const rawHistory = (session.pastMessages ??
-      []) as SessionHistoryMessage[];
+    const rawHistory = (session.pastMessages ?? []) as SessionHistoryMessage[];
     if (rawHistory.length === 0) return cachedDetails;
 
     // A preceding get_history already populated pastMessages from thread/read.
@@ -2959,10 +2948,7 @@ export class BridgeWebSocketServer {
           for (const id of matchingIds) foundUses.add(id);
         }
       } else if (item.role === "tool_result") {
-        const id =
-          item.toolUseId ??
-          item.uuid ??
-          `codex-history-tool-${index}`;
+        const id = item.toolUseId ?? item.uuid ?? `codex-history-tool-${index}`;
         if (requested.has(id) && !foundResults.has(id)) {
           selected.push({ index, item });
           foundResults.add(id);
@@ -3000,7 +2986,7 @@ export class BridgeWebSocketServer {
           Object.keys(cached.input).length > 0
             ? cached.input
             : (raw?.input ?? {}),
-        ...(cached.result ?? raw?.result
+        ...((cached.result ?? raw?.result)
           ? { result: cached.result ?? raw?.result }
           : {}),
       });
@@ -6333,10 +6319,12 @@ export class BridgeWebSocketServer {
           if (session.provider === "codex") {
             this.sendCodexCurrentSettings(ws, msg.sessionId, session);
           }
+          const activityAt = this.sessionActivityAtForClient(ws, msg.sessionId);
           this.send(ws, {
             type: "status",
             status: session.status,
             sessionId: msg.sessionId,
+            ...(activityAt ? { activityAt } : {}),
           } as Record<string, unknown>);
           if (session.provider === "codex") {
             this.sendCodexQueueState(ws, msg.sessionId, session);
@@ -6586,10 +6574,7 @@ export class BridgeWebSocketServer {
           const details =
             session.provider === "codex"
               ? await this.codexHistoryToolDetails(session, msg.toolUseIds)
-              : this.historyToolDetails(
-                  session.historyEntries,
-                  msg.toolUseIds,
-                );
+              : this.historyToolDetails(session.historyEntries, msg.toolUseIds);
           this.send(ws, {
             type: "history_tool_details",
             requestId: msg.requestId,
@@ -9296,6 +9281,7 @@ export class BridgeWebSocketServer {
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
         HISTORY_TOOL_DETAIL_CAPABILITY,
+        SESSION_ACTIVITY_AT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -9347,6 +9333,7 @@ export class BridgeWebSocketServer {
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
         HISTORY_TOOL_DETAIL_CAPABILITY,
+        SESSION_ACTIVITY_AT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -9368,6 +9355,23 @@ export class BridgeWebSocketServer {
       entryCount: entries.filter((entry) => !entry.deletedAt).length,
       updatedAt,
     });
+  }
+
+  private sessionActivityAtForClient(
+    client: WebSocket,
+    sessionId: string,
+  ): string | undefined {
+    if (
+      this.clientSupportedServerMessages
+        .get(client)
+        ?.has(SESSION_ACTIVITY_AT_CAPABILITY) !== true
+    ) {
+      return undefined;
+    }
+    const value = this.sessionManager.get(sessionId)?.lastActivityAt;
+    if (!value) return undefined;
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   }
 
   private broadcastSessionMessage(
@@ -9497,7 +9501,14 @@ export class BridgeWebSocketServer {
     if (client.readyState !== WebSocket.OPEN) return;
 
     for (const msg of batch.messages) {
-      client.send(JSON.stringify({ ...msg, sessionId }));
+      const activityAt = this.sessionActivityAtForClient(client, sessionId);
+      client.send(
+        JSON.stringify({
+          ...msg,
+          sessionId,
+          ...(activityAt ? { activityAt } : {}),
+        }),
+      );
     }
   }
 
@@ -9704,9 +9715,11 @@ export class BridgeWebSocketServer {
           }
           continue;
         }
+        const activityAt = this.sessionActivityAtForClient(client, sessionId);
         const outboundMsg = {
           ...(msg as unknown as Record<string, unknown>),
           sessionId,
+          ...(activityAt ? { activityAt } : {}),
         };
         const compatibleMsg = this.prepareServerMessageForClient(
           client,

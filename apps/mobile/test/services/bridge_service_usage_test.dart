@@ -163,6 +163,110 @@ void main() {
     });
 
     test(
+      'computer activity timestamps reorder cached sessions without delta spam',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final bridge = BridgeService();
+        final published = <List<SessionInfo>>[];
+        final subscription = bridge.sessionList.listen(
+          (sessions) => published.add(List<SessionInfo>.from(sessions)),
+        );
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [
+              {
+                'id': 's1',
+                'provider': 'codex',
+                'projectPath': '/tmp/project',
+                'status': 'running',
+                'createdAt': '2026-07-25T00:00:00Z',
+                'lastActivityAt': '2026-07-25T00:00:00Z',
+              },
+            ],
+          }),
+        );
+        for (var i = 0; i < 30 && published.isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+
+        socket.add(
+          jsonEncode({
+            'type': 'status',
+            'sessionId': 's1',
+            'status': 'running',
+            'activityAt': '2026-07-25T00:00:05Z',
+          }),
+        );
+        for (
+          var i = 0;
+          i < 30 &&
+              bridge.sessions.single.lastActivityAt !=
+                  '2026-07-25T00:00:05.000Z';
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(
+          bridge.sessions.single.lastActivityAt,
+          '2026-07-25T00:00:05.000Z',
+        );
+        final afterFirstActivity = published.length;
+
+        socket.add(
+          jsonEncode({
+            'type': 'stream_delta',
+            'sessionId': 's1',
+            'text': 'small follow-up',
+            'activityAt': '2026-07-25T00:00:05.500Z',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(published, hasLength(afterFirstActivity));
+        expect(
+          bridge.sessions.single.lastActivityAt,
+          '2026-07-25T00:00:05.000Z',
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'thinking_delta',
+            'sessionId': 's1',
+            'text': 'later update',
+            'activityAt': '2026-07-25T00:00:07Z',
+          }),
+        );
+        for (
+          var i = 0;
+          i < 30 &&
+              bridge.sessions.single.lastActivityAt !=
+                  '2026-07-25T00:00:07.000Z';
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(published, hasLength(afterFirstActivity + 1));
+        expect(
+          bridge.sessions.single.lastActivityAt,
+          '2026-07-25T00:00:07.000Z',
+        );
+
+        bridge.disconnect();
+        await subscription.cancel();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'session listeners observe the matching dynamic Codex model catalog',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

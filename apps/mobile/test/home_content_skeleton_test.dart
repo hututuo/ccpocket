@@ -76,7 +76,7 @@ RecentSession _session({
   );
 }
 
-SessionInfo _runningSession({required String id}) {
+SessionInfo _runningSession({required String id, String? providerSessionId}) {
   return SessionInfo.fromJson({
     'id': id,
     'projectPath': '/home/user/project-a',
@@ -86,6 +86,7 @@ SessionInfo _runningSession({required String id}) {
     'gitBranch': 'main',
     'lastMessage': 'Working on something',
     'messageCount': 1,
+    'claudeSessionId': ?providerSessionId,
   });
 }
 
@@ -427,7 +428,7 @@ void main() {
       },
     );
 
-    testWidgets('shows skeleton below running sessions when '
+    testWidgets('keeps running rows visible above the catalog skeleton when '
         'isInitialLoading is true', (tester) async {
       await tester.pumpWidget(
         _buildHomeContent(
@@ -442,15 +443,13 @@ void main() {
       );
       await tester.pump();
 
-      // Running session section should be visible
-      expect(find.text('Running'), findsAtLeast(1));
-      // Skeleton should show for recent sessions section
+      expect(find.byKey(const ValueKey('running_session_r1')), findsOneWidget);
       expect(find.byType(SkeletonizerScope), findsOneWidget);
       expect(find.text('Recent Sessions'), findsOneWidget);
     });
 
-    testWidgets('shows real recent sessions (not skeleton) below running '
-        'sessions when loaded', (tester) async {
+    testWidgets('shows running and recent rows in one conversation list when '
+        'loaded', (tester) async {
       await tester.pumpWidget(
         _buildHomeContent(
           sessions: [_runningSession(id: 'r1')],
@@ -464,16 +463,38 @@ void main() {
       );
       await tester.pump();
 
-      // Running section visible
-      expect(find.text('Running'), findsAtLeast(1));
-      // No skeleton
+      expect(find.byKey(const ValueKey('running_session_r1')), findsOneWidget);
       expect(find.byType(SkeletonizerScope), findsNothing);
-      // Real recent session visible
       expect(find.text('test prompt for s1'), findsOneWidget);
+      expect(find.text('Recent Sessions'), findsOneWidget);
+    });
+
+    testWidgets('deduplicates a running row from its durable catalog entry', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          sessions: [_runningSession(id: 'r1', providerSessionId: 's1')],
+          recentSessions: [
+            _session(id: 's1'),
+            _session(id: 's2'),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('running_session_r1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('recent_session_s1')), findsNothing);
+      expect(find.byKey(const ValueKey('recent_session_s2')), findsOneWidget);
     });
 
     testWidgets(
-      'shows pending resume under Running and hides matching Recent',
+      'shows pending resume in the unified list and hides matching catalog row',
       (tester) async {
         await tester.pumpWidget(
           _buildHomeContent(
@@ -500,7 +521,7 @@ void main() {
         );
         await tester.pump();
 
-        expect(find.text('Running'), findsOneWidget);
+        expect(find.text('Recent Sessions'), findsOneWidget);
         expect(find.text('Resume pending'), findsOneWidget);
         expect(find.text('test prompt for s1'), findsNothing);
         expect(find.text('test prompt for s2'), findsOneWidget);

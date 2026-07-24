@@ -1378,6 +1378,12 @@ class BridgeService implements BridgeServiceBase {
               sessionId = routedGoalSessionId;
               msg = _withEffectiveGoalSessionId(msg, routedGoalSessionId);
             }
+            if (sessionId != null && msg is! StatusMessage) {
+              _patchSessionActivity(
+                sessionId,
+                json['activityAt'] as String?,
+              );
+            }
             _completePendingPermissionChange(msg);
             if (msg is SessionListMessage) {
               for (final session in msg.sessions) {
@@ -1673,11 +1679,15 @@ class BridgeService implements BridgeServiceBase {
                 }
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
-              case StatusMessage(:final status):
+              case StatusMessage(:final status, :final activityAt):
                 // Patch cached session list so the session list screen
                 // reflects status changes in real-time.
                 if (sessionId != null) {
-                  _patchSessionStatus(sessionId, status);
+                  _patchSessionStatus(
+                    sessionId,
+                    status,
+                    activityAt: activityAt,
+                  );
                 }
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
@@ -3933,7 +3943,11 @@ class BridgeService implements BridgeServiceBase {
 
   /// Update the cached [_sessions] list when a [StatusMessage] arrives,
   /// so the session list screen reflects the change in real-time.
-  void _patchSessionStatus(String sessionId, ProcessStatus status) {
+  void _patchSessionStatus(
+    String sessionId,
+    ProcessStatus status, {
+    String? activityAt,
+  }) {
     final statusStr = switch (status) {
       ProcessStatus.starting => 'starting',
       ProcessStatus.idle => 'idle',
@@ -3944,7 +3958,13 @@ class BridgeService implements BridgeServiceBase {
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx < 0) return;
     final current = _sessions[idx];
-    if (current.status == statusStr && current.pendingPermission == null) {
+    final nextActivityAt = _newerSessionActivity(
+      current.lastActivityAt,
+      activityAt,
+    );
+    if (current.status == statusStr &&
+        current.pendingPermission == null &&
+        nextActivityAt == null) {
       return;
     }
     // Clear pendingPermission when status moves away from waiting_approval
@@ -3953,12 +3973,39 @@ class BridgeService implements BridgeServiceBase {
     _sessions = List.of(_sessions)
       ..[idx] = current.copyWith(
         status: statusStr,
+        lastActivityAt: nextActivityAt,
         clearPermission: shouldClear,
       );
     _sessionListController.add(_sessions);
   }
 
+  void _patchSessionActivity(String sessionId, String? activityAt) {
+    final idx = _sessions.indexWhere((session) => session.id == sessionId);
+    if (idx < 0) return;
+    final current = _sessions[idx];
+    final nextActivityAt = _newerSessionActivity(
+      current.lastActivityAt,
+      activityAt,
+    );
+    if (nextActivityAt == null) return;
+    _sessions = List.of(_sessions)
+      ..[idx] = current.copyWith(lastActivityAt: nextActivityAt);
+    _sessionListController.add(_sessions);
+  }
+
+  String? _newerSessionActivity(String current, String? candidate) {
+    final next = DateTime.tryParse(candidate ?? '');
+    if (next == null) return null;
+    final previous = DateTime.tryParse(current);
+    if (previous != null &&
+        next.difference(previous).inMilliseconds < 1000) {
+      return null;
+    }
+    return next.toUtc().toIso8601String();
+  }
+
   void _patchExternalDesktopTurn(CodexDesktopContinuityEventMessage message) {
+    _patchSessionActivity(message.sessionId, message.timestamp);
     final active = switch (message.event) {
       CodexDesktopContinuityEventKind.watching ||
       CodexDesktopContinuityEventKind.state =>

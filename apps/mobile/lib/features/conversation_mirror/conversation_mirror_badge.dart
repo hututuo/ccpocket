@@ -97,7 +97,7 @@ class ConversationMirrorTargetBadge extends StatelessWidget {
                       isResident
                           ? Icons.offline_pin_outlined
                           : hasLocalCopy
-                          ? Icons.cloud_done_outlined
+                          ? Icons.check_circle_outline
                           : Icons.download_for_offline_outlined,
                     ),
                     onPressed: service.featureUnsupported

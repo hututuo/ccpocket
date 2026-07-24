@@ -11509,6 +11509,48 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("adds computer activity time only for clients that advertise support", () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const supported = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const legacy = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(supported);
+    (bridge as any).wss.clients.add(legacy);
+    (bridge as any).clientSupportedServerMessages.set(
+      supported,
+      new Set(["session_activity_at_v1"]),
+    );
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/activity",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-activity" },
+    );
+    (bridge as any).sessionManager.get(sessionId).lastActivityAt = new Date(
+      "2026-07-25T01:02:03.456Z",
+    );
+
+    (bridge as any).broadcastSessionMessage(sessionId, {
+      type: "status",
+      status: "running",
+    });
+
+    expect(JSON.parse(supported.send.mock.calls[0][0] as string)).toEqual({
+      type: "status",
+      status: "running",
+      sessionId,
+      activityAt: "2026-07-25T01:02:03.456Z",
+    });
+    expect(JSON.parse(legacy.send.mock.calls[0][0] as string)).toEqual({
+      type: "status",
+      status: "running",
+      sessionId,
+    });
+
+    bridge.close();
+  });
+
   it("flushes alternating deltas before a non-delta session message", () => {
     vi.useFakeTimers();
     const bridge = new BridgeWebSocketServer({

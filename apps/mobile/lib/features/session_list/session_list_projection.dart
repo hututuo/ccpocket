@@ -1,0 +1,236 @@
+import '../../models/messages.dart';
+import 'state/session_list_cubit.dart';
+import 'state/session_list_state.dart';
+
+/// One durable conversation row assembled from the Bridge runtime list and the
+/// provider's recent-session catalog.
+///
+/// A runtime id is deliberately not treated as durable identity. Once the
+/// provider thread id is known, running and recent representations collapse
+/// into the same row. A just-created runtime without that binding remains a
+/// temporary row until the next authoritative session list supplies it.
+class UnifiedSessionListItem {
+  const UnifiedSessionListItem({
+    required this.identityKey,
+    required this.running,
+    required this.recent,
+    required this.activityAt,
+  });
+
+  final String identityKey;
+  final SessionInfo? running;
+  final RecentSession? recent;
+  final DateTime? activityAt;
+
+  bool get isRunning => running != null;
+
+  String get provider =>
+      running?.provider ?? recent?.provider ?? Provider.claude.value;
+
+  String get projectPath => running?.projectPath ?? recent?.projectPath ?? '';
+
+  String? get providerSessionId {
+    final runningId = running?.claudeSessionId?.trim();
+    if (runningId != null && runningId.isNotEmpty) return runningId;
+    final recentId = recent?.sessionId.trim();
+    return recentId == null || recentId.isEmpty ? null : recentId;
+  }
+
+  String? get pinKey {
+    final durableId = providerSessionId;
+    if (durableId == null) return null;
+    return sessionPinKey(
+      provider: provider,
+      projectPath: projectPath,
+      sessionId: durableId,
+    );
+  }
+
+  UnifiedSessionListItem merge({
+    SessionInfo? nextRunning,
+    RecentSession? nextRecent,
+  }) {
+    final mergedRunning = nextRunning ?? running;
+    final mergedRecent = nextRecent ?? recent;
+    return UnifiedSessionListItem(
+      identityKey: identityKey,
+      running: mergedRunning,
+      recent: mergedRecent,
+      activityAt: _latestActivity(mergedRunning, mergedRecent),
+    );
+  }
+}
+
+List<UnifiedSessionListItem> buildUnifiedSessionList({
+  required Iterable<SessionInfo> runningSessions,
+  required Iterable<RecentSession> recentSessions,
+  Set<String> pendingResumeSessionIds = const {},
+  Set<String> pinnedSessionKeys = const {},
+  Set<String> pinnedProjectPaths = const {},
+}) {
+  final byIdentity = <String, UnifiedSessionListItem>{};
+
+  for (final recent in recentSessions) {
+    if (pendingResumeSessionIds.contains(recent.sessionId)) continue;
+    final identity = _recentIdentity(recent);
+    byIdentity[identity] = UnifiedSessionListItem(
+      identityKey: identity,
+      running: null,
+      recent: recent,
+      activityAt: _latestActivity(null, recent),
+    );
+  }
+
+  for (final running in runningSessions) {
+    final identity = _runningIdentity(running);
+    final existing = byIdentity[identity];
+    if (existing == null) {
+      byIdentity[identity] = UnifiedSessionListItem(
+        identityKey: identity,
+        running: running,
+        recent: null,
+        activityAt: _latestActivity(running, null),
+      );
+      continue;
+    }
+    final currentRunning = existing.running;
+    final keep = currentRunning == null
+        ? running
+        : _preferRunning(currentRunning, running);
+    byIdentity[identity] = existing.merge(nextRunning: keep);
+  }
+
+  final items = byIdentity.values.toList(growable: false);
+  items.sort((left, right) {
+    final tierCompare =
+        _priorityTier(
+          left,
+          pinnedSessionKeys: pinnedSessionKeys,
+          pinnedProjectPaths: pinnedProjectPaths,
+        ).compareTo(
+          _priorityTier(
+            right,
+            pinnedSessionKeys: pinnedSessionKeys,
+            pinnedProjectPaths: pinnedProjectPaths,
+          ),
+        );
+    if (tierCompare != 0) return tierCompare;
+
+    final activityCompare = (right.activityAt?.millisecondsSinceEpoch ?? -1)
+        .compareTo(left.activityAt?.millisecondsSinceEpoch ?? -1);
+    if (activityCompare != 0) return activityCompare;
+    return left.identityKey.compareTo(right.identityKey);
+  });
+  return List.unmodifiable(items);
+}
+
+bool runningSessionMatchesListFilters(
+  SessionInfo session, {
+  required ProviderFilter providerFilter,
+  required String? projectPath,
+  required bool namedOnly,
+  required String searchQuery,
+}) {
+  if (projectPath != null && session.projectPath != projectPath) return false;
+  final provider = session.provider ?? Provider.claude.value;
+  if (providerFilter != ProviderFilter.all && provider != providerFilter.name) {
+    return false;
+  }
+  if (namedOnly && (session.name?.trim().isNotEmpty != true)) return false;
+
+  final query = searchQuery.trim().toLowerCase();
+  if (query.isEmpty) return true;
+  return [
+    session.name,
+    session.agentNickname,
+    session.agentRole,
+    session.lastMessage,
+    session.projectPath,
+    session.worktreePath,
+    session.gitBranch,
+  ].whereType<String>().any((value) => value.toLowerCase().contains(query));
+}
+
+bool recentSessionMatchesListFilters(
+  RecentSession session, {
+  required ProviderFilter providerFilter,
+  required String? projectPath,
+  required bool namedOnly,
+  required String searchQuery,
+}) {
+  if (projectPath != null && session.projectPath != projectPath) return false;
+  final provider = session.provider ?? Provider.claude.value;
+  if (providerFilter != ProviderFilter.all && provider != providerFilter.name) {
+    return false;
+  }
+  if (namedOnly && (session.name?.trim().isNotEmpty != true)) return false;
+
+  final query = searchQuery.trim().toLowerCase();
+  if (query.isEmpty) return true;
+  return [
+    session.name,
+    session.agentNickname,
+    session.agentRole,
+    session.summary,
+    session.firstPrompt,
+    session.lastPrompt,
+    session.projectPath,
+    session.resumeCwd,
+    session.gitBranch,
+  ].whereType<String>().any((value) => value.toLowerCase().contains(query));
+}
+
+int _priorityTier(
+  UnifiedSessionListItem item, {
+  required Set<String> pinnedSessionKeys,
+  required Set<String> pinnedProjectPaths,
+}) {
+  final pinKey = item.pinKey;
+  if (pinKey != null && pinnedSessionKeys.contains(pinKey)) return 0;
+  if (pinnedProjectPaths.contains(item.projectPath)) return 1;
+  return 2;
+}
+
+String _recentIdentity(RecentSession session) => providerSessionIdentityKey(
+  session.provider ?? Provider.claude.value,
+  session.sessionId,
+);
+
+String _runningIdentity(SessionInfo session) {
+  final durableId = session.claudeSessionId?.trim();
+  if (durableId != null && durableId.isNotEmpty) {
+    return providerSessionIdentityKey(
+      session.provider ?? Provider.claude.value,
+      durableId,
+    );
+  }
+  return 'runtime\u0000${session.provider ?? Provider.claude.value}'
+      '\u0000${session.id}';
+}
+
+SessionInfo _preferRunning(SessionInfo left, SessionInfo right) {
+  final leftActivity = _parseDate(left.lastActivityAt);
+  final rightActivity = _parseDate(right.lastActivityAt);
+  if (leftActivity == null) return right;
+  if (rightActivity == null) return left;
+  return rightActivity.isAfter(leftActivity) ? right : left;
+}
+
+DateTime? _latestActivity(SessionInfo? running, RecentSession? recent) {
+  final candidates = <DateTime>[
+    ?_parseDate(running?.lastActivityAt),
+    ?_parseDate(recent?.modified),
+    ?_parseDate(running?.createdAt),
+    ?_parseDate(recent?.created),
+  ];
+  if (candidates.isEmpty) return null;
+  return candidates.reduce(
+    (latest, candidate) => candidate.isAfter(latest) ? candidate : latest,
+  );
+}
+
+DateTime? _parseDate(String? raw) {
+  final value = raw?.trim();
+  if (value == null || value.isEmpty) return null;
+  return DateTime.tryParse(value)?.toUtc();
+}

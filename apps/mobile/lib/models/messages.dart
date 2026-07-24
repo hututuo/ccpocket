@@ -1077,6 +1077,7 @@ sealed class ServerMessage {
       ),
       'status' => StatusMessage(
         status: ProcessStatus.fromString(json['status'] as String),
+        activityAt: json['activityAt'] as String?,
       ),
       'history' => HistoryMessage(
         messages: (json['messages'] as List)
@@ -2222,7 +2223,8 @@ GuardianApprovalMessage? _guardianReviewFromLegacyWarning(String message) {
 
 class StatusMessage implements ServerMessage {
   final ProcessStatus status;
-  const StatusMessage({required this.status});
+  final String? activityAt;
+  const StatusMessage({required this.status, this.activityAt});
 }
 
 class HistoryMessage implements ServerMessage {
@@ -4528,6 +4530,7 @@ class SessionInfo {
     String? name,
     bool clearName = false,
     String? lastMessage,
+    String? lastActivityAt,
     String? permissionMode,
     String? executionMode,
     bool? planMode,
@@ -4566,7 +4569,7 @@ class SessionInfo {
       agentRole: agentRole,
       status: status ?? this.status,
       createdAt: createdAt,
-      lastActivityAt: lastActivityAt,
+      lastActivityAt: lastActivityAt ?? this.lastActivityAt,
       gitBranch: gitBranch,
       lastMessage: lastMessage ?? this.lastMessage,
       worktreePath: worktreePath,
@@ -4688,6 +4691,7 @@ enum ClientMessageDelivery { queued, ephemeral }
 const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
 const historyPageCapability = 'history_page_v1';
 const historyToolDetailCapability = 'history_tool_detail_v1';
+const sessionActivityAtCapability = 'session_activity_at_v1';
 
 class ClientMessage {
   final Map<String, dynamic> _json;
@@ -4722,6 +4726,7 @@ class ClientMessage {
           turnAwareHistoryWindowCapability,
           historyPageCapability,
           historyToolDetailCapability,
+          sessionActivityAtCapability,
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',
