@@ -34,9 +34,9 @@ const describeNative = describe.skipIf(!nativeBrowserSupported);
 afterEach(async () => {
   await Promise.all(managers.splice(0).map((manager) => manager.close()));
   await Promise.all(
-    temporaryRoots.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
+    temporaryRoots
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
@@ -48,20 +48,27 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 
 async function fixture(options: {
   allowedDirs?: string[];
+  allowFilesystemRoot?: boolean;
   homeDir?: string;
-  artifactStore?: ConstructorParameters<typeof FileBrowserManager>[0]["artifactStore"];
-  fileTransferManager?: ConstructorParameters<typeof FileBrowserManager>[0]["fileTransferManager"];
+  artifactStore?: ConstructorParameters<
+    typeof FileBrowserManager
+  >[0]["artifactStore"];
+  fileTransferManager?: ConstructorParameters<
+    typeof FileBrowserManager
+  >[0]["fileTransferManager"];
   now?: () => number;
   cursorTtlMs?: number;
   backend?: FileBrowserPosixBackend;
 }) {
-  const root = options.homeDir ?? (await temporaryDirectory("ccpocket-browser-"));
+  const root =
+    options.homeDir ?? (await temporaryDirectory("ccpocket-browser-"));
   const messages: CapturedMessage[] = [];
   const client = {};
   const manager = new FileBrowserManager({
     bridgeInstanceId: "bridge-test",
     homeDir: root,
     allowedDirs: options.allowedDirs ?? [],
+    allowFilesystemRoot: options.allowFilesystemRoot,
     artifactStore: options.artifactStore,
     fileTransferManager: options.fileTransferManager,
     now: options.now,
@@ -78,7 +85,9 @@ async function fixture(options: {
   });
   await manager.init();
 
-  const request = async (message: Parameters<typeof manager.handleClientMessage>[1]) => {
+  const request = async (
+    message: Parameters<typeof manager.handleClientMessage>[1],
+  ) => {
     await manager.handleClientMessage(client, message);
     const response = messages.findLast(
       (candidate) => candidate.requestId === message.requestId,
@@ -86,28 +95,36 @@ async function fixture(options: {
     expect(response).toBeDefined();
     return response!;
   };
-  const roots = await request({ type: "file_browser_roots_v1", requestId: "roots" });
+  const roots = await request({
+    type: "file_browser_roots_v1",
+    requestId: "roots",
+  });
   const firstRoot = (roots.roots as Array<{ rootId: string }>)[0];
-  return { root, manager, client, messages, request, roots, rootId: firstRoot?.rootId };
+  return {
+    root,
+    manager,
+    client,
+    messages,
+    request,
+    roots,
+    rootId: firstRoot?.rootId,
+  };
 }
 
 describeNative("FileBrowserManager roots and path authority", () => {
-  it(
-    "fails initialization when the secure native helper is unavailable",
-    async () => {
-      const root = await temporaryDirectory("ccpocket-browser-no-helper-");
-      const manager = new FileBrowserManager({
-        bridgeInstanceId: "bridge-test",
-        homeDir: root,
-        helperPath: join(root, "missing-helper"),
-      });
-      managers.push(manager);
+  it("fails initialization when the secure native helper is unavailable", async () => {
+    const root = await temporaryDirectory("ccpocket-browser-no-helper-");
+    const manager = new FileBrowserManager({
+      bridgeInstanceId: "bridge-test",
+      homeDir: root,
+      helperPath: join(root, "missing-helper"),
+    });
+    managers.push(manager);
 
-      await expect(manager.init()).rejects.toMatchObject({
-        code: "helper_unavailable",
-      });
-    },
-  );
+    await expect(manager.init()).rejects.toMatchObject({
+      code: "helper_unavailable",
+    });
+  });
 
   it("uses only Home when allowedDirs is empty and never exposes an absolute path", async () => {
     const f = await fixture({});
@@ -140,6 +157,27 @@ describeNative("FileBrowserManager roots and path authority", () => {
       expect.objectContaining({ label: "two", displayPath: "~/two" }),
     ]);
     expect(JSON.stringify(f.roots)).not.toContain(container);
+  });
+
+  it("exposes an opaque Mac root only when explicitly enabled", async () => {
+    const home = await temporaryDirectory("ccpocket-browser-owner-home-");
+    const f = await fixture({
+      homeDir: home,
+      allowFilesystemRoot: true,
+    });
+
+    expect(f.roots.roots).toEqual([
+      expect.objectContaining({ label: "Home", displayPath: "~" }),
+      expect.objectContaining({ label: "Mac", displayPath: "Mac" }),
+    ]);
+    expect(JSON.stringify(f.roots)).not.toContain(home);
+    const macRoot = (
+      f.roots.roots as Array<{
+        rootId: string;
+        label: string;
+      }>
+    ).find((root) => root.label === "Mac");
+    expect(macRoot?.rootId).toMatch(/^[A-Za-z0-9_-]{24}$/);
   });
 
   it("rejects absolute, traversal, backslash, and drive-prefixed paths on every platform", async () => {
@@ -184,13 +222,12 @@ describeNative("FileBrowserManager roots and path authority", () => {
       showHidden: true,
     });
 
-    expect((normal.entries as Array<{ name: string }>).map((entry) => entry.name)).toEqual([
-      "visible.txt",
-    ]);
-    expect((shown.entries as Array<{ name: string }>).map((entry) => entry.name)).toEqual([
-      ".secret",
-      "visible.txt",
-    ]);
+    expect(
+      (normal.entries as Array<{ name: string }>).map((entry) => entry.name),
+    ).toEqual(["visible.txt"]);
+    expect(
+      (shown.entries as Array<{ name: string }>).map((entry) => entry.name),
+    ).toEqual([".secret", "visible.txt"]);
     expect(normal.entries).toEqual([
       expect.objectContaining({ name: "visible.txt", isSymlink: false }),
     ]);
@@ -220,10 +257,9 @@ describeNative("FileBrowserManager roots and path authority", () => {
       rootId: f.rootId,
       relativePath: "",
     });
-    expect((listed.entries as Array<{ name: string }>).map((entry) => entry.name)).toEqual([
-      "a-file.txt",
-      "z-directory",
-    ]);
+    expect(
+      (listed.entries as Array<{ name: string }>).map((entry) => entry.name),
+    ).toEqual(["a-file.txt", "z-directory"]);
   });
 });
 
@@ -232,7 +268,10 @@ describeNative("FileBrowserManager pagination", () => {
     const f = await fixture({});
     await Promise.all(
       Array.from({ length: 205 }, (_, index) =>
-        writeFile(join(f.root, `file-${String(index).padStart(3, "0")}.txt`), "x"),
+        writeFile(
+          join(f.root, `file-${String(index).padStart(3, "0")}.txt`),
+          "x",
+        ),
       ),
     );
 
@@ -339,7 +378,10 @@ describeNative("FileBrowserManager pagination", () => {
       pageSize: 1,
       cursor: expiring.nextCursor as string,
     });
-    expect(expired).toMatchObject({ success: false, errorCode: "invalid_cursor" });
+    expect(expired).toMatchObject({
+      success: false,
+      errorCode: "invalid_cursor",
+    });
 
     const changing = await f.request({
       type: "file_browser_list_v1",
@@ -387,7 +429,10 @@ describeNative("FileBrowserManager pagination", () => {
       pageSize: 1,
       cursor: cursors[0],
     });
-    expect(evicted).toMatchObject({ success: false, errorCode: "invalid_cursor" });
+    expect(evicted).toMatchObject({
+      success: false,
+      errorCode: "invalid_cursor",
+    });
   });
 
   it("invalidates every cursor when the same client reconnects", async () => {
@@ -488,14 +533,19 @@ describeNative("FileBrowserManager node safety", () => {
         })),
       };
       const fileTransferManager = {
-        offerFileToClient: vi.fn(async () => ({ transferId: "transfer-inside" })),
+        offerFileToClient: vi.fn(async () => ({
+          transferId: "transfer-inside",
+        })),
       };
       const f = await fixture({ artifactStore, fileTransferManager });
       const outside = await temporaryDirectory("ccpocket-browser-outside-");
       await writeFile(join(f.root, "inside.txt"), "inside");
       await writeFile(join(outside, "outside.txt"), "outside");
       await symlink("inside.txt", join(f.root, "inside-link.txt"));
-      await symlink(join(outside, "outside.txt"), join(f.root, "outside-link.txt"));
+      await symlink(
+        join(outside, "outside.txt"),
+        join(f.root, "outside-link.txt"),
+      );
 
       const listed = await f.request({
         type: "file_browser_list_v1",
@@ -504,7 +554,9 @@ describeNative("FileBrowserManager node safety", () => {
         relativePath: "",
       });
       const entries = listed.entries as Array<Record<string, unknown>>;
-      expect(entries.find((entry) => entry.name === "inside-link.txt")).toMatchObject({
+      expect(
+        entries.find((entry) => entry.name === "inside-link.txt"),
+      ).toMatchObject({
         kind: "symlink",
         isSymlink: true,
         targetKind: "file",
@@ -512,7 +564,9 @@ describeNative("FileBrowserManager node safety", () => {
         canPreview: true,
         canDownload: true,
       });
-      expect(entries.find((entry) => entry.name === "outside-link.txt")).toMatchObject({
+      expect(
+        entries.find((entry) => entry.name === "outside-link.txt"),
+      ).toMatchObject({
         kind: "symlink",
         isSymlink: true,
         canOpen: false,
@@ -526,7 +580,10 @@ describeNative("FileBrowserManager node safety", () => {
         rootId: f.rootId,
         relativePath: "outside-link.txt",
       });
-      expect(blocked).toMatchObject({ success: false, errorCode: "path_not_allowed" });
+      expect(blocked).toMatchObject({
+        success: false,
+        errorCode: "path_not_allowed",
+      });
 
       const allowed = await f.request({
         type: "file_browser_preview_v1",
@@ -585,8 +642,14 @@ describeNative("FileBrowserManager node safety", () => {
         rootId: f.rootId,
         relativePath: "events.pipe",
       });
-      expect(preview).toMatchObject({ success: false, errorCode: "not_regular_file" });
-      expect(download).toMatchObject({ success: false, errorCode: "not_regular_file" });
+      expect(preview).toMatchObject({
+        success: false,
+        errorCode: "not_regular_file",
+      });
+      expect(download).toMatchObject({
+        success: false,
+        errorCode: "not_regular_file",
+      });
       expect(artifactStore.issue).not.toHaveBeenCalled();
       expect(fileTransferManager.offerFileToClient).not.toHaveBeenCalled();
     },
@@ -828,14 +891,16 @@ describeNative("FileBrowserManager preview and download boundaries", () => {
 
   it("issues a ten-minute artifact only after matching the current node revision", async () => {
     const artifactStore = {
-      issue: vi.fn(async (_filePath: string, options: { filename?: string }) => ({
-        relativeUrl: "/artifacts/token",
-        relativeDownloadUrl: "/artifacts/token/download",
-        filename: options.filename ?? "file.txt",
-        mimeType: "text/plain; charset=utf-8",
-        sizeBytes: 5,
-        expiresAt: new Date(Date.now() + 600_000).toISOString(),
-      })),
+      issue: vi.fn(
+        async (_filePath: string, options: { filename?: string }) => ({
+          relativeUrl: "/artifacts/token",
+          relativeDownloadUrl: "/artifacts/token/download",
+          filename: options.filename ?? "file.txt",
+          mimeType: "text/plain; charset=utf-8",
+          sizeBytes: 5,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        }),
+      ),
     };
     const f = await fixture({ artifactStore });
     await writeFile(join(f.root, "note.txt"), "hello");
@@ -844,7 +909,9 @@ describeNative("FileBrowserManager preview and download boundaries", () => {
       requestId: "stat-note",
       items: [{ rootId: f.rootId, relativePath: "note.txt" }],
     });
-    const node = (statResult.items as Array<{ node: { nodeRevision: string } }>)[0].node;
+    const node = (
+      statResult.items as Array<{ node: { nodeRevision: string } }>
+    )[0].node;
 
     const stale = await f.request({
       type: "file_browser_preview_v1",
@@ -912,13 +979,18 @@ describeNative("FileBrowserManager preview and download boundaries", () => {
       relativePath: "too-large.bin",
     });
     expect(accepted.success).toBe(true);
-    expect(rejected).toMatchObject({ success: false, errorCode: "preview_too_large" });
+    expect(rejected).toMatchObject({
+      success: false,
+      errorCode: "preview_too_large",
+    });
     expect(artifactStore.issue).toHaveBeenCalledOnce();
   });
 
   it("targets the requesting client up to 15 GiB and rejects one byte more", async () => {
     const fileTransferManager = {
-      offerFileToClient: vi.fn(async () => ({ transferId: "download-transfer" })),
+      offerFileToClient: vi.fn(async () => ({
+        transferId: "download-transfer",
+      })),
     };
     const f = await fixture({ fileTransferManager });
     const exact = join(f.root, "exact-download.bin");
@@ -945,7 +1017,10 @@ describeNative("FileBrowserManager preview and download boundaries", () => {
       transferId: "download-transfer",
       status: "queued",
     });
-    expect(rejected).toMatchObject({ success: false, errorCode: "download_too_large" });
+    expect(rejected).toMatchObject({
+      success: false,
+      errorCode: "download_too_large",
+    });
     expect(fileTransferManager.offerFileToClient).toHaveBeenCalledWith(
       f.client,
       expect.objectContaining({

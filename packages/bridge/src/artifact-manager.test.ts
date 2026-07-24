@@ -628,6 +628,52 @@ describe("ArtifactManager", () => {
     ).resolves.toMatchObject({ artifactId: ref.id });
   });
 
+  it("allows exact out-of-project previews only in authenticated owner-read mode", async () => {
+    const root = await tempRoot();
+    const project = join(root, "project");
+    const external = join(root, "external");
+    await mkdir(project);
+    await mkdir(external);
+    const filePath = join(external, "report.pdf");
+    await writeFile(filePath, "report");
+    const manager = new ArtifactManager({
+      store: storeFor([]),
+      registry: new ArtifactRegistry({ filePath: join(root, "registry.json") }),
+      allowUnscopedRead: true,
+    });
+
+    const [ref] = await manager.registerCandidates({
+      ownerId: "thread",
+      messageId: "message",
+      cwd: project,
+      candidateRoots: [project],
+      candidates: extractArtifactCandidates(`[report](<${filePath}>)`),
+    });
+
+    expect(ref).toMatchObject({
+      filename: "report.pdf",
+      kind: "preview",
+    });
+    await expect(
+      manager.resolve({
+        artifactId: ref.id,
+        ownerId: "thread",
+        messageId: "message",
+        candidateRoots: [project],
+      }),
+    ).resolves.toMatchObject({ artifactId: ref.id });
+
+    await writeFile(filePath, "changed");
+    await expect(
+      manager.resolve({
+        artifactId: ref.id,
+        ownerId: "thread",
+        messageId: "message",
+        candidateRoots: [],
+      }),
+    ).rejects.toMatchObject({ code: "file_changed" });
+  });
+
   it("caps structured candidates before inspection and batch registration", async () => {
     const root = await tempRoot();
     const project = join(root, "project");

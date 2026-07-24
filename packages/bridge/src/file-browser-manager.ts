@@ -10,10 +10,7 @@ import {
   resolve,
   sep,
 } from "node:path";
-import {
-  mimeTypeForFilename,
-  previewKindForFile,
-} from "./artifact-preview.js";
+import { mimeTypeForFilename, previewKindForFile } from "./artifact-preview.js";
 import type { ArtifactStore, IssuedArtifact } from "./artifact-store.js";
 import type { ArtifactFileIdentity } from "./artifact-types.js";
 import { FILE_TRANSFER_MAX_FILE_SIZE_BYTES } from "./file-transfer-constants.js";
@@ -66,11 +63,19 @@ interface ArtifactIssuer {
   issue: ArtifactStore["issue"];
 }
 
-export type TargetedFileOfferer = Pick<FileTransferManager, "offerFileToClient">;
+export type TargetedFileOfferer = Pick<
+  FileTransferManager,
+  "offerFileToClient"
+>;
 
 export interface FileBrowserManagerOptions {
   bridgeInstanceId: string;
   allowedDirs?: string[];
+  /**
+   * Expose the filesystem root in addition to Home. This must only be enabled
+   * by an authenticated, explicitly unrestricted Bridge.
+   */
+  allowFilesystemRoot?: boolean;
   artifactStore?: ArtifactIssuer;
   fileTransferManager?: TargetedFileOfferer;
   homeDir?: string;
@@ -153,6 +158,7 @@ export class FileBrowserManager {
   private readonly rootIdFactory: (canonicalPath: string) => string;
   private readonly cursorTokenFactory: () => string;
   private readonly backend: FileBrowserPosixBackend;
+  private readonly allowFilesystemRoot: boolean;
   private readonly rootsPromise: Promise<RootSnapshot>;
   private readonly clients = new Map<object, FileBrowserClientBinding>();
   private readonly clientGenerations = new WeakMap<object, number>();
@@ -181,6 +187,7 @@ export class FileBrowserManager {
     this.cursorTokenFactory =
       options.cursorTokenFactory ??
       (() => randomBytes(24).toString("base64url"));
+    this.allowFilesystemRoot = options.allowFilesystemRoot ?? false;
     this.backend =
       options.backend ??
       new FileBrowserPosixBackend({
@@ -190,8 +197,11 @@ export class FileBrowserManager {
       });
 
     const configuredRoots = options.allowedDirs ?? [];
-    const requestedRoots =
-      configuredRoots.length > 0 ? configuredRoots : [this.homeDir];
+    const requestedRoots = this.allowFilesystemRoot
+      ? [this.homeDir, parse(this.homeDir).root, ...configuredRoots]
+      : configuredRoots.length > 0
+        ? configuredRoots
+        : [this.homeDir];
     this.rootsPromise = this.initializeRoots(requestedRoots);
   }
 
@@ -249,7 +259,8 @@ export class FileBrowserManager {
     if (!this.accepting) return Promise.resolve();
     const binding = this.clients.get(client);
     const generation = this.clientGenerations.get(client);
-    if (!binding?.isOpen() || generation === undefined) return Promise.resolve();
+    if (!binding?.isOpen() || generation === undefined)
+      return Promise.resolve();
     const controller = linkedAbortController(externalSignal);
     const controllers = this.operationControllers.get(client) ?? new Set();
     controllers.add(controller);
@@ -497,7 +508,10 @@ export class FileBrowserManager {
   }
 
   private async previewResult(
-    message: Extract<FileBrowserClientMessage, { type: typeof PREVIEW_REQUEST }>,
+    message: Extract<
+      FileBrowserClientMessage,
+      { type: typeof PREVIEW_REQUEST }
+    >,
     signal: AbortSignal,
   ): Promise<FileBrowserServerMessage> {
     if (!this.artifactStore) {
@@ -508,7 +522,11 @@ export class FileBrowserManager {
     }
     const root = await this.requireRoot(message.rootId);
     const normalizedPath = normalizeRelativePath(message.relativePath);
-    const resolved = await this.requireRegularFile(root, normalizedPath, signal);
+    const resolved = await this.requireRegularFile(
+      root,
+      normalizedPath,
+      signal,
+    );
     const node = this.nodeData(resolved);
     this.requireExpectedRevision(message.nodeRevision, node.nodeRevision);
     const stats = resolved.targetStats ?? resolved.sourceStats;
@@ -550,7 +568,10 @@ export class FileBrowserManager {
 
   private async downloadResult(
     client: object,
-    message: Extract<FileBrowserClientMessage, { type: typeof DOWNLOAD_REQUEST }>,
+    message: Extract<
+      FileBrowserClientMessage,
+      { type: typeof DOWNLOAD_REQUEST }
+    >,
     signal: AbortSignal,
   ): Promise<FileBrowserServerMessage> {
     if (!this.fileTransferManager) {
@@ -561,7 +582,11 @@ export class FileBrowserManager {
     }
     const root = await this.requireRoot(message.rootId);
     const normalizedPath = normalizeRelativePath(message.relativePath);
-    const resolved = await this.requireRegularFile(root, normalizedPath, signal);
+    const resolved = await this.requireRegularFile(
+      root,
+      normalizedPath,
+      signal,
+    );
     const node = this.nodeData(resolved);
     this.requireExpectedRevision(message.nodeRevision, node.nodeRevision);
     const stats = resolved.targetStats ?? resolved.sourceStats;
@@ -572,9 +597,7 @@ export class FileBrowserManager {
       );
     }
 
-    let offered: Awaited<
-      ReturnType<TargetedFileOfferer["offerFileToClient"]>
-    >;
+    let offered: Awaited<ReturnType<TargetedFileOfferer["offerFileToClient"]>>;
     try {
       offered = await this.fileTransferManager.offerFileToClient(client, {
         filePath: resolved.canonicalPath!,
@@ -629,9 +652,12 @@ export class FileBrowserManager {
     for (const requestedRoot of requestedRoots) {
       try {
         const canonicalPath = await realpath(resolve(requestedRoot));
+        const isFilesystemRoot = canonicalPath === parse(canonicalPath).root;
         if (
-          canonicalPath === parse(canonicalPath).root ||
-          candidates.some((candidate) => candidate.canonicalPath === canonicalPath)
+          (isFilesystemRoot && !this.allowFilesystemRoot) ||
+          candidates.some(
+            (candidate) => candidate.canonicalPath === canonicalPath,
+          )
         ) {
           continue;
         }
@@ -649,17 +675,20 @@ export class FileBrowserManager {
       const baseLabel =
         canonicalPath === canonicalHome
           ? "Home"
-          : safeRootLabel(basename(canonicalPath));
+          : canonicalPath === parse(canonicalPath).root
+            ? "Mac"
+            : safeRootLabel(basename(canonicalPath));
       const duplicateIndex = (labelCounts.get(baseLabel) ?? 0) + 1;
       labelCounts.set(baseLabel, duplicateIndex);
       const label =
         duplicateIndex === 1 ? baseLabel : `${baseLabel} (${duplicateIndex})`;
       let rootId = this.rootIdFactory(canonicalPath);
       for (let suffix = 2; usedIds.has(rootId); suffix += 1) {
-        rootId = opaqueDigest("root-collision", canonicalPath, String(suffix)).slice(
-          0,
-          24,
-        );
+        rootId = opaqueDigest(
+          "root-collision",
+          canonicalPath,
+          String(suffix),
+        ).slice(0, 24);
       }
       usedIds.add(rootId);
       return {
@@ -683,7 +712,10 @@ export class FileBrowserManager {
   private async requireRoot(rootId: string): Promise<BrowserRoot> {
     const root = (await this.rootsPromise).byId.get(rootId);
     if (!root) {
-      throw new FileBrowserError("invalid_root", "The file root is unavailable");
+      throw new FileBrowserError(
+        "invalid_root",
+        "The file root is unavailable",
+      );
     }
     return root;
   }
@@ -738,7 +770,10 @@ export class FileBrowserManager {
         return this.nodeData(this.resolvedFromNative(root, item, result, true));
       } catch (error) {
         const browserError = normalizeError(error);
-        if (browserError.code === "not_found" || browserError.code === "node_changed") {
+        if (
+          browserError.code === "not_found" ||
+          browserError.code === "node_changed"
+        ) {
           throw new FileBrowserError(
             "directory_changed",
             "A directory entry changed while it was being read",
@@ -905,8 +940,7 @@ export class FileBrowserManager {
     const sourceKind = resolved.sourceStats.kind;
     const targetKind = targetStats?.kind;
     const effectiveStats = targetStats ?? resolved.sourceStats;
-    const regularFile =
-      !resolved.blockedSymlink && targetKind === "file";
+    const regularFile = !resolved.blockedSymlink && targetKind === "file";
     const filename = displayNameFor(resolved.root, resolved.relativePath);
     const mimeType = regularFile ? mimeTypeForFilename(filename) : undefined;
     const previewKind =
@@ -921,8 +955,7 @@ export class FileBrowserManager {
       regularFile &&
       this.fileTransferManager !== undefined &&
       effectiveStats.size <= FILE_BROWSER_DOWNLOAD_MAX_BYTES;
-    const directory =
-      !resolved.blockedSymlink && targetKind === "directory";
+    const directory = !resolved.blockedSymlink && targetKind === "directory";
 
     return {
       name: filename,
@@ -1147,7 +1180,9 @@ function displayPathForRoot(
 
 function safeRootLabel(input: string): string {
   const cleaned = input.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
-  return Array.from(cleaned || "Folder").slice(0, 80).join("");
+  return Array.from(cleaned || "Folder")
+    .slice(0, 80)
+    .join("");
 }
 
 function statsRevisionParts(stats: FileBrowserNativeStats): string {
@@ -1215,9 +1250,7 @@ function numericIdentityPart(value: string): number {
 }
 
 function absolutePathFor(root: string, relativePath: string): string {
-  return relativePath === ""
-    ? root
-    : join(root, ...relativePath.split("/"));
+  return relativePath === "" ? root : join(root, ...relativePath.split("/"));
 }
 
 function canonicalRelativeWithinRoot(root: string, target: string): string {
@@ -1242,7 +1275,10 @@ function nativeResultError(code: string): FileBrowserError {
     case "not_found":
       return new FileBrowserError(code, "The file no longer exists");
     case "permission_denied":
-      return new FileBrowserError(code, "The file cannot be read by the Bridge");
+      return new FileBrowserError(
+        code,
+        "The file cannot be read by the Bridge",
+      );
     case "invalid_symlink":
       return new FileBrowserError(
         code,
@@ -1282,9 +1318,7 @@ function unreadableEntry(
 }
 
 function boundedErrorCode(value: string): string {
-  return /^[A-Za-z0-9_-]{1,128}$/u.test(value)
-    ? value
-    : "file_browser_failed";
+  return /^[A-Za-z0-9_-]{1,128}$/u.test(value) ? value : "file_browser_failed";
 }
 
 const abortControllerCleanup = new WeakMap<AbortController, () => void>();
@@ -1363,7 +1397,10 @@ function translateCapabilityError(
         "The file changed while the capability was being created",
       );
     }
-    return new FileBrowserError(code, "The file capability could not be created");
+    return new FileBrowserError(
+      code,
+      "The file capability could not be created",
+    );
   }
   return new FileBrowserError(
     fallbackCode,

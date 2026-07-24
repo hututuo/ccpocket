@@ -22,6 +22,12 @@ export interface ArtifactManagerOptions {
   registry: ArtifactRegistry;
   generatedArtifactStore?: GeneratedArtifactStore;
   platform?: NodeJS.Platform;
+  /**
+   * Allow opaque, registry-bound preview refs for regular files outside the
+   * current session roots. Production enables this only for an explicitly
+   * unrestricted Bridge that also requires API-key authentication.
+   */
+  allowUnscopedRead?: boolean;
 }
 
 export interface RegisterArtifactCandidatesInput {
@@ -294,12 +300,14 @@ export class ArtifactManager {
   private readonly registry: ArtifactRegistry;
   private readonly generatedArtifactStore?: GeneratedArtifactStore;
   private readonly platform: NodeJS.Platform;
+  private readonly allowUnscopedRead: boolean;
 
   constructor(options: ArtifactManagerOptions) {
     this.store = options.store;
     this.registry = options.registry;
     this.generatedArtifactStore = options.generatedArtifactStore;
     this.platform = options.platform ?? process.platform;
+    this.allowUnscopedRead = options.allowUnscopedRead ?? false;
   }
 
   /**
@@ -386,6 +394,7 @@ export class ArtifactManager {
       );
       if (existing) {
         if (
+          !this.allowUnscopedRead &&
           requiresSessionScope(candidate.source) &&
           !canonicalCandidateRoots.some((root) =>
             isWithinRoot(existing.canonicalPath, root, this.platform),
@@ -420,6 +429,7 @@ export class ArtifactManager {
       );
       if (!inspected) continue;
       if (
+        !this.allowUnscopedRead &&
         requiresSessionScope(candidate.source) &&
         !canonicalCandidateRoots.some((root) =>
           isWithinRoot(inspected.file.canonicalPath, root, this.platform),
@@ -515,7 +525,7 @@ export class ArtifactManager {
       );
     }
 
-    if (requiresSessionScope(entry.source)) {
+    if (!this.allowUnscopedRead && requiresSessionScope(entry.source)) {
       const roots = await canonicalRoots(input.candidateRoots);
       if (
         !roots.some((root) =>
@@ -583,10 +593,7 @@ export class ArtifactManager {
       );
     }
 
-    const roots = await canonicalRoots([
-      input.cwd,
-      ...input.candidateRoots,
-    ]);
+    const roots = await canonicalRoots([input.cwd, ...input.candidateRoots]);
     if (
       !roots.some((root) =>
         isWithinRoot(entry.canonicalPath, root, this.platform),

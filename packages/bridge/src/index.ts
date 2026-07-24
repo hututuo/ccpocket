@@ -39,6 +39,10 @@ export async function startServer() {
   const PORT = parseBridgePort();
   const HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
   const API_KEY = process.env.BRIDGE_API_KEY;
+  const FULL_DISK_READ_REQUESTED =
+    process.env.BRIDGE_ALLOWED_DIRS?.trim() === "*";
+  const OWNER_FULL_DISK_READ =
+    FULL_DISK_READ_REQUESTED && Boolean(API_KEY?.trim());
   const MDNS_ENABLED = shouldAdvertiseMdns(
     process.platform,
     !!process.env.BRIDGE_DISABLE_MDNS,
@@ -55,6 +59,12 @@ export async function startServer() {
 
   if (API_KEY) {
     console.log("[bridge] API key authentication enabled");
+  }
+  if (FULL_DISK_READ_REQUESTED && !OWNER_FULL_DISK_READ) {
+    console.warn(
+      "[bridge] Full-disk phone browsing and out-of-project artifact previews " +
+        "require BRIDGE_API_KEY; keeping those owner surfaces scoped to Home/session roots",
+    );
   }
 
   if (!MDNS_ENABLED) {
@@ -113,6 +123,7 @@ export async function startServer() {
         store: artifactStore,
         registry: artifactRegistry,
         generatedArtifactStore,
+        allowUnscopedRead: OWNER_FULL_DISK_READ,
       });
       console.log("[bridge] Automatic artifact links enabled");
     } catch (error) {
@@ -162,61 +173,61 @@ export async function startServer() {
   await galleryStore
     .init()
     .then(() => {
-    console.log("[bridge] Gallery store initialized");
+      console.log("[bridge] Gallery store initialized");
     })
     .catch((err) => {
-    console.error("[bridge] Failed to initialize gallery store:", err);
-  });
+      console.error("[bridge] Failed to initialize gallery store:", err);
+    });
 
   projectHistory
     .init()
     .then(() => {
-    console.log("[bridge] Project history initialized");
+      console.log("[bridge] Project history initialized");
     })
     .catch((err) => {
-    console.error("[bridge] Failed to initialize project history:", err);
-  });
+      console.error("[bridge] Failed to initialize project history:", err);
+    });
 
   debugTraceStore
     .init()
     .then(() => {
-    console.log("[bridge] Debug trace store initialized");
+      console.log("[bridge] Debug trace store initialized");
     })
     .catch((err) => {
-    console.error("[bridge] Failed to initialize debug trace store:", err);
-  });
+      console.error("[bridge] Failed to initialize debug trace store:", err);
+    });
 
   if (recordingStore) {
     recordingStore
       .init()
       .then(() => {
-      console.log("[bridge] Recording enabled");
+        console.log("[bridge] Recording enabled");
       })
       .catch((err) => {
-      console.error("[bridge] Failed to initialize recording store:", err);
-    });
+        console.error("[bridge] Failed to initialize recording store:", err);
+      });
   }
 
   promptHistoryBackup
     .init()
     .then(() => {
-    console.log("[bridge] Prompt history backup store initialized");
+      console.log("[bridge] Prompt history backup store initialized");
     })
     .catch((err) => {
       console.error(
         "[bridge] Failed to initialize prompt history backup store:",
         err,
       );
-  });
+    });
 
   await promptHistoryStore
     .init()
     .then(() => {
-    console.log("[bridge] Prompt history store initialized");
+      console.log("[bridge] Prompt history store initialized");
     })
     .catch((err) => {
-    console.error("[bridge] Failed to initialize prompt history store:", err);
-  });
+      console.error("[bridge] Failed to initialize prompt history store:", err);
+    });
 
   const fileTransferRuntime = await initializeFileTransferRuntime({
     port: PORT,
@@ -239,6 +250,7 @@ export async function startServer() {
     fileBrowser = new FileBrowserManager({
       bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
       allowedDirs: ALLOWED_DIRS,
+      allowFilesystemRoot: OWNER_FULL_DISK_READ,
       artifactStore,
       fileTransferManager: fileTransfer,
     });
@@ -330,10 +342,10 @@ export async function startServer() {
     // Upload images via POST /api/gallery/upload
     if (
       galleryStore.handleUploadRequest(req, res, (meta) => {
-      if (wsServer) {
-        const info = galleryStore.metaToInfo(meta);
-        wsServer.broadcastGalleryNewImage(info);
-      }
+        if (wsServer) {
+          const info = galleryStore.metaToInfo(meta);
+          wsServer.broadcastGalleryNewImage(info);
+        }
       })
     )
       return;
@@ -399,8 +411,12 @@ export async function startServer() {
   mdns?.start(PORT, API_KEY);
   printStartupInfo(PORT, HOST, API_KEY);
 
-  process.on("SIGINT", () => { void shutdown(); });
-  process.on("SIGTERM", () => { void shutdown(); });
+  process.on("SIGINT", () => {
+    void shutdown();
+  });
+  process.on("SIGTERM", () => {
+    void shutdown();
+  });
 }
 
 // Auto-start when executed directly (node dist/index.js, tsx src/index.ts)

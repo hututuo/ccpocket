@@ -709,6 +709,26 @@ UI 和诊断必须分别显示两条链路的 capability、权限、token、Brid
 - token 绑定设备、连接、文件 identity、范围、过期和 read-only action；
 - 目录列表和搜索分页、可取消、有超时和结果上限。
 
+源码复核后的第一步实现边界（2026-07-25）：
+
+- 现有 `BRIDGE_ALLOWED_DIRS=*` 在多数 Bridge 路径中已代表 unrestricted，但手动
+  `FileBrowserManager` 会把空 roots 重新解释成 Home，因此此前并没有真正暴露
+  全盘浏览；
+- 自动 Agent artifact 已经有 owner/message/registry identity、短期随机 URL 和
+  变更后拒绝读取，不需要重写路径解析器；真正的失败点是注册和 resolve 时再次
+  套用了 session cwd/additional writable roots；
+- 现在只有同时显式配置 `BRIDGE_ALLOWED_DIRS=*` 和非空 `BRIDGE_API_KEY` 时，
+  Bridge 才会：
+  - 给手动文件管理增加不泄露绝对路径的 `Mac` 根；
+  - 允许 Agent 输出的真实外部本地文件登记为 exact-identity preview artifact；
+- 未配置 API key 时仍只显示 Home/session roots 并打印警告；旧客户端、旧 Bridge
+  和非 unrestricted 配置的既有行为不变；
+- 这一步没有放宽 source editor，也没有接受 Mobile 传入任意绝对路径；外部引用
+  只能由 Agent 消息候选解析、Bridge 实际检查和 registry 绑定后打开；
+- artifact URL 当前已是高熵、短期、单文件 identity capability，但尚未绑定设备/
+  connection；后续 endpoint 审计仍需决定是否在不破坏 WebView/Quick Look/
+  分享的前提下再加一层设备会话约束。
+
 ### 11.3 连接安全先行
 
 当前 live Bridge 监听所有接口且没有 API key。在开放 owner 全盘读取前必须：
