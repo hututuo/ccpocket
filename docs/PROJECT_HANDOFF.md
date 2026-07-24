@@ -178,10 +178,18 @@ codex exec resume \
 
 - Codex 正常输出真实文件路径；Bridge 负责识别、安全映射并发出 Mobile 可点击的结构化链接。
 - Mobile 优先应用内预览；不支持时提供系统预览、下载和分享。预览关闭后返回页仍要可左滑返回。
+- owner 自用部署允许在 macOS 实际授权范围内全盘浏览、读取、预览和下载；
+  不限制 Codex/Claude 根据用户任务读取文件。Mobile 直接发起的新建、写入、
+  覆盖、移动、重命名、上传落盘和删除必须由 Bridge 通过文件变更密码或
+  Secure Enclave + Face ID 签名做一次性二次授权，不能相信客户端自报
+  `faceIdPassed`。完整设计见
+  [`docs/full-disk-read-mutation-authorization.md`](full-disk-read-mutation-authorization.md)。
 - Mac 与手机互传上限 15 GiB，预览上限 2 GiB；小文件用小块，大文件自适应到较大块，支持断点续传、校验和原子落盘。
 - 发送前先检查 iPhone/Bridge capability；旧版本不展示无法完成的入口。
 - 手机主页接收拖放时默认发送到电脑；会话输入区接收拖放时默认作为会话附件。
-- 文件管理允许浏览经授权的电脑目录、固定常用文件夹、预览和下载，但必须经过 canonical path、允许目录、symlink、遍历和 no-overwrite 检查。
+- 默认/非 owner 部署继续使用经授权的电脑目录；owner 全盘只读模式仍必须经过
+  canonical path、symlink、遍历和文件身份检查。写操作额外执行二次授权、
+  no-overwrite/原子落盘和执行前身份复核。
 - 项目路径在允许目录之外时应返回明确错误和修复建议，不能无限重试。
 
 ## 9. Git、worktree 和官方更新

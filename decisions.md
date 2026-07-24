@@ -607,3 +607,49 @@
   Source integration is therefore not a security regression, but Cloud/Bridge
   deployment must not be described as security-cleared until those dependency
   upgrades receive a separate compatibility review.
+
+## Full-disk read and Bridge-verified file mutation authorization
+
+- This accepted design applies to the owner's self-hosted deployment. Bridge
+  may browse, search, read, preview and download every file that its macOS host
+  can actually access. Codex and Claude provider tools remain governed by their
+  existing sandbox, permission and approval systems; this decision does not
+  add a biometric prompt to every agent-authored code edit.
+- Every filesystem mutation initiated directly by Mobile or a Bridge file
+  management RPC requires step-up authorization. This includes create, write,
+  append, overwrite, rename, move, phone-to-Mac upload, replace and delete.
+  Read-only access still requires ordinary authenticated Bridge connectivity,
+  but it does not require the mutation password or Face ID.
+- The mutation password is configured locally on the Mac. Bridge stores only a
+  versioned Argon2id verifier and salt in a `0600` file, never plaintext. It is
+  not logged or persisted on Mobile. Rate limiting, bounded lockout and local
+  reset are mandatory; reset revokes devices and all outstanding challenges.
+- Face ID is proven cryptographically, not by trusting a client boolean. After
+  password-authorized enrollment, Mobile creates a non-exportable Secure
+  Enclave signing key protected by `biometryCurrentSet`; Bridge stores the
+  public key. Face ID unlocks a signature over a Bridge nonce bound to the
+  exact action, canonical paths, file identity, device, connection generation
+  and expiry. Biometry changes, reinstall, revocation or stale generations fail
+  closed.
+- A successful password or biometric proof produces one short-lived,
+  single-use authorization for the exact operation or explicit batch. Bridge
+  rechecks canonical paths, symlinks and file identity immediately before
+  atomic execution. Disconnect, replay, timeout, Bridge restart and late
+  signatures cannot execute the mutation. Recoverable Trash is the default
+  delete; permanent deletion requires a fresh authorization and warning.
+- Owner full-disk configuration is not enabled before Bridge connectivity and
+  every private HTTP/WebSocket route share an authentication boundary, Gallery
+  upload/list/read/delete cannot bypass it, request/storage limits are bounded,
+  and the listener is restricted to Tailscale or an equivalent verified
+  firewall rule. macOS Full Disk Access belongs to a stable Bridge host or
+  narrow helper, not a version-changing Node runtime path.
+- The protocol remains additive through capabilities such as
+  `full_disk_read_v1`, `file_mutation_step_up_v1` and
+  `biometric_device_signature_v1`. Old peers retain read/session behavior but
+  must fail closed for mutations they cannot authorize. Secure Enclave support
+  may require a new base IPA and must be checked before claiming an OTA-only
+  delivery.
+- The complete accepted design, sequencing and verification matrix is in
+  `docs/full-disk-read-mutation-authorization.md`. No source implementation,
+  runtime configuration, Bridge deployment, IPA, OTA or physical-device
+  enrollment is implied by this documentation decision.
