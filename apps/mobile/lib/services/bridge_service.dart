@@ -1987,6 +1987,9 @@ class BridgeService implements BridgeServiceBase {
     _deliveryPrivacyMode = privacyMode;
     _deliveryEnabledEventTypes = List.unmodifiable(enabledEventTypes);
     _latestDeliveryModeRequestId = requestId;
+    if (!isTransportHealthy) {
+      return null;
+    }
     final completer = Completer<ClientDeliveryModeStateMessage>();
     _pendingDeliveryModeRequests[requestId] = completer;
     try {

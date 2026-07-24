@@ -167,8 +167,12 @@ export function projectBackgroundNotification(
     };
   }
 
+  if (msg.type !== "result") {
+    return null;
+  }
+  state.progressBySession.delete(sessionId);
+  state.permissionToolUsesBySession.delete(sessionId);
   if (
-    msg.type !== "result" ||
     msg.subtype === "stopped" ||
     (msg.subtype !== "success" && msg.subtype !== "error")
   ) {
@@ -178,7 +182,6 @@ export function projectBackgroundNotification(
   const isSuccess = msg.subtype === "success";
   const eventType = isSuccess ? "session_completed" : "session_failed";
   if (!policy.enabledEventTypes.has(eventType)) return null;
-  state.progressBySession.delete(sessionId);
 
   const pieces: string[] = [];
   if (isSuccess) {

@@ -266,7 +266,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
       _deliveryEngaged = false;
       _notificationModeRequested = false;
       if (shouldRestoreInteractive) {
-        await _setInteractiveIfConnected();
+        await _setInteractiveDesiredMode();
       }
       final snapshot = await _locationHost.stop();
       _prearmed = false;
@@ -386,7 +386,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
     );
     if (!snapshot.active) {
       _deliveryEngaged = false;
-      await _setInteractiveIfConnected();
+      await _setInteractiveDesiredMode();
       return false;
     }
     return true;
@@ -419,7 +419,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
     _deliveryEngaged = false;
     _notificationModeRequested = false;
     if (shouldRestoreInteractive) {
-      await _setInteractiveIfConnected();
+      await _setInteractiveDesiredMode();
     }
     if (operation != _lifecycleOperationGeneration || _disposed) return;
     final snapshot = await _locationHost.stop();
@@ -443,7 +443,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
     _deliveryEngaged = false;
     _notificationModeRequested = false;
     if (shouldRestoreInteractive) {
-      await _setInteractiveIfConnected();
+      await _setInteractiveDesiredMode();
     }
     if (operation != _lifecycleOperationGeneration || _disposed) return;
     _prearmed = false;
@@ -482,8 +482,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
     return false;
   }
 
-  Future<void> _setInteractiveIfConnected() async {
-    if (!_delivery.isConnected) return;
+  Future<void> _setInteractiveDesiredMode() async {
     await _delivery.setMode(
       mode: BridgeClientDeliveryMode.interactive,
       locale: _locale,
@@ -493,7 +492,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
   }
 
   Future<void> _refreshBackgroundDeliveryPolicy() async {
-    if (!_delivery.isConnected || !_deliveryEngaged || !_isBackground) return;
+    if (!_deliveryEngaged || !_isBackground) return;
     await _delivery.setMode(
       mode: BridgeClientDeliveryMode.notificationsOnly,
       locale: _locale,
@@ -548,6 +547,13 @@ class BackgroundNotificationModeController extends ChangeNotifier
       return;
     }
     if (state == BridgeConnectionState.disconnected) {
+      // Reconnection can happen before machine-scoped settings are restored.
+      // Fail private during that gap; a later settings update may relax the
+      // policy again after the active machine identity is known.
+      _privacyMode = true;
+      if (_deliveryEngaged) {
+        unawaited(_refreshBackgroundDeliveryPolicy());
+      }
       _disconnectedTimer ??= Timer(
         _disconnectedPowerGrace,
         () => unawaited(_stopAfterDisconnectedGrace()),
@@ -641,7 +647,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
     await _connectionSub?.cancel();
     await _capabilitySub?.cancel();
     if (_deliveryEngaged || _notificationModeRequested) {
-      await _setInteractiveIfConnected();
+      await _setInteractiveDesiredMode();
     }
     await _locationHost.stop();
     await _locationHost.dispose();

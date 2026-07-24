@@ -7,6 +7,33 @@ import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('offline foreground restoration resets the desired delivery mode', () async {
+    final bridge = BridgeService();
+    addTearDown(bridge.dispose);
+
+    expect(
+      await bridge.setClientDeliveryMode(
+        mode: BridgeClientDeliveryMode.notificationsOnly,
+      ),
+      isNull,
+    );
+    expect(
+      bridge.desiredClientDeliveryMode,
+      BridgeClientDeliveryMode.notificationsOnly,
+    );
+
+    expect(
+      await bridge.setClientDeliveryMode(
+        mode: BridgeClientDeliveryMode.interactive,
+      ),
+      isNull,
+    );
+    expect(
+      bridge.desiredClientDeliveryMode,
+      BridgeClientDeliveryMode.interactive,
+    );
+  });
+
   test(
     'notification-only mode rejects full stream messages before normal routing',
     () async {

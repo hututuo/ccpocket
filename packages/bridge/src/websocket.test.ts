@@ -10502,6 +10502,46 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("does not queue batched stream deltas for a background client", async () => {
+    vi.useFakeTimers();
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      deltaBatchMs: 100,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "client_delivery_mode_state_v1",
+          "background_notification_v1",
+          "background_activity_state_v1",
+        ],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "notifications_only",
+        requestId: "background-batched",
+      },
+      ws,
+    );
+    ws.send.mockClear();
+
+    (bridge as any).broadcastSessionMessage("session-1", {
+      type: "stream_delta",
+      text: "sensitive batched payload",
+    });
+    vi.advanceTimersByTime(100);
+
+    expect(ws.send).not.toHaveBeenCalled();
+    expect((bridge as any).deltaBatches.has(ws)).toBe(false);
+    bridge.close();
+  });
+
   it("flushes every client batch during shutdown", () => {
     vi.useFakeTimers();
     const bridge = new BridgeWebSocketServer({

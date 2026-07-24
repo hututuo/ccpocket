@@ -127,6 +127,19 @@ Automated checks cover:
 - interactive restoration before foreground history reconciliation;
 - old Bridge and old base-IPA fallback.
 
+The coordination review added four release-candidate hardening fixes:
+
+- batched `stream_delta` and `thinking_delta` frames now bypass
+  notification-only clients at the queue boundary, not only at the normal send
+  boundary;
+- foreground restoration records `interactive` as the desired mode even if the
+  socket is already disconnected, preventing a later reconnect from reviving
+  notification-only delivery in the foreground;
+- a disconnected background client fails private until its machine-scoped
+  policy is known again;
+- per-session progress and permission deduplication state is released for every
+  terminal result, including stopped turns.
+
 The iOS Simulator can verify compilation, registration and deterministic state
 logic only. A physical iPhone must still verify:
 

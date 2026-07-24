@@ -8483,6 +8483,12 @@ export class BridgeWebSocketServer {
       const chunks = this.splitDeltaText(msg.text);
       for (const client of this.wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
+        if (
+          this.backgroundDeliveryClients.get(client)?.mode ===
+          "notifications_only"
+        ) {
+          continue;
+        }
         if (!this.shouldSendToClient(client, msg)) continue;
         this.queueDeltaForClient(client, sessionId, msg.type, chunks);
       }

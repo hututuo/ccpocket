@@ -170,4 +170,30 @@ describe("background notification projector", () => {
     expect(JSON.stringify(message)).not.toContain("private-tool-id");
     expect(JSON.stringify(message)).not.toContain("not-forwarded");
   });
+
+  it("releases per-session deduplication state when a turn ends", () => {
+    const policy = createBackgroundNotificationPolicy({
+      enabledEventTypes: ["approval_required", "session_progress"],
+    });
+    const state = createBackgroundNotificationProjectionState();
+    state.progressBySession.set("session-1", {
+      lastSentAt: context.now,
+      lastToolKey: "tool-1:Read",
+    });
+    state.permissionToolUsesBySession.set(
+      "session-1",
+      new Set(["permission-1"]),
+    );
+
+    expect(
+      projectBackgroundNotification(
+        { type: "result", subtype: "stopped" },
+        context,
+        policy,
+        state,
+      ),
+    ).toBeNull();
+    expect(state.progressBySession.has("session-1")).toBe(false);
+    expect(state.permissionToolUsesBySession.has("session-1")).toBe(false);
+  });
 });

@@ -225,10 +225,45 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 10));
 
     expect(host.active, isFalse);
+    expect(delivery.modes, [
+      BridgeClientDeliveryMode.notificationsOnly,
+      BridgeClientDeliveryMode.notificationsOnly,
+    ]);
+    expect(delivery.privacyModes, [false, true]);
     expect(controller.ownsBackgroundTransport, isFalse);
     expect(controller.state.phase, 'bridge_disconnected_power_pause');
     await controller.dispose();
   });
+
+  test(
+    'foreground restoration records interactive intent while disconnected',
+    () async {
+      final preferences = await SharedPreferences.getInstance();
+      final host = _FakeLocationHost(_authorizedSnapshot());
+      final delivery = _FakeDelivery(activeWorkCount: 1);
+      final controller = BackgroundNotificationModeController(
+        preferences: preferences,
+        locationHost: host,
+        delivery: delivery,
+        permissionHost: PermissionHostService.test(
+          gateway: _FakePermissionGateway(),
+        ),
+        notifications: _FakePresenter(),
+      );
+      await controller.initialize();
+      expect(await controller.enterBackground(hasBackgroundWork: true), isTrue);
+
+      delivery.isConnected = false;
+      await controller.enterForeground();
+
+      expect(delivery.modes, [
+        BridgeClientDeliveryMode.notificationsOnly,
+        BridgeClientDeliveryMode.interactive,
+      ]);
+      expect(controller.ownsBackgroundTransport, isFalse);
+      await controller.dispose();
+    },
+  );
 
   test('an old Bridge falls back without starting location updates', () async {
     final preferences = await SharedPreferences.getInstance();
