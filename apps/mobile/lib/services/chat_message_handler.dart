@@ -455,6 +455,7 @@ class ChatMessageHandler {
           ),
           messageUuid: msg.messageUuid,
           artifacts: msg.artifacts,
+          historyToolDetailGaps: msg.historyToolDetailGaps,
           artifactContentIndexOffset: msg.artifactContentIndexOffset + 1,
         );
       }

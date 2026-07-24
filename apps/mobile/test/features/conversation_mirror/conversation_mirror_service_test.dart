@@ -1539,6 +1539,81 @@ void main() {
   );
 
   test(
+    'downloaded tool details remain available from the mirror while offline',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 4,
+        revision: _hashText('offline-tool-detail'),
+        messageBuilder: (index) => switch (index) {
+          0 => {
+            'type': 'user_input',
+            'text': 'read the local file',
+            'userMessageUuid': 'codex:user-turn:0',
+          },
+          1 => {
+            'type': 'assistant',
+            'messageUuid': 'assistant-tools',
+            'message': {
+              'id': 'assistant-tools',
+              'role': 'assistant',
+              'model': 'codex',
+              'content': [
+                {
+                  'type': 'tool_use',
+                  'id': 'tool-read',
+                  'name': 'Read',
+                  'input': {'file_path': '/tmp/local.txt'},
+                },
+                {
+                  'type': 'tool_use',
+                  'id': 'tool-unrelated',
+                  'name': 'Search',
+                  'input': {'query': 'not requested'},
+                },
+              ],
+            },
+          },
+          2 => {
+            'type': 'tool_result',
+            'toolUseId': 'tool-read',
+            'toolName': 'Read',
+            'content': 'local contents',
+          },
+          _ => {
+            'type': 'tool_result',
+            'toolUseId': 'tool-unrelated',
+            'toolName': 'Search',
+            'content': 'unrelated contents',
+          },
+        },
+      );
+      bridge.connected = false;
+
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        ),
+        isTrue,
+      );
+
+      final details = await bridge.requestHistoryToolDetails(
+        runtimeSessionId: 'runtime-1',
+        toolUseIds: const ['tool-read', 'missing'],
+      );
+
+      expect(details, hasLength(1));
+      expect(details?.single.toolUseId, 'tool-read');
+      expect(details?.single.toolName, 'Read');
+      expect(details?.single.input, {'file_path': '/tmp/local.txt'});
+      expect(details?.single.result?.content, 'local contents');
+      expect(bridge.sent, isEmpty);
+    },
+  );
+
+  test(
     'canonical mutation after local decode keeps the full index without publishing stale content',
     () async {
       final message = <String, dynamic>{

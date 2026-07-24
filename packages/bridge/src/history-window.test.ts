@@ -45,7 +45,17 @@ describe("selectTurnAwareHistoryWindow", () => {
 
     const selected = selectTurnAwareHistoryWindow(entries);
 
-    expect(selected).toHaveLength(402);
+    expect(selected).toHaveLength(403);
+    expect(selected[1].message).toMatchObject({
+      type: "assistant",
+      message: { content: [] },
+      historyToolDetailGaps: [
+        {
+          toolUseIds: ["tool-0", "tool-1", "tool-2", "tool-3", "tool-4"],
+          toolCallCount: 5,
+        },
+      ],
+    });
     expect(
       selected.some(
         (item) =>
@@ -68,7 +78,7 @@ describe("selectTurnAwareHistoryWindow", () => {
     });
   });
 
-  it("retains visible assistant updates even when they include a tool", () => {
+  it("retains visible text while replacing over-budget tools with a gap", () => {
     const selected = selectTurnAwareHistoryWindow(
       [
         entry(1, { type: "user_input", text: "inspect" }),
@@ -94,6 +104,50 @@ describe("selectTurnAwareHistoryWindow", () => {
     );
 
     expect(selected).toHaveLength(2);
+    expect(selected[1].message).toMatchObject({
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "I am checking the file." }],
+      },
+      historyToolDetailGaps: [
+        {
+          toolUseIds: ["only-tool"],
+          toolNames: ["Read"],
+          toolCallCount: 1,
+        },
+      ],
+    });
+  });
+
+  it("drops anonymous tool payloads that cannot be loaded by stable id", () => {
+    const selected = selectTurnAwareHistoryWindow([
+      entry(1, { type: "user_input", text: "inspect" }),
+      entry(2, {
+        type: "assistant",
+        message: {
+          id: "anonymous-tools",
+          role: "assistant",
+          model: "codex",
+          content: [
+            { type: "text", text: "checking" },
+            ...Array.from({ length: 1_000 }, () => ({
+              type: "tool_use" as const,
+              id: "",
+              name: "Read",
+              input: { content: "x".repeat(1_000) },
+            })),
+          ],
+        },
+      }),
+    ]);
+
+    expect(selected).toHaveLength(2);
+    expect(selected[1].message).toMatchObject({
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "checking" }],
+      },
+    });
   });
 
   it("has a hard retained-entry ceiling for pathological output", () => {

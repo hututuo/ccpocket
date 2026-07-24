@@ -90,6 +90,12 @@ typedef SessionHistoryUserIndexLoader =
       required String runtimeSessionId,
     });
 
+typedef SessionHistoryToolDetailLoader =
+    Future<List<HistoryToolDetail>?> Function({
+      required String runtimeSessionId,
+      required List<String> toolUseIds,
+    });
+
 class _ExternalSessionHistoryMetadata {
   const _ExternalSessionHistoryMetadata({this.timestampAnchor});
 
@@ -284,6 +290,7 @@ class BridgeService implements BridgeServiceBase {
   SessionHistoryAvailable? _sessionHistoryAvailable;
   SessionHistoryPageInvalidator? _sessionHistoryPageInvalidator;
   SessionHistoryUserIndexLoader? _sessionHistoryUserIndexLoader;
+  SessionHistoryToolDetailLoader? _sessionHistoryToolDetailLoader;
   final Expando<_ExternalSessionHistoryMetadata> _externalSessionHistories =
       Expando<_ExternalSessionHistoryMetadata>('externalSessionHistory');
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
@@ -294,6 +301,9 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, Future<LocalSessionHistoryPage?>>
       _remoteHistoryPageFlights = {};
   int _nextRemoteHistoryPageRequestId = 0;
+  final Map<String, Completer<HistoryToolDetailsMessage>>
+      _pendingHistoryToolDetails = {};
+  int _nextHistoryToolDetailRequestId = 0;
   final Map<String, ClientMessage> _inFlightPendingMessages = {};
   final Map<String, ClientMessage> _inFlightInputMessages = {};
   final Map<String, Timer> _inFlightPendingVisibilityTimers = {};
@@ -1306,7 +1316,7 @@ class BridgeService implements BridgeServiceBase {
         (!_sameBridgeTarget(previousUrl, url) ||
             _logicalConnectionIdentity != nextLogicalIdentity);
     _connectionEpoch++;
-    _failPendingRemoteHistoryPages(clearCursors: false);
+    _failPendingHistoryRequests(clearCursors: false);
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
     final epoch = _connectionEpoch;
@@ -1339,6 +1349,10 @@ class BridgeService implements BridgeServiceBase {
             var msg = ServerMessage.fromJson(json);
             if (msg is HistoryPageMessage) {
               _completeRemoteHistoryPage(msg);
+              return;
+            }
+            if (msg is HistoryToolDetailsMessage) {
+              _completeHistoryToolDetails(msg);
               return;
             }
             if (msg is ClientDeliveryModeStateMessage) {
@@ -1720,7 +1734,7 @@ class BridgeService implements BridgeServiceBase {
         onError: (error, stackTrace) {
           if (epoch != _connectionEpoch) return;
           logger.error('WS stream error', error, stackTrace);
-          _failPendingRemoteHistoryPages(clearCursors: false);
+          _failPendingHistoryRequests(clearCursors: false);
           _clearPendingLocalFeatureRequests();
           _goalRequestRouter.clear();
           _failPendingPermissionChanges(
@@ -1741,7 +1755,7 @@ class BridgeService implements BridgeServiceBase {
         onDone: () {
           if (epoch != _connectionEpoch) return;
           _channel = null;
-          _failPendingRemoteHistoryPages(clearCursors: false);
+          _failPendingHistoryRequests(clearCursors: false);
           _clearPendingLocalFeatureRequests();
           _goalRequestRouter.clear();
           _failPendingPermissionChanges(
@@ -1825,7 +1839,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _clearBridgeScopedState({required bool clearOfflineQueue}) {
-    _failPendingRemoteHistoryPages(clearCursors: true);
+    _failPendingHistoryRequests(clearCursors: true);
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
     _failPendingArtifactResolutions(
@@ -2008,15 +2022,31 @@ class BridgeService implements BridgeServiceBase {
     }
   }
 
-  void _failPendingRemoteHistoryPages({required bool clearCursors}) {
+  void _completeHistoryToolDetails(HistoryToolDetailsMessage message) {
+    final completer = _pendingHistoryToolDetails[message.requestId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(message);
+    }
+  }
+
+  void _failPendingHistoryRequests({required bool clearCursors}) {
     final completers = _pendingRemoteHistoryPages.values.toList();
+    final toolCompleters = _pendingHistoryToolDetails.values.toList();
     _pendingRemoteHistoryPages.clear();
+    _pendingHistoryToolDetails.clear();
     _remoteHistoryPageFlights.clear();
     if (clearCursors) _remoteHistoryCursors.clear();
     for (final completer in completers) {
       if (!completer.isCompleted) {
         completer.completeError(
           StateError('Bridge disconnected while loading older history.'),
+        );
+      }
+    }
+    for (final completer in toolCompleters) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          StateError('Bridge disconnected while loading tool details.'),
         );
       }
     }
@@ -3367,6 +3397,12 @@ class BridgeService implements BridgeServiceBase {
     _sessionHistoryUserIndexLoader = loader;
   }
 
+  void configureSessionHistoryToolDetails(
+    SessionHistoryToolDetailLoader? loader,
+  ) {
+    _sessionHistoryToolDetailLoader = loader;
+  }
+
   bool get hasSessionHistoryUserIndex =>
       _sessionHistoryUserIndexLoader != null;
 
@@ -3519,6 +3555,111 @@ class BridgeService implements BridgeServiceBase {
       return null;
     } finally {
       _pendingRemoteHistoryPages.remove(requestId);
+    }
+  }
+
+  Future<List<HistoryToolDetail>?> requestHistoryToolDetails({
+    required String runtimeSessionId,
+    required List<String> toolUseIds,
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    final normalizedIds = toolUseIds
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty && value.length <= 256)
+        .toSet()
+        .take(8)
+        .toList(growable: false);
+    if (normalizedIds.isEmpty) return null;
+
+    final localById = <String, HistoryToolDetail>{};
+    final localLoader = _sessionHistoryToolDetailLoader;
+    if (localLoader != null) {
+      try {
+        final local = await localLoader(
+          runtimeSessionId: runtimeSessionId,
+          toolUseIds: normalizedIds,
+        );
+        for (final detail in local ?? const <HistoryToolDetail>[]) {
+          if (normalizedIds.contains(detail.toolUseId)) {
+            localById[detail.toolUseId] = detail;
+          }
+        }
+      } catch (error, stackTrace) {
+        logger.warning(
+          '[history:$runtimeSessionId] Local tool detail lookup failed',
+          error,
+          stackTrace,
+        );
+      }
+    }
+    final missingIds = normalizedIds
+        .where((toolUseId) => !localById.containsKey(toolUseId))
+        .toList(growable: false);
+    List<HistoryToolDetail> orderedDetails(
+      Map<String, HistoryToolDetail> details,
+    ) => [
+      for (final toolUseId in normalizedIds) ?details[toolUseId],
+    ];
+    if (missingIds.isEmpty) {
+      return List.unmodifiable(orderedDetails(localById));
+    }
+    if (!_bridgeCapabilities.contains(historyToolDetailCapability) ||
+        !isTransportHealthy) {
+      return localById.isEmpty
+          ? null
+          : List.unmodifiable(orderedDetails(localById));
+    }
+    final epoch = _connectionEpoch;
+    final logicalIdentity = _logicalConnectionIdentity;
+    final requestId = 'history-tools-${++_nextHistoryToolDetailRequestId}';
+    final completer = Completer<HistoryToolDetailsMessage>();
+    _pendingHistoryToolDetails[requestId] = completer;
+    try {
+      sendEphemeralRpc(
+        ClientMessage.getHistoryToolDetails(
+          requestId: requestId,
+          sessionId: runtimeSessionId,
+          toolUseIds: missingIds,
+        ),
+      );
+      final response = await completer.future.timeout(timeout);
+      if (epoch != _connectionEpoch ||
+          logicalIdentity != _logicalConnectionIdentity ||
+          response.sessionId != runtimeSessionId) {
+        return null;
+      }
+      if (response.error != null) {
+        logger.warning(response.error!);
+        return localById.isEmpty
+            ? null
+            : List.unmodifiable(orderedDetails(localById));
+      }
+      for (final detail in response.details) {
+        if (missingIds.contains(detail.toolUseId)) {
+          localById[detail.toolUseId] = detail;
+        }
+      }
+      return List.unmodifiable(orderedDetails(localById));
+    } on TimeoutException catch (error, stackTrace) {
+      logger.warning(
+        '[history:$runtimeSessionId] Tool detail request timed out',
+        error,
+        stackTrace,
+      );
+      return localById.isEmpty
+          ? null
+          : List.unmodifiable(orderedDetails(localById));
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[history:$runtimeSessionId] Tool detail request failed',
+        error,
+        stackTrace,
+      );
+      return localById.isEmpty
+          ? null
+          : List.unmodifiable(orderedDetails(localById));
+    } finally {
+      _pendingHistoryToolDetails.remove(requestId);
     }
   }
 
@@ -4380,7 +4521,7 @@ class BridgeService implements BridgeServiceBase {
 
   void dispose() {
     _intentionalDisconnect = true;
-    _failPendingRemoteHistoryPages(clearCursors: true);
+    _failPendingHistoryRequests(clearCursors: true);
     _completePendingSessionLinkResolutionsAsUnsupported();
     _reconnectTimer?.cancel();
     _cancelPendingPermissionChanges();

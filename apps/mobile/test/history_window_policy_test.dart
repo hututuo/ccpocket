@@ -37,7 +37,17 @@ void main() {
 
     final selected = selectTurnAwareServerMessageWindow(messages);
 
-    expect(selected, hasLength(402));
+    expect(selected, hasLength(403));
+    final gapEnvelope = selected[1] as AssistantServerMessage;
+    expect(gapEnvelope.message.content, isEmpty);
+    expect(gapEnvelope.historyToolDetailGaps, hasLength(1));
+    expect(gapEnvelope.historyToolDetailGaps.single.toolUseIds, [
+      'tool-0',
+      'tool-1',
+      'tool-2',
+      'tool-3',
+      'tool-4',
+    ]);
     expect(
       selected.whereType<ToolResultMessage>().any(
         (message) => message.toolUseId == 'tool-0',
@@ -73,6 +83,37 @@ void main() {
     ], toolCalls: 0);
 
     expect(selected, hasLength(2));
+    final assistant = selected.last as AssistantServerMessage;
+    expect(assistant.message.content.whereType<ToolUseContent>(), isEmpty);
+    expect(assistant.historyToolDetailGaps.single.toolUseIds, ['only-tool']);
+  });
+
+  test('drops anonymous tool payloads that have no stable detail identity', () {
+    final largeInput = List.filled(1000, 'x').join();
+    final selected = selectTurnAwareServerMessageWindow([
+      const UserInputMessage(text: 'inspect'),
+      AssistantServerMessage(
+        message: AssistantMessage(
+          id: 'anonymous-tools',
+          role: 'assistant',
+          model: 'codex',
+          content: [
+            const TextContent(text: 'checking'),
+            for (var index = 0; index < 1000; index++)
+              ToolUseContent(
+                id: '',
+                name: 'Read',
+                input: {'content': largeInput},
+              ),
+          ],
+        ),
+      ),
+    ]);
+
+    expect(selected, hasLength(2));
+    final assistant = selected.last as AssistantServerMessage;
+    expect(assistant.message.content, [isA<TextContent>()]);
+    expect(assistant.historyToolDetailGaps, isEmpty);
   });
 }
 

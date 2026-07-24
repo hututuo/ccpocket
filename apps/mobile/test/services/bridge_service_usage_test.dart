@@ -457,6 +457,168 @@ void main() {
       },
     );
 
+    test(
+      'history tool details are correlated, bounded, and connection fenced',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        final secondRequestReady = Completer<void>();
+        final requests = <Map<String, dynamic>>[];
+        final runtimeSessionId = List.filled(200, 's').join();
+
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+          socket.listen((data) {
+            final request =
+                jsonDecode(data as String) as Map<String, dynamic>;
+            if (request['type'] != 'get_history_tool_details') return;
+            requests.add(request);
+            if (requests.length == 1) {
+              socket.add(
+                jsonEncode({
+                  'type': 'history_tool_details',
+                  'requestId': request['requestId'],
+                  'sessionId': runtimeSessionId,
+                  'details': [
+                    {
+                      'toolUseId': 'tool-1',
+                      'toolName': 'Read',
+                      'input': {'file_path': '/tmp/a.txt'},
+                      'result': {
+                        'content': 'contents',
+                        'toolName': 'Read',
+                      },
+                    },
+                  ],
+                }),
+              );
+            } else if (requests.length == 2) {
+              socket.add(
+                jsonEncode({
+                  'type': 'history_tool_details',
+                  'requestId': request['requestId'],
+                  'sessionId': runtimeSessionId,
+                  'details': const [],
+                  'error': 'remote detail unavailable',
+                }),
+              );
+            } else if (!secondRequestReady.isCompleted) {
+              secondRequestReady.complete();
+            }
+          });
+        });
+
+        final bridge = BridgeService();
+        final sessionListReceived = bridge.sessionList.first;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': const [],
+            'bridgeCapabilities': const [historyToolDetailCapability],
+          }),
+        );
+        await sessionListReceived.timeout(const Duration(seconds: 2));
+        bridge.configureSessionHistoryToolDetails(({
+          required runtimeSessionId,
+          required toolUseIds,
+        }) async {
+          return toolUseIds.contains('tool-local')
+              ? const [
+                  HistoryToolDetail(
+                    toolUseId: 'tool-local',
+                    toolName: 'Read',
+                    input: {'file_path': '/tmp/local.txt'},
+                  ),
+                ]
+              : const [];
+        });
+
+        final details = await bridge.requestHistoryToolDetails(
+          runtimeSessionId: runtimeSessionId,
+          toolUseIds: const [
+            'tool-local',
+            'tool-1',
+            'tool-1',
+            'tool-2',
+            'tool-3',
+            'tool-4',
+            'tool-5',
+            'tool-6',
+            'tool-7',
+            'tool-8',
+            'tool-9',
+          ],
+        );
+        expect(requests.single['toolUseIds'], [
+          'tool-1',
+          'tool-2',
+          'tool-3',
+          'tool-4',
+          'tool-5',
+          'tool-6',
+          'tool-7',
+        ]);
+        expect((requests.single['requestId'] as String).length, lessThan(128));
+        expect(details, hasLength(2));
+        expect(details?.first.toolUseId, 'tool-local');
+        expect(details?.last.result?.content, 'contents');
+
+        final localAfterRemoteError = await bridge.requestHistoryToolDetails(
+          runtimeSessionId: runtimeSessionId,
+          toolUseIds: const ['tool-local', 'tool-error'],
+        );
+        expect(localAfterRemoteError, hasLength(1));
+        expect(localAfterRemoteError?.single.toolUseId, 'tool-local');
+
+        final interrupted = bridge.requestHistoryToolDetails(
+          runtimeSessionId: runtimeSessionId,
+          toolUseIds: const ['tool-pending'],
+        );
+        await secondRequestReady.future.timeout(const Duration(seconds: 2));
+        bridge.disconnect();
+        expect(await interrupted, isNull);
+
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test('history tool details remain available from a local mirror offline', () async {
+      final bridge = BridgeService();
+      bridge.configureSessionHistoryToolDetails(({
+        required runtimeSessionId,
+        required toolUseIds,
+      }) async {
+        expect(runtimeSessionId, 's1');
+        expect(toolUseIds, ['tool-local', 'missing']);
+        return const [
+          HistoryToolDetail(
+            toolUseId: 'tool-local',
+            toolName: 'Read',
+            input: {'file_path': '/tmp/local.txt'},
+            result: ToolResultMessage(
+              toolUseId: 'tool-local',
+              toolName: 'Read',
+              content: 'local contents',
+            ),
+          ),
+        ];
+      });
+
+      final details = await bridge.requestHistoryToolDetails(
+        runtimeSessionId: 's1',
+        toolUseIds: const ['tool-local', 'missing'],
+      );
+
+      expect(details, hasLength(1));
+      expect(details?.single.toolUseId, 'tool-local');
+      expect(details?.single.result?.content, 'local contents');
+      bridge.dispose();
+    });
+
     test('requestSessionHistory uses last complete cached sequence', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();

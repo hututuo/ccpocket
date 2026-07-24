@@ -179,6 +179,9 @@ class ConversationMirrorService extends ChangeNotifier {
       invalidate: _removeRuntimePageCursor,
     );
     _bridge.configureSessionHistoryUserIndex(_loadRuntimeUserIndex);
+    _bridge.configureSessionHistoryToolDetails(
+      _loadRuntimeHistoryToolDetails,
+    );
     if (kIsWeb) return;
     try {
       // Opening also removes interrupted shadow generations while preserving
@@ -1982,6 +1985,126 @@ class ConversationMirrorService extends ChangeNotifier {
     }
   }
 
+  Future<List<HistoryToolDetail>?> _loadRuntimeHistoryToolDetails({
+    required String runtimeSessionId,
+    required List<String> toolUseIds,
+  }) async {
+    final cursor = _pageCursorsByRuntime[runtimeSessionId];
+    if (cursor == null || toolUseIds.isEmpty) return null;
+    if (!_pageCursorIdentityMatches(runtimeSessionId, cursor)) {
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
+      return null;
+    }
+    final metadataBefore = await _store.readMetadata(cursor.key);
+    if (!_pageCursorMetadataMatches(cursor, metadataBefore)) {
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
+      return null;
+    }
+    final entries = await _store.readToolEntries(cursor.key, toolUseIds);
+    final metadataAfter = await _store.readMetadata(cursor.key);
+    if (!_pageCursorMetadataMatches(cursor, metadataAfter) ||
+        !_pageCursorIdentityMatches(runtimeSessionId, cursor) ||
+        !identical(_pageCursorsByRuntime[runtimeSessionId], cursor)) {
+      _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
+      return null;
+    }
+    return _historyToolDetailsFromMessages(
+      _decodeRenderableEntries(entries),
+      toolUseIds,
+    );
+  }
+
+  List<HistoryToolDetail> _historyToolDetailsFromMessages(
+    List<ServerMessage> messages,
+    List<String> toolUseIds,
+  ) {
+    const maximumFieldBytes = 64 * 1024;
+    const maximumAttachments = 32;
+    final requested = toolUseIds.toSet();
+    final details = <String, HistoryToolDetail>{};
+    for (final message in messages) {
+      if (message is AssistantServerMessage) {
+        for (final content in message.message.content) {
+          if (content is! ToolUseContent || !requested.contains(content.id)) {
+            continue;
+          }
+          final existing = details[content.id];
+          details[content.id] = HistoryToolDetail(
+            toolUseId: content.id,
+            toolName: content.name,
+            input: _boundedHistoryToolInput(
+              content.input,
+              maximumFieldBytes,
+            ),
+            result: existing?.result,
+          );
+        }
+        continue;
+      }
+      if (message is! ToolResultMessage ||
+          !requested.contains(message.toolUseId)) {
+        continue;
+      }
+      final existing = details[message.toolUseId];
+      details[message.toolUseId] = HistoryToolDetail(
+        toolUseId: message.toolUseId,
+        toolName:
+            existing?.toolName ??
+            (message.toolName?.trim().isNotEmpty == true
+                ? message.toolName!
+                : 'Tool'),
+        input: existing?.input ?? const {},
+        result: ToolResultMessage(
+          toolUseId: message.toolUseId,
+          content: _boundedHistoryToolText(
+            message.content,
+            maximumFieldBytes,
+          ),
+          toolName: message.toolName,
+          images: message.images.take(maximumAttachments).toList(
+            growable: false,
+          ),
+          userMessageUuid: message.userMessageUuid,
+          artifacts: message.artifacts.take(maximumAttachments).toList(
+            growable: false,
+          ),
+        ),
+      );
+    }
+    return [
+      for (final toolUseId in toolUseIds) ?details[toolUseId],
+    ];
+  }
+
+  Map<String, dynamic> _boundedHistoryToolInput(
+    Map<String, dynamic> input,
+    int maximumBytes,
+  ) {
+    String encoded;
+    try {
+      encoded = jsonEncode(input);
+    } catch (_) {
+      return const {
+        'truncated': true,
+        'preview': '[Tool input could not be serialized locally]',
+      };
+    }
+    if (utf8.encode(encoded).length <= maximumBytes) return input;
+    return {
+      'truncated': true,
+      'preview': _boundedHistoryToolText(encoded, maximumBytes),
+    };
+  }
+
+  String _boundedHistoryToolText(String value, int maximumBytes) {
+    final encoded = utf8.encode(value);
+    if (encoded.length <= maximumBytes) return value;
+    return '${utf8.decode(
+      encoded.sublist(0, maximumBytes),
+      allowMalformed: true,
+    )}\n…[truncated by local mirror]';
+  }
+
   Future<List<LocalSessionUserIndexEntry>?> _loadRuntimeUserIndex({
     required String runtimeSessionId,
   }) async {
@@ -2417,6 +2540,7 @@ class ConversationMirrorService extends ChangeNotifier {
     _bridge.configureSessionHistoryBootstrap(null);
     _bridge.configureSessionHistoryPaging();
     _bridge.configureSessionHistoryUserIndex(null);
+    _bridge.configureSessionHistoryToolDetails(null);
     await _localFeatureSub?.cancel();
     await _bridgeIdentitySub?.cancel();
     await _connectionSub?.cancel();

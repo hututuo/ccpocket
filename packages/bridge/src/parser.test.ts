@@ -797,6 +797,34 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("parses only bounded unique history tool detail requests", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_tool_details","requestId":"tools-1","sessionId":"s2","toolUseIds":["tool-1","tool-2"]}',
+      ),
+    ).toEqual({
+      type: "get_history_tool_details",
+      requestId: "tools-1",
+      sessionId: "s2",
+      toolUseIds: ["tool-1", "tool-2"],
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_tool_details","requestId":"tools-1","sessionId":"s2","toolUseIds":[]}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_tool_details","requestId":"tools-1","sessionId":"s2","toolUseIds":["tool-1","tool-1"]}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_tool_details","requestId":"tools-1","sessionId":"s2","toolUseIds":["tool-1"," tool-1 "]}',
+      ),
+    ).toBeNull();
+  });
+
   it("keeps official usage parsing unchanged", () => {
     expect(parseClientMessage('{"type":"get_usage"}')).toEqual({
       type: "get_usage",

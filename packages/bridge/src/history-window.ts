@@ -1,23 +1,31 @@
-import type { ServerMessage } from "./parser.js";
+import { createHash } from "node:crypto";
+
+import type { HistoryToolDetailGap, ServerMessage } from "./parser.js";
 
 export const TURN_AWARE_HISTORY_WINDOW_CAPABILITY =
   "turn_aware_history_window_v1";
 export const HISTORY_PAGE_CAPABILITY = "history_page_v1";
+export const HISTORY_TOOL_DETAIL_CAPABILITY = "history_tool_detail_v1";
 export const TURN_AWARE_HISTORY_ROOT_TURNS = 5;
 export const TURN_AWARE_HISTORY_TOOL_CALLS = 200;
 export const TURN_AWARE_HISTORY_ENVELOPE_ENTRIES = 300;
-export const TURN_AWARE_HISTORY_MAX_RETAINED_ENTRIES = 705;
+export const TURN_AWARE_HISTORY_MAX_RETAINED_ENTRIES = 755;
+export const TURN_AWARE_HISTORY_GAP_TOOL_IDS = 200;
 
 type SequencedServerMessage = { message: ServerMessage };
+type ProjectedEntry<T extends SequencedServerMessage> = {
+  sourceIndex: number;
+  entry: T;
+};
 
 /**
  * Keeps the conversational spine of the latest root turns while bounding
- * expensive tool detail independently from ordinary assistant text.
+ * expensive tool input/result details independently from ordinary text.
  *
- * Selection runs newest-first so the most recent tool activity wins the
- * budget. Tool-use and tool-result envelopes sharing an id count as one call.
- * The returned entries retain their original chronological order and sequence
- * numbers, which keeps live history deltas compatible with the projection.
+ * The newest tool calls retain their complete envelopes. Older calls are
+ * represented by compact, stable gap metadata attached to one assistant
+ * envelope per process segment. A client can then request the omitted details
+ * explicitly without downloading or parsing them during the initial render.
  */
 export function selectTurnAwareHistoryWindow<T extends SequencedServerMessage>(
   entries: readonly T[],
@@ -47,52 +55,270 @@ export function selectTurnAwareHistoryWindow<T extends SequencedServerMessage>(
   );
   const effectiveRootTurns = Math.min(rootTurns, maxRetainedEntries);
   const start = startOfLatestRootTurns(entries, effectiveRootTurns);
-  const retainedRootTurns = entries
-    .slice(start)
-    .filter((entry) => entry.message.type === "user_input").length;
-  const nonRootEntryLimit = Math.max(0, maxRetainedEntries - retainedRootTurns);
-  const selectedIndexes: number[] = [];
-  const selectedToolIds = new Set<string>();
-  let anonymousToolCalls = 0;
-  let retainedEnvelopes = 0;
-  let retainedNonRootEntries = 0;
+  const retainedToolIds = newestToolIds(entries, start, toolCalls);
+  const ordinaryIndexes = newestOrdinaryEnvelopeIndexes(
+    entries,
+    start,
+    envelopeEntries,
+  );
+  const projected = projectEntries(
+    entries,
+    start,
+    retainedToolIds,
+    ordinaryIndexes,
+  );
+  if (projected.length <= maxRetainedEntries) {
+    return projected.map((value) => value.entry);
+  }
+  return hardCapProjectedEntries(projected, maxRetainedEntries).map(
+    (index) => projected[index].entry,
+  );
+}
 
+function newestToolIds<T extends SequencedServerMessage>(
+  entries: readonly T[],
+  start: number,
+  limit: number,
+): Set<string> {
+  const selected = new Set<string>();
+  if (limit <= 0) return selected;
+  for (let index = entries.length - 1; index >= start; index -= 1) {
+    const ids = concreteToolIdsForMessage(entries[index].message);
+    for (let position = ids.length - 1; position >= 0; position -= 1) {
+      const id = ids[position];
+      if (selected.has(id)) continue;
+      if (selected.size >= limit) return selected;
+      selected.add(id);
+    }
+  }
+  return selected;
+}
+
+function newestOrdinaryEnvelopeIndexes<T extends SequencedServerMessage>(
+  entries: readonly T[],
+  start: number,
+  limit: number,
+): Set<number> {
+  const selected = new Set<number>();
+  if (limit <= 0) return selected;
   for (let index = entries.length - 1; index >= start; index -= 1) {
     const message = entries[index].message;
-    const isRootTurn = message.type === "user_input";
-    const toolIdentity = toolIdentityForMessage(message);
-    const newToolIds = toolIdentity.ids.filter(
-      (id) => !selectedToolIds.has(id),
-    );
-    const newToolCalls = newToolIds.length + toolIdentity.anonymousCount;
-    const hasToolDetail =
-      toolIdentity.ids.length > 0 || toolIdentity.anonymousCount > 0;
-    const requiredTextEnvelope =
-      message.type === "assistant" && assistantHasVisibleText(message);
+    if (message.type === "user_input") continue;
+    if (heavyToolIdsForMessage(message).length > 0) continue;
+    selected.add(index);
+    if (selected.size >= limit) break;
+  }
+  return selected;
+}
 
-    if (!isRootTurn && retainedNonRootEntries >= nonRootEntryLimit) {
-      continue;
+function projectEntries<T extends SequencedServerMessage>(
+  entries: readonly T[],
+  start: number,
+  retainedToolIds: ReadonlySet<string>,
+  ordinaryIndexes: ReadonlySet<number>,
+): Array<ProjectedEntry<T>> {
+  const projected: Array<ProjectedEntry<T>> = [];
+  const gappedToolIds = new Set<string>();
+  let gapHost: { outputIndex: number; gaps: HistoryToolDetailGap[] } | null =
+    null;
+
+  const setHostGaps = (host: {
+    outputIndex: number;
+    gaps: HistoryToolDetailGap[];
+  }) => {
+    const current = projected[host.outputIndex];
+    const message = current.entry.message;
+    if (message.type !== "assistant") return;
+    projected[host.outputIndex] = {
+      sourceIndex: current.sourceIndex,
+      entry: withMessage(current.entry, {
+        ...message,
+        historyToolDetailGaps: host.gaps,
+      }),
+    };
+  };
+
+  const createGapHost = (sourceIndex: number) => {
+    const source = entries[sourceIndex];
+    const sourceMessage = source.message;
+    const outputIndex = projected.length;
+    const gaps: HistoryToolDetailGap[] = [];
+    projected.push({
+      sourceIndex,
+      entry: withMessage(source, {
+        type: "assistant",
+        message:
+          sourceMessage.type === "assistant"
+            ? { ...sourceMessage.message, content: [] }
+            : {
+                id: `history-tool-gap-${sourceIndex}`,
+                role: "assistant",
+                model: "",
+                content: [],
+              },
+        ...(sourceMessage.type === "assistant" && sourceMessage.messageUuid
+          ? { messageUuid: sourceMessage.messageUuid }
+          : {}),
+        historyToolDetailGaps: gaps,
+      }),
+    });
+    gapHost = { outputIndex, gaps };
+    return gapHost;
+  };
+
+  const addGapTool = (
+    sourceIndex: number,
+    toolUseId: string,
+    toolName: string,
+  ) => {
+    const id = toolUseId.trim();
+    if (!id || gappedToolIds.has(id)) return;
+    const host = gapHost ?? createGapHost(sourceIndex);
+    let gap = host.gaps.at(-1);
+    if (!gap || gap.toolUseIds.length >= TURN_AWARE_HISTORY_GAP_TOOL_IDS) {
+      gap = {
+        gapId: "",
+        toolUseIds: [],
+        toolNames: [],
+        toolCallCount: 0,
+      };
+      host.gaps.push(gap);
     }
-    if (
-      hasToolDetail &&
-      !requiredTextEnvelope &&
-      selectedToolIds.size + anonymousToolCalls + newToolCalls > toolCalls
-    ) {
-      continue;
-    }
-    if (!hasToolDetail && !isRootTurn && retainedEnvelopes >= envelopeEntries) {
+    gap.toolUseIds.push(id);
+    gap.toolNames.push(toolName.trim());
+    gap.toolCallCount = gap.toolUseIds.length;
+    gap.gapId = historyToolDetailGapId(gap.toolUseIds);
+    gappedToolIds.add(id);
+    setHostGaps(host);
+  };
+
+  for (let index = start; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const message = entry.message;
+    if (message.type === "user_input") {
+      gapHost = null;
+      projected.push({ sourceIndex: index, entry });
       continue;
     }
 
-    selectedIndexes.push(index);
-    if (!isRootTurn) retainedNonRootEntries += 1;
-    for (const id of newToolIds) selectedToolIds.add(id);
-    anonymousToolCalls += toolIdentity.anonymousCount;
-    if (!hasToolDetail && !isRootTurn) retainedEnvelopes += 1;
+    if (message.type === "assistant") {
+      const hasVisibleText = assistantHasVisibleText(message);
+      const hasVisibleSpine = assistantHasVisibleSpine(message);
+      if (hasVisibleText) gapHost = null;
+      const retainedContent = message.message.content.filter(
+        (content) =>
+          content.type !== "tool_use" ||
+          (content.id.trim().length > 0 &&
+            retainedToolIds.has(content.id.trim())),
+      );
+      const omittedTools = message.message.content.filter(
+        (content) =>
+          content.type === "tool_use" &&
+          content.id.trim().length > 0 &&
+          !retainedToolIds.has(content.id.trim()),
+      );
+      const existingGaps = message.historyToolDetailGaps ?? [];
+      const hasRetainedTool = retainedContent.some(
+        (content) => content.type === "tool_use",
+      );
+      const shouldRetainEnvelope =
+        hasVisibleSpine ||
+        hasRetainedTool ||
+        (message.artifacts?.length ?? 0) > 0 ||
+        ordinaryIndexes.has(index);
+
+      if (shouldRetainEnvelope) {
+        const outputIndex = projected.length;
+        projected.push({
+          sourceIndex: index,
+          entry: withMessage(entry, {
+            ...message,
+            message: { ...message.message, content: retainedContent },
+            historyToolDetailGaps: undefined,
+          }),
+        });
+        if (hasVisibleText) gapHost = { outputIndex, gaps: [] };
+      }
+
+      if (
+        (existingGaps.length > 0 || omittedTools.length > 0) &&
+        gapHost === null &&
+        shouldRetainEnvelope
+      ) {
+        gapHost = { outputIndex: projected.length - 1, gaps: [] };
+      }
+      for (const existing of existingGaps) {
+        for (
+          let position = 0;
+          position < existing.toolUseIds.length;
+          position += 1
+        ) {
+          addGapTool(
+            index,
+            existing.toolUseIds[position],
+            existing.toolNames[position] ?? "",
+          );
+        }
+      }
+      for (const content of omittedTools) {
+        if (content.type === "tool_use") {
+          addGapTool(index, content.id, content.name);
+        }
+      }
+      continue;
+    }
+
+    if (message.type === "tool_result") {
+      const id = message.toolUseId.trim();
+      if (id && !retainedToolIds.has(id)) {
+        addGapTool(index, id, message.toolName ?? "");
+        continue;
+      }
+      projected.push({ sourceIndex: index, entry });
+      continue;
+    }
+
+    if (message.type === "tool_use_summary" || ordinaryIndexes.has(index)) {
+      projected.push({ sourceIndex: index, entry });
+    }
   }
 
-  selectedIndexes.reverse();
-  return selectedIndexes.map((index) => entries[index]);
+  return projected;
+}
+
+function withMessage<T extends SequencedServerMessage>(
+  entry: T,
+  message: ServerMessage,
+): T {
+  return { ...entry, message } as T;
+}
+
+function hardCapProjectedEntries<T extends SequencedServerMessage>(
+  projected: Array<ProjectedEntry<T>>,
+  limit: number,
+): number[] {
+  const selected = new Set<number>();
+  for (let index = 0; index < projected.length; index += 1) {
+    if (projected[index].entry.message.type === "user_input") {
+      selected.add(index);
+    }
+  }
+  for (
+    let index = projected.length - 1;
+    index >= 0 && selected.size < limit;
+    index -= 1
+  ) {
+    selected.add(index);
+  }
+  return [...selected].sort((left, right) => left - right);
+}
+
+export function historyToolDetailGapId(toolUseIds: readonly string[]): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(toolUseIds))
+    .digest("hex")
+    .slice(0, 24);
+  return `tool-gap-v1:${toolUseIds.length}:${digest}`;
 }
 
 function startOfLatestRootTurns<T extends SequencedServerMessage>(
@@ -117,33 +343,36 @@ function assistantHasVisibleText(
   );
 }
 
-function toolIdentityForMessage(message: ServerMessage): {
-  ids: string[];
-  anonymousCount: number;
-} {
-  if (message.type === "tool_result") {
-    const id = message.toolUseId.trim();
-    return id
-      ? { ids: [id], anonymousCount: 0 }
-      : { ids: [], anonymousCount: 1 };
-  }
-  if (message.type === "tool_use_summary") {
-    const ids = uniqueNonEmpty(message.precedingToolUseIds);
-    return ids.length > 0
-      ? { ids, anonymousCount: 0 }
-      : { ids: [], anonymousCount: 1 };
-  }
-  if (message.type !== "assistant") {
-    return { ids: [], anonymousCount: 0 };
-  }
-  const toolUses = message.message.content.filter(
-    (content) => content.type === "tool_use",
+function assistantHasVisibleSpine(
+  message: Extract<ServerMessage, { type: "assistant" }>,
+): boolean {
+  return message.message.content.some(
+    (content) =>
+      (content.type === "text" && content.text.trim().length > 0) ||
+      (content.type === "thinking" && content.thinking.trim().length > 0),
   );
-  const ids = uniqueNonEmpty(toolUses.map((content) => content.id));
-  return {
-    ids,
-    anonymousCount: toolUses.length - ids.length,
-  };
+}
+
+function concreteToolIdsForMessage(message: ServerMessage): string[] {
+  if (message.type === "tool_result") {
+    return uniqueNonEmpty([message.toolUseId]);
+  }
+  if (message.type !== "assistant") return [];
+  return uniqueNonEmpty(
+    message.message.content
+      .filter((content) => content.type === "tool_use")
+      .map((content) => content.id),
+  );
+}
+
+function heavyToolIdsForMessage(message: ServerMessage): string[] {
+  if (message.type !== "assistant") {
+    return concreteToolIdsForMessage(message);
+  }
+  return uniqueNonEmpty([
+    ...concreteToolIdsForMessage(message),
+    ...(message.historyToolDetailGaps ?? []).flatMap((gap) => gap.toolUseIds),
+  ]);
 }
 
 function uniqueNonEmpty(values: readonly string[]): string[] {

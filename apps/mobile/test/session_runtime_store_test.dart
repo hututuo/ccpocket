@@ -370,5 +370,106 @@ void main() {
       expect(store.latestHistorySeq('s1'), 12);
       expect(store.cachedHistorySeq('s1'), 12);
     });
+
+    test(
+      'tool-detail projection keeps the canonical sequence watermark contiguous',
+      () {
+        final store = SessionRuntimeStore();
+        final entries = <HistoryEntry>[
+          const HistoryEntry(
+            seq: 1,
+            message: UserInputMessage(text: 'question'),
+          ),
+        ];
+        var seq = 2;
+        for (var index = 0; index < 201; index++) {
+          entries.add(
+            HistoryEntry(
+              seq: seq++,
+              message: AssistantServerMessage(
+                message: AssistantMessage(
+                  id: 'assistant-tool-$index',
+                  role: 'assistant',
+                  content: [
+                    ToolUseContent(
+                      id: 'tool-$index',
+                      name: 'Read',
+                      input: {'file_path': '/tmp/$index'},
+                    ),
+                  ],
+                  model: 'codex',
+                ),
+              ),
+            ),
+          );
+          entries.add(
+            HistoryEntry(
+              seq: seq++,
+              message: ToolResultMessage(
+                toolUseId: 'tool-$index',
+                toolName: 'Read',
+                content: 'result $index',
+              ),
+            ),
+          );
+        }
+        entries.add(
+          HistoryEntry(
+            seq: seq,
+            message: const AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'final',
+                role: 'assistant',
+                content: [TextContent(text: 'answer')],
+                model: 'codex',
+              ),
+            ),
+          ),
+        );
+
+        store.applyServerMessage(
+          's1',
+          HistorySnapshotMessage(
+            fromSeq: 1,
+            toSeq: seq,
+            entries: entries,
+            reason: 'bootstrap',
+          ),
+        );
+
+        expect(store.cachedHistorySeq('s1'), seq);
+        final assistants = store
+            .messages('s1')
+            .whereType<AssistantServerMessage>();
+        expect(
+          assistants.expand((message) => message.historyToolDetailGaps),
+          isNotEmpty,
+        );
+        expect(
+          assistants
+              .expand((message) => message.message.content)
+              .whereType<ToolUseContent>()
+              .any((tool) => tool.id == 'tool-0'),
+          isFalse,
+        );
+
+        store.applyServerMessage(
+          's1',
+          HistoryDeltaMessage(
+            fromSeq: seq + 1,
+            toSeq: seq + 1,
+            entries: [
+              HistoryEntry(
+                seq: seq + 1,
+                message: const StatusMessage(status: ProcessStatus.idle),
+              ),
+            ],
+          ),
+        );
+
+        expect(store.latestHistorySeq('s1'), seq + 1);
+        expect(store.cachedHistorySeq('s1'), seq + 1);
+      },
+    );
   });
 }

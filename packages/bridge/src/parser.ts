@@ -55,6 +55,25 @@ export interface AssistantThinkingContent {
   thinking: string;
 }
 
+export interface HistoryToolDetailGap {
+  gapId: string;
+  toolUseIds: string[];
+  toolNames: string[];
+  toolCallCount: number;
+}
+
+export interface HistoryToolDetailPayload {
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  result?: {
+    content: string;
+    toolName?: string;
+    images?: ImageRef[];
+    artifacts?: ArtifactRef[];
+  };
+}
+
 export type AssistantContent =
   AssistantTextContent | AssistantToolUseContent | AssistantThinkingContent;
 
@@ -291,6 +310,12 @@ export type ClientMessage =
       sessionId: string;
       beforeSeq: number;
       beforeCursor?: string;
+    }
+  | {
+      type: "get_history_tool_details";
+      requestId: string;
+      sessionId: string;
+      toolUseIds: string[];
     }
   | {
       type: "resolve_artifact";
@@ -633,6 +658,7 @@ export type ServerMessage =
       message: AssistantMessage;
       messageUuid?: string;
       artifacts?: ArtifactRef[];
+      historyToolDetailGaps?: HistoryToolDetailGap[];
     }
   | {
       type: "tool_result";
@@ -723,6 +749,13 @@ export type ServerMessage =
       nextBeforeCursor?: string;
       hasMore: boolean;
       messages: Array<{ seq: number; message: ServerMessage }>;
+      error?: string;
+    }
+  | {
+      type: "history_tool_details";
+      requestId: string;
+      sessionId: string;
+      details: HistoryToolDetailPayload[];
       error?: string;
     }
   | {
@@ -1618,6 +1651,28 @@ export function parseClientMessage(data: string): ClientMessage | null {
           (typeof msg.beforeCursor !== "string" ||
             msg.beforeCursor.length === 0 ||
             msg.beforeCursor.length > 512)
+        )
+          return null;
+        break;
+      case "get_history_tool_details":
+        if (
+          typeof msg.requestId !== "string" ||
+          msg.requestId.length === 0 ||
+          msg.requestId.length > 128 ||
+          typeof msg.sessionId !== "string" ||
+          msg.sessionId.length === 0 ||
+          msg.sessionId.length > 256 ||
+          !Array.isArray(msg.toolUseIds) ||
+          msg.toolUseIds.length === 0 ||
+          msg.toolUseIds.length > 8 ||
+          msg.toolUseIds.some(
+            (value: unknown) =>
+              typeof value !== "string" ||
+              value.length === 0 ||
+              value.length > 256 ||
+              value.trim() !== value,
+          ) ||
+          new Set(msg.toolUseIds).size !== msg.toolUseIds.length
         )
           return null;
         break;

@@ -248,6 +248,78 @@ void main() {
       ]);
     });
 
+    test('tool detail lookup reads only matching envelopes', () async {
+      const key = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-a',
+        provider: 'codex',
+        providerSessionId: 'session-tool-detail',
+      );
+      final entries = [
+        _rawEntry('tool-detail-0', 0, {
+          'type': 'assistant',
+          'message': {
+            'id': 'assistant-tools',
+            'role': 'assistant',
+            'model': 'codex',
+            'content': [
+              {
+                'type': 'tool_use',
+                'id': 'tool-read',
+                'name': 'Read',
+                'input': {'file_path': '/tmp/a.txt'},
+              },
+              {
+                'type': 'tool_use',
+                'id': 'tool-search',
+                'name': 'Search',
+                'input': {'query': 'needle'},
+              },
+            ],
+          },
+        }),
+        _rawEntry('tool-detail-1', 1, {
+          'type': 'tool_result',
+          'toolUseId': 'tool-read',
+          'toolName': 'Read',
+          'content': 'contents',
+        }),
+        _rawEntry('tool-detail-2', 2, {
+          'type': 'tool_result',
+          'toolUseId': 'tool-search',
+          'toolName': 'Search',
+          'content': 'matches',
+        }),
+        _rawEntry('tool-detail-3', 3, {
+          'type': 'assistant',
+          'message': {
+            'id': 'assistant-unrelated',
+            'role': 'assistant',
+            'model': 'codex',
+            'content': [
+              {'type': 'text', 'text': 'unrelated'},
+            ],
+          },
+        }),
+      ];
+      await _writeSnapshot(
+        store,
+        key,
+        generation: 'generation-tool-detail',
+        revision: _revision('tool-detail'),
+        entries: entries,
+      );
+
+      final selected = await store.readToolEntries(key, const [
+        'tool-read',
+        'missing',
+      ]);
+
+      expect(selected.map((entry) => entry.entryId), [
+        'tool-detail-0',
+        'tool-detail-1',
+      ]);
+    });
+
     test(
       'incomplete completion leaves the prior generation readable',
       () async {

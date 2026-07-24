@@ -52,6 +52,7 @@ import {
   type DebugTraceEvent,
   type CodexGoal,
   type ImageChange,
+  type HistoryToolDetailPayload,
   type Provider,
   type ServerMessage,
 } from "./parser.js";
@@ -171,6 +172,7 @@ import {
 } from "./codex-goal-controller.js";
 import {
   HISTORY_PAGE_CAPABILITY,
+  HISTORY_TOOL_DETAIL_CAPABILITY,
   selectTurnAwareHistoryWindow,
   TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
 } from "./history-window.js";
@@ -209,6 +211,47 @@ type BackgroundDeliveryClientState = {
 
 const FILE_PEEK_TEXT_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
+const HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES = 64 * 1024;
+const HISTORY_TOOL_DETAIL_MAX_ATTACHMENTS = 32;
+
+function boundedHistoryToolDetailInput(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    return {
+      truncated: true,
+      preview: "[Tool input could not be serialized by Bridge]",
+    };
+  }
+  if (
+    Buffer.byteLength(encoded, "utf8") <=
+    HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES
+  ) {
+    return value;
+  }
+  return {
+    truncated: true,
+    preview: boundedHistoryToolDetailText(encoded),
+  };
+}
+
+function boundedHistoryToolDetailText(value: string): string {
+  if (
+    Buffer.byteLength(value, "utf8") <=
+    HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES
+  ) {
+    return value;
+  }
+  const bytes = Buffer.from(value, "utf8");
+  const decoder = new StringDecoder("utf8");
+  return `${decoder.write(
+    bytes.subarray(0, HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES),
+  )}\n…[truncated by Bridge]`;
+}
+
 const CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY =
   "codex_permission_apply_strategy_v1";
 const CODEX_SESSION_LIFECYCLE_CAPABILITY = "codex_session_lifecycle_v1";
@@ -2807,6 +2850,164 @@ export class BridgeWebSocketServer {
       (entry) =>
         this.codexHistoryMessageIdentityKeys(entry.message)[0] === cursor,
     );
+  }
+
+  private historyToolDetails(
+    entries: HistoryEntry[],
+    toolUseIds: string[],
+  ): HistoryToolDetailPayload[] {
+    const requested = new Set(toolUseIds);
+    const details = new Map<string, HistoryToolDetailPayload>();
+    for (const entry of entries) {
+      const message = entry.message;
+      if (message.type === "assistant") {
+        for (const content of message.message.content) {
+          if (
+            content.type !== "tool_use" ||
+            !requested.has(content.id)
+          ) {
+            continue;
+          }
+          const existing = details.get(content.id);
+          details.set(content.id, {
+            toolUseId: content.id,
+            toolName: content.name,
+            input: boundedHistoryToolDetailInput(content.input),
+            ...(existing?.result ? { result: existing.result } : {}),
+          });
+        }
+        continue;
+      }
+      if (
+        message.type !== "tool_result" ||
+        !requested.has(message.toolUseId)
+      ) {
+        continue;
+      }
+      const existing = details.get(message.toolUseId);
+      details.set(message.toolUseId, {
+        toolUseId: message.toolUseId,
+        toolName:
+          existing?.toolName ??
+          (message.toolName?.trim().length ? message.toolName : "Tool"),
+        input: existing?.input ?? {},
+        result: {
+          content: boundedHistoryToolDetailText(message.content),
+          ...(message.toolName ? { toolName: message.toolName } : {}),
+          ...(message.images?.length
+            ? {
+                images: message.images.slice(
+                  0,
+                  HISTORY_TOOL_DETAIL_MAX_ATTACHMENTS,
+                ),
+              }
+            : {}),
+          ...(message.artifacts?.length
+            ? {
+                artifacts: message.artifacts.slice(
+                  0,
+                  HISTORY_TOOL_DETAIL_MAX_ATTACHMENTS,
+                ),
+              }
+            : {}),
+        },
+      });
+    }
+    return toolUseIds
+      .map((toolUseId) => details.get(toolUseId))
+      .filter((detail): detail is HistoryToolDetailPayload => detail != null);
+  }
+
+  private async codexHistoryToolDetails(
+    session: SessionInfo,
+    toolUseIds: string[],
+  ): Promise<HistoryToolDetailPayload[]> {
+    const cachedEntries = [
+      ...(session.codexOrderedHistoryEntries ?? []),
+      ...session.historyEntries,
+    ];
+    const cachedDetails = this.historyToolDetails(cachedEntries, toolUseIds);
+    const rawHistory = (session.pastMessages ??
+      []) as SessionHistoryMessage[];
+    if (rawHistory.length === 0) return cachedDetails;
+
+    // A preceding get_history already populated pastMessages from thread/read.
+    // Reuse that canonical snapshot and convert only the requested envelopes:
+    // expanding each 8-row page must not issue another full provider read or
+    // enrich every item in a long thread again.
+    const requested = new Set(toolUseIds);
+    const foundUses = new Set<string>();
+    const foundResults = new Set<string>();
+    const selected: Array<{
+      index: number;
+      item: SessionHistoryMessage;
+    }> = [];
+    for (let index = rawHistory.length - 1; index >= 0; index -= 1) {
+      const item = rawHistory[index];
+      if (item.role === "assistant" && Array.isArray(item.content)) {
+        const matchingIds = item.content
+          .filter(
+            (content) =>
+              content.type === "tool_use" &&
+              typeof content.id === "string" &&
+              requested.has(content.id) &&
+              !foundUses.has(content.id),
+          )
+          .map((content) => content.id as string);
+        if (matchingIds.length > 0) {
+          selected.push({ index, item });
+          for (const id of matchingIds) foundUses.add(id);
+        }
+      } else if (item.role === "tool_result") {
+        const id =
+          item.toolUseId ??
+          item.uuid ??
+          `codex-history-tool-${index}`;
+        if (requested.has(id) && !foundResults.has(id)) {
+          selected.push({ index, item });
+          foundResults.add(id);
+        }
+      }
+      if (
+        foundUses.size === requested.size &&
+        foundResults.size === requested.size
+      ) {
+        break;
+      }
+    }
+
+    const selectedEntries: HistoryEntry[] = [];
+    for (const { index, item } of selected.reverse()) {
+      const converted = await this.codexHistoryMessageToServerMessage(
+        session,
+        item,
+        index,
+      );
+      if (converted) {
+        selectedEntries.push({ seq: index + 1, message: converted });
+      }
+    }
+    const rawDetails = this.historyToolDetails(selectedEntries, toolUseIds);
+    const rawById = new Map(
+      rawDetails.map((detail) => [detail.toolUseId, detail]),
+    );
+    for (const cached of cachedDetails) {
+      const raw = rawById.get(cached.toolUseId);
+      rawById.set(cached.toolUseId, {
+        ...raw,
+        ...cached,
+        input:
+          Object.keys(cached.input).length > 0
+            ? cached.input
+            : (raw?.input ?? {}),
+        ...(cached.result ?? raw?.result
+          ? { result: cached.result ?? raw?.result }
+          : {}),
+      });
+    }
+    return toolUseIds
+      .map((toolUseId) => rawById.get(toolUseId))
+      .filter((detail): detail is HistoryToolDetailPayload => detail != null);
   }
 
   private shouldResetCodexHistoryDelta(
@@ -6369,6 +6570,46 @@ export class BridgeWebSocketServer {
         break;
       }
 
+      case "get_history_tool_details": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "history_tool_details",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            details: [],
+            error: `Session ${msg.sessionId} not found`,
+          });
+          break;
+        }
+        try {
+          const details =
+            session.provider === "codex"
+              ? await this.codexHistoryToolDetails(session, msg.toolUseIds)
+              : this.historyToolDetails(
+                  session.historyEntries,
+                  msg.toolUseIds,
+                );
+          this.send(ws, {
+            type: "history_tool_details",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            details,
+          });
+        } catch (error) {
+          this.send(ws, {
+            type: "history_tool_details",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            details: [],
+            error: `Failed to read history tool details: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          });
+        }
+        break;
+      }
+
       case "refresh_branch": {
         const session = this.sessionManager.get(msg.sessionId);
         if (session) {
@@ -9054,6 +9295,7 @@ export class BridgeWebSocketServer {
         PERSISTED_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
+        HISTORY_TOOL_DETAIL_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -9104,6 +9346,7 @@ export class BridgeWebSocketServer {
         PERSISTED_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
+        HISTORY_TOOL_DETAIL_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],

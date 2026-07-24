@@ -1006,6 +1006,17 @@ sealed class ServerMessage {
         ),
         messageUuid: json['messageUuid'] as String?,
         artifacts: _parseArtifactRefs(json['artifacts']),
+        historyToolDetailGaps:
+            (json['historyToolDetailGaps'] as List?)
+                ?.whereType<Map>()
+                .map(
+                  (value) => HistoryToolDetailGap.fromJson(
+                    Map<String, dynamic>.from(value),
+                  ),
+                )
+                .where((gap) => gap.isValid)
+                .toList() ??
+            const [],
       ),
       'tool_result' => ToolResultMessage(
         toolUseId: json['toolUseId'] as String,
@@ -1086,6 +1097,21 @@ sealed class ServerMessage {
         error: json['error'] as String?,
         entries: (json['messages'] as List)
             .map((m) => HistoryEntry.fromJson(m as Map<String, dynamic>))
+            .toList(),
+      ),
+      'history_tool_details' => HistoryToolDetailsMessage(
+        requestId: json['requestId'] as String? ?? '',
+        sessionId: json['sessionId'] as String? ?? '',
+        error: json['error'] as String?,
+        details: ((json['details'] as List?) ?? const [])
+            .whereType<Map>()
+            .take(8)
+            .map(
+              (value) => HistoryToolDetail.fromJson(
+                Map<String, dynamic>.from(value),
+              ),
+            )
+            .where((detail) => detail.isValid)
             .toList(),
       ),
       'history_delta' => HistoryDeltaMessage(
@@ -1886,6 +1912,7 @@ class AssistantServerMessage implements ServerMessage {
   final AssistantMessage message;
   final String? messageUuid;
   final List<ArtifactRef> artifacts;
+  final List<HistoryToolDetailGap> historyToolDetailGaps;
 
   /// Number of UI-only content blocks prepended after the Bridge assigned
   /// [ArtifactRef.textContentIndex]. Never serialized on the wire.
@@ -1894,11 +1921,66 @@ class AssistantServerMessage implements ServerMessage {
     required this.message,
     this.messageUuid,
     this.artifacts = const [],
+    this.historyToolDetailGaps = const [],
     this.artifactContentIndexOffset = 0,
   });
 
   String get artifactMessageId =>
       message.id.isNotEmpty ? message.id : messageUuid?.trim() ?? '';
+}
+
+class HistoryToolDetailGap {
+  static const maxToolUseIds = 200;
+
+  final String gapId;
+  final List<String> toolUseIds;
+  final List<String> toolNames;
+  final int toolCallCount;
+
+  const HistoryToolDetailGap({
+    required this.gapId,
+    required this.toolUseIds,
+    required this.toolNames,
+    required this.toolCallCount,
+  });
+
+  bool get isValid => gapId.isNotEmpty && toolUseIds.isNotEmpty;
+
+  factory HistoryToolDetailGap.fromJson(Map<String, dynamic> json) {
+    final rawNames = json['toolNames'] is List
+        ? json['toolNames'] as List
+        : const [];
+    final rawIds = json['toolUseIds'] is List
+        ? json['toolUseIds'] as List
+        : const [];
+    final seen = <String>{};
+    final toolUseIds = <String>[];
+    final toolNames = <String>[];
+    for (var rawIndex = 0; rawIndex < rawIds.length; rawIndex++) {
+      final rawId = rawIds[rawIndex];
+      if (rawId is! String) continue;
+      final id = rawId.trim();
+      final rawName =
+          rawIndex < rawNames.length && rawNames[rawIndex] is String
+          ? (rawNames[rawIndex] as String).trim()
+          : '';
+      if (id.isEmpty || id.length > 256 || !seen.add(id)) continue;
+      toolUseIds.add(id);
+      toolNames.add(
+        rawName.isEmpty || rawName.length > 256 ? 'Tool' : rawName,
+      );
+      if (toolUseIds.length >= maxToolUseIds) break;
+    }
+    final rawGapId = (json['gapId'] as String? ?? '').trim();
+    return HistoryToolDetailGap(
+      gapId: rawGapId.length <= 128 ? rawGapId : '',
+      toolUseIds: List.unmodifiable(toolUseIds),
+      toolNames: List.unmodifiable(toolNames),
+      // Count only validated IDs. The client must never allocate or display
+      // work based on an untrusted wire count.
+      toolCallCount: toolUseIds.length,
+    );
+  }
 }
 
 class ToolResultMessage implements ServerMessage {
@@ -2218,6 +2300,72 @@ class HistoryPageMessage implements ServerMessage {
     this.nextBeforeCursor,
     required this.hasMore,
     required this.entries,
+    this.error,
+  });
+}
+
+class HistoryToolDetail {
+  final String toolUseId;
+  final String toolName;
+  final Map<String, dynamic> input;
+  final ToolResultMessage? result;
+
+  const HistoryToolDetail({
+    required this.toolUseId,
+    required this.toolName,
+    required this.input,
+    this.result,
+  });
+
+  bool get isValid => toolUseId.isNotEmpty;
+
+  factory HistoryToolDetail.fromJson(Map<String, dynamic> json) {
+    final rawToolUseId = (json['toolUseId'] as String? ?? '').trim();
+    final toolUseId = rawToolUseId.length <= 256 ? rawToolUseId : '';
+    final rawToolName = (json['toolName'] as String? ?? 'Tool').trim();
+    final rawResult = json['result'];
+    final rawImages = rawResult is Map ? rawResult['images'] : null;
+    final rawArtifacts = rawResult is Map ? rawResult['artifacts'] : null;
+    return HistoryToolDetail(
+      toolUseId: toolUseId,
+      toolName: rawToolName.isEmpty || rawToolName.length > 256
+          ? 'Tool'
+          : rawToolName,
+      input: Map<String, dynamic>.from(json['input'] as Map? ?? const {}),
+      result: rawResult is Map
+          ? ToolResultMessage(
+              toolUseId: toolUseId,
+              content: _normalizeToolResultContent(rawResult['content']),
+              toolName: rawResult['toolName'] as String?,
+              images:
+                  (rawImages is List
+                          ? rawImages.whereType<Map>().take(32)
+                          : const <Map>[])
+                      .map(
+                        (value) => ImageRef.fromJson(
+                          Map<String, dynamic>.from(value),
+                        ),
+                      )
+                      .toList(growable: false),
+              artifacts: rawArtifacts is List
+                  ? _parseArtifactRefs(rawArtifacts.take(32).toList())
+                  : const [],
+            )
+          : null,
+    );
+  }
+}
+
+class HistoryToolDetailsMessage implements ServerMessage {
+  final String requestId;
+  final String sessionId;
+  final List<HistoryToolDetail> details;
+  final String? error;
+
+  const HistoryToolDetailsMessage({
+    required this.requestId,
+    required this.sessionId,
+    required this.details,
     this.error,
   });
 }
@@ -4539,6 +4687,7 @@ enum ClientMessageDelivery { queued, ephemeral }
 
 const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
 const historyPageCapability = 'history_page_v1';
+const historyToolDetailCapability = 'history_tool_detail_v1';
 
 class ClientMessage {
   final Map<String, dynamic> _json;
@@ -4572,6 +4721,7 @@ class ClientMessage {
           'bounded_history_window_v1',
           turnAwareHistoryWindowCapability,
           historyPageCapability,
+          historyToolDetailCapability,
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',
@@ -4974,6 +5124,17 @@ class ClientMessage {
     'sessionId': sessionId,
     'beforeSeq': beforeSeq,
     'beforeCursor': ?beforeCursor,
+  });
+
+  factory ClientMessage.getHistoryToolDetails({
+    required String requestId,
+    required String sessionId,
+    required List<String> toolUseIds,
+  }) => ClientMessage._({
+    'type': 'get_history_tool_details',
+    'requestId': requestId,
+    'sessionId': sessionId,
+    'toolUseIds': toolUseIds,
   });
 
   factory ClientMessage.resolveSessionLink({

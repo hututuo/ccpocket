@@ -13,6 +13,7 @@ import '../../../services/bridge_service.dart';
 import '../../../utils/artifact_link_matcher.dart';
 import '../../../widgets/bubbles/assistant_bubble.dart';
 import '../../../widgets/bubbles/todo_write_widget.dart';
+import '../../../widgets/bubbles/tool_result_bubble.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import '../../../widgets/message_bubble.dart';
 import '../../artifact_preview/artifact_preview_entry.dart';
@@ -547,6 +548,17 @@ class _ChatMessageListState extends State<ChatMessageList> {
         message: message,
         collapseNotifier: widget.collapseToolResults,
         hiddenToolUseIds: hiddenToolUseIds,
+        historyToolDetailGapBuilder: (gap) => _HistoryToolDetailGapView(
+          key: ValueKey('history_tool_detail_view_${gap.gapId}'),
+          cubit: context.read<ChatSessionCubit>(),
+          gap: gap,
+          httpBaseUrl: widget.httpBaseUrl,
+          sessionId: widget.sessionId,
+          projectPath: widget.projectPath,
+          collapseNotifier: widget.collapseToolResults,
+          onFilePeekOpened: widget.onFilePeekOpened,
+          onArtifactOpen: _openArtifact,
+        ),
       );
     }
     return const SizedBox.shrink();
@@ -1163,6 +1175,192 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
               children: widget.children,
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HistoryToolDetailGapView extends StatefulWidget {
+  const _HistoryToolDetailGapView({
+    super.key,
+    required this.cubit,
+    required this.gap,
+    required this.sessionId,
+    required this.onArtifactOpen,
+    this.httpBaseUrl,
+    this.projectPath,
+    this.collapseNotifier,
+    this.onFilePeekOpened,
+  });
+
+  final ChatSessionCubit cubit;
+  final HistoryToolDetailGap gap;
+  final String sessionId;
+  final String? httpBaseUrl;
+  final String? projectPath;
+  final ValueNotifier<int>? collapseNotifier;
+  final ValueChanged<String>? onFilePeekOpened;
+  final Future<void> Function(String messageId, ArtifactRef artifact)
+  onArtifactOpen;
+
+  @override
+  State<_HistoryToolDetailGapView> createState() =>
+      _HistoryToolDetailGapViewState();
+}
+
+class _HistoryToolDetailGapViewState extends State<_HistoryToolDetailGapView> {
+  @override
+  void initState() {
+    super.initState();
+    _scheduleInitialPage();
+  }
+
+  @override
+  void didUpdateWidget(_HistoryToolDetailGapView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.gap.gapId != widget.gap.gapId) {
+      _scheduleInitialPage();
+    }
+  }
+
+  void _scheduleInitialPage() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.cubit.isClosed) return;
+      final state = widget.cubit.historyToolDetailState(widget.gap.gapId);
+      if (state.details.isEmpty &&
+          !state.loading &&
+          !state.complete &&
+          state.error == null) {
+        unawaited(widget.cubit.loadHistoryToolDetailGap(widget.gap));
+      }
+    });
+  }
+
+  void _openFile(String filePath) {
+    final projectPath = widget.projectPath;
+    if (projectPath == null || projectPath.isEmpty) return;
+    openFilePeek(
+      context,
+      bridge: context.read<BridgeService>(),
+      projectPath: projectPath,
+      filePath: filePath,
+      projectFiles: context.read<FileListCubit>().state,
+      onResolvedFilePath: widget.onFilePeekOpened,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: widget.cubit.historyToolDetailRevision,
+      builder: (context, _, _) {
+        final loadState = widget.cubit.historyToolDetailState(widget.gap.gapId);
+        return Column(
+          key: ValueKey('history_tool_detail_gap_content_${widget.gap.gapId}'),
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final detail in loadState.details) ...[
+              ToolUseTile(
+                key: ValueKey(
+                  'history_tool_use_${widget.gap.gapId}_${detail.toolUseId}',
+                ),
+                toolUseId: detail.toolUseId,
+                name: detail.toolName,
+                input: detail.input,
+                collapseNotifier: widget.collapseNotifier,
+              ),
+              if (detail.result case final result?)
+                ToolResultBubble(
+                  key: ValueKey(
+                    'history_tool_result_'
+                    '${widget.gap.gapId}_${detail.toolUseId}',
+                  ),
+                  message: result,
+                  httpBaseUrl: widget.httpBaseUrl,
+                  sessionId: widget.sessionId,
+                  projectPath: widget.projectPath,
+                  onFileTap: widget.projectPath?.isNotEmpty == true
+                      ? _openFile
+                      : null,
+                  onArtifactOpen: result.artifacts.isEmpty
+                      ? null
+                      : (artifact) =>
+                            widget.onArtifactOpen(detail.toolUseId, artifact),
+                  collapseNotifier: widget.collapseNotifier,
+                ),
+            ],
+            _HistoryToolDetailLoadControl(
+              gap: widget.gap,
+              state: loadState,
+              onLoad: () =>
+                  unawaited(widget.cubit.loadHistoryToolDetailGap(widget.gap)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _HistoryToolDetailLoadControl extends StatelessWidget {
+  const _HistoryToolDetailLoadControl({
+    required this.gap,
+    required this.state,
+    required this.onLoad,
+  });
+
+  final HistoryToolDetailGap gap;
+  final HistoryToolDetailLoadState state;
+  final VoidCallback onLoad;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state.complete) return const SizedBox.shrink();
+    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final remaining = gap.toolUseIds.length - state.nextOffset;
+    final nextCount = remaining > 8 ? 8 : remaining;
+    final colors = Theme.of(context).colorScheme;
+    if (state.loading) {
+      return Padding(
+        key: ValueKey('history_tool_detail_loading_${gap.gapId}'),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            const SizedBox.square(
+              dimension: 14,
+              child: CircularProgressIndicator(strokeWidth: 1.8),
+            ),
+            const SizedBox(width: 9),
+            Text(
+              zh ? '正在读取较早工具详情…' : 'Loading older tool details…',
+              style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+            ),
+          ],
+        ),
+      );
+    }
+    if (state.error != null) {
+      return Padding(
+        key: ValueKey('history_tool_detail_error_${gap.gapId}'),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        child: TextButton.icon(
+          onPressed: onLoad,
+          icon: const Icon(Icons.refresh, size: 17),
+          label: Text(zh ? '读取失败，点此重试' : 'Could not load details. Retry'),
+        ),
+      );
+    }
+    return Padding(
+      key: ValueKey('history_tool_detail_more_${gap.gapId}'),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      child: TextButton.icon(
+        onPressed: nextCount > 0 ? onLoad : null,
+        icon: const Icon(Icons.expand_more, size: 18),
+        label: Text(
+          zh
+              ? '加载接下来的 $nextCount 个工具详情'
+              : 'Load the next $nextCount tool details',
         ),
       ),
     );

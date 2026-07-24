@@ -43,6 +43,37 @@ class LocalHistoryPagingState {
   );
 }
 
+class HistoryToolDetailLoadState {
+  const HistoryToolDetailLoadState({
+    this.details = const [],
+    this.nextOffset = 0,
+    this.loading = false,
+    this.complete = false,
+    this.error,
+  });
+
+  final List<HistoryToolDetail> details;
+  final int nextOffset;
+  final bool loading;
+  final bool complete;
+  final Object? error;
+
+  HistoryToolDetailLoadState copyWith({
+    List<HistoryToolDetail>? details,
+    int? nextOffset,
+    bool? loading,
+    bool? complete,
+    Object? error,
+    bool clearError = false,
+  }) => HistoryToolDetailLoadState(
+    details: details ?? this.details,
+    nextOffset: nextOffset ?? this.nextOffset,
+    loading: loading ?? this.loading,
+    complete: complete ?? this.complete,
+    error: clearError ? null : (error ?? this.error),
+  );
+}
+
 /// Manages the state of a single chat session.
 ///
 /// Subscribes to [BridgeService.messagesForSession] and delegates message
@@ -138,6 +169,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _discardLocalMirrorOnNextCanonicalHistory = false;
   final ValueNotifier<LocalHistoryPagingState> localHistoryPaging =
       ValueNotifier(const LocalHistoryPagingState());
+  final ValueNotifier<int> historyToolDetailRevision = ValueNotifier(0);
+  final Map<String, HistoryToolDetailLoadState> _historyToolDetailStates = {};
+  final Map<String, Future<bool>> _historyToolDetailFlights = {};
   final ValueNotifier<int> localHistoryIndexRevision = ValueNotifier(0);
   bool _localHistoryUserIndexComplete = false;
 
@@ -1348,6 +1382,115 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
   }
 
+  HistoryToolDetailLoadState historyToolDetailState(String gapId) =>
+      _historyToolDetailStates[gapId] ??
+      const HistoryToolDetailLoadState();
+
+  Future<bool> loadHistoryToolDetailGap(HistoryToolDetailGap gap) {
+    final existing = _historyToolDetailFlights[gap.gapId];
+    if (existing != null) return existing;
+    final flight = _loadHistoryToolDetailGap(gap);
+    _historyToolDetailFlights[gap.gapId] = flight;
+    return flight.whenComplete(() {
+      if (identical(_historyToolDetailFlights[gap.gapId], flight)) {
+        _historyToolDetailFlights.remove(gap.gapId);
+      }
+    });
+  }
+
+  Future<bool> _loadHistoryToolDetailGap(HistoryToolDetailGap gap) async {
+    final current = historyToolDetailState(gap.gapId);
+    if (isClosed || current.loading || current.complete) return false;
+    final requestedIds = gap.toolUseIds
+        .skip(current.nextOffset)
+        .take(8)
+        .toList(growable: false);
+    if (requestedIds.isEmpty) {
+      _historyToolDetailStates[gap.gapId] = current.copyWith(complete: true);
+      historyToolDetailRevision.value += 1;
+      return false;
+    }
+    _historyToolDetailStates[gap.gapId] = current.copyWith(
+      loading: true,
+      clearError: true,
+    );
+    historyToolDetailRevision.value += 1;
+    try {
+      final details = await _bridge.requestHistoryToolDetails(
+        runtimeSessionId: sessionId,
+        toolUseIds: requestedIds,
+      );
+      if (isClosed || !_historyToolDetailGapIsActive(gap.gapId)) {
+        return false;
+      }
+      if (details == null) {
+        throw StateError('History tool details are unavailable.');
+      }
+      final latest = historyToolDetailState(gap.gapId);
+      final merged = <String, HistoryToolDetail>{
+        for (final detail in latest.details) detail.toolUseId: detail,
+        for (final detail in details) detail.toolUseId: detail,
+      };
+      final nextOffset = current.nextOffset + requestedIds.length;
+      _historyToolDetailStates[gap.gapId] = HistoryToolDetailLoadState(
+        details: List.unmodifiable(merged.values),
+        nextOffset: nextOffset,
+        complete: nextOffset >= gap.toolUseIds.length,
+      );
+      historyToolDetailRevision.value += 1;
+      return true;
+    } catch (error, stackTrace) {
+      if (isClosed || !_historyToolDetailGapIsActive(gap.gapId)) {
+        return false;
+      }
+      logger.warning(
+        '[session:$sessionId] Failed to load history tool details',
+        error,
+        stackTrace,
+      );
+      _historyToolDetailStates[gap.gapId] = current.copyWith(
+        loading: false,
+        error: error,
+      );
+      historyToolDetailRevision.value += 1;
+      return false;
+    }
+  }
+
+  bool _historyToolDetailGapIsActive(String gapId) {
+    for (final entry in state.entries) {
+      if (entry case ServerChatEntry(
+        message: AssistantServerMessage(:final historyToolDetailGaps),
+      )) {
+        for (final gap in historyToolDetailGaps) {
+          if (gap.gapId == gapId) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  void _pruneHistoryToolDetailStates(List<ChatEntry> entries) {
+    if (_historyToolDetailStates.isEmpty) return;
+    final activeGapIds = <String>{};
+    for (final entry in entries) {
+      if (entry case ServerChatEntry(
+        message: AssistantServerMessage(:final historyToolDetailGaps),
+      )) {
+        activeGapIds.addAll(
+          historyToolDetailGaps.map((gap) => gap.gapId),
+        );
+      }
+    }
+    final before = _historyToolDetailStates.length;
+    _historyToolDetailStates.removeWhere(
+      (gapId, _) => !activeGapIds.contains(gapId),
+    );
+    if (_historyToolDetailStates.length != before) {
+      historyToolDetailRevision.value += 1;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Message processing
   // ---------------------------------------------------------------------------
@@ -2137,6 +2280,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           .where((entry) => !_isDismissedCodexWarningEntry(entry))
           .toList(growable: false);
     }
+    if (didModifyEntries && _historyToolDetailStates.isNotEmpty) {
+      _pruneHistoryToolDetailStates(nextEntries);
+    }
 
     // --- Apply state update ---
     final historyUsesSessionSnapshotAuthority =
@@ -2418,12 +2564,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> mirrorEntries,
     required List<ChatEntry> canonicalEntries,
   }) {
-    final projectedCanonicalEntries = [
-      for (final index in selectTurnAwareChatEntryWindowIndexes(
-        canonicalEntries,
-      ))
-        canonicalEntries[index],
-    ];
+    final projectedCanonicalEntries = selectTurnAwareChatEntryWindow(
+      canonicalEntries,
+    );
     for (
       var canonicalIndex = 0;
       canonicalIndex < projectedCanonicalEntries.length;
@@ -2992,6 +3135,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             ),
             messageUuid: mergedUuid,
             artifacts: artifacts,
+            historyToolDetailGaps: useIncomingContent
+                ? incomingMessage.historyToolDetailGaps
+                : existingMessage.historyToolDetailGaps,
             artifactContentIndexOffset: useIncomingContent
                 ? incomingMessage.artifactContentIndexOffset
                 : existingMessage.artifactContentIndexOffset,
@@ -5007,6 +5153,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _sideEffectsController.close();
     _bridge.invalidateLocalSessionHistoryPaging(sessionId);
     localHistoryIndexRevision.dispose();
+    historyToolDetailRevision.dispose();
+    _historyToolDetailStates.clear();
+    _historyToolDetailFlights.clear();
     localHistoryPaging.dispose();
     return super.close();
   }

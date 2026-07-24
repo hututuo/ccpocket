@@ -313,6 +313,36 @@ Mobile rebuildable store
 - 详情超过大小门槛时分页或截断显示，并保留下载完整结果入口；
 - 旧 Bridge 无详情分页能力时使用有界兼容回退，不能一次拉取整个超长 transcript。
 
+### 5.4 实施期校正（2026-07-25）
+
+- 首轮深挖确认，一个 assistant envelope 可能同时含可见文本和多个工具调用，
+  因此不能简单删掉整个旧 envelope；当前实现会保留 text/thinking spine，只剥离
+  超出 200 预算的 tool input/result，并附加稳定的轻量 gap metadata。
+- 新增能力均为 additive/capability-gated：
+  `turn_aware_history_window_v1`、`history_page_v1`、
+  `history_tool_detail_v1`；旧 Mobile 仍获得原来的平铺 200 条窗口。
+- 工具详情只有在既有“中间过程”折叠被展开后才请求；每页最多 8 个唯一 tool ID，
+  与工具组内部最多 8 行可见 viewport 对齐。请求按 gap single-flight，并受连接
+  epoch、逻辑 Bridge identity、session ID 和当前 gap generation 约束。
+- Mobile/Bridge 的内部硬上限由早期草案的 705 调整为 755 个轻重混合 envelope：
+  这是 5 根回合、300 个普通 envelope、200 个完整工具调用（use/result 配对）和
+  有界 gap shell 的安全总门槛，不是新的用户可见“消息条数”限制。
+- 单个按需工具 input 和 result 文本在 Bridge 侧各最多 64 KiB，图片/附件元数据各
+  最多 32 个；异常大字段显示截断标记，避免一次展开造成多 MiB 解码、布局和内存
+  峰值。后续完整结果导出必须走独立下载入口，不能重新塞回聊天首屏协议。
+- 已下载会话不要求在线 Bridge 才能展开旧工具。Mirror 使用现有 active generation
+  和 JSON1 按最多 8 个 tool ID 精确读取匹配的 assistant/tool-result envelope，
+  非支持 JSON1 的兼容宿主才走有界 fallback；不迁移 schema、不扫描或解码整段
+  历史。读取前后校验 generation/revision/runtime identity，防止并发 patch 或
+  会话重绑后发布旧详情。手机本地结果与远端缺失项按请求顺序合并。
+- 在线 Codex 详情展开复用首次 `thread/read` 后已经保存在 session 的 canonical
+  raw snapshot，只扫描身份并转换最多 8 个工具对应的少量 envelope；每个详情页
+  不再重复触发 provider 全历史读取和全量 artifact enrichment。当前 live cache
+  与 raw snapshot 按工具 ID 合并，连接或会话 identity 变化仍直接丢弃迟到结果。
+- 无稳定非空 tool ID 的异常工具 payload 不进入完整预算，也不生成不可回取的
+  gap；Mobile 与 Bridge 都在投影层丢弃它，防止畸形历史用匿名工具绕过 200 条
+  详情预算。
+
 ## 6. 折叠、工具组和消息稳定性
 
 ### 6.1 稳定 disclosure identity
@@ -625,6 +655,9 @@ Local file   -> iOS Quick Look canPreview -> 本地有界预览器 -> metadata/d
 - keyset paging；
 - 8 行工具 viewport；
 - disclosure/scroll identity 和重复过程修复。
+- 当前完成：稳定 cursor 的更早回合分页、旧工具 gap 投影、展开后每批 8 个详情、
+  连接/历史代际 fence、字段与附件上限、Mirror 离线按 ID 精确读取；仍需在最终
+  全链审计中用真实超长会话样本复核投影、滚动锚点和内存峰值。
 
 ### Phase 4：临时会话与辅助悬浮窗
 

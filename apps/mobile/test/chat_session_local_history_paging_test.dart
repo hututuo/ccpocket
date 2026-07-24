@@ -24,6 +24,9 @@ class _Bridge extends BridgeService {
 
   List<SessionInfo> sessionSnapshot = const [];
   int requestSessionHistoryCallCount = 0;
+  final historyToolDetailRequests = <List<String>>[];
+  Future<List<HistoryToolDetail>?> Function(List<String> toolUseIds)?
+  historyToolDetailLoader;
 
   @override
   bool get isConnected => true;
@@ -85,6 +88,17 @@ class _Bridge extends BridgeService {
   void requestFileList(String projectPath) {}
 
   @override
+  Future<List<HistoryToolDetail>?> requestHistoryToolDetails({
+    required String runtimeSessionId,
+    required List<String> toolUseIds,
+    Duration timeout = const Duration(seconds: 12),
+  }) {
+    final ids = List<String>.unmodifiable(toolUseIds);
+    historyToolDetailRequests.add(ids);
+    return historyToolDetailLoader?.call(ids) ?? Future.value();
+  }
+
+  @override
   void interrupt(String sessionId) {}
 
   @override
@@ -133,6 +147,105 @@ void main() {
     await Future<void>.microtask(() {});
     await Future<void>.microtask(() {});
   }
+
+  test(
+    'history tool details load eight at a time and discard a late stale page',
+    () async {
+      final cubit = createCubit();
+      await settleBootstrap();
+      final gap = HistoryToolDetailGap(
+        gapId: 'gap-1',
+        toolUseIds: List.generate(10, (index) => 'tool-$index'),
+        toolNames: List.generate(10, (_) => 'Read'),
+        toolCallCount: 10,
+      );
+      bridge.emitMessage(
+        HistoryMessage(
+          messages: [
+            AssistantServerMessage(
+              message: const AssistantMessage(
+                id: 'assistant-gap',
+                role: 'assistant',
+                content: [TextContent(text: 'Visible reply')],
+                model: 'test',
+              ),
+              historyToolDetailGaps: [gap],
+            ),
+          ],
+        ),
+        sessionId: 's1',
+      );
+      await settleBootstrap();
+
+      final firstPage = Completer<List<HistoryToolDetail>?>();
+      bridge.historyToolDetailLoader = (_) => firstPage.future;
+      final first = cubit.loadHistoryToolDetailGap(gap);
+      final duplicate = cubit.loadHistoryToolDetailGap(gap);
+      expect(bridge.historyToolDetailRequests, hasLength(1));
+      expect(bridge.historyToolDetailRequests.single, [
+        'tool-0',
+        'tool-1',
+        'tool-2',
+        'tool-3',
+        'tool-4',
+        'tool-5',
+        'tool-6',
+        'tool-7',
+      ]);
+      firstPage.complete(
+        List.generate(
+          8,
+          (index) => HistoryToolDetail(
+            toolUseId: 'tool-$index',
+            toolName: 'Read',
+            input: {'path': '/tmp/$index'},
+          ),
+        ),
+      );
+      expect(await first, isTrue);
+      expect(await duplicate, isTrue);
+      expect(cubit.historyToolDetailState('gap-1').nextOffset, 8);
+      expect(cubit.historyToolDetailState('gap-1').complete, isFalse);
+
+      final stalePage = Completer<List<HistoryToolDetail>?>();
+      bridge.historyToolDetailLoader = (_) => stalePage.future;
+      final stale = cubit.loadHistoryToolDetailGap(gap);
+      expect(bridge.historyToolDetailRequests.last, ['tool-8', 'tool-9']);
+      bridge.emitMessage(
+        const HistoryMessage(
+          messages: [
+            AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'assistant-gap',
+                role: 'assistant',
+                content: [
+                  TextContent(
+                    text:
+                        'Replacement reply without any historical tool gap '
+                        'metadata.',
+                  ),
+                ],
+                model: 'test',
+              ),
+            ),
+          ],
+        ),
+        sessionId: 's1',
+      );
+      await settleBootstrap();
+      stalePage.complete([
+        const HistoryToolDetail(
+          toolUseId: 'tool-8',
+          toolName: 'Read',
+          input: {},
+        ),
+      ]);
+
+      expect(await stale, isFalse);
+      expect(cubit.historyToolDetailState('gap-1').details, isEmpty);
+      expect(cubit.historyToolDetailState('gap-1').nextOffset, 0);
+    },
+  );
 
   test(
     'local mirror pages older history without blocking a live append',

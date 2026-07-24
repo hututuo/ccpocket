@@ -649,6 +649,7 @@ void main() {
         'bounded_history_window_v1',
         turnAwareHistoryWindowCapability,
         historyPageCapability,
+        historyToolDetailCapability,
         'git_status_result',
         'prompt_history_status',
         'artifact_resolved',
@@ -722,6 +723,21 @@ void main() {
         'sessionId': 's1',
         'beforeSeq': 42,
         'beforeCursor': 'user:turn-42',
+      });
+    });
+
+    test('ClientMessage.getHistoryToolDetails serializes requested IDs', () {
+      final msg = ClientMessage.getHistoryToolDetails(
+        requestId: 'tools-1',
+        sessionId: 's1',
+        toolUseIds: const ['tool-1', 'tool-2'],
+      );
+
+      expect(jsonDecode(msg.toJson()), {
+        'type': 'get_history_tool_details',
+        'requestId': 'tools-1',
+        'sessionId': 's1',
+        'toolUseIds': ['tool-1', 'tool-2'],
       });
     });
 
@@ -881,6 +897,66 @@ void main() {
       expect(page.nextBeforeCursor, 'user:older');
       expect(page.hasMore, isTrue);
       expect(page.entries.single.message, isA<UserInputMessage>());
+    });
+
+    test('ServerMessage parses bounded assistant tool-detail gaps', () {
+      final message =
+          ServerMessage.fromJson({
+                'type': 'assistant',
+                'message': {
+                  'id': 'assistant-1',
+                  'role': 'assistant',
+                  'model': 'test',
+                  'content': [
+                    {'type': 'text', 'text': 'Visible reply'},
+                  ],
+                },
+                'historyToolDetailGaps': [
+                  {
+                    'gapId': 'gap-1',
+                    'toolUseIds': [' tool-1 ', 'tool-1', '', 'tool-2'],
+                    'toolNames': ['Read', 'Duplicate', '', 'Search'],
+                    'toolCallCount': 999999,
+                  },
+                  {
+                    'gapId': '',
+                    'toolUseIds': ['ignored'],
+                    'toolNames': ['Read'],
+                  },
+                ],
+              })
+              as AssistantServerMessage;
+
+      expect(message.historyToolDetailGaps, hasLength(1));
+      final gap = message.historyToolDetailGaps.single;
+      expect(gap.gapId, 'gap-1');
+      expect(gap.toolUseIds, ['tool-1', 'tool-2']);
+      expect(gap.toolNames, ['Read', 'Search']);
+      expect(gap.toolCallCount, 2);
+    });
+
+    test('ServerMessage parses correlated history tool details', () {
+      final message =
+          ServerMessage.fromJson({
+                'type': 'history_tool_details',
+                'requestId': 'tools-1',
+                'sessionId': 's1',
+                'details': [
+                  {
+                    'toolUseId': 'tool-1',
+                    'toolName': 'Read',
+                    'input': {'file_path': '/tmp/a.txt'},
+                    'result': {'content': 'contents', 'toolName': 'Read'},
+                  },
+                ],
+              })
+              as HistoryToolDetailsMessage;
+
+      expect(message.requestId, 'tools-1');
+      expect(message.sessionId, 's1');
+      expect(message.details, hasLength(1));
+      expect(message.details.single.input['file_path'], '/tmp/a.txt');
+      expect(message.details.single.result?.content, 'contents');
     });
 
     test('ClientMessage.start serializes codex thread options', () {

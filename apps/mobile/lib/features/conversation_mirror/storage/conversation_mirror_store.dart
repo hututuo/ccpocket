@@ -776,6 +776,108 @@ class ConversationMirrorStore {
     });
   }
 
+  /// Reads only envelopes containing one of the requested tool identities.
+  ///
+  /// This keeps old downloaded conversations useful without scanning or
+  /// decoding their whole active generation in Dart whenever a folded tool
+  /// group is opened. JSON1 is available on supported iOS SQLite builds; the
+  /// fallback exists only for custom test engines and older compatible hosts.
+  Future<List<ConversationMirrorEntry>> readToolEntries(
+    ConversationMirrorKey key,
+    Iterable<String> toolUseIds,
+  ) async {
+    _validateKey(key);
+    final ids = toolUseIds
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toSet()
+        .take(8)
+        .toList(growable: false);
+    if (ids.isEmpty) return const [];
+    for (final id in ids) {
+      _validateIdentifier(id, 'Tool use ID', maxLength: 256);
+    }
+    final requested = ids.toSet();
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final db = await _database.database;
+    return db.transaction((txn) async {
+      final metadata = await _queryMetadata(txn, key);
+      final generation = metadata?['active_generation'] as String?;
+      if (generation == null) return const <ConversationMirrorEntry>[];
+      await readTransactionHook?.call(generation);
+
+      final baseArgs = [..._keyArgs(key), generation];
+      late final List<Map<String, Object?>> rows;
+      try {
+        rows = await txn.rawQuery(
+          '''
+          SELECT DISTINCT entries.*
+          FROM ${ConversationMirrorDatabase.entriesTable} AS entries
+          WHERE $_keyWhere
+            AND generation = ?
+            AND (
+              (
+                json_extract(message_json, '\$.type') = 'tool_result'
+                AND json_extract(message_json, '\$.toolUseId')
+                  IN ($placeholders)
+              )
+              OR
+              (
+                json_extract(message_json, '\$.type') = 'assistant'
+                AND EXISTS (
+                  SELECT 1
+                  FROM json_each(
+                    entries.message_json,
+                    '\$.message.content'
+                  ) AS content
+                  WHERE json_extract(content.value, '\$.type') = 'tool_use'
+                    AND json_extract(content.value, '\$.id')
+                      IN ($placeholders)
+                )
+              )
+            )
+          ORDER BY ordinal ASC
+          LIMIT 32
+          ''',
+          [...baseArgs, ...ids, ...ids],
+        );
+      } on DatabaseException {
+        final candidates = await txn.query(
+          ConversationMirrorDatabase.entriesTable,
+          where: '$_keyWhere AND generation = ?',
+          whereArgs: baseArgs,
+          orderBy: 'ordinal ASC',
+        );
+        rows = candidates
+            .where((row) {
+              try {
+                final decoded = jsonDecode(row['message_json'] as String);
+                if (decoded is! Map) return false;
+                if (decoded['type'] == 'tool_result') {
+                  return requested.contains(decoded['toolUseId']);
+                }
+                if (decoded['type'] != 'assistant') return false;
+                final message = decoded['message'];
+                if (message is! Map || message['content'] is! List) {
+                  return false;
+                }
+                return (message['content'] as List).any(
+                  (content) =>
+                      content is Map &&
+                      content['type'] == 'tool_use' &&
+                      requested.contains(content['id']),
+                );
+              } catch (_) {
+                return false;
+              }
+            })
+            .take(32)
+            .toList(growable: false);
+      }
+      return rows.map(_entryFromRow).toList(growable: false);
+    });
+  }
+
   Future<List<ConversationMirrorMetadata>> listAutoSync() async {
     final rows = await (await _database.database).query(
       ConversationMirrorDatabase.metadataTable,

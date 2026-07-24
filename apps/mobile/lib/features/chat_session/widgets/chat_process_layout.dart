@@ -305,6 +305,12 @@ ChatProcessLayout buildChatProcessLayout(
           planToolUseIds.add(content.id);
         }
       }
+      for (final gap in assistant.historyToolDetailGaps) {
+        if (gap.toolCallCount <= 0) continue;
+        accumulator.toolCalls += gap.toolCallCount;
+        if (visible) accumulator.inlineToolCalls += gap.toolCallCount;
+        hasProcess = true;
+      }
       if (visible || hasProcess) accumulator.noteEntry(entryIndex);
       if (!visible && hasProcess) {
         accumulator.processEntryIndices.add(entryIndex);

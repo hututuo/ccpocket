@@ -5295,6 +5295,223 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("returns only requested canonical tool details in a bounded response", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-history-tools",
+    );
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.historyEntries = [
+      {
+        seq: 1,
+        message: {
+          type: "assistant",
+          message: {
+            id: "assistant-tools",
+            role: "assistant",
+            model: "test",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-1",
+                name: "Read",
+                input: { file_path: "/tmp/a.txt" },
+              },
+              {
+                type: "tool_use",
+                id: "tool-2",
+                name: "Search",
+                input: { query: "needle" },
+              },
+            ],
+          },
+        },
+      },
+      {
+        seq: 2,
+        message: {
+          type: "tool_result",
+          toolUseId: "tool-1",
+          toolName: "Read",
+          content: "file contents",
+        },
+      },
+    ];
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_tool_details",
+        requestId: "history-tools-1",
+        sessionId,
+        toolUseIds: ["tool-1", "missing"],
+      },
+      ws,
+    );
+
+    const response = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history_tool_details");
+    expect(response).toEqual({
+      type: "history_tool_details",
+      requestId: "history-tools-1",
+      sessionId,
+      details: [
+        {
+          toolUseId: "tool-1",
+          toolName: "Read",
+          input: { file_path: "/tmp/a.txt" },
+          result: {
+            content: "file contents",
+            toolName: "Read",
+          },
+        },
+      ],
+    });
+
+    bridge.close();
+  });
+
+  it("reuses cached codex history when older tool details are expanded", async () => {
+    codexThreadToSessionHistoryMock.mockReturnValue([
+      {
+        role: "user",
+        uuid: "codex:user-turn:1",
+        content: [{ type: "text", text: "read it" }],
+      },
+      {
+        role: "assistant",
+        uuid: "assistant-tool",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-cached",
+            name: "Read",
+            input: { file_path: "/tmp/cached.txt" },
+          },
+        ],
+      },
+      {
+        role: "tool_result",
+        toolUseId: "tool-cached",
+        toolName: "Read",
+        content: "cached contents",
+      },
+    ]);
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-tool-cache",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.claudeSessionId = "thr_codex_tool_cache";
+    session.process.readThread.mockResolvedValue({
+      id: "thr_codex_tool_cache",
+      turns: [],
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+    expect(session.process.readThread).toHaveBeenCalledTimes(1);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_tool_details",
+        requestId: "history-tools-cached",
+        sessionId,
+        toolUseIds: ["tool-cached"],
+      },
+      ws,
+    );
+
+    const response = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history_tool_details");
+    expect(session.process.readThread).toHaveBeenCalledTimes(1);
+    expect(response.details).toEqual([
+      {
+        toolUseId: "tool-cached",
+        toolName: "Read",
+        input: { file_path: "/tmp/cached.txt" },
+        result: { content: "cached contents", toolName: "Read" },
+      },
+    ]);
+
+    bridge.close();
+  });
+
+  it("bounds pathological tool detail fields before sending them", () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const largeText = "界".repeat(100_000);
+    const details = (bridge as any).historyToolDetails(
+      [
+        {
+          seq: 1,
+          message: {
+            type: "assistant",
+            message: {
+              id: "assistant-large-tool",
+              role: "assistant",
+              model: "test",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tool-large",
+                  name: "Write",
+                  input: { file_path: "/tmp/large.txt", content: largeText },
+                },
+              ],
+            },
+          },
+        },
+        {
+          seq: 2,
+          message: {
+            type: "tool_result",
+            toolUseId: "tool-large",
+            toolName: "Write",
+            content: largeText,
+            images: Array.from({ length: 40 }, (_, index) => ({
+              id: `image-${index}`,
+              url: `/images/${index}`,
+              mimeType: "image/png",
+            })),
+          },
+        },
+      ],
+      ["tool-large"],
+    );
+
+    expect(details[0].input).toMatchObject({ truncated: true });
+    expect(details[0].result.content).toContain("[truncated by Bridge]");
+    expect(details[0].result.images).toHaveLength(32);
+    expect(Buffer.byteLength(JSON.stringify(details), "utf8")).toBeLessThan(
+      140 * 1024,
+    );
+
+    bridge.close();
+  });
+
   it("does not publish fallback settings while a resumed thread is unresolved", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

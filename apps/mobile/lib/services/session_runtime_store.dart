@@ -325,16 +325,21 @@ class SessionRuntimeStore {
       _clearMessages(state);
       return changed;
     }
-    final selectedIndexes = selectTurnAwareServerMessageWindowIndexes(
+    final projected = projectTurnAwareServerMessageWindow(
       state._messages,
       maxRetainedEntries: maxMessagesPerSession,
     );
-    if (selectedIndexes.length == state._messages.length) return false;
-    final selectedMessages = [
-      for (final index in selectedIndexes) state._messages[index],
-    ];
+    final unchanged =
+        projected.length == state._messages.length &&
+        projected.indexed.every(
+          (value) =>
+              value.$2.sourceIndex == value.$1 &&
+              identical(value.$2.message, state._messages[value.$1]),
+        );
+    if (unchanged) return false;
+    final selectedMessages = [for (final value in projected) value.message];
     final selectedSeqs = [
-      for (final index in selectedIndexes) state._messageSeqs[index],
+      for (final value in projected) state._messageSeqs[value.sourceIndex],
     ];
     state._messages
       ..clear()

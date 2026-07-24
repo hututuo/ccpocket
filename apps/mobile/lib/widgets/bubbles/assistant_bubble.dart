@@ -82,11 +82,13 @@ class AssistantProcessDetails extends StatelessWidget {
     required this.message,
     this.collapseNotifier,
     this.hiddenToolUseIds = const {},
+    this.historyToolDetailGapBuilder,
   });
 
   final AssistantServerMessage message;
   final ValueNotifier<int>? collapseNotifier;
   final Set<String> hiddenToolUseIds;
+  final Widget Function(HistoryToolDetailGap)? historyToolDetailGapBuilder;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -120,8 +122,71 @@ class AssistantProcessDetails extends StatelessWidget {
                   ),
           TextContent() => const SizedBox.shrink(),
         },
+      for (final gap in message.historyToolDetailGaps)
+        historyToolDetailGapBuilder?.call(gap) ??
+            HistoryToolDetailGapTile(gap: gap),
     ],
   );
+}
+
+class HistoryToolDetailGapTile extends StatelessWidget {
+  const HistoryToolDetailGapTile({super.key, required this.gap, this.onTap});
+
+  final HistoryToolDetailGap gap;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final color = Theme.of(context).colorScheme.tertiary;
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.bubbleMarginH,
+        vertical: 3,
+      ),
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          key: ValueKey('history_tool_detail_gap_${gap.gapId}'),
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+            child: Row(
+              children: [
+                Icon(Icons.inventory_2_outlined, size: 16, color: color),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    zh
+                        ? '${gap.toolCallCount} 个较早工具详情尚未加载'
+                        : '${gap.toolCallCount} older tool details not loaded',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                ),
+                Text(
+                  zh ? '按需加载' : 'Load',
+                  style: TextStyle(fontSize: 11, color: appColors.subtleText),
+                ),
+                const SizedBox(width: 3),
+                Icon(
+                  Icons.chevron_right,
+                  size: 16,
+                  color: appColors.subtleText,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _AssistantBubbleState extends State<AssistantBubble> {

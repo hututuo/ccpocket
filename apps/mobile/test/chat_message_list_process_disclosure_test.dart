@@ -22,6 +22,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class _Bridge extends BridgeService {
   final _messages = StreamController<(ServerMessage, String?)>.broadcast();
+  final historyToolDetailRequests = <List<String>>[];
+  Future<List<HistoryToolDetail>?> Function(List<String> toolUseIds)?
+  historyToolDetailLoader;
 
   @override
   bool get isConnected => true;
@@ -40,6 +43,17 @@ class _Bridge extends BridgeService {
 
   @override
   void requestSessionHistory(String sessionId) {}
+
+  @override
+  Future<List<HistoryToolDetail>?> requestHistoryToolDetails({
+    required String runtimeSessionId,
+    required List<String> toolUseIds,
+    Duration timeout = const Duration(seconds: 12),
+  }) {
+    final ids = List<String>.unmodifiable(toolUseIds);
+    historyToolDetailRequests.add(ids);
+    return historyToolDetailLoader?.call(ids) ?? Future.value();
+  }
 
   @override
   void dispose() {
@@ -428,6 +442,131 @@ void main() {
       await cubit.close();
     },
   );
+
+  testWidgets('opening an old tool gap loads at most eight details per page', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final bridge = _Bridge();
+    bridge.historyToolDetailLoader = (toolUseIds) async => [
+      for (final toolUseId in toolUseIds)
+        HistoryToolDetail(
+          toolUseId: toolUseId,
+          toolName: 'Read',
+          input: {'file_path': '$toolUseId.txt'},
+          result: ToolResultMessage(
+            toolUseId: toolUseId,
+            toolName: 'Read',
+            content: 'result for $toolUseId',
+          ),
+        ),
+    ];
+    final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+    final cubit = ChatSessionCubit(
+      sessionId: 'session-history-tool-gap',
+      bridge: bridge,
+      streamingCubit: streaming,
+      provider: Provider.codex,
+    );
+    final scrollController = ReadingPositionAutoScrollController();
+    addTearDown(bridge.dispose);
+    addTearDown(streaming.close);
+    addTearDown(scrollController.dispose);
+    addTearDown(() async {
+      if (!cubit.isClosed) await cubit.close();
+    });
+
+    await tester.pumpWidget(
+      _chatHarness(
+        bridge: bridge,
+        cubit: cubit,
+        streaming: streaming,
+        scrollController: scrollController,
+        sessionId: 'session-history-tool-gap',
+      ),
+    );
+    final gap = HistoryToolDetailGap(
+      gapId: 'gap-old-tools',
+      toolUseIds: List.generate(10, (index) => 'old-tool-$index'),
+      toolNames: List.generate(10, (_) => 'Read'),
+      toolCallCount: 10,
+    );
+    bridge.emit(
+      HistoryMessage(
+        messages: [
+          const UserInputMessage(
+            text: 'show prior work',
+            clientMessageId: 'turn-gap',
+          ),
+          AssistantServerMessage(
+            message: const AssistantMessage(
+              id: 'gap-update',
+              role: 'assistant',
+              content: [TextContent(text: 'Prior work is available.')],
+              model: 'codex',
+            ),
+            historyToolDetailGaps: [gap],
+          ),
+          const ResultMessage(subtype: 'success'),
+        ],
+      ),
+      'session-history-tool-gap',
+    );
+    await tester.pump();
+
+    final disclosure = find.byKey(
+      const ValueKey(
+        'chat_process_disclosure_client:turn-gap:segment:id:gap-update',
+      ),
+    );
+    expect(disclosure, findsOneWidget);
+    expect(bridge.historyToolDetailRequests, isEmpty);
+    expect(find.byType(ToolUseTile), findsNothing);
+
+    await tester.tap(disclosure);
+    await tester.pump();
+    await tester.pump();
+
+    expect(bridge.historyToolDetailRequests, hasLength(1));
+    expect(bridge.historyToolDetailRequests.single, [
+      'old-tool-0',
+      'old-tool-1',
+      'old-tool-2',
+      'old-tool-3',
+      'old-tool-4',
+      'old-tool-5',
+      'old-tool-6',
+      'old-tool-7',
+    ]);
+    expect(find.byType(ToolUseTile), findsNWidgets(8));
+    expect(find.byType(ToolResultBubble), findsNWidgets(8));
+    expect(find.text('Load the next 2 tool details'), findsOneWidget);
+    expect(
+      find.byKey(
+        const ValueKey(
+          'process_details_viewport_client:turn-gap:segment:id:gap-update',
+        ),
+      ),
+      findsOneWidget,
+    );
+
+    final loadMore = find.text('Load the next 2 tool details');
+    await tester.ensureVisible(loadMore);
+    await tester.pump();
+    await tester.tap(loadMore);
+    await tester.pump();
+    await tester.pump();
+
+    expect(bridge.historyToolDetailRequests, hasLength(2));
+    expect(bridge.historyToolDetailRequests.last, ['old-tool-8', 'old-tool-9']);
+    expect(find.byType(ToolUseTile), findsNWidgets(10));
+    expect(find.byType(ToolResultBubble), findsNWidgets(10));
+    expect(find.text('Load the next 2 tool details'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await cubit.close();
+  });
 
   testWidgets(
     'incremental output and app lifecycle keep current progress expanded',
