@@ -322,6 +322,7 @@ class _PermissionStatusBadge extends StatelessWidget {
         status == MobilePermissionStatus.restricted;
     final granted =
         status == MobilePermissionStatus.authorized ||
+        status == MobilePermissionStatus.authorizedAlways ||
         status == MobilePermissionStatus.limited ||
         status == MobilePermissionStatus.provisional ||
         status == MobilePermissionStatus.ephemeral;
@@ -359,6 +360,8 @@ String _statusLabel(
 ) => switch (status) {
   MobilePermissionStatus.notDetermined => l.statusNotDetermined,
   MobilePermissionStatus.authorized => l.statusAuthorized,
+  MobilePermissionStatus.authorizedWhenInUse => l.statusAuthorizedWhenInUse,
+  MobilePermissionStatus.authorizedAlways => l.statusAuthorizedAlways,
   MobilePermissionStatus.denied => l.statusDenied,
   MobilePermissionStatus.restricted => l.statusRestricted,
   MobilePermissionStatus.limited => l.statusLimited,
@@ -407,6 +410,11 @@ class _PermissionCopy {
         title: l.speechRecognitionTitle,
         description: l.speechRecognitionDescription,
         icon: Icons.record_voice_over_outlined,
+      ),
+      MobilePermission.locationAlways => _PermissionCopy(
+        title: l.locationAlwaysTitle,
+        description: l.locationAlwaysDescription,
+        icon: Icons.location_searching_outlined,
       ),
       MobilePermission.localNetwork => _PermissionCopy(
         title: l.localNetworkTitle,

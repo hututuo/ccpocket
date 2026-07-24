@@ -1,5 +1,7 @@
 /* iOS permission dialog descriptions - Japanese */
 "NSCameraUsageDescription" = "ブリッジサーバーへの接続にQRコードスキャン用のカメラアクセスが必要です";
 "NSLocalNetworkUsageDescription" = "ローカルネットワーク上のCC Pocketブリッジサーバーを検索します";
+"NSLocationWhenInUseUsageDescription" = "CC Pocket は実行中タスクの通知接続を維持するためだけに低精度の位置情報実行を使用します。座標の読み取り、保存、送信は行いません。";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "バックグラウンド位置情報を許可すると、Agent タスクの実行中に軽量なローカル通知を受信できます。座標の読み取り、保存、送信は行いません。";
 "NSMicrophoneUsageDescription" = "音声入力でテキストに変換するためにマイクへのアクセスが必要です";
 "NSSpeechRecognitionUsageDescription" = "音声認識を使用して音声入力をテキストメッセージに変換します";

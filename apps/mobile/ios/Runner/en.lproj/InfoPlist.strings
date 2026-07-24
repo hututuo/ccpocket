@@ -1,5 +1,7 @@
 /* iOS permission dialog descriptions - English (default) */
 "NSCameraUsageDescription" = "QR code scanning requires camera access to connect to bridge server";
 "NSLocalNetworkUsageDescription" = "Searching for CC Pocket bridge servers on your local network";
+"NSLocationWhenInUseUsageDescription" = "CC Pocket uses coarse location execution only to keep an active notification connection; coordinates are never read, stored, or uploaded.";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "Allow background location so CC Pocket can receive lightweight local alerts while an agent task is running. Coordinates are never read, stored, or uploaded.";
 "NSMicrophoneUsageDescription" = "Voice input requires microphone access to transcribe speech to text";
 "NSSpeechRecognitionUsageDescription" = "Speech recognition is used to convert voice input to text messages";

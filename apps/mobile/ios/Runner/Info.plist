@@ -54,6 +54,12 @@
 	<string>QR code scanning requires camera access to connect to bridge server</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Searching for CC Pocket bridge servers on your local network</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>CC Pocket uses coarse location execution only to keep an active notification connection; coordinates are never read, stored, or uploaded.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Allow background location so CC Pocket can receive lightweight local alerts while an agent task is running. Coordinates are never read, stored, or uploaded.</string>
+	<key>NSLocationDefaultAccuracyReduced</key>
+	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
@@ -103,6 +109,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
+		<string>location</string>
 		<string>remote-notification</string>
 	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

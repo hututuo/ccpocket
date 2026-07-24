@@ -1,5 +1,7 @@
 /* iOS permission dialog descriptions - Simplified Chinese */
 "NSCameraUsageDescription" = "扫描二维码连接桥接服务器需要使用相机";
 "NSLocalNetworkUsageDescription" = "正在搜索本地网络上的CC Pocket桥接服务器";
+"NSLocationWhenInUseUsageDescription" = "CC Pocket 仅使用粗略定位的后台执行能力维持活动任务通知；不会读取、保存或上传坐标。";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "允许后台定位后，CC Pocket 可在 Agent 任务运行时接收轻量本地通知；不会读取、保存或上传坐标。";
 "NSMicrophoneUsageDescription" = "语音输入需要使用麦克风将语音转换为文字";
 "NSSpeechRecognitionUsageDescription" = "使用语音识别将语音输入转换为文字消息";

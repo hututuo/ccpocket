@@ -1,4 +1,5 @@
 import Flutter
+import CoreLocation
 import Photos
 import UIKit
 import XCTest
@@ -236,7 +237,7 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertEqual(supported["supported"] as? Bool, true)
     XCTAssertEqual(supported["iosMajor"] as? Int, 26)
-    XCTAssertEqual(supported["nativeApiVersion"] as? Int, 2)
+    XCTAssertEqual(supported["nativeApiVersion"] as? Int, 3)
     XCTAssertEqual(supported["appVersion"] as? String, "1.72.1")
 
     let unsupported = FileTransferPlugin.supportInfo(
@@ -274,6 +275,25 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(PermissionHostPlugin.statusName(PHAuthorizationStatus.denied), "denied")
   }
 
+  func testPermissionHostLocationStatusesAndUpgradeModesAreStable() {
+    XCTAssertEqual(
+      PermissionHostPlugin.statusName(CLAuthorizationStatus.authorizedWhenInUse),
+      "authorizedWhenInUse"
+    )
+    XCTAssertEqual(
+      PermissionHostPlugin.statusName(CLAuthorizationStatus.authorizedAlways),
+      "authorizedAlways"
+    )
+    XCTAssertEqual(
+      PermissionHostPlugin.requestMode(for: "authorizedWhenInUse"),
+      "direct"
+    )
+    XCTAssertEqual(
+      PermissionHostPlugin.requestMode(for: "authorizedAlways"),
+      "none"
+    )
+  }
+
   func testMobileHostSnapshotIsVersionedAndIncludesRequiredCapabilities() throws {
     let snapshot = MobileHostSnapshotPlugin.snapshot(
       osVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 1, patchVersion: 0)
@@ -283,7 +303,7 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(snapshot["schemaVersion"] as? Int, 1)
     XCTAssertEqual(snapshot["platform"] as? String, "ios")
     let capabilities = try XCTUnwrap(snapshot["capabilities"] as? [String: Int])
-    XCTAssertEqual(capabilities["permissionHost"], 2)
+    XCTAssertEqual(capabilities["permissionHost"], 3)
     XCTAssertEqual(capabilities["fileTransfer"], 2)
     XCTAssertEqual(capabilities["quickLook"], 1)
     XCTAssertEqual(capabilities["secureStorage"], 1)
@@ -292,7 +312,46 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(capabilities["biometrics"], 1)
     XCTAssertEqual(capabilities["backgroundContinuation"], 1)
     XCTAssertEqual(capabilities["backgroundRefreshWarmRuntime"], 1)
+    XCTAssertEqual(capabilities["backgroundLocationKeepAlive"], 1)
     XCTAssertNil(capabilities["backgroundAppRefresh"])
+  }
+
+  func testBackgroundLocationKeepAliveFailsClosedForPowerPermissionAndThermalPressure() {
+    XCTAssertNil(
+      BackgroundLocationKeepAlivePlugin.eligibilityPauseReason(
+        authorization: .authorizedAlways,
+        locationServicesEnabled: true,
+        lowPowerModeEnabled: false,
+        thermalState: .nominal
+      )
+    )
+    XCTAssertEqual(
+      BackgroundLocationKeepAlivePlugin.eligibilityPauseReason(
+        authorization: .authorizedWhenInUse,
+        locationServicesEnabled: true,
+        lowPowerModeEnabled: false,
+        thermalState: .nominal
+      ),
+      "location_always_required"
+    )
+    XCTAssertEqual(
+      BackgroundLocationKeepAlivePlugin.eligibilityPauseReason(
+        authorization: .authorizedAlways,
+        locationServicesEnabled: true,
+        lowPowerModeEnabled: true,
+        thermalState: .nominal
+      ),
+      "low_power_mode"
+    )
+    XCTAssertEqual(
+      BackgroundLocationKeepAlivePlugin.eligibilityPauseReason(
+        authorization: .authorizedAlways,
+        locationServicesEnabled: true,
+        lowPowerModeEnabled: false,
+        thermalState: .serious
+      ),
+      "thermal_pressure"
+    )
   }
 
   func testMobileHostSnapshotFailsClosedBelowMinimumIOS() throws {

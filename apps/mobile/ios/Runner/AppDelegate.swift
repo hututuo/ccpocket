@@ -47,6 +47,11 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "BackgroundSyncHostPlugin") {
       BackgroundSyncHostPlugin.register(with: registrar)
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(
+      forPlugin: "BackgroundLocationKeepAlivePlugin"
+    ) {
+      BackgroundLocationKeepAlivePlugin.register(with: registrar)
+    }
   }
 
   private func handleAppIconMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {

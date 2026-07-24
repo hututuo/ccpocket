@@ -25,6 +25,7 @@ enum MobileHostCapability {
   photoLibrary('photoLibrary'),
   biometrics('biometrics'),
   backgroundContinuation('backgroundContinuation'),
+  backgroundLocationKeepAlive('backgroundLocationKeepAlive'),
   // Opportunistic BGAppRefresh while the existing Flutter runtime is
   // available. This does not claim a cold/headless Dart runtime.
   backgroundRefreshWarmRuntime('backgroundRefreshWarmRuntime');

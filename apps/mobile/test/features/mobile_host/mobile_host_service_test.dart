@@ -16,6 +16,7 @@ void main() {
           'permissionHost': 2,
           'photoLibrary': 1,
           'biometrics': 1,
+          'backgroundLocationKeepAlive': 1,
         },
       });
 
@@ -38,6 +39,10 @@ void main() {
       );
       expect(snapshot.supports(MobileHostCapability.photoLibrary), isTrue);
       expect(snapshot.supports(MobileHostCapability.biometrics), isTrue);
+      expect(
+        snapshot.supports(MobileHostCapability.backgroundLocationKeepAlive),
+        isTrue,
+      );
       expect(
         snapshot.supports(MobileHostCapability.backgroundContinuation),
         isFalse,

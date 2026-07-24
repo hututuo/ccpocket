@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 const permissionHostChannelName = 'ccpocket/permission_host';
+// Version 3 adds locationAlways. Keep the minimum at v2 so an older base IPA
+// can still manage its existing permissions; the missing additive permission
+// fails closed as unavailable.
 const permissionHostNativeApiVersion = 2;
 const permissionHostProbeTimeout = Duration(seconds: 2);
 const permissionHostRequestTimeout = Duration(minutes: 2);
@@ -20,6 +23,7 @@ enum MobilePermission {
   photoLibrary('photoLibrary'),
   microphone('microphone'),
   speechRecognition('speechRecognition'),
+  locationAlways('locationAlways'),
   localNetwork('localNetwork'),
   files('files'),
   biometrics('biometrics');
@@ -39,6 +43,8 @@ enum MobilePermission {
 enum MobilePermissionStatus {
   notDetermined,
   authorized,
+  authorizedWhenInUse,
+  authorizedAlways,
   denied,
   restricted,
   limited,
@@ -71,6 +77,7 @@ class MobilePermissionState {
 
   bool get isGranted => switch (status) {
     MobilePermissionStatus.authorized ||
+    MobilePermissionStatus.authorizedAlways ||
     MobilePermissionStatus.limited ||
     MobilePermissionStatus.provisional ||
     MobilePermissionStatus.ephemeral => true,
@@ -257,6 +264,8 @@ class MethodChannelPermissionHostGateway implements PermissionHostGateway {
   static MobilePermissionStatus _statusFromRaw(String raw) => switch (raw) {
     'notDetermined' => MobilePermissionStatus.notDetermined,
     'authorized' => MobilePermissionStatus.authorized,
+    'authorizedWhenInUse' => MobilePermissionStatus.authorizedWhenInUse,
+    'authorizedAlways' => MobilePermissionStatus.authorizedAlways,
     'denied' => MobilePermissionStatus.denied,
     'restricted' => MobilePermissionStatus.restricted,
     'limited' => MobilePermissionStatus.limited,

@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreLocation
 import Flutter
 import Photos
 import Speech
@@ -11,9 +12,9 @@ import UserNotifications
 /// Bridge may declare one of the stable permission identifiers, but requesting
 /// it remains an explicit Flutter UI action. iOS permissions without a query or
 /// request API are reported as system-managed instead of being guessed.
-final class PermissionHostPlugin: NSObject, FlutterPlugin {
+final class PermissionHostPlugin: NSObject, FlutterPlugin, CLLocationManagerDelegate {
   static let channelName = "ccpocket/permission_host"
-  static let nativeAPIVersion = 2
+  static let nativeAPIVersion = 3
   static let minimumOSMajorVersion = 15
   static let permissionIds = [
     "notifications",
@@ -21,10 +22,19 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
     "photoLibrary",
     "microphone",
     "speechRecognition",
+    "locationAlways",
     "localNetwork",
     "files",
     "biometrics",
   ]
+
+  private lazy var locationManager: CLLocationManager = {
+    let manager = CLLocationManager()
+    manager.delegate = self
+    return manager
+  }()
+  private var pendingLocationResult: FlutterResult?
+  private var shouldUpgradeLocationRequest = false
 
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
@@ -100,6 +110,7 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
     )
     let microphone = microphoneStatusName()
     let speechRecognition = statusName(SFSpeechRecognizer.authorizationStatus())
+    let locationAlways = statusName(CLLocationManager.authorizationStatus())
 
     return [
       "notifications": entry(
@@ -122,6 +133,10 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
         status: speechRecognition,
         requestMode: requestMode(for: speechRecognition)
       ),
+      "locationAlways": entry(
+        status: locationAlways,
+        requestMode: requestMode(for: locationAlways)
+      ),
       "localNetwork": entry(
         status: "systemManaged",
         requestMode: "featureTriggered"
@@ -140,11 +155,11 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
 
   static func requestMode(for status: String) -> String {
     switch status {
-    case "notDetermined":
+    case "notDetermined", "authorizedWhenInUse":
       return "direct"
     case "denied", "restricted":
       return "openSettings"
-    case "authorized", "limited", "provisional", "ephemeral":
+    case "authorized", "authorizedAlways", "limited", "provisional", "ephemeral":
       return "none"
     default:
       return "unavailable"
@@ -210,6 +225,23 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
       return "authorized"
     case .limited:
       return "limited"
+    @unknown default:
+      return "unknown"
+    }
+  }
+
+  static func statusName(_ status: CLAuthorizationStatus) -> String {
+    switch status {
+    case .notDetermined:
+      return "notDetermined"
+    case .restricted:
+      return "restricted"
+    case .denied:
+      return "denied"
+    case .authorizedAlways:
+      return "authorizedAlways"
+    case .authorizedWhenInUse:
+      return "authorizedWhenInUse"
     @unknown default:
       return "unknown"
     }
@@ -281,11 +313,62 @@ final class PermissionHostPlugin: NSObject, FlutterPlugin {
       SFSpeechRecognizer.requestAuthorization { _ in
         self.completeSnapshot(result)
       }
+    case "locationAlways":
+      requestLocationAlways(result: result)
     case "localNetwork", "files", "biometrics":
       // iOS presents these prompts only from the feature operation itself.
       completeSnapshot(result)
     default:
       result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func requestLocationAlways(result: @escaping FlutterResult) {
+    DispatchQueue.main.async {
+      guard self.pendingLocationResult == nil else {
+        result(
+          FlutterError(
+            code: "permission_request_in_progress",
+            message: "A location permission request is already in progress",
+            details: nil
+          )
+        )
+        return
+      }
+      switch self.locationManager.authorizationStatus {
+      case .notDetermined:
+        self.pendingLocationResult = result
+        self.shouldUpgradeLocationRequest = true
+        self.locationManager.requestWhenInUseAuthorization()
+      case .authorizedWhenInUse:
+        self.locationManager.requestAlwaysAuthorization()
+        // Choosing "Keep Only While Using" does not guarantee another
+        // authorization callback. Release the Flutter request now; the
+        // independent background-location host reports any later upgrade.
+        self.completeSnapshot(result)
+      case .authorizedAlways, .denied, .restricted:
+        self.completeSnapshot(result)
+      @unknown default:
+        self.completeSnapshot(result)
+      }
+    }
+  }
+
+  func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    guard let result = pendingLocationResult else { return }
+    switch manager.authorizationStatus {
+    case .notDetermined:
+      return
+    case .authorizedWhenInUse where shouldUpgradeLocationRequest:
+      pendingLocationResult = nil
+      shouldUpgradeLocationRequest = false
+      manager.requestAlwaysAuthorization()
+      // The Always prompt may finish without another delegate callback.
+      completeSnapshot(result)
+    default:
+      pendingLocationResult = nil
+      shouldUpgradeLocationRequest = false
+      completeSnapshot(result)
     }
   }
 

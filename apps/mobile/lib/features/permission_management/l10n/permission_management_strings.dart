@@ -14,6 +14,8 @@ class PermissionManagementStrings {
     required this.actionFailed,
     required this.statusNotDetermined,
     required this.statusAuthorized,
+    required this.statusAuthorizedWhenInUse,
+    required this.statusAuthorizedAlways,
     required this.statusDenied,
     required this.statusRestricted,
     required this.statusLimited,
@@ -32,6 +34,8 @@ class PermissionManagementStrings {
     required this.microphoneDescription,
     required this.speechRecognitionTitle,
     required this.speechRecognitionDescription,
+    required this.locationAlwaysTitle,
+    required this.locationAlwaysDescription,
     required this.localNetworkTitle,
     required this.localNetworkDescription,
     required this.filesTitle,
@@ -50,6 +54,8 @@ class PermissionManagementStrings {
   final String actionFailed;
   final String statusNotDetermined;
   final String statusAuthorized;
+  final String statusAuthorizedWhenInUse;
+  final String statusAuthorizedAlways;
   final String statusDenied;
   final String statusRestricted;
   final String statusLimited;
@@ -68,6 +74,8 @@ class PermissionManagementStrings {
   final String microphoneDescription;
   final String speechRecognitionTitle;
   final String speechRecognitionDescription;
+  final String locationAlwaysTitle;
+  final String locationAlwaysDescription;
   final String localNetworkTitle;
   final String localNetworkDescription;
   final String filesTitle;
@@ -99,6 +107,8 @@ class PermissionManagementStrings {
     actionFailed: 'The permission action could not be completed.',
     statusNotDetermined: 'Not requested',
     statusAuthorized: 'Allowed',
+    statusAuthorizedWhenInUse: 'While using the app only',
+    statusAuthorizedAlways: 'Always allowed',
     statusDenied: 'Denied',
     statusRestricted: 'Restricted',
     statusLimited: 'Limited access',
@@ -118,6 +128,9 @@ class PermissionManagementStrings {
     microphoneDescription: 'Capture audio for voice input.',
     speechRecognitionTitle: 'Speech Recognition',
     speechRecognitionDescription: 'Convert voice input into message text.',
+    locationAlwaysTitle: 'Background Location',
+    locationAlwaysDescription:
+        'Keeps only the lightweight notification connection alive during an active task. Coordinates are never read, stored, or uploaded.',
     localNetworkTitle: 'Local Network',
     localNetworkDescription:
         'Find and connect to Bridges on your network. iOS presents this permission when discovery is used.',
@@ -140,6 +153,8 @@ class PermissionManagementStrings {
     actionFailed: '权限操作未能完成。',
     statusNotDetermined: '尚未请求',
     statusAuthorized: '已允许',
+    statusAuthorizedWhenInUse: '仅使用 App 时允许',
+    statusAuthorizedAlways: '始终允许',
     statusDenied: '已拒绝',
     statusRestricted: '受系统限制',
     statusLimited: '有限访问',
@@ -158,6 +173,8 @@ class PermissionManagementStrings {
     microphoneDescription: '采集语音输入所需的音频。',
     speechRecognitionTitle: '语音识别',
     speechRecognitionDescription: '把语音输入转换为消息文字。',
+    locationAlwaysTitle: '后台定位',
+    locationAlwaysDescription: '仅在任务运行时维持轻量通知连接；不会读取、保存或上传坐标。',
     localNetworkTitle: '本地网络',
     localNetworkDescription: '发现并连接局域网内的 Bridge；iOS 会在实际发现设备时弹出授权。',
     filesTitle: '文件',
@@ -178,6 +195,8 @@ class PermissionManagementStrings {
     actionFailed: '権限操作を完了できませんでした。',
     statusNotDetermined: '未リクエスト',
     statusAuthorized: '許可済み',
+    statusAuthorizedWhenInUse: 'App の使用中のみ',
+    statusAuthorizedAlways: '常に許可',
     statusDenied: '拒否',
     statusRestricted: '制限中',
     statusLimited: '限定アクセス',
@@ -196,6 +215,8 @@ class PermissionManagementStrings {
     microphoneDescription: '音声入力用の音声を取り込みます。',
     speechRecognitionTitle: '音声認識',
     speechRecognitionDescription: '音声入力をメッセージのテキストに変換します。',
+    locationAlwaysTitle: 'バックグラウンド位置情報',
+    locationAlwaysDescription: '実行中タスクの軽量通知接続だけを維持します。座標の読み取り、保存、送信は行いません。',
     localNetworkTitle: 'ローカルネットワーク',
     localNetworkDescription:
         'ネットワーク上の Bridge を検出して接続します。iOS は検出機能の使用時に権限を表示します。',
@@ -218,6 +239,8 @@ class PermissionManagementStrings {
     actionFailed: '권한 작업을 완료하지 못했습니다.',
     statusNotDetermined: '요청하지 않음',
     statusAuthorized: '허용됨',
+    statusAuthorizedWhenInUse: '앱을 사용하는 동안만',
+    statusAuthorizedAlways: '항상 허용',
     statusDenied: '거부됨',
     statusRestricted: '제한됨',
     statusLimited: '제한된 접근',
@@ -236,6 +259,9 @@ class PermissionManagementStrings {
     microphoneDescription: '음성 입력을 위한 오디오를 캡처합니다.',
     speechRecognitionTitle: '음성 인식',
     speechRecognitionDescription: '음성 입력을 메시지 텍스트로 변환합니다.',
+    locationAlwaysTitle: '백그라운드 위치',
+    locationAlwaysDescription:
+        '실행 중인 작업의 가벼운 알림 연결만 유지하며 좌표를 읽거나 저장하거나 업로드하지 않습니다.',
     localNetworkTitle: '로컬 네트워크',
     localNetworkDescription:
         '네트워크의 Bridge를 찾아 연결합니다. iOS는 검색 기능을 사용할 때 권한을 표시합니다.',

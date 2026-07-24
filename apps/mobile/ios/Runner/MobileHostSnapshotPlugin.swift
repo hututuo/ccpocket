@@ -12,7 +12,7 @@ final class MobileHostSnapshotPlugin: NSObject, FlutterPlugin {
   static let minimumOSMajorVersion = 15
 
   static let nativeCapabilities: [String: Int] = [
-    "permissionHost": 2,
+    "permissionHost": 3,
     "fileTransfer": 2,
     "quickLook": 1,
     "share": 1,
@@ -30,6 +30,9 @@ final class MobileHostSnapshotPlugin: NSObject, FlutterPlugin {
     // may service BGAppRefresh, but the host does not create a cold headless
     // engine after iOS has reclaimed the process.
     "backgroundRefreshWarmRuntime": 1,
+    // User-authorized, coarse location execution used only for the optional
+    // notification-only Bridge connection.
+    "backgroundLocationKeepAlive": 1,
   ]
 
   static func register(with registrar: FlutterPluginRegistrar) {

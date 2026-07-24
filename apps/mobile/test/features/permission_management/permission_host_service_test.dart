@@ -25,7 +25,7 @@ void main() {
       ).getSnapshot();
 
       expect(snapshot.supported, isTrue);
-      expect(snapshot.nativeApiVersion, permissionHostNativeApiVersion);
+      expect(snapshot.nativeApiVersion, 3);
       expect(
         snapshot.stateFor(MobilePermission.notifications).status,
         MobilePermissionStatus.notDetermined,
@@ -41,6 +41,10 @@ void main() {
       expect(
         snapshot.stateFor(MobilePermission.localNetwork).requestMode,
         MobilePermissionRequestMode.featureTriggered,
+      );
+      expect(
+        snapshot.stateFor(MobilePermission.locationAlways).status,
+        MobilePermissionStatus.authorizedAlways,
       );
     });
 
@@ -84,6 +88,31 @@ void main() {
       expect(snapshot.supported, isFalse);
       expect(snapshot.reason, 'native_api_unsupported');
     });
+
+    test(
+      'a v2 host remains usable while additive location is unavailable',
+      () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              return _snapshotPayload(
+                nativeApiVersion: 2,
+                includeLocation: false,
+              );
+            });
+
+        final snapshot = await const MethodChannelPermissionHostGateway(
+          channel,
+        ).getSnapshot();
+
+        expect(snapshot.supported, isTrue);
+        expect(snapshot.nativeApiVersion, 2);
+        expect(snapshot.stateFor(MobilePermission.camera).isGranted, isTrue);
+        expect(
+          snapshot.stateFor(MobilePermission.locationAlways).status,
+          MobilePermissionStatus.unavailable,
+        );
+      },
+    );
   });
 
   group('PermissionHostService', () {
@@ -149,8 +178,9 @@ void main() {
 }
 
 Map<String, Object> _snapshotPayload({
-  int nativeApiVersion = permissionHostNativeApiVersion,
+  int nativeApiVersion = 3,
   String cameraStatus = 'authorized',
+  bool includeLocation = true,
 }) {
   return {
     'supported': true,
@@ -166,6 +196,8 @@ Map<String, Object> _snapshotPayload({
         'status': 'restricted',
         'requestMode': 'openSettings',
       },
+      if (includeLocation)
+        'locationAlways': {'status': 'authorizedAlways', 'requestMode': 'none'},
       'localNetwork': {
         'status': 'systemManaged',
         'requestMode': 'featureTriggered',
