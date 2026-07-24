@@ -336,7 +336,7 @@ export type ClientMessage =
       limit?: number;
       offset?: number;
       projectPath?: string;
-      requestScope?: "list" | "project";
+      requestScope?: "list" | "append" | "project" | "catalog";
       provider?: "claude" | "codex";
       namedOnly?: boolean;
       searchQuery?: string;
@@ -829,6 +829,11 @@ export type ServerMessage =
       truncated?: boolean;
     }
   | { type: "project_history"; projects: string[] }
+  | {
+      type: "session_catalog_changed_v1";
+      revision: number;
+      occurredAt: string;
+    }
   | {
       type: "diff_result";
       diff: string;

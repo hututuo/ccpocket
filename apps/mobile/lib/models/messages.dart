@@ -1236,6 +1236,10 @@ sealed class ServerMessage {
         projectPath: json['projectPath'] as String?,
         requestScope: json['requestScope'] as String?,
       ),
+      sessionCatalogChangedMessageType => SessionCatalogChangedMessage(
+        revision: (json['revision'] as num?)?.toInt() ?? 0,
+        occurredAt: json['occurredAt'] as String?,
+      ),
       'past_history' => PastHistoryMessage(
         claudeSessionId: json['claudeSessionId'] as String? ?? '',
         messages: (json['messages'] as List)
@@ -3090,6 +3094,13 @@ class RecentSessionsMessage implements ServerMessage {
   });
 }
 
+class SessionCatalogChangedMessage implements ServerMessage {
+  final int revision;
+  final String? occurredAt;
+
+  const SessionCatalogChangedMessage({required this.revision, this.occurredAt});
+}
+
 class PastHistoryMessage implements ServerMessage {
   final String claudeSessionId;
   final List<PastMessage> messages;
@@ -4699,6 +4710,8 @@ const historyPageCapability = 'history_page_v1';
 const historyToolDetailCapability = 'history_tool_detail_v1';
 const sessionActivityAtCapability = 'session_activity_at_v1';
 const sessionRequestCorrelationCapability = 'session_request_correlation_v1';
+const sessionCatalogWatchCapability = 'session_catalog_watch_v1';
+const sessionCatalogChangedMessageType = 'session_catalog_changed_v1';
 
 class ClientMessage {
   final Map<String, dynamic> _json;
@@ -4735,6 +4748,7 @@ class ClientMessage {
           historyToolDetailCapability,
           sessionActivityAtCapability,
           sessionRequestCorrelationCapability,
+          sessionCatalogChangedMessageType,
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',

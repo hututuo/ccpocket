@@ -337,8 +337,24 @@ Mobile rebuildable store
 - 同一 start 的离线/重连去重会忽略 `startRequestId`，避免同一业务动作仅因重试
   UUID 不同而重复创建；Mobile 还会同时检查 queue 和尚未进入可见 action 列表的
   in-flight 请求，关闭原先约 650 ms 的重复点击窗口。
-- 本节仍未宣称完成“全持久会话 metadata-only catalog”；该部分须完成 provider
-  目录/索引变更监听、紧凑 revision 推送和有界前台追平后再关闭 Phase 2。
+- “全持久会话 metadata-only catalog”已按真实存储布局落地：Bridge 只在至少一个
+  支持 `session_catalog_watch_v1` 且处于 interactive 的客户端存在时，监听
+  `~/.claude/projects`、`~/.codex/sessions` 和 Codex 的名称/CC Pocket 设置索引。
+  为兼容 Node 18 及 macOS/Linux/Windows，没有依赖平台限定的 recursive watch，
+  而是对浅层 provider 目录安装有 1024 目录总上限的非递归 watcher；目录增删会
+  有界重建监听，最后一个前台客户端离开或进入 notification-only 后立即释放。
+- 文件写入只产生 `session_catalog_changed_v1` revision，不读取完整历史、不创建
+  runtime、不启动 app-server，也不把工具/图片正文推到手机；连续写入先 750 ms
+  合并，并限制为最快 2.5 秒一次。Mobile 再做 250 ms 合并，同一时刻只允许一个
+  catalog 请求，超时可恢复，按当前 project/provider/named/search 条件刷新。
+- 自动刷新只重取已经可见的前 20–200 条 metadata；若用户已经加载更多，深层尾页
+  原样保留，第一页的新增、更新、删除由 authoritative prefix 替换。Claude 与
+  Codex 的去重键已从裸 `sessionId` 修正为 `provider + sessionId`；普通刷新、
+  append、project 和 catalog 使用独立 `requestScope`，筛选切换仍能淘汰旧响应，
+  catalog 不会激活会话或抢走用户正在加载的下一页。
+- 旧 Mobile 不声明新 server message，Bridge 不启动 watcher；旧 Bridge 不广播
+  revision，新 Mobile 继续保留手动刷新、连接恢复及回到前台时的有界 recent
+  刷新。因此这一步关闭的是前台轻量目录同步，不改变 iOS 被挂起/回收时的能力承诺。
 
 ## 5. 分层历史和渐进披露
 

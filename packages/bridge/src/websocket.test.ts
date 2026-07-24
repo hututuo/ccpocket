@@ -12034,6 +12034,75 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("runs the catalog monitor only for an interactive opt-in client", async () => {
+    let notifyCatalogChanged: ((revision: number) => void) | undefined;
+    let active = false;
+    const monitor = {
+      get isActive() {
+        return active;
+      },
+      start: vi.fn(async () => {
+        active = true;
+      }),
+      close: vi.fn(() => {
+        active = false;
+      }),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      sessionCatalogMonitorFactory: (onChanged) => {
+        notifyCatalogChanged = onChanged;
+        return monitor;
+      },
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "session_catalog_changed_v1",
+          "client_delivery_mode_state_v1",
+          "background_notification_v1",
+          "background_activity_state_v1",
+        ],
+      },
+      ws,
+    );
+    expect(monitor.start).toHaveBeenCalledOnce();
+    notifyCatalogChanged?.(3);
+    expect(JSON.parse(ws.send.mock.calls.at(-1)[0] as string)).toMatchObject({
+      type: "session_catalog_changed_v1",
+      revision: 3,
+    });
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "notifications_only",
+        requestId: "catalog-background",
+      },
+      ws,
+    );
+    expect(monitor.close).toHaveBeenCalled();
+    ws.send.mockClear();
+    notifyCatalogChanged?.(4);
+    expect(ws.send).not.toHaveBeenCalled();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "interactive",
+        requestId: "catalog-foreground",
+      },
+      ws,
+    );
+    expect(monitor.start).toHaveBeenCalledTimes(2);
+    await bridge.close();
+    expect(active).toBe(false);
+  });
+
   it("does not queue batched stream deltas for a background client", async () => {
     vi.useFakeTimers();
     const bridge = new BridgeWebSocketServer({

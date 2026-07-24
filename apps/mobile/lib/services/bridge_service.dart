@@ -337,6 +337,15 @@ class BridgeService implements BridgeServiceBase {
   String? _currentProvider;
   bool? _currentNamedOnly;
   String? _currentSearchQuery;
+  Timer? _sessionCatalogRefreshTimer;
+  Timer? _sessionCatalogRefreshTimeout;
+  bool _sessionCatalogRefreshInFlight = false;
+  bool _sessionCatalogRefreshDirty = false;
+  int _lastSessionCatalogRevision = 0;
+  static const _sessionCatalogRefreshDebounce = Duration(milliseconds: 250);
+  static const _sessionCatalogRefreshRequestTimeout = Duration(seconds: 15);
+  static const _sessionCatalogRefreshMinLimit = 20;
+  static const _sessionCatalogRefreshMaxLimit = 200;
 
   // Auto-reconnect
   String? _lastUrl;
@@ -475,6 +484,8 @@ class BridgeService implements BridgeServiceBase {
   Set<String> get bridgeCapabilities => _bridgeCapabilities;
   bool get supportsBackgroundNotificationDelivery => _bridgeCapabilities
       .contains(backgroundNotificationDeliveryBridgeCapability);
+  bool get supportsSessionCatalogWatch =>
+      _bridgeCapabilities.contains(sessionCatalogWatchCapability);
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>
       _desiredClientDeliveryMode;
   String? get promptHistoryBridgeId => _promptHistoryBridgeId;
@@ -1540,9 +1551,20 @@ class BridgeService implements BridgeServiceBase {
                     _recentSessions,
                     sessions,
                   );
+                } else if (msg.requestScope == 'catalog') {
+                  final catalogLimit = msg.limit ?? sessions.length;
+                  _recentSessionsHasMore =
+                      hasMore || _recentSessions.length > catalogLimit;
+                  _recentSessions = _replaceRecentSessionsCatalogPrefix(
+                    _recentSessions,
+                    sessions,
+                    catalogLimit,
+                  );
+                  _finishSessionCatalogRefresh();
                 } else {
                   _recentSessionsHasMore = hasMore;
-                  if (_appendMode) {
+                  if (msg.requestScope == 'append' ||
+                      (msg.requestScope == null && _appendMode)) {
                     _recentSessions = _mergeRecentSessions(
                       _recentSessions,
                       sessions,
@@ -1553,6 +1575,8 @@ class BridgeService implements BridgeServiceBase {
                   _appendMode = false;
                 }
                 _recentSessionsController.add(_recentSessions);
+              case SessionCatalogChangedMessage(:final revision):
+                _handleSessionCatalogChanged(revision);
               case PastHistoryMessage():
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
@@ -1879,6 +1903,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _clearBridgeScopedState({required bool clearOfflineQueue}) {
+    _resetSessionCatalogRefresh();
     _failPendingHistoryRequests(clearCursors: true);
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
@@ -3087,6 +3112,7 @@ class BridgeService implements BridgeServiceBase {
         limit: limit,
         offset: offset,
         projectPath: projectPath,
+        requestScope: 'list',
         provider: _currentProvider,
         namedOnly: _currentNamedOnly,
         searchQuery: _currentSearchQuery,
@@ -3099,7 +3125,7 @@ class BridgeService implements BridgeServiceBase {
     int pageSize = 20,
     String? projectPath,
     int? offset,
-    String requestScope = 'list',
+    String requestScope = 'append',
   }) {
     final requestedProjectPath = projectPath ?? _currentProjectFilter;
     _appendMode = true;
@@ -3126,6 +3152,7 @@ class BridgeService implements BridgeServiceBase {
         limit: pageSize,
         offset: 0,
         projectPath: projectPath,
+        requestScope: 'list',
         provider: _currentProvider,
         namedOnly: _currentNamedOnly,
         searchQuery: _currentSearchQuery,
@@ -3151,11 +3178,100 @@ class BridgeService implements BridgeServiceBase {
         limit: pageSize,
         offset: 0,
         projectPath: projectPath,
+        requestScope: 'list',
         provider: provider,
         namedOnly: namedOnly,
         searchQuery: searchQuery,
       ),
     );
+  }
+
+  void _handleSessionCatalogChanged(int revision) {
+    if (revision <= 0 || revision <= _lastSessionCatalogRevision) return;
+    _lastSessionCatalogRevision = revision;
+    _scheduleSessionCatalogRefresh();
+  }
+
+  void _scheduleSessionCatalogRefresh() {
+    if (!supportsSessionCatalogWatch ||
+        !isConnected ||
+        _desiredClientDeliveryMode != BridgeClientDeliveryMode.interactive) {
+      return;
+    }
+    _sessionCatalogRefreshDirty = true;
+    if (_sessionCatalogRefreshInFlight || _sessionCatalogRefreshTimer != null) {
+      return;
+    }
+    _sessionCatalogRefreshTimer = Timer(
+      _sessionCatalogRefreshDebounce,
+      _requestSessionCatalogRefresh,
+    );
+  }
+
+  void _requestSessionCatalogRefresh() {
+    _sessionCatalogRefreshTimer?.cancel();
+    _sessionCatalogRefreshTimer = null;
+    if (!isConnected ||
+        !supportsSessionCatalogWatch ||
+        _desiredClientDeliveryMode != BridgeClientDeliveryMode.interactive) {
+      return;
+    }
+    if (_sessionCatalogRefreshInFlight) {
+      _sessionCatalogRefreshDirty = true;
+      return;
+    }
+
+    _sessionCatalogRefreshDirty = false;
+    _sessionCatalogRefreshInFlight = true;
+    final limit = max(
+      _sessionCatalogRefreshMinLimit,
+      min(_recentSessions.length, _sessionCatalogRefreshMaxLimit),
+    );
+    send(
+      ClientMessage.listRecentSessions(
+        limit: limit,
+        offset: 0,
+        projectPath: _currentProjectFilter,
+        requestScope: 'catalog',
+        provider: _currentProvider,
+        namedOnly: _currentNamedOnly,
+        searchQuery: _currentSearchQuery,
+      ),
+    );
+    _sessionCatalogRefreshTimeout?.cancel();
+    _sessionCatalogRefreshTimeout = Timer(
+      _sessionCatalogRefreshRequestTimeout,
+      () {
+        _sessionCatalogRefreshTimeout = null;
+        _sessionCatalogRefreshInFlight = false;
+        if (_sessionCatalogRefreshDirty) {
+          _scheduleSessionCatalogRefresh();
+        }
+      },
+    );
+  }
+
+  void _finishSessionCatalogRefresh() {
+    _sessionCatalogRefreshTimeout?.cancel();
+    _sessionCatalogRefreshTimeout = null;
+    _sessionCatalogRefreshInFlight = false;
+    if (!_sessionCatalogRefreshDirty || _sessionCatalogRefreshTimer != null) {
+      return;
+    }
+    _sessionCatalogRefreshTimer = Timer(
+      _sessionCatalogRefreshDebounce,
+      _requestSessionCatalogRefresh,
+    );
+  }
+
+  void _resetSessionCatalogRefresh() {
+    _sessionCatalogRefreshTimer?.cancel();
+    _sessionCatalogRefreshTimeout?.cancel();
+    _sessionCatalogRefreshTimer = null;
+    _sessionCatalogRefreshTimeout = null;
+    _sessionCatalogRefreshInFlight = false;
+    _sessionCatalogRefreshDirty = false;
+    _lastSessionCatalogRevision = 0;
   }
 
   @override
@@ -4353,15 +4469,42 @@ class BridgeService implements BridgeServiceBase {
   ) {
     if (current.isEmpty) return incoming;
     if (incoming.isEmpty) return current;
-    final seen = current.map((session) => session.sessionId).toSet();
     final merged = List<RecentSession>.of(current);
+    final indices = <String, int>{
+      for (var index = 0; index < merged.length; index++)
+        _recentSessionIdentity(merged[index]): index,
+    };
     for (final session in incoming) {
-      if (seen.add(session.sessionId)) {
+      final key = _recentSessionIdentity(session);
+      final existingIndex = indices[key];
+      if (existingIndex == null) {
+        indices[key] = merged.length;
         merged.add(session);
+      } else {
+        merged[existingIndex] = session;
       }
     }
     return merged;
   }
+
+  List<RecentSession> _replaceRecentSessionsCatalogPrefix(
+    List<RecentSession> current,
+    List<RecentSession> incoming,
+    int requestedLimit,
+  ) {
+    final prefixLength = min(current.length, max(0, requestedLimit));
+    if (prefixLength >= current.length) return incoming;
+    final incomingKeys = incoming.map(_recentSessionIdentity).toSet();
+    final tail = current
+        .skip(prefixLength)
+        .where(
+          (session) => !incomingKeys.contains(_recentSessionIdentity(session)),
+        );
+    return [...incoming, ...tail];
+  }
+
+  String _recentSessionIdentity(RecentSession session) =>
+      '${session.provider ?? Provider.claude.value}\u0000${session.sessionId}';
 
   void patchSessionPermissionMode(String sessionId, String permissionMode) {
     _patchSessionPermissionMode(sessionId, permissionMode);
@@ -4629,6 +4772,7 @@ class BridgeService implements BridgeServiceBase {
 
   void dispose() {
     _intentionalDisconnect = true;
+    _resetSessionCatalogRefresh();
     _failPendingHistoryRequests(clearCursors: true);
     _completePendingSessionLinkResolutionsAsUnsupported();
     _reconnectTimer?.cancel();

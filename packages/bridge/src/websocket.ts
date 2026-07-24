@@ -16,6 +16,7 @@ import { resolve, extname, basename, relative } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
+import { SessionCatalogMonitor } from "./session-catalog-monitor.js";
 import {
   artifactCandidateRootsForSession,
   SessionManager,
@@ -261,6 +262,8 @@ const PUSH_PROGRESS_MIN_INTERVAL_MS = 45_000;
 const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
 const SESSION_ACTIVITY_AT_CAPABILITY = "session_activity_at_v1";
 const SESSION_REQUEST_CORRELATION_CAPABILITY = "session_request_correlation_v1";
+const SESSION_CATALOG_WATCH_CAPABILITY = "session_catalog_watch_v1";
+const SESSION_CATALOG_CHANGED_MESSAGE = "session_catalog_changed_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
@@ -615,6 +618,7 @@ const OPT_IN_SERVER_MESSAGES = new Set<string>([
   CLIENT_DELIVERY_MODE_STATE_MESSAGE,
   BACKGROUND_NOTIFICATION_MESSAGE,
   BACKGROUND_ACTIVITY_STATE_MESSAGE,
+  SESSION_CATALOG_CHANGED_MESSAGE,
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1134,6 +1138,15 @@ export interface BridgeServerOptions {
   artifactManager?: ArtifactManager;
   fileTransfer?: FileTransferManager;
   fileBrowser?: FileBrowserManager;
+  sessionCatalogMonitorFactory?: (
+    onChanged: (revision: number) => void,
+  ) => SessionCatalogMonitorControl;
+}
+
+export interface SessionCatalogMonitorControl {
+  readonly isActive: boolean;
+  start(): Promise<void>;
+  close(): void;
 }
 
 type DeltaServerMessage = Extract<
@@ -1247,6 +1260,7 @@ export class BridgeWebSocketServer {
   private readonly codexGoals: CodexGoalController;
   private readonly fileTransfer: FileTransferManager | null;
   private readonly fileBrowser: FileBrowserManager | null;
+  private readonly sessionCatalogMonitor: SessionCatalogMonitorControl;
   private resumeOperations = new Map<string, ResumeOperation>();
 
   constructor(options: BridgeServerOptions) {
@@ -1270,6 +1284,7 @@ export class BridgeWebSocketServer {
       artifactManager,
       fileTransfer,
       fileBrowser,
+      sessionCatalogMonitorFactory,
     } = options;
     this.apiKey = apiKey ?? null;
     this.allowedDirs = allowedDirs ?? [];
@@ -1290,6 +1305,14 @@ export class BridgeWebSocketServer {
     this.artifactManager = artifactManager ?? null;
     this.fileTransfer = fileTransfer ?? null;
     this.fileBrowser = fileBrowser ?? null;
+    this.sessionCatalogMonitor = sessionCatalogMonitorFactory
+      ? sessionCatalogMonitorFactory((revision) =>
+          this.broadcastSessionCatalogChanged(revision),
+        )
+      : new SessionCatalogMonitor({
+          onChanged: (revision) =>
+            this.broadcastSessionCatalogChanged(revision),
+        });
     this.platform = platform ?? process.platform;
     this.fileListMaxEntries = normalizePositiveLimit(
       fileListMaxEntries,
@@ -3475,6 +3498,7 @@ export class BridgeWebSocketServer {
 
   async close(): Promise<void> {
     console.log("[ws] Shutting down...");
+    this.sessionCatalogMonitor.close();
     // Abort local operations synchronously so the existing shutdown flush
     // contract remains observable before callers await this method. Drain the
     // async handlers before releasing shared file-transfer state below.
@@ -3570,6 +3594,7 @@ export class BridgeWebSocketServer {
       this.fileTransfer?.disconnect(ws);
       this.discardClientDeltaBatches(ws);
       this.clearPendingClaudeResumeInputs(ws);
+      this.refreshSessionCatalogMonitorState();
     });
 
     ws.on("error", (err) => {
@@ -3608,6 +3633,7 @@ export class BridgeWebSocketServer {
       }
       this.localFeatures.capabilitiesChanged(ws);
       this.sendPromptHistoryStatus(ws);
+      this.refreshSessionCatalogMonitorState();
       return;
     }
 
@@ -3640,6 +3666,7 @@ export class BridgeWebSocketServer {
       } else {
         this.backgroundDeliveryClients.delete(ws);
       }
+      this.refreshSessionCatalogMonitorState();
       this.send(ws, {
         type: CLIENT_DELIVERY_MODE_STATE_MESSAGE,
         mode: msg.mode,
@@ -6743,12 +6770,13 @@ export class BridgeWebSocketServer {
       }
 
       case "list_recent_sessions": {
-        const isProjectScopedRequest = msg.requestScope === "project";
+        const startsNewQuery =
+          msg.requestScope == null || msg.requestScope === "list";
         const currentRequestId = this.recentSessionsRequestIds.get(ws) ?? 0;
-        const requestId = isProjectScopedRequest
-          ? currentRequestId
-          : currentRequestId + 1;
-        if (!isProjectScopedRequest) {
+        const requestId = startsNewQuery
+          ? currentRequestId + 1
+          : currentRequestId;
+        if (startsNewQuery) {
           this.recentSessionsRequestIds.set(ws, requestId);
         }
         this.listRecentSessions(msg)
@@ -9335,6 +9363,7 @@ export class BridgeWebSocketServer {
         HISTORY_TOOL_DETAIL_CAPABILITY,
         SESSION_ACTIVITY_AT_CAPABILITY,
         SESSION_REQUEST_CORRELATION_CAPABILITY,
+        SESSION_CATALOG_WATCH_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -9388,6 +9417,7 @@ export class BridgeWebSocketServer {
         HISTORY_TOOL_DETAIL_CAPABILITY,
         SESSION_ACTIVITY_AT_CAPABILITY,
         SESSION_REQUEST_CORRELATION_CAPABILITY,
+        SESSION_CATALOG_WATCH_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
       ],
@@ -10894,6 +10924,41 @@ export class BridgeWebSocketServer {
         client.send(JSON.stringify(compatibleMsg));
       }
     }
+  }
+
+  private clientWantsSessionCatalogWatch(client: WebSocket): boolean {
+    return (
+      client.readyState === WebSocket.OPEN &&
+      this.clientSupportedServerMessages
+        .get(client)
+        ?.has(SESSION_CATALOG_CHANGED_MESSAGE) === true &&
+      this.backgroundDeliveryClients.get(client)?.mode !== "notifications_only"
+    );
+  }
+
+  private refreshSessionCatalogMonitorState(): void {
+    const shouldRun = Array.from(this.wss.clients).some((client) =>
+      this.clientWantsSessionCatalogWatch(client),
+    );
+    if (!shouldRun) {
+      this.sessionCatalogMonitor.close();
+      return;
+    }
+    void this.sessionCatalogMonitor.start().catch((error) => {
+      console.warn(
+        "[sessions-index] Failed to start catalog monitor:",
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+  }
+
+  private broadcastSessionCatalogChanged(revision: number): void {
+    if (!this.sessionCatalogMonitor.isActive) return;
+    this.broadcast({
+      type: SESSION_CATALOG_CHANGED_MESSAGE,
+      revision,
+      occurredAt: new Date().toISOString(),
+    });
   }
 
   private prepareServerMessageForClient(

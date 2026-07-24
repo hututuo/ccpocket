@@ -163,6 +163,151 @@ void main() {
     });
 
     test(
+      'catalog invalidation refreshes a bounded metadata window without activating sessions',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [sessionCatalogWatchCapability],
+          }),
+        );
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': [
+              {
+                'sessionId': 'shared-id',
+                'provider': 'claude',
+                'firstPrompt': 'Claude old',
+                'created': '2026-07-25T00:00:00Z',
+                'modified': '2026-07-25T00:00:01Z',
+                'gitBranch': '',
+                'projectPath': '/project',
+                'isSidechain': false,
+              },
+              {
+                'sessionId': 'shared-id',
+                'provider': 'codex',
+                'firstPrompt': 'Codex old',
+                'created': '2026-07-25T00:00:00Z',
+                'modified': '2026-07-25T00:00:02Z',
+                'gitBranch': '',
+                'projectPath': '/project',
+                'isSidechain': false,
+              },
+              {
+                'sessionId': 'removed-id',
+                'provider': 'codex',
+                'firstPrompt': 'Removed',
+                'created': '2026-07-25T00:00:00Z',
+                'modified': '2026-07-25T00:00:00Z',
+                'gitBranch': '',
+                'projectPath': '/project',
+                'isSidechain': false,
+              },
+            ],
+            'hasMore': false,
+            'limit': 20,
+            'offset': 0,
+            'requestScope': 'list',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        expect(bridge.recentSessions, hasLength(3));
+        outgoing.clear();
+
+        socket.add(
+          jsonEncode({
+            'type': sessionCatalogChangedMessageType,
+            'revision': 1,
+            'occurredAt': '2026-07-25T00:00:03Z',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        final catalogRequests = outgoing
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .where((message) => message['type'] == 'list_recent_sessions')
+            .toList();
+        expect(catalogRequests, hasLength(1));
+        expect(catalogRequests.single, containsPair('requestScope', 'catalog'));
+        expect(catalogRequests.single, containsPair('limit', 20));
+        expect(
+          outgoing.any((message) => message.type == 'resume_session'),
+          isFalse,
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': [
+              {
+                'sessionId': 'shared-id',
+                'provider': 'codex',
+                'firstPrompt': 'Codex updated',
+                'created': '2026-07-25T00:00:00Z',
+                'modified': '2026-07-25T00:00:04Z',
+                'gitBranch': '',
+                'projectPath': '/project',
+                'isSidechain': false,
+              },
+              {
+                'sessionId': 'shared-id',
+                'provider': 'claude',
+                'firstPrompt': 'Claude updated',
+                'created': '2026-07-25T00:00:00Z',
+                'modified': '2026-07-25T00:00:03Z',
+                'gitBranch': '',
+                'projectPath': '/project',
+                'isSidechain': false,
+              },
+            ],
+            'hasMore': false,
+            'limit': 20,
+            'offset': 0,
+            'requestScope': 'catalog',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        expect(
+          bridge.recentSessions.map(
+            (session) => '${session.provider}:${session.sessionId}',
+          ),
+          ['codex:shared-id', 'claude:shared-id'],
+        );
+        expect(bridge.recentSessions.map((session) => session.firstPrompt), [
+          'Codex updated',
+          'Claude updated',
+        ]);
+        expect(bridge.recentSessionsHasMore, isFalse);
+
+        outgoing.clear();
+        socket.add(
+          jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        expect(outgoing, isEmpty);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'computer activity timestamps reorder cached sessions without delta spam',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
