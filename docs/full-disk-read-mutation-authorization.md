@@ -2,6 +2,11 @@
 
 > 状态：accepted design，尚未实现。本文记录用户已确认的长期产品行为和实现边界，
 > 不表示 Bridge、Mobile、基础 IPA、运行配置或真机权限已经更新。
+>
+> 文件、预览、授权与本地翻译的合并实施参考见
+> [`owner-file-access-preview-and-local-translation-plan.md`](owner-file-access-preview-and-local-translation-plan.md)。
+> 合并文档内容更完整，但仍须在实际实施前重新核对源码；本文保留为文件安全方案
+> 的独立背景记录。
 
 ## 1. 产品决定
 
