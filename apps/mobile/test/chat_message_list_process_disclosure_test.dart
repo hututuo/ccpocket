@@ -342,6 +342,199 @@ void main() {
   );
 
   testWidgets(
+    'a large tool group uses an eight-row viewport and scrolls internally',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-bounded-tools',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-bounded-tools',
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(messages: _anchoringHistory(toolCount: 13)),
+        'session-bounded-tools',
+      );
+      await tester.pump();
+
+      final outerDisclosure = find.byKey(
+        const ValueKey('chat_intermediate_disclosure_client:turn-anchor'),
+      );
+      for (var step = 0; step <= 30; step++) {
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * step / 30,
+        );
+        await tester.pump();
+        if (outerDisclosure.evaluate().isNotEmpty) break;
+      }
+      await tester.tap(outerDisclosure);
+      await tester.pump();
+
+      final processDisclosure = find.byKey(
+        const ValueKey(
+          'chat_process_disclosure_client:turn-anchor:segment:id:anchor-update-1',
+        ),
+      );
+      await tester.tap(processDisclosure);
+      await tester.pump();
+
+      final viewport = find.byKey(
+        const ValueKey(
+          'process_details_viewport_client:turn-anchor:segment:id:anchor-update-1',
+        ),
+      );
+      expect(viewport, findsOneWidget);
+      expect(tester.getSize(viewport).height, lessThanOrEqualTo(353));
+      expect(find.byType(ToolUseTile), findsNWidgets(13));
+
+      final detailsScroll = find.descendant(
+        of: viewport,
+        matching: find.byKey(const ValueKey('process_details_scroll_view')),
+      );
+      final nestedScrollable = find.descendant(
+        of: detailsScroll,
+        matching: find.byType(Scrollable),
+      );
+      final nestedPosition = tester
+          .state<ScrollableState>(nestedScrollable)
+          .position;
+      expect(nestedPosition.maxScrollExtent, greaterThan(0));
+      expect(nestedPosition.pixels, 0);
+      await tester.drag(detailsScroll, const Offset(0, -1000));
+      await tester.pumpAndSettle();
+      expect(nestedPosition.pixels, greaterThan(0));
+      expect(tester.takeException(), isNull);
+      await cubit.close();
+    },
+  );
+
+  testWidgets(
+    'incremental output and app lifecycle keep current progress expanded',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-stable-disclosure',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-stable-disclosure',
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(messages: _activeHistory()),
+        'session-stable-disclosure',
+      );
+      await tester.pump();
+
+      final currentHeader = find.byKey(
+        const ValueKey('chat_current_progress_entry:client:turn-active'),
+      );
+      await tester.tap(currentHeader);
+      await tester.pump();
+      expect(
+        tester
+            .widget<ChatCurrentProgressHeader>(
+              find.byType(ChatCurrentProgressHeader),
+            )
+            .expanded,
+        isTrue,
+      );
+
+      bridge.emit(
+        AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'current-follow-up',
+            role: 'assistant',
+            content: const [
+              ThinkingContent(thinking: 'follow-up thought'),
+              TextContent(text: 'The live update continued.'),
+              ToolUseContent(
+                id: 'tool-follow-up',
+                name: 'Read',
+                input: {'file_path': 'follow-up.txt'},
+              ),
+            ],
+            model: 'codex',
+          ),
+        ),
+        'session-stable-disclosure',
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(
+        tester
+            .widget<ChatCurrentProgressHeader>(
+              find.byType(ChatCurrentProgressHeader),
+            )
+            .expanded,
+        isTrue,
+      );
+
+      for (final state in const [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+        await tester.pump();
+      }
+      expect(
+        tester
+            .widget<ChatCurrentProgressHeader>(
+              find.byType(ChatCurrentProgressHeader),
+            )
+            .expanded,
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+      await cubit.close();
+    },
+  );
+
+  testWidgets(
     'a long intermediate hierarchy unfolds below a persistent outer header',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 500));

@@ -442,6 +442,60 @@ void main() {
     );
     expect(turn.currentTool, isNull);
   });
+
+  test(
+    'keeps an idless process segment key stable when history is prepended',
+    () {
+      final currentTurn = <ChatEntry>[
+        UserChatEntry('inspect', clientMessageId: 'stable-turn'),
+        ServerChatEntry(
+          AssistantServerMessage(
+            message: const AssistantMessage(
+              id: '',
+              role: 'assistant',
+              content: [
+                ThinkingContent(thinking: 'checking'),
+                TextContent(text: 'Inspecting now.'),
+                ToolUseContent(
+                  id: 'stable-tool-id',
+                  name: 'Read',
+                  input: {'file_path': 'stable.txt'},
+                ),
+              ],
+              model: 'codex',
+            ),
+          ),
+        ),
+        ServerChatEntry(
+          const ToolResultMessage(
+            toolUseId: 'stable-tool-id',
+            toolName: 'Read',
+            content: 'contents',
+          ),
+        ),
+        ServerChatEntry(
+          _assistant('stable-final', const [TextContent(text: 'Done')]),
+        ),
+      ];
+
+      final initialKey = buildChatProcessLayout(
+        currentTurn,
+      ).segmentForEntry(1)!.key;
+      final withOlderTurn = <ChatEntry>[
+        UserChatEntry('older', clientMessageId: 'older-turn'),
+        ServerChatEntry(
+          _assistant('older-final', const [TextContent(text: 'Older answer')]),
+        ),
+        ...currentTurn,
+      ];
+      final prependedKey = buildChatProcessLayout(
+        withOlderTurn,
+      ).segmentForEntry(3)!.key;
+
+      expect(initialKey, prependedKey);
+      expect(initialKey, contains('tool:stable-tool-id'));
+    },
+  );
 }
 
 AssistantServerMessage _assistant(String id, List<AssistantContent> content) =>

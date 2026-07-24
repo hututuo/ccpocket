@@ -147,7 +147,7 @@ void main() {
   });
 
   group('AssistantMessage handling', () {
-    test('triggers collapse tool results', () {
+    test('does not collapse process disclosures during incremental output', () {
       final update = handler.handle(
         AssistantServerMessage(
           message: AssistantMessage(
@@ -159,7 +159,7 @@ void main() {
         ),
         isBackground: false,
       );
-      expect(update.sideEffects, contains(ChatSideEffect.collapseToolResults));
+      expect(update.sideEffects, isEmpty);
       expect(update.markUserMessagesSent, isTrue);
     });
 

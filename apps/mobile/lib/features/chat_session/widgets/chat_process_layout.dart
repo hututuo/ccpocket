@@ -563,16 +563,13 @@ String _segmentIdentity(
 ) {
   final index = accumulator.assistantEntryIndex;
   if (index == null) {
-    return 'leading:${accumulator.firstEntryIndex ?? position}';
+    final firstIndex = accumulator.firstEntryIndex;
+    if (firstIndex != null && firstIndex >= 0 && firstIndex < entries.length) {
+      return 'leading:${_processEntryIdentity(entries[firstIndex])}';
+    }
+    return 'leading:empty:$position';
   }
-  final entry = entries[index];
-  if (entry case ServerChatEntry(
-    message: AssistantServerMessage(:final messageUuid, :final message),
-  )) {
-    if (messageUuid?.trim().isNotEmpty == true) return 'uuid:$messageUuid';
-    if (message.id.trim().isNotEmpty) return 'id:${message.id}';
-  }
-  return 'index:$index';
+  return _processEntryIdentity(entries[index]);
 }
 
 String _turnKey(UserChatEntry entry) {
@@ -606,9 +603,80 @@ String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
     }
   }
   final timestamp = start < entries.length
-      ? entries[start].timestamp.microsecondsSinceEpoch
-      : 0;
-  return 'partial:time:$timestamp:$start';
+      ? _processEntryIdentity(entries[start])
+      : 'empty';
+  return 'partial:$timestamp';
+}
+
+String _processEntryIdentity(ChatEntry entry) {
+  if (entry is UserChatEntry) return _turnKey(entry);
+  if (entry is StreamingChatEntry) return 'streaming';
+  final message = (entry as ServerChatEntry).message;
+  return switch (message) {
+    AssistantServerMessage(:final messageUuid, :final message) =>
+      _assistantProcessIdentity(messageUuid, message, entry.timestamp),
+    ToolResultMessage(:final toolUseId) =>
+      toolUseId.trim().isNotEmpty
+          ? 'tool-result:${toolUseId.trim()}'
+          : 'tool-result:${entry.timestamp.microsecondsSinceEpoch}',
+    PermissionRequestMessage(:final toolUseId) =>
+      toolUseId.trim().isNotEmpty
+          ? 'permission:${toolUseId.trim()}'
+          : 'permission:${entry.timestamp.microsecondsSinceEpoch}',
+    ToolUseSummaryMessage(:final precedingToolUseIds, :final summary) =>
+      precedingToolUseIds.isNotEmpty
+          ? 'tool-summary:${precedingToolUseIds.first}'
+          : 'tool-summary:${_stableFingerprint(_boundedIdentityText(summary))}',
+    _ => '${message.runtimeType}:${entry.timestamp.microsecondsSinceEpoch}',
+  };
+}
+
+String _assistantProcessIdentity(
+  String? messageUuid,
+  AssistantMessage message,
+  DateTime timestamp,
+) {
+  final uuid = messageUuid?.trim();
+  if (uuid?.isNotEmpty == true) return 'uuid:$uuid';
+  final messageId = message.id.trim();
+  if (messageId.isNotEmpty) return 'id:$messageId';
+  for (final content in message.content) {
+    if (content case ToolUseContent(:final id) when id.trim().isNotEmpty) {
+      return 'tool:${id.trim()}';
+    }
+  }
+  final signature = message.content
+      .map(
+        (content) => switch (content) {
+          TextContent(:final text) => 'text:${_boundedIdentityText(text)}',
+          ThinkingContent(:final thinking) =>
+            'thinking:${_boundedIdentityText(thinking)}',
+          ToolUseContent(:final name, :final input) =>
+            'tool:$name:${input.keys.join(',')}',
+        },
+      )
+      .join('|');
+  if (signature.isNotEmpty) {
+    return 'content:${_stableFingerprint(signature)}';
+  }
+  return 'time:${timestamp.microsecondsSinceEpoch}';
+}
+
+String _boundedIdentityText(String value) {
+  const edgeLength = 128;
+  if (value.length <= edgeLength * 2) return value;
+  return '${value.substring(0, edgeLength)}'
+      ':${value.length}:'
+      '${value.substring(value.length - edgeLength)}';
+}
+
+String _stableFingerprint(String value) {
+  var hash = 0x811c9dc5;
+  for (final unit in value.codeUnits) {
+    hash ^= unit;
+    hash = (hash * 0x01000193) & 0xffffffff;
+  }
+  return hash.toRadixString(16).padLeft(8, '0');
 }
 
 bool _hasVisibleText(AssistantServerMessage message) => message.message.content

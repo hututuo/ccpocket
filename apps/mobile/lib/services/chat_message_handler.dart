@@ -436,7 +436,7 @@ class ChatMessageHandler {
     required bool isBackground,
     required bool isCodex,
   }) {
-    final effects = <ChatSideEffect>{ChatSideEffect.collapseToolResults};
+    final effects = <ChatSideEffect>{};
 
     // Inject accumulated thinking text
     ServerMessage displayMsg = msg;

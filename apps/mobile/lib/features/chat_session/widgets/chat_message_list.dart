@@ -135,8 +135,7 @@ class ChatMessageList extends StatefulWidget {
   State<ChatMessageList> createState() => _ChatMessageListState();
 }
 
-class _ChatMessageListState extends State<ChatMessageList>
-    with WidgetsBindingObserver {
+class _ChatMessageListState extends State<ChatMessageList> {
   ChatSessionCubit? _pagingCubit;
   List<ChatEntry>? _processLayoutEntries;
   bool? _processLayoutLatestTurnIsActive;
@@ -146,14 +145,12 @@ class _ChatMessageListState extends State<ChatMessageList>
   final Set<String> _expandedIntermediateTurns = {};
   final Set<String> _expandedCurrentProgress = {};
   final Map<String, GlobalKey> _disclosureAnchorKeys = {};
-  bool? _tickerEnabled;
   final _generatedImageItemCache =
       <GeneratedImageItemCacheKey, GeneratedImagePreviewItem>{};
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     widget.scrollToUserEntry?.addListener(_onScrollToUserEntry);
     widget.collapseToolResults?.addListener(_onCollapseSignal);
   }
@@ -161,13 +158,6 @@ class _ChatMessageListState extends State<ChatMessageList>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final tickerEnabled = TickerMode.valuesOf(context).enabled;
-    if (_tickerEnabled == true && !tickerEnabled) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _requestCollapseAll();
-      });
-    }
-    _tickerEnabled = tickerEnabled;
     final nextCubit = context.read<ChatSessionCubit>();
     if (identical(nextCubit, _pagingCubit)) return;
     _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
@@ -191,25 +181,10 @@ class _ChatMessageListState extends State<ChatMessageList>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     widget.scrollToUserEntry?.removeListener(_onScrollToUserEntry);
     widget.collapseToolResults?.removeListener(_onCollapseSignal);
     _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
     super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    _requestCollapseAll();
-  }
-
-  void _requestCollapseAll() {
-    final notifier = widget.collapseToolResults;
-    if (notifier != null) {
-      notifier.value++;
-    } else {
-      _collapseAllState();
-    }
   }
 
   void _onCollapseSignal() => _collapseAllState();
@@ -655,14 +630,17 @@ class _ChatMessageListState extends State<ChatMessageList>
         ),
       );
       if (expanded) {
-        children.addAll(
-          _buildProcessSegmentDetails(
-            segment: segment,
-            entries: entries,
-            hiddenToolUseIds: hiddenToolUseIds,
-            transcriptTailComplete: transcriptTailComplete,
-            imageItemsByAnchor: imageItemsByAnchor,
-            imageGroupMemberIndices: imageGroupMemberIndices,
+        children.add(
+          _ProcessDetailsViewport(
+            key: ValueKey('process_details_viewport_${segment.key}'),
+            children: _buildProcessSegmentDetails(
+              segment: segment,
+              entries: entries,
+              hiddenToolUseIds: hiddenToolUseIds,
+              transcriptTailComplete: transcriptTailComplete,
+              imageItemsByAnchor: imageItemsByAnchor,
+              imageGroupMemberIndices: imageGroupMemberIndices,
+            ),
           ),
         );
       }
@@ -718,14 +696,17 @@ class _ChatMessageListState extends State<ChatMessageList>
       );
     }
     if (expanded) {
-      children.addAll(
-        _buildProcessSegmentDetails(
-          segment: segment,
-          entries: entries,
-          hiddenToolUseIds: hiddenToolUseIds,
-          transcriptTailComplete: transcriptTailComplete,
-          imageItemsByAnchor: imageItemsByAnchor,
-          imageGroupMemberIndices: imageGroupMemberIndices,
+      children.add(
+        _ProcessDetailsViewport(
+          key: ValueKey('process_details_viewport_${segment.key}'),
+          children: _buildProcessSegmentDetails(
+            segment: segment,
+            entries: entries,
+            hiddenToolUseIds: hiddenToolUseIds,
+            transcriptTailComplete: transcriptTailComplete,
+            imageItemsByAnchor: imageItemsByAnchor,
+            imageGroupMemberIndices: imageGroupMemberIndices,
+          ),
         ),
       );
     }
@@ -1034,7 +1015,7 @@ class _ChatMessageListState extends State<ChatMessageList>
               return const SizedBox.shrink();
             }
             final itemKey = processSegment.assistantEntryIndex != null
-                ? _entryKey(entry, entryIndex)
+                ? _entryKey(entry)
                 : 'process:${processSegment.key}';
             return _timelineItem(
               key: itemKey,
@@ -1052,7 +1033,7 @@ class _ChatMessageListState extends State<ChatMessageList>
 
           final imageItems = imageItemsByAnchor[entryIndex];
           return _timelineItem(
-            key: _entryKey(entry, entryIndex),
+            key: _entryKey(entry),
             entryIndex: entryIndex,
             child: imageItems != null
                 ? GeneratedImageChatGroup(items: imageItems)
@@ -1100,7 +1081,7 @@ class _ChatMessageListState extends State<ChatMessageList>
     });
   }
 
-  String _entryKey(ChatEntry entry, int index) {
+  String _entryKey(ChatEntry entry) {
     return switch (entry) {
       ServerChatEntry(:final message) => switch (message) {
         ToolResultMessage(:final toolUseId) => 'tool_result:$toolUseId',
@@ -1109,21 +1090,82 @@ class _ChatMessageListState extends State<ChatMessageList>
               ? 'assistant_uuid:$messageUuid'
               : message.id.isNotEmpty
               ? 'assistant_id:${message.id}'
-              : 'assistant_ts:${entry.timestamp.microsecondsSinceEpoch}:$index',
+              : switch (message.content
+                    .whereType<ToolUseContent>()
+                    .firstOrNull) {
+                  ToolUseContent(:final id) when id.isNotEmpty =>
+                    'assistant_tool:$id',
+                  _ => 'assistant_ts:${entry.timestamp.microsecondsSinceEpoch}',
+                },
         PermissionRequestMessage(:final toolUseId) => 'permission:$toolUseId',
-        ToolUseSummaryMessage() =>
-          'tool_summary:${entry.timestamp.microsecondsSinceEpoch}:$index',
-        _ =>
-          '${message.runtimeType}:${entry.timestamp.microsecondsSinceEpoch}:$index',
+        ToolUseSummaryMessage(:final precedingToolUseIds) =>
+          precedingToolUseIds.isNotEmpty
+              ? 'tool_summary:${precedingToolUseIds.first}'
+              : 'tool_summary:${entry.timestamp.microsecondsSinceEpoch}',
+        _ => '${message.runtimeType}:${entry.timestamp.microsecondsSinceEpoch}',
       },
       UserChatEntry(:final messageUuid, :final clientMessageId, :final text) =>
         messageUuid != null && messageUuid.isNotEmpty
             ? 'user_uuid:$messageUuid'
             : clientMessageId != null && clientMessageId.isNotEmpty
             ? 'user_client:$clientMessageId'
-            : 'user_ts:${entry.timestamp.microsecondsSinceEpoch}:${text.hashCode}:$index',
+            : 'user_ts:${entry.timestamp.microsecondsSinceEpoch}:${text.hashCode}',
       StreamingChatEntry() => 'streaming',
     };
+  }
+}
+
+class _ProcessDetailsViewport extends StatefulWidget {
+  const _ProcessDetailsViewport({super.key, required this.children});
+
+  final List<Widget> children;
+
+  @override
+  State<_ProcessDetailsViewport> createState() =>
+      _ProcessDetailsViewportState();
+}
+
+class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
+  static const _maximumVisibleRows = 8;
+  static const _compactRowExtent = 44.0;
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final textScale = media.textScaler.scale(1).clamp(1.0, 1.6).toDouble();
+    final eightRowHeight = _compactRowExtent * _maximumVisibleRows * textScale;
+    final screenHeightCap = media.size.height * 0.55;
+    final maximumHeight = eightRowHeight < screenHeightCap
+        ? eightRowHeight
+        : screenHeightCap;
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maximumHeight),
+      child: NotificationListener<ScrollNotification>(
+        // This nested viewport owns its vertical gesture. Do not let its
+        // metrics trigger the transcript's older-history pagination.
+        onNotification: (_) => true,
+        child: Scrollbar(
+          controller: _controller,
+          child: SingleChildScrollView(
+            key: const ValueKey('process_details_scroll_view'),
+            controller: _controller,
+            primary: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: widget.children,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
