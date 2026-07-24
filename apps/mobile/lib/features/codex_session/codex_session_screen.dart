@@ -650,20 +650,6 @@ class _CodexChatBody extends HookWidget {
       ephemeralSideChatRegistry = context
           .read<EphemeralSideChatRegistryService>();
     } catch (_) {}
-    final localFeatureContext = CodexSessionFeatureContext(
-      context: context,
-      sessionId: sessionId,
-      bridge: bridge,
-      inputController: chatInputController,
-      draftService: draftService,
-      openPane: (featureId, {arguments = const {}}) =>
-          _openLocalFeaturePaneOrSheet(
-            context,
-            featureId: featureId,
-            sessionId: sessionId,
-            arguments: arguments,
-          ),
-    );
 
     // --- Draft persistence: restore on mount, auto-save on change ---
     useEffect(() {
@@ -711,6 +697,21 @@ class _CodexChatBody extends HookWidget {
     final chatSessionCubit = context.read<ChatSessionCubit>();
     final sessionState = context.watch<ChatSessionCubit>().state;
     final bridgeState = context.watch<ConnectionCubit>().state;
+    final localFeatureContext = CodexSessionFeatureContext(
+      context: context,
+      sessionId: sessionId,
+      bridge: bridge,
+      inputController: chatInputController,
+      draftService: draftService,
+      codexModel: sessionState.codexModel,
+      openPane: (featureId, {arguments = const {}}) =>
+          _openLocalFeaturePaneOrSheet(
+            context,
+            featureId: featureId,
+            sessionId: sessionId,
+            arguments: arguments,
+          ),
+    );
     final effectiveProjectPath = _firstNonEmptyProjectPath(
       projectPath,
       sessionState.projectPath,

@@ -13,6 +13,7 @@ class CodexSessionFeatureContext {
   final BridgeService bridge;
   final TextEditingController inputController;
   final DraftService draftService;
+  final String? codexModel;
   final OpenLocalFeaturePane openPane;
 
   const CodexSessionFeatureContext({
@@ -21,6 +22,7 @@ class CodexSessionFeatureContext {
     required this.bridge,
     required this.inputController,
     required this.draftService,
+    this.codexModel,
     required this.openPane,
   });
 }

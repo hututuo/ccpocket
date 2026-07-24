@@ -178,8 +178,14 @@ Mobile rebuildable store
   语义的时间。
 - 现有原生 Side Chat 面板、输入和消息组件可复用，后端 thread 类型才是需要
   替换的部分。
-- Spark 额度圆环选择错误已经定位为 quota selector 仍使用普通总额度分类，
-  不是额度数据本身缺失。
+- Spark 额度圆环选择错误已经确认：Bridge 的
+  `account/rateLimits/read` 结果已经保留 `rateLimitsByLimitId`，其中可直接
+  出现 `gpt-5.3-codex-spark` 卡片；但 Mobile 顶栏 selector 完全没有接收当前
+  会话模型，只取第一张完整卡片/普通 Codex 总额度。不是额度数据本身缺失。
+- 已把当前 runtime `codexModel` 作为只读 feature context 传给额度栏，按规范化
+  后的完整 model ID 精确选择同名卡片；无同名卡时优先回退 `codex` 总额度，
+  再回退旧 Bridge 的 legacy windows。不会用显示名称包含 `Spark` 的模糊判断，
+  也不改变详情页展示全部额度卡片的行为。
 
 ### 2A.4 权限、审批和风险提示
 
@@ -557,10 +563,15 @@ Mobile rebuildable store
 
 ### 9.2 额度
 
-- 选择 Spark 模型时，额度圆环读取 Spark 对应窗口；
-- 普通模型读取普通总额度；
-- quota selector 由实际 model/service tier 分类，不按显示名称字符串模糊匹配；
-- 未知未来 tier 显示 generic/unknown，不误标为普通额度。
+- 已确认并接通 `ChatSessionState.codexModel → local feature context →
+  SessionInsightsBar → rateLimitsByLimitId`：
+  - 选择 `gpt-5.3-codex-spark` 时，两个额度圆环读取该模型卡片；
+  - 普通模型没有专属卡片时读取 `codex` 总额度；
+  - selector 使用完整 model ID 大小写无关精确匹配，不按显示名称模糊匹配；
+  - 旧 Bridge 没有 named cards 时继续读取原有 five-hour/seven-day 字段；
+  - model 切换会触发 Widget 重建并立即重新选卡，不额外请求、不增加轮询。
+- 详情页仍显示 Bridge 返回的全部卡片，便于核对总额度、Spark 与未来新增限额；
+  未知未来模型只走上述兼容回退，不被误识别成 Spark。
 
 ### 9.3 消息时间
 

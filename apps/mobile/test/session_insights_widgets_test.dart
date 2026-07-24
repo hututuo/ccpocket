@@ -361,6 +361,81 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('compact quota rings follow the selected Codex model', (
+    tester,
+  ) async {
+    final bridge = _Bridge()
+      ..quotaProviders = const [
+        SessionUsageInfo(
+          provider: 'codex',
+          limitCards: [
+            SessionUsageLimitCard(
+              id: 'codex',
+              fiveHour: SessionUsageWindow(utilization: 12),
+              sevenDay: SessionUsageWindow(utilization: 24),
+            ),
+            SessionUsageLimitCard(
+              id: 'gpt-5.3-codex-spark',
+              fiveHour: SessionUsageWindow(utilization: 73),
+              sevenDay: SessionUsageWindow(utilization: 88),
+            ),
+          ],
+        ),
+      ];
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      _app(
+        Center(
+          child: SessionInsightsBar(
+            sessionId: 's1',
+            bridgeService: bridge,
+            selectedModel: 'gpt-5.3-codex-spark',
+            compact: true,
+          ),
+        ),
+      ),
+    );
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 's1',
+        requestId: _latestUsageRequestId(bridge),
+        providers: bridge.quotaProviders,
+      ),
+      's1',
+    );
+    await tester.pump();
+
+    final fiveHourRing = find.byKey(
+      const ValueKey('session_insights_five_hour_ring'),
+    );
+    final sevenDayRing = find.byKey(
+      const ValueKey('session_insights_seven_day_ring'),
+    );
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.descendant(
+              of: fiveHourRing,
+              matching: find.byType(CircularProgressIndicator),
+            ),
+          )
+          .value,
+      0.73,
+    );
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.descendant(
+              of: sevenDayRing,
+              matching: find.byType(CircularProgressIndicator),
+            ),
+          )
+          .value,
+      0.88,
+    );
+  });
+
   testWidgets('compact quota rings omit windows the Bridge does not report', (
     tester,
   ) async {

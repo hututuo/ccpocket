@@ -16,6 +16,7 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
       key: ValueKey('session_insights_${context.sessionId}'),
       sessionId: context.sessionId,
       bridgeService: context.bridge,
+      selectedModel: context.codexModel,
       compact: true,
       showLeadingDivider: true,
       onCompact: () => context.openPane(

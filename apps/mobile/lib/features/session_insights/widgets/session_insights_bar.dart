@@ -19,6 +19,7 @@ class SessionInsightsBar extends StatefulWidget {
     super.key,
     required this.sessionId,
     required this.bridgeService,
+    this.selectedModel,
     this.controller,
     this.onCompact,
     this.compact = false,
@@ -27,6 +28,7 @@ class SessionInsightsBar extends StatefulWidget {
 
   final String sessionId;
   final BridgeService bridgeService;
+  final String? selectedModel;
   final SessionInsightsController? controller;
   final VoidCallback? onCompact;
   final bool compact;
@@ -90,7 +92,7 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
     final usage = _controller.contextUsage;
     final hasContext = usage != null && usage.modelContextWindow > 0;
     final quota = _controller.codexUsage;
-    final quotaWindows = _primaryQuotaWindows(quota);
+    final quotaWindows = _primaryQuotaWindows(quota, widget.selectedModel);
     final fiveHour = quotaWindows.fiveHour;
     final sevenDay = quotaWindows.sevenDay;
     if (!hasContext && !(quota?.hasData ?? false) && !_controller.isLoading) {
@@ -105,7 +107,7 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
     final label = hasContext
         ? '$percent% · ${_compactTokens(usage.last.totalTokens)} / '
               '${_compactTokens(usage.modelContextWindow)}'
-        : _compactQuotaSummary(l, strings, quota);
+        : _compactQuotaSummary(l, strings, quota, widget.selectedModel);
     final compactLabel = hasContext
         ? '$percent%'
         : _controller.isLoading
@@ -653,18 +655,32 @@ List<SessionUsageResetCredit> sortResetCreditsForDisplay(
   });
 
 ({SessionUsageWindow? fiveHour, SessionUsageWindow? sevenDay})
-_primaryQuotaWindows(SessionUsageInfo? info) {
+_primaryQuotaWindows(SessionUsageInfo? info, String? selectedModel) {
   if (info == null) return (fiveHour: null, sevenDay: null);
-  for (final card in info.limitCards) {
-    if (card.fiveHour != null && card.sevenDay != null) {
-      return (fiveHour: card.fiveHour, sevenDay: card.sevenDay);
-    }
-  }
-  if (info.limitCards.isNotEmpty) {
-    final first = info.limitCards.first;
-    return (fiveHour: first.fiveHour, sevenDay: first.sevenDay);
+  final card = _quotaCardForModel(info.limitCards, selectedModel);
+  if (card != null) {
+    return (fiveHour: card.fiveHour, sevenDay: card.sevenDay);
   }
   return (fiveHour: info.fiveHour, sevenDay: info.sevenDay);
+}
+
+SessionUsageLimitCard? _quotaCardForModel(
+  List<SessionUsageLimitCard> cards,
+  String? selectedModel,
+) {
+  final normalizedModel = selectedModel?.trim().toLowerCase();
+  if (normalizedModel != null && normalizedModel.isNotEmpty) {
+    for (final card in cards) {
+      if (card.id.trim().toLowerCase() == normalizedModel) return card;
+    }
+  }
+  for (final card in cards) {
+    if (card.id.trim().toLowerCase() == 'codex') return card;
+  }
+  for (final card in cards) {
+    if (card.fiveHour != null && card.sevenDay != null) return card;
+  }
+  return cards.isEmpty ? null : cards.first;
 }
 
 Color _meterColor(ColorScheme colors, double utilization) {
@@ -693,15 +709,17 @@ String _compactQuotaSummary(
   AppLocalizations l,
   SessionInsightsStrings strings,
   SessionUsageInfo? info,
+  String? selectedModel,
 ) {
   if (info == null) return strings.title;
-  for (final card in info.limitCards) {
-    final primary = card.fiveHour;
+  final selectedCard = _quotaCardForModel(info.limitCards, selectedModel);
+  if (selectedCard != null) {
+    final primary = selectedCard.fiveHour;
     if (primary != null) {
       return '${_windowLabel(primary, fallback: l.usageFiveHour)} '
           '${primary.utilization.clamp(0, 100).round()}%';
     }
-    final secondary = card.sevenDay;
+    final secondary = selectedCard.sevenDay;
     if (secondary != null) {
       return '${_windowLabel(secondary, fallback: l.usageSevenDay)} '
           '${secondary.utilization.clamp(0, 100).round()}%';
