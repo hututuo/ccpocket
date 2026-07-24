@@ -10392,6 +10392,111 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     disabledBridge.close();
   });
 
+  it("delivers only lightweight notifications while a client is backgrounded", async () => {
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      deltaBatchMs: 0,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "client_delivery_mode_state_v1",
+          "background_notification_v1",
+          "background_activity_state_v1",
+        ],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "notifications_only",
+        requestId: "background-1",
+        locale: "zh",
+        enabledEventTypes: [
+          "approval_required",
+          "session_completed",
+        ],
+      },
+      ws,
+    );
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        type: "client_delivery_mode_state_v1",
+        mode: "notifications_only",
+        requestId: "background-1",
+      }),
+      expect.objectContaining({
+        type: "background_activity_state_v1",
+        activeWorkCount: 0,
+      }),
+    ]);
+
+    ws.send.mockClear();
+    (bridge as any).broadcastSessionMessage("session-1", {
+      type: "stream_delta",
+      text: "large streaming payload",
+    });
+    (bridge as any).broadcastSessionMessage("session-1", {
+      type: "permission_request",
+      toolUseId: "tool-1",
+      toolName: "Bash",
+      input: { command: "cat /private/secret" },
+    });
+    const backgroundMessages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(backgroundMessages).toHaveLength(1);
+    expect(backgroundMessages[0]).toMatchObject({
+      type: "background_notification_v1",
+      eventType: "approval_required",
+      sessionId: "session-1",
+    });
+    expect(JSON.stringify(backgroundMessages)).not.toContain(
+      "large streaming payload",
+    );
+    expect(JSON.stringify(backgroundMessages)).not.toContain(
+      "cat /private/secret",
+    );
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "interactive",
+        requestId: "foreground-1",
+      },
+      ws,
+    );
+    (bridge as any).broadcastSessionMessage("session-1", {
+      type: "stream_delta",
+      text: "foreground payload",
+    });
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        type: "client_delivery_mode_state_v1",
+        mode: "interactive",
+        requestId: "foreground-1",
+      }),
+      expect.objectContaining({
+        type: "stream_delta",
+        text: "foreground payload",
+      }),
+    ]);
+    bridge.close();
+  });
+
   it("flushes every client batch during shutdown", () => {
     vi.useFakeTimers();
     const bridge = new BridgeWebSocketServer({

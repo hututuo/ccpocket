@@ -17,6 +17,11 @@ import {
   type FileTransferClientMessage,
   type FileTransferServerMessage,
 } from "./file-transfer-protocol.js";
+import {
+  parseBackgroundDeliveryClientMessage,
+  type BackgroundDeliveryClientMessage,
+  type BackgroundDeliveryServerMessage,
+} from "./background-delivery-protocol.js";
 
 export type {
   CodexSubagentInfo,
@@ -141,6 +146,7 @@ export interface MobileRuntimeCapabilities {
 }
 
 export type ClientMessage =
+  | BackgroundDeliveryClientMessage
   | {
       type: "client_capabilities";
       appVersion?: string;
@@ -535,6 +541,7 @@ export interface CodexCliJoinTarget {
 }
 
 export type ServerMessage =
+  | BackgroundDeliveryServerMessage
   | {
       type: "system";
       subtype: string;
@@ -1015,6 +1022,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
   try {
     const msg = JSON.parse(data) as Record<string, unknown>;
     if (!msg.type || typeof msg.type !== "string") return null;
+    const backgroundDeliveryMessage =
+      parseBackgroundDeliveryClientMessage(msg);
+    if (backgroundDeliveryMessage !== undefined) {
+      return backgroundDeliveryMessage;
+    }
     const fileTransferMessage = parseFileTransferClientMessage(msg);
     if (fileTransferMessage !== undefined) return fileTransferMessage;
     const localFeatureMessage = parseLocalFeatureClientMessage(msg);

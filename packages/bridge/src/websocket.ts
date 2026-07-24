@@ -113,6 +113,21 @@ import { RecordingStore } from "./recording-store.js";
 import { PushRelayClient } from "./push-relay.js";
 import type { FirebaseAuthClient } from "./firebase-auth.js";
 import { type PushLocale, normalizePushLocale, t } from "./push-i18n.js";
+import {
+  BACKGROUND_ACTIVITY_STATE_MESSAGE,
+  BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
+  BACKGROUND_NOTIFICATION_MESSAGE,
+  CLIENT_DELIVERY_MODE_STATE_MESSAGE,
+  type BackgroundActivityStateMessage,
+  type ClientDeliveryMode,
+} from "./background-delivery-protocol.js";
+import {
+  createBackgroundNotificationPolicy,
+  createBackgroundNotificationProjectionState,
+  projectBackgroundNotification,
+  type BackgroundNotificationPolicy,
+  type BackgroundNotificationProjectionState,
+} from "./background-notification-projector.js";
 import { fetchAllUsage } from "./usage.js";
 import type { PromptHistoryBackupStore } from "./prompt-history-backup.js";
 import type { PromptHistoryStore } from "./prompt-history-store.js";
@@ -158,6 +173,11 @@ type FileContentServerMessage = Extract<
 >;
 type ClaudePermissionMode =
   "default" | "auto" | "acceptEdits" | "bypassPermissions" | "plan";
+type BackgroundDeliveryClientState = {
+  mode: Extract<ClientDeliveryMode, "notifications_only">;
+  policy: BackgroundNotificationPolicy;
+  projectionState: BackgroundNotificationProjectionState;
+};
 
 const FILE_PEEK_TEXT_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
@@ -515,6 +535,9 @@ const OPT_IN_SERVER_MESSAGES = new Set<string>([
   "guardian_approval",
   "prompt_history_status",
   "artifact_resolved",
+  CLIENT_DELIVERY_MODE_STATE_MESSAGE,
+  BACKGROUND_NOTIFICATION_MESSAGE,
+  BACKGROUND_ACTIVITY_STATE_MESSAGE,
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1125,6 +1148,8 @@ export class BridgeWebSocketServer {
   private deltaBatches = new Map<WebSocket, Map<string, DeltaBatch>>();
   private platform: NodeJS.Platform;
   private clientSupportedServerMessages = new WeakMap<WebSocket, Set<string>>();
+  private backgroundDeliveryClients =
+    new WeakMap<WebSocket, BackgroundDeliveryClientState>();
   // Diagnostic-only: feature behavior remains gated by advertised capabilities.
   private clientMobileRuntime = new WeakMap<
     WebSocket,
@@ -3254,6 +3279,47 @@ export class BridgeWebSocketServer {
       }
       this.localFeatures.capabilitiesChanged(ws);
       this.sendPromptHistoryStatus(ws);
+      return;
+    }
+
+    if (msg.type === "set_client_delivery_mode") {
+      const supportedMessages = this.clientSupportedServerMessages.get(ws);
+      const supportsBackgroundDelivery =
+        supportedMessages?.has(CLIENT_DELIVERY_MODE_STATE_MESSAGE) === true &&
+        supportedMessages.has(BACKGROUND_NOTIFICATION_MESSAGE) &&
+        supportedMessages.has(BACKGROUND_ACTIVITY_STATE_MESSAGE);
+      if (msg.mode === "notifications_only" && !supportsBackgroundDelivery) {
+        this.send(ws, {
+          type: "error",
+          errorCode: "background_delivery_client_unsupported",
+          message: msg.type,
+        });
+        return;
+      }
+
+      if (msg.mode === "notifications_only") {
+        this.discardClientDeltaBatches(ws);
+        this.backgroundDeliveryClients.set(ws, {
+          mode: "notifications_only",
+          policy: createBackgroundNotificationPolicy({
+            locale: msg.locale,
+            privacyMode: msg.privacyMode,
+            enabledEventTypes: msg.enabledEventTypes,
+          }),
+          projectionState: createBackgroundNotificationProjectionState(),
+        });
+      } else {
+        this.backgroundDeliveryClients.delete(ws);
+      }
+      this.send(ws, {
+        type: CLIENT_DELIVERY_MODE_STATE_MESSAGE,
+        mode: msg.mode,
+        requestId: msg.requestId,
+        activeWorkCount: this.backgroundActiveWorkCount(),
+      });
+      if (msg.mode === "notifications_only") {
+        this.send(ws, this.backgroundActivityState());
+      }
       return;
     }
 
@@ -8335,6 +8401,7 @@ export class BridgeWebSocketServer {
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
+        BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -8381,6 +8448,7 @@ export class BridgeWebSocketServer {
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
+        BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         PERSISTED_SIDE_CHAT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -8702,6 +8770,36 @@ export class BridgeWebSocketServer {
     for (const client of this.wss.clients) {
       if (client === exclude) continue;
       if (client.readyState === WebSocket.OPEN) {
+        const backgroundDelivery =
+          this.backgroundDeliveryClients.get(client);
+        if (backgroundDelivery?.mode === "notifications_only") {
+          const notification = projectBackgroundNotification(
+            msg,
+            {
+              sessionId,
+              provider:
+                this.sessionManager.get(sessionId)?.provider ?? "claude",
+              label: this.sessionLabel(sessionId),
+            },
+            backgroundDelivery.policy,
+            backgroundDelivery.projectionState,
+          );
+          if (notification) {
+            const compatibleNotification =
+              this.prepareServerMessageForClient(client, notification);
+            if (compatibleNotification) {
+              client.send(JSON.stringify(compatibleNotification));
+            }
+          }
+          if (msg.type === "status" || msg.type === "result") {
+            const activity = this.prepareServerMessageForClient(
+              client,
+              this.backgroundActivityState(),
+            );
+            if (activity) client.send(JSON.stringify(activity));
+          }
+          continue;
+        }
         const outboundMsg = {
           ...(msg as unknown as Record<string, unknown>),
           sessionId,
@@ -9775,6 +9873,23 @@ export class BridgeWebSocketServer {
     ws: WebSocket,
     msg: ServerMessage | Record<string, unknown>,
   ): ServerMessage | Record<string, unknown> | null {
+    if (
+      this.backgroundDeliveryClients.get(ws)?.mode === "notifications_only"
+    ) {
+      if (msg.type === "session_list") {
+        return this.shouldSendToClient(ws, this.backgroundActivityState())
+          ? this.backgroundActivityState()
+          : null;
+      }
+      if (
+        msg.type !== CLIENT_DELIVERY_MODE_STATE_MESSAGE &&
+        msg.type !== BACKGROUND_NOTIFICATION_MESSAGE &&
+        msg.type !== BACKGROUND_ACTIVITY_STATE_MESSAGE &&
+        msg.type !== "error"
+      ) {
+        return null;
+      }
+    }
     if (!this.shouldSendToClient(ws, msg)) return null;
     if (!("messages" in msg) || !Array.isArray(msg.messages)) return msg;
     const messages = msg.messages as unknown[];
@@ -9798,6 +9913,25 @@ export class BridgeWebSocketServer {
       };
     }
     return msg;
+  }
+
+  private backgroundActiveWorkCount(): number {
+    return this.sessionManager.list().filter((session) => {
+      return (
+        session.queuedInput != null ||
+        session.status === "starting" ||
+        session.status === "running" ||
+        session.status === "compacting"
+      );
+    }).length;
+  }
+
+  private backgroundActivityState(): BackgroundActivityStateMessage {
+    return {
+      type: BACKGROUND_ACTIVITY_STATE_MESSAGE,
+      activeWorkCount: this.backgroundActiveWorkCount(),
+      occurredAt: new Date().toISOString(),
+    };
   }
 
   private shouldSendToClient(

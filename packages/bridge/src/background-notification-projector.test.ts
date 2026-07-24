@@ -1,0 +1,136 @@
+import { describe, expect, it } from "vitest";
+import {
+  createBackgroundNotificationPolicy,
+  createBackgroundNotificationProjectionState,
+  projectBackgroundNotification,
+} from "./background-notification-projector.js";
+
+const context = {
+  sessionId: "session-1",
+  provider: "codex" as const,
+  label: "同步修复 (ccpocket)",
+  now: Date.parse("2026-07-24T01:00:00.000Z"),
+};
+
+describe("background notification projector", () => {
+  it("projects only enabled lightweight events and never includes tool input", () => {
+    const policy = createBackgroundNotificationPolicy({
+      locale: "zh-CN",
+      enabledEventTypes: ["approval_required"],
+    });
+    const state = createBackgroundNotificationProjectionState();
+    const message = projectBackgroundNotification(
+      {
+        type: "permission_request",
+        toolUseId: "tool-1",
+        toolName: "Bash",
+        input: { command: "cat /private/secret" },
+      },
+      context,
+      policy,
+      state,
+    );
+
+    expect(message).toMatchObject({
+      type: "background_notification_v1",
+      eventType: "approval_required",
+      sessionId: "session-1",
+      provider: "codex",
+      title: "需要批准 - 同步修复 (ccpocket)",
+      body: "请批准执行 Bash",
+    });
+    expect(JSON.stringify(message)).not.toContain("cat /private/secret");
+    expect(
+      projectBackgroundNotification(
+        {
+          type: "permission_request",
+          toolUseId: "tool-1",
+          toolName: "Bash",
+          input: {},
+        },
+        context,
+        policy,
+        state,
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps progress opt-in, deduplicated and rate limited", () => {
+    const policy = createBackgroundNotificationPolicy({
+      locale: "en",
+      enabledEventTypes: ["session_progress"],
+    });
+    const state = createBackgroundNotificationProjectionState();
+    const assistant = (id: string, name: string) =>
+      ({
+        type: "assistant",
+        message: {
+          id: `message-${id}`,
+          role: "assistant",
+          model: "gpt-5.6",
+          content: [{ type: "tool_use", id, name, input: { large: "value" } }],
+        },
+      }) as const;
+
+    expect(
+      projectBackgroundNotification(
+        assistant("tool-1", "Read"),
+        context,
+        policy,
+        state,
+      ),
+    ).toMatchObject({
+      eventType: "session_progress",
+      body: "Using Read",
+    });
+    expect(
+      projectBackgroundNotification(
+        assistant("tool-1", "Read"),
+        { ...context, now: context.now + 50_000 },
+        policy,
+        state,
+      ),
+    ).toBeNull();
+    expect(
+      projectBackgroundNotification(
+        assistant("tool-2", "Bash"),
+        { ...context, now: context.now + 30_000 },
+        policy,
+        state,
+      ),
+    ).toBeNull();
+    expect(
+      projectBackgroundNotification(
+        assistant("tool-2", "Bash"),
+        { ...context, now: context.now + 45_000 },
+        policy,
+        state,
+      ),
+    ).toMatchObject({ body: "Using Bash" });
+  });
+
+  it("removes result content in privacy mode", () => {
+    const policy = createBackgroundNotificationPolicy({
+      locale: "zh",
+      privacyMode: true,
+      enabledEventTypes: ["session_completed"],
+    });
+    const message = projectBackgroundNotification(
+      {
+        type: "result",
+        subtype: "success",
+        result: "sensitive result body",
+        duration: 3.2,
+      },
+      context,
+      policy,
+      createBackgroundNotificationProjectionState(),
+    );
+
+    expect(message).toMatchObject({
+      title: "任务已完成",
+      body: "会话已完成 (3.2s)",
+    });
+    expect(JSON.stringify(message)).not.toContain("sensitive");
+  });
+});

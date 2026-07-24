@@ -46,6 +46,29 @@ describe("normalizeToolResultContent", () => {
 // ---- parseClientMessage ----
 
 describe("parseClientMessage", () => {
+  it("parses strict background delivery mode requests", () => {
+    const request = {
+      type: "set_client_delivery_mode",
+      mode: "notifications_only",
+      requestId: "delivery-1",
+      locale: "zh-CN",
+      privacyMode: true,
+      enabledEventTypes: ["approval_required", "session_completed"],
+    };
+    expect(parseClientMessage(JSON.stringify(request))).toEqual(request);
+    expect(
+      parseClientMessage(JSON.stringify({ ...request, mode: "streaming" })),
+    ).toBeNull();
+    expect(
+      parseClientMessage(JSON.stringify({ ...request, unexpected: true })),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({ ...request, enabledEventTypes: [1] }),
+      ),
+    ).toBeNull();
+  });
+
   it("routes only strict v2 file-transfer messages into the independent module", () => {
     const valid = {
       type: "file_transfer_upload_prepare_v2",
