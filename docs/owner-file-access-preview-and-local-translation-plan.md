@@ -1,4 +1,4 @@
-# CC Pocket owner 文件能力、统一预览与本地翻译实施参考
+# CC Pocket owner 文件能力、统一预览、本地翻译与统一会话实施参考
 
 > 状态：accepted product design / provisional implementation reference
 > 当前只完成设计整理，尚未开始实现、集成、构建、部署、发布或真机验收。
@@ -6,12 +6,14 @@
 
 ## 0. 文档权威边界
 
-本文合并两组已经由用户确认、但尚未交付实现的方案：
+本文合并三组已经由用户确认、但尚未交付实现的方案：
 
 1. owner 自用部署的全盘只读、手动文件管理、Agent 文件引用、统一预览，以及
    Mobile 文件变更的密码或 Face ID 二次授权；
 2. CC Pocket 固定界面的完整中文化，以及对动态英文警告/说明使用 Apple
-   Translation framework 做本地翻译。
+   Translation framework 做本地翻译；
+3. Codex Desktop 风格的统一会话列表、APP 前台全会话轻量增量同步、直接打开
+   并继续使用，以及将完整下载状态收束为会话行内勾号。
 
 本文有意写得完整，但编写前只核对了相关主链路，没有穷尽所有 Bridge、Mobile、
 native、HTTP、文件传输、Gallery、历史兼容、发布和测试代码。因此：
@@ -96,6 +98,23 @@ Bridge 权威验证以下任一方式：
   继续正常运行并显示英文原文，但可以完全不显示动态翻译入口。
 - 翻译失败、语言包未下载或系统不支持时，不能阻塞消息、审批、警告或会话使用。
 
+### 1.6 统一会话与前台增量同步
+
+- 首页最终只保留一套会话列表，不再把“运行中”“常驻”“已下载”分别做成占据
+  顶部空间的独立会话区；这些都只是同一个 durable 会话的行内状态。
+- 用户点击任何已知会话都应立即进入并看到手机已有的最近内容。恢复或建立
+  Bridge runtime、增量对账和 interactive 切换在后台完成，不再要求用户先
+  “激活”，再第二次进入或使用。
+- APP 处于前台且 Bridge 已连接时，未打开的会话也接收轻量变化通知和必要增量，
+  写入本地可重建缓存；未打开会话不构建聊天 Widget、不做 Markdown 重排，也不
+  展开或渲染工具详情。
+- “所有会话自动同步”不等于首次把所有历史全部下载到手机。所有会话保留可直接
+  打开的最近窗口和后续增量；用户主动完整下载的会话才保存全部可恢复历史。
+- 完整下载按钮的状态收束为：未下载显示下载符号、下载中显示进度、已下载显示
+  勾号。完整下载会话仍留在原列表顺序中，不因下载或自动同步被移到顶部。
+- iOS 真正挂起、系统回收或用户强退后不承诺永久 WebSocket；回到前台后必须按
+  durable provider thread ID 和 revision/sequence 增量追平。
+
 ## 2. 已确认存在的能力与不得重复实现的部分
 
 截至上述只读快照，已经确认：
@@ -116,6 +135,16 @@ Bridge 权威验证以下任一方式：
   DOCX 和 unsupported fallback 的部分实现；
 - Mobile 已有 `app_en.arb`、`app_zh.arb`、`app_ja.arb`、`app_ko.arb` 和若干
   feature-specific strings，但仍存在直接写死的英文 UI 文案。
+- Recent session 点击当前仍调用 `resumeSession()`，等 Bridge 创建运行实例后
+  才导航到聊天，因此“激活”仍是用户可感知的前置步骤；
+- `DesktopSessionListContinuityTracker` 只跟踪已经出现在 Bridge active
+  session list 中的 Codex 会话，不覆盖所有未激活历史会话；
+- Conversation Mirror 已能让未打开的 Codex 会话在连接时增量同步，但产品与
+  Bridge 当前都把 resident watch 限制在最多 8 个；
+- Home 当前存在独立 `ConversationMirrorResidentSection`，并从普通 recent
+  list 中排除 resident 会话；
+- 会话行内已经存在 Mirror 状态按钮：未下载、已保存未常驻、常驻和同步中已有
+  不同状态，不应再造第二套下载状态系统。
 
 后续不得重复创建：
 
@@ -149,6 +178,15 @@ Mobile 文件变更请求
 
 固定 UI 英文 ─ ARB + 本地术语表
 动态自然语言英文 ─ Apple Translation（可用时）─ 译文 + 可查看原文
+
+Bridge 会话索引/变化监视
+        │
+        ├─ compact revision/status event
+        ├─ changed-session bounded delta
+        └─ Mobile Mirror/SQLite（不渲染未打开会话）
+                         │
+                         ├─ 统一会话列表行内状态
+                         └─ 打开后立即读本地窗口并后台恢复 interactive runtime
 ```
 
 Bridge 是 Mac 文件读取和变更授权的权威端。Mobile 不直接提交任意本地路径给
@@ -447,7 +485,174 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 开关调整是否可 OTA，必须再与当前 Shorebird release 的真实 native-Dart 契约
 核对。
 
-## 9. 候选 capability 与协议
+## 9. 统一会话列表与全会话轻量增量同步
+
+### 9.1 当前问题与边界
+
+当前实现把同一个 durable 会话拆成三种用户可见形态：
+
+1. active/running session：Bridge 已经持有运行实例，Home continuity watcher
+   能跟踪 Desktop 变化；
+2. resident conversation：手机拥有完整副本并维持 Mirror watch，但最多 8 个，
+   还会进入独立的首页顶部区域；
+3. recent session：只有历史 metadata，点击时先恢复 runtime，再进入会话。
+
+这三者是运行状态和缓存状态，不应该继续表现为三种不同的“会话实体”。直接提高
+现有 resident watch 上限也不是目标方案：当前 Mirror watch 会为每个会话持有
+状态并轮询 marker、在变化或定时到期时做完整 reconciliation；把这种模型机械
+扩展到全部历史会话会增加 Bridge 进程、文件读取、内存快照和手机写入压力。
+
+### 9.2 单一 durable 会话身份
+
+统一列表和同步必须以稳定 provider identity 为主键：
+
+```text
+bridgeInstanceId + provider + providerSessionId
+```
+
+runtime session ID、标题、第一条 prompt、project 名和列表位置都不能替代
+`providerSessionId`。同一个 durable 会话可以同时具有：
+
+- 当前 Bridge runtime ID；
+- provider thread/rollout revision；
+- Mobile 最近窗口缓存；
+- 可选的完整下载副本；
+- running、needs-you、ready、unseen、syncing 等瞬时状态。
+
+这些都是一个实体的属性。Bridge 重连、runtime 重建、Desktop 接手和 Mobile
+重新打开不能生成第二张会话卡。
+
+### 9.3 统一首页
+
+目标首页行为：
+
+- 删除独立 `ConversationMirrorResidentSection`；
+- resident/完整下载会话不再从 recent list 过滤掉；
+- 运行状态、审批状态、未读、Desktop 活动、同步和完整下载均显示为行内 badge；
+- 排序继续使用用户选择的项目、时间和主动 pin 规则，下载状态不能改变排序；
+- 完整下载状态按钮：
+  - 无完整副本：下载符号；
+  - 下载或对账中：小型进度；
+  - 完整副本存在：勾号；
+- “立即同步、停止完整自动同步、删除手机副本”继续留在长按/更多菜单；
+- 如未来增加“只看已下载”，它是筛选器，不是首页顶部分类。
+
+所有状态控件应复用现有 `ConversationMirrorBadge`、Mirror metadata 和 action
+handler，不创建并行的保存状态或第二套数据库。
+
+### 9.4 直接打开与延迟 runtime 恢复
+
+点击会话后的目标顺序：
+
+1. 立即导航到同一聊天页面；
+2. 优先读取 Mobile 已有的最近窗口或完整副本并首屏显示；
+3. 同时向 Bridge 查询当前 runtime，存在则直接绑定；
+4. 不存在则在后台恢复 provider 会话，并把 durable ID 与新 runtime ID 绑定；
+5. 从本地已知 revision/sequence 做增量 reconciliation；
+6. interactive ready 后正常发送输入。
+
+如果用户在 runtime 尚未 ready 时马上发送，输入可以进入明确标记、可取消且有界
+的本地 pending queue；ready 后只发送一次。断线、恢复失败、会话已归档或 provider
+身份不匹配必须显示真实状态，不能把“直接打开”实现成静默丢消息。
+
+打开页面不应先请求完整历史。最近窗口用于即时首屏，更旧历史按现有分页机制向上
+加载；有完整手机副本时直接从本地分页。
+
+### 9.5 Bridge 统一变化流
+
+APP 前台的“所有会话同步”应采用一个 Bridge 级索引/变化流，而不是为每个会话
+复制一个完整 Mirror poller。候选职责：
+
+- Bridge 维护已知 provider threads 的有界 revision/status 索引；
+- provider rollout、历史 marker 或 active runtime 发生变化时，推送 compact
+  change event；
+- event 至少关联 provider、providerSessionId、project identity、revision 或
+  sequence、状态和变化类型；
+- Mobile 只对真正变化、且本地缺少增量的会话发起 bounded delta 请求；
+- Bridge 对同一会话的短时间 burst 合并，对不同会话实行公平队列和并发上限；
+- 断线重连先交换客户端已有 revision 摘要，再补缺口，不全量重发所有历史；
+- revision 不连续、摘要冲突或协议不支持时，退回该单会话的 canonical
+  reconciliation，不扩大成全库重建。
+
+协议名称必须在实施时检索现有 local-feature slot 和官方上游后决定。本文中的
+`conversation_index_stream_v1`、`conversation_delta_sync_v2` 仅表达候选边界，
+不是已经批准的最终 wire 名称。
+
+### 9.6 Mobile 未打开会话的数据路径
+
+未打开会话只允许：
+
+- 验证 generation、provider identity、revision 和顺序；
+- 合并/标准化必要增量；
+- 事务性写入 Conversation Mirror/SQLite；
+- 更新列表需要的少量 metadata、最后活动时间、状态和未读标记；
+- 在缓存/磁盘预算达到上限时按明确策略压缩或淘汰可重建的最近窗口。
+
+未打开会话禁止：
+
+- 构建 `ChatSessionCubit` 或完整消息 Widget 树；
+- Markdown/代码高亮全文重排；
+- 工具结果展开、图片解码或 Artifact 预览；
+- 每个 delta 重建整个 Home；
+- 为所有会话长期保留完整内存 snapshot。
+
+Home 只订阅列表级摘要，并用稳定 key/selector 更新真正变化的行。
+
+### 9.7 最近窗口与完整下载
+
+两个概念必须分离：
+
+- **最近窗口自动同步**：所有已知会话都可以拥有一个有界、可直接首屏显示的最近
+  窗口，并持续接收后续增量；
+- **完整下载**：用户显式选择后保存全部可恢复文本和工具历史，支持完整离线浏览。
+
+勾号只表示完整下载副本存在。没有勾号的会话仍能直接打开和继续使用，只是向上
+翻阅很久以前的内容时可能需要 Bridge 在线分页。停止“完整自动同步”只停止完整
+副本的 resident 策略，不应停止该会话的列表状态和最近窗口轻量同步。
+
+### 9.8 性能与功耗约束
+
+- 当前打开会话保持现有低延迟流式反馈，不能为了后台同步降低用户正在看的实时性；
+- 未打开会话可以用更长合并窗口，具体数值必须通过真机和长会话基准确定；
+- Bridge provider reads、Mobile reconciliation、SQLite transaction 和网络字节
+  都要分别设并发、单次、每分钟和全局预算；
+- 同一会话的多个变化 single-flight；新 revision 可覆盖尚未开始的旧对账，但
+  不能跳过已经确认需要的 sequence；
+- 优先处理正在运行、needs-you、用户刚打开和列表可见的会话；
+- 很久未变化的归档会话只保留索引，不维持周期性完整读取；
+- 启动先显示本地列表，再分批校验远端 revision；不能因全会话扫描阻塞首帧；
+- 需要基准覆盖数百/数千会话、长历史、工具密集、burst、断线重连和低内存。
+
+### 9.9 iOS 生命周期
+
+本方案的可靠范围首先是“APP 在前台，但用户没有打开具体会话”。此时保持一个
+Bridge 连接和统一变化流是合理的。
+
+进入 iOS 后台后：
+
+- 现有有限 `UIBackgroundTask` 只能短时间续跑；
+- `BGAppRefresh` 是系统机会性调度；
+- notification-only 模式不能顺带恢复全历史/Mirror；
+- 进程被系统回收或用户强退后不继续同步；
+- 下次前台恢复按 durable ID 和 revision/sequence 增量追平。
+
+不得用定位、音频或其他后台模式伪装永久全会话 WebSocket。本节不改变已经确认的
+通知与后台功耗边界。
+
+### 9.10 Provider 与兼容边界
+
+- 当前 Desktop continuity 和 Conversation Mirror 的完整实现主要是 Codex 专用；
+  “所有会话”若包含 Claude，必须通过 provider adapter 提供同一上层语义，不能
+  把 Codex rollout 假设套到 Claude；
+- 新 Mobile + 旧 Bridge：保留当前 recent resume、运行中 continuity 和最多
+  8 个 resident 会话；统一变化流缺失时隐藏或降级，不破坏会话；
+- 旧 Mobile + 新 Bridge：没有 capability opt-in 时行为不变，不发送未知事件；
+- 新两端：使用统一索引/变化流和按需 delta；
+- Mirror/SQLite 始终是可重建缓存，canonical provider history 仍是权威；
+- 新表、字段或索引只能 additive migration，旧数据库损坏或缺字段时安全重建；
+- 官方上游若新增类似 thread subscription，应优先语义复用，不保留两套竞争协议。
+
+## 10. 候选 capability 与协议
 
 以下名称只用于表达边界，实施时必须先检索现有命名和版本，避免重复：
 
@@ -456,6 +661,8 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 - `file_mutation_step_up_v1`
 - `biometric_device_signature_v1`
 - `system_translation_v1`
+- `conversation_index_stream_v1`（候选名）
+- `conversation_delta_sync_v2`（候选名）
 
 原则：
 
@@ -467,10 +674,12 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 - 如果 Bridge 需要标注“可翻译自然语言”，应使用窄、可选的展示 metadata，
   不能把服务端翻译结果写成 provider 原文；
 - capability 表达真实能力，不用总版本号代替。
+- 会话变化协议只传 compact metadata 和按需增量，不能把全部会话完整 snapshot
+  塞入一次广播。
 
-## 10. 兼容矩阵
+## 11. 兼容矩阵
 
-### 10.1 文件能力
+### 11.1 文件能力
 
 - 新 Bridge + 新 Mobile：owner 全盘只读、统一预览、直接文件变更二次授权；
 - 新 Bridge + 旧 Mobile：保留旧只读行为；新写操作不回退为未授权执行；
@@ -478,7 +687,7 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
   普通会话和旧文件读取继续工作；
 - 旧 Bridge + 旧 Mobile：行为不变。
 
-### 10.2 native 能力
+### 11.2 native 能力
 
 - 新基础 IPA + 新 Dart：使用 Quick Look、Secure Enclave/Face ID 和系统翻译的
   已声明能力；
@@ -487,7 +696,7 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 - 新基础 IPA + 旧 Dart：新增 native plugin 无调用时保持 dormant；
 - Shorebird 回滚 Dart 时仍必须保证 native host 对旧调用兼容。
 
-### 10.3 动态翻译
+### 11.3 动态翻译
 
 - 支持 Apple Translation 的系统：按用户设置翻译自然语言；
 - 不支持的旧系统：APP 正常运行，固定 UI 仍通过 ARB 中文化，动态内容显示原文；
@@ -495,9 +704,18 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 - 翻译异常：显示原文并可重试，不影响主流程；
 - 不使用 Bridge 云翻译作为隐式 fallback。
 
-## 11. 安全、隐私和性能
+### 11.4 统一会话
 
-### 11.1 文件安全
+- 新 Mobile + 新 Bridge：统一列表、直接打开、前台全会话轻量变化流和按需增量；
+- 新 Mobile + 旧 Bridge：沿用当前 resume/continuity/resident 行为，不假装全量
+  自动同步已经存在；
+- 旧 Mobile + 新 Bridge：没有新 capability 时 Bridge 不发送新事件；
+- 旧 Mobile + 旧 Bridge：行为不变；
+- iOS 后台、强退和进程回收继续按第 9.9 节边界处理。
+
+## 12. 安全、隐私和性能
+
+### 12.1 文件安全
 
 - 全盘只读必须建立在已认证连接和受限网络暴露上；
 - WebSocket 与所有私有 HTTP、Gallery、artifact、preview/content/download
@@ -507,7 +725,7 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 - Full Disk Access 只授予路径和身份稳定的窄宿主/helper；
 - 审计日志不记录密码、文件正文、Face ID 数据、私钥或完整敏感响应。
 
-### 11.2 翻译隐私
+### 12.2 翻译隐私
 
 - 动态翻译只使用 Apple on-device 模型；
 - 不把 warning、路径、代码或日志发送给第三方 API；
@@ -516,7 +734,7 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 - 进入翻译前做结构化内容分类，不能仅用“包含英文字母”判断；
 - 密码、token、签名、challenge 和文件正文默认永不进入翻译。
 
-### 11.3 性能
+### 12.3 性能
 
 - 静态 UI 不做运行时翻译；
 - 动态翻译不对每个流式 delta 调用；
@@ -524,8 +742,11 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 - 翻译结果缓存有界，列表离屏后不保留不必要 widget/任务；
 - Quick Look 临时下载必须可取消、有进度并遵守预览大小限制；
 - 大目录、大文件、全文搜索和本地 renderer 不得因为全盘权限变成无界工作。
+- 未打开会话只做有界增量落库和列表摘要更新，不解析渲染完整聊天内容；
+- 全会话同步使用统一变化流，不能机械放开每会话 Mirror poller 或 resident 上限；
+- 当前打开会话的实时流式反馈优先级最高。
 
-## 12. 实施前强制调查
+## 13. 实施前强制调查
 
 后续任务开始后，先输出一份“本文假设核对表”，至少确认：
 
@@ -543,88 +764,124 @@ Translation API 需要在实际可用系统上 capability-gate。当前产品决
 11. Face ID/Secure Enclave 是否已有可复用 host；
 12. 官方上游是否新增同类文件、预览、翻译或授权能力；
 13. 与正在进行的其他 worktree/commit 的路径交集和语义冲突。
+14. recent session 点击、`resumeSession()`、`session_created` 和导航的完整时序；
+15. Desktop continuity watch、Mirror watch、active session 和 provider runtime
+    各自的身份、资源与所有权边界；
+16. Home resident section、recent 去重/过滤、Mirror badge 和下载 action 的实际
+    复用接缝；
+17. Bridge 能否低成本监听 dormant provider thread 的 revision，是否已有官方
+    app-server subscription 或只能有界监视 rollout/marker；
+18. Mobile Mirror/SQLite 最近窗口、完整副本、分页、schema migration 和磁盘
+    淘汰策略；
+19. Codex 与 Claude 能否提供一致 delta 语义，不能做到时如何明确分阶段；
+20. 数百/数千会话、长历史、burst、重连和低内存下的基线数据。
 
 调查完成前，不按本文直接创建 protocol、数据库 schema、native channel 或大规模
 UI 重构。
 
-## 13. 候选实施阶段
+## 14. 候选实施阶段
 
 阶段顺序可以因现场代码调整，但每个阶段必须保持独立、可审查：
 
 ### Phase 0：源码与运行边界审计
 
-- 完成第 12 节调查；
+- 完成第 13 节调查；
 - 形成现状图、冲突表和最终实施拆分；
 - 不改运行 Bridge，不发布。
 
-### Phase 1：固定 UI 中文化
+### Phase 1：统一会话与轻量变化流
+
+- 先统一 durable identity、最近窗口和完整副本语义；
+- 增加 capability-gated Bridge 索引/变化流及按需 delta；
+- Mobile 未打开会话只落库和更新列表摘要；
+- 改成单一列表、直接打开和下载勾号；
+- 对旧 Bridge 保留当前路径，不发布。
+
+### Phase 2：固定 UI 中文化
 
 - 扫描生产 UI 硬编码英文；
 - 完善 ARB/feature l10n 和术语；
 - 补关键 UI/危险操作测试；
 - 纯 Dart 边界成立时可作为独立提交，但此阶段不自动发布。
 
-### Phase 2：owner read authority
+### Phase 3：owner read authority
 
 - 收束只读授权；
 - 修复 project 外 Agent 引用；
 - 接通手动文件管理；
 - 覆盖 canonical path、symlink、TCC、文件变化和 capability 时效。
 
-### Phase 3：统一预览
+### Phase 4：统一预览
 
 - 在现有预览页上实现 Quick Look system-first；
 - native unsupported 自动回退本地 renderer；
 - 复用分享、下载、进度和取消；
 - 补 JSON、未知二进制和大文件测试。
 
-### Phase 4：Bridge 密码与一次性授权
+### Phase 5：Bridge 密码与一次性授权
 
 - Mac 本地设置；
 - Argon2id verifier；
 - challenge、锁定、审计和原子执行；
 - 先接一个窄写操作验证端到端，再统一覆盖所有变更 RPC。
 
-### Phase 5：Secure Enclave + Face ID
+### Phase 6：Secure Enclave + Face ID
 
 - 设备登记、签名和撤销；
 - 与密码路径共享 Bridge authorization verifier；
 - 物理 iPhone 验收。
 
-### Phase 6：Apple Translation native host
+### Phase 7：Apple Translation native host
 
 - `@available` 与 capability；
 - LanguageAvailability、下载同意、翻译 session；
 - Flutter 显示、原文保留、有界缓存；
 - 旧系统原文兼容。
 
-### Phase 7：候选集成与发布门禁
+### Phase 8：候选集成与发布门禁
 
 - 语义合并官方更新和并行分支；
 - Bridge、Flutter、XCTest、模拟器、IPA 和物理真机分别验收；
 - 只有用户明确授权后才部署 Bridge、发布 owner OTA、生成/安装 IPA 或晋级 stable。
 
-## 14. 建议提交拆分
+## 15. 建议提交拆分
 
 实际提交以最终调查为准，候选拆分：
 
-1. `l10n(mobile): 补齐固定界面中文化`
-2. `feat(bridge): 增加 owner 全盘只读 authority`
-3. `fix(artifact): 允许 owner 预览 project 外 Agent 引用`
-4. `feat(mobile): 统一 Quick Look 与本地预览路由`
-5. `feat(bridge): 增加文件变更密码与一次性授权`
-6. `feat(mobile): 接入文件变更 step-up 交互`
-7. `feat(ios): 增加 Secure Enclave 文件授权签名`
-8. `feat(ios): 增加 Apple 本地翻译宿主`
-9. `feat(mobile): 展示动态本地译文并保留原文`
-10. `docs: 更新 owner 文件与翻译兼容矩阵`
+1. `feat(bridge): 增加统一会话变化索引与按需增量`
+2. `feat(mobile): 未打开会话增量落库与最近窗口`
+3. `feat(mobile): 统一会话列表并隐藏激活步骤`
+4. `ui(mobile): 以勾号表示完整会话副本`
+5. `l10n(mobile): 补齐固定界面中文化`
+6. `feat(bridge): 增加 owner 全盘只读 authority`
+7. `fix(artifact): 允许 owner 预览 project 外 Agent 引用`
+8. `feat(mobile): 统一 Quick Look 与本地预览路由`
+9. `feat(bridge): 增加文件变更密码与一次性授权`
+10. `feat(mobile): 接入文件变更 step-up 交互`
+11. `feat(ios): 增加 Secure Enclave 文件授权签名`
+12. `feat(ios): 增加 Apple 本地翻译宿主`
+13. `feat(mobile): 展示动态本地译文并保留原文`
+14. `docs: 更新 owner 文件、会话与翻译兼容矩阵`
 
 不要为了匹配这份清单拆出无意义 adapter；也不要把全盘授权、Quick Look、Face ID、
 翻译、生成文件和发布配置混进一个巨型 commit。
 
-## 15. 验收清单
+## 16. 验收清单
 
-### 15.1 固定中文化
+### 16.1 统一会话与同步
+
+- 首页只有一套会话列表，resident/完整下载会话不再形成顶部重复卡片；
+- 未运行会话点击后立即显示本地最近窗口，不要求用户先激活再第二次进入；
+- runtime 恢复期间首条输入只发送一次，可取消，失败时有真实提示；
+- APP 前台且未打开会话时，Desktop/Bridge 新增内容能增量写入本地；
+- 未打开会话没有 Markdown、工具详情和完整 Widget 渲染；
+- 无完整副本显示下载符号，下载中显示进度，完整副本显示勾号；
+- 无勾号会话仍可直接打开；向上加载旧历史按需在线分页；
+- 断线重连只补 revision/sequence 缺口，不全量重建所有会话；
+- 数百/数千会话、长历史和 burst 基准满足现场确定的 CPU、内存、网络和首帧门槛；
+- 旧 Bridge、旧 Mobile、Codex/Claude 分阶段能力和 iOS 生命周期降级符合矩阵。
+
+### 16.2 固定中文化
 
 - 中文 locale 下生产 UI 不再出现未批准的写死英文；
 - 品牌、技术标识和代码没有被错误翻译；
@@ -632,7 +889,7 @@ UI 重构。
 - 英文、日文、韩文现有 locale 不被破坏；
 - l10n codegen、analyze 和相关 widget tests 通过。
 
-### 15.2 动态翻译
+### 16.3 动态翻译
 
 - 支持系统上能翻译完整英文 warning；
 - 译文明确标记，本地原文可见；
@@ -641,7 +898,7 @@ UI 重构。
 - 拒绝下载语言包、无网络下载条件、unsupported language 和旧系统均显示原文；
 - 不使用模拟器结果冒充真机 Translation framework 已通过。
 
-### 15.3 全盘只读
+### 16.4 全盘只读
 
 - 手动文件管理可读取普通 project 外文件；
 - Agent 引用 project 外文件可预览，不再误报 `path_not_allowed`；
@@ -650,7 +907,7 @@ UI 重构。
 - HTTP 不接受任意本地路径；
 - 旧 Bridge/Mobile 降级明确。
 
-### 15.4 预览、分享和下载
+### 16.5 预览、分享和下载
 
 - JSON、PDF、图片、音视频、Office 和文本在 Quick Look 可用时系统优先；
 - native unsupported 自动落入本地 renderer；
@@ -660,7 +917,7 @@ UI 重构。
 - 分享临时文件和用户下载副本生命周期正确；
 - 左滑返回、取消、断线和链接过期行为正常。
 
-### 15.5 文件变更授权
+### 16.6 文件变更授权
 
 - 未授权写入必定失败；
 - 正确密码与正确 Face ID 签名可分别完成同一类操作；
@@ -670,8 +927,12 @@ UI 重构。
 - 默认删除可恢复，永久删除需要独立授权；
 - 日志不泄露密码、私钥或文件正文。
 
-## 16. 回滚与恢复
+## 17. 回滚与恢复
 
+- 统一会话变化流 capability 可关闭并回退当前 recent resume、active continuity
+  和最多 8 个 resident watch；
+- 列表 UI 回滚不能删除手机完整副本、最近窗口或 canonical history；
+- runtime 恢复失败时保留本地只读会话页和重试入口，不清空已有缓存；
 - 固定中文化可按独立 Mobile commit 回滚，不改变协议和历史；
 - 动态翻译显示层回滚后必须保留原文，不能造成消息丢失；
 - Translation native host 在旧 Dart 下 dormant；
@@ -681,8 +942,12 @@ UI 重构。
 - 预览 system-first 回滚时保留现有本地预览、分享和下载；
 - 回滚不能删除 canonical history、用户文件、下载副本或其他 Agent 的提交。
 
-## 17. 明确不做
+## 18. 明确不做
 
+- 不把 resident watch 上限简单改成无限；
+- 不为每个历史会话常驻一个 provider runtime、完整内存 snapshot 或高频 poller；
+- 不把“所有会话自动同步”解释为首次自动下载所有完整历史；
+- 不用定位、音频或其他 iOS 后台模式伪装永久全会话 WebSocket；
 - 不把 Agent provider 工具改成每次写入都要求 Face ID；
 - 不让 Mobile 自报 Face ID 成功；
 - 不把 Mac 绝对路径直接暴露给任意 HTTP 调用者；
@@ -694,11 +959,11 @@ UI 重构。
 - 不因为 Translation framework 提高所有旧系统基础功能门槛；
 - 不在本文完成后立即开始实现、部署、发布或构建 IPA。
 
-## 18. 当前完成状态
+## 19. 当前完成状态
 
 本文完成只代表：
 
-- 两组产品方案已经合并成一个可检索的实施参考；
+- 三组产品方案已经合并成一个可检索的实施参考；
 - 已知现状、候选架构、兼容、安全、阶段和验收边界已经登记；
 - 后续执行者有明确的“先调查、再实现”门禁。
 
@@ -710,4 +975,6 @@ UI 重构。
 - 密码或 Face ID 文件授权已经实现；
 - 固定英文已经翻译；
 - Apple Translation 已经接入；
+- 统一会话列表、直接打开或全会话轻量同步已经实现；
+- resident 顶部区已经移除或下载图标已经改为勾号；
 - Bridge、Mobile、基础 IPA、owner OTA 或 stable 已发生任何变化。

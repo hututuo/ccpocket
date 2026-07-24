@@ -12,7 +12,7 @@
 | 仓库总规则 | `CLAUDE.md` | 官方仓库规则和本文入口 |
 | 长期产品决策 | `decisions.md` | 已采纳、废弃和待迁移的项目决策 |
 | 本手册 | `docs/PROJECT_HANDOFF.md` | Agent 分工、兼容、发布、验证和核心产品约束 |
-| owner 文件与本地翻译实施参考 | `docs/owner-file-access-preview-and-local-translation-plan.md` | 合并全盘只读、统一预览、文件变更二次授权、固定中文化和 Apple 本地翻译；内容完整但实现前必须重新核对源码 |
+| owner 文件、统一会话与本地翻译实施参考 | `docs/owner-file-access-preview-and-local-translation-plan.md` | 合并全盘只读、统一预览、文件变更二次授权、固定中文化、Apple 本地翻译，以及统一会话列表和前台全会话轻量增量同步；内容完整但实现前必须重新核对源码 |
 
 ### 0.1 发布会话的使用规则
 
@@ -199,7 +199,8 @@ codex exec resume \
   共用该只读 authority 和预览/下载管线；写操作额外执行二次授权、
   no-overwrite/原子落盘和执行前身份复核。
 - 项目路径在允许目录之外时应返回明确错误和修复建议，不能无限重试。
-- 上述 owner 文件能力、预览与本地翻译的合并实施参考见
+- 上述 owner 文件能力、预览、本地翻译，以及统一会话列表与轻量增量同步的合并
+  实施参考见
   [`docs/owner-file-access-preview-and-local-translation-plan.md`](owner-file-access-preview-and-local-translation-plan.md)。
   它是尚未实施的参考设计，后续任务必须先核对实际代码，不能机械照抄其中的
   capability、channel、状态机或实施顺序。
