@@ -161,6 +161,42 @@ describe("relay", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "Invalid request body" });
   });
 
+  it("rejects oversized notification and registration payloads before rate limiting", async () => {
+    const oversizedNotificationBodies = [
+      { title: "x".repeat(257) },
+      { body: "x".repeat(2049) },
+      { locale: "x".repeat(33) },
+      {
+        data: Object.fromEntries(
+          Array.from({ length: 17 }, (_, index) => [`k${index}`, "v"]),
+        ),
+      },
+      { data: { field: "x".repeat(513) } },
+      { data: { field: { nested: true } } },
+    ];
+
+    for (const invalid of oversizedNotificationBodies) {
+      const res = await invoke({
+        op: "notify",
+        eventType: "session_completed",
+        title: "Done",
+        body: "Finished",
+        ...invalid,
+      });
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ error: "Invalid request body" });
+    }
+
+    const oversizedToken = await invoke({
+      op: "register",
+      token: "a".repeat(4097),
+      platform: "ios",
+    });
+    expect(oversizedToken.status).toHaveBeenCalledWith(400);
+    expect(mocks.runTransaction).not.toHaveBeenCalled();
+    expect(mocks.sendEachForMulticast).not.toHaveBeenCalled();
+  });
+
   it("returns 429 when the token operation rate limit is exceeded", async () => {
     mocks.transactionGet.mockResolvedValue({
       data: () => ({ timestamps: Array.from({ length: 20 }, () => Date.now()) }),

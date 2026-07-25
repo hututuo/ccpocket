@@ -41,6 +41,15 @@ type NotifyBody = {
 type RelayBody = RegisterBody | UnregisterBody | NotifyBody;
 
 const OPT_IN_ONLY_EVENT_TYPES = new Set(["session_progress"]);
+const MAX_FCM_TOKEN_LENGTH = 4096;
+const MAX_LOCALE_BYTES = 32;
+const MAX_EVENT_TYPE_BYTES = 64;
+const MAX_NOTIFICATION_TITLE_BYTES = 256;
+const MAX_NOTIFICATION_BODY_BYTES = 2048;
+const MAX_NOTIFICATION_DATA_ENTRIES = 16;
+const MAX_NOTIFICATION_DATA_KEY_BYTES = 64;
+const MAX_NOTIFICATION_DATA_VALUE_BYTES = 512;
+const MAX_NOTIFICATION_PAYLOAD_BYTES = 3072;
 
 class RelayHttpError extends Error {
   constructor(
@@ -157,6 +166,41 @@ function asNonEmptyString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function utf8Length(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+function boundedString(value: unknown, maximumBytes: number): string | null {
+  const normalized = asNonEmptyString(value);
+  if (!normalized || utf8Length(normalized) > maximumBytes) return null;
+  return normalized;
+}
+
+function parseNotificationData(
+  value: unknown,
+): Record<string, string> | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value == null || Array.isArray(value)) {
+    return null;
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_NOTIFICATION_DATA_ENTRIES) return null;
+
+  const data: Record<string, string> = {};
+  for (const [key, rawValue] of entries) {
+    if (
+      !key ||
+      utf8Length(key) > MAX_NOTIFICATION_DATA_KEY_BYTES ||
+      typeof rawValue !== "string" ||
+      utf8Length(rawValue) > MAX_NOTIFICATION_DATA_VALUE_BYTES
+    ) {
+      return null;
+    }
+    data[key] = rawValue;
+  }
+  return data;
+}
+
 function parseRelayBody(payload: unknown): RelayBody | null {
   if (typeof payload !== "object" || payload == null) return null;
   const body = payload as Record<string, unknown>;
@@ -169,11 +213,15 @@ function parseRelayBody(payload: unknown): RelayBody | null {
   if (op === "register") {
     const token = asNonEmptyString(body.token);
     const platform = body.platform;
-    if (!token) return null;
+    if (!token || token.length > MAX_FCM_TOKEN_LENGTH) return null;
     if (platform !== "ios" && platform !== "android" && platform !== "web") {
       return null;
     }
-    const locale = asNonEmptyString(body.locale) ?? undefined;
+    const locale =
+      body.locale === undefined
+        ? undefined
+        : boundedString(body.locale, MAX_LOCALE_BYTES) ?? null;
+    if (locale === null) return null;
     let enabledEventTypes: string[] | undefined;
     if (body.enabledEventTypes !== undefined) {
       if (
@@ -211,24 +259,36 @@ function parseRelayBody(payload: unknown): RelayBody | null {
 
   if (op === "unregister") {
     const token = asNonEmptyString(body.token);
-    if (!token) return null;
+    if (!token || token.length > MAX_FCM_TOKEN_LENGTH) return null;
     return { op, bridgeId: "", token };
   }
 
   if (op === "notify") {
-    const eventType = asNonEmptyString(body.eventType);
-    const title = asNonEmptyString(body.title);
-    const bodyText = asNonEmptyString(body.body);
+    const eventType = boundedString(body.eventType, MAX_EVENT_TYPE_BYTES);
+    const title = boundedString(body.title, MAX_NOTIFICATION_TITLE_BYTES);
+    const bodyText = boundedString(body.body, MAX_NOTIFICATION_BODY_BYTES);
     if (!eventType || !title || !bodyText) return null;
-    const locale = asNonEmptyString(body.locale) ?? undefined;
-    const data =
-      typeof body.data === "object" && body.data != null
-        ? Object.fromEntries(
-            Object.entries(body.data as Record<string, unknown>)
-              .filter(([, v]) => v != null)
-              .map(([k, v]) => [k, String(v)]),
-          )
-        : undefined;
+    const locale =
+      body.locale === undefined
+        ? undefined
+        : boundedString(body.locale, MAX_LOCALE_BYTES) ?? null;
+    if (locale === null) return null;
+    const data = parseNotificationData(body.data);
+    if (data === null) return null;
+    const dataBytes = Object.entries(data ?? {}).reduce(
+      (total, [key, value]) => total + utf8Length(key) + utf8Length(value),
+      0,
+    );
+    if (
+      utf8Length(eventType) +
+        utf8Length(title) +
+        utf8Length(bodyText) +
+        utf8Length(locale ?? "") +
+        dataBytes >
+      MAX_NOTIFICATION_PAYLOAD_BYTES
+    ) {
+      return null;
+    }
     return { op, bridgeId: "", eventType, title, body: bodyText, locale, data };
   }
 
