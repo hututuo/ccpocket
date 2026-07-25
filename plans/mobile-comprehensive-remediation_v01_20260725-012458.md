@@ -215,8 +215,10 @@ Mobile rebuildable store
 - 已确认 Guardian risk 虽然 Bridge 已携带 `targetItemId`，Mobile 仍把它当普通
   transcript row，process layout 完全没有消费该关联，所以会跑到过程外层并
   永久累积；修复应按 tool-use identity 归属，而不是用 CSS/Widget 绝对定位。
-- 原生通知 category/actions 目前不存在；“长按通知 Allow/Reject”不能靠普通
-  Flutter local notification payload 自动获得。
+- 原始实现没有原生远程通知 category/actions；“长按通知 Allow/Reject”不能靠
+  普通 Flutter local notification payload 自动获得。实施期已经按
+  capability-gated native host + Dart 权威复核补齐，真实 APNs 展示和设备认证
+  仍须物理 iPhone 验收，详见 10.4–10.5。
 
 ### 2A.5 通知和未读
 
@@ -234,8 +236,17 @@ Mobile rebuildable store
 - Cloud relay 日志出现 `tokenCount: 0`，说明当次 FCM 无 token；它与本地
   location notification-only 是不同失败点。
 - progress 偏好默认关闭；没有显式开启就不会生成中间进度。
-- 当前未读状态主要依赖 active runtime/页面状态，缺少 durable
-  thread+revision ledger，不能可靠跨 App 重启和多会话同步。
+- 原推送设置在 Mobile 发出 `push_register` 后立即显示 enabled，没有等待
+  Bridge/Cloud relay 成功；因此配置缺失、Cloud 注册失败和真实可用会显示成同一
+  状态。实施期已增加 capability-gated requestId/ack，旧 Bridge 继续使用原语义。
+- Cloud 原 locale 过滤会让没有 locale 的 legacy token 同时收到所有语言副本；
+  已改为只接收 English fallback，不改变已登记 locale 的精确投递。
+- 原未读实现把“已读时间”写成最后活动时间加一天，导致用户离开后当天完成的
+  会话仍被吞掉；另以 runtime session ID 持久化，重连换 ID 后会失去身份。
+  实施期已改成 provider + durable provider session ID、精确权威活动时间与当前
+  可见会话联合计算，并兼容迁移旧 runtime key、限制持久化与新会话 one-shot
+  抑制规模。它解决本机 App 重启和 runtime ID 替换；多设备已读同步仍不伪装成
+  已实现的 Bridge revision ledger。
 - 已确认旧时间显示不是单纯格式问题：`ChatEntry` 默认使用手机当前时间，
   canonical history 又只给用户项提供 provider timestamp，助手/工具项会继承
   上一个用户时间；因此旧 UI 的 `HH:mm` 可能同时混入手机同步时间、provider
@@ -673,9 +684,11 @@ UI 和诊断必须分别显示两条链路的 capability、权限、token、Brid
 
 - action required、question、completed、failed、progress 全部使用确定性本地化文案；
 - progress 仅工具阶段发生变化时产生，按 session 45 秒限流并去重；
-- 完成/失败后为对应 durable session 写入 unread revision；
-- 首页行显示蓝点；用户实际打开并读到相应 revision 后清除；
-- unread ledger 持久化并按 machine/provider/thread/revision 识别，App 重启后保留；
+- 完成/失败后以对应 durable session 的权威活动时间推进 unread；
+- 首页行显示蓝点；用户实际打开并持续可见时按精确活动时间清除；
+- 本机 unread ledger 按 provider + durable thread identity 持久化，App 重启和
+  runtime ID 替换后保留；跨设备 machine/revision 已读同步属于后续加法能力，
+  本轮不能用本地时间账本冒充；
 - 当前打开会话不产生多余前台 banner，但仍更新状态。
 
 ### 10.4 通知长按批准/拒绝
@@ -690,6 +703,41 @@ UI 和诊断必须分别显示两条链路的 capability、权限、token、Brid
   - 当前策略允许该动作。
 - 离线、过期、重复或已解决动作 fail closed，并给出已失效提示；
 - 这是新的 native 边界，不能通过旧基础 IPA 的 Dart OTA 冒充已经支持。
+
+### 10.5 实施期校正与已落地边界（2026-07-25）
+
+- `a891d086` 将通知注册改为 Bridge/Cloud/Mobile 三层确认：
+  `push_registration_status_v1` 只对声明支持的新 Mobile 回送 requestId 关联结果；
+  旧 Mobile 仍收到原 error/legacy 语义。Bridge 对同一 token 串行 register/
+  unregister，并在 relay 失败时恢复上一份已确认偏好，避免并发失败污染内存状态。
+- Mobile 只有收到成功 ack 才显示远程推送 enabled；未配置 relay、注册失败和
+  12 秒超时分别显示可本地化状态。`approvalActionsSupported` 只由安装基础 IPA
+  的 native capability 产生，不能由 Dart 或设置开关自行声称。
+- Cloud 仅给明确登记 action capability 且携带有界 `sessionId/provider/
+  permissionId/occurredAt` 的 approval 推送附加 APNs category；旧 token 和畸形
+  payload 仍收到普通通知，不获得可操作按钮。
+- 原生 action payload 不携带命令、路径、工具正文或审批策略，只携带受限的不透明
+  permission identity。iOS 要求设备认证并把 App 带回前台；Dart 队列最多 8 条、
+  10 分钟过期，随后必须在当前连接本代的权威 session list 中唯一匹配仍 pending
+  的 permission，最后才通过 live-only WebSocket 发送一次 allow/reject。断线、
+  迟到、重复、身份不唯一或已处理都 fail closed。
+- privacy notification 仍保留完成上述复核所需的 opaque `permissionId`，但不再
+  暴露 `toolUseId`、工具名或 provider 结果元数据。普通进度的工具元数据在 privacy
+  模式同样被移除。
+- 本地通知补齐确定性中英日韩完成文案、JSON session payload、冷启动 response
+  缓冲和 Flutter local-notifications action fallback；远程 FCM action 由
+  `NotificationActionHostPlugin` 在 AppDelegate 层捕获。ask-user-question 不套
+  approval category，避免把结构化回答错误降级成 Allow/Reject。
+- `af81d244` 修复未读的 +1 day 根因：运行中/Needs You 继续使用原强状态，真正
+  完成并在用户离开后才显示蓝点；若会话仍可见则立即消费该活动时间。
+- 当前 live Bridge 仍是缺少上述 capability 的 `1.69.0-compat.6`，所以这轮源码
+  和模拟器成功不等于用户现有运行链路已经可用。Cloud Function 未在本文阶段
+  部署，Bridge 也未替换；Always Location、APS、锁屏按钮、Face ID/设备认证和
+  AltStore 重签仍是物理 iPhone/发布门槛。
+- 已取得的实施验证包括：Bridge 通知相关 388 项、Cloud Function 22 项、
+  Mobile 审批/注册/未读/App 根接线定向回归、Flutter 全量 analyze
+  0 error/0 warning、iOS Simulator build 和 RunnerTests 27/27。最终 Phase 8
+  仍须重跑串行全套，不把这些阶段性信号冒充发布验收。
 
 ## 11. 文件 authority、安全握手和预览
 
@@ -968,6 +1016,12 @@ Local file   -> iOS Quick Look canPreview -> 本地有界预览器 -> metadata/d
 - unread；
 - 原生 Allow/Reject actions；
 - 全部固定 UI 中文化。
+- 当前完成：推送注册 request/ack、同 token 串行与失败回滚、legacy locale
+  fallback、privacy 投影、确定性通知文案、本地/远程 action native 接缝、权威
+  pending 复核、live-only allow/reject，以及本机 durable 未读蓝点；
+- 发布前仍需：Phase 8 全套回归和安全/性能复审，候选 Bridge/Cloud 配置检查，
+  新基础 IPA 构建，以及物理 iPhone 的 APS、Always Location、锁屏 action、
+  设备认证、低电量/温控和长时间功耗验收。
 
 ### Phase 8：完整审计、性能收束和发布候选
 
