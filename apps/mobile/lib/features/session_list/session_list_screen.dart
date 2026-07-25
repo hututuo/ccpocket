@@ -33,6 +33,7 @@ import '../../widgets/new_session_sheet.dart';
 import '../../widgets/rename_session_dialog.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../file_browser/file_browser_screen.dart';
+import '../file_browser/file_mutation_authorization.dart';
 import '../file_transfer/file_drop_ingress.dart';
 import '../file_transfer/file_transfer_service.dart';
 import '../session_archive/session_archive_cubit.dart';
@@ -793,6 +794,8 @@ class _SessionListScreenState extends State<SessionListScreen>
             filename: payload.filename,
             bytes: payload.bytes,
             expectedSizeBytes: payload.sizeBytes,
+            authorizeMutation: (operation) =>
+                requestFileMutationAuthorization(context, operation),
           );
           unawaited(_showHomeTransferResult(ticket, payload.filename));
         } catch (error) {

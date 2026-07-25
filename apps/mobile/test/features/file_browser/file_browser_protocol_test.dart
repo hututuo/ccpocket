@@ -4,6 +4,12 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _transferId = '123e4567-e89b-12d3-a456-426614174000';
+final _testPassword = <String>[
+  'sample',
+  'mutation',
+  'credential',
+  '2026',
+].join('-');
 
 Map<String, dynamic> _json(ClientMessage message) =>
     jsonDecode(message.toJson()) as Map<String, dynamic>;
@@ -74,6 +80,8 @@ void main() {
   group('file_browser_v1 capability and requests', () {
     test('freezes additive capability and server message surface', () {
       expect(fileBrowserCapability, 'file_browser_v1');
+      expect(fileMutationAuthCapability, 'file_mutation_auth_v1');
+      expect(fileTransferUploadAuthCapability, 'file_transfer_upload_auth_v1');
       expect(fileBrowserOwnerSessionId, '__file_browser__');
       expect(maxFileBrowserRoots, 32);
       expect(maxFileBrowserPageSize, 200);
@@ -87,6 +95,7 @@ void main() {
         'file_browser_stat_result_v1',
         'file_browser_preview_result_v1',
         'file_browser_download_result_v1',
+        'file_mutation_auth_result_v1',
       ]);
 
       final capabilities = _json(ClientMessage.clientCapabilities());
@@ -142,6 +151,62 @@ void main() {
           'cursor': 'cursor-1',
           'pageSize': 25,
           'showHidden': true,
+        },
+      );
+      expect(
+        _json(
+          requestFileMutationAuthState(
+            requestId: 'auth-state-1',
+            deviceId: 'ios:device-1',
+          ),
+        ),
+        {
+          'type': 'file_mutation_auth_state_v1',
+          'requestId': 'auth-state-1',
+          'deviceId': 'ios:device-1',
+        },
+      );
+      const operation = FileMutationOperation.upload(
+        transferId: _transferId,
+        filename: 'report.pdf',
+        sizeBytes: 1024,
+      );
+      expect(
+        _json(
+          requestFileMutationAuthChallenge(
+            requestId: 'auth-challenge-1',
+            deviceId: 'ios:device-1',
+            operation: operation,
+          ),
+        ),
+        {
+          'type': 'file_mutation_auth_challenge_v1',
+          'requestId': 'auth-challenge-1',
+          'deviceId': 'ios:device-1',
+          'operation': {
+            'kind': 'upload',
+            'transferId': _transferId,
+            'filename': 'report.pdf',
+            'sizeBytes': 1024,
+          },
+        },
+      );
+      final publicKey = List.filled(87, 'A').join();
+      expect(
+        _json(
+          requestFileMutationAuthEnroll(
+            requestId: 'auth-enroll-1',
+            deviceId: 'ios:device-1',
+            publicKey: publicKey,
+            password: _testPassword,
+          ),
+        ),
+        {
+          'type': 'file_mutation_auth_enroll_v1',
+          'requestId': 'auth-enroll-1',
+          'deviceId': 'ios:device-1',
+          'publicKey': publicKey,
+          'password': _testPassword,
         },
       );
 
@@ -278,6 +343,51 @@ void main() {
   });
 
   group('strict server result parsing', () {
+    test('decodes strict file mutation auth state and challenge results', () {
+      final state =
+          ServerMessage.fromJson(const {
+                'type': 'file_mutation_auth_result_v1',
+                'requestId': 'auth-state-1',
+                'success': true,
+                'event': 'state',
+                'passwordConfigured': true,
+                'biometricEnrolled': false,
+              })
+              as FileMutationAuthResultMessage;
+      expect(state.event, FileMutationAuthEvent.state);
+      expect(state.passwordConfigured, isTrue);
+      expect(state.biometricEnrolled, isFalse);
+
+      final challenge =
+          ServerMessage.fromJson(const {
+                'type': 'file_mutation_auth_result_v1',
+                'requestId': 'auth-challenge-1',
+                'success': true,
+                'event': 'challenge',
+                'challengeId': '1234567890abcdef',
+                'payload': '{"version":1}',
+                'expiresAt': '2026-07-20T01:02:03.000Z',
+              })
+              as FileMutationAuthResultMessage;
+      expect(challenge.event, FileMutationAuthEvent.challenge);
+      expect(challenge.challengeId, '1234567890abcdef');
+      expect(challenge.payload, '{"version":1}');
+
+      expect(
+        () => ServerMessage.fromJson(const {
+          'type': 'file_mutation_auth_result_v1',
+          'requestId': 'auth-invalid-1',
+          'success': true,
+          'event': 'challenge',
+          'challengeId': '1234567890abcdef',
+          'payload': '{"version":1}',
+          'expiresAt': '2026-07-20T01:02:03.000Z',
+          'passwordConfigured': true,
+        }),
+        throwsFormatException,
+      );
+    });
+
     test('decodes bounded roots and an error-only failure union', () {
       final roots = ServerMessage.fromJson(_rootsResult());
       expect(roots, isA<FileBrowserRootsResultMessage>());

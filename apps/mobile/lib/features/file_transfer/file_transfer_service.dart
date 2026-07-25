@@ -96,6 +96,11 @@ class FileTransferUploadTicket {
   final Future<FileTransferRecord> completion;
 }
 
+typedef FileMutationAuthorizationCallback =
+    Future<FileMutationAuthorization?> Function(
+      FileMutationOperation operation,
+    );
+
 abstract interface class FileTransferDocumentPicker {
   Future<FileTransferSelection?> pickFile({required int maxSizeBytes});
 }
@@ -336,6 +341,8 @@ class FileTransferService extends ChangeNotifier {
   final Map<String, AdaptiveTransferChunkSizer> _chunkSizers = {};
   final Map<String, int> _completionRecoveryAttempts = {};
   final Map<String, Completer<FileTransferRecord>> _uploadCompletions = {};
+  final Map<String, FileMutationAuthorization>
+  _uploadMutationAuthorizations = {};
   List<ReceivedFileTransfer> _receivedFiles = const [];
   Set<String> _unreadReceivedPaths = const {};
 
@@ -370,6 +377,8 @@ class FileTransferService extends ChangeNotifier {
   bool get isConnected => _bridge.isConnected;
   bool get supportedByBridge =>
       _bridge.capabilities.contains(fileTransferCapability);
+  bool get uploadMutationAuthRequired =>
+      _bridge.capabilities.contains(fileTransferUploadAuthCapability);
   bool get uploadAvailable =>
       _platformSupported && isConnected && supportedByBridge;
   bool get autoResume => _autoResume;
@@ -467,14 +476,20 @@ class FileTransferService extends ChangeNotifier {
 
   Future<void> startQueuedTransfers() => _drainAndScheduleRecovery();
 
-  Future<FileTransferRecord?> uploadToMac() async {
+  Future<FileTransferRecord?> uploadToMac({
+    FileMutationAuthorizationCallback? authorizeMutation,
+  }) async {
     final identity = _requireUploadIngressReady(rejectIfBusy: true);
     await _markTransientStorage(identity);
     final selection = await _picker.pickFile(
       maxSizeBytes: maxFileTransferBytes,
     );
     if (selection == null) return null;
-    final ticket = await _enqueueUploadSelection(selection, identity: identity);
+    final ticket = await _enqueueUploadSelection(
+      selection,
+      identity: identity,
+      authorizeMutation: authorizeMutation,
+    );
     return ticket.completion;
   }
 
@@ -482,8 +497,11 @@ class FileTransferService extends ChangeNotifier {
     required String filename,
     required Stream<List<int>> bytes,
     int? expectedSizeBytes,
+    FileMutationAuthorizationCallback? authorizeMutation,
   }) async {
-    final identity = _requireUploadIngressReady(rejectIfBusy: false);
+    final identity = _requireUploadIngressReady(
+      rejectIfBusy: uploadMutationAuthRequired,
+    );
     _validateIngressMetadata(filename, expectedSizeBytes);
     await _markTransientStorage(identity);
     final pickerRoot = await _storage.pickerStagingDirectory();
@@ -503,6 +521,7 @@ class FileTransferService extends ChangeNotifier {
         sizeBytes: staged.sizeBytes,
       ),
       identity: identity,
+      authorizeMutation: authorizeMutation,
     );
   }
 
@@ -547,6 +566,7 @@ class FileTransferService extends ChangeNotifier {
   Future<FileTransferUploadTicket> _enqueueUploadSelection(
     FileTransferSelection selection, {
     required String identity,
+    FileMutationAuthorizationCallback? authorizeMutation,
   }) async {
     _validateSelection(selection);
     final localId = _requestIdGenerator();
@@ -563,6 +583,20 @@ class FileTransferService extends ChangeNotifier {
       sizeBytes: selection.sizeBytes,
       pickerCopy: File(selection.path),
     );
+    try {
+      final authorization = await _authorizeUploadMutation(
+        checkpoint,
+        authorizeMutation,
+      );
+      if (authorization != null) {
+        _uploadMutationAuthorizations[checkpoint.transferId] = authorization;
+      }
+    } catch (_) {
+      await _storage
+          .deleteUpload(checkpoint, deleteStaged: true)
+          .catchError((_) {});
+      rethrow;
+    }
     final completion = Completer<FileTransferRecord>();
     _uploadCompletions[localId] = completion;
     _uploadRecoveryQueue.add(checkpoint);
@@ -578,11 +612,20 @@ class FileTransferService extends ChangeNotifier {
     _activeCancellation?.cancel();
   }
 
-  Future<void> continuePaused() async {
+  Future<void> continuePaused({
+    FileMutationAuthorizationCallback? authorizeMutation,
+  }) async {
     final work = _pausedWork;
     if (work == null || _processing) return;
     if (!uploadAvailable) {
       throw const FileTransferException('bridge_disconnected');
+    }
+    FileMutationAuthorization? uploadAuthorization;
+    if (work case _UploadWork(:final checkpoint)) {
+      uploadAuthorization = await _authorizeUploadMutation(
+        checkpoint,
+        authorizeMutation,
+      );
     }
     _pausedWork = null;
     if (work case _ReceiveWork(:final checkpoint, :final secret)) {
@@ -592,6 +635,10 @@ class FileTransferService extends ChangeNotifier {
         first: true,
       );
     } else if (work case _UploadWork(:final checkpoint)) {
+      if (uploadAuthorization != null) {
+        _uploadMutationAuthorizations[checkpoint.transferId] =
+            uploadAuthorization;
+      }
       _uploadRecoveryQueue.addFirst(checkpoint);
     }
     _notify(force: true);
@@ -1782,6 +1829,15 @@ class FileTransferService extends ChangeNotifier {
     if (secret == null || secret.logicalBridgeIdentity != identity) {
       throw const FileTransferException('upload_secret_missing');
     }
+    final mutationAuthorization = _uploadMutationAuthorizations.remove(
+      checkpoint.transferId,
+    );
+    if (uploadMutationAuthRequired && mutationAuthorization == null) {
+      throw const FileTransferException(
+        'step_up_required',
+        'Password or Face ID approval is required',
+      );
+    }
     _requireUploadContext(
       checkpoint,
       identity,
@@ -1814,6 +1870,7 @@ class FileTransferService extends ChangeNotifier {
         resumeToken: secret.resumeToken,
         filename: checkpoint.filename,
         sizeBytes: checkpoint.sizeBytes,
+        mutationAuthorization: mutationAuthorization,
       ),
     );
     final first = await _waitWithCancellation<Object>(
@@ -1999,6 +2056,7 @@ class FileTransferService extends ChangeNotifier {
       await _storage.deleteUpload(completed, deleteStaged: true);
     } catch (_) {}
     _chunkSizers.remove(work.id);
+    _uploadMutationAuthorizations.remove(checkpoint.transferId);
     _remember(
       _recordForUpload(
         completed,
@@ -2100,6 +2158,7 @@ class FileTransferService extends ChangeNotifier {
     _markQueuedReceivesForLeaseRefresh();
     _resetCompletionRecoveryRetryRound();
     _connectionEpoch++;
+    _uploadMutationAuthorizations.clear();
     _completedReceives.clear();
     _activeCancellation?.cancel();
     _failPendingUpload(const FileTransferException('bridge_disconnected'));
@@ -2130,6 +2189,7 @@ class FileTransferService extends ChangeNotifier {
     _receiveQueue.clear();
     _completionRecoveryQueue.clear();
     _uploadRecoveryQueue.clear();
+    _uploadMutationAuthorizations.clear();
     _knownReceiveIds.clear();
     _receiveReservations.clear();
     _completedReceives.clear();
@@ -2489,6 +2549,7 @@ class FileTransferService extends ChangeNotifier {
       await _storage.deleteReceive(work.checkpoint, deletePartial: true);
       _knownReceiveIds.remove(work.checkpoint.transferId);
     } else if (work is _UploadWork) {
+      _uploadMutationAuthorizations.remove(work.checkpoint.transferId);
       await _storage.deleteUpload(work.checkpoint, deleteStaged: true);
     }
   }
@@ -2502,6 +2563,27 @@ class FileTransferService extends ChangeNotifier {
 
   void _validateSelection(FileTransferSelection selection) {
     _validateIngressMetadata(selection.filename, selection.sizeBytes);
+  }
+
+  Future<FileMutationAuthorization?> _authorizeUploadMutation(
+    UploadTransferCheckpoint checkpoint,
+    FileMutationAuthorizationCallback? authorizeMutation,
+  ) async {
+    if (!uploadMutationAuthRequired) return null;
+    if (authorizeMutation == null) {
+      throw const FileTransferException('mutation_auth_required');
+    }
+    final authorization = await authorizeMutation(
+      FileMutationOperation.upload(
+        transferId: checkpoint.transferId,
+        filename: checkpoint.filename,
+        sizeBytes: checkpoint.sizeBytes,
+      ),
+    );
+    if (authorization == null) {
+      throw const FileTransferException('mutation_auth_cancelled');
+    }
+    return authorization;
   }
 
   void _validateIngressMetadata(String filename, int? sizeBytes) {
@@ -2573,6 +2655,7 @@ class FileTransferService extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     _activeCancellation?.cancel();
+    _uploadMutationAuthorizations.clear();
     const disposed = FileTransferException('disposed');
     _failUploadCompletions(disposed);
     _failPendingUpload(disposed);
@@ -2756,6 +2839,13 @@ bool _isRecoverable(Object error) {
     'insufficient_storage',
     'notification_pending',
     'upload_offset_mismatch',
+    'step_up_required',
+    'invalid_password',
+    'password_rate_limited',
+    'password_not_configured',
+    'biometric_not_enrolled',
+    'challenge_invalid_or_expired',
+    'invalid_biometric_proof',
   }.contains(code);
 }
 

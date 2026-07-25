@@ -1,6 +1,9 @@
 part of '../../messages.dart';
 
 const String fileBrowserCapability = 'file_browser_v1';
+const String fileMutationAuthCapability = 'file_mutation_auth_v1';
+const String fileTransferUploadAuthCapability =
+    'file_transfer_upload_auth_v1';
 const String fileBrowserFeatureId = 'file_browser';
 const String fileBrowserOwnerSessionId = '__file_browser__';
 
@@ -23,6 +26,13 @@ const int _fileBrowserMaxKindLength = 128;
 const int _fileBrowserMaxErrorCodeLength = 128;
 const int _fileBrowserMaxErrorLength = 2048;
 const int _fileBrowserMaxSafeInteger = 9007199254740991;
+const int _fileMutationMaxDeviceIdLength = 128;
+const int _fileMutationMaxPublicKeyLength = 256;
+const int _fileMutationMaxPasswordLength = 256;
+const int _fileMutationMaxChallengeIdLength = 128;
+const int _fileMutationMaxChallengePayloadLength = 4096;
+const int _fileMutationMaxSignatureLength = 256;
+const int _fileMutationMaxFilenameLength = 255;
 
 const LocalFeatureProtocolSlot fileBrowserProtocolSlot =
     _FileBrowserProtocolSlot();
@@ -37,6 +47,9 @@ class _FileBrowserProtocolSlot
     'file_browser_stat_v1',
     'file_browser_preview_v1',
     'file_browser_download_v1',
+    'file_mutation_auth_state_v1',
+    'file_mutation_auth_challenge_v1',
+    'file_mutation_auth_enroll_v1',
   };
 
   @override
@@ -49,6 +62,7 @@ class _FileBrowserProtocolSlot
     'file_browser_stat_result_v1',
     'file_browser_preview_result_v1',
     'file_browser_download_result_v1',
+    'file_mutation_auth_result_v1',
   ];
 
   @override
@@ -66,6 +80,8 @@ class _FileBrowserProtocolSlot
       FileBrowserPreviewResultMessage.fromJson(json),
     'file_browser_download_result_v1' =>
       FileBrowserDownloadResultMessage.fromJson(json),
+    'file_mutation_auth_result_v1' =>
+      FileMutationAuthResultMessage.fromJson(json),
     _ => null,
   };
 
@@ -105,6 +121,18 @@ class _FileBrowserProtocolSlot
       'file_browser_preview_v1' => response is FileBrowserPreviewResultMessage,
       'file_browser_download_v1' =>
         response is FileBrowserDownloadResultMessage,
+      'file_mutation_auth_state_v1' =>
+        response is FileMutationAuthResultMessage &&
+            (!response.success ||
+                response.event == FileMutationAuthEvent.state),
+      'file_mutation_auth_challenge_v1' =>
+        response is FileMutationAuthResultMessage &&
+            (!response.success ||
+                response.event == FileMutationAuthEvent.challenge),
+      'file_mutation_auth_enroll_v1' =>
+        response is FileMutationAuthResultMessage &&
+            (!response.success ||
+                response.event == FileMutationAuthEvent.enrolled),
       _ => false,
     };
   }
@@ -287,6 +315,86 @@ class FileBrowserPathRef {
     'relativePath': _fileBrowserOutboundRelativePath(
       relativePath,
       allowRoot: true,
+    ),
+  };
+}
+
+class FileMutationOperation {
+  final String transferId;
+  final String filename;
+  final int sizeBytes;
+
+  const FileMutationOperation.upload({
+    required this.transferId,
+    required this.filename,
+    required this.sizeBytes,
+  });
+
+  Map<String, dynamic> toJson() {
+    if (sizeBytes < 0 || sizeBytes > maxFileBrowserDownloadBytes) {
+      throw ArgumentError.value(
+        sizeBytes,
+        'sizeBytes',
+        'must fit the file-transfer limit',
+      );
+    }
+    return <String, dynamic>{
+      'kind': 'upload',
+      'transferId': _fileBrowserOutboundTransferId(transferId),
+      'filename': _fileMutationOutboundFilename(filename),
+      'sizeBytes': sizeBytes,
+    };
+  }
+}
+
+sealed class FileMutationAuthorization {
+  const FileMutationAuthorization();
+
+  Map<String, dynamic> toJson();
+}
+
+final class FileMutationPasswordAuthorization
+    extends FileMutationAuthorization {
+  final String password;
+
+  const FileMutationPasswordAuthorization(this.password);
+
+  @override
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'method': 'password',
+    'password': _fileMutationOutboundPassword(password),
+  };
+}
+
+final class FileMutationBiometricAuthorization
+    extends FileMutationAuthorization {
+  final String challengeId;
+  final String deviceId;
+  final String signature;
+
+  const FileMutationBiometricAuthorization({
+    required this.challengeId,
+    required this.deviceId,
+    required this.signature,
+  });
+
+  @override
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'method': 'biometric',
+    'challengeId': _fileBrowserOutboundIdentifier(
+      challengeId,
+      'challengeId',
+      _fileMutationMaxChallengeIdLength,
+    ),
+    'deviceId': _fileBrowserOutboundIdentifier(
+      deviceId,
+      'deviceId',
+      _fileMutationMaxDeviceIdLength,
+    ),
+    'signature': _fileBrowserOutboundIdentifier(
+      signature,
+      'signature',
+      _fileMutationMaxSignatureLength,
     ),
   };
 }
@@ -770,6 +878,120 @@ class FileBrowserDownloadResultMessage extends FileBrowserResultMessage {
   }
 }
 
+enum FileMutationAuthEvent {
+  state('state'),
+  enrolled('enrolled'),
+  challenge('challenge');
+
+  const FileMutationAuthEvent(this.wireValue);
+
+  final String wireValue;
+
+  static FileMutationAuthEvent parse(Object? value) {
+    for (final event in values) {
+      if (event.wireValue == value) return event;
+    }
+    throw const FormatException('file mutation auth event is invalid');
+  }
+}
+
+class FileMutationAuthResultMessage extends FileBrowserResultMessage {
+  final FileMutationAuthEvent? event;
+  final bool? passwordConfigured;
+  final bool? biometricEnrolled;
+  final String? challengeId;
+  final String? payload;
+  final String? expiresAt;
+
+  const FileMutationAuthResultMessage({
+    required super.requestId,
+    required super.success,
+    super.errorCode,
+    super.error,
+    this.event,
+    this.passwordConfigured,
+    this.biometricEnrolled,
+    this.challengeId,
+    this.payload,
+    this.expiresAt,
+  });
+
+  factory FileMutationAuthResultMessage.fromJson(Map<String, dynamic> json) {
+    const payloadKeys = <String>{
+      'event',
+      'passwordConfigured',
+      'biometricEnrolled',
+      'challengeId',
+      'payload',
+      'expiresAt',
+    };
+    final envelope = _fileBrowserResultEnvelope(
+      json,
+      expectedType: 'file_mutation_auth_result_v1',
+      payloadKeys: payloadKeys,
+    );
+    if (!envelope.success) {
+      return FileMutationAuthResultMessage(
+        requestId: envelope.requestId,
+        success: false,
+        errorCode: envelope.errorCode,
+        error: envelope.error,
+      );
+    }
+    final event = FileMutationAuthEvent.parse(json['event']);
+    switch (event) {
+      case FileMutationAuthEvent.state:
+      case FileMutationAuthEvent.enrolled:
+        if (json.containsKey('challengeId') ||
+            json.containsKey('payload') ||
+            json.containsKey('expiresAt')) {
+          throw const FormatException(
+            'file mutation auth state contains challenge fields',
+          );
+        }
+        return FileMutationAuthResultMessage(
+          requestId: envelope.requestId,
+          success: true,
+          event: event,
+          passwordConfigured: _fileBrowserRequiredBool(
+            json['passwordConfigured'],
+            'passwordConfigured',
+          ),
+          biometricEnrolled: _fileBrowserRequiredBool(
+            json['biometricEnrolled'],
+            'biometricEnrolled',
+          ),
+        );
+      case FileMutationAuthEvent.challenge:
+        if (json.containsKey('passwordConfigured') ||
+            json.containsKey('biometricEnrolled')) {
+          throw const FormatException(
+            'file mutation auth challenge contains state fields',
+          );
+        }
+        return FileMutationAuthResultMessage(
+          requestId: envelope.requestId,
+          success: true,
+          event: event,
+          challengeId: _fileBrowserRequiredIdentifier(
+            json['challengeId'],
+            'challengeId',
+            _fileMutationMaxChallengeIdLength,
+          ),
+          payload: _fileBrowserRequiredText(
+            json['payload'],
+            'payload',
+            _fileMutationMaxChallengePayloadLength,
+          ),
+          expiresAt: _fileBrowserRequiredUtcTimestamp(
+            json['expiresAt'],
+            'expiresAt',
+          ),
+        );
+    }
+  }
+}
+
 ClientMessage requestFileBrowserRoots({required String requestId}) =>
     _fileBrowserRequest(type: 'file_browser_roots_v1', requestId: requestId);
 
@@ -858,6 +1080,62 @@ ClientMessage requestFileBrowserDownload({
   rootId: rootId,
   relativePath: relativePath,
   nodeRevision: nodeRevision,
+);
+
+ClientMessage requestFileMutationAuthState({
+  required String requestId,
+  String? deviceId,
+}) => _fileBrowserRequest(
+  type: 'file_mutation_auth_state_v1',
+  requestId: requestId,
+  fields: <String, dynamic>{
+    if (deviceId != null)
+      'deviceId': _fileBrowserOutboundIdentifier(
+        deviceId,
+        'deviceId',
+        _fileMutationMaxDeviceIdLength,
+      ),
+  },
+);
+
+ClientMessage requestFileMutationAuthChallenge({
+  required String requestId,
+  required String deviceId,
+  required FileMutationOperation operation,
+}) => _fileBrowserRequest(
+  type: 'file_mutation_auth_challenge_v1',
+  requestId: requestId,
+  fields: <String, dynamic>{
+    'deviceId': _fileBrowserOutboundIdentifier(
+      deviceId,
+      'deviceId',
+      _fileMutationMaxDeviceIdLength,
+    ),
+    'operation': operation.toJson(),
+  },
+);
+
+ClientMessage requestFileMutationAuthEnroll({
+  required String requestId,
+  required String deviceId,
+  required String publicKey,
+  required String password,
+}) => _fileBrowserRequest(
+  type: 'file_mutation_auth_enroll_v1',
+  requestId: requestId,
+  fields: <String, dynamic>{
+    'deviceId': _fileBrowserOutboundIdentifier(
+      deviceId,
+      'deviceId',
+      _fileMutationMaxDeviceIdLength,
+    ),
+    'publicKey': _fileBrowserOutboundIdentifier(
+      publicKey,
+      'publicKey',
+      _fileMutationMaxPublicKeyLength,
+    ),
+    'password': _fileMutationOutboundPassword(password),
+  },
 );
 
 ClientMessage _fileBrowserNodeActionRequest({
@@ -1166,4 +1444,29 @@ String _fileBrowserRequiredTransferId(Object? value) {
     throw const FormatException('file browser transferId is invalid');
   }
   return text;
+}
+
+String _fileBrowserOutboundTransferId(String value) {
+  if (!RegExp(r'^[A-Za-z0-9_-]{16,128}$').hasMatch(value)) {
+    throw ArgumentError.value(value, 'transferId', 'is invalid');
+  }
+  return value;
+}
+
+String _fileMutationOutboundFilename(String value) {
+  if (value.trim().isEmpty ||
+      value.length > _fileMutationMaxFilenameLength ||
+      value.contains('\u0000')) {
+    throw ArgumentError.value(value, 'filename', 'is invalid');
+  }
+  return value;
+}
+
+String _fileMutationOutboundPassword(String value) {
+  if (value.length < 8 ||
+      value.length > _fileMutationMaxPasswordLength ||
+      value.contains('\u0000')) {
+    throw ArgumentError.value(value, 'password', 'must contain 8–256 chars');
+  }
+  return value;
 }

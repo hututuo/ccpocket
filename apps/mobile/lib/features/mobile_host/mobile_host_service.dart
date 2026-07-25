@@ -24,6 +24,7 @@ enum MobileHostCapability {
   dragDrop('dragDrop'),
   photoLibrary('photoLibrary'),
   biometrics('biometrics'),
+  fileMutationBiometricAuth('fileMutationBiometricAuth'),
   backgroundContinuation('backgroundContinuation'),
   backgroundLocationKeepAlive('backgroundLocationKeepAlive'),
   // Opportunistic BGAppRefresh while the existing Flutter runtime is

@@ -441,6 +441,7 @@ ClientMessage prepareFileTransferUpload({
   required String resumeToken,
   required String filename,
   required int sizeBytes,
+  FileMutationAuthorization? mutationAuthorization,
 }) {
   _fileTransferRequireOutboundText(
     requestId,
@@ -464,6 +465,8 @@ ClientMessage prepareFileTransferUpload({
     'resumeToken': resumeToken,
     'filename': filename,
     'sizeBytes': sizeBytes,
+    if (mutationAuthorization != null)
+      'mutationAuthorization': mutationAuthorization.toJson(),
   }, delivery: ClientMessageDelivery.ephemeral);
 }
 

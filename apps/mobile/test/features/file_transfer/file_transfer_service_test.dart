@@ -17,6 +17,12 @@ const token = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const replayToken = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 const etag = '"EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"';
 const changedEtag = '"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"';
+final testPassword = <String>[
+  'sample',
+  'mutation',
+  'credential',
+  '2026',
+].join('-');
 
 DateTime _fixtureNow() => DateTime.utc(2026, 7, 18, 12);
 
@@ -279,6 +285,103 @@ void main() {
     } on FileSystemException {
       if (await root.exists()) rethrow;
     }
+  });
+
+  test('upload auth capability blocks mutation without a step-up proof', () async {
+    bridge.capabilityValues = {
+      fileTransferCapability,
+      fileTransferUploadAuthCapability,
+    };
+    final pickerRoot = await storage.pickerStagingDirectory();
+    final picked = File('${pickerRoot.path}/locked.bin');
+    await picked.writeAsBytes(const [1]);
+    final service = createService(
+      client: MockClient.streaming((request, body) async {
+        throw StateError('HTTP must not start without authorization');
+      }),
+      picker: _FakePicker(
+        FileTransferSelection(
+          path: picked.path,
+          filename: 'locked.bin',
+          sizeBytes: 1,
+        ),
+      ),
+    );
+
+    await expectLater(
+      service.uploadToMac(),
+      throwsA(
+        isA<FileTransferException>().having(
+          (error) => error.code,
+          'code',
+          'mutation_auth_required',
+        ),
+      ),
+    );
+
+    expect(
+      bridge.sentJson.where(
+        (message) => message['type'] == 'file_transfer_upload_prepare_v2',
+      ),
+      isEmpty,
+    );
+    expect(await storage.loadUploads('machine-1'), isEmpty);
+    service.dispose();
+  });
+
+  test('upload sends one operation-bound password proof without persistence', () async {
+    bridge.capabilityValues = {
+      fileTransferCapability,
+      fileTransferUploadAuthCapability,
+    };
+    final pickerRoot = await storage.pickerStagingDirectory();
+    final picked = File('${pickerRoot.path}/authorized.bin');
+    await picked.writeAsBytes(const [7]);
+    FileMutationOperation? approvedOperation;
+    final service = createService(
+      client: MockClient.streaming((request, body) async {
+        throw StateError('completed prepare must not start HTTP');
+      }),
+      picker: _FakePicker(
+        FileTransferSelection(
+          path: picked.path,
+          filename: 'authorized.bin',
+          sizeBytes: 1,
+        ),
+      ),
+    );
+    bridge.onSend = (json) {
+      if (json['type'] != 'file_transfer_upload_prepare_v2') return;
+      expect(json['mutationAuthorization'], {
+        'method': 'password',
+        'password': testPassword,
+      });
+      scheduleMicrotask(() {
+        bridge.emit(
+          FileTransferUploadResultMessage(
+            requestId: json['requestId'] as String,
+            transferId: json['transferId'] as String,
+            success: true,
+            filename: 'authorized.bin',
+            sizeBytes: 1,
+          ),
+        );
+      });
+    };
+
+    final result = await service.uploadToMac(
+      authorizeMutation: (operation) async {
+        approvedOperation = operation;
+        return FileMutationPasswordAuthorization(testPassword);
+      },
+    );
+
+    expect(approvedOperation?.filename, 'authorized.bin');
+    expect(approvedOperation?.sizeBytes, 1);
+    expect(result?.status, FileTransferStatus.succeeded);
+    expect(await storage.loadUploads('machine-1'), isEmpty);
+    expect(secrets.values.values, isNot(contains(testPassword)));
+    service.dispose();
   });
 
   test(

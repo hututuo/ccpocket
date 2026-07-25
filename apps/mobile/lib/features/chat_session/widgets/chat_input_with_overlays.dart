@@ -27,6 +27,7 @@ import '../../../widgets/file_mention_overlay.dart';
 import '../../../widgets/slash_command_overlay.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
 import '../../settings/state/settings_cubit.dart';
+import '../../file_browser/file_mutation_authorization.dart';
 import '../../file_transfer/file_drop_ingress.dart';
 import '../../file_transfer/file_transfer_service.dart';
 import '../../../services/draft_service.dart';
@@ -665,6 +666,8 @@ class ChatInputWithOverlays extends HookWidget {
                   filename: payload.filename,
                   bytes: payload.bytes,
                   expectedSizeBytes: payload.sizeBytes,
+                  authorizeMutation: (operation) =>
+                      requestFileMutationAuthorization(context, operation),
                 );
             unawaited(
               awaitDroppedUpload(ticket, attachmentId, payload.filename),

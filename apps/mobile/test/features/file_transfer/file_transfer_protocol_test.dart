@@ -6,6 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 const transferId = '123e4567-e89b-12d3-a456-426614174000';
 const token = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const etag = '"EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"';
+final testPassword = <String>[
+  'sample',
+  'mutation',
+  'credential',
+  '2026',
+].join('-');
 
 void main() {
   test('slot keeps v2 compatibility and advertises path-aware v3 results', () {
@@ -123,6 +129,55 @@ void main() {
       'filename': 'report.zip',
       'sizeBytes': maxFileTransferBytes,
     });
+  });
+
+  test('prepare carries only the exact short-lived mutation proof', () {
+    final password = _json(
+      prepareFileTransferUpload(
+        requestId: 'request-1',
+        transferId: transferId,
+        resumeToken: token,
+        filename: 'report.zip',
+        sizeBytes: 32,
+        mutationAuthorization: FileMutationPasswordAuthorization(testPassword),
+      ),
+    );
+    expect(password['mutationAuthorization'], {
+      'method': 'password',
+      'password': testPassword,
+    });
+
+    final biometric = _json(
+      prepareFileTransferUpload(
+        requestId: 'request-2',
+        transferId: transferId,
+        resumeToken: token,
+        filename: 'report.zip',
+        sizeBytes: 32,
+        mutationAuthorization: const FileMutationBiometricAuthorization(
+          challengeId: '1234567890abcdef',
+          deviceId: 'ios:device-1',
+          signature: '1234567890abcdef',
+        ),
+      ),
+    );
+    expect(biometric['mutationAuthorization'], {
+      'method': 'biometric',
+      'challengeId': '1234567890abcdef',
+      'deviceId': 'ios:device-1',
+      'signature': '1234567890abcdef',
+    });
+    expect(
+      () => prepareFileTransferUpload(
+        requestId: 'request-3',
+        transferId: transferId,
+        resumeToken: token,
+        filename: 'report.zip',
+        sizeBytes: 32,
+        mutationAuthorization: const FileMutationPasswordAuthorization('short'),
+      ),
+      throwsArgumentError,
+    );
   });
 
   test('receive result reports resumable byte offset without a Mac path', () {

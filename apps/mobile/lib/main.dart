@@ -37,6 +37,7 @@ import 'features/background_sync/background_sync_host.dart';
 import 'features/conversation_mirror/conversation_mirror_service.dart';
 import 'features/conversation_mirror/storage/conversation_mirror_storage.dart';
 import 'features/file_browser/file_browser_service.dart';
+import 'features/file_browser/file_mutation_auth_host.dart';
 import 'features/file_transfer/file_transfer_service.dart';
 import 'features/file_transfer/file_transfer_sheet.dart';
 import 'features/file_transfer/file_transfer_storage.dart';
@@ -217,6 +218,11 @@ void main() async {
   final fileBrowserService = FileBrowserService(
     bridge: BridgeServiceFileBrowserGateway(bridge),
     preferences: prefs,
+    biometricHost: FileMutationBiometricHost(
+      supportedByInstalledHost: mobileHostSnapshot.supports(
+        MobileHostCapability.fileMutationBiometricAuth,
+      ),
+    ),
     fileTransferClientSupported: fileTransferPlatformSupport.supported,
   );
   final autoApprovalService = AutoApprovalService(

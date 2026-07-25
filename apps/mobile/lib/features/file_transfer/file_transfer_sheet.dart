@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../artifact_preview/artifact_quick_look_service.dart';
+import '../file_browser/file_mutation_authorization.dart';
 import 'file_transfer_storage.dart';
 import 'file_transfer_service.dart';
 import 'received_file_actions.dart';
@@ -172,7 +173,10 @@ class FileTransferSheet extends StatelessWidget {
     _TransferCopy copy,
   ) async {
     try {
-      await service.uploadToMac();
+      await service.uploadToMac(
+        authorizeMutation: (operation) =>
+            requestFileMutationAuthorization(context, operation),
+      );
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(
@@ -463,7 +467,10 @@ class _ActiveTransferCard extends StatelessWidget {
 
   Future<void> _resume(BuildContext context) async {
     try {
-      await service.continuePaused();
+      await service.continuePaused(
+        authorizeMutation: (operation) =>
+            requestFileMutationAuthorization(context, operation),
+      );
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(

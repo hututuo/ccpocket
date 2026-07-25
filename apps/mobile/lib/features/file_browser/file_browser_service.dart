@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
+import 'file_mutation_auth_host.dart';
 
 const _fileBrowserPinsPreference = 'file_browser_v1_pins';
 const _fileBrowserMaxPins = 64;
@@ -74,6 +75,12 @@ class BridgeServiceFileBrowserGateway implements FileBrowserBridgeGateway {
           connected: _bridge.isConnected,
           identity: _bridge.logicalConnectionIdentity,
           supported: _bridge.bridgeCapabilities.contains(fileBrowserCapability),
+          mutationAuth: _bridge.bridgeCapabilities.contains(
+            fileMutationAuthCapability,
+          ),
+          uploadAuth: _bridge.bridgeCapabilities.contains(
+            fileTransferUploadAuthCapability,
+          ),
         ),
       )
       .distinct()
@@ -198,6 +205,8 @@ class FileBrowserService extends ChangeNotifier {
   factory FileBrowserService({
     required FileBrowserBridgeGateway bridge,
     required SharedPreferences preferences,
+    FileMutationBiometricHost biometricHost =
+        const FileMutationBiometricHost(supportedByInstalledHost: false),
     bool fileTransferClientSupported = true,
     DateTime Function()? clock,
     String Function()? requestIdGenerator,
@@ -210,6 +219,7 @@ class FileBrowserService extends ChangeNotifier {
     requestTimeout,
     _readPins(preferences),
     fileTransferClientSupported,
+    biometricHost,
   );
 
   FileBrowserService._(
@@ -220,6 +230,7 @@ class FileBrowserService extends ChangeNotifier {
     this._requestTimeout,
     this._pins,
     this._fileTransferClientSupported,
+    this._biometricHost,
   ) {
     _lastConnectionIdentity = _stableLogicalIdentity;
     _lastCapabilitySupported = supportedByBridge;
@@ -244,6 +255,7 @@ class FileBrowserService extends ChangeNotifier {
   final Duration _requestTimeout;
   final List<FileBrowserPin> _pins;
   final bool _fileTransferClientSupported;
+  final FileMutationBiometricHost _biometricHost;
   final Map<String, _PendingFileBrowserRequest> _pending = {};
   final LinkedHashMap<String, FileBrowserDirectorySnapshot> _directoryCache =
       LinkedHashMap();
@@ -277,6 +289,11 @@ class FileBrowserService extends ChangeNotifier {
   bool get isConnected => _bridge.isConnected;
   bool get supportedByBridge =>
       _bridge.capabilities.contains(fileBrowserCapability);
+  bool get mutationAuthSupportedByBridge =>
+      _bridge.capabilities.contains(fileMutationAuthCapability);
+  bool get uploadMutationAuthRequired =>
+      _bridge.capabilities.contains(fileTransferUploadAuthCapability);
+  FileMutationBiometricHost get biometricHost => _biometricHost;
   List<FileBrowserRoot> get roots => List.unmodifiable(_roots);
   String? get bridgeInstanceId => _bridgeInstanceId;
   String? get rootSetRevision => _rootSetRevision;
@@ -618,6 +635,72 @@ class FileBrowserService extends ChangeNotifier {
     return result.transferId!;
   }
 
+  Future<FileMutationAuthResultMessage> mutationAuthState({
+    String? deviceId,
+  }) async {
+    _requireMutationAuthAvailable();
+    final requestId = _requestIdGenerator();
+    final result = await _request<FileMutationAuthResultMessage>(
+      requestId: requestId,
+      requestType: 'file_mutation_auth_state_v1',
+      message: requestFileMutationAuthState(
+        requestId: requestId,
+        deviceId: deviceId,
+      ),
+      matches: (message) => message is FileMutationAuthResultMessage,
+    );
+    if (result.event != FileMutationAuthEvent.state) {
+      throw const FileBrowserException('response_event_mismatch');
+    }
+    return result;
+  }
+
+  Future<FileMutationAuthResultMessage> mutationAuthChallenge({
+    required String deviceId,
+    required FileMutationOperation operation,
+  }) async {
+    _requireMutationAuthAvailable();
+    final requestId = _requestIdGenerator();
+    final result = await _request<FileMutationAuthResultMessage>(
+      requestId: requestId,
+      requestType: 'file_mutation_auth_challenge_v1',
+      message: requestFileMutationAuthChallenge(
+        requestId: requestId,
+        deviceId: deviceId,
+        operation: operation,
+      ),
+      matches: (message) => message is FileMutationAuthResultMessage,
+    );
+    if (result.event != FileMutationAuthEvent.challenge) {
+      throw const FileBrowserException('response_event_mismatch');
+    }
+    return result;
+  }
+
+  Future<FileMutationAuthResultMessage> enrollMutationBiometrics({
+    required String deviceId,
+    required String publicKey,
+    required String password,
+  }) async {
+    _requireMutationAuthAvailable();
+    final requestId = _requestIdGenerator();
+    final result = await _request<FileMutationAuthResultMessage>(
+      requestId: requestId,
+      requestType: 'file_mutation_auth_enroll_v1',
+      message: requestFileMutationAuthEnroll(
+        requestId: requestId,
+        deviceId: deviceId,
+        publicKey: publicKey,
+        password: password,
+      ),
+      matches: (message) => message is FileMutationAuthResultMessage,
+    );
+    if (result.event != FileMutationAuthEvent.enrolled) {
+      throw const FileBrowserException('response_event_mismatch');
+    }
+    return result;
+  }
+
   bool isPinned(String rootId, String relativePath) {
     final identity = _stableLogicalIdentity;
     final bridgeId = _bridgeInstanceId;
@@ -839,6 +922,13 @@ class FileBrowserService extends ChangeNotifier {
     }
     if (!supportedByBridge) {
       throw const FileBrowserException('bridge_unsupported');
+    }
+  }
+
+  void _requireMutationAuthAvailable() {
+    _requireAvailableForRequest();
+    if (!mutationAuthSupportedByBridge) {
+      throw const FileBrowserException('mutation_auth_unsupported');
     }
   }
 
