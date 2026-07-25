@@ -264,6 +264,37 @@ describe("GalleryStore.addImage", () => {
       await rm(galleryDirectory, { recursive: true, force: true });
     }
   });
+
+  it("drops malformed persisted rows before they can escape the Gallery directory", async () => {
+    const galleryDirectory = await mkdtemp(
+      join(tmpdir(), "ccpocket-gallery-store-"),
+    );
+    try {
+      await writeFile(
+        join(galleryDirectory, "index.json"),
+        JSON.stringify([
+          {
+            id: "poisoned",
+            filename: "../../outside.png",
+            mimeType: "image/png",
+            projectPath: "/tmp/project",
+            sourcePath: "/tmp/source.png",
+            addedAt: new Date().toISOString(),
+            sizeBytes: 16,
+          },
+        ]),
+      );
+
+      const store = new GalleryStore({ directory: galleryDirectory });
+      await store.init();
+
+      expect(store.list()).toEqual([]);
+      expect(store.getImagePath("poisoned")).toBeNull();
+      await expect(store.getImageAsBase64("poisoned")).resolves.toBeNull();
+    } finally {
+      await rm(galleryDirectory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("GalleryStore HTTP upload", () => {

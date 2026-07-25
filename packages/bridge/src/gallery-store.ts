@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  chmod,
   copyFile,
   lstat,
   mkdir,
@@ -44,6 +45,7 @@ const MAX_GALLERY_UPLOAD_BODY_BYTES =
 const MAX_GALLERY_STRING_BYTES = 16 * 1024;
 const BASE64_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const GALLERY_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -64,6 +66,59 @@ function boundedString(
 ): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   return Buffer.byteLength(value, "utf8") <= maxBytes ? value : undefined;
+}
+
+function parseGalleryImageMeta(value: unknown): GalleryImageMeta | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  const id = boundedString(raw.id);
+  const filename = boundedString(raw.filename);
+  const mimeType = boundedString(raw.mimeType);
+  const projectPath = boundedString(raw.projectPath);
+  const sourcePath = boundedString(raw.sourcePath);
+  const addedAt = boundedString(raw.addedAt);
+  const sessionId =
+    raw.sessionId === undefined ? undefined : boundedString(raw.sessionId);
+  const providerSessionId =
+    raw.providerSessionId === undefined
+      ? undefined
+      : boundedString(raw.providerSessionId);
+  const sizeBytes = raw.sizeBytes;
+  const extension = filename ? extname(filename).toLowerCase() : "";
+
+  if (
+    !id ||
+    !GALLERY_ID_PATTERN.test(id) ||
+    !filename ||
+    basename(filename) !== filename ||
+    !extension ||
+    MIME_TYPES[extension] !== mimeType ||
+    !projectPath ||
+    !sourcePath ||
+    !addedAt ||
+    !Number.isFinite(Date.parse(addedAt)) ||
+    !Number.isSafeInteger(sizeBytes) ||
+    (sizeBytes as number) < 0 ||
+    (sizeBytes as number) > MAX_GALLERY_IMAGE_BYTES ||
+    (raw.sessionId !== undefined && !sessionId) ||
+    (raw.providerSessionId !== undefined && !providerSessionId)
+  ) {
+    return undefined;
+  }
+
+  return {
+    id,
+    filename,
+    mimeType,
+    projectPath,
+    ...(sessionId ? { sessionId } : {}),
+    ...(providerSessionId ? { providerSessionId } : {}),
+    sourcePath,
+    addedAt,
+    sizeBytes: sizeBytes as number,
+  };
 }
 
 function decodeGalleryBase64(base64Data: string): Buffer | null {
@@ -127,12 +182,14 @@ function sendGalleryJson(
 
 export class GalleryStore {
   private index: GalleryImageMeta[] = [];
+  private readonly directory: string;
   private readonly imagesDirectory: string;
   private readonly indexFile: string;
   private indexWriteTail: Promise<void> = Promise.resolve();
 
   constructor(options: { directory?: string } = {}) {
     const directory = options.directory ?? DEFAULT_GALLERY_DIR;
+    this.directory = directory;
     this.imagesDirectory = join(directory, "images");
     this.indexFile = join(directory, "index.json");
   }
@@ -159,12 +216,17 @@ export class GalleryStore {
   }
 
   async init(): Promise<void> {
-    await mkdir(this.imagesDirectory, { recursive: true });
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await chmod(this.directory, 0o700);
+    await mkdir(this.imagesDirectory, { recursive: true, mode: 0o700 });
+    await chmod(this.imagesDirectory, 0o700);
     try {
       const data = await readFile(this.indexFile, "utf-8");
       const parsed: unknown = JSON.parse(data);
       this.index = Array.isArray(parsed)
-        ? (parsed as GalleryImageMeta[])
+        ? parsed
+            .map((entry) => parseGalleryImageMeta(entry))
+            .filter((entry): entry is GalleryImageMeta => entry !== undefined)
         : [];
     } catch {
       // File doesn't exist or is corrupt — start fresh
@@ -212,6 +274,7 @@ export class GalleryStore {
       const destPath = join(this.imagesDirectory, filename);
 
       await copyFile(resolvedPath, destPath);
+      await chmod(destPath, 0o600);
 
       const meta: GalleryImageMeta = {
         id,
@@ -263,7 +326,7 @@ export class GalleryStore {
       // Decode a canonical bounded payload before touching persistent storage.
       const buffer = decodeGalleryBase64(base64Data);
       if (!buffer) return null;
-      await writeFile(destPath, buffer);
+      await writeFile(destPath, buffer, { mode: 0o600 });
 
       const meta: GalleryImageMeta = {
         id,
