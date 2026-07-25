@@ -27,6 +27,48 @@
 - 固定 UI 与确定性错误继续中文化；本轮不加入运行时翻译模型、云翻译 API 或
   自动翻译 provider 内容。旧系统通过显示原文保持兼容。
 
+## 2026-07-26 conversation catalog and durable-view audit directions
+
+- 本节是
+  `plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
+  第二轮静态审计形成的实施门禁，不是业务代码已经完成或已获发布授权。真正开工
+  时必须在当时 HEAD、最新官方 upstream、真实 Bridge 事件线和真机上重新验证。
+- 首次进入会话首页的 readiness 是复合事实：当前 transport、当前 connection
+  epoch 的 runtime snapshot，以及同 machine/source/filter 的可用持久 catalog
+  或权威 catalog response。不得用固定 1～2 秒延迟，也不得先展示整页
+  `(no description)`。
+- recent catalog response 必须作为一个原子 envelope 提交；rows、query key、
+  request/generation、revision/cursor、scope、tombstone 和 health 不得再从
+  stream payload 与“最后一份全局 message”分别读取。目录 identity 必须包含
+  machine/Bridge、source Home、provider 和 durable session ID。
+- `SessionCatalogRepository` 是持久目录唯一写入者。断线结束 flights 并标记
+  stale/degraded，但不清用户筛选和同目标缓存；authoritative empty、delete、
+  archive、move 和 project exhaustion 都有独立语义。Cockpit/`CODEX_HOME`
+  必须通过显式 source registry 接入，不能继续硬编码普通 Home 后把两套记录按
+  raw session ID 合并。
+- 阅读 durable conversation 与 provider runtime attachment 分离。点开先以
+  durable identity 展示 catalog + local hot/full content；发送、审批或需要 live
+  provider 行为时才 attach。runtime ID 变化不能替换页面 identity，也不能清掉
+  草稿、锚点、未读或 disclosure 状态。
+- `HistorySyncArbiter` 每个 durable conversation 同时只允许一个 provider
+  history flight。interactive 可升级 background flight；后来的低优先级
+  delta-only 请求不得取消已经确认的 interactive fallback 权限。新协议回显
+  request/generation；旧 Bridge 每会话串行且有 deadline，unscoped capability
+  error 不得触发所有 pending 会话的 full-history fallback。
+- 普通“一键清理缓存”只删除明确列出的可重建 catalog/hot/tool/preview caches，
+  不删除完整下载副本、草稿、未发送队列、凭据、设置和传输断点。Settings 的
+  “已下载会话历史”逐项管理复用现有 Conversation Mirror
+  `removeLocalCopyTarget()` 删除/取消链路，并列出包括暂停 auto-sync 在内的全部
+  full copies；不另写一套删除 SQL。
+- 消息时间由 semantic row/bubble/disclosure 持有，不再由
+  `ChatEntryWidget` 在每个 entry 顶部插入独立全宽时间行。tool/process 摘要时间
+  位于 chevron 左侧；无法内嵌的中间文本使用最小间距标签；approximate provenance
+  保留。
+- 当前回合只有一个 stable-turn process surface。expanded 时 thinking、tool、
+  result 和 guardian 都在同一有边界、最多约八个紧凑工具行高、内部可滚动的
+  viewport；collapsed 时当前进度才显示单行摘要。`live:`/`entry:` 渲染来源不得
+  再成为 expansion identity。
+
 ## Upstream-compatible local fixes
 
 - Local compatibility fixes must preserve the official protocol and data model wherever possible.

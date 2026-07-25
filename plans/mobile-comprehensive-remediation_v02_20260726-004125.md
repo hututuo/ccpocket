@@ -1108,6 +1108,385 @@ Bridge 轻量增量和前台/机会性后台的有界追平。
 7. 功能全部完成后执行 v01 Phase 8 和本方案 v02-006 的全 App 性能/安全审查，
    并在当时的最新官方 upstream 上做语义合并和完整兼容回归。
 
+### v02-011：第二轮目录深审——请求身份、状态单写者与扫描成本
+
+#### 1. 本轮结论
+
+第二轮审计确认，当前目录问题不是只给首页补一个 loading 就能解决。Mobile 的
+筛选状态、请求身份、response metadata 和分页状态之间存在多个“分别正确、组合
+后可能错配”的边界；Bridge 则仍把多个来源的全量扫描、offset 分页和有限 watcher
+拼在一起。若只遮住 `(no description)`，迟到响应、重复扫描、陈旧 tail 和错误
+排序仍会继续发生。
+
+本节登记的是开工前必须先修正的事实边界，不授权现在直接重写目录层。
+
+#### 2. Mobile `SessionListCubit` 已确认的一致性缺口
+
+1. **recent payload 与 metadata 不是原子快照**
+   - `recentSessionsStream` 只向 Cubit 发送 `List<RecentSession>`；
+   - Cubit 收到列表后，再从 `BridgeService.lastRecentSessionsMessage` 读取
+     `hasMore`、offset、scope、projectPath 等元数据；
+   - stream 是异步 broadcast，若两份 response 紧邻到达，列表 payload 可能和
+     全局“最后一份 message”不属于同一个请求。
+   - 后续必须让 typed response envelope 一次携带 rows、scope、requestId、
+     queryGeneration、revision、cursor 和 source identity，禁止从旁路全局变量
+     拼接一次状态提交。
+
+2. **持久筛选恢复晚于首次网络请求**
+   - Cubit 构造时先订阅/工作，再异步读取 provider、named-only、pin、collapse
+     等偏好；
+   - 恢复出的筛选可以先改变 UI，但首次 recent request 可能已经按
+     all-provider / 非 named-only 发出；
+   - 因而界面筛选和已装入的数据短时间可能不一致，现有测试只验证值被恢复，没有
+     验证恢复后的第一份网络结果属于同一 query。
+   - 目标是先完成最小偏好恢复，再创建首个 query generation；或者在恢复完成时
+     明确废弃之前 generation 并重发，不能只改 UI。
+
+3. **筛选存在第二来源**
+   - `selectProject()` 没有把当前项目作为完整 Cubit state 的唯一事实；
+   - 后续请求仍读取 `BridgeService.currentProjectFilter` 这类可变旁路状态；
+   - search debounce 期间 UI query 已改变，旧 query response 仍可能结束 loading
+     并替换列表。
+   - provider、named-only、project、search、archive/source 等必须形成不可变
+     `CatalogQueryKey`，response 只有与当前 key + generation 完全一致才可提交。
+
+4. **分页状态缺少 flight 身份**
+   - 顶层 `loadMore` 虽有 `isLoadingMore` 展示字段，但没有统一的
+     has-more / same-flight / duplicate-tap guard；
+   - project page 用当前列表中“原始 path 完全相等”的数量计算 offset，规范化路径、
+     worktree alias 或迟到 merge 都可能造成错位；
+   - project page 没有自己的 requestId、deadline 和 retry identity，response
+     丢失时 loading path 可长期残留；
+   - offset pagination 面对正在变化的目录，本身会在页间插入/删除时重复或跳过。
+   - 新协议优先使用 snapshot revision + opaque cursor；旧 Bridge fallback
+     必须把同一 query 的 offset 请求串行化并在 response 后做 stable-key 去重。
+
+5. **身份键仍有 raw ID 漏口**
+   - 本地改名投影仍可能只按 `sessionId` 匹配，没有把 provider/source 放入键；
+   - Bridge 合并 Claude/Codex 扫描结果时也存在按 raw `sessionId` 去重的路径；
+   - 两个 provider 或两个 Codex Home 出现相同 ID 时，可能误改名或丢掉其中一个。
+   - 所有目录、pin、rename、unread、cache、page merge 的最小键必须是
+     `machine/Bridge + sourceHome + provider + providerSessionId`。
+
+6. **项目集合和 exhaustion 含义被混用**
+   - 空的 project-history response 当前不能权威清掉旧项目集合；
+   - `accumulatedProjectPaths` 主要做单调 union，被删除或迁移的项目会残留；
+   - 顶层 `hasMore=false` 会把当前已出现的项目都标成 project page exhausted，
+     但“顶层总页结束”不证明每个项目自己的页都结束；
+   - prefix refresh 会保留旧 tail，被归档、删除或改项目且不在新 prefix 的会话
+     可能继续存在。
+   - project catalog、top-level catalog 和各 project cursor 必须分别有 revision、
+     authoritative-empty 与 tombstone 语义。
+
+7. **断线重置把用户偏好当成传输状态**
+   - 当前断线会调用 `resetFilters()`，清空列表并把 provider/named-only 重置；
+   - 同一个 Cubit 生命周期内重连不会重新恢复偏好；
+   - 现有测试还明确要求“disconnect reset 清空 sessions、回到 skeleton”，这与
+     本轮“同目标保留持久目录、保留用户筛选、非阻塞重连”相冲突。
+   - 断线只能结束当前 flights、标记缓存 stale/degraded；不能清掉用户选择或同目标
+     已验证缓存。切换 machine/source 才切换到另一个缓存分区。
+
+8. **偏好写入缺少顺序保证**
+   - pin、collapse、filter 等多处持久化是 fire-and-forget；
+   - 快速连续切换可能让较早的异步写在较晚状态之后完成。
+   - 采用单写者串行队列或 versioned snapshot write；进程内 UI 仍可乐观更新，但
+     持久结果必须最终收敛到最新 revision。
+
+#### 3. Bridge 目录与 watcher 已确认的性能/兼容缺口
+
+1. `SessionCatalogMonitor` 和 `sessions-index` 多处固定读取
+   `~/.codex` / `~/.claude`，没有统一服从显式 `CODEX_HOME`、Cockpit instance
+   Home 或 v02-007 的 source registry。即使 App Server 连接了另一 Home，文件
+   catalog 仍可能读普通 Home。
+2. watcher 总数上限为 1024，安装顺序大致是 Claude projects、Codex root、
+   Codex sessions。前面的目录先占满时，后面的 Codex 目录可能没有 watch；
+   retry 每 15 秒继续尝试，但 cap 不会自行恢复，容易形成“反复扫描但覆盖仍不完整”
+   的静默退化。
+3. all-provider recent path 会并行执行：
+   - 一次包含 Claude + Codex rollout 的全目录扫描；
+   - 一次 Codex `thread/list`。
+   合并时优先保留 `thread/list` 的 Codex 结果并丢掉 rollout 重复项，因此很多
+   Codex rollout metadata 工作是重复成本，还可能影响 `hasMore` 推断。
+4. `getAllRecentSessions` 为一个小 page 仍可能扫描全部相关 Claude project、
+   Codex session tree，解析 index/JSONL 头尾，再对完整过滤结果排序后 slice。
+   在多 Home、数千 thread 和持续写入下不能作为每次 catalog revision 的常规路径。
+5. 当前 offset page 没有 snapshot token；目录在 page 1 与 page 2 之间变化时，
+   结果可重复/跳过。server generation 主要保护 top-level/filter，catalog、
+   append、project response 仍缺独立 request identity。
+6. watcher cap、解析失败、source Home 不一致和索引 fallback 当前没有足够明确的
+   health/degraded 投影给 Mobile；UI 可能继续显示“已同步”。
+
+#### 4. 目标目录协议与本地单写者
+
+建议以 v02-010 的 `SessionCatalogRepository` 为唯一写入者，最小契约如下：
+
+```text
+CatalogQueryKey
+  machineId + bridgeInstanceId + sourceHomeId
+  + provider + project + search + named/archive filters
+
+CatalogEnvelope
+  queryKey + connectionEpoch + requestId + queryGeneration
+  + catalogRevision + snapshot/cursor + rows + tombstones + health
+```
+
+- Bridge 新能力优先发送 revisioned snapshot/delta；旧 Bridge 继续用
+  recent snapshot，但 Mobile 将其包进本地 generation 并串行提交。
+- watcher 只负责产生“某 source 可能变化”的信号，目录 repository 才负责一次
+  有界 reconciliation；禁止页面、filter Cubit、runtime tracker 各自重扫。
+- `thread/list` 可提供的 Codex metadata 不再同时重复 rollout 全扫；仅对
+  app-server 缺失、兼容旧数据或需要补字段的候选做有界 fallback。
+- watcher 根目录来自显式 source registry；cap 达到时选择可预测的高价值根并
+  上报 degraded，同时以低频、有预算的 reconciliation 补偿。
+- 首页排序每次按权威 activity timestamp + stable tie-breaker 重算投影；不能
+  因“旧行原位置替换”把刚更新会话留在列表底部。
+- authoritative empty、delete/archive/move 必须能删除旧投影；不得只做 union。
+
+#### 5. 必须新增或改写的目录回归
+
+1. 持久 provider/named-only 偏好在首个 query 前恢复；旧首个 response 不得污染。
+2. search debounce 中旧 response 先到、后到两种顺序都不能结束新 query loading。
+3. list payload 与 response metadata 连续交错，证明 envelope 原子提交。
+4. Bridge A → Bridge B、普通 Codex Home → Cockpit Home 的迟到 response 被拒绝。
+5. Claude/Codex 或两个 Home 使用相同 raw session ID 时均保留，rename/pin 不串线。
+6. authoritative empty project history 能清旧项目；top-level exhaustion 不误标
+   每个 project cursor。
+7. mutable catalog 的两页之间插入、删除、归档和改 project，不重复、不漏项。
+8. project page 丢包、超时、重复点击和规范化路径 alias 均能收束。
+9. 断线/同目标重连保留筛选和缓存；切换目标只切换分区，不混用。
+10. watcher cap、根目录后出现、`CODEX_HOME` 切换和 degraded health 有确定性测试。
+11. all-provider 目录基准记录 scan count、读取字节和 JSONL fallback 数；Codex
+    `thread/list` 命中时不得再做等价全树工作。
+
+### v02-012：第二轮查看深审——阅读、运行时附着与历史同步状态机
+
+#### 1. 已确认的当前耦合
+
+当前点击一个 recent conversation 的真实路径是：
+
+```text
+tap recent
+  → register PendingSessionBinding
+  → Bridge resume
+  → navigate pending_resume_<requestId>
+  → full-page “creating session”
+  → session_created(runtimeSessionId)
+  → rebuild screen/cubits under the new runtime ID
+  → restore runtime cache / Mirror / provider history
+```
+
+这条路径解释了三个用户可见现象：
+
+- 既有会话也显示“正在创建会话”；
+- 没有 runtime attachment 就不能先阅读已缓存内容；
+- resume ID 到达后以新的 `ValueKey(sessionId)` 重建页面所有者，局部展开、滚动和
+  current-process 状态容易丢失。
+
+普通 `PendingSessionBinding` 已经能在新 Bridge 上按 exact request ID 关联，并对
+旧 Bridge 做有界唯一 fallback，这是应保留的基础；但 Codex/Claude 页面仍有各自
+的兼容 listener 路径，主要按 project/durable ID 推断，同项目并发 resume 时仍
+需要证明不会误认。
+
+#### 2. Runtime cache 与完整副本不能代替 durable view
+
+- `SessionRuntimeStore` 以 Bridge runtime session ID 为键；同一 provider thread
+  每次 resume 产生新 runtime ID 时，不能自然复用上一 attachment 的进程内缓存。
+- Conversation Mirror 能按 durable provider ID 找完整手机副本，但 bootstrap
+  发生在 runtime screen/cubit 创建以后；它只覆盖用户下载的 Codex 副本和有界
+  resident 集合，不是所有 catalog conversation 的默认阅读层。
+- 因而“所有会话随时点开”必须新增 durable view identity 和 hot-content store，
+  不能靠提前 resume 所有会话，也不能只扩大 resident 上限。
+
+目标打开路径应为：
+
+```text
+tap durable conversation
+  → open ConversationView(durableIdentity)
+  → immediate catalog + local hot/full content
+  → optional foreground delta reconciliation
+  → only on send/approval/live need: RuntimeAttachmentController.attach
+  → migrate live ownership without replacing durable screen identity
+```
+
+UI phase 至少要类型化为：
+
+- `openingLocal`：读取本地目录/正文；
+- `reconciling`：已有正文可读，追平增量；
+- `offlineReadable`：有缓存但 Bridge 不可用；
+- `attachingRuntime`：发送或审批前正在建立 provider runtime；
+- `creatingNew`：仅真实新建线程；
+- `unavailable/retryableError`：明确失败和重试，不永久 pending。
+
+#### 3. History 请求没有真正的 per-conversation flight
+
+已确认：
+
+1. `ChatSessionCubit` 在 `starting` 状态每 3 秒继续请求 history，没有固定重试数、
+   总 deadline 或指数退避；resume/状态丢失时可无限重复。
+2. history 请求还来自 foreground/background coordinator、Desktop continuity、
+   Mirror、手动刷新和错误恢复。
+3. `BridgeService` 的 pending maps 以 session 为键，不以 request 为键。后来的
+   调用会覆盖 `allowFullFallback`；response 也没有 request ID / since echo /
+   connection generation，旧结果可先结束新 flight 的“正在同步”展示。
+4. 现有测试明确要求“后来的 background delta-only 请求取消先前 foreground
+   full-fallback 资格”，即 codify latest-writer-wins。该契约与本方案相反：
+   interactive 请求可以提升已有 background flight，但 background 请求不得降低
+   已确认的 interactive 权限。
+5. 旧 Bridge 对 `get_history_delta` 返回的 unsupported error 可能没有 session
+   scope；当前 fallback 会处理所有 pending sessions。一个旧能力错误不应同时
+   改变多个会话的策略或触发 history 风暴。
+
+`HistorySyncArbiter` 应采用合并而非覆盖：
+
+```text
+one durable conversation → at most one provider flight
+
+effective reason/permission
+  = highest current priority
+  + earliest safe cursor
+  + monotonic fallback permission within the flight
+  + deadline + connection epoch + request generation
+```
+
+- `interactive/open/send/approval` 优先级高于 foreground warm、background
+  delta-only 和低优先级预取。
+- 新高优先级调用可升级/标 dirty；低优先级调用不能降级正在进行的高优先级 flight。
+- 新 Bridge 通过 additive requestId/generation 原样回显；旧 Bridge 每会话严格
+  single-flight，unscoped unsupported 只改变 capability 状态，并由 arbiter 对
+  符合条件的会话逐一有界处理。
+- 超时结束当前等待并保留可重试状态，不伪造空 history；迟到 response 只能进入
+  与其 generation 匹配的 reducer。
+
+#### 4. Message ownership 与 history replacement 风险
+
+- `messagesForSession()` 当前会把 `pair.sessionId == null` 的消息暴露给每一个打开
+  的 chat cubit。解析错误、旧协议 unscoped error 或基础设施提示可能同时进入
+  多个会话的处理路径。基础设施事件应进入 connection/error channel；只有有
+  明确 owner 的 transcript item 才能进入会话 projection。
+- `SessionRuntimeStore` 对有 sequence 的 history delta 有良好水位和排序基础，
+  应保留；但无 sequence 消息仍按到达追加，重复旧事件可能产生重复项。
+- legacy `HistoryMessage` 会整体替换 runtime store 并把 seq 水位重置为零；新旧
+  capability 切换、迟到 legacy snapshot 和新 delta 交错需要 generation fence。
+- `ChatSessionCubit` 为保留本地 user 图片/时间，在没有 UUID 时还会以
+  `text:<message text>` 建索引。两轮完全相同的问题会覆盖同一个 map key，可能把
+  前一轮的图片字节或时间赋给后一轮。现有测试覆盖有 UUID 的重复 prompt 和重复
+  assistant text，但没有覆盖“两个无 UUID 同文 user、各自不同图片/时间”的替换。
+- live/history/Mirror/optimistic echo 仍有多套 weak-equivalence/保留算法；不能
+  再通过增加一个 text fallback 修补。最终以 stable item/turn identity、provider
+  ordinal/sequence 和明确 provisional→canonical mapping 收束。
+
+#### 5. 必须新增或改写的查看/历史回归
+
+1. 有 hot/full cache 的既有会话在无 runtime 时立即可读，且不发送 resume；
+   首次发送消息时才 attach，页面 durable key、滚动和展开状态不变。
+2. 无本地正文的既有会话显示“正在加载/同步”，从不显示“正在创建”。
+3. create/open/attach/resume/reattach 分别有 requestId、取消、deadline、重试和
+   迟到结果测试；同项目并发操作不能互认。
+4. starting 永不结束、socket 半开、旧 Bridge 不支持 delta 时，请求数有界且 UI
+   可恢复，不每 3 秒永久轮询。
+5. foreground interactive 与 background delta-only 以两种调用顺序交错，最终
+   有效权限遵循优先级，不遵循最后写入者。
+6. 两个会话同时 pending delta，收到一次 unscoped unsupported error，不产生
+   多会话无界 full-history fallback。
+7. old response、new response、Mirror snapshot、live tail 以所有可能顺序交错，
+   只有当前 generation 提交，同一 item 不重复。
+8. 两个无 UUID、文字相同但图片/时间不同的 user turn 经 canonical replacement
+   后仍各自保留正确元数据。
+9. parse/infrastructure error 无 session owner 时只显示一次全局诊断，不进入所有
+   chat transcript。
+10. runtime ID 迁移不得重建 durable screen；草稿、选择、锚点、过程框和未读水位
+    都按 durable identity 保留。
+
+### v02-013：缓存管理与紧凑过程 UI 的复用边界
+
+#### 1. 设置页缓存管理不重复实现已有删除能力
+
+当前已经存在：
+
+- `ConversationMirrorStore.listLocalCopies()`：能列出所有完成的本地副本，包括暂停
+  auto-sync 的副本；
+- `ConversationMirrorService.removeLocalCopyTarget()`：会先取消目标请求，再调用
+  store 删除，并清理 metadata、syncing 和 paging cursor；
+- recent/running 会话菜单与会话内 resident 面板已经能删除单个副本。
+
+当前真正缺少：
+
+- Settings 中的统一“存储与缓存”入口；
+- service 面向设置页的**全部** local copies 投影。目前公开的
+  `residentMetadata` 只返回 `autoSync && hasLocalCopy`，会漏掉暂停同步但仍占空间
+  的副本；
+- 可理解的标题。Mirror metadata 只有 provider/session key、project path、
+  entry count、bytes、lastSyncedAt、error，没有 title/summary；设置页必须按
+  durable identity 与持久 catalog join，不能拿路径或第一条正文临时猜；
+- 总占用、按类别占用、清理进度、失败恢复和测试。
+
+因此实施时：
+
+1. **一键清理可重建缓存**
+   - 清理 catalog 可重建投影、recent hot window、按需工具详情、预览/图片/diff
+     等明确列出的 cache；
+   - 不删除完整下载副本、草稿、未发送队列、连接凭据、设置、传输断点或授权材料；
+   - 清理完成后首页可以降级为在线重取或空 skeleton，但迟到 frame 不得复活旧代。
+2. **已下载会话历史管理**
+   - 单独列出全部 full copies，显示标题/项目/provider/source、大小、条目数、
+     最后同步、自动同步状态和错误；
+   - 每项独立确认删除，复用现有 `removeLocalCopyTarget()`，不再写第二套 SQL/
+     cancellation 逻辑；
+   - 正在打开、同步或离线阅读的副本删除时，先撤销 watch/flight，再让视图安全
+     降级，不闪退、不显示已删正文。
+3. 普通清缓存与副本删除必须是两个不同的 destructive scope；文案明确实际释放
+   的空间和可重新下载性。
+4. 若以后增加“清除全部已下载历史”，必须用一次有界批事务/批次 vacuum 和进度，
+   不能循环 N 次单删造成 N 次 vacuum；本轮用户当前要求的逐项删除无需默认提供
+   该危险快捷键。
+
+#### 2. 时间戳迁移采用 semantic owner
+
+`ChatEntryWidget` 的通用顶部 `_TimestampWidget` 必须退出“所有 entry 的默认
+装饰”角色，但时间事实本身保留：
+
+- 普通 user/assistant 气泡由气泡 footer/trailing 自己显示；
+- tool/process 折叠摘要把时间放在最右侧、chevron 左边；
+- 自由中间文本无法内嵌时，可在正文上方用紧凑 leading/trailing label，间距尽量
+  小，不能生成居中的全宽分隔行；
+- process frame 内的工具默认用组/事件时间和 canonical 顺序，不在每两个工具间
+  插时间；
+- approximate `~` provenance 继续保留，但不得因 local re-render 更新成当前时间。
+
+现有 `message_timestamp_test.dart` 只断言 `03:04:05` 和 `~03:04:05` 存在，会
+允许任何糟糕布局继续通过。必须改成结构/位置测试，并在窄屏、Dynamic Type、
+中英文长摘要下证明时间不遮挡 chevron。
+
+#### 3. 当前过程框复用与必须推翻的测试假设
+
+现有八行 viewport、内部滚动、reading-position anchor 和 process layout cache
+都是可复用基础。不要重新写聊天树。但需要修正：
+
+- `_expandedCurrentProgress` 目前按 `entry:<turn>` / `live:<turn>` 两个渲染身份
+  保存；stable durable turn key 才是唯一 expansion owner。
+- live path 的 thinking/details 与 persisted tool viewport 是两个 surface；必须
+  合并成同一 current-process viewport。
+- 已有“incremental output keeps current progress expanded”测试只覆盖 persisted
+  路径继续追加和 App lifecycle，没有覆盖用户复现的
+  `entry expanded → streaming thinking → live key → persisted tool` 身份切换；
+  另一个 live 测试甚至明确要求 live stream 使用独立 surface。实施时必须改写
+  这条旧契约，而不是为了让旧测试通过继续保留双 surface。
+- 八行框增加静态边界、底色、溢出 fade/scrollbar 时只监听 overflow/scroll
+  状态；thinking delta 不得让整个 outer list 和装饰层每帧重建。
+
+#### 4. 本轮文档完成门禁
+
+本轮只完成调查与方向文档，不代表以下事项已经实现：
+
+- catalog protocol/repository、hot cache 或设置页；
+- durable view/runtime attachment 分离；
+- history single-flight/request correlation；
+- 时间戳迁移或 unified current-process viewport；
+- Bridge 部署、官方更新合并、IPA、OTA 或真机验收。
+
+正式实施前先把本节列出的旧测试中“有意维护旧行为”的断言改成新业务契约，再按
+小提交逐层迁移；每一层都要保留旧 Bridge fallback，不能通过整文件覆盖官方代码。
+
 ## 2. 后续讨论登记方式
 
 从本轮对话开始，每个新增问题按 `v02-002`、`v02-003`……追加到本文。若用户
