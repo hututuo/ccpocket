@@ -1,6 +1,7 @@
 # CC Pocket 1.109.2 全面修复、兼容整合与性能收束方案
 
-> 状态：active
+> 状态：active（源码与 build 202 候选 IPA 已完成；真机验收和运行中
+> Bridge/Cloud 切换尚未执行）
 >
 > 本方案记录 2026-07-25 已确认的产品目标、当前证据、实施顺序和验收门槛。
 > 它是执行路线和完成审计清单，不是对当前源码或运行状态的完成声明。
@@ -1094,3 +1095,99 @@ Local file   -> iOS Quick Look canPreview -> 本地有界预览器 -> metadata/d
 7. 安全审计覆盖配对、HTTP/WebSocket、全盘读取和 mutation step-up；
 8. 工作树干净，commits 按行为拆分，构建产物未混入 Git；
 9. 剩余只能由物理设备或用户视觉判断的门槛被明确列出，不能用模拟器代替。
+
+## 19. 2026-07-25 实施与最终审计记录
+
+本节记录本方案对应集成分支的实际结果。它不会把未部署、未安装或未真机验证的
+事项写成已经完成。
+
+### 19.1 源码、官方基线和运行态
+
+- 实施分支：
+  `integration/mobile-1.109.2-comprehensive-20260725`。
+- 官方 `upstream/main` 在最终构建前再次 fetch，仍为
+  `aa215a3b98a8035cba0e6bdd8005803f76041d66`；没有遗漏更新。
+- 官方 Mobile `1.109.2+201` 和 Bridge `1.69.4` 已通过显式 merge
+  `1907a42c` 纳入；本地候选使用 Mobile `1.109.2+202` 和 Bridge
+  `1.69.4-compat.1`。
+- 当前 Mac 上实际运行的 Bridge 没有被本轮替换，仍是
+  `1.69.0-compat.6-4e611c6b`。现场配置为 `0.0.0.0:8765`、无
+  `BRIDGE_API_KEY`，允许目录是 `/Users/huyiyang` 和一个旧临时集成目录，
+  不是本轮设计的显式 `*` 全盘 owner 读取配置。
+- 因此当前运行态不能代表新鉴权、全盘 owner 读取、通知偏好、notification-only
+  或 mutation step-up 已经上线。新 App 对旧 Bridge 会按能力降级；需要新 Bridge
+  的入口会 fail closed 或提示更新。
+
+### 19.2 最终安全和性能收束
+
+- Cloud notification relay 增加 token、locale、event type、标题、正文、data
+  数量/键值和总 payload 上限；拒绝嵌套或非字符串 data，并在限流前先拒绝非法
+  token，避免把畸形请求放进外部调用路径。
+- Gallery index 不再信任持久 JSON 中任意 filename/MIME/size/date；启动时只采用
+  安全、类型一致和有界的条目，忽略损坏行，不删除用户图片。Gallery 目录和复制/
+  上传文件分别收紧为 `0700`/`0600`。
+- Mobile remote-history 在 session 清除和数据库迁移时释放 cursor、page-flight、
+  pending delta 与同步状态，避免旧连接/旧数据库代际继续持有分页状态。
+- 会话 catalog watch、Side Chat timer/subscription、工具 detail flight、文件
+  cursor/abort、mutation challenge 和 disconnect cleanup 均复核为有界或按生命
+  周期释放。Gallery index 没有擅自加入自动删除，因为那会改变用户数据保留语义。
+- running 状态线和 history-sync 光晕只在状态活跃、当前 `TickerMode` 可见且用户
+  未开启 reduced motion 时驱动，并由 `RepaintBoundary` 隔离；没有为了追求微小
+  指标删除用户需要的同步反馈。
+- 全量 Flutter 并发运行曾令一个文件传输恢复测试受跨文件资源竞争卡住；该测试
+  单文件、窄组合和最终单线程全量均稳定通过。没有通过放宽 30 秒 timeout 或修改
+  产品逻辑掩盖测试运行器干扰。
+
+### 19.3 最终验证信号
+
+- Bridge 全量：91 个 test files，`1672/1672` 通过。
+- Cloud Functions：typecheck、build 通过，`23/23` 测试通过。
+- Mobile 单线程全量：`2265` 通过，`4` 个依赖外部环境的 smoke tests 跳过，
+  末行 `All tests passed!`，进程 exit 0。
+- `flutter analyze --no-pub --no-fatal-infos`：0 error、0 warning、53 个
+  info，exit 0；其中包括仓库已有的 initializing-formal 风格项和三处上游依赖
+  API deprecation，不伪装成零提示。
+- iOS Simulator Debug：`Xcode build done. 46.3s`，
+  `Built build/ios/iphonesimulator/Runner.app`。
+- RunnerTests：iPhone 17 Pro Max / iOS 26.1 Simulator，`27/27` 通过，
+  `TEST SUCCEEDED`。
+- Shorebird 1.6.114 / Flutter 3.44.7 使用
+  `release ios --dry-run --no-codesign` 完成 device archive；Xcode archive
+  126.0 秒，Shorebird 校验 `No issues detected`，未上传或创建 Cloud release。
+- 构建时发现 Xcode 详细日志会继承并打印当前 shell 的无关云凭据。最终 Shorebird
+  构建已显式剥离这类敏感环境变量；先前测试专用日志和 DerivedData 已移入废纸篓，
+  没有登记或提交凭据值。
+
+### 19.4 build 202 IPA 交付
+
+- 文件：
+  `/Users/huyiyang/Downloads/CC-Pocket-1.109.2-build202-comprehensive-ae17d712-AltStore.ipa`
+- SHA-256：
+  `54c2f2ca134bcecbd2123549e47ad067f1df957292f57c73b1609d0748b54b7b`
+- Bundle：`com.k9i.ccpocket`；版本 `1.109.2`；build `202`；最低 iOS
+  `15.0`。
+- ZIP 共 287 个安全相对条目，只有一个 `Payload/Runner.app` 顶层应用，没有
+  `__MACOSX`、`.DS_Store`、绝对路径或父目录穿越；新鲜解压树与
+  `.xcarchive` 的 Runner.app 完全一致。
+- 35 个 Mach-O 全部只有 arm64 且平台为 iPhoneOS；顶层 App 未签名、没有
+  `embedded.mobileprovision`，交由 AltStore/AltServer 现场重签。四个依赖
+  framework 保留其随包签名，重签工具仍需按正常流程重签整个 bundle。
+- 包内确认存在 Shorebird app identity、后台定位、有限后台同步、通知 action、
+  File Mutation Face ID/Secure Enclave、Quick Look 和 Mobile Host 原生插件；
+  `UIBackgroundModes` 为 `fetch/location/remote-notification`。
+- 当前包内 `GoogleService-Info.plist` 仍是仓库的 `dummy-project`。这不影响应用
+  内/本地通知或已连接 Bridge 的 location notification-only 路径，但不能证明
+  FCM/APNs 远程推送可用。远程推送还需要真实 Firebase 配置，并取决于 AltStore
+  最终 profile 是否保留 APS entitlement。
+
+### 19.5 仍需用户或部署阶段完成
+
+1. 用 AltStore/AltServer 重签并安装上述唯一 build 202 IPA。
+2. 在物理 iPhone 验证 Always Location 两阶段授权、后台系统指示、任务运行/结束/
+   断线停机、锁屏本地通知、低电量和温控行为。
+3. 验证通知长按 Allow/Reject 的设备认证与权威 pending request 复核。
+4. 验证超长会话滚动、5 回合/200 tool/8 行 disclosure、展开状态、前台 catch-up、
+   未读蓝点、Quick Look/HTML/JSON、分享/下载和 Face ID 文件授权的真实交互。
+5. 在单独的部署步骤配置非空 API key、确认 Tailscale/监听/反代边界后再替换
+   live Bridge；若要远程 FCM/APNs，再提供真实 Firebase 配置并部署对应 Cloud
+   Functions。不能因为 IPA 构建成功就跳过这些门槛。
