@@ -8,6 +8,10 @@ import {
   FILE_TRANSFER_MAX_FILE_SIZE_BYTES,
   FILE_TRANSFER_TOKEN_PATTERN,
 } from "./file-transfer-constants.js";
+import {
+  validateFileMutationAuthorization,
+  type FileMutationAuthorization,
+} from "./file-mutation-auth.js";
 export { FILE_TRANSFER_CAPABILITY } from "./file-transfer-constants.js";
 
 export type FileTransferClientMessage =
@@ -18,6 +22,7 @@ export type FileTransferClientMessage =
       resumeToken: string;
       filename: string;
       sizeBytes: number;
+      mutationAuthorization?: FileMutationAuthorization;
     }
   | {
       type: "file_transfer_receive_result_v2";
@@ -212,6 +217,7 @@ export function parseFileTransferClientMessage(
         "resumeToken",
         "filename",
         "sizeBytes",
+        "mutationAuthorization",
       ]) ||
       !correlatedId(message.requestId, MAX_REQUEST_ID_LENGTH) ||
       typeof message.transferId !== "string" ||
@@ -221,7 +227,9 @@ export function parseFileTransferClientMessage(
       !validLocalFeatureText(message.filename, MAX_FILENAME_LENGTH, false) ||
       !Number.isSafeInteger(message.sizeBytes) ||
       Number(message.sizeBytes) < 0 ||
-      Number(message.sizeBytes) > FILE_TRANSFER_MAX_FILE_SIZE_BYTES
+      Number(message.sizeBytes) > FILE_TRANSFER_MAX_FILE_SIZE_BYTES ||
+      (message.mutationAuthorization !== undefined &&
+        !validateFileMutationAuthorization(message.mutationAuthorization))
     ) {
       return null;
     }
@@ -232,6 +240,9 @@ export function parseFileTransferClientMessage(
       resumeToken: message.resumeToken,
       filename: message.filename,
       sizeBytes: Number(message.sizeBytes),
+      ...(message.mutationAuthorization === undefined
+        ? {}
+        : { mutationAuthorization: message.mutationAuthorization }),
     };
   }
 

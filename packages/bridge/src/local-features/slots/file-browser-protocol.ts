@@ -3,6 +3,10 @@ import {
   validLocalFeatureId,
   type LocalFeatureProtocolContribution,
 } from "../protocol-slot.js";
+import {
+  validateFileMutationOperation,
+  type FileMutationOperation,
+} from "../../file-mutation-auth.js";
 
 export const FILE_BROWSER_CAPABILITY = "file_browser_v1";
 
@@ -16,6 +20,9 @@ const MAX_REQUEST_ID_LENGTH = 128;
 const MAX_ROOT_ID_LENGTH = 128;
 const MAX_CURSOR_LENGTH = 2048;
 const MAX_NODE_REVISION_LENGTH = 256;
+const MAX_DEVICE_ID_LENGTH = 128;
+const MAX_PUBLIC_KEY_LENGTH = 256;
+const MAX_PASSWORD_LENGTH = 256;
 
 export type FileBrowserNodeKind =
   | "file"
@@ -102,19 +109,44 @@ export interface FileBrowserDownloadRequest {
   nodeRevision?: string;
 }
 
+export interface FileMutationAuthStateRequest {
+  type: "file_mutation_auth_state_v1";
+  requestId: string;
+  deviceId?: string;
+}
+
+export interface FileMutationAuthChallengeRequest {
+  type: "file_mutation_auth_challenge_v1";
+  requestId: string;
+  deviceId: string;
+  operation: FileMutationOperation;
+}
+
+export interface FileMutationAuthEnrollRequest {
+  type: "file_mutation_auth_enroll_v1";
+  requestId: string;
+  deviceId: string;
+  publicKey: string;
+  password: string;
+}
+
 export type FileBrowserClientMessage =
   | FileBrowserRootsRequest
   | FileBrowserListRequest
   | FileBrowserStatRequest
   | FileBrowserPreviewRequest
-  | FileBrowserDownloadRequest;
+  | FileBrowserDownloadRequest
+  | FileMutationAuthStateRequest
+  | FileMutationAuthChallengeRequest
+  | FileMutationAuthEnrollRequest;
 
 type FileBrowserResultType =
   | "file_browser_roots_result_v1"
   | "file_browser_list_result_v1"
   | "file_browser_stat_result_v1"
   | "file_browser_preview_result_v1"
-  | "file_browser_download_result_v1";
+  | "file_browser_download_result_v1"
+  | "file_mutation_auth_result_v1";
 
 export type FileBrowserFailureResult<Type extends FileBrowserResultType> = {
   type: Type;
@@ -199,12 +231,33 @@ export type FileBrowserDownloadResult =
   | FileBrowserDownloadSuccessResult
   | FileBrowserFailureResult<"file_browser_download_result_v1">;
 
+export type FileMutationAuthResult =
+  | {
+      type: "file_mutation_auth_result_v1";
+      requestId: string;
+      success: true;
+      event: "state" | "enrolled";
+      passwordConfigured: boolean;
+      biometricEnrolled: boolean;
+    }
+  | {
+      type: "file_mutation_auth_result_v1";
+      requestId: string;
+      success: true;
+      event: "challenge";
+      challengeId: string;
+      payload: string;
+      expiresAt: string;
+    }
+  | FileBrowserFailureResult<"file_mutation_auth_result_v1">;
+
 export type FileBrowserServerMessage =
   | FileBrowserRootsResult
   | FileBrowserListResult
   | FileBrowserStatResult
   | FileBrowserPreviewResult
-  | FileBrowserDownloadResult;
+  | FileBrowserDownloadResult
+  | FileMutationAuthResult;
 
 const CLIENT_TYPES = [
   "file_browser_roots_v1",
@@ -212,6 +265,9 @@ const CLIENT_TYPES = [
   "file_browser_stat_v1",
   "file_browser_preview_v1",
   "file_browser_download_v1",
+  "file_mutation_auth_state_v1",
+  "file_mutation_auth_challenge_v1",
+  "file_mutation_auth_enroll_v1",
 ] as const;
 
 const SERVER_TYPES = [
@@ -220,6 +276,7 @@ const SERVER_TYPES = [
   "file_browser_stat_result_v1",
   "file_browser_preview_result_v1",
   "file_browser_download_result_v1",
+  "file_mutation_auth_result_v1",
 ] as const;
 
 /**
@@ -364,6 +421,68 @@ export const fileBrowserProtocolContribution: LocalFeatureProtocolContribution<
           ...(typeof message.nodeRevision === "string"
             ? { nodeRevision: message.nodeRevision }
             : {}),
+        };
+      case "file_mutation_auth_state_v1":
+        if (
+          !hasOnlyLocalFeatureKeys(message, [
+            "type",
+            "requestId",
+            "deviceId",
+          ]) ||
+          (message.deviceId !== undefined &&
+            !correlatedId(message.deviceId, MAX_DEVICE_ID_LENGTH))
+        ) {
+          return null;
+        }
+        return {
+          type: message.type,
+          requestId,
+          ...(typeof message.deviceId === "string"
+            ? { deviceId: message.deviceId }
+            : {}),
+        };
+      case "file_mutation_auth_challenge_v1":
+        if (
+          !hasOnlyLocalFeatureKeys(message, [
+            "type",
+            "requestId",
+            "deviceId",
+            "operation",
+          ]) ||
+          !correlatedId(message.deviceId, MAX_DEVICE_ID_LENGTH) ||
+          !validateFileMutationOperation(message.operation)
+        ) {
+          return null;
+        }
+        return {
+          type: message.type,
+          requestId,
+          deviceId: message.deviceId,
+          operation: message.operation,
+        };
+      case "file_mutation_auth_enroll_v1":
+        if (
+          !hasOnlyLocalFeatureKeys(message, [
+            "type",
+            "requestId",
+            "deviceId",
+            "publicKey",
+            "password",
+          ]) ||
+          !correlatedId(message.deviceId, MAX_DEVICE_ID_LENGTH) ||
+          !correlatedId(message.publicKey, MAX_PUBLIC_KEY_LENGTH) ||
+          typeof message.password !== "string" ||
+          message.password.length < 8 ||
+          message.password.length > MAX_PASSWORD_LENGTH
+        ) {
+          return null;
+        }
+        return {
+          type: message.type,
+          requestId,
+          deviceId: message.deviceId,
+          publicKey: message.publicKey,
+          password: message.password,
         };
     }
   },

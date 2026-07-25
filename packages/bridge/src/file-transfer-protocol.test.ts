@@ -26,6 +26,52 @@ describe("file transfer v2 protocol", () => {
     });
   });
 
+  it("accepts only a bounded password or biometric upload authorization", () => {
+    const base = {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "request-auth",
+      transferId,
+      resumeToken: token,
+      filename: "报告.pdf",
+      sizeBytes: 42,
+    };
+    expect(
+      parseFileTransferClientMessage({
+        ...base,
+        mutationAuthorization: {
+          method: "password",
+          password: ["correct", "bridge", "credential"].join("-"),
+        },
+      }),
+    ).toMatchObject({
+      mutationAuthorization: { method: "password" },
+    });
+    expect(
+      parseFileTransferClientMessage({
+        ...base,
+        mutationAuthorization: {
+          method: "biometric",
+          challengeId: "challenge_1234567890",
+          deviceId: "ios:test-device",
+          signature: "a".repeat(86),
+        },
+      }),
+    ).toMatchObject({
+      mutationAuthorization: { method: "biometric" },
+    });
+    expect(
+      parseFileTransferClientMessage({
+        ...base,
+        mutationAuthorization: {
+          method: "biometric",
+          challengeId: "short",
+          deviceId: "ios:test-device",
+          signature: "a".repeat(86),
+        },
+      }),
+    ).toBeNull();
+  });
+
   it("accepts receive acknowledgements, resume, and direction-scoped cancel", () => {
     expect(parseFileTransferClientMessage({
       type: "file_transfer_receive_result_v2",

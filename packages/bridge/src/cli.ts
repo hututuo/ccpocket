@@ -29,6 +29,9 @@ Commands:
   send <path>           Offer a local file to the one connected compatible phone
   file-transfer status  Diagnose the persistent transfer process lock
   file-transfer unlock  Remove only a lock whose recorded owner PID is dead
+  file-access status    Show whether mutation step-up is configured
+  file-access set-password
+                        Configure the Bridge-side mutation password
 
 Options:
   -h, --help            Show this help
@@ -55,6 +58,9 @@ Send options:
       --ttl <seconds>    Download lease from 60 to 86400 seconds (default: 86400)
       --base-url <url>   Mobile-reachable HTTP(S) Bridge URL
       --json             Print structured metadata with status "offered"
+
+File access options:
+      --password-stdin  Read the new password from redirected stdin
 
 Setup options:
       --uninstall       Remove the registered service
@@ -168,6 +174,46 @@ if (parsed.helpRequested) {
       .catch((err) => {
         console.error(
           `File transfer ${action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        process.exitCode = 1;
+      });
+  }
+} else if (parsed.command === "file-access") {
+  const action = parsed.positionals[1];
+  if (action !== "status" && action !== "set-password") {
+    console.error("File access command requires status or set-password");
+    process.exitCode = 1;
+  } else {
+    import("./file-access-command.js")
+      .then(async ({
+        readFileAccessStatus,
+        readPasswordFromStdin,
+        setFileAccessPassword,
+      }) => {
+        if (action === "status") {
+          const status = await readFileAccessStatus();
+          if (hasFlag(parsed, "json")) {
+            console.log(JSON.stringify(status));
+          } else {
+            console.log(
+              status.passwordConfigured
+                ? `File mutation password configured; ${status.biometricDeviceCount} biometric device(s) enrolled.`
+                : "File mutation password is not configured.",
+            );
+          }
+          return;
+        }
+        const password = hasFlag(parsed, "password-stdin")
+          ? await readPasswordFromStdin()
+          : undefined;
+        await setFileAccessPassword({ password });
+        console.log(
+          "File mutation password configured. Existing biometric enrollments were revoked.",
+        );
+      })
+      .catch((err) => {
+        console.error(
+          `File access ${action} failed: ${err instanceof Error ? err.message : String(err)}`,
         );
         process.exitCode = 1;
       });

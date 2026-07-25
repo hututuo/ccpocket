@@ -6,6 +6,10 @@ import type { PersistedUploadTransfer } from "./file-transfer-state-store.js";
 import type { TransferFileIdentity } from "./file-transfer-state-store.js";
 import type { FileTransferUploadStore, UploadAppendResult } from "./file-transfer-upload-store.js";
 import {
+  FileMutationAuthError,
+  type FileMutationAuthorizer,
+} from "./file-mutation-auth.js";
+import {
   validateFileTransferBaseUrl,
   validateFileTransferPeerBaseUrl,
 } from "./file-transfer-utils.js";
@@ -31,6 +35,12 @@ interface BoundUploadClient {
 
 interface BoundDownloadClient {
   client: object;
+  sizeBytes: number;
+}
+
+interface AuthorizedUpload {
+  client: object;
+  filename: string;
   sizeBytes: number;
 }
 
@@ -60,6 +70,7 @@ export interface FileTransferManagerOptions {
   downloadStore: FileTransferDownloadStore;
   uploadStore: FileTransferUploadStore;
   baseUrl?: string;
+  fileMutationAuthorizer?: FileMutationAuthorizer;
 }
 
 /** Coordinates live peers while byte/session authority stays in persistent stores. */
@@ -67,9 +78,11 @@ export class FileTransferManager {
   readonly downloadStore: FileTransferDownloadStore;
   readonly uploadStore: FileTransferUploadStore;
   private readonly baseUrl?: string;
+  private readonly fileMutationAuthorizer?: FileMutationAuthorizer;
   private readonly clients = new Map<object, FileTransferClientBinding>();
   private readonly uploadClients = new Map<string, BoundUploadClient>();
   private readonly downloadClients = new Map<string, BoundDownloadClient>();
+  private readonly authorizedUploads = new Map<string, AuthorizedUpload>();
   private accepting = true;
   private readonly activeControlOperations = new Set<Promise<void>>();
   private readonly activeOfferOperations = new Set<Promise<unknown>>();
@@ -79,6 +92,7 @@ export class FileTransferManager {
     this.downloadStore = options.downloadStore;
     this.uploadStore = options.uploadStore;
     this.baseUrl = options.baseUrl;
+    this.fileMutationAuthorizer = options.fileMutationAuthorizer;
   }
 
   async init(): Promise<void> {
@@ -100,6 +114,12 @@ export class FileTransferManager {
     for (const [transferId, binding] of this.downloadClients) {
       if (binding.client === client) this.downloadClients.delete(transferId);
     }
+    for (const [transferId, authorization] of this.authorizedUploads) {
+      if (authorization.client === client) {
+        this.authorizedUploads.delete(transferId);
+      }
+    }
+    this.fileMutationAuthorizer?.disconnect(client);
   }
 
   close(): Promise<void> {
@@ -123,6 +143,7 @@ export class FileTransferManager {
     this.clients.clear();
     this.uploadClients.clear();
     this.downloadClients.clear();
+    this.authorizedUploads.clear();
     await this.uploadStore.close();
   }
 
@@ -333,12 +354,42 @@ export class FileTransferManager {
       return;
     }
     try {
+      const existingAuthorization = this.authorizedUploads.get(
+        message.transferId,
+      );
+      const requiresAuthorization =
+        this.fileMutationAuthorizer !== undefined &&
+        (existingAuthorization?.client !== client ||
+          existingAuthorization.filename !== message.filename ||
+          existingAuthorization.sizeBytes !== message.sizeBytes);
+      if (
+        this.fileMutationAuthorizer &&
+        requiresAuthorization
+      ) {
+        await this.fileMutationAuthorizer.authorize(
+          client,
+          {
+            kind: "upload",
+            transferId: message.transferId,
+            filename: message.filename,
+            sizeBytes: message.sizeBytes,
+          },
+          message.mutationAuthorization,
+        );
+      }
       const prepared = await this.uploadStore.prepare(
         message.transferId,
         message.resumeToken,
         message.filename,
         message.sizeBytes,
       );
+      if (this.fileMutationAuthorizer && requiresAuthorization) {
+        this.authorizedUploads.set(message.transferId, {
+          client,
+          filename: message.filename,
+          sizeBytes: message.sizeBytes,
+        });
+      }
       this.uploadClients.set(message.transferId, {
         client,
         requestId: message.requestId,
@@ -417,7 +468,10 @@ export class FileTransferManager {
         }
         // A deliberately indistinguishable not-found response must not let an
         // unauthenticated peer detach the real owner's completion route.
-        if (authorized) this.uploadClients.delete(message.transferId);
+        if (authorized) {
+          this.uploadClients.delete(message.transferId);
+          this.authorizedUploads.delete(message.transferId);
+        }
       } else {
         const liveOwner = this.downloadClients.get(message.transferId)?.client === client;
         let authorized = liveOwner;
@@ -545,6 +599,7 @@ export class FileTransferManager {
           },
     );
     if (sent) this.uploadClients.delete(entry.transferId);
+    if (sent) this.authorizedUploads.delete(entry.transferId);
   }
 
   private sendUploadFailure(
@@ -554,9 +609,16 @@ export class FileTransferManager {
     error: unknown,
   ): void {
     if (this.clients.get(client) !== binding || !binding?.isOpen()) return;
-    const transferError = error instanceof FileTransferError
-      ? error
-      : new FileTransferError(500, "upload_prepare_failed", "Unable to prepare upload");
+    const transferError =
+      error instanceof FileTransferError
+        ? error
+        : error instanceof FileMutationAuthError
+          ? new FileTransferError(403, error.code, error.message)
+          : new FileTransferError(
+              500,
+              "upload_prepare_failed",
+              "Unable to prepare upload",
+            );
     const type = binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)
       ? UPLOAD_RESULT_WITH_PATH_MESSAGE
       : UPLOAD_RESULT_MESSAGE;

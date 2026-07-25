@@ -768,6 +768,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const bridge = new BridgeWebSocketServer({
       server: httpServer,
       fileTransfer: fileTransfer as any,
+      fileMutationAuthorizer: {} as any,
     });
     const listeners = new Map<string, (...args: any[]) => void>();
     const ws = {
@@ -802,6 +803,15 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           "session_request_correlation_v1",
         ]),
       }),
+    );
+    const initialSessionList = initialMessages.find(
+      (message: any) => message.type === "session_list",
+    );
+    expect(initialSessionList.bridgeCapabilities).not.toContain(
+      "file_mutation_auth_v1",
+    );
+    expect(initialSessionList.bridgeCapabilities).not.toContain(
+      "file_transfer_upload_auth_v1",
     );
 
     const binding = fileTransfer.connect.mock.calls[0][1];
@@ -893,6 +903,50 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(fileTransfer.disconnect).toHaveBeenCalledWith(ws);
     await bridge.close();
     expect(fileTransfer.close).toHaveBeenCalledOnce();
+  });
+
+  it("advertises upload step-up only with both transfer and authorization surfaces", async () => {
+    const fileTransfer = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      handleClientMessage: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const fileBrowser = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      handleClientMessage: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      fileTransfer: fileTransfer as any,
+      fileBrowser: fileBrowser as any,
+      fileMutationAuthorizer: {} as any,
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn(),
+    } as any;
+
+    (bridge as any).handleConnection(ws, {
+      headers: { host: "100.104.72.123:8765" },
+      socket: {},
+    });
+    const sessionList = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "session_list");
+    expect(sessionList.bridgeCapabilities).toEqual(
+      expect.arrayContaining([
+        "file_browser_v1",
+        "file_transfer_v2",
+        "file_mutation_auth_v1",
+        "file_transfer_upload_auth_v1",
+      ]),
+    );
+
+    await bridge.close();
   });
 
   it("preserves the phone-side loopback HTTP origin used by an SSH tunnel", async () => {

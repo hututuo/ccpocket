@@ -16,6 +16,7 @@ const BOOLEAN_FLAGS = new Set([
   "json",
   "uninstall",
   "no-mdns",
+  "password-stdin",
 ]);
 
 export interface ParsedCliArgs {

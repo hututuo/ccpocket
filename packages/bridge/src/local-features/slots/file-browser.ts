@@ -11,6 +11,9 @@ const REQUEST_TYPES = [
   "file_browser_stat_v1",
   "file_browser_preview_v1",
   "file_browser_download_v1",
+  "file_mutation_auth_state_v1",
+  "file_mutation_auth_challenge_v1",
+  "file_mutation_auth_enroll_v1",
 ] as const satisfies readonly FileBrowserClientMessage["type"][];
 
 const RESULT_TYPE_BY_REQUEST = {
@@ -19,6 +22,9 @@ const RESULT_TYPE_BY_REQUEST = {
   file_browser_stat_v1: "file_browser_stat_result_v1",
   file_browser_preview_v1: "file_browser_preview_result_v1",
   file_browser_download_v1: "file_browser_download_result_v1",
+  file_mutation_auth_state_v1: "file_mutation_auth_result_v1",
+  file_mutation_auth_challenge_v1: "file_mutation_auth_result_v1",
+  file_mutation_auth_enroll_v1: "file_mutation_auth_result_v1",
 } as const satisfies Record<
   FileBrowserClientMessage["type"],
   FileBrowserServerMessage["type"]

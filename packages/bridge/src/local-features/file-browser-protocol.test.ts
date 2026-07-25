@@ -211,7 +211,58 @@ describe("file browser protocol slot", () => {
     }
   });
 
-  it("registers exactly the five result capabilities", () => {
+  it("strictly parses bounded mutation authorization requests", () => {
+    const operation = {
+      kind: "upload",
+      transferId: "transfer_1234567890",
+      filename: "report.json",
+      sizeBytes: 42,
+    };
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "file_mutation_auth_state_v1",
+        requestId: "state-1",
+        deviceId: "ios:test-device",
+      }),
+    ).toMatchObject({ type: "file_mutation_auth_state_v1" });
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "file_mutation_auth_challenge_v1",
+        requestId: "challenge-1",
+        deviceId: "ios:test-device",
+        operation,
+      }),
+    ).toMatchObject({ operation });
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "file_mutation_auth_enroll_v1",
+        requestId: "enroll-1",
+        deviceId: "ios:test-device",
+        publicKey: "a".repeat(88),
+        password: ["correct", "bridge", "credential"].join("-"),
+      }),
+    ).toMatchObject({ type: "file_mutation_auth_enroll_v1" });
+
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "file_mutation_auth_challenge_v1",
+        requestId: "challenge-2",
+        deviceId: "ios:test-device",
+        operation: { ...operation, absolutePath: "/tmp/report.json" },
+      }),
+    ).toBeNull();
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "file_mutation_auth_enroll_v1",
+        requestId: "enroll-2",
+        deviceId: "ios:test-device",
+        publicKey: "a".repeat(88),
+        password: "short",
+      }),
+    ).toBeNull();
+  });
+
+  it("registers the read-only and mutation-authorization result capabilities", () => {
     expect(FILE_BROWSER_CAPABILITY).toBe("file_browser_v1");
     for (const type of [
       "file_browser_roots_result_v1",
@@ -219,6 +270,7 @@ describe("file browser protocol slot", () => {
       "file_browser_stat_result_v1",
       "file_browser_preview_result_v1",
       "file_browser_download_result_v1",
+      "file_mutation_auth_result_v1",
     ]) {
       expect(isLocalFeatureServerMessageType(type), type).toBe(true);
     }

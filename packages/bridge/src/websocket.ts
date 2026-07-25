@@ -162,6 +162,11 @@ import {
 import type { FileTransferManager } from "./file-transfer-manager.js";
 import type { FileBrowserManager } from "./file-browser-manager.js";
 import {
+  FILE_MUTATION_AUTH_CAPABILITY,
+  FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY,
+  type FileMutationAuthorizer,
+} from "./file-mutation-auth.js";
+import {
   FILE_TRANSFER_CAPABILITY,
   isFileTransferClientMessage,
   isFileTransferServerMessageType,
@@ -1138,6 +1143,7 @@ export interface BridgeServerOptions {
   artifactManager?: ArtifactManager;
   fileTransfer?: FileTransferManager;
   fileBrowser?: FileBrowserManager;
+  fileMutationAuthorizer?: FileMutationAuthorizer;
   sessionCatalogMonitorFactory?: (
     onChanged: (revision: number) => void,
   ) => SessionCatalogMonitorControl;
@@ -1260,6 +1266,7 @@ export class BridgeWebSocketServer {
   private readonly codexGoals: CodexGoalController;
   private readonly fileTransfer: FileTransferManager | null;
   private readonly fileBrowser: FileBrowserManager | null;
+  private readonly fileMutationAuthorizer: FileMutationAuthorizer | null;
   private readonly sessionCatalogMonitor: SessionCatalogMonitorControl;
   private resumeOperations = new Map<string, ResumeOperation>();
 
@@ -1284,6 +1291,7 @@ export class BridgeWebSocketServer {
       artifactManager,
       fileTransfer,
       fileBrowser,
+      fileMutationAuthorizer,
       sessionCatalogMonitorFactory,
     } = options;
     this.apiKey = apiKey ?? null;
@@ -1305,6 +1313,7 @@ export class BridgeWebSocketServer {
     this.artifactManager = artifactManager ?? null;
     this.fileTransfer = fileTransfer ?? null;
     this.fileBrowser = fileBrowser ?? null;
+    this.fileMutationAuthorizer = fileMutationAuthorizer ?? null;
     this.sessionCatalogMonitor = sessionCatalogMonitorFactory
       ? sessionCatalogMonitorFactory((revision) =>
           this.broadcastSessionCatalogChanged(revision),
@@ -9521,6 +9530,14 @@ export class BridgeWebSocketServer {
         SESSION_CATALOG_WATCH_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
+        ...(this.fileBrowser && this.fileMutationAuthorizer
+          ? [FILE_MUTATION_AUTH_CAPABILITY]
+          : []),
+        ...(this.fileTransfer &&
+        this.fileBrowser &&
+        this.fileMutationAuthorizer
+          ? [FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY]
+          : []),
       ],
     });
   }
@@ -9575,6 +9592,14 @@ export class BridgeWebSocketServer {
         SESSION_CATALOG_WATCH_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
+        ...(this.fileBrowser && this.fileMutationAuthorizer
+          ? [FILE_MUTATION_AUTH_CAPABILITY]
+          : []),
+        ...(this.fileTransfer &&
+        this.fileBrowser &&
+        this.fileMutationAuthorizer
+          ? [FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY]
+          : []),
       ],
     });
   }

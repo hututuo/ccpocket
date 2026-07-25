@@ -30,6 +30,10 @@ import { ArtifactManager } from "./artifact-manager.js";
 import { GeneratedArtifactStore } from "./generated-artifact-store.js";
 import { initializeFileTransferRuntime } from "./file-transfer-runtime.js";
 import { FileBrowserManager } from "./file-browser-manager.js";
+import {
+  FileMutationAuthorizer,
+  FileMutationAuthStore,
+} from "./file-mutation-auth.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -229,21 +233,48 @@ export async function startServer() {
       console.error("[bridge] Failed to initialize prompt history store:", err);
     });
 
-  const fileTransferRuntime = await initializeFileTransferRuntime({
-    port: PORT,
-    bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
-    allowedDirs: ALLOWED_DIRS,
-    baseUrl: artifactBaseUrl,
-    stateFilePath: process.env.BRIDGE_FILE_TRANSFER_STATE_FILE?.trim(),
-    downloadDirectory: process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
-    partialDirectory: process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
-    warn: (message) => console.warn(`[bridge] ${message}`),
-  });
-  const fileTransfer = fileTransferRuntime?.manager;
-  const fileTransferHttp = fileTransferRuntime?.http;
-  if (fileTransferRuntime) {
-    console.log("[bridge] Resumable phone file transfer enabled");
+  let fileMutationAuthorizer: FileMutationAuthorizer | undefined;
+  if (API_KEY?.trim()) {
+    const candidate = new FileMutationAuthorizer({
+      bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+      store: new FileMutationAuthStore(),
+    });
+    try {
+      await candidate.init();
+      const state = await candidate.status();
+      if (OWNER_FULL_DISK_READ || state.passwordConfigured) {
+        fileMutationAuthorizer = candidate;
+        console.log(
+          state.passwordConfigured
+            ? "[bridge] File mutation step-up authorization enabled"
+            : "[bridge] File mutation uploads locked until a Bridge password is configured",
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[bridge] File mutation authorization unavailable: ${startupErrorMessage(error)}`,
+      );
+    }
   }
+
+  let fileTransferRuntime =
+    OWNER_FULL_DISK_READ && !fileMutationAuthorizer
+      ? undefined
+      : await initializeFileTransferRuntime({
+          port: PORT,
+          bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+          allowedDirs: ALLOWED_DIRS,
+          baseUrl: artifactBaseUrl,
+          stateFilePath: process.env.BRIDGE_FILE_TRANSFER_STATE_FILE?.trim(),
+          downloadDirectory:
+            process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
+          partialDirectory:
+            process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
+          fileMutationAuthorizer,
+          warn: (message) => console.warn(`[bridge] ${message}`),
+        });
+  let fileTransfer = fileTransferRuntime?.manager;
+  let fileTransferHttp = fileTransferRuntime?.http;
 
   let fileBrowser: FileBrowserManager | undefined;
   try {
@@ -253,15 +284,31 @@ export async function startServer() {
       allowFilesystemRoot: OWNER_FULL_DISK_READ,
       artifactStore,
       fileTransferManager: fileTransfer,
+      fileMutationAuthorizer,
     });
     await fileBrowser.init();
     console.log("[bridge] Root-scoped phone file browser enabled");
   } catch (error) {
     await fileBrowser?.close();
     fileBrowser = undefined;
+    if (fileMutationAuthorizer && fileTransferRuntime) {
+      await fileTransferHttp?.close();
+      await fileTransfer?.close();
+      fileTransferRuntime = undefined;
+      fileTransfer = undefined;
+      fileTransferHttp = undefined;
+      fileMutationAuthorizer = undefined;
+      console.warn(
+        "[bridge] Phone uploads disabled because their mutation authorization " +
+          "surface could not start; read-only chat remains available",
+      );
+    }
     console.warn(
       `[bridge] Phone file browser disabled; chat remains available: ${startupErrorMessage(error)}`,
     );
+  }
+  if (fileTransferRuntime) {
+    console.log("[bridge] Resumable phone file transfer enabled");
   }
 
   const startedAt = Date.now();
@@ -371,6 +418,7 @@ export async function startServer() {
       artifactManager,
       fileTransfer,
       fileBrowser,
+      fileMutationAuthorizer,
     });
   } catch (error) {
     await fileBrowser?.close();

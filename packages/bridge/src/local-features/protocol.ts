@@ -151,6 +151,10 @@ export type {
   FileBrowserStatResult,
   FileBrowserStatResultItem,
   FileBrowserStatSuccessResult,
+  FileMutationAuthChallengeRequest,
+  FileMutationAuthEnrollRequest,
+  FileMutationAuthResult,
+  FileMutationAuthStateRequest,
 } from "./slots/file-browser-protocol.js";
 
 export type LocalFeatureClientMessage =

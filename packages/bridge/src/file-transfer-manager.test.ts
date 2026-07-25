@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FileTransferDownloadStore } from "./file-transfer-download-store.js";
 import {
+  FileMutationAuthorizer,
+  FileMutationAuthStore,
+} from "./file-mutation-auth.js";
+import {
   FileTransferManager,
   type FileTransferClientBinding,
 } from "./file-transfer-manager.js";
@@ -24,7 +28,11 @@ interface Fixture {
   manager: FileTransferManager;
 }
 
-async function fixture(options: { now?: () => number; maxChunkSizeBytes?: number } = {}): Promise<Fixture> {
+async function fixture(options: {
+  now?: () => number;
+  maxChunkSizeBytes?: number;
+  mutationPassword?: string;
+} = {}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "ccpocket-transfer-manager-"));
   roots.push(root);
   const source = join(root, "report.pdf");
@@ -56,10 +64,22 @@ async function fixture(options: { now?: () => number; maxChunkSizeBytes?: number
     maxChunkSizeBytes: options.maxChunkSizeBytes,
     tokenFactory: () => `${String(++tokenSequence).padStart(43, "u")}`.slice(-43),
   });
+  let fileMutationAuthorizer: FileMutationAuthorizer | undefined;
+  if (options.mutationPassword !== undefined) {
+    const authStore = new FileMutationAuthStore({
+      filePath: join(root, "file-mutation-auth.json"),
+    });
+    await authStore.setPassword(options.mutationPassword);
+    fileMutationAuthorizer = new FileMutationAuthorizer({
+      store: authStore,
+      bridgeInstanceId: "bridge-test",
+    });
+  }
   const manager = new FileTransferManager({
     downloadStore,
     uploadStore,
     baseUrl: "http://100.64.0.1:8765",
+    fileMutationAuthorizer,
   });
   await manager.init();
   managers.push(manager);
@@ -340,6 +360,88 @@ describe("FileTransferManager v2", () => {
       filename: "from phone.txt",
       sizeBytes: 5,
     });
+  });
+
+  it("requires an operation-bound step-up proof and revokes it on reconnect", async () => {
+    const credential = ["correct", "horse", "battery", "staple"].join("-");
+    const f = await fixture({ mutationPassword: credential });
+    const client = {};
+    const phone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v2",
+    ]);
+    f.manager.connect(client, phone.binding);
+    const prepare = {
+      type: "file_transfer_upload_prepare_v2" as const,
+      requestId: "auth-request-1",
+      transferId: "upload_auth00001",
+      resumeToken,
+      filename: "approved.txt",
+      sizeBytes: 5,
+    };
+
+    await f.manager.handleClientMessage(client, prepare);
+    expect(phone.messages.pop()).toMatchObject({
+      type: "file_transfer_upload_result_v2",
+      success: false,
+      errorCode: "step_up_required",
+    });
+    expect(await f.state.listUploads()).toEqual([]);
+
+    await f.manager.handleClientMessage(client, {
+      ...prepare,
+      requestId: "auth-request-2",
+      mutationAuthorization: {
+        method: "password",
+        password: ["wrong", "credential"].join("-"),
+      },
+    });
+    expect(phone.messages.pop()).toMatchObject({
+      type: "file_transfer_upload_result_v2",
+      success: false,
+      errorCode: "invalid_password",
+    });
+
+    await f.manager.handleClientMessage(client, {
+      ...prepare,
+      requestId: "auth-request-3",
+      mutationAuthorization: { method: "password", password: credential },
+    });
+    expect(phone.messages.pop()).toMatchObject({
+      type: "file_transfer_upload_ready_v2",
+      requestId: "auth-request-3",
+      transferId: prepare.transferId,
+    });
+
+    await f.manager.handleClientMessage(client, {
+      ...prepare,
+      requestId: "auth-request-4",
+      filename: "different.txt",
+    });
+    expect(phone.messages.pop()).toMatchObject({
+      type: "file_transfer_upload_result_v2",
+      success: false,
+      errorCode: "step_up_required",
+    });
+
+    f.manager.disconnect(client);
+    const nextClient = {};
+    const nextPhone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v2",
+    ]);
+    f.manager.connect(nextClient, nextPhone.binding);
+    await f.manager.handleClientMessage(nextClient, {
+      ...prepare,
+      requestId: "auth-request-5",
+    });
+    expect(nextPhone.messages).toEqual([
+      expect.objectContaining({
+        type: "file_transfer_upload_result_v2",
+        success: false,
+        errorCode: "step_up_required",
+      }),
+    ]);
   });
 
   it("negotiates the saved computer path only with a v3-capable phone", async () => {

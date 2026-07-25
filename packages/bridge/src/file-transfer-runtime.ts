@@ -7,6 +7,7 @@ import {
   fileTransferStateFile,
 } from "./file-transfer-state-store.js";
 import { FileTransferUploadStore } from "./file-transfer-upload-store.js";
+import type { FileMutationAuthorizer } from "./file-mutation-auth.js";
 
 export interface FileTransferRuntime {
   manager: FileTransferManager;
@@ -22,6 +23,7 @@ export interface FileTransferRuntimeOptions {
   stateFilePath?: string;
   downloadDirectory?: string;
   partialDirectory?: string;
+  fileMutationAuthorizer?: FileMutationAuthorizer;
   warn?: (message: string) => void;
 }
 
@@ -63,6 +65,7 @@ export async function initializeFileTransferRuntime(
       downloadStore,
       uploadStore,
       baseUrl: options.baseUrl,
+      fileMutationAuthorizer: options.fileMutationAuthorizer,
     });
     await manager.init();
     return {

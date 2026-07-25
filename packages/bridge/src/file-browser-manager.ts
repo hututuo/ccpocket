@@ -17,6 +17,10 @@ import { FILE_TRANSFER_MAX_FILE_SIZE_BYTES } from "./file-transfer-constants.js"
 import type { FileTransferManager } from "./file-transfer-manager.js";
 import type { TransferFileIdentity } from "./file-transfer-state-store.js";
 import {
+  FileMutationAuthError,
+  type FileMutationAuthorizer,
+} from "./file-mutation-auth.js";
+import {
   FileBrowserBackendError,
   FileBrowserPosixBackend,
   type FileBrowserNativeListResult,
@@ -44,6 +48,9 @@ const LIST_REQUEST = "file_browser_list_v1";
 const STAT_REQUEST = "file_browser_stat_v1";
 const PREVIEW_REQUEST = "file_browser_preview_v1";
 const DOWNLOAD_REQUEST = "file_browser_download_v1";
+const AUTH_STATE_REQUEST = "file_mutation_auth_state_v1";
+const AUTH_CHALLENGE_REQUEST = "file_mutation_auth_challenge_v1";
+const AUTH_ENROLL_REQUEST = "file_mutation_auth_enroll_v1";
 
 const MAX_CONCURRENT_OPERATIONS = 2;
 const MAX_GLOBAL_CONCURRENT_OPERATIONS = 4;
@@ -78,6 +85,7 @@ export interface FileBrowserManagerOptions {
   allowFilesystemRoot?: boolean;
   artifactStore?: ArtifactIssuer;
   fileTransferManager?: TargetedFileOfferer;
+  fileMutationAuthorizer?: FileMutationAuthorizer;
   homeDir?: string;
   now?: () => number;
   cursorTtlMs?: number;
@@ -152,6 +160,7 @@ export class FileBrowserManager {
   private readonly bridgeInstanceId: string;
   private readonly artifactStore?: ArtifactIssuer;
   private readonly fileTransferManager?: TargetedFileOfferer;
+  private readonly fileMutationAuthorizer?: FileMutationAuthorizer;
   private readonly homeDir: string;
   private readonly now: () => number;
   private readonly cursorTtlMs: number;
@@ -178,6 +187,7 @@ export class FileBrowserManager {
     this.bridgeInstanceId = options.bridgeInstanceId;
     this.artifactStore = options.artifactStore;
     this.fileTransferManager = options.fileTransferManager;
+    this.fileMutationAuthorizer = options.fileMutationAuthorizer;
     this.homeDir = resolve(options.homeDir ?? homedir());
     this.now = options.now ?? Date.now;
     this.cursorTtlMs = options.cursorTtlMs ?? DEFAULT_CURSOR_TTL_MS;
@@ -229,6 +239,7 @@ export class FileBrowserManager {
     for (const [token, cursor] of this.cursors) {
       if (cursor.client === client) this.cursors.delete(token);
     }
+    this.fileMutationAuthorizer?.disconnect(client);
   }
 
   close(): Promise<void> {
@@ -332,7 +343,78 @@ export class FileBrowserManager {
         return this.previewResult(message, signal);
       case DOWNLOAD_REQUEST:
         return this.downloadResult(client, message, signal);
+      case AUTH_STATE_REQUEST:
+        return this.fileMutationAuthState(message.requestId, message.deviceId);
+      case AUTH_CHALLENGE_REQUEST:
+        return this.fileMutationAuthChallenge(client, message);
+      case AUTH_ENROLL_REQUEST:
+        return this.fileMutationAuthEnroll(client, message);
     }
+  }
+
+  private async fileMutationAuthState(
+    requestId: string,
+    deviceId?: string,
+  ): Promise<FileBrowserServerMessage> {
+    const state = await this.requireFileMutationAuthorizer().status(deviceId);
+    return {
+      type: "file_mutation_auth_result_v1",
+      requestId,
+      success: true,
+      event: "state",
+      ...state,
+    };
+  }
+
+  private async fileMutationAuthChallenge(
+    client: object,
+    message: Extract<
+      FileBrowserClientMessage,
+      { type: typeof AUTH_CHALLENGE_REQUEST }
+    >,
+  ): Promise<FileBrowserServerMessage> {
+    const challenge = await this.requireFileMutationAuthorizer().issueChallenge(
+      client,
+      message.deviceId,
+      message.operation,
+    );
+    return {
+      type: "file_mutation_auth_result_v1",
+      requestId: message.requestId,
+      success: true,
+      event: "challenge",
+      ...challenge,
+    };
+  }
+
+  private async fileMutationAuthEnroll(
+    client: object,
+    message: Extract<
+      FileBrowserClientMessage,
+      { type: typeof AUTH_ENROLL_REQUEST }
+    >,
+  ): Promise<FileBrowserServerMessage> {
+    const state = await this.requireFileMutationAuthorizer().enrollDevice(
+      client,
+      message,
+    );
+    return {
+      type: "file_mutation_auth_result_v1",
+      requestId: message.requestId,
+      success: true,
+      event: "enrolled",
+      ...state,
+    };
+  }
+
+  private requireFileMutationAuthorizer(): FileMutationAuthorizer {
+    if (!this.fileMutationAuthorizer) {
+      throw new FileMutationAuthError(
+        "unsupported_capability",
+        "File mutation authorization was not negotiated",
+      );
+    }
+    return this.fileMutationAuthorizer;
   }
 
   private async rootsResult(
@@ -1410,6 +1492,9 @@ function translateCapabilityError(
 
 function normalizeError(error: unknown): FileBrowserError {
   if (error instanceof FileBrowserError) return error;
+  if (error instanceof FileMutationAuthError) {
+    return new FileBrowserError(boundedErrorCode(error.code), error.message);
+  }
   if (error instanceof FileBrowserBackendError) {
     return new FileBrowserError(boundedErrorCode(error.code), error.message);
   }
@@ -1439,5 +1524,9 @@ function resultTypeFor(
       return "file_browser_preview_result_v1";
     case DOWNLOAD_REQUEST:
       return "file_browser_download_result_v1";
+    case AUTH_STATE_REQUEST:
+    case AUTH_CHALLENGE_REQUEST:
+    case AUTH_ENROLL_REQUEST:
+      return "file_mutation_auth_result_v1";
   }
 }

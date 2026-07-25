@@ -94,4 +94,16 @@ describe("parseCliArgs", () => {
     );
     expect(hasFlag(parsed, "json")).toBe(true);
   });
+
+  it("parses file-access password input as a command-scoped boolean flag", () => {
+    const parsed = parseCliArgs([
+      "file-access",
+      "set-password",
+      "--password-stdin",
+    ]);
+
+    expect(parsed.command).toBe("file-access");
+    expect(parsed.positionals).toEqual(["file-access", "set-password"]);
+    expect(hasFlag(parsed, "password-stdin")).toBe(true);
+  });
 });
