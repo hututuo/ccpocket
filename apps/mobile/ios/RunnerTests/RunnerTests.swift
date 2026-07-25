@@ -310,10 +310,19 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(capabilities["dragDrop"], 1)
     XCTAssertEqual(capabilities["photoLibrary"], 1)
     XCTAssertEqual(capabilities["biometrics"], 1)
+    XCTAssertEqual(capabilities["fileMutationBiometricAuth"], 1)
     XCTAssertEqual(capabilities["backgroundContinuation"], 1)
     XCTAssertEqual(capabilities["backgroundRefreshWarmRuntime"], 1)
     XCTAssertEqual(capabilities["backgroundLocationKeepAlive"], 1)
     XCTAssertNil(capabilities["backgroundAppRefresh"])
+  }
+
+  func testFileMutationAuthChallengeBoundsAreStable() {
+    XCTAssertTrue(FileMutationAuthPlugin.isValidChallengePayload("{\"v\":1}"))
+    XCTAssertFalse(FileMutationAuthPlugin.isValidChallengePayload(""))
+    XCTAssertFalse(
+      FileMutationAuthPlugin.isValidChallengePayload(String(repeating: "x", count: 4_097))
+    )
   }
 
   func testBackgroundLocationKeepAliveFailsClosedForPowerPermissionAndThermalPressure() {

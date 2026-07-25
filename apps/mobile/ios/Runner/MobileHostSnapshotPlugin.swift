@@ -25,6 +25,7 @@ final class MobileHostSnapshotPlugin: NSObject, FlutterPlugin {
     "dragDrop": 1,
     "photoLibrary": 1,
     "biometrics": 1,
+    "fileMutationBiometricAuth": 1,
     "backgroundContinuation": 1,
     // This capability is intentionally explicit: the existing Flutter runtime
     // may service BGAppRefresh, but the host does not create a cold headless

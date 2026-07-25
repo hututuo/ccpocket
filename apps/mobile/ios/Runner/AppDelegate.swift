@@ -38,6 +38,11 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "FileTransferPlugin") {
       FileTransferPlugin.register(with: registrar)
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(
+      forPlugin: "FileMutationAuthPlugin"
+    ) {
+      FileMutationAuthPlugin.register(with: registrar)
+    }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "PermissionHostPlugin") {
       PermissionHostPlugin.register(with: registrar)
     }
