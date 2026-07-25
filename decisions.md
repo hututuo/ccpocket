@@ -2,10 +2,14 @@
 
 ## 2026-07-25 comprehensive remediation execution
 
-- 当前 active 执行方案是
-  `plans/mobile-comprehensive-remediation_v01_20260725-012458.md`。它把本轮
-  全部会话、历史、折叠、临时会话、文件、通知、安全和性能需求整理为同一份
-  requirement ledger；后续实现和完成审计以该清单为入口。
+- `plans/mobile-comprehensive-remediation_v01_20260725-012458.md` 是 build 202
+  已完成阶段的 accepted requirement/implementation/validation ledger，不得把
+  它改写成“当时没有做过”。
+- build 202 真机反馈后的 active investigation/draft 是
+  `plans/mobile-comprehensive-remediation_v02_20260726-004125.md`。它补充连接
+  门禁、真正非模态悬浮窗、会话状态/缓存、紧凑时间戳、统一过程框、目录同步、
+  durable view 与 runtime attach 分离，以及 Cockpit 多 Home 权威边界。用户
+  确认前只调查和设计，不授权业务实现；正式实施仍须按当时 HEAD 重新取证。
 - 实施基线必须先语义合并官方
   `upstream/main@aa215a3b98a8035cba0e6bdd8005803f76041d66`
   （Mobile `1.109.2+201` / Bridge `1.69.4`）或开工时更高的官方 HEAD，再保留

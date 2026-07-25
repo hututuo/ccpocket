@@ -4,7 +4,7 @@
 >
 > 创建时间：2026-07-26 00:41:25 +0800
 >
-> 最近补充：2026-07-26（Cockpit 双 Codex 实例的会话权威与并发安全）
+> 最近补充：2026-07-26（连接元数据就绪、缓存管理、过程窗口及会话同步/激活全链路审计）
 >
 > 上一版方案：
 > `plans/mobile-comprehensive-remediation_v01_20260725-012458.md`
@@ -416,6 +416,13 @@ Read: seen / unseen
   分页和增量 ordinal 基础。这是应优先复用/扩展的存储基础。
 - 但完整副本目前是用户显式选择的 resident 行为，最多 8 个会话；它表示完整
   下载和自动同步，不等于本轮要求的默认“最近会话热缓存”。
+- 现有 `ConversationMirrorService.removeLocalCopyTarget()`、存储层
+  `listLocalCopies()` / `deleteLocalCopy()` 和会话内确认入口已经能删除一个完整
+  本地副本；缺少的是设置页可用的全量投影、按占用排序、批量清理和统一状态管理。
+  因此不得重写一套删除机制。
+- 当前本地副本元数据已有 entry 数、字节数、项目路径、最后同步时间、自动同步和
+  错误状态，但没有稳定保存完整的显示标题/摘要。设置页逐项列表需要和持久会话
+  目录按 identity 关联，或只补一份明确可重建的显示投影，不能靠路径猜标题。
 - `SessionListState.sessions` 仍是 server-loaded 内存列表。当前本地偏好只保存
   filter、project collapse、pin 等展示设置，没有持久的完整会话目录。
 - `BridgeService` 的 recent sessions 也是进程内存。收到 catalog change 后，
@@ -427,6 +434,8 @@ Read: seen / unseen
   请求时间线，不能把不同常量混为一个根因。
 - 当前没有全局会话缓存管理入口；只有单个完整本地副本的删除动作和若干进程内
   图片/命令缓存清理。
+- “至少 10 个最近会话”不能通过把当前 full-resident 上限从 8 机械改成 10 实现。
+  轻量目录、最近窗口热缓存和完整 resident watch 的成本不同，必须分别设预算。
 
 #### 3. 建议的三层本地数据模型
 
@@ -476,14 +485,22 @@ Read: seen / unseen
 
 设置页应先计算并展示类别及大致占用，再允许清理：
 
-- 会话目录与最近消息热缓存；
-- 工具详情、预览和可重建缩略图；
-- 完整本地副本（独立危险项，逐会话或明确二次确认）；
+- 一个“清理可重建缓存”入口：会话目录投影、最近消息热缓存、工具详情、预览和
+  可重建缩略图；执行前显示预计释放空间和离线影响；
+- 一个独立的“已下载会话历史”管理页：逐项显示标题/项目、大小、最后同步时间和
+  自动同步状态，支持逐项删除，也支持带二次确认的“清除全部已下载历史”；
 - 传输中断点、用户设置、连接凭据、草稿和未发送队列不应被普通缓存清理误删。
 
 清理后 App 应能从 Bridge 安全重建；离线时明确哪些内容暂不可用。清理过程需要
 事务、取消/失败恢复和空间统计测试，不能直接删除整个数据库文件导致其他功能
-一起丢失。
+一起丢失。删除正在打开、正在 watch 或正在分页的副本时，先取消对应请求和 watch，
+再以 generation fence 拒绝迟到帧；视图可退回在线/无缓存状态，但不能闪退或把
+已删除内容重新写回。
+
+批量清理不能循环调用当前“单条删除后立即 `incremental_vacuum`”的路径。存储层
+应提供一次事务内删除所选 rows、提交后只做一次有界增量回收的批量 API，避免
+N 个副本产生 N 次 vacuum 和 UI 长时间阻塞。完整副本与普通可重建缓存必须保持
+两个确认边界。
 
 #### 6. 性能和验收指标
 
@@ -527,6 +544,15 @@ Read: seen / unseen
 - 激活、恢复、同步、缓存命中、内部 tool bookkeeping 和列表刷新不单独插入
   消息时间戳。
 - 同一可见消息只显示一次；折叠/展开和增量合并不能复制时间戳。
+- 工具组/过程折叠行把时间放在右侧、展开箭头左侧，与“多个命令已完成”处于同一
+  行；已完成组使用该组最后一个可见事件的权威时间，运行中组使用最新可见事件。
+- 普通消息优先把时间放进气泡现有的右下或标题尾部空间；空间不足时允许在气泡
+  内换行，但不得另占一条全宽分隔行。
+- 思考、临时输出等无法自然内联的自由文本，使用紧贴正文的顶部 trailing 小字，
+  与正文保持最小间距；不能把时间插到两个工具调用或两条分割线之间。
+- 当前 Bridge 已为实时事件附加 `receivedAt`，Mobile 也保留
+  authoritative/approximate provenance；本项主要调整布局和聚合语义，不重造
+  时间来源。
 
 #### 3. 测试和验收
 
@@ -536,6 +562,8 @@ Read: seen / unseen
 4. 工具详情、激活事件和缓存/同步状态不产生额外消息时间戳。
 5. 历史分页、折叠展开、重复 delta 和 App 重启不会复制或重排时间。
 6. 新旧 Bridge 缺失时间字段时采用兼容回退，不导致消息解析失败。
+7. 增加布局/golden 验收：工具组时间位于 chevron 左侧，普通气泡和自由文本没有
+   新增全宽时间行，Dynamic Type/窄屏下不遮挡内容且整体高度明显小于当前实现。
 
 ### v02-006：本批需求的实施顺序与“先审计、后重构”门禁
 
@@ -543,7 +571,9 @@ Read: seen / unseen
 
 1. **全项目状态、身份与来源审计**：完成 v02-003 的状态账本，真机定位
    “正在挂起”；同时记录打开会话时实际目录/历史/工具请求时间线，并完成
-   v02-007 的 Codex Home、app-server 与 thread owner 盘点。
+   v02-007 的 Codex Home、app-server 与 thread owner 盘点，以及
+   v02-008～v02-010 的目录就绪、历史 single-flight 和 disclosure ownership
+   审计。
 2. **会话权威与单写者门禁**：在扩展缓存前先确定每个会话的来源身份和唯一写入
    所有者；禁止把两个 Codex Home 盲扫后只按 thread ID 合并。
 3. **持久数据基础**：在现有 Mirror/SQLite 体系上实现会话目录和热缓存，建立
@@ -600,21 +630,35 @@ Read: seen / unseen
 #### 3. Cockpit 当前版本的“同步”到底是什么
 
 当前安装的 Cockpit Tools 1.3.14 的本地配置中，`autoSyncThreads=true`。已安装
-程序的命令与提示文本表明它会：
+程序和 v1.3.14 对应源码确认，它实际提供两类不同语义的操作：
 
-- 扫描各 Codex 实例，向目标实例补齐缺少的 thread；
-- 写入前备份目标文件；
-- 已存在的 thread 不覆盖；
-- 自动同步在实例启动或关闭流程触发，并要求所有 Codex 实例都已经停止后才进行
-  合并。
+1. **“同步所有实例记录”是停机后的事件行级全量合并。** 它递归扫描每个 Home 的
+   `sessions/` 和 `archived_sessions/`，按 thread ID 分组；同 ID 的多份 rollout
+   会整文件读入，按完整 JSON 值或原始行去重，提取可识别时间戳后重新排序，再把
+   结果写回所有来源。它会备份 `session_index.jsonl`、
+   `.codex-global-state.json` 和被覆盖的旧 rollout，但不会直接备份
+   `state_5.sqlite`、WAL、SHM。同步后再调用各目标 Home 的官方 app-server，
+   触发元数据重建。
+2. **“复制到某实例”或导入包是缺项复制。** 目标已存在相同 thread ID 时直接
+   跳过，不做事件合并。此前“已存在的 thread 不覆盖”的结论只适用于这一类操作，
+   不能用于描述“同步所有实例记录”。
 
-现场证据也与此一致：普通目录的活跃 rollout 已继续增长，而 Cockpit 自己的
-副本仍停留在旧时间点。因此它不是两个运行中 app-server 之间的实时事务同步，
-也不是冲突解决器；更接近“停机后的缺项复制/集合补齐”。一旦同一个 thread 在
-两边都已经存在但内容分叉，“不覆盖已有记录”反而意味着分叉不会自动消失。
+自动全量同步只在启动前发现全部实例已停、停止最后一个实例后，或关闭全部实例后
+触发；手动界面也会在有运行实例时拒绝。底层同步函数本身没有绝对禁止运行中调用，
+所以其他调用入口仍必须守住停机门禁。
 
-本结论绑定当前本机安装版。升级 Cockpit 后必须重新核对，不能永久依赖二进制
-提示文本推断实现。
+当前普通目录的活跃 rollout 已继续增长，而 Cockpit 自己的副本仍停留在旧时间点，
+且两个 Home 都没有出现全量同步生成的 `backup-*-instance-thread-sync` 目录。
+因此它不是运行中 app-server 之间的实时事务同步；现场更准确的解释是“创建实例时
+复制出的旧快照尚未完成一次全量同步”。全量同步虽会合并同 ID 的事件行，但其
+“完整 JSON 去重 + 时间戳排序”没有 thread owner、因果 revision 或业务级冲突
+判定，仍不能作为并发双写的冲突解决器。
+
+当前两套 `sessions` 的逻辑规模各约 26 GiB，最大 rollout 约 2.81 GB。同步算法
+会多次整文件读取，并同时持有行、去重键和输出；在当前数据规模下，自动全量同步
+有显著 I/O、内存和卡死风险。完整架构、算法和可迁移审计方法记录在
+`notes/cockpit-codex-multi-instance-architecture_v01_20260726-012035.md`。本结论
+绑定当前本机安装版；升级 Cockpit 后必须重新核对源码和现场状态。
 
 #### 4. CC Pocket 当前读取哪一份
 
@@ -655,8 +699,9 @@ app-server 进程内重复加载同一 thread，但从实现结构推断，它�
   模式只能降低直接覆盖概率，不能提供语义单写者或冲突解决。
 - **两边同时重命名、归档、删除同一 thread：中高风险。** 即使 rollout 正文没坏，
   两套独立 SQLite / index 的目录状态也会分叉。
-- **Cockpit 停机同步：不能当并发安全机制。** 它补缺但不覆盖，无法判断两个已存在
-  副本哪一个才是权威。
+- **Cockpit 停机同步：不能当并发安全机制。** 全量同步会合并同 ID 的事件行，
+  但只有完整 JSON 去重和时间戳排序，无法识别哪个 turn、审批或元数据版本才是
+  业务权威，也无法还原两个 app-server 并发写入的因果顺序。
 
 当前没有观察到 JSONL 损坏，不能据此宣称未来并发写同一会话安全。反过来也不能
 仅因为两个进程都打开了同一文件就断言它们已经同时写坏；需要区分读取/监听和
@@ -669,11 +714,14 @@ app-server 进程内重复加载同一 thread，但从实现结构推断，它�
    消息、审批或继续任务；另一个实例最多只读查看。
 3. 不要在两边同时对同一 thread 做重命名、归档、删除或 fork 后回写。
 4. 不要在 Codex 运行时手工复制/覆盖 `state_5.sqlite`、WAL 或 rollout JSONL。
-5. 需要让 Cockpit 独有的新会话出现在 CC Pocket 时，先正常关闭全部 Codex 实例，
-   让 Cockpit 完成同步，再核对普通 `~/.codex` 是否出现该 thread；不能假设运行
-   中会实时同步。
+5. 当前不要点击“同步所有实例记录”；并建议先在 Cockpit UI 关闭自动同步会话。
+   本次只做调查，尚未替用户修改该设置。需要导入 Cockpit 独有的新 thread 时，
+   先做可恢复备份，并在副本或改进后的流式同步实现上验证；不能直接拿当前约
+   52 GiB 逻辑数据做首次试验。
 6. 若发现同一 thread 两份 JSONL 已经不是“严格前缀 + 新尾部”关系，应只读保存
    两份证据并停止自动覆盖，由工具做结构化冲突审计；不要文本拼接。
+7. 单独“复制到实例”遇到相同 thread ID 会跳过，也不能用来追平一个已存在但落后
+   的副本。
 
 #### 7. 后续实现方向：显式来源 + 每会话单写者
 
@@ -692,8 +740,9 @@ app-server 进程内重复加载同一 thread，但从实现结构推断，它�
 - 聚合目录可以统一展示，但去重必须先识别“同一来源”“严格前缀副本”“内容已经
   分叉”三种情况。严格前缀只能选择权威，不复制成两个会话；分叉必须标记冲突，
   禁止自动拼接或静默覆盖。
-- Cockpit 自动同步只作为外部导入信号，CC Pocket 不把它当事务协议。必要时提供
-  只读冲突检测器和来源诊断页，但普通无冲突场景不增加用户操作负担。
+- Cockpit 全量同步只作为外部导入信号，CC Pocket 不把它当事务协议或因果合并
+  协议。必要时提供只读冲突检测器和来源诊断页，但普通无冲突场景不增加用户操作
+  负担。
 - 为避免性能回退，不得在每次列表刷新时扫描两套共约 52 GiB 的 JSONL。优先读取
   各自 SQLite/index 元数据、文件 revision/mtime/size 和增量尾部；正文只按需读。
 
@@ -706,11 +755,358 @@ app-server 进程内重复加载同一 thread，但从实现结构推断，它�
 3. owner 崩溃、Bridge 重启、lease 超时和转交晚帧不会形成双 owner。
 4. 一个实例创建新 thread 后，在 Cockpit 尚未停机同步时，CC Pocket 明确标识
    来源和可见性，不把“没找到”误报为删除。
-5. 重命名、归档、删除和 fork 在双 Home 下保留来源身份；冲突不被 missing-only
-   同步掩盖。
+5. 重命名、归档、删除和 fork 在双 Home 下保留来源身份；全量事件合并与目标
+   缺项复制都不能掩盖冲突。
 6. 旧 Mobile + 新 Bridge、新 Mobile + 旧 Bridge 仍维持默认单 Home 语义。
 7. 数千 thread、两个 Home、数十 GiB rollout 下测量目录首屏、增量索引 CPU、
    内存、磁盘读取和电量；禁止以全量双目录轮询换取表面实时性。
+
+### v02-008：连接后会话摘要必须就绪，首页不能先显示整页 “no description”
+
+#### 1. 用户可见现象与本轮决定
+
+- 点击连接 Bridge 后进入主会话列表，所有卡片会先显示
+  `(no description)`，稍后才出现真实摘要。
+- 这会让用户误以为会话丢失、索引损坏或 Bridge 读错了数据源。
+- 用户允许在进入首页前短暂加载，但本方案不采用固定等待 1～2 秒。固定延迟在
+  快设备上白等，在慢连接上仍会穿透；应等待真实的目录就绪条件，并显示当前阶段。
+- 本项与 v02-001 是同一条连接门禁的下一层：`session_list` 运行态快照就绪不等于
+  `recent_sessions` 会话目录、摘要和当前筛选结果已经就绪。
+
+#### 2. 已确认的当前调用链
+
+- `SessionHomeConnectionGate` 只检查 transport connected 和当前连接的权威
+  `session_list` generation。收到运行对象快照后即可放行 connected 首页。
+- 完整主列表由另一条 `recentSessionsStream` 驱动；`SessionListState` 只有收到
+  第一份 recent response 后才把 `isInitialLoading` 设为 false。
+- `HomeContent` 在 initial loading 期间若已经有 runtime rows，仍可能先渲染这些
+  行，而不是保持完整 skeleton。
+- `RecentSession.displayText` 在 summary 和 firstPrompt 都为空时直接返回字面量
+  `(no description)`。因此这里不是 provider 把所有摘要删了，而是 UI 把
+  “当前尚未取得元数据”和“权威确认的空会话”折成同一占位文案。
+- 现有 Bridge/Mobile 的 recent catalog 只在进程内缓存；同目标短重连可能暂时
+  保留，切换目标会清空，App 冷启动也没有可直接显示的持久目录。
+
+#### 3. 目标就绪模型
+
+连接首页至少区分以下互不替代的阶段：
+
+```text
+transport
+  └─ current-connection runtime snapshot
+       └─ current target + filter 的 catalog snapshot
+            └─ 可选：recent hot-content reconciliation
+```
+
+- **有属于同一 Bridge/machine identity 和筛选条件的持久目录缓存**：首页可立即
+  显示真实缓存标题/摘要，同时用非阻塞小型状态提示“正在同步会话列表”。新空值
+  不得覆盖已有摘要，除非带当前 generation 的权威删除/清空事实。
+- **首次连接且没有缓存**：保持连接页中的“已连接，正在读取会话列表”阶段，或
+  显示有明确 loading/progress 语义的会话 skeleton；不得渲染一屏
+  `(no description)`。收到当前 query 的 authoritative response 后再进入正常首页。
+- **权威返回零项**：显示“当前筛选下没有会话”，不能继续转圈，也不能显示损坏
+  占位。
+- **目录请求超时/失败**：显示可重试、可诊断的失败状态，并保留已确认的连接事实；
+  不能把超时当空列表或自动跳到消息页。
+- **单个真实空会话**：可显示“空会话/暂无消息”。“摘要尚未加载”“会话确实为空”
+  和“摘要解析失败”必须是三个不同状态。
+
+catalog readiness 必须携带 Bridge identity、connection epoch、provider/filter、
+request ID 或 query generation。旧连接、旧筛选和旧机器的迟到 response 不得
+解除当前首页门禁。
+
+#### 4. 性能与兼容边界
+
+- 不为了首屏就绪读取正文或解析工具详情；只取目录投影。
+- 有缓存时不增加阻塞等待；没有缓存时等待的是实际响应，而不是任意动画时长。
+- 新 Mobile + 旧 Bridge 可用一次有界 recent list response 作为就绪边界；新
+  catalog generation 字段采用 additive capability。
+- 会话目录缓存必须按 machine/Bridge identity 分区，不能在两个 Bridge 或
+  v02-007 的两个 Codex Home 之间混用。
+- 不用每次 runtime status 更新重新请求目录；runtime 状态和 durable catalog
+  可在投影层按 identity 合并。
+
+#### 5. 测试与验收
+
+1. 首次连接：runtime snapshot 先到、recent catalog 后到，期间不出现任何
+   `(no description)` 卡片。
+2. 有缓存重连：真实缓存摘要立即出现，迟到空 runtime metadata 不覆盖它。
+3. 空列表、筛选无结果、单个空会话、目录超时分别显示不同状态。
+4. Bridge A 的迟到 catalog 不能放行或污染已切到 Bridge B 的首页。
+5. 快连接不被固定延迟拖慢；慢连接不在固定秒数后穿透门禁。
+6. 首页可交互时必须已经满足“有同目标缓存”或“当前 query 权威返回”之一。
+
+### v02-009：紧凑时间戳、可感知的八行过程框与统一展开状态
+
+#### 1. 已确认的三个根因
+
+1. `ChatEntryWidget` 当前在每一个可见 entry 顶部无条件插入居中的独立
+   `_TimestampWidget`，并带上下间距。这正是时间戳出现在工具之间、占据大量高度
+   的直接原因；现有测试只验证 `HH:mm:ss` / `~HH:mm:ss` 文本，没有验证位置。
+2. `_ProcessDetailsViewport` 已经按“8 个紧凑行高”和屏幕高度 55% 取较小值，
+   内部也可滚动；但它没有边框、底色、上下溢出提示或足够明显的 scrollbar，
+   用户难以感知那是一块独立可滚动区域。
+3. 当前活动回合在 streaming 与 persisted 两条渲染路径之间切换：
+   - 有 transient stream 时，layout 故意不生成 persisted `currentSegment`；
+   - persisted 过程框只在非 streaming 路径显示；
+   - live 展开 key 使用 `live:<turn>`，persisted 使用 `entry:<turn>`。
+   因此工具 → 思考 → 新工具的增量转换会让过程框消失、思考回到“当前进度”，
+   随后又出现一个过程框。局部 `Set` 没有一定被清空，但渲染 owner 和 key 已换，
+   用户看到的效果仍等同于被折叠。
+
+#### 2. 统一活动回合过程面
+
+每个 durable turn 只允许一个稳定的 process surface：
+
+- key 使用 provider/turn 的稳定 identity，不再包含 `live:` / `entry:` 这种渲染
+  来源前缀；
+- persisted 工具、live 工具、live thinking 和已落盘的中间输出进入同一有序
+  过程模型，按稳定 item/sequence 合并；
+- **折叠时**，“当前进度”可以展示最新 thinking/tool 的单行摘要；
+- **展开时**，thinking、工具调用、工具结果和对应风险提示都留在过程框内；框外
+  的“当前进度”不再重复显示 thinking；
+- 最终 assistant 回复仍使用普通最终消息组件，不因为过程框展开而复制到框内；
+- 新增 delta、history replacement、Mirror reconcile、工具转 thinking、thinking
+  转工具都只更新框内内容，不改变用户展开意图；
+- 只有用户显式收起、切换 durable 会话、执行全局折叠，或结构经 identity 校验
+  确认已经失效，才允许清除展开状态。
+
+这需要先把 live/persisted process ownership 统一到 projection/reducer 层，
+不能只在 Widget 中把两个 key 改成相同字符串，否则重复项和迟到事件仍会争抢。
+
+#### 3. 八行过程框的视觉和滚动规范
+
+- 最大高度仍是当前宽度、Dynamic Type 和屏幕安全区下约 8 个紧凑工具行的容量，
+  不是只保留 8 个数据项；更多内容通过框内纵向滚动查看。
+- 思考文本可能比工具行高，因此使用“等价 8 个紧凑工具行的最大高度”而不是伪称
+  永远恰好露出 8 个语义 item。
+- 增加静态、低成本的圆角底色和 1px/物理像素边界；只有内容可滚动时显示明显的
+  scrollbar，并可用顶部/底部轻微渐隐或阴影提示还有内容。
+- 渐隐不能使用持续动画、每帧 shader 重建或大范围 backdrop blur。滚动状态改变
+  时才更新，Reduce Motion 下保持静态。
+- 边框与背景要在明暗主题、高对比模式和 Dynamic Type 下可辨识，但不抢正文层级。
+
+#### 4. 时间戳与过程框协同
+
+- 工具组摘要时间按 v02-005 放到右侧 chevron 左边；框内每个工具默认不再额外
+  占一整行时间。
+- 只有确实需要区分发生顺序的 thinking/工具详情才在自身 trailing 位置显示小字；
+  不用时间戳代替 canonical sequence 排序。
+- 增量更新只能继承原事件时间，不能以“框重新出现/本地重建时间”刷新。
+
+#### 5. 必须新增的回归
+
+1. 展开当前过程框，依次注入 tool use → thinking delta → tool result → 新 tool；
+   同一 viewport 和同一 expansion key 始终存在。
+2. expanded 时 thinking 只在框内出现一次；collapsed 时只在当前进度出现摘要。
+3. canonical history 替换 live provisional 项后，展开状态、滚动位置和 anchor
+   均保留，且没有重复工具/最终回复。
+4. 9 个以上工具及长 thinking 在框内滚动；边界、scrollbar/overflow affordance
+   可见，外层聊天列表不被一次展开撑得极长。
+5. 时间戳不出现在两个工具之间的独立全宽行；窄屏和大字体下不遮挡 chevron。
+6. 对长会话测量增量更新的 build/layout、滚动掉帧和内存；装饰层不得引入持续
+   repaint。
+
+### v02-010：会话目录同步、查看、增量追平与“激活”业务逻辑全局审计
+
+#### 1. 本项范围和关键结论
+
+本项不是一次大重写授权，而是把用户要求的“所有会话随时可点开”和现有运行时
+机制重新分层。首轮静态调用链审计已经确认：
+
+- **所有会话可直接查看/使用，不等于把所有会话都 resume 成 active runtime。**
+- 当前前台恢复会先取权威 `session_list`，随后对
+  `BridgeService.sessions` 中每个 active runtime 请求 history，并并行对账最多
+  8 个 resident。若机械地把整个目录都变成 active，会把当前有界路径放大为
+  全会话 history 风暴。
+- 正确方向是：所有 durable conversations 都有本地目录和可打开的轻量/热缓存；
+  只有发送消息、审批、明确需要 live stream 或 provider 要求时，才建立/接管
+  runtime attachment。
+
+后续实施前仍要在届时 HEAD、真实 Bridge 日志和真机时间线上重新审计。下列是本次
+已经取得的方向性证据，不限制实施时发现更深层问题后修正。
+
+#### 2. 当前目录同步链路与已确认风险
+
+当前链路大致是：
+
+```text
+Codex/Claude 会话文件变化
+  → Bridge SessionCatalogMonitor debounce / revision
+  → Mobile catalog changed
+  → Mobile 再请求当前筛选的 recent prefix
+  → Bridge 重新列目录并投影 metadata
+  → Mobile 替换 prefix、保留旧 tail
+```
+
+已确认的事实和问题：
+
+- Bridge watch 当前采用约 750ms debounce、2.5s 最小间隔和 15s retry；Mobile
+  另有约 250ms debounce、单 in-flight + dirty latch、15s timeout。基本防抖已经
+  存在，不应再叠加无界 timer。
+- Codex catalog refresh 仍可能递归枚举整个 `~/.codex/sessions`，并为最多 200
+  个需要摘要的会话做有界头尾解析。当前文件规模尚未撞到 watcher 上限，但活跃
+  rollout 连续写入时，约每 2.5 秒重复目录枚举/metadata 解析仍是可避免的成本。
+- metadata fallback 中存在“对每个文件匹配 wanted IDs”的多重查找，最坏可能接近
+  files × wanted IDs；应先以 canonical rollout path/thread ID 建索引。
+- Mobile 的 catalog refresh 只替换已请求 prefix 并保留旧 tail。若 tail 中的
+  会话被删除、归档或改变，而它不在本次 prefix 内，旧条目可继续残留到更深层
+  全量/筛选刷新。
+- top-level/filter 的 Bridge 工作已有每 WebSocket generation 保护，但 append、
+  project 和 catalog response 缺少贯穿协议的显式 request/query identity；
+  Mobile 仍过度依赖当前 scope 和本地状态推断迟到响应属于谁。
+- watcher 达到目录上限时覆盖可能退化，当前接口没有足够清晰的健康状态告诉
+  Mobile“实时目录 watch 已不完整”。这不是本机当前故障，但属于未来规模风险。
+- same-target reconnect 可保留进程内 recent list，App 冷启动和 target switch
+  没有持久目录；这与 v02-008 的首屏空摘要直接相连。
+
+#### 3. 当前查看/激活/history 链路与已确认风险
+
+- 点击既有 recent session 目前立即调用 `SessionResumeCoordinator.resume()`，
+  Bridge 随即执行 resume；UI 再打开一个 `pending_resume_*` 路由。也就是说
+  “查看已有会话”和“激活 provider runtime”仍是同一个动作。
+- Codex/Claude pending screen 各自复制了一套 binding/subscription 逻辑，且一个
+  `isPending` boolean 同时代表 create 和 resume，所以恢复会话显示
+  `正在创建会话`。两端重复代码也容易在错误、取消、迟到 session_created 和
+  draft 迁移上漂移。
+- Conversation Mirror 的本地 bootstrap 目前在 `ChatSessionCubit` 和
+  runtimeSessionId 已存在后才启动；它不能单独支持“先离线打开 durable thread，
+  再按需 attach runtime”。
+- `ChatSessionCubit` 会依次恢复 Bridge 进程内 runtime 消息、尝试本地 Mirror，
+  再按情况请求 canonical history。同一内容可能经过多条 decode/merge 路径。
+- 当状态长期停在 `starting` 时，当前 3 秒 periodic timer 会持续请求 history；
+  Mirror bootstrap 成功也只延迟两个 tick。若 resume 丢失或状态永不收束，会形成
+  无明确总次数/截止时间的重复请求。
+- history 请求不只来自 chat cubit，还来自 Desktop continuity tracker、Mirror、
+  foreground/background coordinator、手动刷新和错误恢复。`BridgeService` 有
+  pending/active 展示集合，但没有真正的 per-session request single-flight；
+  同一会话的多个 delta 请求会重发，后来的调用还会覆盖之前记录的
+  `allowFullFallback` 策略。
+- 前台 background-sync coordinator 会先刷新权威 runtime list，再对所有 active
+  runtime 并发 history reconciliation；后台只对已有 cached sequence 的 active
+  runtime 发送 delta-only。它处理的是运行对象，不是 durable catalog 的所有会话。
+- Desktop list continuity watch 只覆盖活跃 Codex runtime，并在首页 tracker 与
+  打开聊天的 cubit 之间转移 watch ownership；反复进入/退出会话可能产生
+  unwatch/rewatch、ack retry 和 displaced ownership 竞态。
+- `ProcessStatus.fromString()` 对未知未来状态直接回退 `idle`，
+  `sessionVisualStatusFor()` 又把其他未知 raw status 显示为英文 `Ready`。这会把
+  官方新增状态静默伪装成可用/空闲，既是兼容风险，也解释了为什么当前“Ready”
+  不能再承担会话可用性语义。
+
+#### 4. 已确认 bug、设计缺口与暂不下结论项
+
+| 分类 | 当前结论 | 处理原则 |
+|---|---|---|
+| 首页全是 no description | 已确认 readiness gap | v02-008 按真实 catalog generation 修 |
+| 既有会话显示“正在创建” | 已确认 create/resume 被一个 bool 合并 | 改为类型化 operation |
+| starting 每 3 秒无限请求 history | 已确认无总截止/退避 | single-flight、deadline、指数退避 |
+| 多调用者覆盖 history fallback 策略 | 已确认共享 map 的 latest-writer 行为 | 建 per-session arbiter |
+| catalog prefix 保留陈旧 tail | 已确认当前替换算法可能发生 | delta delete 或 generation/page 对账 |
+| 进入会话会立刻 resume | 已确认当前产品耦合 | durable view 与 runtime attach 分离 |
+| 未知 provider status 显示 Ready | 已确认兼容回退过强 | 保留 raw/unknown，不伪造 idle |
+| “正在挂起”具体触发序列 | 尚未取得真机事件线 | 实施前加结构化 phase/epoch 诊断复现 |
+| 同步后重复消息/折叠异常的所有根因 | 已确认多来源竞争，未证明只有一个根因 | 按 stable identity 逐来源重放验证 |
+
+#### 5. 目标业务分层
+
+每个会话至少拆成六个正交事实，任何一个都不能再叫“是否激活”：
+
+```text
+Durable identity   provider + thread + machine/source
+Catalog snapshot   title/project/activity/archive/revision
+Local content      none / hot window / full copy + cursor
+Runtime attachment detached / attaching / attached / stopping
+Work status        idle / running / needs-you / compacting / unknown
+Sync status        cached / catalog-sync / history-delta / live / degraded / error
+```
+
+- 首页“所有会话都可用”来自 durable identity + catalog/local content，不来自
+  runtime attachment。
+- 卡片主状态只突出 Working、Needs You、未读、同步/离线等正交事实；普通空闲会话
+  无需再显示一层橙/灰 `Ready` 分类。
+- 未知未来 work status 保留 raw value 并显示中性兼容状态，不直接变 idle。
+- 运行蓝条只由 authoritative work status 驱动；刷新光晕只由真实 catalog/history
+  sync transaction 驱动，二者不互相冒充。
+
+#### 6. 目标协调器和唯一所有权
+
+不要求一次替换全部代码，但最终应形成以下单一所有权边界：
+
+1. **SessionCatalogRepository**
+   - 持久保存按 machine/source 分区的目录投影；
+   - 接收 snapshot/delta，维护 revision、删除墓碑和 query generation；
+   - 首页只订阅投影，不自己发目录请求。
+2. **ConversationContentStore**
+   - 在现有 Mirror/SQLite 基础上区分 hot window 与 full copy；
+   - 以 turn/item/tool identity、ordinal/cursor 幂等写入；
+   - 为未 attach runtime 的会话提供立即可读的本地窗口和按需旧页。
+3. **HistorySyncArbiter**
+   - 每 durable conversation 同时只有一个 provider history flight；
+   - 合并多个 reason，保留 dirty latch、优先级、deadline、connection epoch；
+   - interactive foreground 可升级 background delta-only，但 background 请求不能
+     降低一个已经确认的 foreground fallback 权限；
+   - 结果只提交给发起 generation，迟到帧不得重开已清理缓存或覆盖新连接。
+4. **RuntimeAttachmentController**
+   - 阅读不 attach；发送、审批或需要 live provider 行为时才 attach；
+   - create、open、attach、resume、reconnect、stop 是明确 operation kind；
+   - 同一 durable thread 服从 v02-007 的单写者/owner 边界。
+5. **WatchRegistry**
+   - App 级集中管理 active runtime、hot cache 和 full copy 的 watch leases；
+   - 页面只是订阅者，进入/退出页面不直接夺取 server watch ownership；
+   - 有界并发、引用计数、connection epoch 和 retry 统一管理。
+6. **ConversationProjection**
+   - live、history、Mirror、optimistic echo 进入一个 stable-ID reducer；
+   - canonical sequence/ordinal 决定顺序，手机接收时间只用于显示；
+   - disclosure、anchor、未读和当前过程框绑定 stable turn/item，不绑定 list index
+     或数据来源。
+
+#### 7. 前台、后台与“全部自动同步”的准确边界
+
+- **App 在前台但会话未打开**：所有会话接收轻量 catalog delta；最近热会话、运行
+  中/Needs You/未读会话按预算接收内容尾部 delta。不得为每个 catalog entry 构建
+  `ChatSessionCubit`、Markdown Widget 或完整工具树。
+- **当前打开会话**：最高优先级 history single-flight + live stream；只构建
+  viewport 所需内容，展开详情按需加载。
+- **iOS 普通有限后台/BGAppRefresh**：只对已有 cursor 和允许的有界集合做
+  delta-only，尊重系统 deadline；没有 cache 不退回 full history。
+- **用户开启定位 notification-only 模式**：保持既定隐私/功耗边界，只投递轻量
+  通知，不在后台同步正文、Mirror、文件或工具。回前台后 interactive first，
+  再按 cursor 追平。
+- **进程被 iOS 回收或用户 force-quit**：不承诺实时正文同步；下次启动从持久目录
+  和热缓存立即展示，再增量 catch-up。
+
+因此“后台自动刷新”不能被实现成所有会话常驻 runtime；正确体验来自持久缓存、
+Bridge 轻量增量和前台/机会性后台的有界追平。
+
+#### 8. Bridge 目录性能方向
+
+- 文件 watcher 尽可能报告 changed path/thread identity；Bridge 维护按
+  path + inode/size/mtime/revision 的 metadata cache，只重算变化项。
+- 优先使用官方 app-server/SQLite/index 的结构化元数据，JSONL 只做有界尾部校验
+  和兼容 fallback；不得每个 revision 扫描 v02-007 的多套数十 GiB Home。
+- 协议增加 capability-gated `catalog_delta`、delete/tombstone、requestId、
+  queryGeneration 和 source identity；旧 Mobile 继续接 snapshot。
+- 保留周期性低频 reconciliation 处理 watcher 丢事件，但要有抖动、预算和健康
+  telemetry；不能用高频全树轮询兜底。
+- watcher 覆盖退化、解析失败、revision gap 和 source 冲突要显式上报 degraded，
+  不能继续让 UI 假装“已同步”。
+
+#### 9. 实施与回归门禁
+
+1. 先建立只读事件时间线：连接、catalog request/response、runtime attach、
+   history reason、cursor、generation、Mirror/watch、UI phase；日志必须有界脱敏。
+2. 用相同真实长会话分别重放 live-only、history-only、Mirror-only 和三路交错，
+   证明 stable identity reducer 后再迁移 UI。
+3. 先引入 arbiter/typed phase，再移除分散 timer 和页面 watch ownership；禁止
+   同时大改存储、协议和渲染而无法定位回归。
+4. 旧 Bridge fallback、旧 Mobile snapshot、无 Mirror、离线、切换 Bridge、
+   两个 Codex Home、provider truncate/rename/archive/delete 都要覆盖。
+5. 压测至少包含：数千目录项、10 个热会话、8 个 full resident、一个超长活动
+   会话、连续工具/思考流、前后台快速切换和网络抖动。
+6. 指标至少记录 catalog 首屏/稳定完成时间、重复请求数、读取字节、SQLite 写放大、
+   history decode 次数、Widget rebuild、CPU、内存、滚动帧、前台追平时间和电量。
+7. 功能全部完成后执行 v01 Phase 8 和本方案 v02-006 的全 App 性能/安全审查，
+   并在当时的最新官方 upstream 上做语义合并和完整兼容回归。
 
 ## 2. 后续讨论登记方式
 
