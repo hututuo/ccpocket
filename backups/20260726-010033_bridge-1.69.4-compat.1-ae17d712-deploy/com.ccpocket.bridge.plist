@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>BRIDGE_ARTIFACT_BASE_URL</key>
+		<string>http://100.105.41.82:8765</string>
+		<key>BRIDGE_ALLOWED_DIRS</key>
+		<string>/Users/huyiyang,/private/tmp/ccpocket-upstream-1.108-ota-integration</string>
+		<key>BRIDGE_CLI_ENTRY</key>
+		<string>/Users/huyiyang/Library/Application Support/ccPocket Bridge/runtime/1.69.0-compat.6-4e611c6b/packages/bridge/dist/cli.js</string>
+		<key>BRIDGE_DISABLE_MDNS</key>
+		<string>1</string>
+		<key>BRIDGE_HOST</key>
+		<string>0.0.0.0</string>
+		<key>BRIDGE_PORT</key>
+		<string>8765</string>
+		<key>BRIDGE_PUBLIC_WS_URL</key>
+		<string>ws://100.105.41.82:8765</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.ccpocket.bridge</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>-li</string>
+		<string>-c</string>
+		<string>exec node "$BRIDGE_CLI_ENTRY"</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/ccpocket-bridge.err</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/ccpocket-bridge.log</string>
+</dict>
+</plist>
