@@ -4,7 +4,7 @@
 >
 > 创建时间：2026-07-26 00:41:25 +0800
 >
-> 最近补充：2026-07-26（悬浮小窗、会话状态语义、持久缓存与文案/时间戳）
+> 最近补充：2026-07-26（Cockpit 双 Codex 实例的会话权威与并发安全）
 >
 > 上一版方案：
 > `plans/mobile-comprehensive-remediation_v01_20260725-012458.md`
@@ -541,25 +541,176 @@ Read: seen / unseen
 
 本批内容不能按 UI 现象逐项打补丁。用户确认实施后，建议按以下顺序推进：
 
-1. **全项目状态与身份审计**：完成 v02-003 的状态账本，真机定位“正在挂起”；
-   同时记录打开会话时实际目录/历史/工具请求时间线。
-2. **持久数据基础**：在现有 Mirror/SQLite 体系上实现会话目录和热缓存，建立
+1. **全项目状态、身份与来源审计**：完成 v02-003 的状态账本，真机定位
+   “正在挂起”；同时记录打开会话时实际目录/历史/工具请求时间线，并完成
+   v02-007 的 Codex Home、app-server 与 thread owner 盘点。
+2. **会话权威与单写者门禁**：在扩展缓存前先确定每个会话的来源身份和唯一写入
+   所有者；禁止把两个 Codex Home 盲扫后只按 thread ID 合并。
+3. **持久数据基础**：在现有 Mirror/SQLite 体系上实现会话目录和热缓存，建立
    revision、identity、generation 与清理边界。
-3. **直接可用的会话模型**：把运行、注意、未读、同步从 Ready 可用性中拆开，
+4. **直接可用的会话模型**：把运行、注意、未读、同步从 Ready 可用性中拆开，
    迁移首页和恢复链路。
-4. **局部交互调整**：实现真正的非模态悬浮小窗、正确 loading 文案和类型化
+5. **局部交互调整**：实现真正的非模态悬浮小窗、正确 loading 文案和类型化
    时间戳；继续复用原有 side chat/subagent UI。
-5. **回归与遗留清理**：只有调用链和测试证明新模型已覆盖后，才删除旧 activation、
+6. **回归与遗留清理**：只有调用链和测试证明新模型已覆盖后，才删除旧 activation、
    resident 分类展示或不可达状态；发现的业务 bug 先证实再修。
-6. **完整性能审查**：功能完成后再做全 App 的 CPU、内存、SQLite、流式重建、
+7. **完整性能审查**：功能完成后再做全 App 的 CPU、内存、SQLite、流式重建、
    首页目录、会话打开、后台增量、动画和能耗审查，并进行针对性优化。
-7. **官方更新与发布**：重新获取并语义合并届时最新官方 commits，复跑新旧
+8. **官方更新与发布**：重新获取并语义合并届时最新官方 commits，复跑新旧
    Mobile/Bridge、iOS Simulator/真机、通知/后台和 IPA 验收；未经确认不晋级
    stable。
 
 每一步应按行为拆分可独立回滚的 commit。本文给出方向和已知边界，不限制实施时
 基于更完整证据修正数据模型；但任何修正都要回写方案/decisions，并说明为何与
 当前草案不同。
+
+### v02-007：Cockpit 双 Codex 实例的会话权威、同步与并发写入安全
+
+#### 1. 用户提出的问题
+
+- 当前通过 Cockpit 同时运行了两个 Codex Desktop 实例。
+- 用户需要确认两者是共用会话文件还是各写各的、Cockpit 所谓“同步”是否会造成
+  冲突，以及 CC Pocket 最终读取哪一个实例。
+- 本项只做只读取证和设计登记；当前没有修改 Cockpit、Codex、Bridge 或 Mobile
+  的配置和代码。
+
+#### 2. 当前这台 Mac 上已确认的存储拓扑
+
+当前不是“两个窗口共用一套完整状态”，而是“两个独立索引库，加上一批指向同一
+权威 rollout 的已导入记录”：
+
+- 普通 Codex 使用 `/Users/huyiyang/.codex`。
+- Cockpit 的 `team` 实例使用独立的
+  `/Users/huyiyang/.antigravity_cockpit/instances/codex/f894427cc1c571f7`；
+  Chromium user-data 也通过单独的 `--user-data-dir` 隔离。
+- 两边的 `state_5.sqlite`、WAL、日志、目标和 `sessions/` 都是不同 inode，不是
+  硬链接；Cockpit 实例仅把 rules、skills、AGENTS 等规则入口链接回默认目录。
+- 两边当前各有 1,131 条 thread 记录。thread ID 集合相同，已导入记录的
+  `rollout_path` 也相同；绝大多数实际指向普通
+  `/Users/huyiyang/.codex/sessions/...`，而不是 Cockpit 自己的 `sessions/`。
+- 两个 `sessions/` 目录内看起来各有一套 JSONL，但 Cockpit 目录中的文件是独立
+  副本，不是实时镜像。以当前协调会话为例，Cockpit 副本是主文件前 18,580 行的
+  严格旧快照；普通目录的主文件随后又追加了 480 行。
+- 当前普通主文件共 19,060 行，没有发现无法解析的 JSON 行；两套 SQLite 的
+  `integrity_check` 均通过。两边已有 3 条相同 thread 的标题/更新时间/归档等
+  元数据不一致。结论是“目前没有发现文件已经损坏”，而不是“结构天然安全”。
+
+上述数字是 2026-07-26 的现场快照，不能作为以后固定常量。
+
+#### 3. Cockpit 当前版本的“同步”到底是什么
+
+当前安装的 Cockpit Tools 1.3.14 的本地配置中，`autoSyncThreads=true`。已安装
+程序的命令与提示文本表明它会：
+
+- 扫描各 Codex 实例，向目标实例补齐缺少的 thread；
+- 写入前备份目标文件；
+- 已存在的 thread 不覆盖；
+- 自动同步在实例启动或关闭流程触发，并要求所有 Codex 实例都已经停止后才进行
+  合并。
+
+现场证据也与此一致：普通目录的活跃 rollout 已继续增长，而 Cockpit 自己的
+副本仍停留在旧时间点。因此它不是两个运行中 app-server 之间的实时事务同步，
+也不是冲突解决器；更接近“停机后的缺项复制/集合补齐”。一旦同一个 thread 在
+两边都已经存在但内容分叉，“不覆盖已有记录”反而意味着分叉不会自动消失。
+
+本结论绑定当前本机安装版。升级 Cockpit 后必须重新核对，不能永久依赖二进制
+提示文本推断实现。
+
+#### 4. CC Pocket 当前读取哪一份
+
+当前 Bridge 的源码和运行配置给出了明确答案：
+
+- `packages/bridge/src/sessions-index.ts` 的 `listCodexSessionFiles()` 固定扫描
+  `homedir()/.codex/sessions`；会话名、权限配置等其他 Codex 辅助文件也固定写在
+  `homedir()/.codex`。
+- `packages/bridge/src/codex-transport.ts` 启动 `codex app-server` 时继承 Bridge
+  的环境。当前运行的 Bridge LaunchAgent 没有设置 `CODEX_HOME`，因此仍使用普通
+  `/Users/huyiyang/.codex`。
+- 当前会话 identity 没有 `codexHomeId` / Cockpit instance ID 这一维。若以后
+  直接增加第二个扫描根并仍只按 provider + thread ID 去重，同一 thread 的主本
+  和旧快照会发生碰撞，选择哪个文件还可能取决于目录遍历顺序。
+
+所以现阶段 CC Pocket 的事实权威是普通 `~/.codex`，不是“随机选择两个实例”。
+这也带来一个缺口：若在隔离的 Cockpit Home 中创建了真正的新 thread，而它尚未
+停机同步到普通目录，CC Pocket 不会看到它。
+
+#### 5. Codex 自身的并发边界与风险判断
+
+官方 Codex app-server 的 `thread/resume` 会从 rollout JSONL 恢复线程；官方
+`RolloutRecorder` 以 read + append 打开已有文件并逐行写入、刷新。当前源码没有
+显示针对同一 rollout 的跨进程独占文件锁。`ThreadManager` 可以阻止同一个
+app-server 进程内重复加载同一 thread，但从实现结构推断，它不能替两个彼此独立
+的 app-server 建立全局所有权：
+
+- <https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md>
+- <https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs>
+- <https://github.com/openai/codex/blob/main/codex-rs/app-server/src/request_processors/thread_processor.rs>
+
+据此分级：
+
+- **只运行两个实例、各自操作不同 thread：风险较低。** 新 thread ID 不同，
+  主要问题是 CC Pocket 可见性和 Cockpit 停机同步延迟。
+- **两个实例同时恢复并发送同一个 thread：高风险。** 两个 app-server 都可能
+  认为自己是当前运行对象，事件、turn 和元数据会按不同进程的时序交错；追加
+  模式只能降低直接覆盖概率，不能提供语义单写者或冲突解决。
+- **两边同时重命名、归档、删除同一 thread：中高风险。** 即使 rollout 正文没坏，
+  两套独立 SQLite / index 的目录状态也会分叉。
+- **Cockpit 停机同步：不能当并发安全机制。** 它补缺但不覆盖，无法判断两个已存在
+  副本哪一个才是权威。
+
+当前没有观察到 JSONL 损坏，不能据此宣称未来并发写同一会话安全。反过来也不能
+仅因为两个进程都打开了同一文件就断言它们已经同时写坏；需要区分读取/监听和
+真正发送 turn。
+
+#### 6. 在正式修改前的临时使用规则
+
+1. 暂时把普通 `~/.codex` 视为 CC Pocket 和共享会话的唯一权威 Home。
+2. 可以同时运行两个 Codex 实例，但同一个 thread 在同一时刻只能从一个实例发送
+   消息、审批或继续任务；另一个实例最多只读查看。
+3. 不要在两边同时对同一 thread 做重命名、归档、删除或 fork 后回写。
+4. 不要在 Codex 运行时手工复制/覆盖 `state_5.sqlite`、WAL 或 rollout JSONL。
+5. 需要让 Cockpit 独有的新会话出现在 CC Pocket 时，先正常关闭全部 Codex 实例，
+   让 Cockpit 完成同步，再核对普通 `~/.codex` 是否出现该 thread；不能假设运行
+   中会实时同步。
+6. 若发现同一 thread 两份 JSONL 已经不是“严格前缀 + 新尾部”关系，应只读保存
+   两份证据并停止自动覆盖，由工具做结构化冲突审计；不要文本拼接。
+
+#### 7. 后续实现方向：显式来源 + 每会话单写者
+
+本项应先于 v02-004 的持久目录/热缓存实施，否则手机可能把错误来源永久缓存。
+建议目标不是“把两个目录都扫一遍然后合并”，而是：
+
+- 建立显式 Codex Source Registry。每个来源保存稳定 `codexHomeId`、实例名、
+  规范化 Home 路径、状态库和 app-server 连接方式。
+- 会话内部身份至少包含 machine/Bridge identity、provider、`codexHomeId` 和
+  thread ID；旧客户端仍通过 capability-gated 回退到单一默认 Home。
+- 每个 thread 建立唯一 owner/lease。Bridge 恢复或发送 turn 前确认写入所有者；
+  其他实例只能只读或明确把所有权转交，不能各自启动 app-server 写同一 rollout。
+- Bridge 启动 app-server 时显式传入与该来源一致的 `CODEX_HOME`；历史读取、会话
+  名、权限配置和追加操作也必须解析到同一来源，不能一半读默认 Home、一半写实例
+  Home。
+- 聚合目录可以统一展示，但去重必须先识别“同一来源”“严格前缀副本”“内容已经
+  分叉”三种情况。严格前缀只能选择权威，不复制成两个会话；分叉必须标记冲突，
+  禁止自动拼接或静默覆盖。
+- Cockpit 自动同步只作为外部导入信号，CC Pocket 不把它当事务协议。必要时提供
+  只读冲突检测器和来源诊断页，但普通无冲突场景不增加用户操作负担。
+- 为避免性能回退，不得在每次列表刷新时扫描两套共约 52 GiB 的 JSONL。优先读取
+  各自 SQLite/index 元数据、文件 revision/mtime/size 和增量尾部；正文只按需读。
+
+#### 8. 实施前测试与验收矩阵
+
+1. 两个临时 `CODEX_HOME`：不同 thread、相同 thread 的严格前缀副本、真正分叉
+   副本分别识别正确。
+2. 两个 app-server 同时请求恢复同一 thread 时，第二个被拒绝、降为只读或通过
+   显式转交接管，不能静默双写。
+3. owner 崩溃、Bridge 重启、lease 超时和转交晚帧不会形成双 owner。
+4. 一个实例创建新 thread 后，在 Cockpit 尚未停机同步时，CC Pocket 明确标识
+   来源和可见性，不把“没找到”误报为删除。
+5. 重命名、归档、删除和 fork 在双 Home 下保留来源身份；冲突不被 missing-only
+   同步掩盖。
+6. 旧 Mobile + 新 Bridge、新 Mobile + 旧 Bridge 仍维持默认单 Home 语义。
+7. 数千 thread、两个 Home、数十 GiB rollout 下测量目录首屏、增量索引 CPU、
+   内存、磁盘读取和电量；禁止以全量双目录轮询换取表面实时性。
 
 ## 2. 后续讨论登记方式
 
