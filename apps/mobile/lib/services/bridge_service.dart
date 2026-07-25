@@ -31,6 +31,14 @@ typedef SessionPermissionRequestObserver =
 const backgroundNotificationDeliveryBridgeCapability =
     'background_notification_delivery_v1';
 
+@visibleForTesting
+Map<String, String> bridgePrivateHttpHeaders(String? websocketUrl) {
+  final uri = websocketUrl == null ? null : Uri.tryParse(websocketUrl);
+  final apiKey = uri?.queryParameters['token'];
+  if (apiKey == null || apiKey.isEmpty) return const {};
+  return {'Authorization': 'Bearer $apiKey'};
+}
+
 class _PermissionRequestObserverRegistration {
   const _PermissionRequestObserverRegistration(this.observer);
 
@@ -4734,7 +4742,10 @@ class BridgeService implements BridgeServiceBase {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/gallery/upload'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              ...bridgePrivateHttpHeaders(_lastUrl),
+            },
             body: jsonEncode({
               'base64': base64Data,
               'mimeType': mimeType,
@@ -4765,7 +4776,10 @@ class BridgeService implements BridgeServiceBase {
 
     try {
       final response = await http
-          .delete(Uri.parse('$baseUrl/api/gallery/$id'))
+          .delete(
+            Uri.parse('$baseUrl/api/gallery/$id'),
+            headers: bridgePrivateHttpHeaders(_lastUrl),
+          )
           .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
