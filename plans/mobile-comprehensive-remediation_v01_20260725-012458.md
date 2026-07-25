@@ -739,16 +739,73 @@ UI 和诊断必须分别显示两条链路的 capability、权限、token、Brid
 - Tailscale/可信局域网只是网络层，不替代应用认证；
 - 认证验证使用内存常数时间检查和短 token，不对每个增量做昂贵密码哈希。
 
+源码复核后的实现边界（2026-07-25）：
+
+- WebSocket 和私有 HTTP 控制面现在复用同一个 `BRIDGE_API_KEY` authenticator；
+  候选值先做有界 SHA-256，再用 `timingSafeEqual` 比较，不在消息增量热路径运行
+  scrypt；
+- `/usage`、`/doctor`、Gallery 列表/上传/删除全部进入私有 HTTP 门禁。新 Mobile
+  从当前 WebSocket URL 取出已经保存在 Secure Storage 的 API key，以 Bearer
+  header 发送，不新增明文持久化；
+- 旧 Mobile 仍可在其已通过 API key 的直接 WebSocket 存活期间，从同一网络地址
+  使用旧 HTTP 调用；该兼容口拒绝浏览器 `Origin`，socket 关闭后立即撤销。显式
+  错误 Bearer 不会被兼容口放行；
+- direct-loopback 例外现在同时要求没有 `Forwarded`/`X-Forwarded-*`。反向代理
+  把远端流量转成本机 socket 时不能再借 loopback 绕过私有门禁；Artifact 与
+  File Transfer 的本地 control endpoint 也复用此判断；
+- `/health`、`/version` 保持公开，便于连接前探测；Artifact、Gallery 图片和
+  内存图片保持 capability URL 读取，避免破坏 Quick Look/WebView/分享。内存图片
+  ID 已从可预测内容哈希改成每进程随机密钥 HMAC；持久 Gallery 继续使用随机 UUID；
+- Gallery HTTP 上传现在有约 10 MiB 图片/有界 JSON body、严格 canonical base64、
+  MIME 白名单和字符串上限；远端 `filePath` 模式被关闭，只有无 Origin 的直接
+  loopback + `x-ccpocket-control: 1` 才可复制本机路径；
+- Gallery index 写入改成串行、`0600` 临时文件加原子 rename，避免中断时留下半份
+  JSON。上述 Bridge build、WebSocket、Artifact、File Transfer、Gallery、Image
+  和认证定向测试共 332 项通过；Mobile Bearer helper 2 项及定向 analyze 通过。
+- 这仍不等于 live Bridge 已安全切换：当前 `1.69.0-compat.6` 运行态没有被重启。
+  发布前还要在候选配置核对真实 API key、监听地址、反向代理/mDNS/Tailscale
+  拓扑，并决定共享 API key 是否要进一步升级为逐设备可撤销密钥。
+
 ### 11.4 文件变更二次授权
 
 - Mobile/Bridge 文件管理直接发起的 create/write/append/overwrite/move/rename/
   upload/delete 都必须 step-up；
-- Bridge 本地保存 Argon2id verifier，不保存明文密码；
+- Bridge 本地保存慢哈希 verifier，不保存明文密码；算法以实施时可审计、跨平台、
+  不增加脆弱依赖的方案为准；
 - Face ID 路径使用 Secure Enclave 非导出私钥签名 Bridge challenge，不能相信
   `faceIdPassed: true`；
 - challenge 绑定具体操作、canonical paths、file identity、设备、generation、
   nonce 和短 expiry，单次消费；
 - 执行前再 stat/identity 检查，原子写入；删除默认进入废纸篓。
+
+源码复核后的首个实现范围（2026-07-25）：
+
+- 当前 Mobile 文件管理本身仍是只读；现有直接文件变更面只有“手机上传并在 Mac
+  落盘”。没有为了看起来完整而提前增加 create/rename/move/delete；以后增加
+  这些操作时必须复用同一 authorizer，不能另开旁路；
+- Bridge 增加本地 `file-access` 管理入口。密码经内置 scrypt
+  （固定版本化参数、独立随机 salt）生成 verifier，凭据文件使用私有目录、`0600`、
+  no-follow 打开和原子替换；明文不写磁盘、命令行、普通日志或会话记录。选择
+  scrypt 而不是方案初稿里的 Argon2id，是为了复用 Node 自带且可审计的实现，
+  避免为这一条冷路径增加原生密码依赖；
+- Bridge 在每次认证冷路径重新读取这一份很小的状态文件，因此 Mac CLI 修改密码
+  后，运行中的 Bridge 下一次认证即可生效；聊天、历史、文件字节流和增量同步
+  热路径不增加文件读取或密码哈希；
+- 密码成功或 Secure Enclave 签名只授权一个精确 upload operation
+  （client、Bridge instance、transfer ID、文件名、大小、nonce、expiry），
+  Face ID challenge 每次验证尝试都会消费，断线会撤销；修改密码会撤销全部旧
+  Face ID 公钥；
+- iOS 私钥由 Secure Enclave P-256 与 `biometryCurrentSet` 保护且不可导出，
+  Bridge 只保存公钥。Mobile 只在当前连接的 ephemeral RPC/prepare 帧中使用密码
+  或签名，不进入离线队列、transfer checkpoint、SharedPreferences、Keychain
+  或普通日志；取消、断线、机器切换、完成和 dispose 都清除内存中的待用证明；
+- 兼容采用 `file_mutation_auth_v1`、`file_transfer_upload_auth_v1` 和 native
+  `fileMutationBiometricAuth` additive capability。新 Bridge 要求 step-up 时，
+  旧 Mobile 的 upload fail closed；新 Mobile 对旧 Bridge 保留原有上传；旧基础
+  IPA 缺 Secure Enclave 插件时仍可输入密码，Face ID 明确 fail closed；
+- 初版仍以“已认证的 Tailscale 加密连接”为密码传输边界，不把它写成公网密码
+  协议。若将来开放非 Tailscale `ws://`，必须先增加 WSS 或 PAKE/等价应用层
+  保护；本轮最终安全审计还要核对真实监听、配对以及所有私有 HTTP endpoint。
 
 ### 11.5 统一预览路由
 
@@ -896,6 +953,13 @@ Local file   -> iOS Quick Look canPreview -> 本地有界预览器 -> metadata/d
 - Quick Look/HTML/JSON/fallback/download/share；
 - 密码 step-up；
 - Secure Enclave + Face ID。
+- 当前完成：owner 全盘只读的显式配置门槛、Agent 外部引用的 exact artifact
+  映射、统一 Quick Look/HTML/JSON fallback、Bridge 密码 verifier、operation
+  step-up、Secure Enclave Face ID、Mobile upload 接线、私有 HTTP/WebSocket
+  统一认证、旧 Mobile 同地址兼容、不可预测图片 URL 和 Gallery 上传边界；
+- 仍未完成：在候选运行配置上确认真实监听地址、API key、反向代理、mDNS/
+  Tailscale 和旧客户端降级，并在全功能结束后再做一次跨模块安全复审。完成这些
+  检查前不能替换 live Bridge。
 
 ### Phase 7：通知和本地化
 
