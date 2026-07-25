@@ -314,7 +314,69 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(capabilities["backgroundContinuation"], 1)
     XCTAssertEqual(capabilities["backgroundRefreshWarmRuntime"], 1)
     XCTAssertEqual(capabilities["backgroundLocationKeepAlive"], 1)
+    XCTAssertEqual(capabilities["notificationApprovalActions"], 1)
     XCTAssertNil(capabilities["backgroundAppRefresh"])
+  }
+
+  func testNotificationApprovalActionParsesLocalAndRemoteOpaquePayloads() throws {
+    let occurredAt = "2026-07-25T01:02:03Z"
+    let encoded = try JSONSerialization.data(
+      withJSONObject: [
+        "sessionId": "runtime-session",
+        "provider": "codex",
+        "providerSessionId": "durable-thread",
+        "eventType": "approval_required",
+        "permissionId": "opaque-permission",
+        "occurredAt": occurredAt,
+      ]
+    )
+    let local = NotificationApprovalActionPayload.parse(
+      categoryIdentifier: NotificationApprovalActionPayload.categoryIdentifier,
+      actionIdentifier: NotificationApprovalActionPayload.approveActionIdentifier,
+      userInfo: ["payload": try XCTUnwrap(String(data: encoded, encoding: .utf8))]
+    )
+    XCTAssertEqual(local?.sessionId, "runtime-session")
+    XCTAssertEqual(local?.providerSessionId, "durable-thread")
+    XCTAssertEqual(local?.permissionId, "opaque-permission")
+
+    let remote = NotificationApprovalActionPayload.parse(
+      categoryIdentifier: NotificationApprovalActionPayload.categoryIdentifier,
+      actionIdentifier: NotificationApprovalActionPayload.rejectActionIdentifier,
+      userInfo: [
+        "sessionId": "runtime-session",
+        "provider": "claude",
+        "eventType": "approval_required",
+        "permissionId": "opaque-permission",
+        "occurredAt": occurredAt,
+        "toolName": "must-not-be-forwarded",
+      ]
+    )
+    XCTAssertEqual(remote?.actionIdentifier, "ccpocket_reject_v1")
+    XCTAssertNil(remote?.dictionary["toolName"])
+  }
+
+  func testNotificationApprovalActionRejectsWrongCategoryAndQuestionEvents() {
+    let fields: [AnyHashable: Any] = [
+      "sessionId": "runtime-session",
+      "provider": "claude",
+      "eventType": "ask_user_question",
+      "permissionId": "opaque-permission",
+      "occurredAt": "2026-07-25T01:02:03Z",
+    ]
+    XCTAssertNil(
+      NotificationApprovalActionPayload.parse(
+        categoryIdentifier: "other",
+        actionIdentifier: NotificationApprovalActionPayload.approveActionIdentifier,
+        userInfo: fields
+      )
+    )
+    XCTAssertNil(
+      NotificationApprovalActionPayload.parse(
+        categoryIdentifier: NotificationApprovalActionPayload.categoryIdentifier,
+        actionIdentifier: NotificationApprovalActionPayload.approveActionIdentifier,
+        userInfo: fields
+      )
+    )
   }
 
   func testFileMutationAuthChallengeBoundsAreStable() {

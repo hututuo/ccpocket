@@ -23,11 +23,17 @@ class FakeBridgeService extends BridgeService {
           String? locale,
           bool? privacyMode,
           List<String>? enabledEventTypes,
+          bool? approvalActionsSupported,
+          String requestId,
         })
       >[];
   final unregisterCalls = <String>[];
+  final _pushRegistrationController =
+      StreamController<PushRegistrationStateMessage>.broadcast();
   bool _connected = false;
+  bool registrationStatusSupported = false;
   String? _fakeLastUrl;
+  int _requestSequence = 0;
 
   @override
   bool get isConnected => _connected;
@@ -39,6 +45,13 @@ class FakeBridgeService extends BridgeService {
   Stream<BridgeConnectionState> get connectionStatus =>
       _connectionController.stream;
 
+  @override
+  Stream<PushRegistrationStateMessage> get pushRegistrationStates =>
+      _pushRegistrationController.stream;
+
+  @override
+  bool get supportsPushRegistrationStatus => registrationStatusSupported;
+
   void emitConnection(BridgeConnectionState state, {String? url}) {
     _connected = state == BridgeConnectionState.connected;
     if (url != null) _fakeLastUrl = url;
@@ -46,30 +59,41 @@ class FakeBridgeService extends BridgeService {
   }
 
   @override
-  void registerPushToken({
+  String registerPushToken({
     required String token,
     required String platform,
     String? locale,
     bool? privacyMode,
     List<String>? enabledEventTypes,
+    bool? approvalActionsSupported,
   }) {
+    final requestId = 'request-${++_requestSequence}';
     registerCalls.add((
       token: token,
       platform: platform,
       locale: locale,
       privacyMode: privacyMode,
       enabledEventTypes: enabledEventTypes,
+      approvalActionsSupported: approvalActionsSupported,
+      requestId: requestId,
     ));
+    return requestId;
   }
 
   @override
-  void unregisterPushToken(String token) {
+  String unregisterPushToken(String token) {
     unregisterCalls.add(token);
+    return 'request-${++_requestSequence}';
+  }
+
+  void emitPushRegistration(PushRegistrationStateMessage message) {
+    _pushRegistrationController.add(message);
   }
 
   @override
   void dispose() {
     _connectionController.close();
+    _pushRegistrationController.close();
     super.dispose();
   }
 }
@@ -181,6 +205,7 @@ void main() {
         bridgeService: bridge,
         machineManager: manager,
         fcmService: fcm,
+        notificationApprovalActionsSupported: true,
       );
 
       await _flushAsync();
@@ -189,6 +214,7 @@ void main() {
       expect(bridge.registerCalls.first.token, 'token-1');
       expect(bridge.registerCalls.first.platform, 'ios');
       expect(bridge.registerCalls.first.locale, isNotNull);
+      expect(bridge.registerCalls.first.approvalActionsSupported, isTrue);
       expect(bridge.registerCalls.first.enabledEventTypes, [
         NotificationPreferences.approvalRequiredEvent,
         NotificationPreferences.askUserQuestionEvent,
@@ -398,6 +424,90 @@ void main() {
         ),
         updated,
       );
+
+      await cubit.close();
+      await fcm.disposeFake();
+      bridge.dispose();
+    });
+
+    test(
+      'waits for the Bridge relay acknowledgement before showing enabled',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'machines_v2':
+              '[{"id":"$_testMachineId","host":"$_testHost","port":$_testPort}]',
+        });
+        final prefs = await SharedPreferences.getInstance();
+        final manager = await _createMachineManager(prefs);
+        await manager.init();
+        final bridge = FakeBridgeService()
+          ..registrationStatusSupported = true
+          ..emitConnection(BridgeConnectionState.connected, url: _testUrl);
+        final fcm = FakeFcmService(available: true, token: 'token-1');
+        final cubit = SettingsCubit(
+          prefs,
+          bridgeService: bridge,
+          machineManager: manager,
+          fcmService: fcm,
+        );
+
+        await _flushAsync();
+        await cubit.toggleFcm(true);
+        final requestId = bridge.registerCalls.single.requestId;
+        expect(cubit.state.fcmStatusKey, FcmStatusKey.enabledPending);
+        expect(cubit.state.fcmSyncInProgress, isTrue);
+
+        bridge.emitPushRegistration(
+          PushRegistrationStateMessage(
+            operation: 'register',
+            requestId: requestId,
+            success: true,
+          ),
+        );
+        await _flushAsync();
+
+        expect(cubit.state.fcmStatusKey, FcmStatusKey.enabled);
+        expect(cubit.state.fcmSyncInProgress, isFalse);
+
+        await cubit.close();
+        await fcm.disposeFake();
+        bridge.dispose();
+      },
+    );
+
+    test('surfaces a relay-unavailable registration acknowledgement', () async {
+      SharedPreferences.setMockInitialValues({
+        'machines_v2':
+            '[{"id":"$_testMachineId","host":"$_testHost","port":$_testPort}]',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final manager = await _createMachineManager(prefs);
+      await manager.init();
+      final bridge = FakeBridgeService()
+        ..registrationStatusSupported = true
+        ..emitConnection(BridgeConnectionState.connected, url: _testUrl);
+      final fcm = FakeFcmService(available: true, token: 'token-1');
+      final cubit = SettingsCubit(
+        prefs,
+        bridgeService: bridge,
+        machineManager: manager,
+        fcmService: fcm,
+      );
+
+      await _flushAsync();
+      await cubit.toggleFcm(true);
+      bridge.emitPushRegistration(
+        PushRegistrationStateMessage(
+          operation: 'register',
+          requestId: bridge.registerCalls.single.requestId,
+          success: false,
+          errorCode: 'relay_unavailable',
+        ),
+      );
+      await _flushAsync();
+
+      expect(cubit.state.fcmStatusKey, FcmStatusKey.relayUnavailable);
+      expect(cubit.state.fcmSyncInProgress, isFalse);
 
       await cubit.close();
       await fcm.disposeFake();

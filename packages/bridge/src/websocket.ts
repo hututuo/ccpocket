@@ -135,6 +135,11 @@ import {
   type BackgroundNotificationPolicy,
   type BackgroundNotificationProjectionState,
 } from "./background-notification-projector.js";
+import {
+  PUSH_REGISTRATION_STATE_MESSAGE,
+  PUSH_REGISTRATION_STATUS_CAPABILITY,
+  type PushRegistrationStateMessage,
+} from "./push-registration-protocol.js";
 import { fetchAllUsage } from "./usage.js";
 import type { PromptHistoryBackupStore } from "./prompt-history-backup.js";
 import type { PromptHistoryStore } from "./prompt-history-store.js";
@@ -621,6 +626,7 @@ const OPT_IN_SERVER_MESSAGES = new Set<string>([
   "guardian_approval",
   "prompt_history_status",
   "artifact_resolved",
+  PUSH_REGISTRATION_STATE_MESSAGE,
   CLIENT_DELIVERY_MODE_STATE_MESSAGE,
   BACKGROUND_NOTIFICATION_MESSAGE,
   BACKGROUND_ACTIVITY_STATE_MESSAGE,
@@ -1238,6 +1244,7 @@ export class BridgeWebSocketServer {
   private tokenLocales = new Map<string, PushLocale>();
   private tokenPrivacyMode = new Map<string, boolean>();
   private tokenEnabledEventTypes = new Map<string, Set<string>>();
+  private pushTokenOperations = new Map<string, Promise<void>>();
   private failSetPermissionMode = envFlagEnabled(
     "BRIDGE_FAIL_SET_PERMISSION_MODE",
   );
@@ -4790,65 +4797,145 @@ export class BridgeWebSocketServer {
           `[ws] push_register received (platform: ${msg.platform}, locale: ${locale}, privacy: ${privacyMode}, configured: ${this.pushRelay.isConfigured})`,
         );
         if (!this.pushRelay.isConfigured) {
-          this.send(ws, {
-            type: "error",
-            message: "Push relay is not configured on bridge",
+          this.sendPushRegistrationResult(ws, msg, {
+            operation: "register",
+            success: false,
+            errorCode: "relay_unavailable",
+            legacyError: "Push relay is not configured on bridge",
           });
           return;
         }
-        this.tokenLocales.set(msg.token, locale);
-        this.tokenPrivacyMode.set(msg.token, privacyMode);
-        if (msg.enabledEventTypes == null) {
-          this.tokenEnabledEventTypes.delete(msg.token);
-        } else {
-          this.tokenEnabledEventTypes.set(
-            msg.token,
-            new Set(msg.enabledEventTypes),
-          );
-        }
-        this.pushRelay
-          .registerToken(msg.token, msg.platform, locale, msg.enabledEventTypes)
-          .then(() => {
-            console.log("[ws] push_register: token registered successfully");
-          })
-          .catch((err) => {
-            const detail = err instanceof Error ? err.message : String(err);
-            console.error(`[ws] push_register failed: ${detail}`);
-            this.send(ws, {
-              type: "error",
-              message: `Failed to register push token: ${detail}`,
-            });
+        try {
+          await this.runPushTokenOperation(msg.token, async () => {
+            const previousLocale = this.tokenLocales.get(msg.token);
+            const hadPreviousLocale = this.tokenLocales.has(msg.token);
+            const previousPrivacy = this.tokenPrivacyMode.get(msg.token);
+            const hadPreviousPrivacy = this.tokenPrivacyMode.has(msg.token);
+            const previousEventTypes = this.tokenEnabledEventTypes.get(
+              msg.token,
+            );
+            const hadPreviousEventTypes = this.tokenEnabledEventTypes.has(
+              msg.token,
+            );
+            this.tokenLocales.set(msg.token, locale);
+            this.tokenPrivacyMode.set(msg.token, privacyMode);
+            if (msg.enabledEventTypes == null) {
+              this.tokenEnabledEventTypes.delete(msg.token);
+            } else {
+              this.tokenEnabledEventTypes.set(
+                msg.token,
+                new Set(msg.enabledEventTypes),
+              );
+            }
+            try {
+              await this.pushRelay.registerToken(
+                msg.token,
+                msg.platform,
+                locale,
+                msg.enabledEventTypes,
+                msg.approvalActionsSupported,
+              );
+            } catch (error) {
+              this.restorePushTokenPreferences(
+                msg.token,
+                {
+                  present: hadPreviousLocale,
+                  value: previousLocale,
+                },
+                {
+                  present: hadPreviousPrivacy,
+                  value: previousPrivacy,
+                },
+                {
+                  present: hadPreviousEventTypes,
+                  value: previousEventTypes,
+                },
+              );
+              throw error;
+            }
           });
+          console.log("[ws] push_register: token registered successfully");
+          this.sendPushRegistrationResult(ws, msg, {
+            operation: "register",
+            success: true,
+          });
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          console.error(`[ws] push_register failed: ${detail}`);
+          this.sendPushRegistrationResult(ws, msg, {
+            operation: "register",
+            success: false,
+            errorCode: "registration_failed",
+            legacyError: `Failed to register push token: ${detail}`,
+          });
+        }
         break;
       }
 
       case "push_unregister": {
         console.log("[ws] push_unregister received");
         if (!this.pushRelay.isConfigured) {
-          this.send(ws, {
-            type: "error",
-            message: "Push relay is not configured on bridge",
+          this.sendPushRegistrationResult(ws, msg, {
+            operation: "unregister",
+            success: false,
+            errorCode: "relay_unavailable",
+            legacyError: "Push relay is not configured on bridge",
           });
           return;
         }
-        this.tokenLocales.delete(msg.token);
-        this.tokenPrivacyMode.delete(msg.token);
-        this.tokenEnabledEventTypes.delete(msg.token);
-        this.pushRelay
-          .unregisterToken(msg.token)
-          .then(() => {
-            console.log(
-              "[ws] push_unregister: token unregistered successfully",
+        try {
+          await this.runPushTokenOperation(msg.token, async () => {
+            const previousLocale = this.tokenLocales.get(msg.token);
+            const hadPreviousLocale = this.tokenLocales.has(msg.token);
+            const previousPrivacy = this.tokenPrivacyMode.get(msg.token);
+            const hadPreviousPrivacy = this.tokenPrivacyMode.has(msg.token);
+            const previousEventTypes = this.tokenEnabledEventTypes.get(
+              msg.token,
             );
-          })
-          .catch((err) => {
-            const detail = err instanceof Error ? err.message : String(err);
-            console.error(`[ws] push_unregister failed: ${detail}`);
-            this.send(ws, {
-              type: "error",
-              message: `Failed to unregister push token: ${detail}`,
-            });
+            const hadPreviousEventTypes = this.tokenEnabledEventTypes.has(
+              msg.token,
+            );
+            this.tokenLocales.delete(msg.token);
+            this.tokenPrivacyMode.delete(msg.token);
+            this.tokenEnabledEventTypes.delete(msg.token);
+            try {
+              await this.pushRelay.unregisterToken(msg.token);
+            } catch (error) {
+              this.restorePushTokenPreferences(
+                msg.token,
+                {
+                  present: hadPreviousLocale,
+                  value: previousLocale,
+                },
+                {
+                  present: hadPreviousPrivacy,
+                  value: previousPrivacy,
+                },
+                {
+                  present: hadPreviousEventTypes,
+                  value: previousEventTypes,
+                },
+              );
+              throw error;
+            }
           });
+          console.log(
+            "[ws] push_unregister: token unregistered successfully",
+          );
+          this.sendPushRegistrationResult(ws, msg, {
+            operation: "unregister",
+            success: true,
+          });
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          console.error(`[ws] push_unregister failed: ${detail}`);
+          this.sendPushRegistrationResult(ws, msg, {
+            operation: "unregister",
+            success: false,
+            errorCode: "registration_failed",
+            legacyError: `Failed to unregister push token: ${detail}`,
+          });
+        }
         break;
       }
 
@@ -9523,6 +9610,7 @@ export class BridgeWebSocketServer {
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
+        PUSH_REGISTRATION_STATUS_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         EPHEMERAL_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
@@ -9585,6 +9673,7 @@ export class BridgeWebSocketServer {
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
+        PUSH_REGISTRATION_STATUS_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         EPHEMERAL_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
@@ -9954,12 +10043,13 @@ export class BridgeWebSocketServer {
       if (client.readyState === WebSocket.OPEN) {
         const backgroundDelivery = this.backgroundDeliveryClients.get(client);
         if (backgroundDelivery?.mode === "notifications_only") {
+          const projectionSession = this.sessionManager.get(sessionId);
           const notification = projectBackgroundNotification(
             msg,
             {
               sessionId,
-              provider:
-                this.sessionManager.get(sessionId)?.provider ?? "claude",
+              provider: projectionSession?.provider ?? "claude",
+              providerSessionId: projectionSession?.claudeSessionId,
               label: this.sessionLabel(sessionId),
             },
             backgroundDelivery.policy,
@@ -10919,12 +11009,19 @@ export class BridgeWebSocketServer {
         lastToolKey: toolKey,
       });
 
+      const session = this.sessionManager.get(sessionId);
       const data: Record<string, string> = {
         sessionId,
-        provider: this.sessionManager.get(sessionId)?.provider ?? "claude",
-        toolUseId: toolUse.id,
-        toolName: toolUse.name,
+        provider: session?.provider ?? "claude",
+        occurredAt: new Date(now).toISOString(),
       };
+      if (session?.claudeSessionId) {
+        data.providerSessionId = session.claudeSessionId;
+      }
+      if (!privacy) {
+        data.toolUseId = toolUse.id;
+        data.toolName = toolUse.name;
+      }
       for (const locale of this.getRegisteredLocales()) {
         const baseTitle = t(locale, "progress_title");
         const title = label ? `${baseTitle} - ${label}` : baseTitle;
@@ -10975,12 +11072,20 @@ export class BridgeWebSocketServer {
         }
       }
 
+      const session = this.sessionManager.get(sessionId);
       const data: Record<string, string> = {
         sessionId,
-        provider: this.sessionManager.get(sessionId)?.provider ?? "claude",
-        toolUseId: msg.toolUseId,
-        toolName: msg.toolName,
+        provider: session?.provider ?? "claude",
+        permissionId: msg.toolUseId,
+        occurredAt: new Date().toISOString(),
       };
+      if (session?.claudeSessionId) {
+        data.providerSessionId = session.claudeSessionId;
+      }
+      if (!privacy) {
+        data.toolUseId = msg.toolUseId;
+        data.toolName = msg.toolName;
+      }
 
       for (const locale of this.getRegisteredLocales()) {
         let title: string;
@@ -11043,11 +11148,16 @@ export class BridgeWebSocketServer {
     }
     const stats = pieces.length > 0 ? ` (${pieces.join(", ")})` : "";
 
+    const session = this.sessionManager.get(sessionId);
     const data: Record<string, string> = {
       sessionId,
-      provider: this.sessionManager.get(sessionId)?.provider ?? "claude",
+      provider: session?.provider ?? "claude",
       subtype: msg.subtype,
+      occurredAt: new Date().toISOString(),
     };
+    if (session?.claudeSessionId) {
+      data.providerSessionId = session.claudeSessionId;
+    }
     if (msg.stopReason) data.stopReason = msg.stopReason;
     if (msg.sessionId) data.providerSessionId = msg.sessionId;
 
@@ -11158,7 +11268,8 @@ export class BridgeWebSocketServer {
       if (
         msg.type !== CLIENT_DELIVERY_MODE_STATE_MESSAGE &&
         msg.type !== BACKGROUND_NOTIFICATION_MESSAGE &&
-        msg.type !== BACKGROUND_ACTIVITY_STATE_MESSAGE
+        msg.type !== BACKGROUND_ACTIVITY_STATE_MESSAGE &&
+        msg.type !== PUSH_REGISTRATION_STATE_MESSAGE
       ) {
         return null;
       }
@@ -11384,6 +11495,78 @@ export class BridgeWebSocketServer {
   ): void {
     if (!this.shouldSendToClient(ws, msg)) return;
     this.send(ws, msg);
+  }
+
+  private sendPushRegistrationResult(
+    ws: WebSocket,
+    request: Extract<
+      ClientMessage,
+      { type: "push_register" | "push_unregister" }
+    >,
+    result: Omit<PushRegistrationStateMessage, "type" | "requestId"> & {
+      legacyError?: string;
+    },
+  ): void {
+    const requestId = request.requestId;
+    if (
+      requestId &&
+      this.clientSupportedServerMessages
+        .get(ws)
+        ?.has(PUSH_REGISTRATION_STATE_MESSAGE)
+    ) {
+      this.send(ws, {
+        type: PUSH_REGISTRATION_STATE_MESSAGE,
+        requestId,
+        operation: result.operation,
+        success: result.success,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+      });
+      return;
+    }
+    if (!result.success && result.legacyError) {
+      this.send(ws, { type: "error", message: result.legacyError });
+    }
+  }
+
+  private async runPushTokenOperation(
+    token: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const previous = this.pushTokenOperations.get(token);
+    const current = (previous ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(operation);
+    this.pushTokenOperations.set(token, current);
+    try {
+      await current;
+    } finally {
+      if (this.pushTokenOperations.get(token) === current) {
+        this.pushTokenOperations.delete(token);
+      }
+    }
+  }
+
+  private restorePushTokenPreferences(
+    token: string,
+    locale: { present: boolean; value?: PushLocale },
+    privacy: { present: boolean; value?: boolean },
+    eventTypes: { present: boolean; value?: Set<string> },
+  ): void {
+    if (locale.present && locale.value != null) {
+      this.tokenLocales.set(token, locale.value);
+    } else {
+      this.tokenLocales.delete(token);
+    }
+    if (privacy.present && privacy.value != null) {
+      this.tokenPrivacyMode.set(token, privacy.value);
+    } else {
+      this.tokenPrivacyMode.delete(token);
+    }
+    if (eventTypes.present && eventTypes.value != null) {
+      this.tokenEnabledEventTypes.set(token, new Set(eventTypes.value));
+    } else {
+      this.tokenEnabledEventTypes.delete(token);
+    }
   }
 
   private send(

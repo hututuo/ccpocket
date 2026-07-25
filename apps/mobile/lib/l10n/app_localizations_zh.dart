@@ -2781,4 +2781,10 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get goalClearFailed => '清除目标失败，请刷新后重试。';
+
+  @override
+  String get sessionCompleteTitle => '会话已完成';
+
+  @override
+  String get sessionDone => '会话已结束';
 }

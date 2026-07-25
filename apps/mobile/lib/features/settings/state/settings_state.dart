@@ -16,6 +16,8 @@ enum FcmStatusKey {
   unavailable,
   bridgeNotInitialized,
   tokenFailed,
+  relayUnavailable,
+  registrationFailed,
   enabled,
   enabledPending,
   disabled,

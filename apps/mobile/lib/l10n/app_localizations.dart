@@ -5303,6 +5303,18 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'Goalをクリアできませんでした。更新してから再試行してください。'**
   String get goalClearFailed;
+
+  /// No description provided for @sessionCompleteTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッション完了'**
+  String get sessionCompleteTitle;
+
+  /// No description provided for @sessionDone.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッションが終了しました'**
+  String get sessionDone;
 }
 
 class _AppLocalizationsDelegate

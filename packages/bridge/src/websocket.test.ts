@@ -12290,6 +12290,189 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(second.send).toHaveBeenCalledTimes(1);
   });
 
+  it("acknowledges push registration only after the relay accepts it", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const mockAuth = {
+      uid: "bridge-test",
+      getIdToken: vi.fn(async () => "mock-token"),
+      initialize: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: mockAuth as any,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["push_registration_state_v1"],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "push_register",
+        requestId: "push-register-1",
+        token: "token-1",
+        platform: "ios",
+        locale: "zh",
+        enabledEventTypes: ["approval_required"],
+        approvalActionsSupported: true,
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual({
+      type: "push_registration_state_v1",
+      operation: "register",
+      requestId: "push-register-1",
+      success: true,
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      op: "register",
+      approvalActionsSupported: true,
+    });
+    bridge.close();
+  });
+
+  it("preserves the legacy push registration error for older clients", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const registrationId = "legacy-registration-id";
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "push_register",
+        token: registrationId,
+        platform: "ios",
+      },
+      ws,
+    );
+
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual({
+      type: "error",
+      message: "Push relay is not configured on bridge",
+    });
+    bridge.close();
+  });
+
+  it("rolls back in-memory push preferences when registration fails", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response("relay failed", { status: 503 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const mockAuth = {
+      uid: "bridge-test",
+      getIdToken: vi.fn(async () => "mock-token"),
+      initialize: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: mockAuth as any,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const registrationId = "failed-registration-id";
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["push_registration_state_v1"],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "push_register",
+        requestId: "push-register-failed",
+        token: registrationId,
+        platform: "ios",
+        privacyMode: true,
+        enabledEventTypes: ["session_progress"],
+      },
+      ws,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((bridge as any).tokenLocales.has(registrationId)).toBe(false);
+    expect((bridge as any).tokenPrivacyMode.has(registrationId)).toBe(false);
+    expect((bridge as any).tokenEnabledEventTypes.has(registrationId)).toBe(
+      false,
+    );
+    expect(
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      ),
+    ).toContainEqual({
+      type: "push_registration_state_v1",
+      operation: "register",
+      requestId: "push-register-failed",
+      success: false,
+      errorCode: "registration_failed",
+    });
+    bridge.close();
+  });
+
+  it("preserves the last confirmed push preferences when re-registration fails", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response("relay failed", { status: 503 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const mockAuth = {
+      uid: "bridge-test",
+      getIdToken: vi.fn(async () => "mock-token"),
+      initialize: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: mockAuth as any,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).tokenLocales.set("token-existing", "ja");
+    (bridge as any).tokenPrivacyMode.set("token-existing", false);
+    (bridge as any).tokenEnabledEventTypes.set(
+      "token-existing",
+      new Set(["session_completed"]),
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "push_register",
+        token: "token-existing",
+        platform: "ios",
+        locale: "zh",
+        privacyMode: true,
+        enabledEventTypes: ["session_progress"],
+      },
+      ws,
+    );
+
+    expect((bridge as any).tokenLocales.get("token-existing")).toBe("ja");
+    expect((bridge as any).tokenPrivacyMode.get("token-existing")).toBe(false);
+    expect([
+      ...(bridge as any).tokenEnabledEventTypes.get("token-existing"),
+    ]).toEqual(["session_completed"]);
+    bridge.close();
+  });
+
   it("sends push notification once per permission toolUseId", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
@@ -12328,6 +12511,44 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       eventType: "ask_user_question",
     });
 
+    bridge.close();
+  });
+
+  it("keeps FCM privacy mode while retaining an opaque approval identity", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const mockAuth = {
+      uid: "bridge-test",
+      getIdToken: vi.fn(async () => "mock-token"),
+      initialize: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: mockAuth as any,
+    });
+    (bridge as any).tokenPrivacyMode.set("private-token", true);
+
+    (bridge as any).broadcastSessionMessage("s-1", {
+      type: "permission_request",
+      toolUseId: "opaque-permission-id",
+      toolName: "SensitiveToolName",
+      input: { command: "private command" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const payload = JSON.parse(String(init.body)) as {
+      data?: Record<string, unknown>;
+    };
+    expect(payload.data).toMatchObject({
+      sessionId: "s-1",
+      permissionId: "opaque-permission-id",
+    });
+    expect(payload.data).not.toHaveProperty("toolUseId");
+    expect(payload.data).not.toHaveProperty("toolName");
+    expect(JSON.stringify(payload)).not.toContain("SensitiveToolName");
+    expect(JSON.stringify(payload)).not.toContain("private command");
     bridge.close();
   });
 

@@ -10,6 +10,8 @@ import 'package:ccpocket/providers/bridge_cubits.dart';
 import 'package:ccpocket/providers/server_discovery_cubit.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/fcm_service.dart';
+import 'package:ccpocket/services/notification_action_host.dart';
+import 'package:ccpocket/services/notification_approval_coordinator.dart';
 
 void main() {
   testWidgets('Initial screen shows connect UI', (WidgetTester tester) async {
@@ -17,6 +19,11 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     final bridge = BridgeService();
     final fcmService = FcmService();
+    final notificationApprovalCoordinator = NotificationApprovalCoordinator(
+      preferences: prefs,
+      bridge: BridgeServiceNotificationApprovalBridge(bridge),
+    );
+    await notificationApprovalCoordinator.initialize();
 
     await tester.pumpWidget(
       RepositoryProvider<BridgeService>.value(
@@ -53,7 +60,13 @@ void main() {
                   SessionListCubit(bridge: ctx.read<BridgeService>()),
             ),
           ],
-          child: CcpocketApp(fcmService: fcmService),
+          child: CcpocketApp(
+            fcmService: fcmService,
+            notificationApprovalCoordinator: notificationApprovalCoordinator,
+            notificationActionHost: MethodChannelNotificationActionHost(
+              supportedByInstalledHost: false,
+            ),
+          ),
         ),
       ),
     );

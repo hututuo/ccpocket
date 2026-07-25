@@ -211,6 +211,7 @@ describe("relay", () => {
       token: VALID_TOKEN,
       platform: "android",
       enabledEventTypes: "delete-field",
+      approvalActionsSupported: "delete-field",
       locale: "ja",
       updatedAt: "server-timestamp",
     });
@@ -239,6 +240,19 @@ describe("relay", () => {
       expect.objectContaining({
         enabledEventTypes: ["approval_required", "session_progress"],
       }),
+    );
+  });
+
+  it("stores whether the installed native host supports approval actions", async () => {
+    await invoke({
+      op: "register",
+      token: VALID_TOKEN,
+      platform: "ios",
+      approvalActionsSupported: true,
+    });
+
+    expect(mocks.tokenSet).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalActionsSupported: true }),
     );
   });
 
@@ -291,6 +305,29 @@ describe("relay", () => {
     );
   });
 
+  it("does not expose inert approval actions to legacy native hosts", async () => {
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) => (field === "token" ? VALID_TOKEN : undefined),
+        },
+      ],
+    });
+
+    await invoke({
+      op: "notify",
+      eventType: "approval_required",
+      title: "Approval needed",
+      body: "Review the request",
+    });
+
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apns: { payload: { aps: { sound: "default" } } },
+      }),
+    );
+  });
+
   it("sends progress only to explicitly subscribed tokens", async () => {
     mocks.collectionGet.mockResolvedValue({
       docs: [
@@ -321,6 +358,107 @@ describe("relay", () => {
           sessionId: "s-1",
           eventType: "session_progress",
         },
+      }),
+    );
+  });
+
+  it("sends a legacy token only the English locale fallback", async () => {
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) => (field === "token" ? VALID_TOKEN : undefined),
+        },
+      ],
+    });
+
+    const localized = await invoke({
+      op: "notify",
+      eventType: "session_completed",
+      title: "完成",
+      body: "任务完成",
+      locale: "zh",
+    });
+    expect(localized.json).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenCount: 0 }),
+    );
+
+    const fallback = await invoke({
+      op: "notify",
+      eventType: "session_completed",
+      title: "Done",
+      body: "Finished",
+      locale: "en",
+    });
+    expect(fallback.json).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenCount: 1 }),
+    );
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledTimes(1);
+  });
+
+  it("assigns the native approval category to APNs requests", async () => {
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) => {
+            if (field === "token") return VALID_TOKEN;
+            if (field === "approvalActionsSupported") return true;
+            return undefined;
+          },
+        },
+      ],
+    });
+
+    await invoke({
+      op: "notify",
+      eventType: "approval_required",
+      title: "Approval needed",
+      body: "Review the request",
+      data: {
+        sessionId: "runtime-1",
+        provider: "codex",
+        permissionId: "permission-1",
+        occurredAt: "2026-07-25T00:00:00.000Z",
+      },
+    });
+
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apns: {
+          payload: {
+            aps: {
+              sound: "default",
+              category: "ccpocket_approval_v1",
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it("omits approval actions when the opaque action identity is incomplete", async () => {
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) => {
+            if (field === "token") return VALID_TOKEN;
+            if (field === "approvalActionsSupported") return true;
+            return undefined;
+          },
+        },
+      ],
+    });
+
+    await invoke({
+      op: "notify",
+      eventType: "approval_required",
+      title: "Approval needed",
+      body: "Review the request",
+      data: { permissionId: "permission-1" },
+    });
+
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apns: { payload: { aps: { sound: "default" } } },
       }),
     );
   });

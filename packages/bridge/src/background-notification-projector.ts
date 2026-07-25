@@ -28,6 +28,7 @@ export interface BackgroundNotificationProjectionState {
 export interface BackgroundNotificationContext {
   sessionId: string;
   provider: "claude" | "codex";
+  providerSessionId?: string;
   label: string;
   now?: number;
 }
@@ -87,6 +88,9 @@ export function projectBackgroundNotification(
     });
     const titleBase = t(policy.locale, "progress_title");
     const data: Record<string, string> = { sessionId, provider };
+    if (context.providerSessionId) {
+      data.providerSessionId = context.providerSessionId;
+    }
     if (!privacy) {
       data.toolUseId = toolUse.id;
       data.toolName = toolUse.name;
@@ -150,7 +154,14 @@ export function projectBackgroundNotification(
         ? t(policy.locale, "approval_body_private")
         : t(policy.locale, "approval_body", { toolName: msg.toolName });
     }
-    const data: Record<string, string> = { sessionId, provider };
+    const data: Record<string, string> = {
+      sessionId,
+      provider,
+      permissionId: msg.toolUseId,
+    };
+    if (context.providerSessionId) {
+      data.providerSessionId = context.providerSessionId;
+    }
     if (!privacy) {
       data.toolUseId = msg.toolUseId;
       data.toolName = msg.toolName;
@@ -220,6 +231,9 @@ export function projectBackgroundNotification(
   }
 
   const data: Record<string, string> = { sessionId, provider };
+  if (context.providerSessionId) {
+    data.providerSessionId = context.providerSessionId;
+  }
   if (!privacy) {
     data.subtype = msg.subtype;
     if (msg.stopReason) data.stopReason = msg.stopReason;

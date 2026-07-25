@@ -31,8 +31,12 @@ class SettingsCubit extends Cubit<SettingsState> {
   final FcmService _fcmService;
   final RevenueCatService? _revenueCat;
   final AppIconService _appIconService;
+  final bool _notificationApprovalActionsSupported;
   StreamSubscription<BridgeConnectionState>? _bridgeSub;
+  StreamSubscription<PushRegistrationStateMessage>? _pushRegistrationSub;
   StreamSubscription<String>? _tokenRefreshSub;
+  Timer? _pushRegistrationTimeout;
+  String? _pendingPushRegistrationRequestId;
   String? _activeToken;
   VoidCallback? _supporterListener;
 
@@ -82,11 +86,17 @@ class SettingsCubit extends Cubit<SettingsState> {
     FcmService? fcmService,
     RevenueCatService? revenueCatService,
     AppIconService? appIconService,
+    bool notificationApprovalActionsSupported = false,
   }) : _bridge = bridgeService,
        _machineManager = machineManager,
        _fcmService = fcmService ?? FcmService(),
        _revenueCat = revenueCatService,
        _appIconService = appIconService ?? AppIconService(),
+       // The public constructor argument intentionally differs from the
+       // private field name, so an initializing formal cannot preserve the API.
+       // ignore: prefer_initializing_formals
+       _notificationApprovalActionsSupported =
+           notificationApprovalActionsSupported,
        super(
          _load(_prefs).copyWith(
            appIconSupported:
@@ -95,6 +105,9 @@ class SettingsCubit extends Cubit<SettingsState> {
        ) {
     final bridge = _bridge;
     if (bridge != null) {
+      _pushRegistrationSub = bridge.pushRegistrationStates.listen(
+        _handlePushRegistrationState,
+      );
       _bridgeSub = bridge.connectionStatus.listen((status) {
         if (status == BridgeConnectionState.connected) {
           _updateActiveMachine();
@@ -102,6 +115,7 @@ class SettingsCubit extends Cubit<SettingsState> {
             unawaited(_syncPushRegistration());
           }
         } else if (status == BridgeConnectionState.disconnected) {
+          _cancelPushRegistrationWait();
           emit(state.copyWith(activeMachineId: null, fcmStatusKey: null));
         }
       });
@@ -596,20 +610,63 @@ class SettingsCubit extends Cubit<SettingsState> {
     }
 
     _activeToken = token;
-    bridge.registerPushToken(
+    final requestId = bridge.registerPushToken(
       token: token,
       platform: _fcmService.platform,
       locale: _resolvePushLocale(),
       privacyMode: state.fcmPrivacy ? true : null,
       enabledEventTypes: state.notificationPreferences.enabledRemoteEventTypes,
+      approvalActionsSupported: _notificationApprovalActionsSupported,
     );
+    if (bridge.isConnected && bridge.supportsPushRegistrationStatus) {
+      _pendingPushRegistrationRequestId = requestId;
+      _pushRegistrationTimeout?.cancel();
+      _pushRegistrationTimeout = Timer(const Duration(seconds: 12), () {
+        if (_pendingPushRegistrationRequestId != requestId || isClosed) return;
+        _pendingPushRegistrationRequestId = null;
+        emit(
+          state.copyWith(
+            fcmSyncInProgress: false,
+            fcmStatusKey: FcmStatusKey.registrationFailed,
+          ),
+        );
+      });
+      emit(
+        state.copyWith(
+          fcmSyncInProgress: true,
+          fcmStatusKey: FcmStatusKey.enabledPending,
+        ),
+      );
+      return;
+    }
     final statusKey = bridge.isConnected
         ? FcmStatusKey.enabled
         : FcmStatusKey.enabledPending;
     emit(state.copyWith(fcmSyncInProgress: false, fcmStatusKey: statusKey));
   }
 
+  void _handlePushRegistrationState(PushRegistrationStateMessage message) {
+    if (message.operation != 'register' ||
+        message.requestId != _pendingPushRegistrationRequestId) {
+      return;
+    }
+    _cancelPushRegistrationWait();
+    final statusKey = message.success
+        ? FcmStatusKey.enabled
+        : message.errorCode == 'relay_unavailable'
+        ? FcmStatusKey.relayUnavailable
+        : FcmStatusKey.registrationFailed;
+    emit(state.copyWith(fcmSyncInProgress: false, fcmStatusKey: statusKey));
+  }
+
+  void _cancelPushRegistrationWait() {
+    _pushRegistrationTimeout?.cancel();
+    _pushRegistrationTimeout = null;
+    _pendingPushRegistrationRequestId = null;
+  }
+
   Future<void> _syncPushUnregister() async {
+    _cancelPushRegistrationWait();
     final bridge = _bridge;
     if (bridge == null) {
       emit(
@@ -659,7 +716,9 @@ class SettingsCubit extends Cubit<SettingsState> {
 
   @override
   Future<void> close() async {
+    _cancelPushRegistrationWait();
     await _bridgeSub?.cancel();
+    await _pushRegistrationSub?.cancel();
     await _tokenRefreshSub?.cancel();
     final listener = _supporterListener;
     if (listener != null) {

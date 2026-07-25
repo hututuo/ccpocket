@@ -34,6 +34,9 @@ final class MobileHostSnapshotPlugin: NSObject, FlutterPlugin {
     // User-authorized, coarse location execution used only for the optional
     // notification-only Bridge connection.
     "backgroundLocationKeepAlive": 1,
+    // Handles local and FCM approval actions before forwarding only opaque
+    // permission identities to the Dart revalidation layer.
+    "notificationApprovalActions": 1,
   ]
 
   static func register(with registrar: FlutterPluginRegistrar) {

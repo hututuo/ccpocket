@@ -495,6 +495,20 @@ class _RemoteStatusTile extends StatelessWidget {
         state.fcmStatusKey == FcmStatusKey.tokenFailed) {
       return (Icons.cloud_off_outlined, cs.error, strings.remoteUnavailable);
     }
+    if (state.fcmStatusKey == FcmStatusKey.relayUnavailable) {
+      return (
+        Icons.cloud_off_outlined,
+        cs.error,
+        strings.remoteRelayUnavailable,
+      );
+    }
+    if (state.fcmStatusKey == FcmStatusKey.registrationFailed) {
+      return (
+        Icons.cloud_off_outlined,
+        cs.error,
+        strings.remoteRegistrationFailed,
+      );
+    }
     return (Icons.cloud_sync_outlined, cs.tertiary, strings.remotePending);
   }
 }

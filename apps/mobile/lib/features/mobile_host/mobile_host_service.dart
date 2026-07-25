@@ -27,6 +27,7 @@ enum MobileHostCapability {
   fileMutationBiometricAuth('fileMutationBiometricAuth'),
   backgroundContinuation('backgroundContinuation'),
   backgroundLocationKeepAlive('backgroundLocationKeepAlive'),
+  notificationApprovalActions('notificationApprovalActions'),
   // Opportunistic BGAppRefresh while the existing Flutter runtime is
   // available. This does not claim a cold/headless Dart runtime.
   backgroundRefreshWarmRuntime('backgroundRefreshWarmRuntime');

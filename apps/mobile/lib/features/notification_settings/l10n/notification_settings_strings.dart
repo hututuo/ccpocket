@@ -96,6 +96,20 @@ class NotificationSettingsStrings {
     en: 'Unavailable with the current signing or Firebase configuration',
   );
 
+  String get remoteRelayUnavailable => _pick(
+    zh: 'Bridge 尚未配置推送中继；请先更新并配置 Bridge',
+    ja: 'Bridge のプッシュ中継が未設定です',
+    ko: 'Bridge 푸시 릴레이가 구성되지 않음',
+    en: 'The Bridge push relay is not configured',
+  );
+
+  String get remoteRegistrationFailed => _pick(
+    zh: '推送 Token 未被后端确认，请检查 Bridge 日志与网络',
+    ja: 'バックエンドでプッシュ Token を確認できませんでした',
+    ko: '백엔드에서 푸시 토큰을 확인하지 못함',
+    en: 'The backend did not confirm the push token',
+  );
+
   String get remotePending => _pick(
     zh: '正在检测或等待 Bridge 同步',
     ja: '確認中、または Bridge の同期待ち',

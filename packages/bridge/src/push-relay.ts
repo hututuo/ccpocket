@@ -25,6 +25,7 @@ type PushRelayOpPayload =
       platform: PushPlatform;
       locale?: string;
       enabledEventTypes?: string[];
+      approvalActionsSupported?: boolean;
     }
   | { op: "unregister"; token: string }
   | { op: "notify"; eventType: string; title: string; body: string; locale?: string; data?: Record<string, string> };
@@ -59,6 +60,7 @@ export class PushRelayClient {
     platform: PushPlatform,
     locale?: string,
     enabledEventTypes?: string[],
+    approvalActionsSupported?: boolean,
   ): Promise<void> {
     if (!this.isConfigured) return;
     await this.post({
@@ -67,6 +69,7 @@ export class PushRelayClient {
       platform,
       locale,
       enabledEventTypes,
+      approvalActionsSupported,
     });
   }
 

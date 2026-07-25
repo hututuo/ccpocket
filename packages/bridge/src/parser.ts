@@ -22,6 +22,7 @@ import {
   type BackgroundDeliveryClientMessage,
   type BackgroundDeliveryServerMessage,
 } from "./background-delivery-protocol.js";
+import type { PushRegistrationStateMessage } from "./push-registration-protocol.js";
 
 export type {
   CodexSubagentInfo,
@@ -238,11 +239,13 @@ export type ClientMessage =
       type: "push_register";
       token: string;
       platform: "ios" | "android" | "web";
+      requestId?: string;
       locale?: string;
       privacyMode?: boolean;
       enabledEventTypes?: string[];
+      approvalActionsSupported?: boolean;
     }
-  | { type: "push_unregister"; token: string }
+  | { type: "push_unregister"; token: string; requestId?: string }
   | {
       type: "set_permission_mode";
       mode: PermissionMode;
@@ -582,6 +585,7 @@ export interface CodexCliJoinTarget {
 
 export type ServerMessage = (
   | BackgroundDeliveryServerMessage
+  | PushRegistrationStateMessage
   | {
       type: "system";
       subtype: string;
@@ -1465,9 +1469,28 @@ export function parseClientMessage(data: string): ClientMessage | null {
           )
             return null;
         }
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.length === 0 ||
+            msg.requestId.length > 96)
+        )
+          return null;
+        if (
+          msg.approvalActionsSupported !== undefined &&
+          typeof msg.approvalActionsSupported !== "boolean"
+        )
+          return null;
         break;
       case "push_unregister":
         if (typeof msg.token !== "string") return null;
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.length === 0 ||
+            msg.requestId.length > 96)
+        )
+          return null;
         break;
       case "set_permission_mode":
         if (

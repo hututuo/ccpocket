@@ -978,6 +978,12 @@ sealed class ServerMessage {
         activeWorkCount: json['activeWorkCount'] as int? ?? 0,
         occurredAt: DateTime.tryParse(json['occurredAt'] as String? ?? ''),
       ),
+      'push_registration_state_v1' => PushRegistrationStateMessage(
+        operation: json['operation'] as String? ?? 'register',
+        requestId: json['requestId'] as String? ?? '',
+        success: json['success'] as bool? ?? false,
+        errorCode: json['errorCode'] as String?,
+      ),
       'system' => SystemMessage(
         subtype: json['subtype'] as String? ?? '',
         sessionId: json['sessionId'] as String?,
@@ -1870,6 +1876,20 @@ class BackgroundActivityStateMessage implements ServerMessage {
   final DateTime? occurredAt;
 
   bool get hasActiveWork => activeWorkCount > 0;
+}
+
+class PushRegistrationStateMessage implements ServerMessage {
+  const PushRegistrationStateMessage({
+    required this.operation,
+    required this.requestId,
+    required this.success,
+    this.errorCode,
+  });
+
+  final String operation;
+  final String requestId;
+  final bool success;
+  final String? errorCode;
 }
 
 class SystemMessage implements ServerMessage {
@@ -4804,6 +4824,7 @@ class ClientMessage {
           'client_delivery_mode_state_v1',
           'background_notification_v1',
           'background_activity_state_v1',
+          'push_registration_state_v1',
           'archived_sessions_result',
           'unarchive_result',
           'delete_session_result',
@@ -4989,21 +5010,28 @@ class ClientMessage {
   factory ClientMessage.pushRegister({
     required String token,
     required String platform,
+    String? requestId,
     String? locale,
     bool? privacyMode,
     List<String>? enabledEventTypes,
+    bool? approvalActionsSupported,
   }) => ClientMessage._(<String, dynamic>{
     'type': 'push_register',
     'token': token,
     'platform': platform,
+    'requestId': ?requestId,
     'locale': ?locale,
     'privacyMode': ?privacyMode,
     'enabledEventTypes': ?enabledEventTypes,
+    'approvalActionsSupported': ?approvalActionsSupported,
   });
 
-  factory ClientMessage.pushUnregister(String token) => ClientMessage._(
-    <String, dynamic>{'type': 'push_unregister', 'token': token},
-  );
+  factory ClientMessage.pushUnregister(String token, {String? requestId}) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'push_unregister',
+        'token': token,
+        'requestId': ?requestId,
+      });
 
   factory ClientMessage.setPermissionMode(String mode, {String? sessionId}) {
     return ClientMessage._(<String, dynamic>{
@@ -5154,6 +5182,15 @@ class ClientMessage {
       'sessionId': ?sessionId,
     });
   }
+
+  factory ClientMessage.rejectLiveOnly(
+    String id, {
+    required String sessionId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'reject',
+    'id': id,
+    'sessionId': sessionId,
+  }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.answer(
     String toolUseId,

@@ -2928,4 +2928,10 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get goalClearFailed =>
       'Couldn’t clear the Goal. Refresh it and try again.';
+
+  @override
+  String get sessionCompleteTitle => 'Session complete';
+
+  @override
+  String get sessionDone => 'The session has finished';
 }

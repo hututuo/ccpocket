@@ -1,13 +1,40 @@
+import 'dart:convert';
+import 'dart:ui' show PlatformDispatcher;
+
 import 'package:flutter/foundation.dart'
     show ChangeNotifier, TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/scheduler.dart' show SchedulerBinding, SchedulerPhase;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import '../core/logger.dart';
 import '../l10n/app_localizations.dart';
 import '../models/messages.dart';
 import '../models/notification_preferences.dart';
 
 enum NotificationPermissionStatus { unavailable, enabled, disabled }
+
+const approvalNotificationCategoryId = 'ccpocket_approval_v1';
+const approveNotificationActionId = 'ccpocket_approve_once_v1';
+const rejectNotificationActionId = 'ccpocket_reject_v1';
+
+String encodeSessionNotificationPayload({
+  required String sessionId,
+  required String provider,
+  String? providerSessionId,
+  String? eventType,
+  String? permissionId,
+  DateTime? occurredAt,
+}) {
+  return jsonEncode(<String, String>{
+    'sessionId': sessionId,
+    'provider': provider,
+    'occurredAt': (occurredAt ?? DateTime.now().toUtc()).toIso8601String(),
+    if (providerSessionId?.isNotEmpty == true)
+      'providerSessionId': providerSessionId!,
+    if (eventType?.isNotEmpty == true) 'eventType': eventType!,
+    if (permissionId?.isNotEmpty == true) 'permissionId': permissionId!,
+  });
+}
 
 class NotificationService extends ChangeNotifier {
   NotificationService._();
@@ -21,6 +48,9 @@ class NotificationService extends ChangeNotifier {
   String? _activeSessionId;
   String? _activeProvider;
   bool _notifyScheduled = false;
+  NotificationResponse? _pendingLaunchResponse;
+  void Function(String? payload)? _onNotificationTap;
+  void Function(NotificationResponse response)? _onNotificationAction;
 
   String? get activeSessionId => _activeSessionId;
   String? get activeProvider => _activeProvider;
@@ -28,7 +58,17 @@ class NotificationService extends ChangeNotifier {
 
   /// Called when the user taps a notification. The [payload] string
   /// (typically a sessionId) is forwarded.
-  void Function(String? payload)? onNotificationTap;
+  set onNotificationTap(void Function(String? payload)? handler) {
+    _onNotificationTap = handler;
+    _drainPendingLaunchResponse();
+  }
+
+  set onNotificationAction(
+    void Function(NotificationResponse response)? handler,
+  ) {
+    _onNotificationAction = handler;
+    _drainPendingLaunchResponse();
+  }
 
   Future<void> init() async {
     if (kIsWeb) return;
@@ -37,23 +77,48 @@ class NotificationService extends ChangeNotifier {
     const androidSettings = AndroidInitializationSettings(
       '@mipmap/launcher_icon',
     );
-    const iosSettings = DarwinInitializationSettings(
+    final actionLabels = _notificationActionLabels();
+    final approvalCategory = DarwinNotificationCategory(
+      approvalNotificationCategoryId,
+      actions: <DarwinNotificationAction>[
+        DarwinNotificationAction.plain(
+          approveNotificationActionId,
+          actionLabels.$1,
+          options: const <DarwinNotificationActionOption>{
+            DarwinNotificationActionOption.foreground,
+            DarwinNotificationActionOption.authenticationRequired,
+          },
+        ),
+        DarwinNotificationAction.plain(
+          rejectNotificationActionId,
+          actionLabels.$2,
+          options: const <DarwinNotificationActionOption>{
+            DarwinNotificationActionOption.foreground,
+            DarwinNotificationActionOption.authenticationRequired,
+            DarwinNotificationActionOption.destructive,
+          },
+        ),
+      ],
+    );
+    final iosSettings = DarwinInitializationSettings(
       // Initializing the notification channel must not prompt on launch.
       // Permission is requested only when the user enables notifications or
       // explicitly requests it from Settings > Permission Management.
       requestAlertPermission: false,
       requestBadgePermission: false,
       requestSoundPermission: false,
+      notificationCategories: <DarwinNotificationCategory>[approvalCategory],
     );
-    const macosSettings = DarwinInitializationSettings(
+    final macosSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
       requestSoundPermission: true,
+      notificationCategories: <DarwinNotificationCategory>[approvalCategory],
     );
     const linuxSettings = LinuxInitializationSettings(
       defaultActionName: 'Open CC Pocket',
     );
-    const settings = InitializationSettings(
+    final settings = InitializationSettings(
       android: androidSettings,
       iOS: iosSettings,
       macOS: macosSettings,
@@ -64,6 +129,16 @@ class NotificationService extends ChangeNotifier {
       settings: settings,
       onDidReceiveNotificationResponse: _onNotificationResponse,
     );
+    try {
+      final launchDetails = await _plugin.getNotificationAppLaunchDetails();
+      if (launchDetails?.didNotificationLaunchApp == true) {
+        _pendingLaunchResponse = launchDetails?.notificationResponse;
+      }
+    } catch (error) {
+      // Some desktop implementations do not expose launch details. Local
+      // notifications must remain usable even when that optional API is absent.
+      logger.warning('[notifications] launch response unavailable: $error');
+    }
 
     // Create the notification channel eagerly so FCM uses it instead of
     // the low-priority fcm_fallback_notification_channel.
@@ -156,7 +231,34 @@ class NotificationService extends ChangeNotifier {
   }
 
   void _onNotificationResponse(NotificationResponse response) {
-    onNotificationTap?.call(response.payload);
+    if (response.actionId == approveNotificationActionId ||
+        response.actionId == rejectNotificationActionId) {
+      final handler = _onNotificationAction;
+      if (handler == null) {
+        _pendingLaunchResponse = response;
+        return;
+      }
+      handler(response);
+      return;
+    }
+    final handler = _onNotificationTap;
+    if (handler == null) {
+      _pendingLaunchResponse = response;
+      return;
+    }
+    handler(response.payload);
+  }
+
+  void _drainPendingLaunchResponse() {
+    final pending = _pendingLaunchResponse;
+    if (pending == null) return;
+    final isAction =
+        pending.actionId == approveNotificationActionId ||
+        pending.actionId == rejectNotificationActionId;
+    if (isAction && _onNotificationAction == null) return;
+    if (!isAction && _onNotificationTap == null) return;
+    _pendingLaunchResponse = null;
+    _onNotificationResponse(pending);
   }
 
   void setActiveSession({required String sessionId, required String provider}) {
@@ -207,6 +309,7 @@ class NotificationService extends ChangeNotifier {
     required String body,
     int id = 0,
     String? payload,
+    String? categoryIdentifier,
   }) async {
     if (!_initialized) return;
 
@@ -217,10 +320,14 @@ class NotificationService extends ChangeNotifier {
       importance: Importance.high,
       priority: Priority.high,
     );
-    const iosDetails = DarwinNotificationDetails();
-    const macosDetails = DarwinNotificationDetails();
+    final iosDetails = DarwinNotificationDetails(
+      categoryIdentifier: categoryIdentifier,
+    );
+    final macosDetails = DarwinNotificationDetails(
+      categoryIdentifier: categoryIdentifier,
+    );
     const linuxDetails = LinuxNotificationDetails();
-    const details = NotificationDetails(
+    final details = NotificationDetails(
       android: androidDetails,
       iOS: iosDetails,
       macOS: macosDetails,
@@ -244,21 +351,25 @@ class NotificationService extends ChangeNotifier {
   }) {
     if (!_preferences.actionRequired) return Future<void>.value();
     final copy = ApprovalNotificationCopy.from(permission, l: l);
-    return show(title: copy.title, body: copy.body, id: id, payload: payload);
+    return show(
+      title: copy.title,
+      body: copy.body,
+      id: id,
+      payload: payload,
+      categoryIdentifier: permission.usesAskUserUi
+          ? null
+          : approvalNotificationCategoryId,
+    );
   }
 
   Future<void> showSessionCompleteNotification({
+    required String title,
     required String body,
     int id = 3,
     String? payload,
   }) {
     if (!_preferences.taskCompleted) return Future<void>.value();
-    return show(
-      title: 'Session Complete',
-      body: body,
-      id: id,
-      payload: payload,
-    );
+    return show(title: title, body: body, id: id, payload: payload);
   }
 }
 
@@ -291,4 +402,13 @@ class ApprovalNotificationCopy {
       body: presentation.summary,
     );
   }
+}
+
+(String, String) _notificationActionLabels() {
+  return switch (PlatformDispatcher.instance.locale.languageCode) {
+    'zh' => ('允许', '拒绝'),
+    'ja' => ('許可', '拒否'),
+    'ko' => ('허용', '거부'),
+    _ => ('Allow', 'Reject'),
+  };
 }

@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -57,6 +58,27 @@ import UIKit
     ) {
       BackgroundLocationKeepAlivePlugin.register(with: registrar)
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(
+      forPlugin: "NotificationActionHostPlugin"
+    ) {
+      NotificationActionHostPlugin.register(with: registrar)
+    }
+  }
+
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    if NotificationActionHostPlugin.capture(response) {
+      completionHandler()
+      return
+    }
+    super.userNotificationCenter(
+      center,
+      didReceive: response,
+      withCompletionHandler: completionHandler
+    )
   }
 
   private func handleAppIconMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {

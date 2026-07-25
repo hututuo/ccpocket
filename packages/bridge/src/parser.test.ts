@@ -79,8 +79,12 @@ describe("parseClientMessage", () => {
       sizeBytes: 10,
     };
     expect(parseClientMessage(JSON.stringify(valid))).toEqual(valid);
-    expect(parseClientMessage(JSON.stringify({ ...valid, extra: true }))).toBeNull();
-    expect(parseClientMessage(JSON.stringify({ ...valid, transferId: "short" }))).toBeNull();
+    expect(
+      parseClientMessage(JSON.stringify({ ...valid, extra: true })),
+    ).toBeNull();
+    expect(
+      parseClientMessage(JSON.stringify({ ...valid, transferId: "short" })),
+    ).toBeNull();
   });
 
   it("parses client capabilities", () => {
@@ -96,7 +100,8 @@ describe("parseClientMessage", () => {
   });
 
   it("parses bounded mobile host diagnostics", () => {
-    const msg = parseClientMessage(JSON.stringify({
+    const msg = parseClientMessage(
+      JSON.stringify({
       type: "client_capabilities",
       appVersion: "1.107.2",
       mobileRuntime: {
@@ -106,7 +111,8 @@ describe("parseClientMessage", () => {
         hostSchemaVersion: 1,
         nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
       },
-    }));
+      }),
+    );
 
     expect(msg).toMatchObject({
       type: "client_capabilities",
@@ -119,21 +125,29 @@ describe("parseClientMessage", () => {
   });
 
   it("rejects malformed mobile host diagnostics", () => {
-    expect(parseClientMessage(JSON.stringify({
+    expect(
+      parseClientMessage(
+        JSON.stringify({
       type: "client_capabilities",
       mobileRuntime: {
         hostSchemaVersion: 1,
         nativeCapabilities: { fileTransfer: 0 },
       },
-    }))).toBeNull();
-    expect(parseClientMessage(JSON.stringify({
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
       type: "client_capabilities",
       mobileRuntime: {
         hostSchemaVersion: 1,
         nativeCapabilities: {},
         unexpectedAuthority: true,
       },
-    }))).toBeNull();
+        }),
+      ),
+    ).toBeNull();
   });
 
   it("rejects client capabilities with invalid supported messages", () => {
@@ -390,6 +404,28 @@ describe("parseClientMessage", () => {
       token: "t1",
       platform: "ios",
     });
+  });
+
+  it("parses correlated push registration and rejects invalid request IDs", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"push_register","token":"t1","platform":"ios","requestId":"push-1","approvalActionsSupported":true}',
+      ),
+    ).toMatchObject({
+      type: "push_register",
+      requestId: "push-1",
+      approvalActionsSupported: true,
+    });
+    expect(
+      parseClientMessage(
+        `{"type":"push_unregister","token":"t1","requestId":"${"x".repeat(97)}"}`,
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"push_register","token":"t1","platform":"ios","approvalActionsSupported":"yes"}',
+      ),
+    ).toBeNull();
   });
 
   it("parses bounded push notification preferences", () => {
@@ -721,9 +757,7 @@ describe("parseClientMessage", () => {
   });
 
   it("rejects install_tool_suggestion without toolUseId", () => {
-    expect(
-      parseClientMessage('{"type":"install_tool_suggestion"}'),
-    ).toBeNull();
+    expect(parseClientMessage('{"type":"install_tool_suggestion"}')).toBeNull();
   });
 
   it("parses list_sessions message", () => {
@@ -1518,9 +1552,7 @@ describe("parseClientMessage", () => {
 
   it("fails closed for unsafe lifecycle request shapes", () => {
     expect(
-      parseClientMessage(
-        '{"type":"list_archived_sessions","requestId":""}',
-      ),
+      parseClientMessage('{"type":"list_archived_sessions","requestId":""}'),
     ).toBeNull();
     expect(
       parseClientMessage(

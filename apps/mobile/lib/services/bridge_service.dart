@@ -30,6 +30,7 @@ typedef SessionPermissionRequestObserver =
 
 const backgroundNotificationDeliveryBridgeCapability =
     'background_notification_delivery_v1';
+const pushRegistrationStatusBridgeCapability = 'push_registration_status_v1';
 
 @visibleForTesting
 Map<String, String> bridgePrivateHttpHeaders(String? websocketUrl) {
@@ -170,6 +171,8 @@ class BridgeService implements BridgeServiceBase {
       StreamController<BackgroundNotificationMessage>.broadcast();
   final _backgroundActivityStateController =
       StreamController<BackgroundActivityStateMessage>.broadcast();
+  final _pushRegistrationStateController =
+      StreamController<PushRegistrationStateMessage>.broadcast();
   final _sessionListController =
       StreamController<List<SessionInfo>>.broadcast();
   final _sessionHistoryAvailabilityController =
@@ -280,6 +283,7 @@ class BridgeService implements BridgeServiceBase {
   bool _deliveryPrivacyMode = false;
   List<String> _deliveryEnabledEventTypes = const [];
   int _deliveryModeRequestSequence = 0;
+  int _pushRegistrationRequestSequence = 0;
   String? _latestDeliveryModeRequestId;
   final Map<String, Completer<ClientDeliveryModeStateMessage>>
       _pendingDeliveryModeRequests = {};
@@ -444,6 +448,8 @@ class BridgeService implements BridgeServiceBase {
       _backgroundNotificationController.stream;
   Stream<BackgroundActivityStateMessage> get backgroundActivityStates =>
       _backgroundActivityStateController.stream;
+  Stream<PushRegistrationStateMessage> get pushRegistrationStates =>
+      _pushRegistrationStateController.stream;
   // Git Operations
   Stream<GitStageResultMessage> get gitStageResults =>
       _gitStageResultController.stream;
@@ -502,6 +508,8 @@ class BridgeService implements BridgeServiceBase {
   Set<String> get bridgeCapabilities => _bridgeCapabilities;
   bool get supportsBackgroundNotificationDelivery => _bridgeCapabilities
       .contains(backgroundNotificationDeliveryBridgeCapability);
+  bool get supportsPushRegistrationStatus =>
+      _bridgeCapabilities.contains(pushRegistrationStatusBridgeCapability);
   bool get supportsSessionCatalogWatch =>
       _bridgeCapabilities.contains(sessionCatalogWatchCapability);
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>
@@ -1423,6 +1431,10 @@ class BridgeService implements BridgeServiceBase {
             }
             if (msg is BackgroundActivityStateMessage) {
               _backgroundActivityStateController.add(msg);
+              return;
+            }
+            if (msg is PushRegistrationStateMessage) {
+              _pushRegistrationStateController.add(msg);
               return;
             }
             if (msg is ErrorMessage && _isDeliveryModeProtocolError(msg)) {
@@ -2363,7 +2375,8 @@ class BridgeService implements BridgeServiceBase {
     final wireType = json['type'] as String?;
     if (wireType == 'client_delivery_mode_state_v1' ||
         wireType == 'background_notification_v1' ||
-        wireType == 'background_activity_state_v1') {
+        wireType == 'background_activity_state_v1' ||
+        wireType == 'push_registration_state_v1') {
       return false;
     }
     if (wireType != 'error') return true;
@@ -4177,26 +4190,33 @@ class BridgeService implements BridgeServiceBase {
     send(ClientMessage.interrupt(sessionId: sessionId));
   }
 
-  void registerPushToken({
+  String registerPushToken({
     required String token,
     required String platform,
     String? locale,
     bool? privacyMode,
     List<String>? enabledEventTypes,
+    bool? approvalActionsSupported,
   }) {
+    final requestId = 'push-register-${++_pushRegistrationRequestSequence}';
     send(
       ClientMessage.pushRegister(
         token: token,
         platform: platform,
+        requestId: requestId,
         locale: locale,
         privacyMode: privacyMode,
         enabledEventTypes: enabledEventTypes,
+        approvalActionsSupported: approvalActionsSupported,
       ),
     );
+    return requestId;
   }
 
-  void unregisterPushToken(String token) {
-    send(ClientMessage.pushUnregister(token));
+  String unregisterPushToken(String token) {
+    final requestId = 'push-unregister-${++_pushRegistrationRequestSequence}';
+    send(ClientMessage.pushUnregister(token, requestId: requestId));
+    return requestId;
   }
 
   /// Update the cached [_sessions] list when a [StatusMessage] arrives,
@@ -4896,6 +4916,7 @@ class BridgeService implements BridgeServiceBase {
     _clientDeliveryModeStateController.close();
     _backgroundNotificationController.close();
     _backgroundActivityStateController.close();
+    _pushRegistrationStateController.close();
     _sessionListController.close();
     _sessionHistoryAvailabilityController.close();
     _sessionHistoryReconciledController.close();

@@ -1132,5 +1132,7 @@
   "goalLoadFailedTitle": "Goal을 불러오지 못했습니다",
   "goalLoadFailedBody": "Bridge가 확정된 Goal 상태를 반환하지 않았습니다. 기존 Goal은 변경되지 않았습니다. 다시 연결하거나 재시도하세요.",
   "goalUpdateFailed": "Goal 변경을 저장하지 못했습니다. 초안은 그대로 보존되어 있습니다.",
-  "goalClearFailed": "Goal을 지우지 못했습니다. 새로 고친 뒤 다시 시도하세요."
+  "goalClearFailed": "Goal을 지우지 못했습니다. 새로 고친 뒤 다시 시도하세요.",
+  "sessionCompleteTitle": "세션 완료",
+  "sessionDone": "세션이 종료되었습니다"
 }

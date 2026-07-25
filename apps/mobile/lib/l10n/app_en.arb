@@ -1173,5 +1173,7 @@
   "goalLoadFailedTitle": "Couldn’t load Goal",
   "goalLoadFailedBody": "The Bridge did not return an authoritative Goal state. No Goal was changed. Reconnect or retry.",
   "goalUpdateFailed": "Couldn’t save the Goal change. Your draft is still here.",
-  "goalClearFailed": "Couldn’t clear the Goal. Refresh it and try again."
+  "goalClearFailed": "Couldn’t clear the Goal. Refresh it and try again.",
+  "sessionCompleteTitle": "Session complete",
+  "sessionDone": "The session has finished"
 }

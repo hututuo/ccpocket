@@ -2819,4 +2819,10 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get goalClearFailed => 'Goalをクリアできませんでした。更新してから再試行してください。';
+
+  @override
+  String get sessionCompleteTitle => 'セッション完了';
+
+  @override
+  String get sessionDone => 'セッションが終了しました';
 }

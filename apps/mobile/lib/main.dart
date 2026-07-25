@@ -21,6 +21,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:marionette_flutter/marionette_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -54,6 +55,7 @@ import 'features/settings/state/settings_state.dart';
 import 'features/side_chat/state/ephemeral_side_chat_registry_service.dart';
 import 'models/code_font_family.dart';
 import 'models/messages.dart';
+import 'models/notification_preferences.dart';
 import 'providers/bridge_cubits.dart';
 import 'providers/machine_manager_cubit.dart';
 import 'providers/server_discovery_cubit.dart';
@@ -67,7 +69,9 @@ import 'services/draft_service.dart';
 import 'services/fcm_service.dart';
 import 'services/in_app_review_service.dart';
 import 'services/machine_manager_service.dart';
+import 'services/notification_approval_coordinator.dart';
 import 'services/mock_preview_extension.dart';
+import 'services/notification_action_host.dart';
 import 'services/notification_service.dart';
 import 'services/performance_probe_extension.dart';
 import 'services/prompt_history_service.dart';
@@ -261,6 +265,16 @@ void main() async {
         ),
       );
   await backgroundNotificationModeController.initialize();
+  final notificationApprovalCoordinator = NotificationApprovalCoordinator(
+    preferences: prefs,
+    bridge: BridgeServiceNotificationApprovalBridge(bridge),
+  );
+  await notificationApprovalCoordinator.initialize();
+  final notificationActionHost = MethodChannelNotificationActionHost(
+    supportedByInstalledHost: mobileHostSnapshot.supports(
+      MobileHostCapability.notificationApprovalActions,
+    ),
+  );
   final backgroundSyncCoordinator = MobileBackgroundSyncCoordinator(
     host: backgroundSyncHost,
     bridge: BridgeServiceBackgroundSyncGateway(
@@ -317,6 +331,9 @@ void main() async {
     fcmService: fcmService,
     revenueCatService: revenueCatService,
     appIconService: appIconService,
+    notificationApprovalActionsSupported: mobileHostSnapshot.supports(
+      MobileHostCapability.notificationApprovalActions,
+    ),
   );
   backgroundNotificationModeController.updatePolicy(
     preferences: settingsCubit.state.notificationPreferences,
@@ -470,6 +487,8 @@ void main() async {
           backgroundSyncCoordinator: backgroundSyncCoordinator,
           backgroundNotificationModeController:
               backgroundNotificationModeController,
+          notificationApprovalCoordinator: notificationApprovalCoordinator,
+          notificationActionHost: notificationActionHost,
         ),
       ),
     ),
@@ -485,13 +504,18 @@ class CcpocketApp extends StatefulWidget {
     this.mobileUpdateService,
     this.backgroundSyncCoordinator,
     this.backgroundNotificationModeController,
+    required this.notificationApprovalCoordinator,
+    required this.notificationActionHost,
     super.key,
   });
 
   final FcmService fcmService;
   final MobileUpdateService? mobileUpdateService;
   final MobileBackgroundSyncCoordinator? backgroundSyncCoordinator;
-  final BackgroundNotificationModeController? backgroundNotificationModeController;
+  final BackgroundNotificationModeController?
+  backgroundNotificationModeController;
+  final NotificationApprovalCoordinator notificationApprovalCoordinator;
+  final NotificationActionHost notificationActionHost;
 
   @override
   State<CcpocketApp> createState() => _CcpocketAppState();
@@ -511,6 +535,7 @@ class _CcpocketAppState extends State<CcpocketApp> {
   StreamSubscription<Uri>? _linkSub;
   StreamSubscription<RemoteMessage>? _fcmOnMessageSub;
   StreamSubscription<RemoteMessage>? _fcmOnMessageOpenedAppSub;
+  StreamSubscription<NotificationApprovalActionEvent>? _notificationActionSub;
 
   late final AppRouter _appRouter;
   bool _routerInitialized = false;
@@ -591,6 +616,11 @@ class _CcpocketAppState extends State<CcpocketApp> {
     NotificationService.instance.onNotificationTap = (payload) {
       _openSessionFromPayload(payload);
     };
+    NotificationService.instance.onNotificationAction =
+        _handleNotificationAction;
+    _notificationActionSub ??= widget.notificationActionHost.approvalActions
+        .listen(_handleNativeNotificationAction);
+    unawaited(widget.notificationActionHost.initialize());
   }
 
   void _initFcmHandlers() {
@@ -648,13 +678,27 @@ class _CcpocketAppState extends State<CcpocketApp> {
     )) {
       return;
     }
-    final payload = jsonEncode({'sessionId': sessionId, 'provider': provider});
+    final permissionId =
+        data['permissionId']?.toString() ?? data['toolUseId']?.toString();
+    final payload = encodeSessionNotificationPayload(
+      sessionId: sessionId,
+      provider: provider,
+      providerSessionId: data['providerSessionId']?.toString(),
+      eventType: eventType,
+      permissionId: permissionId,
+      occurredAt: DateTime.tryParse(data['occurredAt']?.toString() ?? ''),
+    );
 
     await NotificationService.instance.show(
       title: title,
       body: body,
       payload: payload,
       id: _notificationId(sessionId, provider, eventType),
+      categoryIdentifier:
+          eventType == NotificationPreferences.approvalRequiredEvent &&
+              permissionId?.isNotEmpty == true
+          ? approvalNotificationCategoryId
+          : null,
     );
   }
 
@@ -674,6 +718,101 @@ class _CcpocketAppState extends State<CcpocketApp> {
       // Backward compatibility: payload may be plain sessionId text.
     }
     _openSessionFromData({'sessionId': payload, 'provider': 'claude'});
+  }
+
+  void _handleNotificationAction(NotificationResponse response) {
+    final actionId = response.actionId;
+    final decision = switch (actionId) {
+      approveNotificationActionId => NotificationApprovalDecision.approve,
+      rejectNotificationActionId => NotificationApprovalDecision.reject,
+      _ => null,
+    };
+    final payload = response.payload;
+    if (decision == null || payload == null || payload.isEmpty) return;
+
+    Map<String, dynamic>? data;
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is Map) {
+        data = Map<String, dynamic>.from(decoded);
+      }
+    } catch (_) {
+      return;
+    }
+    if (data == null) return;
+
+    final sessionId = data['sessionId']?.toString().trim() ?? '';
+    final provider = _normalizeProvider(data['provider']?.toString());
+    final providerSessionId = data['providerSessionId']?.toString().trim();
+    final permissionId = data['permissionId']?.toString().trim() ?? '';
+    final occurredAt = DateTime.tryParse(
+      data['occurredAt']?.toString() ?? '',
+    )?.toUtc();
+    final isApproval =
+        data['eventType'] == NotificationPreferences.approvalRequiredEvent;
+    if (sessionId.isEmpty ||
+        permissionId.isEmpty ||
+        occurredAt == null ||
+        !isApproval) {
+      return;
+    }
+
+    _submitNotificationAction(
+      sessionId: sessionId,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      permissionId: permissionId,
+      decision: decision,
+      occurredAt: occurredAt,
+      navigationData: data,
+    );
+  }
+
+  void _handleNativeNotificationAction(NotificationApprovalActionEvent event) {
+    final decision = switch (event.actionId) {
+      approveNotificationActionId => NotificationApprovalDecision.approve,
+      rejectNotificationActionId => NotificationApprovalDecision.reject,
+      _ => null,
+    };
+    if (decision == null) return;
+    _submitNotificationAction(
+      sessionId: event.sessionId,
+      provider: event.provider,
+      providerSessionId: event.providerSessionId,
+      permissionId: event.permissionId,
+      decision: decision,
+      occurredAt: event.occurredAt,
+      navigationData: <String, dynamic>{
+        'sessionId': event.sessionId,
+        'provider': event.provider,
+      },
+    );
+  }
+
+  void _submitNotificationAction({
+    required String sessionId,
+    required String provider,
+    required String? providerSessionId,
+    required String permissionId,
+    required NotificationApprovalDecision decision,
+    required DateTime occurredAt,
+    required Map<String, dynamic> navigationData,
+  }) {
+    unawaited(
+      widget.notificationApprovalCoordinator.submit(
+        NotificationApprovalRequest(
+          sessionId: sessionId,
+          provider: provider,
+          providerSessionId: providerSessionId?.isNotEmpty == true
+              ? providerSessionId
+              : null,
+          permissionId: permissionId,
+          decision: decision,
+          createdAt: occurredAt,
+        ),
+      ),
+    );
+    _openSessionFromData(navigationData);
   }
 
   void _openFileTransferInbox() {
@@ -747,6 +886,8 @@ class _CcpocketAppState extends State<CcpocketApp> {
 
   @override
   void dispose() {
+    NotificationService.instance.onNotificationTap = null;
+    NotificationService.instance.onNotificationAction = null;
     _lifecycleListener.dispose();
     final backgroundSyncCoordinator = widget.backgroundSyncCoordinator;
     if (backgroundSyncCoordinator != null) {
@@ -757,9 +898,12 @@ class _CcpocketAppState extends State<CcpocketApp> {
     if (backgroundNotificationModeController != null) {
       unawaited(backgroundNotificationModeController.dispose());
     }
+    unawaited(widget.notificationApprovalCoordinator.dispose());
+    unawaited(widget.notificationActionHost.dispose());
     _linkSub?.cancel();
     _fcmOnMessageSub?.cancel();
     _fcmOnMessageOpenedAppSub?.cancel();
+    _notificationActionSub?.cancel();
     _deepLinkNotifier.dispose();
     super.dispose();
   }

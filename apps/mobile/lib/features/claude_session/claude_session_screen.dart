@@ -12,6 +12,7 @@ import '../../hooks/use_keyboard_scroll_adjustment.dart';
 import '../../hooks/use_scroll_tracking.dart';
 import '../../l10n/app_localizations.dart';
 import '../../models/messages.dart';
+import '../../models/notification_preferences.dart';
 import '../../providers/bridge_cubits.dart';
 import '../../providers/machine_manager_cubit.dart';
 import '../../router/app_router.dart';
@@ -1555,7 +1556,12 @@ void _executeSideEffects(
               permission,
               l: l,
               id: 1,
-              payload: sessionId,
+              payload: encodeSessionNotificationPayload(
+                sessionId: sessionId,
+                provider: Provider.claude.value,
+                eventType: NotificationPreferences.approvalRequiredEvent,
+                permissionId: permission.toolUseId,
+              ),
             );
           }
         }
@@ -1567,16 +1573,26 @@ void _executeSideEffects(
               permission,
               l: l,
               id: 2,
-              payload: sessionId,
+              payload: encodeSessionNotificationPayload(
+                sessionId: sessionId,
+                provider: Provider.claude.value,
+                eventType: NotificationPreferences.askUserQuestionEvent,
+                permissionId: permission.toolUseId,
+              ),
             );
           }
         }
       case ChatSideEffect.notifySessionComplete:
         if (isBackground) {
           NotificationService.instance.showSessionCompleteNotification(
-            body: 'Session done',
+            title: l.sessionCompleteTitle,
+            body: l.sessionDone,
             id: 3,
-            payload: sessionId,
+            payload: encodeSessionNotificationPayload(
+              sessionId: sessionId,
+              provider: Provider.claude.value,
+              eventType: NotificationPreferences.sessionCompletedEvent,
+            ),
           );
         }
       case ChatSideEffect.scrollToBottom:

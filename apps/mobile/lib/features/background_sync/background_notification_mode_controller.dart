@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -100,10 +99,16 @@ class NotificationServiceBackgroundPresenter
     )) {
       return;
     }
-    final payload = jsonEncode({
-      'sessionId': notification.sessionId,
-      'provider': notification.provider,
-    });
+    final permissionId =
+        notification.data['permissionId'] ?? notification.data['toolUseId'];
+    final payload = encodeSessionNotificationPayload(
+      sessionId: notification.sessionId,
+      provider: notification.provider,
+      providerSessionId: notification.data['providerSessionId'],
+      eventType: notification.eventType,
+      permissionId: permissionId,
+      occurredAt: notification.occurredAt,
+    );
     await _service.show(
       title: notification.title,
       body: notification.body,
@@ -113,6 +118,12 @@ class NotificationServiceBackgroundPresenter
         notification.provider,
         notification.eventType,
       ).abs(),
+      categoryIdentifier:
+          notification.eventType ==
+                  NotificationPreferences.approvalRequiredEvent &&
+              permissionId?.isNotEmpty == true
+          ? approvalNotificationCategoryId
+          : null,
     );
   }
 }

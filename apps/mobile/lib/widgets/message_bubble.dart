@@ -293,6 +293,7 @@ class ServerMessageWidget extends StatelessWidget {
       LocalFeatureServerMessage() => const SizedBox.shrink(),
       ArtifactResolvedMessage() => const SizedBox.shrink(),
       ClientDeliveryModeStateMessage() => const SizedBox.shrink(),
+      PushRegistrationStateMessage() => const SizedBox.shrink(),
       BackgroundNotificationMessage() => const SizedBox.shrink(),
       BackgroundActivityStateMessage() => const SizedBox.shrink(),
       UsageResultMessage() => const SizedBox.shrink(),

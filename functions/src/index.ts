@@ -18,6 +18,7 @@ type RegisterBody = {
   platform: PushPlatform;
   locale?: string;
   enabledEventTypes?: string[];
+  approvalActionsSupported?: boolean;
 };
 
 type UnregisterBody = {
@@ -190,6 +191,13 @@ function parseRelayBody(payload: unknown): RelayBody | null {
         }
       }
     }
+    const approvalActionsSupported = body.approvalActionsSupported;
+    if (
+      approvalActionsSupported !== undefined &&
+      typeof approvalActionsSupported !== "boolean"
+    ) {
+      return null;
+    }
     return {
       op,
       bridgeId: "",
@@ -197,6 +205,7 @@ function parseRelayBody(payload: unknown): RelayBody | null {
       platform,
       locale,
       enabledEventTypes,
+      approvalActionsSupported,
     };
   }
 
@@ -249,6 +258,8 @@ async function handleRegister(body: RegisterBody): Promise<void> {
       platform: body.platform,
       enabledEventTypes:
         body.enabledEventTypes ?? FieldValue.delete(),
+      approvalActionsSupported:
+        body.approvalActionsSupported ?? FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     };
     if (body.locale) updateData.locale = body.locale;
@@ -270,6 +281,9 @@ async function handleRegister(body: RegisterBody): Promise<void> {
     ...(body.enabledEventTypes !== undefined
       ? { enabledEventTypes: body.enabledEventTypes }
       : {}),
+    ...(body.approvalActionsSupported !== undefined
+      ? { approvalActionsSupported: body.approvalActionsSupported }
+      : {}),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -285,6 +299,26 @@ function isDeleteTargetError(code: string | undefined): boolean {
     || code === "messaging/invalid-registration-token";
 }
 
+function hasValidApprovalActionData(
+  data: Record<string, string> | undefined,
+): boolean {
+  if (!data) return false;
+  const sessionId = asNonEmptyString(data.sessionId);
+  const provider = asNonEmptyString(data.provider);
+  const permissionId = asNonEmptyString(data.permissionId);
+  const occurredAt = asNonEmptyString(data.occurredAt);
+  return (
+    sessionId != null &&
+    sessionId.length <= 256 &&
+    (provider === "claude" || provider === "codex") &&
+    permissionId != null &&
+    permissionId.length <= 256 &&
+    occurredAt != null &&
+    occurredAt.length <= 64 &&
+    Number.isFinite(Date.parse(occurredAt))
+  );
+}
+
 async function handleNotify(body: NotifyBody): Promise<{
   tokenCount: number;
   successCount: number;
@@ -292,13 +326,15 @@ async function handleNotify(body: NotifyBody): Promise<{
   deletedInvalidTokens: number;
 }> {
   const snapshot = await db.collection(`bridges/${body.bridgeId}/tokens`).get();
-  const tokens = snapshot.docs
+  const registrations = snapshot.docs
     .filter((d) => {
       // When locale is specified, only send to tokens with matching locale.
-      // Tokens without a locale field are included when no locale filter is set (backward compat).
+      // Legacy tokens without a locale receive only the English fallback, so
+      // one old device cannot receive every localized copy.
       if (body.locale) {
         const tokenLocale = asNonEmptyString(d.get("locale"));
-        if (tokenLocale !== body.locale && tokenLocale != null) return false;
+        if (tokenLocale == null) return body.locale === "en";
+        if (tokenLocale !== body.locale) return false;
       }
 
       const enabledEventTypes = d.get("enabledEventTypes");
@@ -310,9 +346,19 @@ async function handleNotify(body: NotifyBody): Promise<{
       // category such as progress.
       return !OPT_IN_ONLY_EVENT_TYPES.has(body.eventType);
     })
-    .map((d) => asNonEmptyString(d.get("token")))
-    .filter((token): token is string => token != null);
-  if (tokens.length === 0) {
+    .map((d) => ({
+      token: asNonEmptyString(d.get("token")),
+      approvalActionsSupported: d.get("approvalActionsSupported") === true,
+    }))
+    .filter(
+      (
+        registration,
+      ): registration is {
+        token: string;
+        approvalActionsSupported: boolean;
+      } => registration.token != null,
+    );
+  if (registrations.length === 0) {
     return {
       tokenCount: 0,
       successCount: 0,
@@ -325,32 +371,65 @@ async function handleNotify(body: NotifyBody): Promise<{
   let failureCount = 0;
   const invalidTokens = new Set<string>();
 
-  for (let i = 0; i < tokens.length; i += 500) {
-    const chunk = tokens.slice(i, i + 500);
-    const response = await messaging.sendEachForMulticast({
-      tokens: chunk,
-      notification: { title: body.title, body: body.body },
-      data: { ...body.data, eventType: body.eventType },
-      android: {
-        priority: "high",
-        notification: {
-          channelId: "ccpocket_channel",
-          priority: "high",
-          sound: "default",
-          defaultVibrateTimings: true,
-        },
-      },
-      apns: {
-        payload: { aps: { sound: "default" } },
-      },
-    });
+  const deliveryGroups =
+    body.eventType === "approval_required" &&
+    hasValidApprovalActionData(body.data)
+      ? [
+          {
+            approvalActionsSupported: true,
+            tokens: registrations
+              .filter((registration) => registration.approvalActionsSupported)
+              .map((registration) => registration.token),
+          },
+          {
+            approvalActionsSupported: false,
+            tokens: registrations
+              .filter((registration) => !registration.approvalActionsSupported)
+              .map((registration) => registration.token),
+          },
+        ]
+      : [
+          {
+            approvalActionsSupported: false,
+            tokens: registrations.map((registration) => registration.token),
+          },
+        ];
 
-    successCount += response.successCount;
-    failureCount += response.failureCount;
-    for (let j = 0; j < response.responses.length; j++) {
-      const result = response.responses[j];
-      if (!result.success && isDeleteTargetError(result.error?.code)) {
-        invalidTokens.add(chunk[j]);
+  for (const group of deliveryGroups) {
+    for (let i = 0; i < group.tokens.length; i += 500) {
+      const chunk = group.tokens.slice(i, i + 500);
+      const response = await messaging.sendEachForMulticast({
+        tokens: chunk,
+        notification: { title: body.title, body: body.body },
+        data: { ...body.data, eventType: body.eventType },
+        android: {
+          priority: "high",
+          notification: {
+            channelId: "ccpocket_channel",
+            priority: "high",
+            sound: "default",
+            defaultVibrateTimings: true,
+          },
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: "default",
+              ...(group.approvalActionsSupported
+                ? { category: "ccpocket_approval_v1" }
+                : {}),
+            },
+          },
+        },
+      });
+
+      successCount += response.successCount;
+      failureCount += response.failureCount;
+      for (let j = 0; j < response.responses.length; j++) {
+        const result = response.responses[j];
+        if (!result.success && isDeleteTargetError(result.error?.code)) {
+          invalidTokens.add(chunk[j]);
+        }
       }
     }
   }
@@ -364,7 +443,7 @@ async function handleNotify(body: NotifyBody): Promise<{
   }
 
   return {
-    tokenCount: tokens.length,
+    tokenCount: registrations.length,
     successCount,
     failureCount,
     deletedInvalidTokens: invalidTokens.size,

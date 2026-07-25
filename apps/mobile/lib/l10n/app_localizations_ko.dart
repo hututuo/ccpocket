@@ -2848,4 +2848,10 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get goalClearFailed => 'Goal을 지우지 못했습니다. 새로 고친 뒤 다시 시도하세요.';
+
+  @override
+  String get sessionCompleteTitle => '세션 완료';
+
+  @override
+  String get sessionDone => '세션이 종료되었습니다';
 }

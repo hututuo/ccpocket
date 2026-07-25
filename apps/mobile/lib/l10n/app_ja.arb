@@ -1203,5 +1203,7 @@
   "goalLoadFailedTitle": "Goalを読み込めませんでした",
   "goalLoadFailedBody": "Bridgeから確定したGoal状態が返されませんでした。既存のGoalは変更されていません。再接続するか再試行してください。",
   "goalUpdateFailed": "Goalの変更を保存できませんでした。下書きは保持されています。",
-  "goalClearFailed": "Goalをクリアできませんでした。更新してから再試行してください。"
+  "goalClearFailed": "Goalをクリアできませんでした。更新してから再試行してください。",
+  "sessionCompleteTitle": "セッション完了",
+  "sessionDone": "セッションが終了しました"
 }

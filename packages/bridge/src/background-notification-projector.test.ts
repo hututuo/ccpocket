@@ -171,6 +171,33 @@ describe("background notification projector", () => {
     expect(JSON.stringify(message)).not.toContain("not-forwarded");
   });
 
+  it("keeps only the opaque approval identity in privacy mode", () => {
+    const policy = createBackgroundNotificationPolicy({
+      locale: "zh",
+      privacyMode: true,
+      enabledEventTypes: ["approval_required"],
+    });
+    const message = projectBackgroundNotification(
+      {
+        type: "permission_request",
+        toolUseId: "approval-opaque-id",
+        toolName: "SensitiveToolName",
+        input: { command: "private command" },
+      },
+      context,
+      policy,
+      createBackgroundNotificationProjectionState(),
+    );
+
+    expect(message?.data).toEqual({
+      sessionId: "session-1",
+      provider: "codex",
+      permissionId: "approval-opaque-id",
+    });
+    expect(JSON.stringify(message)).not.toContain("SensitiveToolName");
+    expect(JSON.stringify(message)).not.toContain("private command");
+  });
+
   it("releases per-session deduplication state when a turn ends", () => {
     const policy = createBackgroundNotificationPolicy({
       enabledEventTypes: ["approval_required", "session_progress"],
