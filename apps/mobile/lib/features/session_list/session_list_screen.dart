@@ -24,6 +24,7 @@ import '../../router/app_router.dart';
 import '../../services/app_update_service.dart';
 import '../../services/bridge_service.dart';
 import '../../services/connection_url_parser.dart';
+import '../../services/notification_service.dart';
 import '../../services/platform_environment_service.dart';
 import '../../services/server_discovery_service.dart';
 import '../../services/ssh_bridge_tunnel_service.dart';
@@ -393,17 +394,34 @@ class _SessionListScreenState extends State<SessionListScreen>
       }
     });
     widget.deepLinkNotifier?.addListener(_onDeepLink);
+    NotificationService.instance.addListener(
+      _handleActiveNotificationSessionChanged,
+    );
     _loadPreferencesAndAutoConnect();
 
     // Feed active session updates to the unseen tracker.
     final activeCubit = context.read<ActiveSessionsCubit>();
-    _unseenCubit.updateSessions(activeCubit.state);
+    _updateUnseenSessions(activeCubit.state);
     _activeSessionsSub = activeCubit.stream.listen((sessions) {
-      _unseenCubit.updateSessions(sessions);
+      _updateUnseenSessions(sessions);
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
     });
     unawaited(_loadMacOSNativeAppBannerState());
     _checkAppUpdate();
+  }
+
+  void _handleActiveNotificationSessionChanged() {
+    if (!mounted) return;
+    _updateUnseenSessions(context.read<ActiveSessionsCubit>().state);
+  }
+
+  void _updateUnseenSessions(List<SessionInfo> sessions) {
+    final notifications = NotificationService.instance;
+    _unseenCubit.updateSessions(
+      sessions,
+      visibleSessionId: notifications.activeSessionId,
+      visibleProvider: notifications.activeProvider,
+    );
   }
 
   Future<void> _loadMacOSNativeAppBannerState() async {
@@ -654,6 +672,9 @@ class _SessionListScreenState extends State<SessionListScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.deepLinkNotifier?.removeListener(_onDeepLink);
+    NotificationService.instance.removeListener(
+      _handleActiveNotificationSessionChanged,
+    );
     _messageSub?.cancel();
     _archiveConnectionSub?.cancel();
     _archivePendingRequests.dispose();

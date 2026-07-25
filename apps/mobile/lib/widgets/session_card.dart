@@ -110,7 +110,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
       SessionPrimaryStatus.needsYou => appColors.statusApproval,
       SessionPrimaryStatus.ready =>
         isReadyUnseen
-            ? Theme.of(context).colorScheme.onSurface
+            ? Theme.of(context).colorScheme.primary
             : appColors.statusIdle,
     };
 

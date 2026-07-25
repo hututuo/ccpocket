@@ -5,12 +5,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 SessionInfo _session({
   required String id,
+  String? provider,
+  String? providerSessionId,
   String status = 'idle',
   String lastActivityAt = '2026-03-11T10:00:00Z',
 }) {
   return SessionInfo(
     id: id,
+    provider: provider,
     projectPath: '/test',
+    claudeSessionId: providerSessionId,
     status: status,
     createdAt: '2026-03-11T09:00:00Z',
     lastActivityAt: lastActivityAt,
@@ -25,7 +29,7 @@ void main() {
   group('UnseenSessionsCubit', () {
     test('idle session with no seen-at record is unseen', () async {
       final cubit = UnseenSessionsCubit();
-      await Future<void>.delayed(Duration.zero);
+      await cubit.ready;
 
       cubit.updateSessions([_session(id: 'a')]);
       expect(cubit.state, contains('a'));
@@ -36,7 +40,7 @@ void main() {
 
     test('non-idle sessions are never unseen', () async {
       final cubit = UnseenSessionsCubit();
-      await Future<void>.delayed(Duration.zero);
+      await cubit.ready;
 
       cubit.updateSessions([
         _session(id: 'a', status: 'running'),
@@ -50,7 +54,7 @@ void main() {
 
     test('markSeen removes session from unseen set', () async {
       final cubit = UnseenSessionsCubit();
-      await Future<void>.delayed(Duration.zero);
+      await cubit.ready;
 
       cubit.updateSessions([_session(id: 'a')]);
       expect(cubit.isUnseen('a'), isTrue);
@@ -63,7 +67,7 @@ void main() {
 
     test('markSeen persists and subsequent updates respect seen-at', () async {
       final cubit = UnseenSessionsCubit();
-      await Future<void>.delayed(Duration.zero);
+      await cubit.ready;
 
       cubit.updateSessions([
         _session(id: 'a', lastActivityAt: '2026-03-11T10:00:00Z'),
@@ -90,7 +94,7 @@ void main() {
 
     test('empty lastActivityAt is never unseen', () async {
       final cubit = UnseenSessionsCubit();
-      await Future<void>.delayed(Duration.zero);
+      await cubit.ready;
 
       cubit.updateSessions([_session(id: 'a', lastActivityAt: '')]);
       expect(cubit.state, isEmpty);
@@ -100,7 +104,7 @@ void main() {
 
     test('multiple sessions tracked independently', () async {
       final cubit = UnseenSessionsCubit();
-      await Future<void>.delayed(Duration.zero);
+      await cubit.ready;
 
       cubit.updateSessions([
         _session(id: 'a'),
@@ -117,7 +121,7 @@ void main() {
 
     test('stale entries are cleaned up', () async {
       final cubit = UnseenSessionsCubit();
-      await Future<void>.delayed(Duration.zero);
+      await cubit.ready;
 
       cubit.updateSessions([_session(id: 'a'), _session(id: 'b')]);
       cubit.markSeen('a');
@@ -137,32 +141,32 @@ void main() {
 
     group('false-positive prevention', () {
       test(
-        'markSeen before session becomes idle prevents unseen indicator',
+        'visible session activity stays seen without a future-time buffer',
         () async {
-          // Simulates: user sends a message → markSeen called → session
-          // briefly stays idle with updated lastActivityAt before going
-          // to "working". The +1 day buffer in markSeen should prevent
-          // the session from being marked unseen.
           final cubit = UnseenSessionsCubit();
-          await Future<void>.delayed(Duration.zero);
+          await cubit.ready;
 
-          // Session starts as idle and user taps into it.
           cubit.updateSessions([
             _session(id: 's1', lastActivityAt: '2026-03-11T10:00:00Z'),
           ]);
           cubit.markSeen('s1');
           expect(cubit.isUnseen('s1'), isFalse);
 
-          // Activity timestamp updates moments later (user sent a message,
-          // Bridge echoed back) but session is still idle briefly.
-          cubit.updateSessions([
-            _session(id: 's1', lastActivityAt: '2026-03-11T10:00:05Z'),
-          ]);
+          cubit.updateSessions(
+            [_session(id: 's1', lastActivityAt: '2026-03-11T10:00:05Z')],
+            visibleSessionId: 's1',
+            visibleProvider: 'claude',
+          );
           expect(
             cubit.isUnseen('s1'),
             isFalse,
-            reason: '+1 day buffer should cover near-future activity',
+            reason: 'authoritative activity is consumed while still visible',
           );
+
+          cubit.updateSessions([
+            _session(id: 's1', lastActivityAt: '2026-03-11T10:00:06Z'),
+          ]);
+          expect(cubit.isUnseen('s1'), isTrue);
 
           await cubit.close();
         },
@@ -174,11 +178,15 @@ void main() {
           // Simulates: session_created event fires → markSeen called with
           // real session ID → session later appears in active list as idle.
           final cubit = UnseenSessionsCubit();
-          await Future<void>.delayed(Duration.zero);
+          await cubit.ready;
 
           // markSeen called when session_created arrives (before the session
           // appears in the active session list).
           cubit.markSeen('new-session-123');
+
+          // An older session-list snapshot may arrive before the newly created
+          // session is included. It must not consume the one-shot suppression.
+          cubit.updateSessions(const <SessionInfo>[]);
 
           // Session now appears in the list as idle.
           cubit.updateSessions([
@@ -197,69 +205,79 @@ void main() {
         },
       );
 
+      test('session completion after the user leaves becomes unread', () async {
+        final cubit = UnseenSessionsCubit();
+        await cubit.ready;
+
+        cubit.updateSessions(
+          [_session(id: 's1', lastActivityAt: '2026-03-11T10:00:00Z')],
+          visibleSessionId: 's1',
+          visibleProvider: 'claude',
+        );
+        cubit.markSeen('s1');
+
+        cubit.updateSessions([
+          _session(
+            id: 's1',
+            status: 'running',
+            lastActivityAt: '2026-03-11T10:01:00Z',
+          ),
+        ]);
+        expect(cubit.state, isEmpty);
+
+        cubit.updateSessions([
+          _session(id: 's1', lastActivityAt: '2026-03-11T10:02:00Z'),
+        ]);
+        expect(
+          cubit.isUnseen('s1'),
+          isTrue,
+          reason: 'completion after leaving must create the blue unread dot',
+        );
+
+        await cubit.close();
+      });
+
+      test('completion while the session remains visible stays seen', () async {
+        final cubit = UnseenSessionsCubit();
+        await cubit.ready;
+
+        cubit.updateSessions(
+          [_session(id: 's1', lastActivityAt: '2026-03-11T10:02:00Z')],
+          visibleSessionId: 's1',
+          visibleProvider: 'claude',
+        );
+        expect(
+          cubit.isUnseen('s1'),
+          isFalse,
+          reason: 'visible completion is consumed immediately',
+        );
+
+        await cubit.close();
+      });
+
       test(
-        'session transitions working → idle after markSeen stays seen',
+        'durable session identity survives a runtime ID replacement',
         () async {
-          // Simulates: user views session → sends message → session goes
-          // to working → finishes → returns to idle with newer timestamp.
-          // Should remain seen because the work was initiated by this user.
           final cubit = UnseenSessionsCubit();
-          await Future<void>.delayed(Duration.zero);
+          await cubit.ready;
 
-          // User views and marks seen.
-          cubit.updateSessions([
-            _session(id: 's1', lastActivityAt: '2026-03-11T10:00:00Z'),
-          ]);
-          cubit.markSeen('s1');
-
-          // Session goes to working (not tracked as unseen).
           cubit.updateSessions([
             _session(
-              id: 's1',
-              status: 'running',
-              lastActivityAt: '2026-03-11T10:01:00Z',
+              id: 'runtime-old',
+              provider: 'codex',
+              providerSessionId: 'thread-1',
             ),
           ]);
-          expect(cubit.state, isEmpty);
-
-          // Session returns to idle with newer timestamp.
+          cubit.markSeen('runtime-old');
           cubit.updateSessions([
-            _session(id: 's1', lastActivityAt: '2026-03-11T10:02:00Z'),
+            _session(
+              id: 'runtime-new',
+              provider: 'codex',
+              providerSessionId: 'thread-1',
+            ),
           ]);
-          expect(
-            cubit.isUnseen('s1'),
-            isFalse,
-            reason: '+1 day buffer covers activity within same user session',
-          );
 
-          await cubit.close();
-        },
-      );
-
-      test(
-        'genuinely new activity after buffer period is detected as unseen',
-        () async {
-          // Ensures the +1 day buffer doesn't permanently suppress unseen.
-          // Activity with a timestamp beyond the buffer should be detected.
-          final cubit = UnseenSessionsCubit();
-          await Future<void>.delayed(Duration.zero);
-
-          cubit.updateSessions([
-            _session(id: 's1', lastActivityAt: '2026-03-11T10:00:00Z'),
-          ]);
-          cubit.markSeen('s1');
-          expect(cubit.isUnseen('s1'), isFalse);
-
-          // Activity far in the future (beyond +1 day buffer) → unseen.
-          cubit.updateSessions([
-            _session(id: 's1', lastActivityAt: '2026-03-25T10:00:00Z'),
-          ]);
-          expect(
-            cubit.isUnseen('s1'),
-            isTrue,
-            reason: 'Activity beyond buffer period should be unseen',
-          );
-
+          expect(cubit.isUnseen('runtime-new'), isFalse);
           await cubit.close();
         },
       );
@@ -272,7 +290,7 @@ void main() {
     group('persistence', () {
       test('seen-at survives cubit recreation', () async {
         final cubit1 = UnseenSessionsCubit();
-        await Future<void>.delayed(Duration.zero);
+        await cubit1.ready;
 
         cubit1.updateSessions([
           _session(id: 'a', lastActivityAt: '2026-03-11T10:00:00Z'),
@@ -284,7 +302,7 @@ void main() {
 
         // New cubit instance loads persisted data.
         final cubit2 = UnseenSessionsCubit();
-        await Future<void>.delayed(Duration.zero);
+        await cubit2.ready;
 
         cubit2.updateSessions([
           _session(id: 'a', lastActivityAt: '2026-03-11T10:00:00Z'),
