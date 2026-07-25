@@ -215,6 +215,8 @@ void main() {
       expect(find.text('third result'), findsNothing);
       await _expandToolResult(tester, 2);
       expect(find.text('third result'), findsOneWidget);
+      scrollController.jumpTo(0);
+      await tester.pump();
       expect(find.text('Final answer'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await cubit.close();

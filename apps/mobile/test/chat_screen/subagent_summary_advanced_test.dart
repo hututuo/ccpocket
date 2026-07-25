@@ -1,5 +1,7 @@
+import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/widgets/bubbles/tool_use_summary_bubble.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:patrol_finders/patrol_finders.dart';
 
@@ -207,11 +209,26 @@ void main() {
       await pumpN($.tester);
       await expandTranscriptProcess($.tester);
 
-      // Three summary bubbles
-      expect($(ToolUseSummaryBubble), findsNWidgets(3));
-      expect($('Phase 1 done'), findsOneWidget);
-      expect($('Phase 2 done'), findsOneWidget);
-      expect($('Phase 3 done'), findsOneWidget);
+      // The lazy transcript may only materialize the summaries inside the
+      // current viewport. Verify the full source of truth instead of treating
+      // off-screen rows as missing.
+      final cubit = $.tester
+          .element(find.byType(ToolUseSummaryBubble).first)
+          .read<ChatSessionCubit>();
+      expect(
+        cubit.state.entries.where(
+          (entry) =>
+              entry is ServerChatEntry &&
+              entry.message is ToolUseSummaryMessage,
+        ),
+        hasLength(3),
+      );
+      expect(
+        cubit.state.hiddenToolUseIds,
+        containsAll(<String>{'s1-1', 's2-1', 's2-2', 's3-1'}),
+      );
+      expect(cubit.state.hiddenToolUseIds, hasLength(4));
+      expect($(ToolUseSummaryBubble), findsAtLeast(1));
     });
   });
 }

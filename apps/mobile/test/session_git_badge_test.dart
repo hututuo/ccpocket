@@ -65,6 +65,7 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.pump();
 
     expect(badge().isLabelVisible, isTrue);
 
@@ -75,6 +76,7 @@ void main() {
         hasUncommittedChanges: false,
       ),
     );
+    await tester.pump();
     await tester.pump();
 
     expect(badge().isLabelVisible, isFalse);
@@ -122,6 +124,7 @@ void main() {
         commitsAhead: 1,
       ),
     );
+    await tester.pump();
     await tester.pump();
 
     final buttonFinder = find.byKey(const ValueKey('appbar_view_changes'));

@@ -44,6 +44,7 @@ class _MockBridgeService extends BridgeService {
   BridgeConnectionState _state;
   List<SessionInfo> _sessions = const [];
   List<GalleryImage> _images = const [];
+  bool _hasAuthoritativeSessionList = false;
   final String? _lastUrl;
   bool disconnectCalled = false;
 
@@ -84,6 +85,13 @@ class _MockBridgeService extends BridgeService {
   bool get isConnected => _state == BridgeConnectionState.connected;
 
   @override
+  BridgeConnectionState get currentBridgeConnectionState => _state;
+
+  @override
+  bool get hasAuthoritativeSessionListForCurrentConnection =>
+      isConnected && _hasAuthoritativeSessionList;
+
+  @override
   String? get lastUrl => _lastUrl;
 
   @override
@@ -103,11 +111,15 @@ class _MockBridgeService extends BridgeService {
 
   void emitConnection(BridgeConnectionState state) {
     _state = state;
+    if (state != BridgeConnectionState.connected) {
+      _hasAuthoritativeSessionList = false;
+    }
     _connectionController.add(state);
   }
 
   void emitSessions(List<SessionInfo> sessions) {
     _sessions = sessions;
+    _hasAuthoritativeSessionList = true;
     _activeSessionsController.add(sessions);
   }
 

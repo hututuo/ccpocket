@@ -141,7 +141,9 @@ void main() {
       expect(approveMessages, hasLength(3));
     });
 
-    patrolWidgetTest('B4: Reject clears all pending', ($) async {
+    patrolWidgetTest('B4: Reject advances to the next pending approval', (
+      $,
+    ) async {
       await setupMultiApproval($, bridge);
 
       // Verify approval bar is showing
@@ -151,8 +153,10 @@ void main() {
       await $.tester.tap(find.byKey(const ValueKey('reject_button')));
       await pumpN($.tester);
 
-      // ApprovalBar should be completely gone (all pending cleared, not next)
-      expect(find.byType(ApprovalBar), findsNothing);
+      // Reject resolves only the selected request. The Bridge keeps each
+      // pending approval independent, so the next request remains actionable.
+      expect(find.byType(ApprovalBar), findsOneWidget);
+      expect(find.text('ls -la'), findsWidgets);
 
       // Verify a 'reject' message was sent
       final rejectMessage = findSentMessage(bridge, 'reject');

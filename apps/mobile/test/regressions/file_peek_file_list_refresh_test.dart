@@ -362,6 +362,7 @@ void main() {
         sessionId: 'claude-session',
       );
       await tester.pump();
+      await tester.pump();
 
       expect(
         find.byKey(const ValueKey('appbar_explore_button')),
