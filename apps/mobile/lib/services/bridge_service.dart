@@ -3627,6 +3627,11 @@ class BridgeService implements BridgeServiceBase {
 
   void migrateExplorerHistory(String fromSessionId, String toSessionId) {
     _runtimeStore.migrateSession(fromSessionId, toSessionId);
+    _remoteHistoryPageFlights.remove(fromSessionId);
+    final remoteHistoryCursor = _remoteHistoryCursors.remove(fromSessionId);
+    if (remoteHistoryCursor != null) {
+      _remoteHistoryCursors[toSessionId] = remoteHistoryCursor;
+    }
     final reconciliationGeneration = _sessionHistoryReconciliationGenerations
         .remove(fromSessionId);
     if (reconciliationGeneration != null) {
@@ -3642,6 +3647,11 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void clearExplorerHistory(String sessionId) {
+    _remoteHistoryPageFlights.remove(sessionId);
+    _remoteHistoryCursors.remove(sessionId);
+    _pendingHistoryDeltaSinceSeq.remove(sessionId);
+    _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
+    _finishSessionHistorySync(sessionId);
     _runtimeStore.clearSession(sessionId);
     _sessionHistoryReconciliationGenerations.remove(sessionId);
     _desktopContinuityBacklog.clearSession(sessionId);

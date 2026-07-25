@@ -780,6 +780,13 @@ void main() {
         expect(pages[0]?.hasMore, isFalse);
         expect(bridge.hasOlderRemoteSessionHistory('s1'), isFalse);
 
+        bridge.migrateExplorerHistory('s1', 's2');
+        expect(bridge.hasRemoteSessionHistoryPaging('s1'), isFalse);
+        expect(bridge.hasRemoteSessionHistoryPaging('s2'), isTrue);
+
+        bridge.clearExplorerHistory('s2');
+        expect(bridge.hasRemoteSessionHistoryPaging('s2'), isFalse);
+
         bridge.disconnect();
         await socket.close();
         await server.close(force: true);
