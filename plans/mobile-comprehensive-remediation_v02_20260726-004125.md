@@ -488,7 +488,9 @@ Read: seen / unseen
 - 一个“清理可重建缓存”入口：会话目录投影、最近消息热缓存、工具详情、预览和
   可重建缩略图；执行前显示预计释放空间和离线影响；
 - 一个独立的“已下载会话历史”管理页：逐项显示标题/项目、大小、最后同步时间和
-  自动同步状态，支持逐项删除，也支持带二次确认的“清除全部已下载历史”；
+  自动同步状态，并支持逐项确认删除；
+- 普通“一键清理缓存”不得提供或暗含“清除全部已下载历史”。以后若用户另行要求
+  批量删除完整副本，应作为独立高风险功能重新确认；
 - 传输中断点、用户设置、连接凭据、草稿和未发送队列不应被普通缓存清理误删。
 
 清理后 App 应能从 Bridge 安全重建；离线时明确哪些内容暂不可用。清理过程需要
@@ -497,10 +499,10 @@ Read: seen / unseen
 再以 generation fence 拒绝迟到帧；视图可退回在线/无缓存状态，但不能闪退或把
 已删除内容重新写回。
 
-批量清理不能循环调用当前“单条删除后立即 `incremental_vacuum`”的路径。存储层
-应提供一次事务内删除所选 rows、提交后只做一次有界增量回收的批量 API，避免
-N 个副本产生 N 次 vacuum 和 UI 长时间阻塞。完整副本与普通可重建缓存必须保持
-两个确认边界。
+若以后明确增加完整副本的多选/批量删除，不能循环调用当前“单条删除后立即
+`incremental_vacuum`”的路径；届时应提供一次事务内删除所选 rows、提交后只做
+一次有界增量回收的批量 API。该未来能力不属于本轮当前要求。完整副本与普通
+可重建缓存始终保持两个确认边界。
 
 #### 6. 性能和验收指标
 
@@ -1486,6 +1488,134 @@ effective reason/permission
 
 正式实施前先把本节列出的旧测试中“有意维护旧行为”的断言改成新业务契约，再按
 小提交逐层迁移；每一层都要保留旧 Bridge fallback，不能通过整文件覆盖官方代码。
+
+### v02-014：全需求覆盖矩阵、版本优先级与剩余证据
+
+#### 1. 状态定义
+
+本节用于证明长需求列表没有在多轮讨论中丢项。状态只描述当前证据，不能理解为
+发布完成：
+
+- **保留并复核**：当前分支已有对应实现和回归，后续大重构时必须保留并重跑；
+- **重开**：v01 曾实现或测试过一部分，但用户的新反馈证明最新产品契约仍未满足；
+- **待实施**：方向和 owning layer 已明确，用户尚未授权本轮业务修改；
+- **待部署/真机**：源码或产物已有，但当前 live Bridge、Cloud、签名或物理设备
+  没有证明整条链路可用；
+- **待事件线取证**：已确定排查层次，但缺少真实出错会话/真机事件顺序，不能先
+  假定某一个根因。
+
+#### 2. 会话首页、同步、缓存与运行时
+
+| 用户要求 | 当前权威证据与结论 | 方案归属 | 状态 |
+|---|---|---|---|
+| 连接 Bridge 时不要提前跳离 IP/机器页，也不要只剩无上下文中央转圈 | v01 已加 transport→`session_list` gate，但 auto-connect/connecting presentation 仍替换连接表单 | v02-001；v01 2A.2、9.1 | 重开 |
+| 首页不能先出现整页 `(no description)` | runtime snapshot 和 recent catalog 是两条不同 readiness；当前 gate 只证明前者 | v02-008、v02-011 | 待实施 |
+| 所有持久会话都可直接点开，不再分未激活/Ready | 当前 recent tap 仍先 resume 并创建 `pending_resume_*` runtime screen | v02-003、v02-010、v02-012 | 待实施 |
+| 会话列表像 Codex Desktop，一套列表显示 running/未读/下载等正交状态 | v01 已有 unified projection 和 durable 排序；v02 要移除残留的 Ready/activation 语义 | v01 4.1、4.4；v02-003 | 重开并保留基础 |
+| 已下载会话不占顶部独立区域，只显示勾号 | unified list 和本地副本勾号已有实现 | v01 4.1、4.4 | 保留并复核 |
+| 最近使用的会话排最上面 | v01 已修 running `Map` 插入顺序；第二轮发现 client incremental replace 和多 source merge 仍可能不重排 | v01 2A.2、4.4；v02-011 | 重开 |
+| 所有会话目录和摘要跨启动缓存 | 当前 recent catalog 仍主要是进程内；冷启动无持久目录 | v02-004、v02-010、v02-011 | 待实施 |
+| 至少最近常用 10 个会话保留最近上下文，重启只追增量 | 当前 Mirror full resident 最多 8 个，且不等于默认 hot window | v02-004、v02-012 | 待实施 |
+| App 前台未点开会话时也接收轻量增量 | v01 metadata-only catalog 已存在；内容级 hot set、durable cursor 和集中 watch owner 尚未形成 | v01 4.3、4.4；v02-010 | 待实施 |
+| iOS 后台刷新不能变成所有会话 full runtime | 已明确有限后台 delta-only、location notification-only 不同步正文，回前台再追平 | v02-010.7；`docs/mobile-background-sync.md` | 保留边界 |
+| 设置里一键清缓存，已下载历史逐项删除 | 单个 Mirror 副本删除链已有；Settings 全部副本列表、标题关联、空间统计和普通缓存清理缺失 | v02-004、v02-013 | 待实施 |
+| 已有会话显示“正在加载/同步”，只有新线程显示“正在创建” | Codex/Claude 当前共用 `isPending`，resume 仍显示 creating | v02-005、v02-012 | 待实施 |
+| 会话消息同步、排序、折叠整体稳定 | 第二轮已定位 request identity、single-flight、projection、stable disclosure 等 owning layer | v02-010～v02-013 | 待实施 |
+| 双 Cockpit/Codex 实例的目录和同步不能互相污染 | 已确认两套 Home 是独立副本/旧快照风险，当前 Bridge 多处仍硬编码普通 Home | v02-007、v02-011；multi-instance note | 待实施 |
+| 运行蓝条与 history 同步光晕分开且低开销 | v01 已实现小 selector、ticker 停机和 `RepaintBoundary`；新 arbiter 后须重跑状态语义 | v01 9.4、14；v02-012 | 保留并复核 |
+
+#### 3. 历史窗口、折叠、过程框与消息时间
+
+| 用户要求 | 当前权威证据与结论 | 方案归属 | 状态 |
+|---|---|---|---|
+| 首屏最近 5 个根回合及轻量中间输出，工具详情自动预算 200 | turn-aware envelope/detail 和 additive capability 已在 v01 实现 | v01 5.1、5.4 | 保留并复核 |
+| 向上滚动继续加载更早回合，折叠详情按需取 | keyset/ordinal page 和每次最多 8 个工具详情已有实现 | v01 5.2～5.4 | 保留并复核 |
+| 一个展开工具组最多约 8 行，更多内容框内滚动 | viewport/内部滚动已有；用户反馈证明边界和溢出提示不足 | v01 6.2；v02-009、v02-013 | 重开 |
+| 增量更新不能把已展开过程收起 | v01 撤掉部分隐式 collapse；当前 `entry:`→`live:` identity 切换仍让框视觉消失 | v01 6.1；v02-009 | 重开 |
+| 展开后 thinking、工具和结果始终在同一个框中 | live thinking 与 persisted tool viewport 当前是两个 surface | v02-009、v02-013 | 待实施 |
+| 折叠时当前进度可显示思考摘要，展开后外面不重复 | owning rule 已明确，当前 live path 仍可把 thinking 放回外层 | v02-009 | 待实施 |
+| 中间过程/工具/最终回复偶发整段重复两次 | 已确认应逐层比对 raw→Bridge→Mirror→reducer→render，尚无真实故障会话四层快照 | v01 2A.1、6.3；v02-012 | 待事件线取证 |
+| 每条消息显示电脑接收时间到秒，不用同步时间冒充 | `receivedAt`/`sourceTimestamp` 和 provenance 已实现 | v01 2A.5、9.3 | 保留并复核 |
+| 时间戳尽量融入消息/工具摘要，不能占独立整行高度 | 通用 `ChatEntryWidget` 仍在每个 entry 顶部插独立时间组件 | v02-005、v02-009、v02-013 | 重开 |
+| Guardian 风险归到被批准工具下，当前只显示一条并 3 秒消失 | tool identity 归属和限时视觉提示已有实现；统一 process surface 后需防重复 | v01 8.3；v02-009 | 保留并复核 |
+| Plan 首次退出未选择后审批不能消失 | Bridge pending ledger 与 Mobile 重叠恢复已有修复 | v01 8.2 | 保留并复核 |
+
+#### 4. Side Chat、悬浮窗、权限、Goal 与额度
+
+| 用户要求 | 当前权威证据与结论 | 方案归属 | 状态 |
+|---|---|---|---|
+| Side Chat 使用官方 ephemeral thread/fork，不造持久类型，不硬编码口述半小时 | app-server `thread/fork(ephemeral:true)` 路径和 capability 已接入，复用普通会话 UI | v01 7.1、2A.3 | 保留并待部署复核 |
+| 关闭 Side Chat UI 后仍能找回尚存活 child | auxiliary registry 方向已有，真实 live Bridge 生命周期仍须验证 | v01 7.1～7.2；v02-002 | 重开 |
+| 悬浮窗点开后自身展开成非模态小窗，不是按钮弹 modal sheet | v01 实物仍是 floating button + `showModalBottomSheet`，不符合重新确认语义 | v02-002 | 待实施 |
+| 权限不能在进入/激活会话时莫名回到 `on-request` | v01 已修 unknown 被默认值污染和 resume override；若 build 202 仍出现，需抓 resolved settings/revision 事件线 | v01 2A.4、8.1 | 保留并待事件线复核 |
+| 新建会话不再报 `No thread ID available for goal lookup` | Goal 等 durable thread + authoritative init 后读取的修复已有 | v01 8.4 | 保留并复核 |
+| 选择 5.3 Spark 时额度圆环自动切 Spark 卡片 | exact model ID selector 已实现，旧 Bridge 有兼容回退 | v01 2A.3、9.2 | 保留并复核 |
+
+#### 5. 通知、未读、本地化与后台保活
+
+| 用户要求 | 当前权威证据与结论 | 方案归属 | 状态 |
+|---|---|---|---|
+| action/question/completion/failure/progress 通知本地化，过程通知真正生效 | Bridge/Cloud/Mobile 源码已有分级与 ack；progress 默认关闭，当前 live Bridge 缺 capability | v01 10.1～10.5 | 待部署/真机 |
+| 通过 Always Location 保活，仅收轻量 Bridge 投影并在本地通知 | 新原生宿主、协议和 Mobile gate 已合入 build 202；iOS 回收/force-quit 仍不保证 | v01 10.1～10.2、10.5 | 待部署/真机 |
+| 会话完成后首页显示未读蓝点，打开可见后清除 | durable unread ledger 和蓝点代码已有，跨设备不冒充已实现 | v01 10.3、10.5 | 保留并待真机 |
+| 通知长按 Allow/Reject | native category/action、opaque identity 和 Bridge 权威复核已有；需要签名设备真实验证 | v01 10.4～10.5 | 待部署/真机 |
+| 手机固定文案中文化，不引入本地模型/API 翻译 | 产品方向明确；命令、代码、路径和 provider 原文保留 | v01 12；decisions | 保留并最终扫描 |
+
+#### 6. 文件、预览与安全
+
+| 用户要求 | 当前权威证据与结论 | 方案归属 | 状态 |
+|---|---|---|---|
+| 手动文件管理和 Agent 文件引用保留两套入口，但共用读取/预览能力 | 现有 artifact candidate/hyperlink 必须复用，不能再写路径正则 | v01 11.1、2A.6 | 保留并复核 |
+| owner 模式全盘可读，项目外 Agent 引用不再 `path_not_allowed` | authenticated unrestricted read 代码已有；当前 live Bridge 未配置 API key/`*`，所以尚未上线 | v01 11.2～11.3 | 待部署 |
+| 文件修改/上传/删除必须密码或 Face ID 由 Bridge 授权 | password verifier、Secure Enclave challenge 已覆盖当前存在的 upload mutation；未来新增 move/delete 必须复用 | v01 11.4 | 保留边界并待真机 |
+| JSON/HTML/网页能正确预览，Quick Look 失败回本地预览，并有下载/分享 | 统一路由和代码已有；用户仍见失败，必须核对实际安装 build、Bridge capability、文件类型和 native dismissal 事件线 | v01 11.5；v02-006 | 待事件线/真机 |
+| 整个 Bridge/手机握手做安全审查但不把密码哈希放热路径 | 私有 HTTP/WebSocket auth、limits、symlink/TOCTOU 边界已有；当前 live Bridge 仍监听全接口且无 API key | v01 11.2～11.4、19.1 | 待部署复核 |
+
+#### 7. 实施纪律、官方更新、性能和兼容
+
+| 用户要求 | 当前权威证据与结论 | 方案归属 | 状态 |
+|---|---|---|---|
+| 确认根因后顺手修确定性 bug，不能见现象就改 | owning-layer、最小回归、旧客户端和迟到帧纪律已登记 | v01 13；v02-006 | 持续门禁 |
+| 所有功能完成后做全软件性能审查和优化 | v01 已对 build 202 做过一轮；v02 的目录/cache/arbiter/process 重构完成后必须重做，不沿用旧数字 | v01 14、19.2；v02-006、v02-010 | 待实施后执行 |
+| 合并官方最新 commits，同时保持新旧客户端和官方兼容 | `1907a42c` 已合官方 1.109.2；2026-07-26 复核 upstream/main 仍为 `aa215a3b`；开工前再次检查 | v01 3、16～19；decisions | 当前基线已对齐，开工复核 |
+| 不重复实现已有能力，不整文件覆盖官方热点 | Side Chat UI、artifact parser、Mirror delete、history cursor、pending correlation 等复用点已明确 | 全文，尤其 v01 2A、v02-010～013 | 持续门禁 |
+
+#### 8. v01 与 v02 的优先级
+
+- v01 是 build 202 当时的已实施/已验证历史账本，不能删除或改写成“从未做过”。
+- v02 是 build 202 真机/实际使用反馈后的当前产品语义。两者冲突时：
+  1. 连接页 presentation、catalog readiness 采用 v02-001/v02-008；
+  2. 悬浮按钮/modal sheet 采用 v02-002 的非模态展开小窗；
+  3. Ready/activation、持久目录和 durable view/runtime attach 采用
+     v02-003/v02-004/v02-010～012；
+  4. 时间戳位置、八行框边界和 thinking/tool 统一 surface 采用
+     v02-005/v02-009/v02-013；
+  5. 普通一键清缓存只清可重建数据，完整下载历史只逐项删除；不沿用前文曾扩大到
+     “一键清除全部下载历史”的草案。
+- “v01 有 commit/测试”只能证明旧合同曾通过，不能证明 v02 新合同已经完成。
+- 实施时若当前源码与本矩阵不同，以重新取得的事实为准，先更新矩阵和回归夹具，
+  再修改 owning layer。
+
+#### 9. 仍缺但已明确收集方式的证据
+
+以下项目尚不能靠静态代码或模拟器宣称完全理清，实施开始时必须优先补证据：
+
+1. 用户真机所见“正在挂起”的完整 status/raw provider/runtime/投影时间线；
+2. 一条真实“中间过程 + 工具 + 最终回复重复两次”会话的 raw、Bridge、Mirror、
+   reducer 和 render 五层快照；
+3. build 202 或届时新 build 上权限再次变 `on-request` 时的 override、indexed
+   factual settings、official init 和 connection epoch；
+4. JSON/HTML/Quick Look 失败样本的 MIME/UTType、大小、Bridge preview kind、
+   native `canPreview` 与 fallback 结果；
+5. 当前物理 iPhone 的通知权限、Always Location、native capability、Bridge ack、
+   live mode、最后 notification event 和系统回收状态；
+6. AltStore 重签后的 APS、Secure Enclave/Face ID、通知 action 和后台 entitlement；
+7. Cockpit 两个 Home 对同一 durable thread 出现真正分叉写入时的 owner、revision
+   和冲突样本；在此之前不能把全量 JSON 合并描述成安全同步。
+
+这些不是允许无限拖延的模糊项：对应诊断字段、采集层次和验收结果已经写明。缺少
+真实样本时先实现无副作用、有界、脱敏的诊断和 generation/request correlation，
+再复现；不得先按文本、时间或 project path 猜测并删除数据。
 
 ## 2. 后续讨论登记方式
 

@@ -68,6 +68,12 @@
   result 和 guardian 都在同一有边界、最多约八个紧凑工具行高、内部可滚动的
   viewport；collapsed 时当前进度才显示单行摘要。`live:`/`entry:` 渲染来源不得
   再成为 expansion identity。
+- `plans/mobile-comprehensive-remediation_v02_20260726-004125.md` 的
+  v02-014 是当前全需求覆盖账本。v01 保留为 build 202 的历史实施记录；用户反馈
+  与 v01 旧合同冲突时采用 v02 最新语义，不能以旧 commit/test 通过拒绝重开问题。
+- 当前要求是“一键清理可重建缓存 + 完整下载历史逐项删除”。普通清缓存不得删除
+  full copies；本轮也不默认提供“清除全部已下载历史”。以后若新增批量删除，
+  必须重新确认 destructive scope，并使用批事务而不是循环触发逐项 vacuum。
 
 ## Upstream-compatible local fixes
 
