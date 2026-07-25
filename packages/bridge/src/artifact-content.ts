@@ -11,6 +11,12 @@ export interface ByteRange {
   end: number;
 }
 
+export interface ArtifactServeOptions {
+  contentType?: string;
+  contentSecurityPolicy?: string;
+  extraHeaders?: Record<string, string | number>;
+}
+
 function asciiFilename(input: string): string {
   const ascii = input
     .normalize("NFKD")
@@ -120,9 +126,10 @@ function contentHeaders(
   entry: ArtifactEntry,
   disposition: "inline" | "attachment",
   contentLength: number,
+  options: ArtifactServeOptions,
 ): Record<string, string | number> {
   return {
-    "Content-Type": entry.mimeType,
+    "Content-Type": options.contentType ?? entry.mimeType,
     "Content-Disposition": contentDisposition(disposition, entry.filename),
     "Content-Length": contentLength,
     "Accept-Ranges": "bytes",
@@ -130,7 +137,9 @@ function contentHeaders(
     Pragma: "no-cache",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
-    "Content-Security-Policy": "sandbox; default-src 'none'",
+    "Content-Security-Policy":
+      options.contentSecurityPolicy ?? "sandbox; default-src 'none'",
+    ...options.extraHeaders,
   };
 }
 
@@ -140,6 +149,7 @@ export async function serveArtifactFile(
   disposition: "inline" | "attachment",
   req: IncomingMessage,
   res: ServerResponse,
+  options: ArtifactServeOptions = {},
 ): Promise<void> {
   const entry = store.getEntry(token);
   if (!entry) {
@@ -166,7 +176,7 @@ export async function serveArtifactFile(
   try {
     handle = await store.openCurrentEntry(entry);
     const contentLength = range ? range.end - range.start + 1 : entry.size;
-    const headers = contentHeaders(entry, disposition, contentLength);
+    const headers = contentHeaders(entry, disposition, contentLength, options);
     if (range) {
       headers["Content-Range"] =
         `bytes ${range.start}-${range.end}/${entry.size}`;

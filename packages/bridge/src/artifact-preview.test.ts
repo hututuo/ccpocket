@@ -9,6 +9,8 @@ import {
 describe("artifact preview types", () => {
   it.each([
     ["report.pdf", "application/pdf", "pdf"],
+    ["page.html", "text/html", "html"],
+    ["page.htm", "application/octet-stream", "html"],
     ["photo.png", "image/png", "image"],
     ["notes.md", "text/markdown", "text"],
     ["voice.m4a", "audio/mp4", "audio"],
@@ -75,6 +77,18 @@ describe("renderArtifactPreviewHtml", () => {
 
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain('<script>alert("x")</script>');
+  });
+
+  it("routes local HTML through the isolated artifact sandbox", () => {
+    const html = renderArtifactPreviewHtml({
+      ...baseModel,
+      filename: "page.html",
+      mimeType: "text/html; charset=utf-8",
+    });
+
+    expect(html).toContain(`/artifacts/${baseModel.token}/sandbox`);
+    expect(html).toContain('sandbox="allow-scripts"');
+    expect(html).toContain('referrerpolicy="no-referrer"');
   });
 
   it("loads only local scripts for DOCX previews", () => {

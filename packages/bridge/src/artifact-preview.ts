@@ -3,6 +3,7 @@ import { extname } from "node:path";
 export type ArtifactPreviewKind =
   | "image"
   | "pdf"
+  | "html"
   | "text"
   | "audio"
   | "video"
@@ -31,6 +32,7 @@ const MIME_TYPES: Record<string, string> = {
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".gif": "image/gif",
   ".heic": "image/heic",
+  ".htm": "text/html; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
@@ -125,6 +127,13 @@ export function previewKindForFile(
   const ext = extname(filename).toLowerCase();
   if (ext === ".docx") return "docx";
   if (OFFICE_EXTENSIONS.has(ext)) return "office";
+  if (
+    ext === ".html" ||
+    ext === ".htm" ||
+    mimeType.toLowerCase().startsWith("text/html")
+  ) {
+    return "html";
+  }
   if (ext === ".pdf" || mimeType === "application/pdf") return "pdf";
   if (mimeType.startsWith("image/")) return "image";
   if (mimeType.startsWith("audio/")) return "audio";
@@ -174,6 +183,9 @@ function previewBody(model: ArtifactPreviewModel): string {
   }
   if (kind === "pdf") {
     return `<div class="stage frame-stage"><iframe src="${contentUrl}" title="${filename}"></iframe></div>`;
+  }
+  if (kind === "html") {
+    return `<div class="stage frame-stage"><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="${basePath}/sandbox" title="${filename}"></iframe></div>`;
   }
   if (kind === "audio") {
     return `<div class="stage media-stage"><div class="file-glyph">♫</div><audio controls preload="metadata" src="${contentUrl}"></audio></div>`;

@@ -24,6 +24,12 @@ const TOKEN_PATTERN = "[A-Za-z0-9_-]{43}";
 const MAX_CONTROL_BODY_BYTES = 16 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 512 * 1024;
 const MAX_DOCX_BROWSER_PREVIEW_BYTES = 25 * 1024 * 1024;
+const SANDBOXED_HTML_CSP =
+  "sandbox allow-scripts; default-src 'none'; img-src data: blob:; " +
+  "media-src data: blob:; style-src 'unsafe-inline'; " +
+  "script-src 'unsafe-inline'; font-src data:; connect-src 'none'; " +
+  "frame-src 'none'; worker-src 'none'; object-src 'none'; " +
+  "form-action 'none'; base-uri 'none'";
 
 export function isLoopbackAddress(address?: string): boolean {
   if (!address) return false;
@@ -102,7 +108,9 @@ export class ArtifactHttpHandler {
     }
 
     const artifactMatch = url.match(
-      new RegExp(`^/artifacts/(${TOKEN_PATTERN})(?:/(content|download))?$`),
+      new RegExp(
+        `^/artifacts/(${TOKEN_PATTERN})(?:/(content|download|sandbox))?$`,
+      ),
     );
     if (!artifactMatch) return false;
 
@@ -118,6 +126,22 @@ export class ArtifactHttpHandler {
     if (action === "preview") {
       const embedded = new URLSearchParams(query).get("embedded") === "1";
       void this.servePreview(token, req.method === "HEAD", embedded, res);
+    } else if (action === "sandbox") {
+      const entry = this.store.getEntry(token);
+      if (
+        !entry ||
+        previewKindForFile(entry.filename, entry.mimeType) !== "html"
+      ) {
+        sendArtifactText(res, 404, "Not Found");
+        return true;
+      }
+      void serveArtifactFile(this.store, token, "inline", req, res, {
+        contentType: "text/html; charset=utf-8",
+        contentSecurityPolicy: SANDBOXED_HTML_CSP,
+        extraHeaders: {
+          "Cross-Origin-Resource-Policy": "same-origin",
+        },
+      });
     } else {
       void serveArtifactFile(
         this.store,
@@ -277,6 +301,18 @@ export class ArtifactHttpHandler {
         const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0);
         textPreview = buffer.subarray(0, bytesRead).toString("utf8");
         textPreviewTruncated = entry.size > bytesRead;
+        if (
+          !textPreviewTruncated &&
+          (entry.filename.toLowerCase().endsWith(".json") ||
+            entry.mimeType.toLowerCase().startsWith("application/json"))
+        ) {
+          try {
+            textPreview = JSON.stringify(JSON.parse(textPreview), null, 2);
+          } catch {
+            // Invalid or JSON-like text remains available as a bounded raw
+            // preview instead of turning a formatting failure into a 500.
+          }
+        }
       }
       await handle.close();
       handle = undefined;

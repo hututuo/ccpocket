@@ -767,6 +767,25 @@ Local file   -> iOS Quick Look canPreview -> 本地有界预览器 -> metadata/d
 - 未知二进制显示 metadata、下载和分享，不猜编码；
 - 复用现有 `ArtifactPreviewScreen`、下载、分享、进度和取消。
 
+源码复核后的实现说明（2026-07-25）：
+
+- 互联网 URL 原本就经统一 markdown link handler 使用系统外部浏览器，予以保留，
+  不再造第二套路由；
+- JSON 在 Bridge 原本已被归为 text，但只显示压缩原文；现在对完整且有效的有界
+  JSON 先 pretty-print，损坏或截断内容仍回退原文，不把格式化失败变成 500；
+- `.html/.htm/text/html` 从普通转义文本中独立为 `html` preview kind，经
+  `/artifacts/<opaque-token>/sandbox` 打开；外层 iframe 与响应 CSP 双层 sandbox，
+  只允许本文件 inline script/style/data/blob 资源，禁用网络、connect、frame、
+  form、worker、object、base 和原生 JS bridge；
+- iOS 仍由原生 `QLPreviewController.canPreview` 作最终判断。Dart 不再只对白名单
+  Office 文件尝试 Quick Look，而是对 64 MiB 内的非 HTML 文件尝试；`unsupported`
+  和旧基础 IPA 缺插件时自动进入现有 WebView/有界文本/metadata fallback，真实
+  传输或 presentation 错误才显示重试；
+- 64 MiB 自动 Quick Look 上限避免点开超大文件就完整下载；更大文件继续使用
+  流式 WebView/metadata 和现有下载、分享入口；
+- 普通 `/content` 仍保持原先 `sandbox; default-src 'none'`，只有经过类型复核的
+  HTML token 才能进入专用 sandbox 路由。
+
 ## 12. 固定 UI 中文化
 
 - 扫描 Dart/Swift/Bridge 直接面向用户的硬编码字符串；

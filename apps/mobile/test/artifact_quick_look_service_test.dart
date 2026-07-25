@@ -55,6 +55,29 @@ void main() {
     expect(isOfficeArtifactForQuickLook('notes.txt', 'text/plain'), isFalse);
   });
 
+  test('tries bounded files in Quick Look but keeps HTML isolated', () {
+    expect(
+      shouldTryQuickLookForArtifact('payload.json', 'application/json', 4096),
+      isTrue,
+    );
+    expect(
+      shouldTryQuickLookForArtifact('report.pdf', 'application/pdf', 4096),
+      isTrue,
+    );
+    expect(
+      shouldTryQuickLookForArtifact('page.html', 'text/html', 4096),
+      isFalse,
+    );
+    expect(
+      shouldTryQuickLookForArtifact(
+        'large.bin',
+        'application/octet-stream',
+        artifactQuickLookAutomaticMaxBytes + 1,
+      ),
+      isFalse,
+    );
+  });
+
   test(
     'method channel gateway sends only the native preview contract',
     () async {
@@ -76,6 +99,28 @@ void main() {
       await const MethodChannelArtifactQuickLookGateway(
         channel,
       ).previewFile(path: '/tmp/report.xlsx', title: '报告.xlsx');
+    },
+  );
+
+  test(
+    'method channel reports unsupported formats as a typed fallback',
+    () async {
+      const channel = MethodChannel('ccpocket/artifact_quick_look_unsupported');
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (_) async {
+            throw PlatformException(code: 'unsupported');
+          });
+
+      await expectLater(
+        const MethodChannelArtifactQuickLookGateway(
+          channel,
+        ).previewFile(path: '/tmp/payload.json', title: 'payload.json'),
+        throwsA(isA<ArtifactQuickLookUnsupportedException>()),
+      );
     },
   );
 

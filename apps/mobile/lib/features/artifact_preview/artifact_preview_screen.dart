@@ -51,12 +51,14 @@ bool isAllowedArtifactPreviewNavigation(Uri previewUrl, Uri candidate) {
   return candidate.path == previewPath ||
       candidate.path == '$previewPath/content' ||
       candidate.path == '$previewPath/download' ||
+      candidate.path == '$previewPath/sandbox' ||
       candidate.path.startsWith('/artifacts/assets/');
 }
 
 @visibleForTesting
 bool artifactPreviewRequiresJavaScript(String filename, String mimeType) {
-  return filename.toLowerCase().endsWith('.docx') ||
+  return isHtmlArtifact(filename, mimeType) ||
+      filename.toLowerCase().endsWith('.docx') ||
       mimeType.toLowerCase().startsWith(
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       );
@@ -107,7 +109,8 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   WebViewController? _controller;
   late final Uri _embeddedUrl;
   late final Uri _downloadUrl;
-  late final bool _usesQuickLook;
+  late final bool _quickLookEligible;
+  var _usesQuickLook = false;
   var _pageProgress = 0;
   var _chromeVisible = true;
   var _quickLookBusy = false;
@@ -124,16 +127,23 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     super.initState();
     _embeddedUrl = embeddedArtifactPreviewUri(widget.previewUrl);
     _downloadUrl = artifactDownloadUri(widget.previewUrl);
-    _usesQuickLook = isOfficeArtifactForQuickLook(
+    _quickLookEligible = shouldTryQuickLookForArtifact(
       widget.filename,
       widget.mimeType,
+      widget.sizeBytes,
     );
+    _usesQuickLook = _quickLookEligible;
     if (_usesQuickLook) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(_previewOfficeArtifact());
+        if (mounted) unawaited(_previewWithQuickLook());
       });
       return;
     }
+    _initializeWebPreview();
+  }
+
+  void _initializeWebPreview() {
+    if (_controller != null) return;
     _controller = WebViewController()
       ..setJavaScriptMode(
         artifactPreviewRequiresJavaScript(widget.filename, widget.mimeType)
@@ -409,7 +419,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     );
   }
 
-  Future<void> _previewOfficeArtifact() async {
+  Future<void> _previewWithQuickLook() async {
     if (!_usesQuickLook || _quickLookBusy || _transferAction != null) return;
     final transfer = _ArtifactTransferSession();
     _activeTransfer = transfer;
@@ -432,6 +442,14 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
         title: widget.filename,
         isCancelled: () => transfer.cancellation.isCancelled || !mounted,
       );
+    } on ArtifactQuickLookUnsupportedException {
+      if (mounted && !transfer.cancellation.isCancelled) {
+        _initializeWebPreview();
+        setState(() {
+          _usesQuickLook = false;
+          _quickLookError = false;
+        });
+      }
     } catch (_) {
       if (mounted && !transfer.cancellation.isCancelled) {
         setState(() => _quickLookError = true);
@@ -521,7 +539,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
                   )
                 else
                   FilledButton.icon(
-                    onPressed: _previewOfficeArtifact,
+                    onPressed: _previewWithQuickLook,
                     icon: const Icon(Icons.visibility_outlined),
                     label: Text(
                       _quickLookError

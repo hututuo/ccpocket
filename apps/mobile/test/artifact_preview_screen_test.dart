@@ -67,6 +67,13 @@ void main() {
     expect(
       isAllowedArtifactPreviewNavigation(
         preview,
+        Uri.parse('${preview.toString()}/sandbox'),
+      ),
+      isTrue,
+    );
+    expect(
+      isAllowedArtifactPreviewNavigation(
+        preview,
         Uri.parse('http://100.105.41.82:8765/artifacts/assets/docx-viewer.js'),
       ),
       isTrue,
@@ -107,7 +114,7 @@ void main() {
     );
   });
 
-  test('enables JavaScript only for the local DOCX renderer', () {
+  test('enables JavaScript only for isolated HTML and local DOCX renderers', () {
     expect(
       artifactPreviewRequiresJavaScript(
         'report.docx',
@@ -122,6 +129,7 @@ void main() {
       ),
       isTrue,
     );
+    expect(artifactPreviewRequiresJavaScript('page.html', 'text/html'), isTrue);
     expect(
       artifactPreviewRequiresJavaScript('report.pdf', 'application/pdf'),
       isFalse,

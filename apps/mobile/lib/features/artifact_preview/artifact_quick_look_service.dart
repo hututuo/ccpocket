@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 
 const artifactQuickLookChannelName = 'ccpocket/artifact_quick_look';
+const artifactQuickLookAutomaticMaxBytes = 64 * 1024 * 1024;
 
 const _officeExtensions = <String>{
   '.doc',
@@ -35,6 +36,36 @@ bool isOfficeArtifactForQuickLook(String filename, String mimeType) {
   return _officeMimeTypes.contains(mediaType);
 }
 
+bool isHtmlArtifact(String filename, String mimeType) {
+  final extension = path.extension(filename).toLowerCase();
+  final mediaType = mimeType.split(';').first.trim().toLowerCase();
+  return extension == '.html' ||
+      extension == '.htm' ||
+      mediaType == 'text/html';
+}
+
+/// Quick Look remains the first choice for bounded local files, while HTML is
+/// deliberately kept in the app's isolated WebView sandbox.
+bool shouldTryQuickLookForArtifact(
+  String filename,
+  String mimeType,
+  int sizeBytes,
+) {
+  if (sizeBytes < 0 || sizeBytes > artifactQuickLookAutomaticMaxBytes) {
+    return false;
+  }
+  return !isHtmlArtifact(filename, mimeType);
+}
+
+class ArtifactQuickLookUnsupportedException implements Exception {
+  const ArtifactQuickLookUnsupportedException([this.code = 'unsupported']);
+
+  final String code;
+
+  @override
+  String toString() => 'ArtifactQuickLookUnsupportedException($code)';
+}
+
 abstract interface class ArtifactQuickLookGateway {
   Future<void> previewFile({required String path, required String title});
 }
@@ -48,11 +79,23 @@ class MethodChannelArtifactQuickLookGateway
   final MethodChannel _channel;
 
   @override
-  Future<void> previewFile({required String path, required String title}) {
-    return _channel.invokeMethod<void>('previewFile', <String, String>{
-      'path': path,
-      'title': title,
-    });
+  Future<void> previewFile({
+    required String path,
+    required String title,
+  }) async {
+    try {
+      await _channel.invokeMethod<void>('previewFile', <String, String>{
+        'path': path,
+        'title': title,
+      });
+    } on MissingPluginException {
+      throw const ArtifactQuickLookUnsupportedException('plugin_missing');
+    } on PlatformException catch (error) {
+      if (error.code == 'unsupported') {
+        throw const ArtifactQuickLookUnsupportedException();
+      }
+      rethrow;
+    }
   }
 }
 

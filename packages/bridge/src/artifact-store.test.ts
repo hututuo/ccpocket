@@ -445,6 +445,79 @@ describe("ArtifactStore HTTP", () => {
     );
   });
 
+  it("renders local HTML only through a same-origin opaque sandbox", async () => {
+    const root = await tempRoot();
+    const filePath = join(root, "page.html");
+    await writeFile(
+      filePath,
+      '<!doctype html><script>document.body.textContent="ok"</script>',
+    );
+    const store = trackedStore({
+      baseUrl: "http://192.168.1.20:8765",
+      allowedDirs: [root],
+    });
+    const port = await startStore(store);
+    const artifact = await publishOverHttp(port, filePath);
+    const previewPath = new URL(artifact.previewUrl).pathname;
+
+    const preview = await httpRequest(port, `${previewPath}?embedded=1`);
+    const sandbox = await httpRequest(port, `${previewPath}/sandbox`);
+    const rawContent = await httpRequest(port, `${previewPath}/content`);
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body.toString()).toContain(`${previewPath}/sandbox`);
+    expect(preview.body.toString()).toContain('sandbox="allow-scripts"');
+    expect(sandbox.statusCode).toBe(200);
+    expect(sandbox.headers["content-type"]).toContain("text/html");
+    expect(sandbox.headers["content-security-policy"]).toContain(
+      "sandbox allow-scripts",
+    );
+    expect(sandbox.headers["content-security-policy"]).toContain(
+      "connect-src 'none'",
+    );
+    expect(sandbox.headers["cross-origin-resource-policy"]).toBe("same-origin");
+    expect(sandbox.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(sandbox.body.toString()).toContain("document.body.textContent");
+    expect(rawContent.headers["content-security-policy"]).toBe(
+      "sandbox; default-src 'none'",
+    );
+  });
+
+  it("pretty-prints valid JSON and keeps invalid JSON as bounded text", async () => {
+    const root = await tempRoot();
+    const validPath = join(root, "valid.json");
+    const invalidPath = join(root, "invalid.json");
+    await writeFile(validPath, '{"warning":"x","nested":{"ok":true}}');
+    await writeFile(invalidPath, '{"warning":');
+    const store = trackedStore({
+      baseUrl: "http://192.168.1.20:8765",
+      allowedDirs: [root],
+    });
+    const port = await startStore(store);
+    const valid = await publishOverHttp(port, validPath);
+    const invalid = await publishOverHttp(port, invalidPath);
+
+    const validPreview = await httpRequest(
+      port,
+      new URL(valid.previewUrl).pathname,
+    );
+    const invalidPreview = await httpRequest(
+      port,
+      new URL(invalid.previewUrl).pathname,
+    );
+
+    expect(validPreview.body.toString()).toContain(
+      "&quot;warning&quot;: &quot;x&quot;",
+    );
+    expect(validPreview.body.toString()).toContain(
+      "&quot;ok&quot;: true",
+    );
+    expect(invalidPreview.statusCode).toBe(200);
+    expect(invalidPreview.body.toString()).toContain(
+      "{&quot;warning&quot;:",
+    );
+  });
+
   it("streams full, HEAD, and byte-range content with safe headers", async () => {
     const root = await tempRoot();
     const filePath = join(root, "报告 2026.txt");
