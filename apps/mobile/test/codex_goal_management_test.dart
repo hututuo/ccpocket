@@ -567,6 +567,17 @@ void main() {
   });
 
   test('native Codex commands emit UI intents without chat turns', () async {
+    bridge.sessionSnapshot = const [
+      SessionInfo(
+        id: 's-ui',
+        provider: 'codex',
+        projectPath: '/project',
+        claudeSessionId: 'thread-ui',
+        status: 'idle',
+        createdAt: '',
+        lastActivityAt: '',
+      ),
+    ];
     final uiCubit = CodexSessionCubit(
       sessionId: 's-ui',
       bridge: bridge,

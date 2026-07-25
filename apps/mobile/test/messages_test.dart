@@ -730,6 +730,7 @@ void main() {
         'client_delivery_mode_state_v1',
         'background_notification_v1',
         'background_activity_state_v1',
+        'push_registration_state_v1',
         'archived_sessions_result',
         'unarchive_result',
         'delete_session_result',
