@@ -6,6 +6,8 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
+import { createServer, request as sendHttpRequest } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +25,52 @@ vi.mock("node:os", async (importOriginal) => {
 });
 
 import { GalleryStore } from "./gallery-store.js";
+
+async function galleryHttpRequest(
+  store: GalleryStore,
+  body: string,
+  headers: Record<string, string | number> = {},
+): Promise<{ statusCode: number; body: string }> {
+  const server = createServer((req, res) => {
+    if (store.handleUploadRequest(req, res)) return;
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    return await new Promise((resolve, reject) => {
+      const req = sendHttpRequest(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/api/gallery/upload",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+            ...headers,
+          },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          res.on("end", () => {
+            resolve({
+              statusCode: res.statusCode ?? 0,
+              body: Buffer.concat(chunks).toString("utf8"),
+            });
+          });
+        },
+      );
+      req.on("error", reject);
+      req.end(body);
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
 
 describe("GalleryStore.addImage", () => {
   beforeEach(async () => {
@@ -215,5 +263,75 @@ describe("GalleryStore.addImage", () => {
       await rm(root, { recursive: true, force: true });
       await rm(galleryDirectory, { recursive: true, force: true });
     }
+  });
+});
+
+describe("GalleryStore HTTP upload", () => {
+  let galleryDirectory: string;
+  let store: GalleryStore;
+
+  beforeEach(async () => {
+    galleryDirectory = await mkdtemp(
+      join(tmpdir(), "ccpocket-gallery-http-"),
+    );
+    store = new GalleryStore({ directory: galleryDirectory });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    await rm(galleryDirectory, { recursive: true, force: true });
+  });
+
+  it("accepts a bounded canonical base64 image", async () => {
+    const response = await galleryHttpRequest(
+      store,
+      JSON.stringify({
+        base64: Buffer.from("small image").toString("base64"),
+        mimeType: "image/png",
+        projectPath: "/tmp/project",
+      }),
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(JSON.parse(response.body).image).toMatchObject({
+      mimeType: "image/png",
+      projectPath: "/tmp/project",
+    });
+  });
+
+  it("rejects malformed base64 instead of decoding it permissively", async () => {
+    const response = await galleryHttpRequest(
+      store,
+      JSON.stringify({
+        base64: "not-valid-base64!",
+        mimeType: "image/png",
+        projectPath: "/tmp/project",
+      }),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(store.list()).toEqual([]);
+  });
+
+  it("does not expose file-path copy mode without local control", async () => {
+    const response = await galleryHttpRequest(
+      store,
+      JSON.stringify({
+        filePath: "/tmp/private-image.png",
+        projectPath: "/tmp",
+      }),
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(store.list()).toEqual([]);
+  });
+
+  it("rejects an oversized declared request before buffering it", async () => {
+    const response = await galleryHttpRequest(store, "{}", {
+      "Content-Length": 20 * 1024 * 1024,
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(store.list()).toEqual([]);
   });
 });

@@ -3,9 +3,9 @@ import { FILE_TRANSFER_MAX_UPLOAD_CHUNK_BYTES } from "./file-transfer-constants.
 import { FileTransferError } from "./file-transfer-errors.js";
 import type { FileTransferManager } from "./file-transfer-manager.js";
 import { UploadOffsetConflictError } from "./file-transfer-upload-store.js";
+import { isDirectLoopbackRequest } from "./bridge-http-auth.js";
 import {
   fileTransferContentDisposition,
-  isFileTransferLoopbackAddress,
   sendFileTransferJson,
   sendFileTransferText,
   validateFileTransferBaseUrl,
@@ -105,7 +105,7 @@ export class FileTransferHttpHandler {
   }
 
   private async handleSendControl(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!isFileTransferLoopbackAddress(req.socket.remoteAddress)) {
+    if (!isDirectLoopbackRequest(req)) {
       req.resume();
       return sendTransferJson(res, 403, "loopback_required", "Forbidden");
     }

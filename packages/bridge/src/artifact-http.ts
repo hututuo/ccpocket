@@ -19,6 +19,12 @@ import {
   type ArtifactStore,
 } from "./artifact-store.js";
 import { validateArtifactBaseUrl } from "./artifact-url.js";
+import {
+  isDirectLoopbackRequest,
+  isLoopbackAddress,
+} from "./bridge-http-auth.js";
+
+export { isLoopbackAddress } from "./bridge-http-auth.js";
 
 const TOKEN_PATTERN = "[A-Za-z0-9_-]{43}";
 const MAX_CONTROL_BODY_BYTES = 16 * 1024;
@@ -30,16 +36,6 @@ const SANDBOXED_HTML_CSP =
   "script-src 'unsafe-inline'; font-src data:; connect-src 'none'; " +
   "frame-src 'none'; worker-src 'none'; object-src 'none'; " +
   "form-action 'none'; base-uri 'none'";
-
-export function isLoopbackAddress(address?: string): boolean {
-  if (!address) return false;
-  const normalized = address.toLowerCase();
-  if (normalized === "::1") return true;
-  const ipv4 = normalized.startsWith("::ffff:")
-    ? normalized.slice("::ffff:".length)
-    : normalized;
-  return ipv4.startsWith("127.");
-}
 
 async function readControlBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -158,7 +154,7 @@ export class ArtifactHttpHandler {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!isDirectLoopbackRequest(req)) {
       req.resume();
       sendArtifactJson(res, 403, {
         error: "Forbidden",

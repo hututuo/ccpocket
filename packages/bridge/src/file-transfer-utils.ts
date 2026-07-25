@@ -1,5 +1,6 @@
 import type { ServerResponse } from "node:http";
 import { extname } from "node:path";
+import { isLoopbackAddress } from "./bridge-http-auth.js";
 
 const MIME_TYPES: Record<string, string> = {
   ".aac": "audio/aac",
@@ -49,13 +50,7 @@ export function fileTransferMimeType(filename: string): string {
 }
 
 export function isFileTransferLoopbackAddress(address?: string): boolean {
-  if (!address) return false;
-  const normalized = address.toLowerCase();
-  if (normalized === "::1") return true;
-  const ipv4 = normalized.startsWith("::ffff:")
-    ? normalized.slice("::ffff:".length)
-    : normalized;
-  return ipv4.startsWith("127.");
+  return isLoopbackAddress(address);
 }
 
 /** Validate a configured/CLI origin that must be reachable from the phone. */

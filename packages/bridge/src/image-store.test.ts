@@ -154,7 +154,7 @@ describe("ImageStore.registerImages", () => {
     }
   });
 
-  it("reuses the same content-addressed ref for identical files", async () => {
+  it("reuses the same opaque ref for identical files in one runtime", async () => {
     const root = await mkdtemp(join(tmpdir(), "ccpocket-image-store-"));
     try {
       const firstPath = join(root, "first.png");
@@ -172,6 +172,16 @@ describe("ImageStore.registerImages", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("does not expose a cross-runtime content digest as the public id", () => {
+    const data = Buffer.from("same generated image").toString("base64");
+    const first = new ImageStore().registerFromBase64(data, "image/png");
+    const second = new ImageStore().registerFromBase64(data, "image/png");
+
+    expect(first?.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(second?.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(second?.id).not.toBe(first?.id);
   });
 });
 

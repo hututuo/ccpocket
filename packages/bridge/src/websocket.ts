@@ -166,6 +166,7 @@ import {
   FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY,
   type FileMutationAuthorizer,
 } from "./file-mutation-auth.js";
+import { BridgeApiKeyAuthenticator } from "./bridge-http-auth.js";
 import {
   FILE_TRANSFER_CAPABILITY,
   isFileTransferClientMessage,
@@ -1126,6 +1127,7 @@ function mergeRecentSessionPages(sessions: unknown[]): unknown[] {
 export interface BridgeServerOptions {
   server: HttpServer;
   apiKey?: string;
+  apiKeyAuthenticator?: BridgeApiKeyAuthenticator;
   allowedDirs?: string[];
   imageStore?: ImageStore;
   galleryStore?: GalleryStore;
@@ -1182,7 +1184,7 @@ export class BridgeWebSocketServer {
 
   private wss: WebSocketServer;
   private sessionManager: SessionManager;
-  private apiKey: string | null;
+  private readonly apiKeyAuthenticator: BridgeApiKeyAuthenticator;
   private allowedDirs: string[];
   private imageStore: ImageStore | null;
   private galleryStore: GalleryStore | null;
@@ -1274,6 +1276,7 @@ export class BridgeWebSocketServer {
     const {
       server,
       apiKey,
+      apiKeyAuthenticator,
       allowedDirs,
       imageStore,
       galleryStore,
@@ -1294,7 +1297,8 @@ export class BridgeWebSocketServer {
       fileMutationAuthorizer,
       sessionCatalogMonitorFactory,
     } = options;
-    this.apiKey = apiKey ?? null;
+    this.apiKeyAuthenticator =
+      apiKeyAuthenticator ?? new BridgeApiKeyAuthenticator(apiKey);
     this.allowedDirs = allowedDirs ?? [];
     this.imageStore = imageStore ?? null;
     this.galleryStore = galleryStore ?? null;
@@ -1521,15 +1525,14 @@ export class BridgeWebSocketServer {
 
     this.wss.on("connection", (ws, req) => {
       // API key authentication
-      if (this.apiKey) {
-        const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-        const token = url.searchParams.get("token");
-        if (token !== this.apiKey) {
-          console.log("[ws] Client rejected: invalid token");
-          ws.close(4001, "Unauthorized");
-          return;
-        }
+      if (!this.apiKeyAuthenticator.acceptsWebSocketRequest(req)) {
+        console.log("[ws] Client rejected: invalid token");
+        ws.close(4001, "Unauthorized");
+        return;
       }
+      const releaseAuthenticatedPeer =
+        this.apiKeyAuthenticator.trackAuthenticatedWebSocketPeer(req);
+      ws.once("close", releaseAuthenticatedPeer);
 
       console.log("[ws] Client connected");
       this.handleConnection(ws, req);

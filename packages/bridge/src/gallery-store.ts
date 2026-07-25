@@ -4,6 +4,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  rename,
   stat,
   unlink,
   writeFile,
@@ -11,6 +12,7 @@ import {
 import { join, extname, basename, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isDirectLoopbackRequest } from "./bridge-http-auth.js";
 
 export interface GalleryImageMeta {
   id: string;
@@ -36,6 +38,12 @@ export interface GalleryImageInfo {
 }
 
 const DEFAULT_GALLERY_DIR = join(homedir(), ".ccpocket", "gallery");
+const MAX_GALLERY_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_GALLERY_UPLOAD_BODY_BYTES =
+  Math.ceil(MAX_GALLERY_IMAGE_BYTES / 3) * 4 + 64 * 1024;
+const MAX_GALLERY_STRING_BYTES = 16 * 1024;
+const BASE64_PATTERN =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -50,10 +58,78 @@ function projectNameFromPath(projectPath: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : projectPath;
 }
 
+function boundedString(
+  value: unknown,
+  maxBytes = MAX_GALLERY_STRING_BYTES,
+): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  return Buffer.byteLength(value, "utf8") <= maxBytes ? value : undefined;
+}
+
+function decodeGalleryBase64(base64Data: string): Buffer | null {
+  if (
+    !base64Data ||
+    base64Data.length > Math.ceil(MAX_GALLERY_IMAGE_BYTES / 3) * 4 ||
+    !BASE64_PATTERN.test(base64Data)
+  ) {
+    return null;
+  }
+  const buffer = Buffer.from(base64Data, "base64");
+  if (
+    buffer.length === 0 ||
+    buffer.length > MAX_GALLERY_IMAGE_BYTES ||
+    buffer.toString("base64") !== base64Data
+  ) {
+    return null;
+  }
+  return buffer;
+}
+
+async function readGalleryUploadBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > MAX_GALLERY_UPLOAD_BODY_BYTES) {
+      req.resume();
+      throw new GalleryUploadError(413, "Request body is too large");
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+class GalleryUploadError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GalleryUploadError";
+  }
+}
+
+function sendGalleryJson(
+  res: ServerResponse,
+  statusCode: number,
+  value: unknown,
+): void {
+  const body = Buffer.from(JSON.stringify(value));
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": body.length,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(body);
+}
+
 export class GalleryStore {
   private index: GalleryImageMeta[] = [];
   private readonly imagesDirectory: string;
   private readonly indexFile: string;
+  private indexWriteTail: Promise<void> = Promise.resolve();
 
   constructor(options: { directory?: string } = {}) {
     const directory = options.directory ?? DEFAULT_GALLERY_DIR;
@@ -97,11 +173,22 @@ export class GalleryStore {
   }
 
   private async saveIndex(): Promise<void> {
-    await writeFile(
-      this.indexFile,
-      JSON.stringify(this.index, null, 2),
-      "utf-8",
-    );
+    const write = this.indexWriteTail.then(async () => {
+      const temporaryFile = `${this.indexFile}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(
+          temporaryFile,
+          JSON.stringify(this.index, null, 2),
+          { encoding: "utf-8", mode: 0o600 },
+        );
+        await rename(temporaryFile, this.indexFile);
+      } catch (error) {
+        await unlink(temporaryFile).catch(() => undefined);
+        throw error;
+      }
+    });
+    this.indexWriteTail = write.catch(() => undefined);
+    await write;
   }
 
   async addImage(
@@ -114,6 +201,7 @@ export class GalleryStore {
       const resolvedPath = await this.resolveReadablePath(filePath, projectPath);
       if (!resolvedPath) return null;
       const st = await stat(resolvedPath);
+      if (st.size > MAX_GALLERY_IMAGE_BYTES) return null;
 
       const ext = extname(resolvedPath).toLowerCase();
       const mimeType = MIME_TYPES[ext];
@@ -172,8 +260,9 @@ export class GalleryStore {
       const filename = `${id}${ext}`;
       const destPath = join(this.imagesDirectory, filename);
 
-      // Decode base64 and write to file
-      const buffer = Buffer.from(base64Data, "base64");
+      // Decode a canonical bounded payload before touching persistent storage.
+      const buffer = decodeGalleryBase64(base64Data);
+      if (!buffer) return null;
       await writeFile(destPath, buffer);
 
       const meta: GalleryImageMeta = {
@@ -389,7 +478,10 @@ export class GalleryStore {
         res.writeHead(200, {
           "Content-Type": meta.mimeType,
           "Content-Length": buffer.length,
-          "Cache-Control": "public, max-age=3600",
+          "Cache-Control": "private, max-age=3600",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer",
+          "Cross-Origin-Resource-Policy": "cross-origin",
         });
         res.end(buffer);
       })
@@ -403,9 +495,9 @@ export class GalleryStore {
 
   /**
    * Handle POST /api/gallery/upload.
-   * Accepts JSON body with EITHER:
-   *   - { filePath: string, projectPath: string, sessionId?: string } (file path mode)
-   *   - { base64: string, mimeType: string, projectPath: string, sessionId?: string } (base64 mode)
+   * Accepts a bounded JSON base64 upload from authenticated Mobile clients.
+   * Legacy local file-path copies remain loopback-only and require the explicit
+   * local-control header used by Bridge command surfaces.
    * Returns true if the request was handled.
    */
   handleUploadRequest(
@@ -416,63 +508,105 @@ export class GalleryStore {
     const url = req.url ?? "";
     if (url !== "/api/gallery/upload" || req.method !== "POST") return false;
 
-    let body = "";
-    req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-    req.on("end", async () => {
-      try {
-        const parsed = JSON.parse(body) as {
-          filePath?: string;
-          base64?: string;
-          mimeType?: string;
-          projectPath?: string;
-          sessionId?: string;
-        };
-
-        if (!parsed.projectPath) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "projectPath is required" }));
-          return;
-        }
-
-        let meta: GalleryImageMeta | null = null;
-
-        // Base64 mode: save from base64 data
-        if (parsed.base64 && parsed.mimeType) {
-          meta = await this.addImageFromBase64(
-            parsed.base64,
-            parsed.mimeType,
-            parsed.projectPath,
-            parsed.sessionId,
-          );
-        }
-        // File path mode: copy from file path
-        else if (parsed.filePath) {
-          meta = await this.addImage(
-            parsed.filePath,
-            parsed.projectPath,
-            parsed.sessionId,
-          );
-        } else {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Either filePath or (base64 + mimeType) is required" }));
-          return;
-        }
-
-        if (!meta) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Failed to add image (unsupported format or invalid data)" }));
-          return;
-        }
-        const info = this.metaToInfo(meta);
-        if (onNewImage) onNewImage(meta);
-        res.writeHead(201, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ image: info }));
-      } catch {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid JSON body" }));
-      }
-    });
+    void this.handleUpload(req, res, onNewImage);
     return true;
+  }
+
+  private async handleUpload(
+    req: IncomingMessage,
+    res: ServerResponse,
+    onNewImage?: (meta: GalleryImageMeta) => void,
+  ): Promise<void> {
+    const contentType = req.headers["content-type"] ?? "";
+    if (
+      contentType.split(";", 1)[0].trim().toLowerCase() !==
+      "application/json"
+    ) {
+      req.resume();
+      sendGalleryJson(res, 415, {
+        error: "Content-Type must be application/json",
+      });
+      return;
+    }
+    const declaredLength = Number(req.headers["content-length"] ?? 0);
+    if (
+      Number.isFinite(declaredLength) &&
+      declaredLength > MAX_GALLERY_UPLOAD_BODY_BYTES
+    ) {
+      req.resume();
+      sendGalleryJson(res, 413, { error: "Request body is too large" });
+      return;
+    }
+
+    try {
+      const value: unknown = JSON.parse(await readGalleryUploadBody(req));
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new GalleryUploadError(400, "Request body must be a JSON object");
+      }
+      const parsed = value as Record<string, unknown>;
+      const projectPath = boundedString(parsed.projectPath);
+      const sessionId =
+        parsed.sessionId === undefined
+          ? undefined
+          : boundedString(parsed.sessionId);
+      if (!projectPath) {
+        throw new GalleryUploadError(400, "projectPath is required");
+      }
+      if (parsed.sessionId !== undefined && !sessionId) {
+        throw new GalleryUploadError(400, "sessionId is invalid");
+      }
+
+      let meta: GalleryImageMeta | null = null;
+      if (
+        typeof parsed.base64 === "string" &&
+        typeof parsed.mimeType === "string"
+      ) {
+        meta = await this.addImageFromBase64(
+          parsed.base64,
+          parsed.mimeType,
+          projectPath,
+          sessionId,
+        );
+      } else if (typeof parsed.filePath === "string") {
+        const localControlRequest =
+          isDirectLoopbackRequest(req) &&
+          !req.headers.origin &&
+          req.headers["x-ccpocket-control"] === "1";
+        if (!localControlRequest) {
+          throw new GalleryUploadError(
+            403,
+            "File-path gallery uploads require local Bridge control",
+          );
+        }
+        const filePath = boundedString(parsed.filePath);
+        if (!filePath) {
+          throw new GalleryUploadError(400, "filePath is invalid");
+        }
+        meta = await this.addImage(filePath, projectPath, sessionId);
+      } else {
+        throw new GalleryUploadError(
+          400,
+          "Either filePath or (base64 + mimeType) is required",
+        );
+      }
+
+      if (!meta) {
+        throw new GalleryUploadError(
+          400,
+          "Failed to add image (unsupported format or invalid data)",
+        );
+      }
+      onNewImage?.(meta);
+      sendGalleryJson(res, 201, { image: this.metaToInfo(meta) });
+    } catch (error) {
+      const statusCode =
+        error instanceof GalleryUploadError ? error.statusCode : 400;
+      const message =
+        error instanceof GalleryUploadError
+          ? error.message
+          : "Invalid JSON body";
+      sendGalleryJson(res, statusCode, { error: message });
+    }
   }
 
   /** Convert GalleryImageMeta to GalleryImageInfo for WS broadcast. */

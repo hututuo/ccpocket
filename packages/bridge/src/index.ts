@@ -34,6 +34,10 @@ import {
   FileMutationAuthorizer,
   FileMutationAuthStore,
 } from "./file-mutation-auth.js";
+import {
+  BridgeApiKeyAuthenticator,
+  requiresPrivateHttpAuthorization,
+} from "./bridge-http-auth.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -43,6 +47,7 @@ export async function startServer() {
   const PORT = parseBridgePort();
   const HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
   const API_KEY = process.env.BRIDGE_API_KEY;
+  const bridgeAuthenticator = new BridgeApiKeyAuthenticator(API_KEY);
   const FULL_DISK_READ_REQUESTED =
     process.env.BRIDGE_ALLOWED_DIRS?.trim() === "*";
   const OWNER_FULL_DISK_READ =
@@ -323,11 +328,22 @@ export async function startServer() {
     // CORS headers for Flutter Web clients
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Authorization, Content-Type",
+    );
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    if (
+      requiresPrivateHttpAuthorization(req.method, req.url) &&
+      !bridgeAuthenticator.acceptsPrivateHttpRequest(req)
+    ) {
+      bridgeAuthenticator.rejectPrivateHttpRequest(req, res);
       return;
     }
 
@@ -406,6 +422,7 @@ export async function startServer() {
     wsServer = new BridgeWebSocketServer({
       server: httpServer,
       apiKey: API_KEY,
+      apiKeyAuthenticator: bridgeAuthenticator,
       allowedDirs: ALLOWED_DIRS,
       imageStore,
       galleryStore,

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -33,10 +33,12 @@ const IMAGE_PATH_RE =
 
 export class ImageStore {
   private store = new Map<string, StoredImage>();
+  private readonly idSecret = randomBytes(32);
   /**
    * Avoid decoding the same base64 payload again during repeated history
-   * conversion. The final public id is still derived from decoded bytes so it
-   * stays stable across Bridge restarts and file/base64 registration paths.
+   * conversion. The public id is a per-process keyed digest: identical content
+   * still deduplicates inside one runtime without making image URLs guessable
+   * from known file bytes.
    */
   private base64Ids = new Map<string, string>();
 
@@ -61,7 +63,7 @@ export class ImageStore {
   }
 
   private imageId(buffer: Buffer, mimeType: string): string {
-    return createHash("sha256")
+    return createHmac("sha256", this.idSecret)
       .update(mimeType.toLowerCase())
       .update("\0")
       .update(buffer)
@@ -216,7 +218,10 @@ export class ImageStore {
     res.writeHead(200, {
       "Content-Type": entry.mimeType,
       "Content-Length": entry.buffer.length,
-      "Cache-Control": "public, max-age=604800",
+      "Cache-Control": "private, max-age=604800",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "Cross-Origin-Resource-Policy": "cross-origin",
     });
     res.end(entry.buffer);
     return true;
