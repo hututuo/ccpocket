@@ -1390,7 +1390,24 @@ export class BridgeWebSocketServer {
       console.log("[ws] Push relay enabled (Firebase Anonymous Auth)");
     }
 
-    this.wss = new WebSocketServer({ server });
+    // Browsers always attach an Origin header to WebSocket handshakes; the
+    // native app clients never do. Rejecting Origin-bearing handshakes closes
+    // the drive-by path (arbitrary web pages connecting to ws://127.0.0.1)
+    // with no compatibility cost for existing clients.
+    this.wss = new WebSocketServer({
+      server,
+      verifyClient: (
+        info: { req: IncomingMessage },
+        done: (res: boolean, code?: number, message?: string) => void,
+      ) => {
+        if (info.req.headers.origin !== undefined) {
+          console.log("[ws] Client rejected: browser Origin handshake");
+          done(false, 403, "Forbidden");
+          return;
+        }
+        done(true);
+      },
+    });
 
     this.sessionManager = new SessionManager(
       (sessionId, msg) => {

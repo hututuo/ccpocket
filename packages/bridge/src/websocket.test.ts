@@ -715,6 +715,7 @@ import { BridgeWebSocketServer } from "./websocket.js";
 import { CodexProcess, CodexRpcError } from "./codex-process.js";
 import { ArtifactResolveError } from "./artifact-manager.js";
 import { GalleryStore } from "./gallery-store.js";
+import { WebSocket as WsClient } from "ws";
 
 describe("BridgeWebSocketServer resume/get_history flow", () => {
   const OPEN_STATE = 1;
@@ -15122,5 +15123,61 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(oldSession.process.stop).toHaveBeenCalledOnce();
 
     await bridge.close();
+  });
+});
+
+describe("BridgeWebSocketServer handshake Origin gate", () => {
+  beforeEach(() => {
+    getAllRecentSessionsMock.mockReset();
+    getAllRecentSessionsMock.mockResolvedValue({
+      sessions: [],
+      hasMore: false,
+    });
+    getCodexSessionIndexMetadataMock.mockReset();
+    getCodexSessionIndexMetadataMock.mockResolvedValue(new Map());
+  });
+
+  it("rejects Origin-bearing handshakes with 403 and accepts native clients", async () => {
+    const httpServer = createServer();
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    await new Promise<void>((res) => {
+      httpServer.listen(0, "127.0.0.1", res);
+    });
+    const port = (httpServer.address() as { port: number }).port;
+    const url = `ws://127.0.0.1:${port}`;
+
+    try {
+      const browserAttempt = await new Promise<{
+        opened: boolean;
+        statusCode?: number;
+      }>((res) => {
+        const ws = new WsClient(url, { origin: "http://evil.example" });
+        ws.on("unexpected-response", (_req, response) => {
+          res({ opened: false, statusCode: response.statusCode });
+          ws.terminate();
+        });
+        ws.on("error", () => {});
+        ws.on("open", () => {
+          res({ opened: true });
+          ws.terminate();
+        });
+      });
+      expect(browserAttempt).toEqual({ opened: false, statusCode: 403 });
+
+      const nativeAttempt = await new Promise<boolean>((res) => {
+        const ws = new WsClient(url);
+        ws.on("open", () => {
+          res(true);
+          ws.close();
+        });
+        ws.on("error", () => res(false));
+      });
+      expect(nativeAttempt).toBe(true);
+    } finally {
+      await bridge.close();
+      await new Promise<void>((res) => {
+        httpServer.close(() => res());
+      });
+    }
   });
 });
