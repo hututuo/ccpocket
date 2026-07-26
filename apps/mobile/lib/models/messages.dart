@@ -1111,13 +1111,13 @@ sealed class ServerMessage {
       'guardian_approval' => GuardianApprovalMessage.fromJson(json),
       'error' =>
         _guardianReviewFromErrorJson(json) ??
-        ErrorMessage(
-          message: json['message'] as String,
-          errorCode: json['errorCode'] as String?,
-          sessionId: json['sessionId'] as String?,
-          permissionChangeId: json['permissionChangeId'] as String?,
-          goalChangeId: json['goalChangeId'] as String?,
-        ),
+            ErrorMessage(
+              message: json['message'] as String,
+              errorCode: json['errorCode'] as String?,
+              sessionId: json['sessionId'] as String?,
+              permissionChangeId: json['permissionChangeId'] as String?,
+              goalChangeId: json['goalChangeId'] as String?,
+            ),
       'session_link_resolution' => SessionLinkResolutionMessage(
         requestId: json['requestId'] as String,
         sourceSessionId: json['sourceSessionId'] as String,
@@ -1164,9 +1164,8 @@ sealed class ServerMessage {
             .whereType<Map>()
             .take(8)
             .map(
-              (value) => HistoryToolDetail.fromJson(
-                Map<String, dynamic>.from(value),
-              ),
+              (value) =>
+                  HistoryToolDetail.fromJson(Map<String, dynamic>.from(value)),
             )
             .where((detail) => detail.isValid)
             .toList(),
@@ -1386,6 +1385,7 @@ sealed class ServerMessage {
                 )
                 .toList() ??
             const [],
+        requestId: json['requestId'] as String?,
       ),
       'diff_image_result' => DiffImageResultMessage(
         filePath: json['filePath'] as String,
@@ -2048,15 +2048,12 @@ class HistoryToolDetailGap {
       final rawId = rawIds[rawIndex];
       if (rawId is! String) continue;
       final id = rawId.trim();
-      final rawName =
-          rawIndex < rawNames.length && rawNames[rawIndex] is String
+      final rawName = rawIndex < rawNames.length && rawNames[rawIndex] is String
           ? (rawNames[rawIndex] as String).trim()
           : '';
       if (id.isEmpty || id.length > 256 || !seen.add(id)) continue;
       toolUseIds.add(id);
-      toolNames.add(
-        rawName.isEmpty || rawName.length > 256 ? 'Tool' : rawName,
-      );
+      toolNames.add(rawName.isEmpty || rawName.length > 256 ? 'Tool' : rawName);
       if (toolUseIds.length >= maxToolUseIds) break;
     }
     final rawGapId = (json['gapId'] as String? ?? '').trim();
@@ -2243,9 +2240,7 @@ class GuardianApprovalMessage implements ServerMessage {
       authorization: json['authorization'] as String?,
       reviewId: json['reviewId'] as String?,
       targetItemId: json['targetItemId'] as String?,
-      action: rawAction is Map
-          ? Map<String, dynamic>.from(rawAction)
-          : null,
+      action: rawAction is Map ? Map<String, dynamic>.from(rawAction) : null,
     );
   }
 }
@@ -2293,9 +2288,7 @@ GuardianApprovalMessage? _guardianReviewFromLegacyWarning(String message) {
         .substring(separator + 1)
         .trim();
   }
-  final risk = GuardianApprovalRisk.fromString(
-    metadata['risk']?.toLowerCase(),
-  );
+  final risk = GuardianApprovalRisk.fromString(metadata['risk']?.toLowerCase());
   final reason = match.group(3)!.trim();
   if (risk == GuardianApprovalRisk.unknown || reason.isEmpty) return null;
   return GuardianApprovalMessage(
@@ -2431,9 +2424,8 @@ class HistoryToolDetail {
                           ? rawImages.whereType<Map>().take(32)
                           : const <Map>[])
                       .map(
-                        (value) => ImageRef.fromJson(
-                          Map<String, dynamic>.from(value),
-                        ),
+                        (value) =>
+                            ImageRef.fromJson(Map<String, dynamic>.from(value)),
                       )
                       .toList(growable: false),
               artifacts: rawArtifacts is List
@@ -3476,11 +3468,16 @@ class DiffResultMessage implements ServerMessage {
   final String? error;
   final String? errorCode;
   final List<DiffImageChange> imageChanges;
+
+  /// Echo of the get_diff requestId; null when talking to an old Bridge.
+  final String? requestId;
+
   const DiffResultMessage({
     required this.diff,
     this.error,
     this.errorCode,
     this.imageChanges = const [],
+    this.requestId,
   });
 }
 
@@ -5495,12 +5492,16 @@ class ClientMessage {
   factory ClientMessage.listFiles(String projectPath) =>
       ClientMessage._({'type': 'list_files', 'projectPath': projectPath});
 
-  factory ClientMessage.getDiff(String projectPath, {bool? staged}) =>
-      ClientMessage._(<String, dynamic>{
-        'type': 'get_diff',
-        'projectPath': projectPath,
-        'staged': ?staged,
-      });
+  factory ClientMessage.getDiff(
+    String projectPath, {
+    bool? staged,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'get_diff',
+    'projectPath': projectPath,
+    'staged': ?staged,
+    'requestId': ?requestId,
+  });
 
   factory ClientMessage.getDiffImage(
     String projectPath,

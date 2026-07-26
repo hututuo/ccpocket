@@ -1833,6 +1833,30 @@ void main() {
       final json = jsonDecode(msg.toJson()) as Map<String, dynamic>;
       expect(json['type'], 'get_diff');
       expect(json.containsKey('staged'), isFalse);
+      expect(json.containsKey('requestId'), isFalse);
+    });
+
+    test('getDiff with requestId', () {
+      final msg = ClientMessage.getDiff('/p', requestId: 'gitdiff-3');
+      final json = jsonDecode(msg.toJson()) as Map<String, dynamic>;
+      expect(json['type'], 'get_diff');
+      expect(json['requestId'], 'gitdiff-3');
+    });
+
+    test('parses diff_result requestId echo (absent on old Bridge)', () {
+      final withId =
+          ServerMessage.fromJson({
+                'type': 'diff_result',
+                'diff': 'diff --git a/a b/a',
+                'requestId': 'gitdiff-3',
+              })
+              as DiffResultMessage;
+      expect(withId.requestId, 'gitdiff-3');
+
+      final withoutId =
+          ServerMessage.fromJson({'type': 'diff_result', 'diff': ''})
+              as DiffResultMessage;
+      expect(withoutId.requestId, isNull);
     });
 
     test('gitStatus with sessionId', () {

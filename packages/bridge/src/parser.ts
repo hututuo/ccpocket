@@ -410,7 +410,13 @@ export type ClientMessage =
       maxLines?: number;
     }
   | { type: "list_files"; projectPath: string }
-  | { type: "get_diff"; projectPath: string; staged?: boolean }
+  | {
+      type: "get_diff";
+      projectPath: string;
+      staged?: boolean;
+      /** Echoed back in diff_result so clients can match responses. */
+      requestId?: string;
+    }
   | {
       type: "get_diff_image";
       projectPath: string;
@@ -864,6 +870,8 @@ export type ServerMessage = (
       error?: string;
       errorCode?: string;
       imageChanges?: ImageChange[];
+      /** Echo of the get_diff requestId, present when the client sent one. */
+      requestId?: string;
     }
   | {
       type: "diff_image_result";
@@ -2063,6 +2071,8 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "get_diff":
         if (typeof msg.projectPath !== "string") return null;
+        if (msg.requestId !== undefined && typeof msg.requestId !== "string")
+          return null;
         break;
       case "get_diff_image":
         if (typeof msg.projectPath !== "string") return null;

@@ -8219,6 +8219,107 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     }
   });
 
+  it("echoes the get_diff requestId in diff_result and omits it when absent", async () => {
+    const projectPath = mkdtempSync(resolve(tmpdir(), "ccpocket-diff-"));
+    execFileSync("git", ["init"], { cwd: projectPath });
+    execFileSync("git", ["config", "user.email", "test@test.com"], {
+      cwd: projectPath,
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: projectPath });
+    writeFileSync(resolve(projectPath, "initial.txt"), "initial\n");
+    execFileSync("git", ["add", "initial.txt"], { cwd: projectPath });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: projectPath });
+    writeFileSync(resolve(projectPath, "initial.txt"), "changed\n");
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: [projectPath],
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    try {
+      await (bridge as any).handleClientMessage(
+        { type: "get_diff", projectPath, requestId: "gitdiff-42" },
+        ws,
+      );
+
+      await expect
+        .poll(() =>
+          ws.send.mock.calls
+            .map((c: unknown[]) => JSON.parse(c[0] as string))
+            .find((m: any) => m.type === "diff_result"),
+        )
+        .toBeDefined();
+
+      const withId = ws.send.mock.calls
+        .map((c: unknown[]) => JSON.parse(c[0] as string))
+        .find((m: any) => m.type === "diff_result");
+      expect(withId.requestId).toBe("gitdiff-42");
+      expect(withId.diff).toContain("diff --git a/initial.txt b/initial.txt");
+
+      // Legacy clients that send no requestId must not get one back.
+      ws.send.mockClear();
+      await (bridge as any).handleClientMessage(
+        { type: "get_diff", projectPath },
+        ws,
+      );
+      await expect
+        .poll(() =>
+          ws.send.mock.calls
+            .map((c: unknown[]) => JSON.parse(c[0] as string))
+            .find((m: any) => m.type === "diff_result"),
+        )
+        .toBeDefined();
+      const withoutId = ws.send.mock.calls
+        .map((c: unknown[]) => JSON.parse(c[0] as string))
+        .find((m: any) => m.type === "diff_result");
+      expect("requestId" in withoutId).toBe(false);
+    } finally {
+      bridge.close();
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it("echoes the get_diff requestId on the error path too", async () => {
+    const projectPath = mkdtempSync(resolve(tmpdir(), "ccpocket-nogit-"));
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: [projectPath],
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    try {
+      await (bridge as any).handleClientMessage(
+        { type: "get_diff", projectPath, requestId: "gitdiff-err-1" },
+        ws,
+      );
+
+      await expect
+        .poll(() =>
+          ws.send.mock.calls
+            .map((c: unknown[]) => JSON.parse(c[0] as string))
+            .find((m: any) => m.type === "diff_result"),
+        )
+        .toBeDefined();
+
+      const diffResult = ws.send.mock.calls
+        .map((c: unknown[]) => JSON.parse(c[0] as string))
+        .find((m: any) => m.type === "diff_result");
+      expect(diffResult.errorCode).toBe("git_not_available");
+      expect(diffResult.requestId).toBe("gitdiff-err-1");
+    } finally {
+      bridge.close();
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
   it("returns base64 image data for image file peek", async () => {
     const projectPath = mkdtempSync(resolve(tmpdir(), "ccpocket-bridge-"));
     const pngBase64 =

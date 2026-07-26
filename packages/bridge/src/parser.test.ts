@@ -87,6 +87,18 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("parses get_diff with an optional requestId", () => {
+    const bare = { type: "get_diff", projectPath: "/home/user/project" };
+    expect(parseClientMessage(JSON.stringify(bare))).toEqual(bare);
+
+    const withId = { ...bare, staged: true, requestId: "gitdiff-7" };
+    expect(parseClientMessage(JSON.stringify(withId))).toEqual(withId);
+
+    expect(
+      parseClientMessage(JSON.stringify({ ...bare, requestId: 7 })),
+    ).toBeNull();
+  });
+
   it("parses client capabilities", () => {
     const msg = parseClientMessage(
       '{"type":"client_capabilities","protocolVersion":1,"appVersion":"1.72.1","supportedServerMessages":["conversation_queue"]}',

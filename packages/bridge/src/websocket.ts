@@ -8188,19 +8188,31 @@ export class BridgeWebSocketServer {
           this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
           break;
         }
+        // Echo the client's requestId (when given) so it can match this
+        // response to its own request instead of consuming another
+        // session's diff.
+        const diffRequestId = msg.requestId;
+        const sendDiffResult = (payload: Record<string, unknown>) => {
+          this.send(
+            ws,
+            diffRequestId === undefined
+              ? payload
+              : { ...payload, requestId: diffRequestId },
+          );
+        };
         this.collectGitDiff(
           msg.projectPath,
           ({ diff, error }) => {
             if (error) {
               if (/not a git repository/i.test(error)) {
-                this.send(ws, {
+                sendDiffResult({
                   type: "diff_result",
                   diff: "",
                   error: "This project is not a git repository",
                   errorCode: "git_not_available",
                 });
               } else {
-                this.send(ws, {
+                sendDiffResult({
                   type: "diff_result",
                   diff: "",
                   error: `Failed to get diff: ${error}`,
@@ -8208,15 +8220,18 @@ export class BridgeWebSocketServer {
               }
               return;
             }
-            void this.collectImageChanges(msg.projectPath, diff).then(
-              (imageChanges) => {
+            void this.collectImageChanges(msg.projectPath, diff)
+              .then((imageChanges) => {
                 if (imageChanges.length > 0) {
-                  this.send(ws, { type: "diff_result", diff, imageChanges });
+                  sendDiffResult({ type: "diff_result", diff, imageChanges });
                 } else {
-                  this.send(ws, { type: "diff_result", diff });
+                  sendDiffResult({ type: "diff_result", diff });
                 }
-              },
-            );
+              })
+              .catch((err) => {
+                console.error("[ws] Failed to collect image changes:", err);
+                sendDiffResult({ type: "diff_result", diff });
+              });
           },
           msg.staged === true
             ? { staged: true }

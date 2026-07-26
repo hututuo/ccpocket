@@ -612,6 +612,103 @@ void main() {
       expect(json['staged'], isFalse);
     });
 
+    test('discards diff_result carrying a foreign requestId', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/home/user/project',
+      );
+      addTearDown(() {
+        cubit.close();
+        mockBridge.dispose();
+      });
+
+      // Another session's response (different requestId) must not land here.
+      mockBridge.emitDiff(
+        const DiffResultMessage(
+          diff: _multiFileDiff,
+          requestId: 'gitdiff-not-ours',
+        ),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.files, isEmpty);
+      expect(cubit.state.loading, isTrue);
+
+      // The response to our own request (echoed requestId) is applied.
+      final ourRequestId =
+          (jsonDecode(
+                    mockBridge.sentMessages
+                        .firstWhere((m) => m.type == 'get_diff')
+                        .toJson(),
+                  )
+                  as Map<String, dynamic>)['requestId']
+              as String;
+      mockBridge.emitDiff(
+        DiffResultMessage(diff: _multiFileDiff, requestId: ourRequestId),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.files, hasLength(3));
+      expect(cubit.state.loading, isFalse);
+    });
+
+    test('drops the superseded response after a rapid mode switch', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/home/user/project',
+      );
+      addTearDown(() {
+        cubit.close();
+        mockBridge.dispose();
+      });
+
+      String requestIdOf(ClientMessage m) =>
+          (jsonDecode(m.toJson()) as Map<String, dynamic>)['requestId']
+              as String;
+      final firstId = requestIdOf(
+        mockBridge.sentMessages.lastWhere((m) => m.type == 'get_diff'),
+      );
+
+      // User switches to staged before the unstaged response arrives.
+      cubit.switchMode(GitViewMode.staged);
+      final secondId = requestIdOf(
+        mockBridge.sentMessages.lastWhere((m) => m.type == 'get_diff'),
+      );
+      expect(secondId, isNot(firstId));
+
+      // The late unstaged response must not populate the staged view.
+      mockBridge.emitDiff(
+        DiffResultMessage(diff: _multiFileDiff, requestId: firstId),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.files, isEmpty);
+      expect(cubit.state.loading, isTrue);
+
+      mockBridge.emitDiff(
+        DiffResultMessage(diff: _multiFileDiff, requestId: secondId),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.files, hasLength(3));
+      expect(cubit.state.loading, isFalse);
+    });
+
+    test('accepts diff_result without requestId from an old Bridge', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/home/user/project',
+      );
+      addTearDown(() {
+        cubit.close();
+        mockBridge.dispose();
+      });
+
+      mockBridge.emitDiff(const DiffResultMessage(diff: _multiFileDiff));
+      await Future.microtask(() {});
+      expect(cubit.state.files, hasLength(3));
+      expect(cubit.state.loading, isFalse);
+    });
+
     test('stageHunk sends git_stage with fingerprinted hunk', () async {
       final mockBridge = MockDiffBridgeService();
       final cubit = GitViewCubit(

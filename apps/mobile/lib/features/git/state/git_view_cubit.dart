@@ -91,8 +91,32 @@ class GitViewCubit extends Cubit<GitViewState> {
     return const GitViewState();
   }
 
+  /// Monotonic id source shared by all cubits so every get_diff in the app
+  /// gets a distinct requestId (`diff_result` is a global broadcast stream).
+  static int _diffRequestCounter = 0;
+
+  /// requestId of this cubit's latest get_diff; older or foreign responses
+  /// are discarded.
+  String? _pendingDiffRequestId;
+
+  /// Send get_diff stamped with a fresh requestId. The Bridge echoes it in
+  /// diff_result so each cubit consumes only its own response; old Bridges
+  /// ignore the extra key and echo nothing (legacy single-session mode).
+  void _sendGetDiff(String projectPath, {required bool staged}) {
+    final requestId = 'gitdiff-${++GitViewCubit._diffRequestCounter}';
+    _pendingDiffRequestId = requestId;
+    _bridge.send(
+      ClientMessage.getDiff(projectPath, staged: staged, requestId: requestId),
+    );
+  }
+
   void _requestDiff(String projectPath) {
     _diffSub = _bridge.diffResults.listen((result) {
+      // A requestId that isn't ours means another session's diff or a stale
+      // response from a superseded request (e.g. rapid mode switch) — drop
+      // it. No requestId means an old Bridge; accept for compatibility.
+      final requestId = result.requestId;
+      if (requestId != null && requestId != _pendingDiffRequestId) return;
       if (result.error != null) {
         emit(
           state.copyWith(
@@ -111,9 +135,7 @@ class GitViewCubit extends Cubit<GitViewState> {
         emit(state.copyWith(loading: false, files: files));
       }
     });
-    _bridge.send(
-      ClientMessage.getDiff(projectPath, staged: _stagedParamForMode),
-    );
+    _sendGetDiff(projectPath, staged: _stagedParamForMode);
   }
 
   /// Whether this cubit supports refresh (projectPath mode).
@@ -134,9 +156,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null) return;
     emit(state.copyWith(loading: true, error: null));
-    _bridge.send(
-      ClientMessage.getDiff(projectPath, staged: _stagedParamForMode),
-    );
+    _sendGetDiff(projectPath, staged: _stagedParamForMode);
     if (requestStatus) {
       _onStatusRefreshRequested?.call(forceRemote: forceRemote);
     }
@@ -346,9 +366,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     emit(state.copyWith(viewMode: mode, loading: true, error: null, files: []));
     final projectPath = _projectPath;
     if (projectPath != null) {
-      _bridge.send(
-        ClientMessage.getDiff(projectPath, staged: mode == GitViewMode.staged),
-      );
+      _sendGetDiff(projectPath, staged: mode == GitViewMode.staged);
     }
   }
 
