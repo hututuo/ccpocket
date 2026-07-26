@@ -316,16 +316,11 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
   final Map<String, bool> _pendingHistoryDeltaAllowsFullFallback = {};
 
-  /// Per-session generation of history sync requests (full or delta). A
-  /// legacy `history` frame is only applied when it answers the latest
-  /// generation — see [_acceptLegacyHistoryFrame].
-  final Map<String, int> _historySyncGenerations = {};
-
-  /// FIFO fences for outstanding legacy `get_history` requests. Responses on
-  /// a WebSocket arrive in request order, so each incoming `history` frame
-  /// pops the oldest fence.
-  final Map<String, List<_LegacyHistoryFence>> _pendingLegacyHistoryFences =
-      {};
+  /// Outstanding legacy `get_history` requests per session. Each incoming
+  /// `history` frame decrements the count, as does an error reply that
+  /// answers the request (see [_consumeLegacyHistoryErrorReply]) — otherwise
+  /// an error-only reply would leave the count drifted forever.
+  final Map<String, int> _outstandingLegacyHistoryRequests = {};
   final Map<String, _RemoteHistoryCursor> _remoteHistoryCursors = {};
   final Map<String, Completer<HistoryPageMessage>>
       _pendingRemoteHistoryPages = {};
@@ -1415,8 +1410,9 @@ class BridgeService implements BridgeServiceBase {
     _resetLegacyRecentSessionsTransport();
     _failPendingHistoryRequests(clearCursors: false);
     // Legacy history responses in flight on the old socket can never arrive
-    // on the new connection; stale fences would desync the FIFO pairing.
-    _pendingLegacyHistoryFences.clear();
+    // on the new connection; a stale count would let an unsolicited frame
+    // through the gate.
+    _outstandingLegacyHistoryRequests.clear();
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
     final epoch = _connectionEpoch;
@@ -1870,6 +1866,7 @@ class BridgeService implements BridgeServiceBase {
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
               case ErrorMessage(:final message):
+                _consumeLegacyHistoryErrorReply(msg, sessionId);
                 if (msg.errorCode == 'unsupported_message' &&
                     message == 'get_history_delta') {
                   _fallbackPendingHistoryDeltaRequests();
@@ -2056,7 +2053,7 @@ class BridgeService implements BridgeServiceBase {
     _pendingHistoryDeltaSinceSeq.clear();
     _pendingHistoryDeltaAllowsFullFallback.clear();
     // Frames from a torn-down socket can never arrive on the new one.
-    _pendingLegacyHistoryFences.clear();
+    _outstandingLegacyHistoryRequests.clear();
     _sessionHistoryReconciliationGenerations.clear();
     _clearSessionHistorySyncTracking();
     _providerSessionBindingByRuntime.clear();
@@ -3603,7 +3600,6 @@ class BridgeService implements BridgeServiceBase {
       // background request must be able to replace a stale foreground
       // permission left behind by a timed-out delta request.
       _pendingHistoryDeltaAllowsFullFallback[sessionId] = allowFullFallback;
-      _bumpHistorySyncGeneration(sessionId);
       send(
         ClientMessage.getHistoryDelta(
           sessionId,
@@ -3618,55 +3614,72 @@ class BridgeService implements BridgeServiceBase {
     }
   }
 
-  int _bumpHistorySyncGeneration(String sessionId) {
-    return _historySyncGenerations[sessionId] =
-        (_historySyncGenerations[sessionId] ?? 0) + 1;
-  }
-
   void _recordLegacyHistoryRequest(String sessionId) {
-    final snapshot = _runtimeStore.snapshot(sessionId);
-    _pendingLegacyHistoryFences
-        .putIfAbsent(sessionId, () => [])
-        .add(
-          _LegacyHistoryFence(
-            generation: _bumpHistorySyncGeneration(sessionId),
-            contentEpoch: snapshot.contentEpoch,
-            storeWasEmpty: snapshot.messages.isEmpty,
-          ),
-        );
+    _outstandingLegacyHistoryRequests[sessionId] =
+        (_outstandingLegacyHistoryRequests[sessionId] ?? 0) + 1;
   }
 
-  /// Generation fence for legacy full-history frames (no seq information).
+  /// Gate for legacy full-history frames (no seq information).
   ///
-  /// Without this, a late `history` frame wholesale-replaced the runtime
-  /// store — wiping real-time messages that arrived after the frame's
-  /// content basis — and reset the seq watermark to 0, forcing the next
-  /// delta request into a full re-pull (messages vanish, then reappear).
+  /// Without it, an unsolicited late `history` frame wholesale-replaced the
+  /// runtime store and reset the seq watermark to 0, forcing the next delta
+  /// request into a full re-pull (messages vanish, then reappear).
+  ///
+  /// A *solicited* reply is trusted: WebSocket replies arrive in request
+  /// order, so an old Bridge serves `get_history` only after emitting any
+  /// live frames the app already applied — the reply is a superset of the
+  /// store and applying it loses nothing. Comparing content epochs here
+  /// would misread every raced-in live frame as staleness and drop the
+  /// backlog the request was made to fetch.
   bool _acceptLegacyHistoryFrame(String sessionId) {
-    final fences = _pendingLegacyHistoryFences[sessionId];
-    _LegacyHistoryFence? fence;
-    if (fences != null && fences.isNotEmpty) {
-      fence = fences.removeAt(0);
-      if (fences.isEmpty) _pendingLegacyHistoryFences.remove(sessionId);
+    final outstanding = _outstandingLegacyHistoryRequests[sessionId] ?? 0;
+    if (outstanding > 0) {
+      if (outstanding == 1) {
+        _outstandingLegacyHistoryRequests.remove(sessionId);
+      } else {
+        _outstandingLegacyHistoryRequests[sessionId] = outstanding - 1;
+      }
     }
     final snapshot = _runtimeStore.snapshot(sessionId);
-    // Hydrating an empty store loses nothing.
+    // Hydrating an empty store loses nothing. (This also covers the
+    // deliberate legacy fallback _requestSessionHistory issues when the
+    // store is empty but an old watermark survives.)
     if (snapshot.messages.isEmpty) return true;
-    // Unsolicited full frame over live content: never wholesale-replace.
-    if (fence == null) return false;
-    // A newer sync request owns the session now; this frame is stale.
-    if (fence.generation != (_historySyncGenerations[sessionId] ?? 0)) {
-      return false;
-    }
-    if (fence.storeWasEmpty) {
-      // Initial load raced by live messages: the frame is still the only
-      // backlog source — unless seq-synced content landed meanwhile, which
-      // a legacy frame (watermark reset to 0) must not destroy.
-      return snapshot.cachedHistorySeq == 0;
-    }
-    // Resync over existing content is only safe while nothing newer arrived.
-    return snapshot.contentEpoch == fence.contentEpoch;
+    // Content owned by the snapshot/delta protocol must never be replaced:
+    // a legacy frame would reset the watermark and wipe seq-synced messages.
+    if (snapshot.cachedHistorySeq > 0) return false;
+    return outstanding > 0;
   }
+
+  /// Pairs an error reply with an outstanding legacy `get_history` request.
+  ///
+  /// Old Bridges answer `get_history` for an unknown session with an
+  /// unscoped error whose only session marker is the message text; current
+  /// Bridges scope the error and set `session_not_found`. Both must
+  /// decrement the outstanding count, or an error-only reply would leave it
+  /// drifted above the real number of pending replies.
+  void _consumeLegacyHistoryErrorReply(ErrorMessage msg, String? sessionId) {
+    if (_outstandingLegacyHistoryRequests.isEmpty) return;
+    String? target;
+    if (sessionId != null) {
+      if (msg.errorCode == 'session_not_found') target = sessionId;
+    } else {
+      target = _legacySessionNotFoundPattern.firstMatch(msg.message)?.group(1);
+    }
+    if (target == null) return;
+    final outstanding = _outstandingLegacyHistoryRequests[target] ?? 0;
+    if (outstanding <= 1) {
+      _outstandingLegacyHistoryRequests.remove(target);
+    } else {
+      _outstandingLegacyHistoryRequests[target] = outstanding - 1;
+    }
+  }
+
+  /// Error shape every Bridge generation emits for a missing session:
+  /// `Session <id> not found`.
+  static final RegExp _legacySessionNotFoundPattern = RegExp(
+    r'^Session (\S+) not found$',
+  );
 
   void refreshBranch(String sessionId) {
     send(ClientMessage.refreshBranch(sessionId));
@@ -5355,20 +5368,6 @@ class ArtifactSourceReadException implements Exception {
 
   @override
   String toString() => 'ArtifactSourceReadException($code): $message';
-}
-
-/// Snapshot of a session's runtime-store state taken when a legacy
-/// `get_history` request was sent, used to fence its full-frame response.
-class _LegacyHistoryFence {
-  final int generation;
-  final int contentEpoch;
-  final bool storeWasEmpty;
-
-  const _LegacyHistoryFence({
-    required this.generation,
-    required this.contentEpoch,
-    required this.storeWasEmpty,
-  });
 }
 
 /// Cached diff image data for a single file.
