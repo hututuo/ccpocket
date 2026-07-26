@@ -103,15 +103,30 @@ export class LocalFeaturesController {
     return false;
   }
 
+  // These fan-outs run synchronously from timer callbacks (e.g. the catalog
+  // monitor's debounce), where a handler throw would surface as an
+  // uncaughtException. Isolate handlers so one failure cannot crash the
+  // process or starve the remaining handlers.
   sessionMessage(session: LocalFeatureSession, message: ServerMessage): void {
     for (const handler of new Set(this.handlers.values())) {
-      handler.sessionMessage?.(session, message);
+      try {
+        handler.sessionMessage?.(session, message);
+      } catch (err) {
+        console.error("[local-features] sessionMessage handler failed:", err);
+      }
     }
   }
 
   sessionCatalogChanged(change: SessionCatalogChange): void {
     for (const handler of new Set(this.handlers.values())) {
-      handler.sessionCatalogChanged?.(change);
+      try {
+        handler.sessionCatalogChanged?.(change);
+      } catch (err) {
+        console.error(
+          "[local-features] sessionCatalogChanged handler failed:",
+          err,
+        );
+      }
     }
   }
 
@@ -120,7 +135,14 @@ export class LocalFeaturesController {
     mode: LocalFeatureClientDeliveryMode,
   ): void {
     for (const handler of new Set(this.handlers.values())) {
-      handler.clientDeliveryModeChanged?.(client, mode);
+      try {
+        handler.clientDeliveryModeChanged?.(client, mode);
+      } catch (err) {
+        console.error(
+          "[local-features] clientDeliveryModeChanged handler failed:",
+          err,
+        );
+      }
     }
   }
 

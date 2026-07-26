@@ -199,6 +199,66 @@ describe("LocalFeaturesController", () => {
     expect(sessionMessage).toHaveBeenCalledWith(session, message);
   });
 
+  it("isolates a throwing handler from the remaining fan-out handlers (B-18)", () => {
+    const session = runtime().getSession("session-1")!;
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const survivorSessionMessage = vi.fn();
+    const survivorCatalogChanged = vi.fn();
+    const survivorDeliveryModeChanged = vi.fn();
+    const throwing: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage"],
+      handle: async () => {},
+      sessionMessage: () => {
+        throw new Error("session message handler blew up");
+      },
+      sessionCatalogChanged: () => {
+        throw new Error("catalog handler blew up");
+      },
+      clientDeliveryModeChanged: () => {
+        throw new Error("delivery handler blew up");
+      },
+    };
+    const survivor: LocalFeatureHandler = {
+      messageTypes: ["get_session_usage"],
+      handle: async () => {},
+      sessionMessage: survivorSessionMessage,
+      sessionCatalogChanged: survivorCatalogChanged,
+      clientDeliveryModeChanged: survivorDeliveryModeChanged,
+    };
+    const controller = new LocalFeaturesController(runtime(), [
+      throwing,
+      survivor,
+    ]);
+
+    try {
+      expect(() =>
+        controller.sessionMessage(session, {
+          type: "status" as const,
+          status: "idle",
+        }),
+      ).not.toThrow();
+      expect(() =>
+        controller.sessionCatalogChanged({
+          revision: 1,
+          provider: "codex" as const,
+          providerSessionId: "thread-1",
+        }),
+      ).not.toThrow();
+      expect(() =>
+        controller.clientDeliveryModeChanged({}, "interactive"),
+      ).not.toThrow();
+
+      expect(survivorSessionMessage).toHaveBeenCalledOnce();
+      expect(survivorCatalogChanged).toHaveBeenCalledOnce();
+      expect(survivorDeliveryModeChanged).toHaveBeenCalledOnce();
+      expect(errorSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("forwards one catalog invalidation once per registered handler", () => {
     const sessionCatalogChanged = vi.fn();
     const handler: LocalFeatureHandler = {
