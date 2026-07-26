@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setupProxy } from "./proxy.js";
+import { installProcessGuards } from "./process-guards.js";
 import { BridgeWebSocketServer } from "./websocket.js";
 import { ImageStore } from "./image-store.js";
 import { GalleryStore } from "./gallery-store.js";
@@ -44,6 +45,7 @@ function startupErrorMessage(err: unknown): string {
 }
 
 export async function startServer() {
+  installProcessGuards();
   const PORT = parseBridgePort();
   const HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
   const API_KEY = process.env.BRIDGE_API_KEY;

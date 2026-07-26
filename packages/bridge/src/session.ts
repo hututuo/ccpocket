@@ -878,19 +878,29 @@ export class SessionManager {
               session.claudeSessionId = msg.sessionId;
               if (!session.auxiliary) this.saveWorktreeMapping(session);
               if (!session.auxiliary && session.codexSettings?.profile) {
-                void saveCodexSessionProfile(
+                saveCodexSessionProfile(
                   msg.sessionId,
                   session.codexSettings.profile,
-                );
+                ).catch((err) => {
+                  console.error(
+                    "[session] Failed to save codex session profile:",
+                    err,
+                  );
+                });
               }
               if (
                 !session.auxiliary &&
                 session.codexSettings?.additionalWritableRoots
               ) {
-                void saveCodexSessionAdditionalWritableRoots(
+                saveCodexSessionAdditionalWritableRoots(
                   msg.sessionId,
                   session.codexSettings.additionalWritableRoots,
-                );
+                ).catch((err) => {
+                  console.error(
+                    "[session] Failed to save codex writable roots:",
+                    err,
+                  );
+                });
               }
             }
             if (msg.type === "system") {
@@ -1224,16 +1234,26 @@ export class SessionManager {
         session.claudeSessionId = codexOptions.threadId;
         this.saveWorktreeMapping(session);
         if (codexOptions.profile) {
-          void saveCodexSessionProfile(
+          saveCodexSessionProfile(
             codexOptions.threadId,
             codexOptions.profile,
-          );
+          ).catch((err) => {
+            console.error(
+              "[session] Failed to save codex session profile:",
+              err,
+            );
+          });
         }
         if (codexOptions.additionalWritableRoots) {
-          void saveCodexSessionAdditionalWritableRoots(
+          saveCodexSessionAdditionalWritableRoots(
             codexOptions.threadId,
             codexOptions.additionalWritableRoots,
-          );
+          ).catch((err) => {
+            console.error(
+              "[session] Failed to save codex writable roots:",
+              err,
+            );
+          });
         }
       }
     }
