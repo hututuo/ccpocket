@@ -692,9 +692,20 @@ export class SessionManager {
     // cannot let a later result/status overtake the assistant message.
     let messageProcessing: Promise<void> | null = null;
     const trackMessageWork = (work: Promise<void>): void => {
-      const tracked = work.finally(() => {
-        if (messageProcessing === tracked) messageProcessing = null;
-      });
+      // Swallow (and log) failures so the stored promise always resolves:
+      // a rejected chain would skip every later .then(processMessage) and
+      // permanently stall this session's pipeline — and, once nothing else
+      // chains onto it, crash the process as an unhandled rejection.
+      const tracked = work
+        .catch((err) => {
+          console.error(
+            `[session] Message pipeline step failed for session ${id}:`,
+            err,
+          );
+        })
+        .finally(() => {
+          if (messageProcessing === tracked) messageProcessing = null;
+        });
       messageProcessing = tracked;
     };
     proc.on("message", (msg) => {

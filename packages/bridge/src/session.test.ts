@@ -179,6 +179,72 @@ describe("SessionManager codex path", () => {
     );
   });
 
+  it("keeps processing messages after a poisoned pipeline step (P0-6)", async () => {
+    let resolveRegister: (images: unknown[]) => void = () => {};
+    const imageStore = {
+      extractImagePaths: vi.fn((content: unknown) =>
+        typeof content === "string" && content.includes("/tmp/a.png")
+          ? ["/tmp/a.png"]
+          : [],
+      ),
+      registerImages: vi.fn(
+        () =>
+          new Promise<unknown[]>((res) => {
+            resolveRegister = res;
+          }),
+      ),
+    };
+    const received: string[] = [];
+    const manager = new SessionManager((_id, msg) => {
+      received.push((msg as { type: string }).type);
+    }, imageStore as never);
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-poison" },
+    );
+    const proc = codexInstances[0];
+
+    // Pin the async pipeline on a pending image registration.
+    proc.emit("message", {
+      type: "tool_result",
+      toolUseId: "tu-1",
+      content: "generated /tmp/a.png",
+    });
+    expect(imageStore.registerImages).toHaveBeenCalledTimes(1);
+
+    // Chain a drain step behind the pinned pipeline and poison it.
+    proc.isWaitingForInput = true;
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-1",
+        text: "queued input",
+        queuedAt: new Date().toISOString(),
+      } as never),
+    ).toBe(true);
+    proc.sendInputStructured.mockImplementation(() => {
+      throw new Error("drain blew up");
+    });
+    proc.emit("input_ready");
+
+    // Release the pipeline, then immediately chain another message onto the
+    // (about to be poisoned) tail before it settles.
+    resolveRegister([]);
+    proc.emit("message", {
+      type: "assistant",
+      message: {
+        model: "codex",
+        content: [{ type: "text", text: "after poison" }],
+      },
+    });
+
+    await new Promise((res) => setTimeout(res, 0));
+    expect(received).toContain("assistant");
+  });
+
   it("surfaces a pending runtime interaction before status catches up", () => {
     const manager = new SessionManager(() => {});
     manager.create(
