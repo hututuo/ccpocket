@@ -799,19 +799,22 @@ List<ArtifactRef> _parseArtifactRefs(dynamic value) {
 
 /// Parse session_list tolerantly: one malformed session entry must not
 /// blank the whole home screen, so bad entries are skipped and counted.
+/// A frame without a `sessions` list is rejected outright — treating it as
+/// an empty authoritative list would wipe the known sessions from the UI.
 SessionListMessage _sessionListFromJson(Map<String, dynamic> json) {
   final sessions = <SessionInfo>[];
   var dropped = 0;
   final rawSessions = json['sessions'];
-  if (rawSessions is List) {
-    for (final entry in rawSessions) {
-      try {
-        sessions.add(
-          SessionInfo.fromJson(Map<String, dynamic>.from(entry as Map)),
-        );
-      } catch (_) {
-        dropped++;
-      }
+  if (rawSessions is! List) {
+    throw const FormatException('session_list has no sessions list');
+  }
+  for (final entry in rawSessions) {
+    try {
+      sessions.add(
+        SessionInfo.fromJson(Map<String, dynamic>.from(entry as Map)),
+      );
+    } catch (_) {
+      dropped++;
     }
   }
   return SessionListMessage(

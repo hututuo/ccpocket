@@ -2077,6 +2077,26 @@ void main() {
       expect(msg.droppedSessionCount, 0);
     });
 
+    test(
+      'a frame without a sessions list is rejected, not treated as empty',
+      () {
+        // Regression: treating a missing/non-List `sessions` key as an empty
+        // authoritative list would blank the home screen. The frame must be
+        // rejected so the previously known session list survives.
+        expect(
+          () => ServerMessage.fromJson({'type': 'session_list'}),
+          throwsFormatException,
+        );
+        expect(
+          () => ServerMessage.fromJson({
+            'type': 'session_list',
+            'sessions': 'not-a-list',
+          }),
+          throwsFormatException,
+        );
+      },
+    );
+
     test('a malformed pendingPermission does not drop the session', () {
       final withBadPermission = validSession('s1')
         ..['pendingPermission'] = {
