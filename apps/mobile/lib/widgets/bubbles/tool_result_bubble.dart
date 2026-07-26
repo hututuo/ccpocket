@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../features/generated_image_preview/generated_image_preview_item.dart';
 import '../../features/generated_image_preview/generated_image_preview_mapper.dart';
 import '../../features/generated_image_preview/widgets/generated_image_chat_group.dart';
 import '../../l10n/app_localizations.dart';
@@ -57,6 +58,12 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
   String? _summaryContent;
   _ToolResultSummary? _summaryCache;
 
+  /// Without this cache every rebuild of an expanded image card re-runs the
+  /// mapper, base64-decoding data: URLs into fresh bytes — and fresh bytes
+  /// change the MemoryImage identity, forcing a full image re-decode.
+  final Map<GeneratedImageItemCacheKey, GeneratedImagePreviewItem>
+  _generatedImageItemCache = {};
+
   static const _previewLines = 5;
 
   @override
@@ -78,6 +85,7 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
       _expansion = ToolResultExpansion.collapsed;
       _summaryContent = null;
       _summaryCache = null;
+      _generatedImageItemCache.clear();
     }
   }
 
@@ -226,6 +234,7 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
       result = _ImageGenerationResultCard(
         message: widget.message,
         httpBaseUrl: widget.httpBaseUrl,
+        itemCache: _generatedImageItemCache,
         onLongPress: () => _copyContent(context),
         onCollapse: _toggleDisclosure,
       );
@@ -281,12 +290,14 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
 class _ImageGenerationResultCard extends StatelessWidget {
   final ToolResultMessage message;
   final String? httpBaseUrl;
+  final Map<GeneratedImageItemCacheKey, GeneratedImagePreviewItem> itemCache;
   final VoidCallback onLongPress;
   final VoidCallback onCollapse;
 
   const _ImageGenerationResultCard({
     required this.message,
     required this.httpBaseUrl,
+    required this.itemCache,
     required this.onLongPress,
     required this.onCollapse,
   });
@@ -295,9 +306,11 @@ class _ImageGenerationResultCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final colorScheme = Theme.of(context).colorScheme;
-    final items = generatedImageItemsFromToolResults([
-      message,
-    ], httpBaseUrl: httpBaseUrl);
+    final items = generatedImageItemsFromToolResults(
+      [message],
+      httpBaseUrl: httpBaseUrl,
+      itemCache: itemCache,
+    );
 
     return Container(
       key: const ValueKey('image_generation_result_card'),

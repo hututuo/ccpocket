@@ -299,6 +299,48 @@ void main() {
       expect(find.textContaining('savedPath'), findsNothing);
     });
 
+    testWidgets('reuses decoded image bytes across rebuilds', (tester) async {
+      // Fresh bytes per build change the MemoryImage identity and force a
+      // full image re-decode; the expanded card must serve rebuilds from
+      // its item cache instead.
+      await tester.pumpWidget(
+        _wrap(
+          ToolResultBubble(
+            message: imageGenerationMessage(),
+            httpBaseUrl: 'http://localhost',
+          ),
+        ),
+      );
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
+
+      Uint8List bytesOfThumbnail() {
+        final image = tester.widget<Image>(
+          find.descendant(
+            of: find.byKey(const ValueKey('generated_image_chat_thumbnail_0')),
+            matching: find.byType(Image),
+          ),
+        );
+        var provider = image.image;
+        if (provider is ResizeImage) provider = provider.imageProvider;
+        return (provider as MemoryImage).bytes;
+      }
+
+      final firstBytes = bytesOfThumbnail();
+      // Force a rebuild of the expanded card without changing the message.
+      await tester.pumpWidget(
+        _wrap(
+          ToolResultBubble(
+            message: imageGenerationMessage(),
+            httpBaseUrl: 'http://localhost',
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(identical(bytesOfThumbnail(), firstBytes), isTrue);
+    });
+
     testWidgets('renders a data URL without an HTTP base URL', (tester) async {
       await tester.pumpWidget(
         _wrap(ToolResultBubble(message: imageGenerationMessage())),
