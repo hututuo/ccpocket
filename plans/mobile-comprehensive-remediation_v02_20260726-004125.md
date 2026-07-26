@@ -1641,9 +1641,10 @@ effective reason/permission
 
 #### 2. 调度模型
 
-建立单一 `ConversationSyncScheduler`，输入为持久目录、runtime/activity、
-Needs You、未读、当前打开、最近访问、最后 provider 活动、最后同步水位和 Bridge
-健康状态；输出为有界的 history delta 工作：
+建立 Bridge 拥有的单一 `ConversationSyncScheduler`，输入为持久目录、
+runtime/Desktop activity、Needs You、各客户端已确认 cursor、最近 provider 活动、
+文件/官方事件变化和 Bridge 健康状态；输出为面向已订阅前台客户端的有界 history
+delta 推送。Mobile 不为每个会话建立轮询 timer，也不逐项发“有没有更新”的探测：
 
 ```text
 P0  当前打开 / 发送前 / 审批前
@@ -1659,11 +1660,15 @@ P3  其余冷会话
     低频只检查 revision/cursor；仅在变化时拉正文 delta，不解析/构建 UI。
 ```
 
-- 队列按 durable identity 去重，同一会话最多一个 flight；新触发只升级优先级或
-  设置 dirty latch，不能叠加重复 history 请求。
-- 调度采用公平轮转和每轮字节/条目/耗时预算，防止一个超长会话饿死其他会话。
-- Bridge 能提供 changed thread identity 时优先事件驱动；旧 Bridge 回退为分桶、
-  抖动的低频检查，不能高频全目录 × 全历史轮询。
+- 队列在 Bridge 按 durable identity 去重，同一会话最多一个计算 flight；新触发
+  只升级优先级或设置 dirty latch，不能叠加重复 history 读取。
+- 调度采用公平轮转和每轮字节/条目/耗时预算，防止一个超长会话饿死其他会话；
+  解析、revision 比对、增量计算和跨客户端结果复用尽量留在 Mac。
+- Bridge 能取得 changed thread identity 时优先事件驱动；对不能可靠 watch 的冷
+  会话才在 Bridge 端分桶、抖动、低频检查。Mobile 不做 N 会话轮询。
+- Mobile 进入 interactive 前台后发送一次带本地 cursor 摘要的订阅/恢复握手；
+  Bridge 主动推送变化并按 ack 收束 backlog。重连时只补 cursor 缺口，不让手机
+  重复下载已确认内容。
 - 只有 storage/reducer 在后台工作；没有打开的会话不得构建 Markdown、工具详情、
   图片、diff 或聊天 Widget。
 - App 进入 iOS 普通后台时继续服从既有系统 deadline 和 delta-only 预算；用户开启
@@ -1682,8 +1687,9 @@ P3  其余冷会话
 
 #### 4. 验收
 
-1. 两个以上近期会话同时变化时，即使用户停留在首页或另一个会话，它们也会在有界
-   队列中依次追平；列表摘要、未读与正文 cursor 同一 generation 收敛。
+1. 两个以上近期会话同时变化时，即使用户停留在首页或另一个会话，Bridge 也会在
+   有界队列中依次计算并主动推送；列表摘要、未读与正文 cursor 同一 generation
+   收敛，Mobile 不发逐会话探测。
 2. 当前打开会话的同步不被冷会话队列阻塞，进入后立即提升到 P0。
 3. 数天未打开的会话在低频检查发现 revision 变化后自动更新，而不是必须先点击。
 4. 数千会话下无 N 个 Cubit、N 个常驻 runtime 或 N 个高频 timer；记录实际队列
@@ -1691,6 +1697,21 @@ P3  其余冷会话
 5. Bridge 断线、切换、迟到结果和 provider rewrite 不串会话、不复活旧缓存。
 6. 新 Mobile + 旧 Bridge 保持有界兼容；旧 Mobile + 新 Bridge 不受新 scheduler
    协议影响。
+
+#### 5. Bridge 推送与 App 生命周期边界
+
+- Bridge 托管 runtime 的 live event 和电脑端 Codex/Desktop 写入统一进入同一
+  durable reducer；若同一条 canonical item 已经由 live path 送达，后台内容推送
+  只确认 cursor，不再重复发送正文。
+- App 前台且 delivery mode 为 `interactive` 时订阅内容增量；Bridge 可以主动推送
+  正在运行、近期活跃和冷会话校验后发现的变化。
+- App 未打开某会话不影响订阅；“当前打开”只提升该 durable identity 的优先级并
+  请求立即补齐，不能成为是否接收更新的开关。
+- App 进入既有 location `notificationsOnly` 或被 iOS 挂起时，Bridge 停止正文/
+  Mirror/工具内容推送，只保留既定轻量通知投影。回前台先恢复 `interactive`，
+  再用持久 ack cursor 补齐。
+- 一台 Bridge 同时连接多个新旧客户端时，每个客户端独立维护有界 cursor/ack；
+  解析结果和 revision 可共享，但不能让一个客户端的 ack 推进另一个客户端水位。
 
 ## 2. 后续讨论登记方式
 
