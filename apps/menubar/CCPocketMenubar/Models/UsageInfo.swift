@@ -6,9 +6,19 @@ struct UsageWindow: Codable, Identifiable {
 
     var id: String { resetsAt }
 
-    /// Parse ISO 8601 resetsAt into a Date
+    /// Parse ISO 8601 resetsAt into a Date.
+    ///
+    /// The Bridge emits fractional seconds (JS `toISOString()`); other senders
+    /// may omit them, so both shapes must parse.
     var resetsAtDate: Date? {
-        ISO8601DateFormatter().date(from: resetsAt)
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: resetsAt) {
+            return date
+        }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: resetsAt)
     }
 
     /// Relative time string for reset (e.g. "2h 15m")
