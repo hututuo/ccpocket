@@ -57,6 +57,12 @@ export interface CodexStartOptions {
   networkAccessEnabled?: boolean;
   webSearchMode?: "disabled" | "cached" | "live";
   collaborationMode?: "plan" | "default";
+  /**
+   * Re-arm a plan approval that was pending when a permission restart
+   * destroyed the previous runtime. Keeps the original toolUseId so the
+   * approval card already on screen can still resolve it.
+   */
+  restorePlanCompletion?: { toolUseId: string; planText: string };
   /** Resume a goal that Bridge paused only to perform an immediate restart. */
   resumeGoalAfterStart?: boolean;
   /**
@@ -613,6 +619,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     toolUseId: string;
     planText: string;
   } | null = null;
+
+  /** Read-only copy for carrying a pending plan approval across a restart. */
+  get pendingPlanCompletionSnapshot(): {
+    toolUseId: string;
+    planText: string;
+  } | null {
+    return this.pendingPlanCompletion
+      ? { ...this.pendingPlanCompletion }
+      : null;
+  }
   /** Queued plan execution text when inputResolve wasn't ready at approval time. */
   private _pendingPlanInput: string | null = null;
   private _idleWhenInteractionsClear = false;
@@ -2905,6 +2921,25 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           void this.fetchCompletionEntities(projectPath);
         }
       }, 25);
+
+      // Re-arm a plan approval that a permission restart carried over. Only
+      // while still in Plan mode: leaving Plan mode abandons the plan. The
+      // original toolUseId is kept so the approval card already on screen
+      // resolves against this runtime.
+      if (
+        options?.restorePlanCompletion &&
+        this._collaborationMode === "plan" &&
+        !this.pendingPlanCompletion
+      ) {
+        this.pendingPlanCompletion = { ...options.restorePlanCompletion };
+        this.emitMessage({
+          type: "permission_request",
+          toolUseId: this.pendingPlanCompletion.toolUseId,
+          toolName: "ExitPlanMode",
+          input: { plan: this.pendingPlanCompletion.planText },
+        });
+        this.setStatus("waiting_approval");
+      }
 
       await this.runInputLoop(options);
     } catch (err) {

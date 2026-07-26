@@ -5521,6 +5521,15 @@ export class BridgeWebSocketServer {
             break;
           }
 
+          // A plan approval that is still on screen must survive the restart;
+          // only carry it while the replacement stays in Plan mode (leaving
+          // Plan mode abandons the plan).
+          const carriedPlanCompletion =
+            newCollaboration === "plan"
+              ? ((process as CodexProcess).pendingPlanCompletionSnapshot ??
+                undefined)
+              : undefined;
+
           this.destroySession(oldSessionId);
           console.log(
             `[ws] Permission mode change: destroyed session ${oldSessionId}`,
@@ -5556,6 +5565,9 @@ export class BridgeWebSocketServer {
                 autoReviewDisabledByPolicy:
                   oldSettings.autoReviewDisabledByPolicy,
                 collaborationMode: newCollaboration,
+                ...(carriedPlanCompletion
+                  ? { restorePlanCompletion: carriedPlanCompletion }
+                  : {}),
                 ...(goalResumeLease
                   ? {
                       resumeGoalAfterStart: true,
@@ -5668,6 +5680,9 @@ export class BridgeWebSocketServer {
               autoReviewDisabledByPolicy:
                 oldSettings.autoReviewDisabledByPolicy,
               collaborationMode: newCollaboration,
+              ...(carriedPlanCompletion
+                ? { restorePlanCompletion: carriedPlanCompletion }
+                : {}),
               ...(goalResumeLease
                 ? {
                     resumeGoalAfterStart: true,

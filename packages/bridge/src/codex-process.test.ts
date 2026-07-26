@@ -2027,6 +2027,86 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("re-arms a carried plan approval after a permission restart", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (msg) => messages.push(msg as Record<string, unknown>));
+
+    proc.start("/tmp/project-plan-restore", {
+      collaborationMode: "plan",
+      restorePlanCompletion: {
+        toolUseId: "plan_restart_1",
+        planText: "Continue the reviewed plan",
+      },
+    });
+    const child = fakeChildren[0];
+    // Requests surface after a variable number of microtask hops.
+    const awaitRequest = async (): Promise<{ id: number; method: string }> => {
+      for (let attempt = 0; attempt < 20; attempt++) {
+        try {
+          return nextOutgoingRequest(child);
+        } catch {
+          await tick();
+        }
+      }
+      throw new Error("no outgoing request surfaced");
+    };
+    const initReq = await awaitRequest();
+    expect(initReq.method).toBe("initialize");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child); // initialized
+    // Plan-mode starts probe native support before opening the thread.
+    const planProbeReq = await awaitRequest();
+    expect(planProbeReq.method).toBe("collaborationMode/list");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: planProbeReq.id,
+        result: {
+          data: [
+            { name: "Plan", mode: "plan", model: null, reasoning_effort: null },
+          ],
+        },
+      })}\n`,
+    );
+    const threadReq = await awaitRequest();
+    expect(threadReq.method).toBe("thread/start");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_plan_restore" } } })}\n`,
+    );
+    await tick();
+    drainSkillsList(child);
+    for (
+      let attempt = 0;
+      attempt < 20 &&
+      !messages.some((message) => message.type === "permission_request");
+      attempt++
+    ) {
+      await tick();
+    }
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "plan_restart_1",
+        toolName: "ExitPlanMode",
+        input: { plan: "Continue the reviewed plan" },
+      }),
+    );
+    expect(proc.status).toBe("waiting_approval");
+    expect(proc.getPendingPermission()).toMatchObject({
+      toolUseId: "plan_restart_1",
+      toolName: "ExitPlanMode",
+    });
+
+    proc.stop();
+  });
+
   it("starts codex app-server and sends initialize + thread/start", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];

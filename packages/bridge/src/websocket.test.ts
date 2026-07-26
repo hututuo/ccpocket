@@ -9252,6 +9252,61 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("carries a pending plan approval across a permission restart", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-plan-carry",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    // The plan approval is on screen while the user switches execution mode.
+    session.status = "waiting_approval";
+    session.process.collaborationMode = "plan";
+    session.process.pendingPlanCompletionSnapshot = {
+      toolUseId: "plan_carry_1",
+      planText: "Execute the reviewed plan",
+    };
+    const createSpy = vi.spyOn((bridge as any).sessionManager, "create");
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId,
+        mode: "plan",
+        planMode: true,
+        executionMode: "acceptEdits",
+        applyStrategy: "restart_now",
+      },
+      ws,
+    );
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const codexOptions = createSpy.mock.calls[0][5] as Record<string, unknown>;
+    // Without the carry, the replacement session silently drops the plan and
+    // the approval card on the phone can never resolve.
+    expect(codexOptions.restorePlanCompletion).toEqual({
+      toolUseId: "plan_carry_1",
+      planText: "Execute the reviewed plan",
+    });
+
+    bridge.close();
+  });
+
   it("fails closed when the exact Codex runtime lacks native Plan mode", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
