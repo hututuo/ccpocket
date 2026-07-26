@@ -126,6 +126,25 @@ function git(args: string[], cwd: string): string {
   }).trim();
 }
 
+/**
+ * Diff text must keep its exact bytes: trimming would delete trailing
+ * whitespace-only context lines and trailing \r, corrupting assembled
+ * patches and diverging from the untrimmed diff the client hashed.
+ */
+function gitDiffText(args: string[], cwd: string): string {
+  return execFileSync("git", withGitPathConfig(args), {
+    cwd,
+    encoding: "utf-8",
+  });
+}
+
+/** Split diff text into lines, dropping only the final-newline artifact. */
+function diffLines(diffText: string): string[] {
+  const lines = diffText.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 interface ParsedHunk {
@@ -171,7 +190,7 @@ function buildFingerprintPatch(
     );
   }
 
-  const lines = diffText.split("\n");
+  const lines = diffLines(diffText);
   const hunks = parseHunks(lines);
   const chosen = new Map<number, ParsedHunk>();
 
@@ -222,7 +241,7 @@ function buildHunkPatch(
 ): string | null {
   if (!diffText) return null;
 
-  const lines = diffText.split("\n");
+  const lines = diffLines(diffText);
   const hunkStarts: number[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith("@@")) {
@@ -294,7 +313,7 @@ function applyHunks(
     }
 
     try {
-      diffText = git([...diffArgs, "--", file], cwd);
+      diffText = gitDiffText([...diffArgs, "--", file], cwd);
     } finally {
       if (addedIntentToAdd) {
         execFileSync("git", ["reset", "--", file], {

@@ -1169,6 +1169,65 @@ describe("hunk fingerprint addressing", () => {
     expect(gitCmd(["diff", "--", "stage-near.txt"], repo)).toBe("");
   });
 
+  // The displayed diff (collectGitDiff) ships untrimmed stdout, so the
+  // client hashes and counts untrimmed bytes. The Bridge-side re-run must
+  // not trim either: a trailing whitespace-only context line or a trailing
+  // \r would otherwise vanish, corrupting the patch or the hash.
+  it("stages a hunk whose trailing context includes a blank line", () => {
+    writeFileSync(join(repo, "blank-tail.txt"), "l1\nl2\nl3\nl4\nl5\n\n");
+    execFileSync("git", ["add", "blank-tail.txt"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "add blank-tail"], { cwd: repo });
+    writeFileSync(join(repo, "blank-tail.txt"), "l1\nl2\nl3x\nl4\nl5\n\n");
+
+    const fingerprints = displayedHunkFingerprints(repo, "blank-tail.txt");
+    expect(fingerprints).toHaveLength(1);
+
+    stageHunks(repo, [
+      { file: "blank-tail.txt", hunkIndex: 0, fingerprint: fingerprints[0] },
+    ]);
+
+    expect(gitCmd(["diff", "--cached", "--", "blank-tail.txt"], repo)).toContain(
+      "l3x",
+    );
+    expect(gitCmd(["diff", "--", "blank-tail.txt"], repo)).toBe("");
+  });
+
+  it("reverts a CRLF hunk addressed by fingerprint", () => {
+    const original = "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\n";
+    writeFileSync(join(repo, "crlf.txt"), original);
+    execFileSync("git", ["add", "crlf.txt"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "add crlf"], { cwd: repo });
+    writeFileSync(join(repo, "crlf.txt"), "a\r\nb\r\nc\r\ndX\r\ne\r\nf\r\ng\r\n");
+
+    const fingerprints = displayedHunkFingerprints(repo, "crlf.txt");
+    expect(fingerprints).toHaveLength(1);
+
+    revertHunks(repo, [
+      { file: "crlf.txt", hunkIndex: 0, fingerprint: fingerprints[0] },
+    ]);
+
+    expect(readFileSync(join(repo, "crlf.txt"), "utf-8")).toBe(original);
+  });
+
+  it("stages an added line carrying trailing whitespace at the diff's end", () => {
+    writeFileSync(join(repo, "ws-tail.txt"), "l1\nl2\nl3\n");
+    execFileSync("git", ["add", "ws-tail.txt"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "add ws-tail"], { cwd: repo });
+    writeFileSync(join(repo, "ws-tail.txt"), "l1\nl2\nl3\ntail  \n");
+
+    const fingerprints = displayedHunkFingerprints(repo, "ws-tail.txt");
+    expect(fingerprints).toHaveLength(1);
+
+    stageHunks(repo, [
+      { file: "ws-tail.txt", hunkIndex: 0, fingerprint: fingerprints[0] },
+    ]);
+
+    expect(gitCmd(["diff", "--cached", "--", "ws-tail.txt"], repo)).toContain(
+      "tail",
+    );
+    expect(gitCmd(["diff", "--", "ws-tail.txt"], repo)).toBe("");
+  });
+
   it("reverts only the selected hunk when changes are far apart", () => {
     const original = seedFile("far.txt");
     const modified = [...original];
