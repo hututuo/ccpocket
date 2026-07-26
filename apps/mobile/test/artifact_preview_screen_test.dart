@@ -10,6 +10,8 @@ import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart'
+    as webview_platform;
 
 class _BlockingQuickLookPreviewer implements ArtifactQuickLookPreviewer {
   final dismissed = Completer<void>();
@@ -37,6 +39,97 @@ class _FailingQuickLookPreviewer implements ArtifactQuickLookPreviewer {
   }) async {
     throw StateError('preview failed');
   }
+}
+
+class _FakeWebViewPlatform extends webview_platform.WebViewPlatform {
+  @override
+  webview_platform.PlatformWebViewController createPlatformWebViewController(
+    webview_platform.PlatformWebViewControllerCreationParams params,
+  ) => _FakeWebViewController(params);
+
+  @override
+  webview_platform.PlatformNavigationDelegate createPlatformNavigationDelegate(
+    webview_platform.PlatformNavigationDelegateCreationParams params,
+  ) => _FakeNavigationDelegate(params);
+
+  @override
+  webview_platform.PlatformWebViewWidget createPlatformWebViewWidget(
+    webview_platform.PlatformWebViewWidgetCreationParams params,
+  ) => _FakeWebViewWidget(params);
+}
+
+class _FakeWebViewController
+    extends webview_platform.PlatformWebViewController {
+  _FakeWebViewController(super.params) : super.implementation();
+
+  @override
+  Future<void> setJavaScriptMode(
+    webview_platform.JavaScriptMode javaScriptMode,
+  ) async {}
+
+  @override
+  Future<void> setBackgroundColor(Color color) async {}
+
+  @override
+  Future<void> setPlatformNavigationDelegate(
+    webview_platform.PlatformNavigationDelegate handler,
+  ) async {}
+
+  @override
+  Future<void> loadRequest(webview_platform.LoadRequestParams params) async {}
+
+  @override
+  Future<bool> canGoBack() async => false;
+
+  @override
+  Future<void> goBack() async {}
+}
+
+class _FakeNavigationDelegate
+    extends webview_platform.PlatformNavigationDelegate {
+  _FakeNavigationDelegate(super.params) : super.implementation();
+
+  @override
+  Future<void> setOnNavigationRequest(
+    webview_platform.NavigationRequestCallback onNavigationRequest,
+  ) async {}
+
+  @override
+  Future<void> setOnPageStarted(
+    webview_platform.PageEventCallback onPageStarted,
+  ) async {}
+
+  @override
+  Future<void> setOnPageFinished(
+    webview_platform.PageEventCallback onPageFinished,
+  ) async {}
+
+  @override
+  Future<void> setOnHttpError(
+    webview_platform.HttpResponseErrorCallback onHttpError,
+  ) async {}
+
+  @override
+  Future<void> setOnProgress(
+    webview_platform.ProgressCallback onProgress,
+  ) async {}
+
+  @override
+  Future<void> setOnWebResourceError(
+    webview_platform.WebResourceErrorCallback onWebResourceError,
+  ) async {}
+
+  @override
+  Future<void> setOnUrlChange(
+    webview_platform.UrlChangeCallback onUrlChange,
+  ) async {}
+}
+
+class _FakeWebViewWidget extends webview_platform.PlatformWebViewWidget {
+  _FakeWebViewWidget(super.params) : super.implementation();
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
 }
 
 void main() {
@@ -224,9 +317,12 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('failed Office preview shows Retry instead of Preview', (
+  testWidgets('failed Quick Look preview falls back to the WebView preview', (
     tester,
   ) async {
+    // E.4 §5: any Quick Look failure falls back to the WebView preview, not
+    // just the explicit "unsupported" signal.
+    webview_platform.WebViewPlatform.instance = _FakeWebViewPlatform();
     await tester.pumpWidget(
       MaterialApp(
         localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -244,8 +340,10 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('Retry'), findsOneWidget);
-    expect(find.text('Preview'), findsNothing);
+    expect(find.byType(WebViewWidget), findsOneWidget);
+    expect(find.text('Retry'), findsNothing);
+    // The failure is surfaced as a non-blocking notice, not a dead end.
+    expect(find.byType(SnackBar), findsOneWidget);
   });
 
   testWidgets('file browser preview delegates Download to resumable transfer', (

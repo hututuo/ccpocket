@@ -114,7 +114,6 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   var _pageProgress = 0;
   var _chromeVisible = true;
   var _quickLookBusy = false;
-  var _quickLookError = false;
   _ArtifactTransferAction? _transferAction;
   double? _transferProgress;
   String? _mainFrameError;
@@ -425,7 +424,6 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     _activeTransfer = transfer;
     setState(() {
       _quickLookBusy = true;
-      _quickLookError = false;
       _transferProgress = null;
     });
     try {
@@ -445,14 +443,15 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     } on ArtifactQuickLookUnsupportedException {
       if (mounted && !transfer.cancellation.isCancelled) {
         _initializeWebPreview();
-        setState(() {
-          _usesQuickLook = false;
-          _quickLookError = false;
-        });
+        setState(() => _usesQuickLook = false);
       }
     } catch (_) {
       if (mounted && !transfer.cancellation.isCancelled) {
-        setState(() => _quickLookError = true);
+        // Any Quick Look failure falls back to the WebView preview, not just
+        // the explicit "unsupported" signal (E.4 §5); the snackbar is a
+        // non-blocking notice instead of a dead-end error card.
+        _initializeWebPreview();
+        setState(() => _usesQuickLook = false);
         _showError(AppLocalizations.of(context).artifactOpenFailed);
       }
     } finally {
@@ -524,9 +523,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
                 const Icon(Icons.insert_drive_file_outlined, size: 52),
                 const SizedBox(height: 14),
                 Text(
-                  _quickLookError
-                      ? localizations.artifactOpenFailed
-                      : widget.filename,
+                  widget.filename,
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center,
@@ -541,11 +538,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
                   FilledButton.icon(
                     onPressed: _previewWithQuickLook,
                     icon: const Icon(Icons.visibility_outlined),
-                    label: Text(
-                      _quickLookError
-                          ? localizations.retry
-                          : localizations.codeFontPreview,
-                    ),
+                    label: Text(localizations.codeFontPreview),
                   ),
               ],
             ),
