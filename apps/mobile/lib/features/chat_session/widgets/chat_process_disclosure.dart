@@ -4,6 +4,7 @@ import '../../../models/messages.dart';
 import '../../../theme/app_spacing.dart';
 import '../../../theme/app_theme.dart';
 import '../../../utils/tool_categories.dart';
+import '../../../widgets/chat_message_timestamp.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import 'chat_process_layout.dart';
 
@@ -14,12 +15,14 @@ class ChatProcessDisclosure extends StatelessWidget {
     required this.expanded,
     required this.onToggle,
     this.running = false,
+    this.timestamp,
   });
 
   final ChatProcessSegmentLayout segment;
   final bool expanded;
   final VoidCallback onToggle;
   final bool running;
+  final ChatMessageTimestampData? timestamp;
 
   @override
   Widget build(BuildContext context) {
@@ -54,22 +57,39 @@ class ChatProcessDisclosure extends StatelessWidget {
                   color: color,
                 ),
                 const SizedBox(width: 7),
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: color,
+                Expanded(
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          title,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: color,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (detail != null) ...[
+                        const SizedBox(width: 7),
+                        Text(
+                          detail,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: appColors.subtleText,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-                if (detail != null) ...[
-                  const SizedBox(width: 7),
-                  Text(
-                    detail,
-                    style: TextStyle(fontSize: 11, color: appColors.subtleText),
-                  ),
+                const SizedBox(width: 5),
+                if (timestamp case final value?) ...[
+                  ChatMessageTimestampText(timestamp: value),
+                  const SizedBox(width: 5),
                 ],
-                const Spacer(),
                 Icon(
                   expanded ? Icons.expand_less : Icons.expand_more,
                   size: 17,
@@ -90,11 +110,13 @@ class ChatIntermediateOutputsDisclosure extends StatelessWidget {
     required this.turn,
     required this.expanded,
     required this.onToggle,
+    this.timestamp,
   });
 
   final ChatProcessTurnLayout turn;
   final bool expanded;
   final VoidCallback onToggle;
+  final ChatMessageTimestampData? timestamp;
 
   @override
   Widget build(BuildContext context) {
@@ -149,6 +171,10 @@ class ChatIntermediateOutputsDisclosure extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 4),
+                if (timestamp case final value?) ...[
+                  ChatMessageTimestampText(timestamp: value),
+                  const SizedBox(width: 5),
+                ],
                 Icon(
                   expanded ? Icons.expand_less : Icons.expand_more,
                   size: 17,
@@ -246,10 +272,12 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
     super.key,
     required this.activity,
     required this.onTap,
+    this.timestamp,
   });
 
   final ChatProcessToolActivity activity;
   final VoidCallback onTap;
+  final ChatMessageTimestampData? timestamp;
 
   @override
   Widget build(BuildContext context) {
@@ -319,6 +347,10 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
                   ),
                 ] else
                   const Spacer(),
+                if (timestamp case final value?) ...[
+                  ChatMessageTimestampText(timestamp: value),
+                  const SizedBox(width: 5),
+                ],
                 Icon(
                   Icons.chevron_right,
                   size: 15,

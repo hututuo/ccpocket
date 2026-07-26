@@ -15,6 +15,7 @@ import 'package:ccpocket/widgets/bubbles/guardian_approval_notice.dart';
 import 'package:ccpocket/widgets/bubbles/streaming_bubble.dart';
 import 'package:ccpocket/widgets/bubbles/todo_write_widget.dart';
 import 'package:ccpocket/widgets/bubbles/tool_result_bubble.dart';
+import 'package:ccpocket/widgets/chat_message_timestamp.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -141,6 +142,20 @@ void main() {
       expect(disclosure, findsOneWidget);
       expect(find.byType(ChatIntermediateOutputsDisclosure), findsOneWidget);
       expect(find.byType(ChatProcessDisclosure), findsNothing);
+      final outerTimestamp = find.descendant(
+        of: disclosure,
+        matching: find.byType(ChatMessageTimestampText),
+      );
+      final outerChevron = find.descendant(
+        of: disclosure,
+        matching: find.byIcon(Icons.expand_more),
+      );
+      expect(outerTimestamp, findsOneWidget);
+      expect(outerChevron, findsOneWidget);
+      expect(
+        tester.getTopRight(outerTimestamp).dx,
+        lessThan(tester.getTopLeft(outerChevron).dx),
+      );
 
       await tester.tap(disclosure);
       await tester.pump();
@@ -164,6 +179,20 @@ void main() {
         const ValueKey(
           'chat_process_disclosure_client:turn-phases:segment:id:update-2',
         ),
+      );
+      final firstTimestamp = find.descendant(
+        of: firstDisclosure,
+        matching: find.byType(ChatMessageTimestampText),
+      );
+      final firstChevron = find.descendant(
+        of: firstDisclosure,
+        matching: find.byIcon(Icons.expand_more),
+      );
+      expect(firstTimestamp, findsOneWidget);
+      expect(firstChevron, findsOneWidget);
+      expect(
+        tester.getTopRight(firstTimestamp).dx,
+        lessThan(tester.getTopLeft(firstChevron).dx),
       );
       expect(
         tester.getTopLeft(firstDisclosure).dy,

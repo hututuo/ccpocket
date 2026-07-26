@@ -16,6 +16,7 @@ import '../../../widgets/bubbles/guardian_approval_notice.dart';
 import '../../../widgets/bubbles/todo_write_widget.dart';
 import '../../../widgets/bubbles/tool_result_bubble.dart';
 import '../../../widgets/chat_selection_actions.dart';
+import '../../../widgets/chat_message_timestamp.dart';
 import '../../../widgets/message_bubble.dart';
 import '../../artifact_preview/artifact_preview_entry.dart';
 import '../../generated_image_preview/generated_image_preview_mapper.dart';
@@ -641,6 +642,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
             segment: segment,
             expanded: expanded,
             onToggle: () => _toggleProcessSegment(segment.key),
+            timestamp: _timestampForEntryIndex(entries, segment.lastEntryIndex),
           ),
         ),
       );
@@ -725,6 +727,10 @@ class _ChatMessageListState extends State<ChatMessageList> {
                     ChatCurrentToolActivityLine(
                       activity: currentTool,
                       onTap: () => _toggleCurrentProgress(progressKey),
+                      timestamp: _timestampForEntryIndex(
+                        entries,
+                        currentTool.entryIndex,
+                      ),
                     ),
                 ],
         ),
@@ -914,6 +920,10 @@ class _ChatMessageListState extends State<ChatMessageList> {
                                   activity: currentTool,
                                   onTap: () =>
                                       _toggleCurrentProgress(progressKey),
+                                  timestamp: _timestampForEntryIndex(
+                                    allEntries,
+                                    currentTool.entryIndex,
+                                  ),
                                 ),
                               if (expanded)
                                 BlocSelector<
@@ -991,6 +1001,15 @@ class _ChatMessageListState extends State<ChatMessageList> {
                     expanded: intermediateExpanded,
                     onToggle: () =>
                         _toggleIntermediateTurn(intermediateTurn.key),
+                    timestamp: _timestampForEntryIndex(
+                      allEntries,
+                      intermediateTurn.intermediateSegments.isNotEmpty
+                          ? intermediateTurn
+                                .intermediateSegments
+                                .last
+                                .lastEntryIndex
+                          : intermediateTurn.intermediateSummaryEntryIndex,
+                    ),
                   ),
                 ),
                 segmentBuilder: (segment) => _buildHistoricalProcessGroup(
@@ -1150,6 +1169,16 @@ class _ChatMessageListState extends State<ChatMessageList> {
 }
 
 String _currentProgressKey(String turnKey) => 'turn:$turnKey';
+
+ChatMessageTimestampData? _timestampForEntryIndex(
+  List<ChatEntry> entries,
+  int? entryIndex,
+) {
+  if (entryIndex == null || entryIndex < 0 || entryIndex >= entries.length) {
+    return null;
+  }
+  return ChatMessageTimestampData.fromEntry(entries[entryIndex]);
+}
 
 class _ProcessDetailsViewport extends StatefulWidget {
   const _ProcessDetailsViewport({

@@ -7,10 +7,12 @@ import '../../theme/app_spacing.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/command_parser.dart';
 import '../adaptive_context_menu.dart';
+import '../chat_message_timestamp.dart';
 
 class UserBubble extends StatelessWidget {
   final String text;
   final MessageStatus status;
+  final ChatMessageTimestampData? timestamp;
   final VoidCallback? onRetry;
   final VoidCallback? onRewind;
   final List<String> imageUrls;
@@ -24,6 +26,7 @@ class UserBubble extends StatelessWidget {
     super.key,
     required this.text,
     this.status = MessageStatus.sent,
+    this.timestamp,
     this.onRetry,
     this.onRewind,
     this.imageUrls = const [],
@@ -40,6 +43,7 @@ class UserBubble extends StatelessWidget {
       return _CommandBubble(
         command: parsed,
         status: status,
+        timestamp: timestamp,
         text: text,
         onRetry: onRetry,
         onRewind: onRewind,
@@ -51,6 +55,7 @@ class UserBubble extends StatelessWidget {
     return _StandardBubble(
       displayText: text,
       status: status,
+      timestamp: timestamp,
       onRetry: onRetry,
       onRewind: onRewind,
       imageBytesList: imageBytesList,
@@ -100,6 +105,7 @@ class UserBubble extends StatelessWidget {
 class _StandardBubble extends StatelessWidget {
   final String displayText;
   final MessageStatus status;
+  final ChatMessageTimestampData? timestamp;
   final VoidCallback? onRetry;
   final VoidCallback? onRewind;
   final List<Uint8List> imageBytesList;
@@ -110,6 +116,7 @@ class _StandardBubble extends StatelessWidget {
   const _StandardBubble({
     required this.displayText,
     required this.status,
+    required this.timestamp,
     required this.onRetry,
     required this.onRewind,
     required this.imageBytesList,
@@ -203,10 +210,30 @@ class _StandardBubble extends StatelessWidget {
                           ],
                         ),
                       ),
-                    if (displayText.isNotEmpty)
-                      Text(
-                        displayText,
-                        style: TextStyle(color: appColors.userBubbleText),
+                    if (displayText.isNotEmpty || timestamp != null)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          if (displayText.isNotEmpty)
+                            Flexible(
+                              child: Text(
+                                displayText,
+                                style: TextStyle(
+                                  color: appColors.userBubbleText,
+                                ),
+                              ),
+                            ),
+                          if (displayText.isNotEmpty && timestamp != null)
+                            const SizedBox(width: 8),
+                          if (timestamp case final value?)
+                            ChatMessageTimestampText(
+                              timestamp: value,
+                              color: appColors.userBubbleText.withValues(
+                                alpha: 0.66,
+                              ),
+                            ),
+                        ],
                       ),
                   ],
                 ),
@@ -227,6 +254,7 @@ class _StandardBubble extends StatelessWidget {
 class _CommandBubble extends StatelessWidget {
   final ParsedCommand command;
   final MessageStatus status;
+  final ChatMessageTimestampData? timestamp;
   final String text;
   final VoidCallback? onRetry;
   final VoidCallback? onRewind;
@@ -235,6 +263,7 @@ class _CommandBubble extends StatelessWidget {
   const _CommandBubble({
     required this.command,
     required this.status,
+    required this.timestamp,
     required this.text,
     required this.onRetry,
     required this.onRewind,
@@ -273,25 +302,41 @@ class _CommandBubble extends StatelessWidget {
                   color: appColors.userBubble,
                   borderRadius: AppSpacing.userBubbleBorderRadius,
                 ),
-                child: Text.rich(
-                  TextSpan(
-                    children: [
-                      TextSpan(
-                        text: command.commandName,
-                        style: TextStyle(
-                          color: appColors.userBubbleText,
-                          fontWeight: FontWeight.w600,
-                          fontFamily: 'monospace',
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Flexible(
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(
+                              text: command.commandName,
+                              style: TextStyle(
+                                color: appColors.userBubbleText,
+                                fontWeight: FontWeight.w600,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                            if (hasArgs)
+                              TextSpan(
+                                text: ' ${command.args}',
+                                style: TextStyle(
+                                  color: appColors.userBubbleText,
+                                ),
+                              ),
+                          ],
                         ),
                       ),
-                      if (hasArgs) ...[
-                        TextSpan(
-                          text: ' ${command.args}',
-                          style: TextStyle(color: appColors.userBubbleText),
-                        ),
-                      ],
+                    ),
+                    if (timestamp case final value?) ...[
+                      const SizedBox(width: 8),
+                      ChatMessageTimestampText(
+                        timestamp: value,
+                        color: appColors.userBubbleText.withValues(alpha: 0.66),
+                      ),
                     ],
-                  ),
+                  ],
                 ),
               ),
               Padding(

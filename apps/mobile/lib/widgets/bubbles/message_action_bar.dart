@@ -5,6 +5,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../l10n/app_localizations.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_theme.dart';
+import '../chat_message_timestamp.dart';
 
 /// Gemini-style action bar shown below assistant messages.
 class MessageActionBar extends StatelessWidget {
@@ -12,6 +13,7 @@ class MessageActionBar extends StatelessWidget {
   final bool isPlainTextMode;
   final VoidCallback? onTogglePlainText;
   final VoidCallback? onFork;
+  final ChatMessageTimestampData? timestamp;
 
   const MessageActionBar({
     super.key,
@@ -19,6 +21,7 @@ class MessageActionBar extends StatelessWidget {
     this.isPlainTextMode = false,
     this.onTogglePlainText,
     this.onFork,
+    this.timestamp,
   });
 
   @override
@@ -82,6 +85,10 @@ class MessageActionBar extends StatelessWidget {
                 onTap: onFork,
               ),
             ),
+          ],
+          if (timestamp case final value?) ...[
+            const Spacer(),
+            ChatMessageTimestampText(timestamp: value),
           ],
         ],
       ),

@@ -25,6 +25,7 @@ import 'artifact_attachment_chip.dart';
 import 'error_bubble.dart';
 import '../plan_detail_sheet.dart';
 import '../chat_selection_actions.dart';
+import '../chat_message_timestamp.dart';
 import 'inline_edit_diff.dart';
 import 'message_action_bar.dart';
 import 'plan_card.dart';
@@ -35,6 +36,7 @@ const _imageGenerationToolName = 'ImageGeneration';
 
 class AssistantBubble extends StatefulWidget {
   final AssistantServerMessage message;
+  final ChatMessageTimestampData? timestamp;
 
   /// Pre-resolved plan text extracted from a Write tool in a *different*
   /// AssistantMessage.  When the real SDK writes the plan to a file via the
@@ -55,6 +57,7 @@ class AssistantBubble extends StatefulWidget {
   const AssistantBubble({
     super.key,
     required this.message,
+    this.timestamp,
     this.resolvedPlanText,
     this.onFileTap,
     this.onArtifactOpen,
@@ -228,6 +231,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
     if (hasPlanExit) {
       return _PlanLayout(
         contents: contents,
+        timestamp: widget.timestamp,
         hasTextContent: hasTextContent,
         resolvedPlanText: widget.resolvedPlanText,
         allText: _allText(),
@@ -248,6 +252,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
 
     return _DefaultLayout(
       contents: contents,
+      timestamp: widget.timestamp,
       hasTextContent: hasTextContent,
       plainTextMode: _plainTextMode,
       allText: _allText(),
@@ -268,6 +273,7 @@ class _AssistantBubbleState extends State<AssistantBubble> {
 
 class _PlanLayout extends StatelessWidget {
   final List<AssistantContent> contents;
+  final ChatMessageTimestampData? timestamp;
   final bool hasTextContent;
   final String? resolvedPlanText;
   final String allText;
@@ -284,6 +290,7 @@ class _PlanLayout extends StatelessWidget {
 
   const _PlanLayout({
     required this.contents,
+    required this.timestamp,
     required this.hasTextContent,
     required this.resolvedPlanText,
     required this.allText,
@@ -393,6 +400,7 @@ class _PlanLayout extends StatelessWidget {
         if (hasTextContent)
           MessageActionBar(
             textToCopy: allText,
+            timestamp: timestamp,
             isPlainTextMode: plainTextMode,
             onFork: onFork,
             onTogglePlainText: onTogglePlainText,
@@ -497,6 +505,7 @@ class _PlanLayout extends StatelessWidget {
 
 class _DefaultLayout extends StatelessWidget {
   final List<AssistantContent> contents;
+  final ChatMessageTimestampData? timestamp;
   final bool hasTextContent;
   final bool plainTextMode;
   final String allText;
@@ -512,6 +521,7 @@ class _DefaultLayout extends StatelessWidget {
 
   const _DefaultLayout({
     required this.contents,
+    required this.timestamp,
     required this.hasTextContent,
     required this.plainTextMode,
     required this.allText,
@@ -593,6 +603,7 @@ class _DefaultLayout extends StatelessWidget {
         if (hasTextContent)
           MessageActionBar(
             textToCopy: allText,
+            timestamp: timestamp,
             isPlainTextMode: plainTextMode,
             onFork: onFork,
             onTogglePlainText: onTogglePlainText,

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models/messages.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_theme.dart';
+import '../chat_message_timestamp.dart';
 
 /// Displays a summary of tool uses from a subagent (Task tool).
 ///
@@ -10,8 +11,13 @@ import '../../theme/app_theme.dart';
 /// summary, similar to how the Claude CLI displays subagent activities.
 class ToolUseSummaryBubble extends StatelessWidget {
   final ToolUseSummaryMessage message;
+  final ChatMessageTimestampData? timestamp;
 
-  const ToolUseSummaryBubble({super.key, required this.message});
+  const ToolUseSummaryBubble({
+    super.key,
+    required this.message,
+    this.timestamp,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -52,6 +58,10 @@ class ToolUseSummaryBubble extends StatelessWidget {
               ),
             ),
           ),
+          if (timestamp case final value?) ...[
+            const SizedBox(width: 6),
+            ChatMessageTimestampText(timestamp: value),
+          ],
         ],
       ),
     );

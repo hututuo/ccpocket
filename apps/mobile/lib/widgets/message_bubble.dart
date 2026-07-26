@@ -18,6 +18,7 @@ import 'bubbles/tip_chip.dart';
 import 'bubbles/tool_result_bubble.dart';
 import 'bubbles/tool_use_summary_bubble.dart';
 import 'bubbles/user_bubble.dart';
+import 'chat_message_timestamp.dart';
 
 export 'bubbles/ask_user_question_widget.dart';
 
@@ -72,15 +73,15 @@ class ChatEntryWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final timestamp = entry is StreamingChatEntry
+        ? null
+        : ChatMessageTimestampData.fromEntry(entry);
     return Column(
       children: [
-        _TimestampWidget(
-          timestamp: entry.timestamp,
-          approximate: !entry.timestampIsAuthoritative,
-        ),
         switch (entry) {
           ServerChatEntry(:final message) => ServerMessageWidget(
             message: message,
+            timestamp: timestamp,
             httpBaseUrl: httpBaseUrl,
             sessionId: sessionId,
             projectPath: projectPath,
@@ -96,6 +97,7 @@ class ChatEntryWidget extends StatelessWidget {
           ),
           final UserChatEntry user => UserBubble(
             text: user.text,
+            timestamp: timestamp,
             status: user.status,
             onRetry: onRetryMessage != null
                 ? () => onRetryMessage!(user)
@@ -130,40 +132,9 @@ class ChatEntryWidget extends StatelessWidget {
   }
 }
 
-class _TimestampWidget extends StatelessWidget {
-  final DateTime timestamp;
-  final bool approximate;
-  const _TimestampWidget({required this.timestamp, required this.approximate});
-
-  @override
-  Widget build(BuildContext context) {
-    final appColors = Theme.of(context).extension<AppColors>()!;
-    final time =
-        '${approximate ? '~' : ''}'
-        '${timestamp.hour.toString().padLeft(2, '0')}:'
-        '${timestamp.minute.toString().padLeft(2, '0')}:'
-        '${timestamp.second.toString().padLeft(2, '0')}';
-    return Padding(
-      padding: const EdgeInsets.only(top: 12, bottom: 6),
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-          decoration: BoxDecoration(
-            color: appColors.subtleText.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Text(
-            time,
-            style: TextStyle(fontSize: 10, color: appColors.subtleText),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class ServerMessageWidget extends StatelessWidget {
   final ServerMessage message;
+  final ChatMessageTimestampData? timestamp;
   final String? httpBaseUrl;
   final String? sessionId;
   final String? projectPath;
@@ -184,6 +155,7 @@ class ServerMessageWidget extends StatelessWidget {
   const ServerMessageWidget({
     super.key,
     required this.message,
+    this.timestamp,
     this.httpBaseUrl,
     this.sessionId,
     this.projectPath,
@@ -209,6 +181,7 @@ class ServerMessageWidget extends StatelessWidget {
             : SystemChip(message: msg),
       final AssistantServerMessage msg => AssistantBubble(
         message: msg,
+        timestamp: timestamp,
         resolvedPlanText: resolvedPlanText,
         hiddenToolUseIds: hiddenToolUseIds,
         onFileTap: onFileTap,
@@ -282,7 +255,10 @@ class ServerMessageWidget extends StatelessWidget {
       WindowListMessage() => const SizedBox.shrink(),
       ScreenshotResultMessage() => const SizedBox.shrink(),
       DebugBundleMessage() => const SizedBox.shrink(),
-      final ToolUseSummaryMessage msg => ToolUseSummaryBubble(message: msg),
+      final ToolUseSummaryMessage msg => ToolUseSummaryBubble(
+        message: msg,
+        timestamp: timestamp,
+      ),
       RewindPreviewMessage() => const SizedBox.shrink(),
       RewindResultMessage() => const SizedBox.shrink(),
       UserInputMessage() => const SizedBox.shrink(),
