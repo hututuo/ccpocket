@@ -1,18 +1,315 @@
-# CC Pocket 新一轮体验、稳定性与兼容实施方案 v02
+# CC Pocket 综合修复交接与实施方案 v02
 
-> 状态：draft / investigation active（只调查与讨论，尚未开始实施）
+> **这是本轮唯一交接文档。接手 Agent 应从本页开始，并继续读完整文件。**
+>
+> 状态：**implementation in progress / handed off**
 >
 > 创建时间：2026-07-26 00:41:25 +0800
 >
-> 最近补充：2026-07-26（连接元数据就绪、缓存管理、过程窗口及会话同步/激活全链路审计）
+> 交接快照：2026-07-26 15:47:01 +0800
+>
+> 当前功能源码 checkpoint：
+> `341b2a2690f830ed1070af6e153eb3350ece7c1b`
+>
+> 本交接文档将在该 checkpoint 之后作为独立 docs commit 提交；恢复时以实际
+> `git rev-parse HEAD` 为准，并确认上述 checkpoint 是其祖先。
 >
 > 上一版方案：
 > `plans/mobile-comprehensive-remediation_v01_20260725-012458.md`
->
-> 本文是 build 202 之后根据真实使用反馈建立的新一轮实施方案。v01 保留为
-> 上一阶段的需求、实现和验证基线，不回写为“当时没有做过”。从本轮对话开始
-> 新提出、重新定义或在真机上复现的问题统一登记到 v02；v02 在用户确认前只作
-> 调查和设计，不授权修改 Dart、Swift、Bridge、Cloud、协议、构建或运行服务。
+
+本文最初是 build 202 之后根据真实使用反馈建立的调查方案，现已进入部分实施。
+下方原始调查、需求矩阵、证据和验收标准全部保留；本节新增的交接快照是当前事实，
+若后文仍写着“尚未开始实施”或“待实施”，以本节和实际 Git 为准。已经落地的部分
+也仍需在整轮收束时重新做跨层回归、性能审查、模拟器构建和真机验收，不能仅凭
+commit 存在就宣称产品完成。
+
+## A. 当前项目、工作树与 Git 身份
+
+| 项目 | 当前值 |
+|---|---|
+| 共享 Git 仓库 | `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat` |
+| 本轮独立工作树 | `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-comprehensive-remediation-20260725` |
+| 当前分支 | `fix/mobile-comprehensive-v02-20260726` |
+| 起始集成基线 | `9e8078ba97fd85d5bdb38a1876d08eba6855b7d7` |
+| 基线分支名 | `integration/mobile-1.109.2-comprehensive-20260725` |
+| 功能源码 checkpoint | `341b2a2690f830ed1070af6e153eb3350ece7c1b` |
+| 分支 HEAD | 提交本交接文档后将前移一个 docs commit；以恢复时 Git 实际值为准 |
+| 官方远端 | `upstream=https://github.com/K9i-0/ccpocket.git`，push 被禁用 |
+| 交接时 `upstream/main` | `aa215a3b98a8035cba0e6bdd8005803f76041d66`，`1.109.2+201` |
+| 官方包含关系 | 交接时 `upstream/main` 已是起始基线祖先；继续开发前仍必须重新 fetch/核对 |
+| 工作树状态 | 交接文档提交前源码工作树干净；不得假定未来恢复时仍然干净 |
+| 磁盘状态 | 交接时数据卷约剩余 31 GiB、使用率 93%；构建前后必须按根级规则收束缓存 |
+
+不要在共享仓库当前主工作树
+`/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat`
+直接继续本轮修改；它当时位于 `feature/mobile-session-tools`，属于另一条工作线。
+继续本轮应使用上表独立工作树和分支。
+
+### A.1 接手前必须先读
+
+1. 工作区根规则：
+   `/Users/huyiyang/AI agent/Codex/AGENTS.md`
+2. 易错索引：
+   `/Users/huyiyang/AI agent/Codex/AGENT_ERROR_INDEX.md`
+3. 仓库规则：
+   `CLAUDE.md`
+4. 长期边界：
+   `docs/PROJECT_HANDOFF.md`、`decisions.md`
+5. 本文全部内容，尤其 v02-014、v02-015 和本节。
+6. 修改新代码区前先用 Codegraph 查完整调用链；只在索引未覆盖具体细节时再做
+   小范围源码读取。
+
+### A.2 仍保留的参考工作树
+
+以下工作树/分支包含历史专项或候选，不能因为“看起来旧”就直接删除，也不能整枝
+机械合入本轮。需要时按提交、协议和真实依赖语义审查：
+
+| 工作树 | 分支 / HEAD | 用途 |
+|---|---|---|
+| `ccpocket-worktrees/mobile-performance-audit-20260724` | `audit/mobile-app-performance-20260724` / `917afcf9` | 独立手机性能审计 |
+| `ccpocket-worktrees/mobile-background-sync` | `feature/mobile-background-sync` / `d5c1ee29` | 有限后台同步宿主 |
+| `ccpocket-worktrees/mobile-background-location-notify` | `feature/mobile-background-location-notify` / `8d6f206a` | Always Location 轻通知方案 |
+| `/private/tmp/ccpocket-mobile-notifications` | `feature/mobile-notification-settings` / `3b48055f` | 分级通知设置 |
+| `/private/tmp/ccpocket-codex-image-references` | `feature/mobile-codex-image-references` / `b2e6d45e` | Codex 图片引用 |
+| `ccpocket-worktrees/mobile-unified-integration-20260724` | `integration/mobile-1.108.1-unified-20260724` / `6cfcef71` | 旧统一集成参考 |
+| `ccpocket-worktrees/project-handoff-manual-20260724` | `docs/project-handoff-manual` / `41cdc65f` | 长期交接手册 |
+
+另有 `/private/tmp/ccpocket-mobile-file-manager-session-polish` 的 worktree 元数据已标为
+prunable，目录不存在。只可在确认分支、commit 和所需内容均已保留后清理元数据；
+不要把“prunable”理解为授权删除分支或历史。
+
+## B. 本轮已经形成的提交
+
+按依赖顺序如下。当前分支未合回共享/稳定分支，未 push，未发布：
+
+| 顺序 | commit | 已落地内容 | 当前判断 |
+|---|---|---|---|
+| 1 | `02128669` | 会话目录请求关联与权威就绪门禁 | 已实现，最终仍需连接页综合回归 |
+| 2 | `6cddb80c` | 按 Bridge 身份隔离并持久化会话目录缓存 | 已实现 |
+| 3 | `ac0f56c0` | 设置页管理普通缓存与已下载历史副本 | 已实现，最终需真机 UI 验收 |
+| 4 | `b986cd13` | 文档确认所有会话分层自动更新 | 方向性方案 |
+| 5 | `e956ee8c` | 文档纠正为 Bridge 主导增量推送 | 方向性方案 |
+| 6 | `39022937` | Bridge 会话目录变化保留 durable identity | 已实现 |
+| 7 | `6685185e` | Bridge 主动推送持久会话增量 | 已实现，未部署 live Bridge |
+| 8 | `fcc4bc46` | Mobile 接收并持久化 Bridge 主动增量 | 已实现，未发布 |
+| 9 | `ddfb1bed` | 从本地缓存立即打开会话，后台延后 runtime 绑定 | 已实现；发送/修改仍等权威 runtime |
+| 10 | `167ec16e` | 点开运行会话只提升 Bridge 同步优先级 | 已实现 |
+| 11 | `78f83eb1` | 统一当前过程展开身份、八行框、框内 thinking/tool、Guardian 三秒归属 | 已实现并通过定向回归 |
+| 12 | `341b2a26` | `checkpoint:` 时间戳归入消息、操作栏和折叠摘要 | 已验证的 checkpoint；继续前先审查下述未完成点 |
+
+### B.1 `341b2a26` 的准确边界
+
+该 checkpoint 已完成：
+
+- 删除 `ChatEntryWidget` 对每个 entry 无条件插入的独立居中时间胶囊；
+- 用户消息时间进入气泡；
+- 助手文字时间进入既有操作栏右侧；
+- ToolUseSummary、历史过程、外层中间过程和当前工具摘要时间进入同一行；
+- 折叠标题的时间位于箭头左侧；
+- 状态/同步型 entry 不再制造空白时间行；
+- 窄屏长文本与命令消息已有回归。
+
+继续时仍应确认：
+
+- 直接脱离过程分组渲染的 `ToolResultBubble` 是否也应在自己的箭头左侧显示时间；
+- inferred error、特殊 plan/card、图片结果等可见消息的时间归属是否符合最终视觉；
+- 真实 iPhone 字体缩放、中文/英文和长工具名下无溢出；
+- 不要恢复独立时间行，也不要把同步时间冒充 Bridge 电脑接收时间。
+
+## C. 用户最终确认的会话同步架构
+
+这是当前最高优先级产品合同，覆盖后文较早、冲突的表述：
+
+1. **所有 durable conversation 都是可直接打开、可阅读、可继续使用的。**
+   UI 不再用“是否激活/Ready”决定会话是否可用。
+2. **Bridge 是更新计算和调度的唯一主要拥有者。**
+   Bridge 负责 provider/Codex Desktop 文件变化检测、目录 revision、cursor、
+   history 读取、增量计算、去重、公平排队和客户端推送。
+3. **Mobile 不为每个会话轮询。**
+   App 在 interactive 前台建立一次订阅/恢复握手，Bridge 主动推送变化；Mobile
+   只做轻量 reducer、SQLite 落盘、未读和当前可见 UI 更新。
+4. **正在运行的会话实时更新。**
+   无论运行时由 Bridge 托管还是电脑端 Codex Desktop 托管，都进入同一 durable
+   增量链；live 和 history 回放按 canonical identity 去重。
+5. **最近会话低延迟，冷会话低频补偿。**
+   当前打开会话为 P0；running/Needs You/未读为 P1；至少最近常用 10 个为 P2；
+   其他会话为 P3。冷会话的周期自适应，用户口述“一分钟”不是硬编码合同，但也
+   不能退化成永不更新。
+6. **runtime attachment 是内部发送机制，不是可见资格。**
+   读取已有 durable history 时不应为了“激活”而 resume。首次发送若必须 attach，
+   应在同一页面后台完成，不得丢草稿、滚动或折叠状态。
+7. **iOS 后台不突破功耗和隐私边界。**
+   普通后台和 location `notificationsOnly` 只接收轻量通知投影，不同步正文、
+   Mirror、工具、文件或渲染树；回前台先恢复 interactive，再按持久 cursor 补齐。
+8. **多客户端 cursor 独立。**
+   Bridge 可共享解析和 revision，但一个客户端的 ack 不能推进另一个客户端水位。
+
+当前代码已建立 Bridge 主动增量、Mobile 持久 reducer、焦点优先级和缓存打开的
+基础；完整 `ConversationSyncScheduler` 的公平性、冷会话补偿、ack/backlog、
+provider rewrite、跨多个新旧客户端和大规模性能仍需最终系统审计。
+
+## D. 已取得的验证信号
+
+本节只证明源码级定向验证，不代表 Bridge 已部署、App 已发布或真机已通过：
+
+- 缓存立即打开/延后 runtime 绑定相关：定向 analyze 通过，相关测试共 178 项通过。
+- 会话点开提升同步优先级：定向 analyze 通过，相关 UI 测试 44 项通过。
+- `78f83eb1` 过程折叠：
+  - 14 项 process disclosure 测试通过；
+  - 相邻 layout/Guardian 测试 18 项通过；
+  - 覆盖 13 个工具、八行内部滚动、增量更新不折回、前后台切换、Guardian
+    三秒消失和窄屏无溢出。
+- `341b2a26` 时间戳 checkpoint：
+  - targeted analyze 无 error/warning；
+  - `assistant_bubble.dart` 有 1 条仓库既有 `imageBuilder` deprecated info；
+  - 时间戳、过程折叠、操作栏、工具摘要和工具结果相邻回归合计 48 项通过；
+  - `git diff --check` 通过。
+- 尚未为本轮最终 HEAD 做：
+  - 全仓测试；
+  - Bridge 全量 build/test；
+  - Flutter 全量 analyze；
+  - iOS Simulator 最新 HEAD 构建；
+  - 物理 iPhone 验收；
+  - IPA 构建、签名检查或安装；
+  - live Bridge/Cloud/OTA/stable 发布。
+
+## E. 尚未完成的工作与建议顺序
+
+### E.1 先做当前源码收束
+
+1. 审查 `341b2a26` 的特殊可见消息和直接 ToolResult 时间归属，形成非 checkpoint
+   功能提交或后续修正提交。
+2. 对“同一中间过程 + 工具 + 最终回复重复两次”取得真实故障会话的
+   raw → Bridge → Mirror → reducer → render 五层证据；不要仅靠 Widget 层去重。
+3. 复核 optimistic user entry 被 canonical entry 替换时 turn key、展开状态、
+   scroll anchor 和时间 provenance 不漂移。
+
+### E.2 完成会话目录与连接体验
+
+1. 连接/自动连接期间保留 IP/机器页和可操作阶段，不再替换成无上下文全屏转圈。
+2. transport ready、认证、capability、权威 session list 和 catalog metadata
+   readiness 分开；只有当前 epoch 的权威结果才能首次进入首页。
+3. 首页不能先整页 `(no description)`；使用持久缓存时必须标明缓存/同步状态，
+   不能让用户误以为数据损坏。
+4. 清除残留的 Ready/激活/挂起展示和“已有会话正在创建”文案；已有会话应显示
+   正在加载/追平。
+5. 验证最近会话排序、至少 10 个 hot 会话、逐项删除下载历史和普通缓存清理。
+
+### E.3 完成会话内交互
+
+1. 真正非模态、可拖动、贴边、折叠/展开都不遮断底层会话的悬浮小窗；内部复用
+   已有会话 UI，承载运行子 Agent、官方 ephemeral Side Chat 和需处理事项。
+2. Side Chat 使用官方 `thread/fork(ephemeral:true)` 和官方生命周期；不要硬编码
+   用户口述的半小时，不新造持久会话类型。
+3. 权限偶发回到 `on-request`、Plan 首次退出后审批消失、Goal thread ID、Spark
+   额度圆环、运行蓝条/同步光晕等先复核真实事件线，再修 owning layer。
+4. 完成消息未读蓝点、打开后清除和多客户端边界。
+
+### E.4 通知、后台、文件与安全
+
+1. 复核已有分级通知和 Always Location 轻通知源码，不重复实现；需要依次验证
+   Cloud → Bridge → Mobile/基础 IPA，progress 默认关闭且必须显式订阅。
+2. 真机验证通知中文、approval/question/progress/completion/failure、长按
+   Allow/Reject、APS entitlement、AltStore 重签和系统回收。
+3. 文件管理保留两套入口：
+   - Agent 原有引用/超链接机制不改语义；
+   - 用户手动文件管理单独存在；
+   - 两者共用全盘只读、统一预览、下载和分享能力。
+4. owner 模式允许认证后的全盘只读/预览；修改、上传、移动、删除必须由 Bridge
+   通过密码或手机 Face ID/Secure Enclave 授权。密码/verifier 不进入热路径。
+5. URL 直接交系统浏览器；本地 HTML 优先应用内安全预览；Quick Look 支持的格式
+   优先 Quick Look，不支持或失败时回退本地预览器。JSON、HTML、下载和分享需用
+   真实失败样本验收。
+6. 对 Bridge/手机握手、路径规范化、symlink/TOCTOU、认证、速率/大小限制做完整
+   安全审查，但不得因自用虚拟局域网就放弃写操作授权边界，也不得为安全检查
+   引入消息热路径性能回退。
+
+### E.5 多实例、官方更新与最终性能
+
+1. Cockpit 多开 Codex 的两个 Home/来源必须显式建模；同一 durable thread 保持
+   单写者，不做按时间或标题猜测的全量 JSON 合并。
+2. 每次继续前重新核对 `upstream/main`；语义合并官方最新提交，禁止整文件
+   ours/theirs 覆盖本地或官方行为。
+3. 全功能完成后做一次全软件性能审查：
+   Bridge watcher/history/JSONL、scheduler、公平队列、重复读取、Mobile SQLite、
+   reducer、列表/Markdown/工具详情、动画 ticker、启动、CPU、内存、网络和电量。
+4. 性能优化不能靠截断历史、减少真实同步、隐藏状态或停止实时反馈冒充修复。
+
+## F. 不可越过的兼容、协作与发布边界
+
+- 新旧 Mobile、Bridge、基础 IPA 与官方 provider/app-server 继续 additive protocol
+  + capability negotiation；未知字段可忽略，未知工具有 generic fallback。
+- canonical provider history 是事实来源；Mirror/SQLite 是可重建缓存，不反写原始
+  rollout，不因 UI 异常删除会话数据。
+- 一个用户可感知功能一个内聚 commit；不整文件覆盖官方热点，不混入大范围
+  format/codegen 噪声。
+- 当前 worktree 中发现用户或其他 Agent 未提交修改时必须先停下识别，不能
+  reset/checkout/clean 覆盖。
+- 未经用户明确授权，不得：
+  - 合回共享或稳定分支；
+  - push；
+  - restart/replace 当前 Bridge；
+  - 部署 Cloud；
+  - 发布 owner OTA；
+  - 晋级 stable；
+  - 构建并安装真机 IPA；
+  - rebase 或改写他人历史；
+  - 删除旧分支、worktree、构建证据或会话数据。
+- 发布门禁必须逐项区分：源码 → 集成 → Bridge build → Bridge deploy →
+  Flutter test/analyze → Simulator → IPA → 重签/安装 → 真机 → owner OTA →
+  用户批准 stable。
+- 最终构建前后检查磁盘；同类 build、DerivedData、Pods、Dart/Flutter、Bridge
+  dist、XCTestDevices 和 IPA 默认只保留最新一版、最多两版。只清理已确认可重建
+  的精确路径，不使用宽泛 `git clean -fdx`。
+
+## G. 接手后的最短安全起步命令
+
+以下仅用于核对身份，不代表授权发布：
+
+```zsh
+cd '/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-comprehensive-remediation-20260725'
+git status --short
+git branch --show-current
+git rev-parse HEAD
+git log --oneline --decorate 9e8078ba97fd85d5bdb38a1876d08eba6855b7d7..HEAD
+git rev-parse upstream/main
+```
+
+预期功能源码 checkpoint 是：
+
+```text
+branch            = fix/mobile-comprehensive-v02-20260726
+source checkpoint = 341b2a2690f830ed1070af6e153eb3350ece7c1b
+```
+
+恢复时分支 HEAD 应是该 checkpoint 之后的独立交接文档提交；若不是，先检查
+`git log --oneline --decorate -20`，不要用 reset、checkout 或 rebase 猜测修复。
+
+若任一项不同，先按现场状态更新本文，不要强行 reset 回交接点。
+
+Flutter/Dart 工具链在交接时为：
+
+```text
+Flutter:
+/Users/huyiyang/.shorebird/bin/cache/flutter/309dd6573a9fe716410489284cd325a34b950375/bin/flutter
+
+Dart:
+/Users/huyiyang/.shorebird/bin/cache/flutter/309dd6573a9fe716410489284cd325a34b950375/bin/cache/dart-sdk/bin/dart
+```
+
+## H. 完成交付格式
+
+下一位 Agent 最终回报至少写明：
+
+1. worktree、branch、起始基线、最终 HEAD；
+2. 全部 commit 及依赖顺序；
+3. 工作树是否干净，是否混入他人改动；
+4. 每项用户需求对应的实际行为和 owning layer；
+5. 新/旧 Mobile × 新/旧 Bridge × 新/旧基础 IPA 的兼容矩阵；
+6. Bridge、Flutter、iOS、IPA 和真机的原始验证信号；
+7. 未验证事实、剩余风险和发布顺序；
+8. 保留/清理的构建产物、占用和磁盘回收；
+9. 未经授权没有执行的 merge、push、部署、OTA、stable、安装和历史改写。
 
 ## 0. 使用规则与权威边界
 
