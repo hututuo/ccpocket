@@ -49,7 +49,7 @@ struct NotificationApprovalActionPayload: Equatable {
       eventType == "approval_required",
       let permissionId = boundedString(fields["permissionId"], maximumLength: 256),
       let occurredAt = boundedString(fields["occurredAt"], maximumLength: 64),
-      ISO8601DateFormatter().date(from: occurredAt) != nil
+      parseIso8601Timestamp(occurredAt) != nil
     else {
       return nil
     }
@@ -83,6 +83,21 @@ struct NotificationApprovalActionPayload: Equatable {
       guard let key = entry.key as? String else { return }
       result[key] = entry.value
     }
+  }
+
+  /// Parses ISO 8601 timestamps with or without fractional seconds.
+  ///
+  /// Bridge/Dart senders emit fractional seconds (JS `toISOString()`), while
+  /// other senders may omit them; both shapes must be accepted.
+  private static func parseIso8601Timestamp(_ value: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractional.date(from: value) {
+      return date
+    }
+    let plain = ISO8601DateFormatter()
+    plain.formatOptions = [.withInternetDateTime]
+    return plain.date(from: value)
   }
 
   private static func boundedString(
