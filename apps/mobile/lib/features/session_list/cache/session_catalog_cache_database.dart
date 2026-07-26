@@ -16,11 +16,13 @@ class SessionCatalogCacheDatabase {
   SessionCatalogCacheDatabase({this.databasePath, this.openDatabase});
 
   static const fileName = 'session_catalog_cache_v1.db';
-  static const schemaVersion = 1;
+  static const schemaVersion = 2;
 
   static const partitionsTable = 'session_catalog_partitions';
   static const aliasesTable = 'session_catalog_aliases';
   static const entriesTable = 'session_catalog_entries';
+  static const hotWindowsTable = 'conversation_hot_windows';
+  static const hotEntriesTable = 'conversation_hot_entries';
 
   final String? databasePath;
   final SessionCatalogCacheDatabaseOpener? openDatabase;
@@ -92,8 +94,9 @@ class SessionCatalogCacheDatabase {
     int oldVersion,
     int newVersion,
   ) async {
-    // Breaking changes use a new cache filename. Older app binaries must never
-    // reinterpret a future rebuildable cache schema.
+    if (oldVersion < 2) {
+      await _createHotConversationSchema(database);
+    }
   }
 
   static Future<void> _createSchema(Database database, int version) async {
@@ -147,6 +150,67 @@ class SessionCatalogCacheDatabase {
     await database.execute('''
       CREATE INDEX session_catalog_alias_partition
       ON $aliasesTable (partition_id)
+    ''');
+
+    await _createHotConversationSchema(database);
+  }
+
+  static Future<void> _createHotConversationSchema(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $hotWindowsTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        entry_count INTEGER NOT NULL,
+        has_earlier INTEGER NOT NULL,
+        source_entry_count INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (partition_id, provider, provider_session_id),
+        FOREIGN KEY (partition_id)
+          REFERENCES $partitionsTable (partition_id)
+          ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $hotEntriesTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        entry_index INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        message_json TEXT NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          provider,
+          provider_session_id,
+          entry_id
+        ),
+        FOREIGN KEY (partition_id, provider, provider_session_id)
+          REFERENCES $hotWindowsTable (
+            partition_id,
+            provider,
+            provider_session_id
+          )
+          ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS conversation_hot_windows_recent
+      ON $hotWindowsTable (partition_id, updated_at DESC)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS conversation_hot_entries_order
+      ON $hotEntriesTable (
+        partition_id,
+        provider,
+        provider_session_id,
+        entry_index
+      )
     ''');
   }
 

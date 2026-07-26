@@ -262,6 +262,108 @@ void main() {
     expect(await repository.countSessions(target), 0);
     expect(await repository.countAllSessions(), 0);
   });
+
+  test('atomically replaces and patches a hot conversation window', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-hot',
+      logicalConnectionIdentity: 'machine:hot',
+    );
+    await repository.replaceConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-hot',
+      revision: 'revision-1',
+      entries: [_entry('entry-1', 0, 'idle')],
+      hasEarlier: true,
+      sourceEntryCount: 500,
+    );
+
+    expect(await repository.knownConversationRevisions(target), hasLength(1));
+    final first = await repository.loadConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-hot',
+    );
+    expect(first?.revision, 'revision-1');
+    expect(first?.hasEarlier, isTrue);
+    expect(first?.entries.single.decodeMessage(), isA<StatusMessage>());
+
+    expect(
+      await repository.applyConversationPatch(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-hot',
+        baseRevision: 'stale-revision',
+        revision: 'revision-2',
+        upserts: const [],
+        deletes: const [],
+        hasEarlier: true,
+        sourceEntryCount: 500,
+      ),
+      isFalse,
+    );
+    expect(
+      await repository.applyConversationPatch(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-hot',
+        baseRevision: 'revision-1',
+        revision: 'revision-2',
+        upserts: [_entry('entry-2', 1, 'running')],
+        deletes: const ['entry-1'],
+        hasEarlier: false,
+        sourceEntryCount: 1,
+      ),
+      isTrue,
+    );
+
+    final patched = await repository.loadConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-hot',
+    );
+    expect(patched?.revision, 'revision-2');
+    expect(patched?.hasEarlier, isFalse);
+    expect(patched?.entries.single.entryId, 'entry-2');
+  });
+
+  test('keeps hot windows isolated by canonical Bridge identity', () async {
+    final oldTarget = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-old',
+      websocketUrl: 'wss://shared.example/socket',
+    );
+    await repository.replaceConversationWindow(
+      target: oldTarget,
+      provider: 'codex',
+      providerSessionId: 'thread-1',
+      revision: 'old',
+      entries: [_entry('entry-old', 0, 'idle')],
+      hasEarlier: false,
+      sourceEntryCount: 1,
+    );
+    final newTarget = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-new',
+      websocketUrl: 'wss://shared.example/socket',
+    );
+
+    expect(
+      await repository.loadConversationWindow(
+        target: newTarget,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+      ),
+      isNull,
+    );
+  });
+}
+
+ConversationContentWireEntry _entry(String id, int index, String status) {
+  return ConversationContentWireEntry(
+    entryId: id,
+    index: index,
+    contentHash: 'hash-$id-$status',
+    rawMessage: {'type': 'status', 'status': status},
+  );
 }
 
 RecentSession _session({

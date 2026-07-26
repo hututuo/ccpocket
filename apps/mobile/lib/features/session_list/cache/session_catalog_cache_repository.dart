@@ -72,10 +72,33 @@ class SessionCatalogCacheSnapshot {
   final DateTime cachedAt;
 }
 
+class ConversationHotWindowSnapshot {
+  const ConversationHotWindowSnapshot({
+    required this.partitionId,
+    required this.provider,
+    required this.providerSessionId,
+    required this.revision,
+    required this.entries,
+    required this.hasEarlier,
+    required this.sourceEntryCount,
+    required this.cachedAt,
+  });
+
+  final String partitionId;
+  final String provider;
+  final String providerSessionId;
+  final String revision;
+  final List<ConversationContentWireEntry> entries;
+  final bool hasEarlier;
+  final int sourceEntryCount;
+  final DateTime cachedAt;
+}
+
 class SessionCatalogCacheRepository {
   SessionCatalogCacheRepository(this.database);
 
   static const maxEntriesPerPartition = 10_000;
+  static const maxHotWindowEntries = 2_000;
 
   final SessionCatalogCacheDatabase database;
   Future<void> _mutationTail = Future<void>.value();
@@ -206,6 +229,15 @@ class SessionCatalogCacheRepository {
           session.sessionId,
         ],
       );
+      await db.delete(
+        SessionCatalogCacheDatabase.hotWindowsTable,
+        where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+        whereArgs: [
+          partitionId,
+          session.provider ?? Provider.claude.value,
+          session.sessionId,
+        ],
+      );
       await db.update(
         SessionCatalogCacheDatabase.partitionsTable,
         {'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch},
@@ -249,15 +281,293 @@ class SessionCatalogCacheRepository {
     return Sqflite.firstIntValue(rows) ?? 0;
   }
 
+  Future<List<ConversationContentCursor>> knownConversationRevisions(
+    SessionCatalogCacheTarget target, {
+    int limit = 256,
+  }) async {
+    if (!target.isValid || limit <= 0) return const [];
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return const [];
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.hotWindowsTable,
+      columns: ['provider', 'provider_session_id', 'revision'],
+      where: 'partition_id = ?',
+      whereArgs: [partitionId],
+      orderBy: 'updated_at DESC',
+      limit: limit.clamp(1, 256),
+    );
+    return List<ConversationContentCursor>.unmodifiable(
+      rows.map(
+        (row) => ConversationContentCursor(
+          provider: row['provider']! as String,
+          providerSessionId: row['provider_session_id']! as String,
+          revision: row['revision']! as String,
+        ),
+      ),
+    );
+  }
+
+  Future<ConversationHotWindowSnapshot?> loadConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!target.isValid) return null;
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final windows = await db.query(
+      SessionCatalogCacheDatabase.hotWindowsTable,
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      limit: 1,
+    );
+    if (windows.isEmpty) return null;
+    final window = windows.single;
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.hotEntriesTable,
+      columns: ['entry_id', 'entry_index', 'content_hash', 'message_json'],
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      orderBy: 'entry_index ASC',
+      limit: maxHotWindowEntries,
+    );
+    final entries = <ConversationContentWireEntry>[];
+    for (final row in rows) {
+      try {
+        final decoded = jsonDecode(row['message_json']! as String);
+        if (decoded is! Map) return null;
+        final entry = ConversationContentWireEntry(
+          entryId: row['entry_id']! as String,
+          index: row['entry_index']! as int,
+          contentHash: row['content_hash']! as String,
+          rawMessage: Map<String, dynamic>.unmodifiable(
+            Map<String, dynamic>.from(decoded),
+          ),
+        );
+        entry.decodeMessage();
+        entries.add(entry);
+      } catch (_) {
+        // A single malformed row invalidates only this rebuildable window.
+        return null;
+      }
+    }
+    if (entries.length != window['entry_count']) return null;
+    return ConversationHotWindowSnapshot(
+      partitionId: partitionId,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      revision: window['revision']! as String,
+      entries: List<ConversationContentWireEntry>.unmodifiable(entries),
+      hasEarlier: (window['has_earlier']! as int) != 0,
+      sourceEntryCount: window['source_entry_count']! as int,
+      cachedAt: DateTime.fromMillisecondsSinceEpoch(
+        window['updated_at']! as int,
+        isUtc: true,
+      ),
+    );
+  }
+
+  Future<void> replaceConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    required List<ConversationContentWireEntry> entries,
+    required bool hasEarlier,
+    required int sourceEntryCount,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    if (entries.length > maxHotWindowEntries) {
+      return Future<void>.error(
+        StateError('Conversation hot window exceeds the local safety bound.'),
+      );
+    }
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        await transaction.insert(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          {
+            'partition_id': partitionId,
+            'provider': provider,
+            'provider_session_id': providerSessionId,
+            'revision': revision,
+            'entry_count': entries.length,
+            'has_earlier': hasEarlier ? 1 : 0,
+            'source_entry_count': sourceEntryCount,
+            'updated_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        await transaction.delete(
+          SessionCatalogCacheDatabase.hotEntriesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        for (final entry in entries) {
+          await _insertHotEntry(
+            transaction,
+            partitionId: partitionId,
+            provider: provider,
+            providerSessionId: providerSessionId,
+            entry: entry,
+          );
+        }
+      });
+    });
+  }
+
+  Future<bool> applyConversationPatch({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String baseRevision,
+    required String revision,
+    required List<ConversationContentWireEntry> upserts,
+    required List<String> deletes,
+    required bool hasEarlier,
+    required int sourceEntryCount,
+  }) {
+    if (!target.isValid) return Future<bool>.value(false);
+    return _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return false;
+        final rows = await transaction.query(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          columns: ['revision'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        if (rows.isEmpty || rows.single['revision'] != baseRevision) {
+          return false;
+        }
+        if (deletes.isNotEmpty) {
+          final placeholders = List.filled(deletes.length, '?').join(',');
+          await transaction.delete(
+            SessionCatalogCacheDatabase.hotEntriesTable,
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ? '
+                'AND entry_id IN ($placeholders)',
+            whereArgs: [partitionId, provider, providerSessionId, ...deletes],
+          );
+        }
+        for (final entry in upserts) {
+          await _insertHotEntry(
+            transaction,
+            partitionId: partitionId,
+            provider: provider,
+            providerSessionId: providerSessionId,
+            entry: entry,
+          );
+        }
+        final countRows = await transaction.rawQuery(
+          '''
+          SELECT
+            COUNT(*) AS entry_count,
+            COUNT(DISTINCT entry_index) AS index_count
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+          WHERE partition_id = ?
+            AND provider = ?
+            AND provider_session_id = ?
+          ''',
+          [partitionId, provider, providerSessionId],
+        );
+        final count = Sqflite.firstIntValue(countRows) ?? 0;
+        final indexCount = countRows.single['index_count']! as int;
+        if (count > maxHotWindowEntries || indexCount != count) {
+          throw StateError(
+            'Conversation hot window violates the local safety bound.',
+          );
+        }
+        await transaction.update(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          {
+            'revision': revision,
+            'entry_count': count,
+            'has_earlier': hasEarlier ? 1 : 0,
+            'source_entry_count': sourceEntryCount,
+            'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+          },
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        return true;
+      });
+    });
+  }
+
+  Future<void> deleteConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      final partitionId = await _resolveReadablePartition(db, target);
+      if (partitionId == null) return;
+      await db.delete(
+        SessionCatalogCacheDatabase.hotWindowsTable,
+        where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+        whereArgs: [partitionId, provider, providerSessionId],
+      );
+    });
+  }
+
   Future<void> close() async {
     await _mutationTail;
     await database.close();
   }
 
   Future<void> _enqueueMutation(Future<void> Function() operation) {
+    return _enqueueMutationResult<void>(operation);
+  }
+
+  Future<T> _enqueueMutationResult<T>(Future<T> Function() operation) {
     final next = _mutationTail.then((_) => operation());
-    _mutationTail = next.catchError((_) {});
+    _mutationTail = next.then<void>((_) {}).catchError((_) {});
     return next;
+  }
+
+  static Future<void> _insertHotEntry(
+    DatabaseExecutor database, {
+    required String partitionId,
+    required String provider,
+    required String providerSessionId,
+    required ConversationContentWireEntry entry,
+  }) async {
+    await database.insert(
+      SessionCatalogCacheDatabase.hotEntriesTable,
+      {
+        'partition_id': partitionId,
+        'provider': provider,
+        'provider_session_id': providerSessionId,
+        'entry_id': entry.entryId,
+        'entry_index': entry.index,
+        'content_hash': entry.contentHash,
+        'message_json': jsonEncode(entry.rawMessage),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   static bool _isAuthoritativeReplacement(RecentSessionsMessage response) {
@@ -455,6 +765,45 @@ class SessionCatalogCacheRepository {
         {...sourceEntry, 'partition_id': targetPartitionId},
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
+    }
+
+    final sourceHotWindows = await transaction.query(
+      SessionCatalogCacheDatabase.hotWindowsTable,
+      where: 'partition_id = ?',
+      whereArgs: [sourcePartitionId],
+    );
+    for (final sourceWindow in sourceHotWindows) {
+      final provider = sourceWindow['provider']! as String;
+      final providerSessionId = sourceWindow['provider_session_id']! as String;
+      final targetWindows = await transaction.query(
+        SessionCatalogCacheDatabase.hotWindowsTable,
+        columns: ['updated_at'],
+        where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+        whereArgs: [targetPartitionId, provider, providerSessionId],
+        limit: 1,
+      );
+      final sourceUpdatedAt = sourceWindow['updated_at']! as int;
+      final targetIsNewer =
+          targetWindows.isNotEmpty &&
+          (targetWindows.single['updated_at']! as int) >= sourceUpdatedAt;
+      if (targetIsNewer) continue;
+      final sourceHotEntries = await transaction.query(
+        SessionCatalogCacheDatabase.hotEntriesTable,
+        where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+        whereArgs: [sourcePartitionId, provider, providerSessionId],
+      );
+      await transaction.insert(
+        SessionCatalogCacheDatabase.hotWindowsTable,
+        {...sourceWindow, 'partition_id': targetPartitionId},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      for (final sourceHotEntry in sourceHotEntries) {
+        await transaction.insert(
+          SessionCatalogCacheDatabase.hotEntriesTable,
+          {...sourceHotEntry, 'partition_id': targetPartitionId},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
     }
 
     final targetMetadata = await _partitionMetadata(

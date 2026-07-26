@@ -19,6 +19,7 @@ part 'local_features/slots/codex_core_actions_protocol_slot.dart';
 part 'local_features/slots/codex_desktop_continuity_protocol_slot.dart';
 part 'local_features/slots/file_transfer_protocol_slot.dart';
 part 'local_features/slots/file_browser_protocol_slot.dart';
+part 'local_features/slots/conversation_content_protocol_slot.dart';
 
 bool isCodexAutoReviewApprovalsReviewer(String? value) {
   return value == 'auto_review' || value == 'guardian_subagent';

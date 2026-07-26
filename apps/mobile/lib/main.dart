@@ -37,6 +37,7 @@ import 'features/background_sync/background_sync_coordinator.dart';
 import 'features/background_sync/background_sync_host.dart';
 import 'features/conversation_mirror/conversation_mirror_service.dart';
 import 'features/conversation_mirror/storage/conversation_mirror_storage.dart';
+import 'features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'features/file_browser/file_browser_service.dart';
 import 'features/file_browser/file_mutation_auth_host.dart';
 import 'features/file_transfer/file_transfer_service.dart';
@@ -245,6 +246,10 @@ void main() async {
   final sessionCatalogCache = SessionCatalogCacheRepository(
     SessionCatalogCacheDatabase(),
   );
+  final conversationContentSyncService = ConversationContentSyncService(
+    bridge: BridgeServiceConversationContentSyncGateway(bridge),
+    cache: sessionCatalogCache,
+  )..start(initialLifecycleState: WidgetsBinding.instance.lifecycleState);
   final backgroundSyncHost = MethodChannelBackgroundSyncHost(
     supportsContinuation: mobileHostSnapshot.supports(
       MobileHostCapability.backgroundContinuation,
@@ -413,6 +418,11 @@ void main() async {
           create: (_) => sessionCatalogCache,
           lazy: false,
           dispose: (repository) => unawaited(repository.close()),
+        ),
+        RepositoryProvider<ConversationContentSyncService>(
+          create: (_) => conversationContentSyncService,
+          lazy: false,
+          dispose: (service) => unawaited(service.dispose()),
         ),
         RepositoryProvider<DraftService>.value(value: draftService),
         RepositoryProvider<InAppReviewService>(
