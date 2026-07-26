@@ -112,7 +112,7 @@ void main() {
     );
   });
 
-  test('rejects malformed, extended, and ambiguous server payloads', () {
+  test('tolerates additive fields but rejects malformed or ambiguous ones', () {
     expect(
       () => ServerMessage.fromJson({
         'type': 'ephemeral_side_chat_opened',
@@ -123,15 +123,16 @@ void main() {
       }),
       throwsFormatException,
     );
-    expect(
-      () => ServerMessage.fromJson({
-        'type': 'ephemeral_side_chat_registry',
-        'entries': [
-          {..._entryJson(), 'unexpected': true},
-        ],
-      }),
-      throwsFormatException,
-    );
+    final extended =
+        ServerMessage.fromJson({
+              'type': 'ephemeral_side_chat_registry',
+              'requestId': 'list-2',
+              'entries': [
+                {..._entryJson(), 'unexpected': true},
+              ],
+            })
+            as EphemeralSideChatRegistryMessage;
+    expect(extended.entries?.single.childSessionId, 'child-1');
     expect(
       () => ServerMessage.fromJson({
         'type': 'ephemeral_side_chat_registry',

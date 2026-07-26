@@ -267,6 +267,25 @@ void main() {
     expect(error.error?.code, 'fork_failed');
   });
 
+  test('accepts additive unknown fields from a newer bridge', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'side_chat_event',
+              'event': 'message',
+              'parentSessionId': 'parent-1',
+              'sideChatId': 'side-1',
+              'seq': 41,
+              'message': {
+                'id': 'm1',
+                'role': 'assistant',
+                'text': 'answer',
+                'createdAt': '2026-07-27T00:00:00.000Z',
+              },
+            })
+            as SideChatEventMessage;
+    expect(message.message?.text, 'answer');
+  });
+
   test('rejects missing correlation and malformed event payloads', () {
     expect(
       () => ServerMessage.fromJson({

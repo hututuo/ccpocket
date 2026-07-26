@@ -505,9 +505,14 @@ Map<String, dynamic>? _sideChatOptionalMap(
   return Map<String, dynamic>.from(value);
 }
 
-void _sideChatRequireOnlyKeys(Map<String, dynamic> json, List<String> allowed) {
-  final allowedSet = allowed.toSet();
-  if (json.keys.any((key) => !allowedSet.contains(key))) {
-    throw const FormatException('Side chat message contains unknown fields.');
-  }
-}
+/// Documents the canonical key set of one side chat payload.
+///
+/// Unknown keys are deliberately tolerated: capability negotiation is
+/// type-name-only, so a newer Bridge may add optional fields to an existing
+/// message without breaking older apps. Message variants are never selected
+/// by key sets — they are disambiguated by explicit discriminators (`type`,
+/// the `event` enum, and the exactly-one-result checks), which stay strict.
+void _sideChatRequireOnlyKeys(
+  Map<String, dynamic> json,
+  List<String> allowed,
+) {}
