@@ -225,6 +225,10 @@ class _ZoomableImageState extends State<_ZoomableImage>
     with SingleTickerProviderStateMixin {
   final _transformController = TransformationController();
   late final AnimationController _animController;
+  // One reusable curve: constructing a CurvedAnimation per gesture adds a
+  // status listener to the controller that is never removed, accumulating
+  // stale objects for the lifetime of the screen.
+  late final CurvedAnimation _zoomCurve;
   Animation<Matrix4>? _animation;
   TapDownDetails? _doubleTapDetails;
 
@@ -235,6 +239,10 @@ class _ZoomableImageState extends State<_ZoomableImage>
       vsync: this,
       duration: const Duration(milliseconds: 250),
     );
+    _zoomCurve = CurvedAnimation(
+      parent: _animController,
+      curve: Curves.easeOutCubic,
+    );
     _animController.addListener(() {
       if (_animation != null) {
         _transformController.value = _animation!.value;
@@ -244,6 +252,7 @@ class _ZoomableImageState extends State<_ZoomableImage>
 
   @override
   void dispose() {
+    _zoomCurve.dispose();
     _animController.dispose();
     _transformController.dispose();
     super.dispose();
@@ -274,10 +283,10 @@ class _ZoomableImageState extends State<_ZoomableImage>
         ..scale(scale);
     }
 
-    _animation = Matrix4Tween(begin: _transformController.value, end: endMatrix)
-        .animate(
-          CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic),
-        );
+    _animation = Matrix4Tween(
+      begin: _transformController.value,
+      end: endMatrix,
+    ).animate(_zoomCurve);
     _animController.forward(from: 0);
   }
 

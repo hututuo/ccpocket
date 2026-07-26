@@ -350,6 +350,13 @@ class _ToggleContentState extends State<_ToggleContent>
   bool _showingBefore = false;
   final _transformController = TransformationController();
   late final AnimationController _animController;
+  // One reusable curve: a per-gesture CurvedAnimation adds a status
+  // listener to the controller that is never removed, accumulating stale
+  // objects for the lifetime of the screen.
+  late final CurvedAnimation _zoomCurve = CurvedAnimation(
+    parent: _animController,
+    curve: Curves.easeOutCubic,
+  );
   Animation<Matrix4>? _animation;
   TapDownDetails? _doubleTapDetails;
 
@@ -369,6 +376,7 @@ class _ToggleContentState extends State<_ToggleContent>
 
   @override
   void dispose() {
+    _zoomCurve.dispose();
     _animController.dispose();
     _transformController.dispose();
     super.dispose();
@@ -393,10 +401,10 @@ class _ToggleContentState extends State<_ToggleContent>
         ..scale(scale);
     }
 
-    _animation = Matrix4Tween(begin: _transformController.value, end: endMatrix)
-        .animate(
-          CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic),
-        );
+    _animation = Matrix4Tween(
+      begin: _transformController.value,
+      end: endMatrix,
+    ).animate(_zoomCurve);
     _animController.forward(from: 0);
   }
 
@@ -480,6 +488,13 @@ class _OverlayContentState extends State<_OverlayContent>
     with SingleTickerProviderStateMixin {
   final _transformController = TransformationController();
   late final AnimationController _animController;
+  // One reusable curve: a per-gesture CurvedAnimation adds a status
+  // listener to the controller that is never removed, accumulating stale
+  // objects for the lifetime of the screen.
+  late final CurvedAnimation _zoomCurve = CurvedAnimation(
+    parent: _animController,
+    curve: Curves.easeOutCubic,
+  );
   Animation<Matrix4>? _animation;
   TapDownDetails? _doubleTapDetails;
 
@@ -499,6 +514,7 @@ class _OverlayContentState extends State<_OverlayContent>
 
   @override
   void dispose() {
+    _zoomCurve.dispose();
     _animController.dispose();
     _transformController.dispose();
     super.dispose();
@@ -523,10 +539,10 @@ class _OverlayContentState extends State<_OverlayContent>
         ..scale(scale);
     }
 
-    _animation = Matrix4Tween(begin: _transformController.value, end: endMatrix)
-        .animate(
-          CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic),
-        );
+    _animation = Matrix4Tween(
+      begin: _transformController.value,
+      end: endMatrix,
+    ).animate(_zoomCurve);
     _animController.forward(from: 0);
   }
 
@@ -613,6 +629,13 @@ class _ZoomableMemoryImageState extends State<_ZoomableMemoryImage>
     with SingleTickerProviderStateMixin {
   final _transformController = TransformationController();
   late final AnimationController _animController;
+  // One reusable curve: a per-gesture CurvedAnimation adds a status
+  // listener to the controller that is never removed, accumulating stale
+  // objects for the lifetime of the screen.
+  late final CurvedAnimation _zoomCurve = CurvedAnimation(
+    parent: _animController,
+    curve: Curves.easeOutCubic,
+  );
   Animation<Matrix4>? _animation;
   TapDownDetails? _doubleTapDetails;
 
@@ -632,6 +655,7 @@ class _ZoomableMemoryImageState extends State<_ZoomableMemoryImage>
 
   @override
   void dispose() {
+    _zoomCurve.dispose();
     _animController.dispose();
     _transformController.dispose();
     super.dispose();
@@ -656,10 +680,10 @@ class _ZoomableMemoryImageState extends State<_ZoomableMemoryImage>
         ..scale(scale);
     }
 
-    _animation = Matrix4Tween(begin: _transformController.value, end: endMatrix)
-        .animate(
-          CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic),
-        );
+    _animation = Matrix4Tween(
+      begin: _transformController.value,
+      end: endMatrix,
+    ).animate(_zoomCurve);
     _animController.forward(from: 0);
   }
 

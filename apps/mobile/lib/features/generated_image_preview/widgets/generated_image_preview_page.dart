@@ -29,6 +29,10 @@ class _GeneratedImagePreviewPageState extends State<GeneratedImagePreviewPage>
     with SingleTickerProviderStateMixin {
   final _transformationController = TransformationController();
   late final AnimationController _animationController;
+  // One reusable curve: constructing a CurvedAnimation per gesture adds a
+  // status listener to the controller that is never removed, accumulating
+  // stale objects for the lifetime of the screen.
+  late final CurvedAnimation _zoomCurve;
   Animation<Matrix4>? _animation;
   TapDownDetails? _doubleTapDetails;
   Offset? _interactionStart;
@@ -42,10 +46,15 @@ class _GeneratedImagePreviewPageState extends State<GeneratedImagePreviewPage>
       vsync: this,
       duration: const Duration(milliseconds: 220),
     )..addListener(_applyAnimation);
+    _zoomCurve = CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeOutCubic,
+    );
   }
 
   @override
   void dispose() {
+    _zoomCurve.dispose();
     _animationController
       ..removeListener(_applyAnimation)
       ..dispose();
@@ -75,16 +84,10 @@ class _GeneratedImagePreviewPageState extends State<GeneratedImagePreviewPage>
   }
 
   void _animateTo(Matrix4 endMatrix) {
-    _animation =
-        Matrix4Tween(
-          begin: _transformationController.value,
-          end: endMatrix,
-        ).animate(
-          CurvedAnimation(
-            parent: _animationController,
-            curve: Curves.easeOutCubic,
-          ),
-        );
+    _animation = Matrix4Tween(
+      begin: _transformationController.value,
+      end: endMatrix,
+    ).animate(_zoomCurve);
     _animationController.forward(from: 0);
   }
 
