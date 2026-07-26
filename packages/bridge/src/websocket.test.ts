@@ -9151,6 +9151,107 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("does not fabricate an approval policy for a collaboration-only change when the policy is unknown", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-unknown-policy",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.status = "idle";
+    // Model a Desktop-created thread taken over via resume: neither the
+    // stored settings nor the runtime ever had a resolved policy.
+    session.process.approvalPolicy = undefined;
+    if (session.codexSettings) delete session.codexSettings.approvalPolicy;
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId,
+        mode: "plan",
+        planMode: true,
+        permissionChangeId: "collab-unknown-1",
+      },
+      ws,
+    );
+
+    expect(session.process.collaborationMode).toBe("plan");
+    expect(session.process.setApprovalPolicy).not.toHaveBeenCalled();
+    expect(session.codexSettings?.approvalPolicy).toBeUndefined();
+    const modeMsg = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" &&
+          message.subtype === "set_permission_mode",
+      );
+    expect(modeMsg).toBeDefined();
+    expect(modeMsg).not.toHaveProperty("approvalPolicy");
+
+    bridge.close();
+  });
+
+  it("omits the fabricated approval policy from a plan-toggle restart when the policy is unknown", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-unknown-policy-restart",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.status = "running";
+    session.process.approvalPolicy = undefined;
+    const createSpy = vi.spyOn((bridge as any).sessionManager, "create");
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId,
+        mode: "plan",
+      },
+      ws,
+    );
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const codexOptions = createSpy.mock.calls[0][5] as Record<string, unknown>;
+    // A fabricated "on-request" here would override the user's config-file
+    // policy on the replacement thread.
+    expect(codexOptions.approvalPolicy).toBeUndefined();
+
+    bridge.close();
+  });
+
   it("fails closed when the exact Codex runtime lacks native Plan mode", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

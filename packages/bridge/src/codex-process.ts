@@ -684,8 +684,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     return this.transport?.isRunning ?? false;
   }
 
-  get approvalPolicy(): string {
-    return this._approvalPolicy ?? "on-request";
+  /**
+   * The resolved approval policy, or undefined while it is unknown (start
+   * options omitted it and the app-server did not report a resolved value).
+   * Never fabricate a default here: an invented "on-request" ends up on the
+   * wire during permission restarts and overrides the user's config policy.
+   */
+  get approvalPolicy(): string | undefined {
+    return this._approvalPolicy ?? undefined;
   }
 
   get approvalsReviewer(): string {

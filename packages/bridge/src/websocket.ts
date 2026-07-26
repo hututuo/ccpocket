@@ -869,6 +869,17 @@ function normalizeCodexApprovalPolicy(
   }
 }
 
+/** Normalizes a known policy but preserves "unknown" instead of fabricating
+ * "on-request" — a fabricated value would be persisted and, on a permission
+ * restart, sent as an explicit policy that overrides the user's config. */
+function normalizeCodexApprovalPolicyIfKnown(
+  value?: string,
+): "never" | "on-request" | "on-failure" | "untrusted" | undefined {
+  return value === undefined
+    ? undefined
+    : normalizeCodexApprovalPolicy(value);
+}
+
 type CodexPermissionsMode = NonNullable<
   CodexStartOptions["codexPermissionsMode"]
 >;
@@ -5065,7 +5076,7 @@ export class BridgeWebSocketServer {
             ? codexSettingsFromPermissionsMode(requestedCodexPermissionsMode)
             : undefined;
           const process = session.process as CodexProcess;
-          const currentApproval = normalizeCodexApprovalPolicy(
+          const currentApproval = normalizeCodexApprovalPolicyIfKnown(
             process.approvalPolicy,
           );
           const currentReviewer = process.approvalsReviewer;
@@ -5225,7 +5236,9 @@ export class BridgeWebSocketServer {
 
             session.codexSettings = {
               ...(session.codexSettings ?? {}),
-              approvalPolicy: newApproval,
+              ...(newApproval !== undefined
+                ? { approvalPolicy: newApproval }
+                : {}),
               approvalsReviewer: newReviewer,
               codexPermissionsMode: newPermissionsMode,
               sandboxMode: newSandboxMode,
@@ -5289,7 +5302,9 @@ export class BridgeWebSocketServer {
             }
             session.codexSettings = {
               ...(session.codexSettings ?? {}),
-              approvalPolicy: newApproval,
+              ...(newApproval !== undefined
+                ? { approvalPolicy: newApproval }
+                : {}),
               approvalsReviewer: newReviewer,
               codexPermissionsMode: newPermissionsMode,
               sandboxMode: newSandboxMode,

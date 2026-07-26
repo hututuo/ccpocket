@@ -414,7 +414,8 @@ describe("CodexProcess (app-server)", () => {
         sandboxMode: "danger-full-access",
       }),
     ).rejects.toMatchObject({ code: -32601 });
-    expect(proc.approvalPolicy).toBe("on-request");
+    // The failed update must leave the policy untouched — still unknown.
+    expect(proc.approvalPolicy).toBeUndefined();
     expect(proc.approvalsReviewer).toBe("user");
     expect(request).toHaveBeenCalledOnce();
   });
