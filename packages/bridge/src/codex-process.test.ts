@@ -4069,6 +4069,9 @@ describe("CodexProcess (app-server)", () => {
     const child = new FakeChildProcess();
     attachFakeTransport(proc as any, child);
 
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-concurrent" },
+    });
     (proc as any).handleServerRequest(
       "req-command-concurrent",
       "item/commandExecution/requestApproval",
@@ -4113,6 +4116,41 @@ describe("CodexProcess (app-server)", () => {
       result: { answers: { q1: { answers: ["A"] } } },
     });
     expect(proc.status).toBe("running");
+  });
+
+  it("returns to idle when an approval resolves after its turn completed", () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-late-approval" },
+    });
+    (proc as any).handleServerRequest(
+      "req-late-approval",
+      "item/commandExecution/requestApproval",
+      { itemId: "item-late-approval", command: "pwd" },
+    );
+    expect(proc.status).toBe("waiting_approval");
+
+    // app-server settles the turn while the approval is still on screen.
+    (proc as any).handleNotification("turn/completed", {
+      turn: { id: "turn-late-approval", status: "completed" },
+    });
+    expect(proc.status).toBe("waiting_approval");
+    // The input loop parks waiting for the next message once the turn ends.
+    (proc as any).inputResolve = () => {};
+
+    proc.approve("item-late-approval");
+
+    expect(nextOutgoingResponse(child)).toMatchObject({
+      id: "req-late-approval",
+      result: { decision: "accept" },
+    });
+    // No turn is in flight anymore: resuming to "running" would leave the
+    // session permanently unable to accept input.
+    expect(proc.status).toBe("idle");
+    expect(proc.isWaitingForInput).toBe(true);
   });
 
   it("defers approved plan execution until every interaction is resolved", () => {

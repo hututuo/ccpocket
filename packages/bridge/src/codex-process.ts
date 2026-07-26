@@ -2447,7 +2447,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this._idleWhenInteractionsClear = false;
       this.setStatus("idle");
     } else {
-      this.setStatus("running");
+      // turn/completed may have settled the turn while this interaction was
+      // still on screen; "running" with no turn in flight would leave the
+      // session permanently unable to accept input.
+      this.setStatus(this.pendingTurnId ? "running" : "idle");
     }
   }
 
