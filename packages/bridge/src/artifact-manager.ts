@@ -252,6 +252,7 @@ function sourceKind(
   projectRelativePath: string | undefined,
   filename: string,
   mimeType: string,
+  line: number | undefined,
 ): ArtifactKind {
   if (
     !projectRelativePath ||
@@ -264,7 +265,10 @@ function sourceKind(
   const extension = extname(filename).toLowerCase();
   // HTML renders in the sandboxed iframe and JSON pretty-prints on the
   // preview page; kind:"source" would strand both in the File Peek text
-  // sheet with the whole preview route unreachable.
+  // sheet with the whole preview route unreachable. A line-anchored ref
+  // is the exception: only File Peek can scroll to the cited line (the
+  // preview page ignores line info and truncates large text), so it
+  // stays on the source path.
   if (
     extension === ".html" ||
     extension === ".htm" ||
@@ -272,7 +276,7 @@ function sourceKind(
     normalizedMime.startsWith("text/html") ||
     normalizedMime.startsWith("application/json")
   ) {
-    return "preview";
+    return line === undefined ? "preview" : "source";
   }
   const isSource =
     SOURCE_EXTENSIONS.has(extension) ||
@@ -460,6 +464,7 @@ export class ArtifactManager {
         projectRelativePath,
         inspected.file.filename,
         inspected.file.mimeType,
+        inspected.line,
       );
       pending.push({
         refIndex,

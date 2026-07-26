@@ -169,6 +169,45 @@ describe("ArtifactManager", () => {
     });
   });
 
+  it("keeps line-anchored .html/.json refs on the source path", async () => {
+    const root = await tempRoot();
+    const project = join(root, "project");
+    await mkdir(project);
+    await writeFile(join(project, "config.json"), '{"a":1}\n');
+    await writeFile(join(project, "page.html"), "<h1>x</h1>\n");
+    const manager = new ArtifactManager({
+      store: storeFor([project]),
+      registry: new ArtifactRegistry({ filePath: join(root, "registry.json") }),
+    });
+    const candidates = extractArtifactCandidates(
+      "[cfg](config.json:4)\n[page](page.html:2)",
+    );
+
+    const refs = await manager.registerCandidates({
+      ownerId: "thread",
+      messageId: "line-anchored-preview",
+      cwd: project,
+      candidates,
+    });
+
+    // A line-anchored reference must open File Peek scrolled to that line;
+    // the preview route ignores line info and truncates large text files.
+    expect(refs).toEqual([
+      expect.objectContaining({
+        kind: "source",
+        filename: "config.json",
+        line: 4,
+        projectRelativePath: "config.json",
+      }),
+      expect.objectContaining({
+        kind: "source",
+        filename: "page.html",
+        line: 2,
+        projectRelativePath: "page.html",
+      }),
+    ]);
+  });
+
   it("tries a complete colon filename before interpreting line metadata", async () => {
     const root = await tempRoot();
     const project = join(root, "project");
