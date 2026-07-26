@@ -88,7 +88,25 @@ class StdioCodexTransport extends CodexTransport {
       if (line) this.emit("log", line);
     });
 
+    // A write can race the child dying (EPIPE); without a listener the stream
+    // "error" event throws and takes down the whole Bridge process.
+    child.stdin.on("error", (err) => {
+      if (this.child === child) {
+        this.emit("error", err);
+      } else {
+        this.emit(
+          "log",
+          `[codex-transport] stdin error after exit: ${err.message}`,
+        );
+      }
+    });
+
     child.on("error", (err) => {
+      // Spawn-level failures (ENOENT, EACCES) never emit "exit"; drop the
+      // reference so isRunning/write stop treating the child as alive.
+      if (this.child === child) {
+        this.child = null;
+      }
       this.emit("error", err);
     });
 
@@ -99,10 +117,21 @@ class StdioCodexTransport extends CodexTransport {
   }
 
   write(envelope: Record<string, unknown>): void {
-    if (!this.child || this.child.killed) {
+    const child = this.child;
+    // "killed" stays false when the child crashes on its own; the writable
+    // check catches the window between the crash and the "exit" event.
+    // Compare against false explicitly: test doubles may omit the property.
+    if (!child || child.killed || child.stdin.writable === false) {
       throw new Error("codex app-server is not running");
     }
-    this.child.stdin.write(`${JSON.stringify(envelope)}\n`);
+    child.stdin.write(`${JSON.stringify(envelope)}\n`, (err) => {
+      if (err) {
+        this.emit(
+          "log",
+          `[codex-transport] stdin write failed: ${err.message}`,
+        );
+      }
+    });
   }
 
   stop(): void {
