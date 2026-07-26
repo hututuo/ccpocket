@@ -2877,6 +2877,88 @@ void main() {
     },
   );
 
+  test(
+    'failed cancel of a paused transfer retries with a fresh bridge request',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'file_transfer_v2_auto_resume': false,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final pickerRoot = await storage.pickerStagingDirectory();
+      final picked = File('${pickerRoot.path}/retry-cancel.bin');
+      await picked.writeAsBytes(const [1, 2, 3]);
+      final service = createService(
+        client: MockClient.streaming((request, body) async {
+          throw StateError('HTTP must not run before the upload is released');
+        }),
+        picker: _FakePicker(
+          FileTransferSelection(
+            path: picked.path,
+            filename: 'retry-cancel.bin',
+            sizeBytes: 3,
+          ),
+        ),
+        preferences: preferences,
+      );
+      final upload = service.uploadToMac();
+      await _waitUntil(
+        () => bridge.sentJson.any(
+          (json) => json['type'] == 'file_transfer_upload_prepare_v2',
+        ),
+      );
+      service.pauseActive();
+      await upload;
+      expect(service.pausedTransfer, isNotNull);
+      final pausedId = service.pausedTransfer!.id;
+
+      bridge.setConnected(false);
+      await expectLater(
+        service.cancelTransfer(pausedId),
+        throwsA(
+          isA<FileTransferException>().having(
+            (error) => error.code,
+            'code',
+            'bridge_disconnected',
+          ),
+        ),
+      );
+      expect(service.pausedTransfer, isNotNull);
+
+      bridge.onSend = (json) {
+        if (json['type'] != 'file_transfer_cancel_v2') return;
+        scheduleMicrotask(() {
+          bridge.emit(
+            FileTransferCancelResultMessage(
+              requestId: json['requestId'] as String,
+              transferId: json['transferId'] as String,
+              direction: FileTransferCancelDirection.upload,
+              success: true,
+            ),
+          );
+        });
+      };
+      bridge.setConnected(true);
+
+      await service.cancelTransfer(pausedId);
+
+      expect(
+        bridge.sentJson.where(
+          (json) => json['type'] == 'file_transfer_cancel_v2',
+        ),
+        hasLength(1),
+      );
+      expect(service.pausedTransfer, isNull);
+      expect(
+        service.recentResults.any(
+          (item) => item.status == FileTransferStatus.cancelled,
+        ),
+        isTrue,
+      );
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+      service.dispose();
+    },
+  );
+
   test('ephemeral send race becomes a recoverable paused checkpoint', () async {
     final pickerRoot = await storage.pickerStagingDirectory();
     final picked = File('${pickerRoot.path}/send-race.bin');

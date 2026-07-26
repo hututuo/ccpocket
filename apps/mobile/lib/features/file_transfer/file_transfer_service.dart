@@ -662,7 +662,18 @@ class FileTransferService extends ChangeNotifier {
     final paused = _pausedWork;
     if (paused?.id != id) return;
     final request = paused!.cancelRequest ??= _requestBridgeCancel(paused);
-    await request;
+    try {
+      await request;
+    } catch (_) {
+      // A rejected cancel must not stay pinned to the paused work, or every
+      // later attempt would replay this stale error without ever contacting
+      // the Bridge again. (The active branch is owned by the drain loop,
+      // which performs its own reset in the cancelRequest catch path.)
+      if (identical(paused.cancelRequest, request)) {
+        paused.cancelRequest = null;
+      }
+      rethrow;
+    }
     paused.cancelled = true;
     _pausedWork = null;
     await _cleanupWork(paused);
