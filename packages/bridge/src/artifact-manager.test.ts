@@ -127,6 +127,48 @@ describe("ArtifactManager", () => {
     expect(refs[3]).not.toHaveProperty("projectRelativePath");
   });
 
+  it("routes project .html and .json through the preview chain", async () => {
+    const root = await tempRoot();
+    const project = join(root, "project");
+    await mkdir(project);
+    await writeFile(join(project, "report.html"), "<h1>report</h1>");
+    await writeFile(join(project, "legacy.htm"), "<h1>legacy</h1>");
+    await writeFile(join(project, "data.json"), '{"a":1}');
+    await writeFile(join(project, "main.ts"), "export {};\n");
+    const manager = new ArtifactManager({
+      store: storeFor([project]),
+      registry: new ArtifactRegistry({ filePath: join(root, "registry.json") }),
+    });
+    const candidates = extractArtifactCandidates(
+      [
+        "[report](report.html)",
+        "[legacy](legacy.htm)",
+        "[data](data.json)",
+        "[source](main.ts)",
+      ].join("\n"),
+    );
+
+    const refs = await manager.registerCandidates({
+      ownerId: "thread",
+      messageId: "preview-routing",
+      cwd: project,
+      candidates,
+    });
+
+    // HTML renders in the sandboxed iframe and JSON pretty-prints on the
+    // preview page; kind:"source" would strand both in the File Peek text
+    // sheet with the whole preview route unreachable.
+    expect(refs.slice(0, 3)).toEqual([
+      expect.objectContaining({ kind: "preview", filename: "report.html" }),
+      expect.objectContaining({ kind: "preview", filename: "legacy.htm" }),
+      expect.objectContaining({ kind: "preview", filename: "data.json" }),
+    ]);
+    expect(refs[3]).toMatchObject({
+      kind: "source",
+      projectRelativePath: "main.ts",
+    });
+  });
+
   it("tries a complete colon filename before interpreting line metadata", async () => {
     const root = await tempRoot();
     const project = join(root, "project");

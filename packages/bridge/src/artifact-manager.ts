@@ -98,11 +98,9 @@ const SOURCE_EXTENSIONS = new Set([
   ".gradle",
   ".h",
   ".hpp",
-  ".html",
   ".ini",
   ".java",
   ".js",
-  ".json",
   ".jsx",
   ".kt",
   ".kts",
@@ -263,11 +261,23 @@ function sourceKind(
     return "preview";
   }
   const normalizedMime = mimeType.toLowerCase();
+  const extension = extname(filename).toLowerCase();
+  // HTML renders in the sandboxed iframe and JSON pretty-prints on the
+  // preview page; kind:"source" would strand both in the File Peek text
+  // sheet with the whole preview route unreachable.
+  if (
+    extension === ".html" ||
+    extension === ".htm" ||
+    extension === ".json" ||
+    normalizedMime.startsWith("text/html") ||
+    normalizedMime.startsWith("application/json")
+  ) {
+    return "preview";
+  }
   const isSource =
-    SOURCE_EXTENSIONS.has(extname(filename).toLowerCase()) ||
+    SOURCE_EXTENSIONS.has(extension) ||
     SOURCE_FILENAMES.has(filename.toLowerCase()) ||
     normalizedMime.startsWith("text/") ||
-    normalizedMime.startsWith("application/json") ||
     normalizedMime.startsWith("application/xml") ||
     normalizedMime.startsWith("application/yaml") ||
     normalizedMime.startsWith("application/toml");
