@@ -3361,12 +3361,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _markdownArtifactSemanticKey(ArtifactRef artifact) {
     final originalHref = artifact.originalHref;
     if (originalHref == null) return null;
+    // Identity is the link site (href + occurrence), not the target's
+    // classification: kind and projectRelativePath can legitimately change
+    // across Bridge versions for the same candidate, and a re-registration
+    // after registry eviction must replace the stale chip, not duplicate it.
     return [
       artifact.source,
-      artifact.kind,
       artifact.textContentIndex ?? -1,
       originalHref,
-      artifact.projectRelativePath ?? '',
       artifact.line ?? -1,
       artifact.column ?? -1,
     ].join('\u0000');

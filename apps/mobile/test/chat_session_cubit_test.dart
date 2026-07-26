@@ -5146,6 +5146,72 @@ void main() {
     );
 
     test(
+      'a re-registered ref with a flipped kind supersedes the stale chip',
+      () async {
+        // Cross-version scenario: a pre-upgrade Bridge registered a project
+        // .html ref as kind:"source" with projectRelativePath; after registry
+        // eviction a post-upgrade Bridge re-registers the same candidate as
+        // kind:"preview" without projectRelativePath. The chip must be
+        // replaced in place, not duplicated (the stale id is dead anyway).
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        const message = AssistantMessage(
+          id: 'owner-stable-kind-flip',
+          role: 'assistant',
+          content: [TextContent(text: '[Report](report.html)')],
+          model: 'codex',
+        );
+        const oldArtifact = ArtifactRef(
+          id: 'artifact-old-source-kind',
+          filename: 'report.html',
+          mimeType: 'text/html',
+          sizeBytes: 20,
+          kind: 'source',
+          source: 'assistant_markdown',
+          originalHref: 'report.html',
+          textContentIndex: 0,
+          projectRelativePath: 'report.html',
+        );
+        const replacementArtifact = ArtifactRef(
+          id: 'artifact-new-preview-kind',
+          filename: 'report.html',
+          mimeType: 'text/html',
+          sizeBytes: 20,
+          kind: 'preview',
+          source: 'assistant_markdown',
+          originalHref: 'report.html',
+          textContentIndex: 0,
+        );
+
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            message: message,
+            artifacts: [oldArtifact],
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            message: message,
+            artifacts: [replacementArtifact],
+          ),
+          sessionId: 's1',
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        final assistant = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .single;
+        expect(
+          assistant.artifacts.map((artifact) => artifact.id),
+          ['artifact-new-preview-kind'],
+        );
+      },
+    );
+
+    test(
       'same UUID with different message ids keeps only the selected owner refs',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
