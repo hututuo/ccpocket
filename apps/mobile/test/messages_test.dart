@@ -2144,4 +2144,227 @@ void main() {
       expect(msg.checkedOutBranches.toList(), ['main']);
     });
   });
+
+  group('history parsing resilience', () {
+    Map<String, dynamic> validEntry(int seq) => {
+      'seq': seq,
+      'message': {'type': 'stream_delta', 'text': 'm$seq'},
+    };
+
+    test('history_page tolerates malformed pagination seq scalars', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'history_page',
+                'requestId': 'r1',
+                'sessionId': 's1',
+                'beforeSeq': 12.0,
+                'nextBeforeSeq': 'oops',
+                'hasMore': true,
+                'messages': [validEntry(1)],
+              })
+              as HistoryPageMessage;
+
+      expect(msg.beforeSeq, 12);
+      expect(msg.nextBeforeSeq, 0);
+      // A page whose continuation cursor is unusable cannot be paged past;
+      // it must report exhaustion instead of fabricating a cursor.
+      expect(msg.hasMore, isFalse);
+      expect(msg.entries.single.seq, 1);
+    });
+
+    test('history_page keeps paging when the numeric cursor survives', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'history_page',
+                'requestId': 'r1',
+                'sessionId': 's1',
+                'beforeSeq': 50,
+                'nextBeforeSeq': 41.0,
+                'hasMore': true,
+                'messages': [validEntry(41)],
+              })
+              as HistoryPageMessage;
+
+      expect(msg.nextBeforeSeq, 41);
+      expect(msg.hasMore, isTrue);
+    });
+
+    test('history_page trusts a string cursor when the seq is missing', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'history_page',
+                'requestId': 'r1',
+                'sessionId': 's1',
+                'beforeSeq': 50,
+                'nextBeforeCursor': 'user:older',
+                'hasMore': true,
+                'messages': [validEntry(41)],
+              })
+              as HistoryPageMessage;
+
+      expect(msg.nextBeforeSeq, 0);
+      expect(msg.nextBeforeCursor, 'user:older');
+      expect(msg.hasMore, isTrue);
+    });
+
+    test('one malformed entry does not wipe a history_page', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'history_page',
+                'requestId': 'r1',
+                'sessionId': 's1',
+                'beforeSeq': 10,
+                'nextBeforeSeq': 5,
+                'messages': [
+                  validEntry(1),
+                  'not-a-map',
+                  {'seq': 2},
+                  validEntry(3),
+                ],
+              })
+              as HistoryPageMessage;
+
+      expect(msg.entries.map((e) => e.seq), [1, 3]);
+    });
+
+    test('one malformed entry does not wipe a history_delta', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'history_delta',
+                'sessionId': 's1',
+                'fromSeq': 1,
+                'toSeq': 3,
+                'messages': [
+                  validEntry(1),
+                  {'seq': 2, 'message': 'not-a-map'},
+                  validEntry(3),
+                ],
+              })
+              as HistoryDeltaMessage;
+
+      expect(msg.entries.map((e) => e.seq), [1, 3]);
+    });
+
+    test('one malformed entry does not wipe a history_snapshot', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'history_snapshot',
+                'sessionId': 's1',
+                'fromSeq': 1,
+                'toSeq': 2,
+                'messages': [validEntry(1), 42, validEntry(2)],
+              })
+              as HistorySnapshotMessage;
+
+      expect(msg.entries.map((e) => e.seq), [1, 2]);
+    });
+
+    test('one malformed message does not wipe a history frame', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'history',
+                'messages': [
+                  {'type': 'stream_delta', 'text': 'a'},
+                  'not-a-map',
+                  {'type': 'stream_delta', 'text': 'b'},
+                ],
+              })
+              as HistoryMessage;
+
+      expect(msg.messages.whereType<StreamDeltaMessage>().map((m) => m.text), [
+        'a',
+        'b',
+      ]);
+    });
+
+    test('entry seq arriving as a double is coerced, not dropped', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'history_delta',
+                'sessionId': 's1',
+                'fromSeq': 7.0,
+                'toSeq': 7.0,
+                'messages': [
+                  {
+                    'seq': 7.0,
+                    'message': {'type': 'stream_delta', 'text': 'x'},
+                  },
+                ],
+              })
+              as HistoryDeltaMessage;
+
+      expect(msg.fromSeq, 7);
+      expect(msg.entries.single.seq, 7);
+    });
+
+    test('a history frame without a messages list is rejected', () {
+      expect(
+        () => ServerMessage.fromJson({
+          'type': 'history_delta',
+          'sessionId': 's1',
+          'fromSeq': 1,
+          'toSeq': 2,
+        }),
+        throwsFormatException,
+      );
+    });
+  });
+
+  group('permission presentation tolerates malformed tool input', () {
+    test('Bash presentation survives a non-string command', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'permission_request',
+                'toolUseId': 't1',
+                'toolName': 'Bash',
+                'input': {
+                  'command': ['ls', '-la'],
+                },
+              })
+              as PermissionRequestMessage;
+
+      final presentation = msg.presentation;
+      expect(presentation.title, 'Command Approval');
+      expect(presentation.summary, 'Allow command execution');
+      expect(presentation.primaryTarget, isNull);
+    });
+
+    test('MCP elicitation presentation survives non-string fields', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'permission_request',
+                'toolUseId': 't2',
+                'toolName': 'McpElicitation',
+                'input': {
+                  'serverName': 42,
+                  'url': 123,
+                  'message': ['not', 'a', 'string'],
+                },
+              })
+              as PermissionRequestMessage;
+
+      expect(msg.displayToolName, 'MCP Elicitation');
+      expect(msg.presentation.primaryTarget, isNull);
+    });
+
+    test('tool suggestion presentation survives non-string fields', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'permission_request',
+                'toolUseId': 't3',
+                'toolName': 'ToolSuggestion',
+                'input': {
+                  'toolName': 1,
+                  'suggestReason': 2,
+                  'toolType': 3,
+                  'installState': 4,
+                },
+              })
+              as PermissionRequestMessage;
+
+      expect(msg.presentation.title, 'Plugin suggestion');
+      expect(msg.toolSuggestionInstallState, 'idle');
+      expect(msg.toolSuggestionType, isNull);
+    });
+  });
 }

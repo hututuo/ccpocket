@@ -866,6 +866,70 @@ SessionListMessage _sessionListFromJson(Map<String, dynamic> json) {
   );
 }
 
+/// Reads a JSON scalar as an int, tolerating doubles (JSON numbers may
+/// arrive as floating point) and yielding null for any other shape.
+int? _intFromJson(dynamic value) =>
+    value is num && value.isFinite ? value.toInt() : null;
+
+/// Parses the `messages` list of a history frame, dropping malformed
+/// entries: one bad entry must not wipe the whole list. A frame without a
+/// list at all is fundamentally broken and is rejected instead.
+List<HistoryEntry> _historyEntriesFromJson(dynamic raw) {
+  if (raw is! List) {
+    throw const FormatException('history frame has no messages list');
+  }
+  final entries = <HistoryEntry>[];
+  for (final entry in raw) {
+    try {
+      entries.add(
+        HistoryEntry.fromJson(Map<String, dynamic>.from(entry as Map)),
+      );
+    } catch (_) {
+      // Drop the malformed entry.
+    }
+  }
+  return entries;
+}
+
+List<ServerMessage> _historyMessagesFromJson(dynamic raw) {
+  if (raw is! List) {
+    throw const FormatException('history frame has no messages list');
+  }
+  final messages = <ServerMessage>[];
+  for (final entry in raw) {
+    try {
+      messages.add(
+        ServerMessage.fromJson(Map<String, dynamic>.from(entry as Map)),
+      );
+    } catch (_) {
+      // Drop the malformed message.
+    }
+  }
+  return messages;
+}
+
+HistoryPageMessage _historyPageFromJson(Map<String, dynamic> json) {
+  final nextBeforeSeq = _intFromJson(json['nextBeforeSeq']);
+  final rawCursor = json['nextBeforeCursor'];
+  final nextBeforeCursor = rawCursor is String && rawCursor.isNotEmpty
+      ? rawCursor
+      : null;
+  return HistoryPageMessage(
+    requestId: json['requestId'] as String,
+    sessionId: json['sessionId'] as String,
+    beforeSeq: _intFromJson(json['beforeSeq']) ?? 0,
+    nextBeforeSeq: nextBeforeSeq ?? 0,
+    nextBeforeCursor: nextBeforeCursor,
+    // Without a usable continuation cursor the page cannot be paged past;
+    // report the stream as exhausted instead of fabricating a cursor.
+    hasMore:
+        (nextBeforeSeq != null || nextBeforeCursor != null) &&
+        (json['hasMore'] as bool? ?? false),
+    error: json['error'] as String?,
+    entries: _historyEntriesFromJson(json['messages']),
+  );
+}
+
 /// A Bridge-owned reference to a local file mentioned by an assistant or tool
 /// result. [originalHref] preserves the assistant's text for exact UI matching;
 /// the client can resolve only the opaque [id], never an arbitrary path.
@@ -1205,26 +1269,13 @@ sealed class ServerMessage {
         activityAt: json['activityAt'] as String?,
       ),
       'history' => HistoryMessage(
-        messages: (json['messages'] as List)
-            .map((m) => ServerMessage.fromJson(m as Map<String, dynamic>))
-            .toList(),
+        messages: _historyMessagesFromJson(json['messages']),
         historyWindow: switch (json['historyWindow']) {
           final Map<String, dynamic> value => HistoryWindowInfo.fromJson(value),
           _ => null,
         },
       ),
-      'history_page' => HistoryPageMessage(
-        requestId: json['requestId'] as String,
-        sessionId: json['sessionId'] as String,
-        beforeSeq: json['beforeSeq'] as int,
-        nextBeforeSeq: json['nextBeforeSeq'] as int,
-        nextBeforeCursor: json['nextBeforeCursor'] as String?,
-        hasMore: json['hasMore'] as bool? ?? false,
-        error: json['error'] as String?,
-        entries: (json['messages'] as List)
-            .map((m) => HistoryEntry.fromJson(m as Map<String, dynamic>))
-            .toList(),
-      ),
+      'history_page' => _historyPageFromJson(json),
       'history_tool_details' => HistoryToolDetailsMessage(
         requestId: json['requestId'] as String? ?? '',
         sessionId: json['sessionId'] as String? ?? '',
@@ -1241,22 +1292,18 @@ sealed class ServerMessage {
       ),
       'history_delta' => HistoryDeltaMessage(
         sessionId: json['sessionId'] as String?,
-        fromSeq: json['fromSeq'] as int? ?? 0,
-        toSeq: json['toSeq'] as int? ?? 0,
-        entries: (json['messages'] as List)
-            .map((m) => HistoryEntry.fromJson(m as Map<String, dynamic>))
-            .toList(),
+        fromSeq: _intFromJson(json['fromSeq']) ?? 0,
+        toSeq: _intFromJson(json['toSeq']) ?? 0,
+        entries: _historyEntriesFromJson(json['messages']),
         status: json['status'] != null
             ? ProcessStatus.fromString(json['status'] as String)
             : null,
       ),
       'history_snapshot' => HistorySnapshotMessage(
         sessionId: json['sessionId'] as String?,
-        fromSeq: json['fromSeq'] as int? ?? 0,
-        toSeq: json['toSeq'] as int? ?? 0,
-        entries: (json['messages'] as List)
-            .map((m) => HistoryEntry.fromJson(m as Map<String, dynamic>))
-            .toList(),
+        fromSeq: _intFromJson(json['fromSeq']) ?? 0,
+        toSeq: _intFromJson(json['toSeq']) ?? 0,
+        entries: _historyEntriesFromJson(json['messages']),
         status: json['status'] != null
             ? ProcessStatus.fromString(json['status'] as String)
             : null,
@@ -2363,7 +2410,7 @@ class HistoryWindowInfo {
   factory HistoryWindowInfo.fromJson(Map<String, dynamic> json) =>
       HistoryWindowInfo(
         capability: json['capability'] as String? ?? '',
-        fromSeq: json['fromSeq'] as int? ?? 0,
+        fromSeq: _intFromJson(json['fromSeq']) ?? 0,
         hasMore: json['hasMore'] as bool? ?? false,
         cursor: json['cursor'] as String?,
       );
@@ -2376,8 +2423,10 @@ class HistoryEntry {
 
   factory HistoryEntry.fromJson(Map<String, dynamic> json) {
     return HistoryEntry(
-      seq: json['seq'] as int? ?? 0,
-      message: ServerMessage.fromJson(json['message'] as Map<String, dynamic>),
+      seq: _intFromJson(json['seq']) ?? 0,
+      message: ServerMessage.fromJson(
+        Map<String, dynamic>.from(json['message'] as Map),
+      ),
     );
   }
 }
@@ -2549,21 +2598,22 @@ class PermissionRequestMessage implements ServerMessage {
   bool get isToolSuggestion => toolName == 'ToolSuggestion';
 
   String get suggestedToolName =>
-      input['toolName'] as String? ?? displayToolName;
+      _nonEmptyString(input['toolName']) ?? displayToolName;
 
   String get toolSuggestionReason =>
-      input['suggestReason'] as String? ??
-      input['message'] as String? ??
+      _nonEmptyString(input['suggestReason']) ??
+      _nonEmptyString(input['message']) ??
       suggestedToolName;
 
   String get toolSuggestionInstallState =>
-      input['installState'] as String? ?? 'idle';
+      _nonEmptyString(input['installState']) ?? 'idle';
 
-  String? get toolSuggestionInstallError => input['installError'] as String?;
+  String? get toolSuggestionInstallError =>
+      _nonEmptyString(input['installError']);
 
-  String? get toolSuggestionInstallUrl => input['installUrl'] as String?;
+  String? get toolSuggestionInstallUrl => _nonEmptyString(input['installUrl']);
 
-  String? get toolSuggestionType => input['toolType'] as String?;
+  String? get toolSuggestionType => _nonEmptyString(input['toolType']);
 
   List<ToolSuggestionApp> get appsNeedingAuthentication {
     final raw = input['appsNeedingAuth'];
@@ -2617,16 +2667,14 @@ class PermissionRequestMessage implements ServerMessage {
 
   String get displayToolName {
     if (isToolSuggestion) {
-      return input['toolName'] as String? ?? 'Plugin suggestion';
+      return _nonEmptyString(input['toolName']) ?? 'Plugin suggestion';
     }
     if (isQuestionApproval) {
       return requestUserInputHeader(input) ?? 'App Tool Approval';
     }
     if (isMcpElicitation) {
-      final serverName = input['serverName'] as String?;
-      return serverName == null || serverName.isEmpty
-          ? 'MCP Elicitation'
-          : 'MCP: $serverName';
+      final serverName = _nonEmptyString(input['serverName']);
+      return serverName == null ? 'MCP Elicitation' : 'MCP: $serverName';
     }
     if (isPermissionGrantRequest) {
       return 'Additional Permissions';
@@ -2712,16 +2760,17 @@ class PermissionPresentation {
           _mcpSummary(input) ??
           requestUserInputQuestionText(input) ??
           message.displayToolName;
+      final url = _nonEmptyString(input['url']);
       return PermissionPresentation(
         title: message.displayToolName,
         summary: summary,
         rawDetails: rawDetails,
         riskBadge: 'MCP',
-        primaryTargetLabel: input['url'] is String ? 'URL' : null,
-        primaryTarget: input['url'] as String?,
+        primaryTargetLabel: url != null ? 'URL' : null,
+        primaryTarget: url,
         secondaryDetails: _dedupeDetailLines(
           summary: summary,
-          primaryTarget: input['url'] as String?,
+          primaryTarget: url,
           lines: [
             if (_nonEmptyString(input['serverName']) case final serverName?)
               'Server: $serverName',
@@ -2756,7 +2805,7 @@ class PermissionPresentation {
 
     switch (message.toolName) {
       case 'Bash':
-        final command = input['command'] as String?;
+        final command = _nonEmptyString(input['command']);
         final visibleReason = _visibleReason(
           input['reason'],
           primaryTarget: command,
@@ -2886,12 +2935,12 @@ String? _networkPolicySummary(dynamic value) {
 }
 
 String? _mcpSummary(Map<String, dynamic> input) {
-  final message = input['message'] as String?;
-  final url = input['url'] as String?;
-  if (message != null && message.isNotEmpty && url != null && url.isNotEmpty) {
+  final message = _nonEmptyString(input['message']);
+  final url = _nonEmptyString(input['url']);
+  if (message != null && url != null) {
     return '$message | $url';
   }
-  return _nonEmptyString(message) ?? _nonEmptyString(url);
+  return message ?? url;
 }
 
 String? _nonEmptyString(dynamic value) {
