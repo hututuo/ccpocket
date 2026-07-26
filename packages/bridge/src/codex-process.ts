@@ -1960,8 +1960,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
     transport.on("error", (err) => {
       if (this.stopped) return;
-      this.releaseCoreAction();
-      this.activeCoreActionTurnId = null;
+      // Spawn-level failures (ENOENT) never emit "exit", so this is the only
+      // chance to settle in-flight RPCs — otherwise bootstrap awaits
+      // initialize forever and the session hangs instead of surfacing the
+      // error. rejectAllPending also releases the core-action lock.
+      this.rejectAllPending(
+        err instanceof Error ? err : new Error(String(err)),
+      );
       console.error("[codex-process] app-server process error:", err);
       this.emitMessage(codexAppServerStartError(err));
       this.setStatus("idle");

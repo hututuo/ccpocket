@@ -1997,6 +1997,35 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("rejects in-flight RPCs when the app-server errors without exiting", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    proc.on("message", (msg) => messages.push(msg));
+
+    try {
+      proc.start("/tmp/project-error-no-exit");
+      await tick();
+      expect((proc as any).pendingRpc.size).toBeGreaterThan(0);
+
+      // Spawn-level failures emit "error" only — no "exit" ever follows
+      // (see codex-transport), so this is the only settlement chance.
+      const err = new Error("spawn codex ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      fakeChildren[0].emit("error", err);
+      await tick();
+
+      expect((proc as any).pendingRpc.size).toBe(0);
+      expect(messages).toContainEqual(
+        expect.objectContaining({ type: "result", subtype: "error" }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    proc.stop();
+  });
+
   it("starts codex app-server and sends initialize + thread/start", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
