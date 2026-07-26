@@ -194,6 +194,7 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
   final snapshots = <String, SessionCatalogCacheSnapshot>{};
   final writes =
       <({SessionCatalogCacheTarget target, RecentSessionsMessage response})>[];
+  int clearCalls = 0;
 
   @override
   Future<SessionCatalogCacheSnapshot?> load(
@@ -206,6 +207,12 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
     required RecentSessionsMessage response,
   }) async {
     writes.add((target: target, response: response));
+  }
+
+  @override
+  Future<void> clearAll() async {
+    clearCalls++;
+    snapshots.clear();
   }
 
   @override
@@ -537,6 +544,38 @@ void main() {
 
         expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
         expect(cubit.state.sessions.single.sessionId, 'old-session');
+      },
+    );
+
+    test(
+      'clearing persistent cache closes the disconnected readiness gate',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testBridgeInstanceId = 'bridge-a'
+          ..testLastUrl = 'wss://mac-a.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        final target = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: mockBridge.testBridgeInstanceId,
+          websocketUrl: mockBridge.testLastUrl,
+        );
+        cache.snapshots[target.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'bridge-a',
+          sessions: [_session(id: 'cached-session')],
+          catalogRevision: 3,
+          isComplete: true,
+          cachedAt: DateTime.utc(2026, 7, 25),
+        );
+        cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+        await pumpEventQueue();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+
+        await cubit.clearPersistentCatalogCache();
+
+        expect(cache.clearCalls, 1);
+        expect(cubit.state.sessions.single.sessionId, 'cached-session');
+        expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
       },
     );
 

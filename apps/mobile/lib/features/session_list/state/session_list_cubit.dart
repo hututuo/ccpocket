@@ -564,6 +564,20 @@ class SessionListCubit extends Cubit<SessionListState> {
     );
   }
 
+  /// Removes the rebuildable on-device catalog without hiding the current
+  /// in-memory list. A disconnected reconnect must obtain a fresh catalog
+  /// before the application-ready gate opens again.
+  Future<void> clearPersistentCatalogCache() async {
+    _cacheLoadGeneration++;
+    await _catalogCache?.clearAll();
+    if (isClosed) return;
+    _loadedCacheFingerprint = null;
+    _loadedCacheCatalogRevision = null;
+    _loadedCacheComplete = false;
+    _cachedSessions = const [];
+    _catalogSnapshotChanges.add(null);
+  }
+
   /// Optimistically update a session's name in the local state.
   void updateSessionName(String sessionId, String? name) {
     final updated = state.sessions.map((s) {

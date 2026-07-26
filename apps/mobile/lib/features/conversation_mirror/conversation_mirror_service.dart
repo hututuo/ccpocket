@@ -132,6 +132,23 @@ class ConversationMirrorService extends ChangeNotifier {
     return List.unmodifiable(result);
   }
 
+  /// Every complete phone copy, including copies whose automatic watch is
+  /// paused and copies belonging to another known Bridge installation.
+  List<ConversationMirrorMetadata> get localCopyMetadata {
+    final result =
+        _metadata.values
+            .where((metadata) => metadata.hasLocalCopy)
+            .toList(growable: false)
+          ..sort((a, b) {
+            final aTime =
+                a.lastSyncedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bTime =
+                b.lastSyncedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            return bTime.compareTo(aTime);
+          });
+    return List.unmodifiable(result);
+  }
+
   Future<void> initialize() async {
     if (_initialized || _closed) return;
     _initialized = true;
@@ -530,6 +547,15 @@ class ConversationMirrorService extends ChangeNotifier {
                 providerSessionId: target.providerSessionId,
               ));
     if (key == null) return;
+    await removeLocalCopyByKey(key);
+  }
+
+  /// Removes an exact cached copy selected from storage management.
+  ///
+  /// Unlike a target-only removal, the key keeps two Bridge installations
+  /// with the same provider thread ID isolated.
+  Future<void> removeLocalCopyByKey(ConversationMirrorKey key) async {
+    if (!isAvailable) return;
     _cancelTargetRequests(
       key,
       errorCode: 'local_copy_removed',

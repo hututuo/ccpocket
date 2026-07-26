@@ -239,6 +239,16 @@ class SessionCatalogCacheRepository {
     return Sqflite.firstIntValue(rows) ?? 0;
   }
 
+  Future<int> countAllSessions() async {
+    await _mutationTail;
+    final db = await database.database;
+    final rows = await db.rawQuery('''
+      SELECT COUNT(*) AS entry_count
+      FROM ${SessionCatalogCacheDatabase.entriesTable}
+      ''');
+    return Sqflite.firstIntValue(rows) ?? 0;
+  }
+
   Future<void> close() async {
     await _mutationTail;
     await database.close();

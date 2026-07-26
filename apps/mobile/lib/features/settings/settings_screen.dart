@@ -39,6 +39,8 @@ import '../notification_settings/notification_settings_screen.dart';
 import '../permission_management/l10n/permission_management_strings.dart';
 import '../permission_management/permission_management_screen.dart';
 import '../session_list/workspace_shell_screen.dart';
+import 'cache_management_screen.dart';
+import 'cache_management_strings.dart';
 import 'code_font_settings_screen.dart';
 import 'state/settings_cubit.dart';
 import 'state/settings_state.dart';
@@ -746,6 +748,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
+              ),
+              const SizedBox(height: 8),
+
+              _SectionHeader(title: CacheManagementStrings.of(context).title),
+              const Card(
+                margin: EdgeInsets.symmetric(horizontal: 16),
+                child: CacheManagementSettingsTile(),
               ),
               const SizedBox(height: 8),
 

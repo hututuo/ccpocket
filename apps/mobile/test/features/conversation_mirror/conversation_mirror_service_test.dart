@@ -101,6 +101,17 @@ class _MirrorTestBridge extends BridgeService {
 
   void emitConnection(BridgeConnectionState state) => _connections.add(state);
 
+  void emitPromptHistoryIdentity(String nextBridgeId) {
+    bridgeId = nextBridgeId;
+    _promptHistory.add(
+      PromptHistoryStatusMessage(
+        bridgeInstanceId: nextBridgeId,
+        revision: 0,
+        entryCount: 0,
+      ),
+    );
+  }
+
   @override
   void publishExternalSessionHistory(
     String runtimeSessionId,
@@ -656,6 +667,65 @@ void main() {
       contains('conversation_mirror_unwatch'),
     );
   });
+
+  test(
+    'storage management lists paused copies and removes the exact Bridge key',
+    () async {
+      const otherBridgeKey = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-other',
+        provider: 'codex',
+        providerSessionId: 'provider-session-1',
+      );
+      await _seedLocalCopy(
+        store,
+        key: otherBridgeKey,
+        message: const {
+          'type': 'user_input',
+          'text': 'other bridge',
+          'userMessageUuid': 'other-bridge-1',
+        },
+        revision: _hashText('other-bridge'),
+        projectPath: '/tmp/other',
+      );
+      await store.setAutoSync(otherBridgeKey, false, projectPath: '/tmp/other');
+      bridge.emitPromptHistoryIdentity('bridge-other');
+      await _waitUntil(
+        () async => service.currentBridgeInstanceId == 'bridge-other',
+      );
+
+      await _seedLocalCopy(
+        store,
+        message: const {
+          'type': 'user_input',
+          'text': 'current bridge',
+          'userMessageUuid': 'current-bridge-1',
+        },
+        revision: _hashText('current-bridge'),
+      );
+      bridge.emitPromptHistoryIdentity('bridge-test');
+      await _waitUntil(
+        () async => service.currentBridgeInstanceId == 'bridge-test',
+      );
+      await service.metadataFor(_recentSession);
+
+      expect(service.localCopyMetadata, hasLength(2));
+      expect(
+        service.localCopyMetadata
+            .singleWhere((metadata) => metadata.key == otherBridgeKey)
+            .autoSync,
+        isFalse,
+      );
+
+      await service.removeLocalCopyByKey(otherBridgeKey);
+
+      expect(await store.readMetadata(otherBridgeKey), isNull);
+      expect(service.localCopyMetadata, hasLength(1));
+      expect(
+        service.localCopyMetadata.single.key.bridgeInstanceId,
+        'bridge-test',
+      );
+    },
+  );
 
   test('resident watch count is bounded to the Bridge limit', () async {
     for (

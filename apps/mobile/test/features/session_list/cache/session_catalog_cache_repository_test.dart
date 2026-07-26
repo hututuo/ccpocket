@@ -251,6 +251,7 @@ void main() {
 
     await repository.deleteSession(target: target, session: first);
     expect(await repository.countSessions(target), 1);
+    expect(await repository.countAllSessions(), 1);
     expect(
       (await repository.load(target))!.sessions.single.sessionId,
       'thread-b',
@@ -259,6 +260,7 @@ void main() {
     await repository.clearAll();
     expect(await repository.load(target), isNull);
     expect(await repository.countSessions(target), 0);
+    expect(await repository.countAllSessions(), 0);
   });
 }
 
