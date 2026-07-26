@@ -3,6 +3,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+
 enum DiffLineType { context, addition, deletion }
 
 /// Extensions treated as image files for diff preview.
@@ -162,6 +164,47 @@ class DiffFile {
 
 /// Regex for the hunk header: @@ -oldStart[,oldCount] +newStart[,newCount] @@
 final _hunkHeaderRegex = RegExp(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@');
+
+/// Header regex capturing all four numbers, for fingerprint addressing.
+final _fingerprintHeaderRegex = RegExp(
+  r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@',
+);
+
+/// Content-address a displayed hunk so the Bridge can locate it in its own
+/// re-run of the diff instead of trusting a positional index (which breaks
+/// when the Bridge's context setting merges/splits hunks differently).
+///
+/// The hash covers the +/- change lines exactly as displayed, each followed
+/// by `\n`, sha1, hex — it must stay in sync with `hashHunkChangeLines` in
+/// `packages/bridge/src/git-operations.ts`.
+///
+/// Returns `null` when the hunk has no parseable git header (synthesized
+/// tool-result diffs) — callers then fall back to the legacy index protocol.
+Map<String, dynamic>? buildHunkFingerprint(DiffHunk hunk) {
+  final match = _fingerprintHeaderRegex.firstMatch(hunk.header);
+  if (match == null) return null;
+
+  final bytes = <int>[];
+  for (final line in hunk.lines) {
+    switch (line.type) {
+      case DiffLineType.addition:
+        bytes.addAll(utf8.encode('+${line.content}\n'));
+      case DiffLineType.deletion:
+        bytes.addAll(utf8.encode('-${line.content}\n'));
+      case DiffLineType.context:
+        break;
+    }
+  }
+
+  int count(String? group) => group == null ? 1 : int.parse(group);
+  return {
+    'oldStart': int.parse(match.group(1)!),
+    'oldLines': count(match.group(2)),
+    'newStart': int.parse(match.group(3)!),
+    'newLines': count(match.group(4)),
+    'changesHash': sha1.convert(bytes).toString(),
+  };
+}
 
 /// Parse unified diff text into a list of [DiffFile].
 ///

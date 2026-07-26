@@ -612,6 +612,41 @@ void main() {
       expect(json['staged'], isFalse);
     });
 
+    test('stageHunk sends git_stage with fingerprinted hunk', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/home/user/project',
+      );
+      addTearDown(() {
+        cubit.close();
+        mockBridge.dispose();
+      });
+
+      mockBridge.emitDiff(const DiffResultMessage(diff: _multiFileDiff));
+      await Future.microtask(() {});
+
+      cubit.stageHunk(0, 0);
+      final json =
+          jsonDecode(mockBridge.sentMessages.last.toJson())
+              as Map<String, dynamic>;
+      expect(json['type'], 'git_stage');
+      expect(json['hunks'], [
+        {
+          'file': 'file_a.dart',
+          'hunkIndex': 0,
+          'fingerprint': {
+            'oldStart': 1,
+            'oldLines': 2,
+            'newStart': 1,
+            'newLines': 2,
+            // sha1 over "-old\n+new\n" — matches the Bridge-side contract.
+            'changesHash': 'e8aeea4be273128765ff12676ba3ac941fd46a46',
+          },
+        },
+      ]);
+    });
+
     test('unstageHunk sends git_unstage_hunks', () async {
       final mockBridge = MockDiffBridgeService();
       final cubit = GitViewCubit(
@@ -632,7 +667,18 @@ void main() {
               as Map<String, dynamic>;
       expect(json['type'], 'git_unstage_hunks');
       expect(json['hunks'], [
-        {'file': 'file_a.dart', 'hunkIndex': 0},
+        {
+          'file': 'file_a.dart',
+          'hunkIndex': 0,
+          'fingerprint': {
+            'oldStart': 1,
+            'oldLines': 2,
+            'newStart': 1,
+            'newLines': 2,
+            // sha1 over "-old\n+new\n" — matches the Bridge-side contract.
+            'changesHash': 'e8aeea4be273128765ff12676ba3ac941fd46a46',
+          },
+        },
       ]);
     });
 
@@ -656,7 +702,18 @@ void main() {
               as Map<String, dynamic>;
       expect(json['type'], 'git_revert_hunks');
       expect(json['hunks'], [
-        {'file': 'file_b.dart', 'hunkIndex': 0},
+        {
+          'file': 'file_b.dart',
+          'hunkIndex': 0,
+          'fingerprint': {
+            'oldStart': 1,
+            'oldLines': 2,
+            'newStart': 1,
+            'newLines': 3,
+            // sha1 over "+added\n" — matches the Bridge-side contract.
+            'changesHash': '213acdd75e7a8e7ff4d9a7b469354ba061b5304d',
+          },
+        },
       ]);
     });
 

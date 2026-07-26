@@ -165,6 +165,24 @@ export interface MobileRuntimeCapabilities {
   nativeCapabilities: Record<string, number>;
 }
 
+/**
+ * Hunk reference sent by git hunk operations. `fingerprint` (additive,
+ * newer clients only) content-addresses the hunk as displayed; when present
+ * the Bridge locates the hunk by content instead of the legacy positional
+ * `hunkIndex`, whose numbering differs between context levels.
+ */
+export interface ClientHunkRef {
+  file: string;
+  hunkIndex: number;
+  fingerprint?: {
+    oldStart: number;
+    oldLines: number;
+    newStart: number;
+    newLines: number;
+    changesHash: string;
+  };
+}
+
 export type ClientMessage =
   | BackgroundDeliveryClientMessage
   | {
@@ -510,13 +528,13 @@ export type ClientMessage =
       type: "git_stage";
       projectPath: string;
       files?: string[];
-      hunks?: { file: string; hunkIndex: number }[];
+      hunks?: ClientHunkRef[];
     }
   | { type: "git_unstage"; projectPath: string; files?: string[] }
   | {
       type: "git_unstage_hunks";
       projectPath: string;
-      hunks: { file: string; hunkIndex: number }[];
+      hunks: ClientHunkRef[];
     }
   | {
       type: "git_commit";
@@ -538,7 +556,7 @@ export type ClientMessage =
   | {
       type: "git_revert_hunks";
       projectPath: string;
-      hunks: { file: string; hunkIndex: number }[];
+      hunks: ClientHunkRef[];
     }
   | { type: "git_fetch"; projectPath: string }
   | { type: "git_pull"; projectPath: string }
@@ -1122,6 +1140,22 @@ export function normalizeToolResultContent(
 }
 
 // ---- Parser ----
+
+function isValidClientHunkRef(value: unknown): boolean {
+  const hunk = value as Record<string, unknown> | null | undefined;
+  if (typeof hunk?.file !== "string" || typeof hunk?.hunkIndex !== "number") {
+    return false;
+  }
+  if (hunk.fingerprint === undefined) return true;
+  const fp = hunk.fingerprint as Record<string, unknown> | null;
+  return (
+    typeof fp?.oldStart === "number" &&
+    typeof fp?.oldLines === "number" &&
+    typeof fp?.newStart === "number" &&
+    typeof fp?.newLines === "number" &&
+    typeof fp?.changesHash === "string"
+  );
+}
 
 export function parseClientMessage(data: string): ClientMessage | null {
   try {
@@ -2204,12 +2238,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (msg.hunks !== undefined) {
           if (!Array.isArray(msg.hunks)) return null;
           for (const h of msg.hunks as unknown[]) {
-            const hunk = h as Record<string, unknown>;
-            if (
-              typeof hunk?.file !== "string" ||
-              typeof hunk?.hunkIndex !== "number"
-            )
-              return null;
+            if (!isValidClientHunkRef(h)) return null;
           }
         }
         break;
@@ -2220,12 +2249,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (typeof msg.projectPath !== "string") return null;
         if (!Array.isArray(msg.hunks) || msg.hunks.length === 0) return null;
         for (const h of msg.hunks as unknown[]) {
-          const hunk = h as Record<string, unknown>;
-          if (
-            typeof hunk?.file !== "string" ||
-            typeof hunk?.hunkIndex !== "number"
-          )
-            return null;
+          if (!isValidClientHunkRef(h)) return null;
         }
         break;
       case "git_commit":
@@ -2276,12 +2300,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (typeof msg.projectPath !== "string") return null;
         if (!Array.isArray(msg.hunks) || msg.hunks.length === 0) return null;
         for (const h of msg.hunks as unknown[]) {
-          const hunk = h as Record<string, unknown>;
-          if (
-            typeof hunk?.file !== "string" ||
-            typeof hunk?.hunkIndex !== "number"
-          )
-            return null;
+          if (!isValidClientHunkRef(h)) return null;
         }
         break;
       case "git_fetch":

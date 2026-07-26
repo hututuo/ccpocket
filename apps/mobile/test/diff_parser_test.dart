@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ccpocket/utils/diff_parser.dart';
@@ -444,6 +447,99 @@ Binary files a/image.png and b/image.png differ
         reconstructUnifiedDiff(file),
         'diff --git a/image.png b/image.png\nBinary files a/image.png and b/image.png differ',
       );
+    });
+  });
+
+  group('buildHunkFingerprint', () {
+    test('pins the changes-hash contract shared with the Bridge', () {
+      // Golden value — packages/bridge/src/git-operations.test.ts pins the
+      // same sha1 over "-old line\n+new line\n".
+      const diff = '''
+diff --git a/file_a.dart b/file_a.dart
+--- a/file_a.dart
++++ b/file_a.dart
+@@ -1,2 +1,2 @@
+-old line
++new line
+ same line
+''';
+      final hunk = parseDiff(diff).single.hunks.single;
+      final fingerprint = buildHunkFingerprint(hunk);
+
+      expect(fingerprint, isNotNull);
+      expect(fingerprint!['oldStart'], 1);
+      expect(fingerprint['oldLines'], 2);
+      expect(fingerprint['newStart'], 1);
+      expect(fingerprint['newLines'], 2);
+      expect(
+        fingerprint['changesHash'],
+        '72e37c089cc6615e099c2668f6cd4c797d676f9f',
+      );
+    });
+
+    test('covers change lines in display order and skips context', () {
+      const diff = '''
+diff --git a/lib/config.dart b/lib/config.dart
+--- a/lib/config.dart
++++ b/lib/config.dart
+@@ -3,9 +3,9 @@
+ const one = 1;
+ const two = 2;
+ const three = 3;
+-const four = 4;
++const four = 40;
+ const five = 5;
+ const six = 6;
+-const seven = 7;
++const seven = 70;
+ const eight = 8;
+''';
+      final hunk = parseDiff(diff).single.hunks.single;
+      final fingerprint = buildHunkFingerprint(hunk)!;
+
+      // Same bytes the Bridge hashes: the four +/- lines, diff order.
+      final expected = sha1
+          .convert(
+            utf8.encode(
+              '-const four = 4;\n'
+              '+const four = 40;\n'
+              '-const seven = 7;\n'
+              '+const seven = 70;\n',
+            ),
+          )
+          .toString();
+      expect(fingerprint['changesHash'], expected);
+      expect(fingerprint['oldStart'], 3);
+      expect(fingerprint['oldLines'], 9);
+      expect(fingerprint['newStart'], 3);
+      expect(fingerprint['newLines'], 9);
+    });
+
+    test('defaults omitted header counts to 1', () {
+      const diff = '''
+diff --git a/single.txt b/single.txt
+--- a/single.txt
++++ b/single.txt
+@@ -1 +1 @@
+-before
++after
+''';
+      final hunk = parseDiff(diff).single.hunks.single;
+      final fingerprint = buildHunkFingerprint(hunk)!;
+
+      expect(fingerprint['oldStart'], 1);
+      expect(fingerprint['oldLines'], 1);
+      expect(fingerprint['newStart'], 1);
+      expect(fingerprint['newLines'], 1);
+    });
+
+    test('returns null for hunks without a git header', () {
+      final synthesized = synthesizeEditToolDiff('Edit', {
+        'file_path': 'lib/main.dart',
+        'old_string': 'a',
+        'new_string': 'b',
+      })!;
+      expect(buildHunkFingerprint(synthesized.hunks.single), isNull);
     });
   });
 }

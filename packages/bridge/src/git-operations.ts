@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { realpathSync, type Dir, type Dirent } from "node:fs";
 import { opendir } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
@@ -6,9 +7,39 @@ import { StringDecoder } from "node:string_decoder";
 
 // ---- Types ----
 
+/**
+ * Content fingerprint of a hunk as the client displayed it (default-context
+ * `git diff` output). The header quadruple locates the hunk in a fresh diff
+ * and `changesHash` proves the +/- lines are still the ones the user saw;
+ * any mismatch means the tree changed since display and the operation is
+ * rejected instead of guessing.
+ */
+export interface HunkFingerprint {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  changesHash: string;
+}
+
 export interface HunkRef {
   file: string;
   hunkIndex: number;
+  fingerprint?: HunkFingerprint;
+}
+
+/**
+ * Stable hash over a hunk's +/- lines (each raw line including its prefix,
+ * '\n'-terminated). Must stay in sync with the mobile client's
+ * `buildHunkFingerprint` in apps/mobile/lib/utils/diff_parser.dart.
+ */
+export function hashHunkChangeLines(changeLines: string[]): string {
+  const hash = createHash("sha1");
+  for (const line of changeLines) {
+    hash.update(line, "utf-8");
+    hash.update("\n", "utf-8");
+  }
+  return hash.digest("hex");
 }
 
 export interface CommitResult {
@@ -95,6 +126,95 @@ function git(args: string[], cwd: string): string {
   }).trim();
 }
 
+const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+interface ParsedHunk {
+  startLine: number;
+  endLine: number;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+}
+
+function parseHunks(lines: string[]): ParsedHunk[] {
+  const hunks: ParsedHunk[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const match = HUNK_HEADER_RE.exec(lines[i]);
+    if (!match) continue;
+    if (hunks.length > 0) hunks[hunks.length - 1].endLine = i;
+    hunks.push({
+      startLine: i,
+      endLine: lines.length,
+      oldStart: Number(match[1]),
+      oldLines: match[2] === undefined ? 1 : Number(match[2]),
+      newStart: Number(match[3]),
+      newLines: match[4] === undefined ? 1 : Number(match[4]),
+    });
+  }
+  return hunks;
+}
+
+/**
+ * Build a patch by locating each fingerprinted hunk in the given
+ * default-context diff. Throws when a fingerprint no longer matches —
+ * the tree changed since the client displayed the diff.
+ */
+function buildFingerprintPatch(
+  diffText: string,
+  file: string,
+  fingerprints: HunkFingerprint[],
+): string | null {
+  if (!diffText) {
+    throw new Error(
+      `No current diff for ${file}; the change may already be applied. Refresh the diff and retry.`,
+    );
+  }
+
+  const lines = diffText.split("\n");
+  const hunks = parseHunks(lines);
+  const chosen = new Map<number, ParsedHunk>();
+
+  for (const fp of fingerprints) {
+    const match = hunks.find(
+      (h) =>
+        h.oldStart === fp.oldStart &&
+        h.oldLines === fp.oldLines &&
+        h.newStart === fp.newStart &&
+        h.newLines === fp.newLines,
+    );
+    const changeLines =
+      match === undefined
+        ? null
+        : lines
+            .slice(match.startLine + 1, match.endLine)
+            .filter((l) => l.startsWith("+") || l.startsWith("-"));
+    if (
+      match === undefined ||
+      hashHunkChangeLines(changeLines ?? []) !== fp.changesHash
+    ) {
+      throw new Error(
+        `Hunk at -${fp.oldStart},${fp.oldLines} +${fp.newStart},${fp.newLines} ` +
+          `no longer matches the current diff for ${file}. ` +
+          `The file changed since the diff was displayed; refresh and retry.`,
+      );
+    }
+    chosen.set(match.startLine, match);
+  }
+
+  if (chosen.size === 0) return null;
+
+  const firstHunkLine = hunks[0].startLine;
+  let patch = lines.slice(0, firstHunkLine).join("\n") + "\n";
+  const ordered = [...chosen.values()].sort(
+    (a, b) => a.startLine - b.startLine,
+  );
+  for (const hunk of ordered) {
+    patch += lines.slice(hunk.startLine, hunk.endLine).join("\n") + "\n";
+  }
+  return patch;
+}
+
 function buildHunkPatch(
   diffText: string,
   file: string,
@@ -137,19 +257,28 @@ function applyHunks(
   options: {
     diffArgs: string[];
     applyArgs: string[];
+    contextDiffArgs: string[];
+    contextApplyArgs: string[];
     includeUntracked?: boolean;
   },
 ): void {
   const cwd = resolveProject(projectPath);
-  const byFile = new Map<string, number[]>();
+  const byFile = new Map<string, HunkRef[]>();
 
   for (const h of hunks) {
     const list = byFile.get(h.file) ?? [];
-    list.push(h.hunkIndex);
+    list.push(h);
     byFile.set(h.file, list);
   }
 
-  for (const [file, indices] of byFile) {
+  for (const [file, refs] of byFile) {
+    // Fingerprints address hunks in the default-context diff the client
+    // displayed; the legacy index path counts hunks in a --unified=0 diff.
+    // The two disagree whenever changes sit within ~6 lines of each other,
+    // so never mix addressing schemes within one file.
+    const useFingerprint = refs.every((r) => r.fingerprint !== undefined);
+    const diffArgs = useFingerprint ? options.contextDiffArgs : options.diffArgs;
+
     let diffText = "";
     let addedIntentToAdd = false;
 
@@ -165,7 +294,7 @@ function applyHunks(
     }
 
     try {
-      diffText = git([...options.diffArgs, "--", file], cwd);
+      diffText = git([...diffArgs, "--", file], cwd);
     } finally {
       if (addedIntentToAdd) {
         execFileSync("git", ["reset", "--", file], {
@@ -175,10 +304,23 @@ function applyHunks(
       }
     }
 
-    const patch = buildHunkPatch(diffText, file, indices);
+    const patch = useFingerprint
+      ? buildFingerprintPatch(
+          diffText,
+          file,
+          refs.map((r) => r.fingerprint as HunkFingerprint),
+        )
+      : buildHunkPatch(
+          diffText,
+          file,
+          refs.map((r) => r.hunkIndex),
+        );
     if (!patch) continue;
 
-    execFileSync("git", [...options.applyArgs, "-"], {
+    const applyArgs = useFingerprint
+      ? options.contextApplyArgs
+      : options.applyArgs;
+    execFileSync("git", [...applyArgs, "-"], {
       cwd,
       encoding: "utf-8",
       input: patch,
@@ -203,6 +345,10 @@ export function stageHunks(projectPath: string, hunks: HunkRef[]): void {
   applyHunks(projectPath, hunks, {
     diffArgs: ["diff", "--unified=0"],
     applyArgs: ["apply", "--cached", "--unidiff-zero"],
+    // Context lines of a worktree-vs-index diff are identical in both, so a
+    // default-context hunk from the displayed diff always applies cleanly.
+    contextDiffArgs: ["diff", "--no-color"],
+    contextApplyArgs: ["apply", "--cached"],
     includeUntracked: true,
   });
 }
@@ -221,6 +367,8 @@ export function unstageHunks(projectPath: string, hunks: HunkRef[]): void {
   applyHunks(projectPath, hunks, {
     diffArgs: ["diff", "--cached", "--unified=0"],
     applyArgs: ["apply", "-R", "--cached", "--unidiff-zero"],
+    contextDiffArgs: ["diff", "--cached", "--no-color"],
+    contextApplyArgs: ["apply", "-R", "--cached"],
   });
 }
 
@@ -722,6 +870,8 @@ export function revertHunks(projectPath: string, hunks: HunkRef[]): void {
   applyHunks(projectPath, hunks, {
     diffArgs: ["diff", "--unified=0"],
     applyArgs: ["apply", "-R", "--unidiff-zero"],
+    contextDiffArgs: ["diff", "--no-color"],
+    contextApplyArgs: ["apply", "-R"],
     includeUntracked: true,
   });
 }

@@ -378,17 +378,25 @@ class GitViewCubit extends Cubit<GitViewState> {
     );
   }
 
+  /// Build the wire reference for a displayed hunk. Includes a content
+  /// fingerprint so the Bridge targets exactly the hunk the user saw; the
+  /// legacy `hunkIndex` stays for old Bridges that ignore the extra key.
+  Map<String, dynamic> _hunkRef(int fileIdx, int hunkIdx) {
+    final file = state.files[fileIdx];
+    final ref = <String, dynamic>{'file': file.filePath, 'hunkIndex': hunkIdx};
+    if (hunkIdx < file.hunks.length) {
+      final fingerprint = buildHunkFingerprint(file.hunks[hunkIdx]);
+      if (fingerprint != null) ref['fingerprint'] = fingerprint;
+    }
+    return ref;
+  }
+
   void stageHunk(int fileIdx, int hunkIdx) {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
     _bridge.send(
-      ClientMessage.gitStage(
-        projectPath,
-        hunks: [
-          {'file': state.files[fileIdx].filePath, 'hunkIndex': hunkIdx},
-        ],
-      ),
+      ClientMessage.gitStage(projectPath, hunks: [_hunkRef(fileIdx, hunkIdx)]),
     );
   }
 
@@ -397,9 +405,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
     _bridge.send(
-      ClientMessage.gitUnstageHunks(projectPath, [
-        {'file': state.files[fileIdx].filePath, 'hunkIndex': hunkIdx},
-      ]),
+      ClientMessage.gitUnstageHunks(projectPath, [_hunkRef(fileIdx, hunkIdx)]),
     );
   }
 
@@ -418,9 +424,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
     _bridge.send(
-      ClientMessage.gitRevertHunks(projectPath, [
-        {'file': state.files[fileIdx].filePath, 'hunkIndex': hunkIdx},
-      ]),
+      ClientMessage.gitRevertHunks(projectPath, [_hunkRef(fileIdx, hunkIdx)]),
     );
   }
 

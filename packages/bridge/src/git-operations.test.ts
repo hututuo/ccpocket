@@ -12,6 +12,8 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import {
+  hashHunkChangeLines,
+  type HunkFingerprint,
   stageFiles,
   stageHunks,
   unstageFiles,
@@ -1051,5 +1053,240 @@ describe("checkoutBranch", () => {
 
   it("throws for non-existent branch", () => {
     expect(() => checkoutBranch(repo, "nonexistent")).toThrow();
+  });
+});
+
+// ---- Hunk fingerprint addressing (P0-1) ----
+
+/**
+ * Reproduce what the mobile client displays: run the same default-context
+ * `git diff --no-color` the app renders, and derive one fingerprint per
+ * displayed hunk (header quadruple + sha1 over the +/- change lines).
+ */
+function displayedHunkFingerprints(
+  repo: string,
+  file: string,
+  options?: { cached?: boolean },
+): HunkFingerprint[] {
+  const args = options?.cached
+    ? ["diff", "--cached", "--no-color", "--", file]
+    : ["diff", "--no-color", "--", file];
+  const diff = execFileSync("git", ["-c", "core.quotePath=false", ...args], {
+    cwd: repo,
+    encoding: "utf-8",
+  });
+  const headerRe = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+  const lines = diff.split("\n");
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (headerRe.test(lines[i])) starts.push(i);
+  }
+  return starts.map((start, idx) => {
+    const match = headerRe.exec(lines[start]);
+    if (!match) throw new Error("unreachable: header matched above");
+    const end = idx + 1 < starts.length ? starts[idx + 1] : lines.length;
+    const changeLines = lines
+      .slice(start + 1, end)
+      .filter((line) => line.startsWith("+") || line.startsWith("-"));
+    return {
+      oldStart: Number(match[1]),
+      oldLines: match[2] === undefined ? 1 : Number(match[2]),
+      newStart: Number(match[3]),
+      newLines: match[4] === undefined ? 1 : Number(match[4]),
+      changesHash: hashHunkChangeLines(changeLines),
+    };
+  });
+}
+
+describe("hunk fingerprint addressing", () => {
+  let repo: string;
+
+  beforeEach(() => {
+    repo = createTempRepo();
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  /** Commit a file of `count` numbered lines and return them. */
+  function seedFile(name: string, count = 30): string[] {
+    const lines = Array.from({ length: count }, (_, i) => `line ${i}`);
+    writeFileSync(join(repo, name), `${lines.join("\n")}\n`);
+    execFileSync("git", ["add", name], { cwd: repo });
+    execFileSync("git", ["commit", "-m", `add ${name}`], { cwd: repo });
+    return lines;
+  }
+
+  it("pins the changes-hash contract shared with the mobile client", () => {
+    // Golden value — apps/mobile/lib/utils/diff_parser.dart pins the same one.
+    expect(hashHunkChangeLines(["-old line", "+new line"])).toBe(
+      "72e37c089cc6615e099c2668f6cd4c797d676f9f",
+    );
+  });
+
+  // Changes 2–4 lines apart merge into ONE displayed hunk under the default
+  // 3 context lines, but split into TWO under --unified=0 — exactly the regime
+  // where the old index-based addressing reverted the wrong code.
+  for (const gap of [2, 3, 4]) {
+    it(`reverts exactly the displayed hunk when changes are ${gap} lines apart`, () => {
+      const original = seedFile(`near-${gap}.txt`);
+      const modified = [...original];
+      modified[5] = "changed five";
+      modified[5 + gap] = "changed other";
+      writeFileSync(join(repo, `near-${gap}.txt`), `${modified.join("\n")}\n`);
+
+      const fingerprints = displayedHunkFingerprints(repo, `near-${gap}.txt`);
+      expect(fingerprints).toHaveLength(1);
+
+      revertHunks(repo, [
+        { file: `near-${gap}.txt`, hunkIndex: 0, fingerprint: fingerprints[0] },
+      ]);
+
+      expect(readFileSync(join(repo, `near-${gap}.txt`), "utf-8")).toBe(
+        `${original.join("\n")}\n`,
+      );
+    });
+  }
+
+  it("stages the whole displayed hunk when changes are 3 lines apart", () => {
+    const original = seedFile("stage-near.txt");
+    const modified = [...original];
+    modified[5] = "changed five";
+    modified[8] = "changed eight";
+    writeFileSync(join(repo, "stage-near.txt"), `${modified.join("\n")}\n`);
+
+    const fingerprints = displayedHunkFingerprints(repo, "stage-near.txt");
+    expect(fingerprints).toHaveLength(1);
+
+    stageHunks(repo, [
+      { file: "stage-near.txt", hunkIndex: 0, fingerprint: fingerprints[0] },
+    ]);
+
+    const staged = gitCmd(["diff", "--cached", "--", "stage-near.txt"], repo);
+    expect(staged).toContain("changed five");
+    expect(staged).toContain("changed eight");
+    expect(gitCmd(["diff", "--", "stage-near.txt"], repo)).toBe("");
+  });
+
+  it("reverts only the selected hunk when changes are far apart", () => {
+    const original = seedFile("far.txt");
+    const modified = [...original];
+    modified[2] = "changed two";
+    modified[17] = "changed seventeen";
+    writeFileSync(join(repo, "far.txt"), `${modified.join("\n")}\n`);
+
+    const fingerprints = displayedHunkFingerprints(repo, "far.txt");
+    expect(fingerprints).toHaveLength(2);
+
+    revertHunks(repo, [
+      { file: "far.txt", hunkIndex: 1, fingerprint: fingerprints[1] },
+    ]);
+
+    const expected = [...original];
+    expected[2] = "changed two";
+    expect(readFileSync(join(repo, "far.txt"), "utf-8")).toBe(
+      `${expected.join("\n")}\n`,
+    );
+  });
+
+  it("unstages the displayed staged hunk", () => {
+    const original = seedFile("unstage.txt");
+    const modified = [...original];
+    modified[5] = "changed five";
+    writeFileSync(join(repo, "unstage.txt"), `${modified.join("\n")}\n`);
+    execFileSync("git", ["add", "unstage.txt"], { cwd: repo });
+
+    const fingerprints = displayedHunkFingerprints(repo, "unstage.txt", {
+      cached: true,
+    });
+    expect(fingerprints).toHaveLength(1);
+
+    unstageHunks(repo, [
+      { file: "unstage.txt", hunkIndex: 0, fingerprint: fingerprints[0] },
+    ]);
+
+    expect(gitCmd(["diff", "--cached", "--", "unstage.txt"], repo)).toBe("");
+    expect(gitCmd(["diff", "--", "unstage.txt"], repo)).toContain(
+      "changed five",
+    );
+  });
+
+  it("stages an untracked file's displayed hunk", () => {
+    writeFileSync(join(repo, "brand-new.txt"), "alpha\nbeta\n");
+    // The displayed diff for untracked files comes from the intent-to-add
+    // dance the Bridge itself performs when producing diff_result.
+    execFileSync("git", ["add", "--intent-to-add", "--", "brand-new.txt"], {
+      cwd: repo,
+    });
+    const fingerprints = displayedHunkFingerprints(repo, "brand-new.txt");
+    execFileSync("git", ["reset", "--", "brand-new.txt"], { cwd: repo });
+    expect(fingerprints).toHaveLength(1);
+
+    stageHunks(repo, [
+      { file: "brand-new.txt", hunkIndex: 0, fingerprint: fingerprints[0] },
+    ]);
+
+    expect(
+      gitCmd(["diff", "--cached", "--name-only", "--", "brand-new.txt"], repo),
+    ).toBe("brand-new.txt");
+  });
+
+  it("rejects a stale fingerprint instead of touching the wrong lines", () => {
+    const original = seedFile("stale.txt");
+    const modified = [...original];
+    modified[5] = "changed five";
+    writeFileSync(join(repo, "stale.txt"), `${modified.join("\n")}\n`);
+    const fingerprints = displayedHunkFingerprints(repo, "stale.txt");
+
+    // The worktree moves on after the client captured the diff.
+    modified[6] = "changed six";
+    writeFileSync(join(repo, "stale.txt"), `${modified.join("\n")}\n`);
+
+    expect(() =>
+      revertHunks(repo, [
+        { file: "stale.txt", hunkIndex: 0, fingerprint: fingerprints[0] },
+      ]),
+    ).toThrow(/no longer matches/);
+    expect(readFileSync(join(repo, "stale.txt"), "utf-8")).toBe(
+      `${modified.join("\n")}\n`,
+    );
+  });
+
+  it("rejects a fingerprint for a file with no current diff", () => {
+    seedFile("clean.txt");
+    expect(() =>
+      revertHunks(repo, [
+        {
+          file: "clean.txt",
+          hunkIndex: 0,
+          fingerprint: {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            changesHash: hashHunkChangeLines(["-a", "+b"]),
+          },
+        },
+      ]),
+    ).toThrow(/No current diff/);
+  });
+
+  it("still honours the legacy index-based path when fingerprints are absent", () => {
+    const original = seedFile("legacy.txt");
+    const modified = [...original];
+    modified[2] = "changed two";
+    modified[17] = "changed seventeen";
+    writeFileSync(join(repo, "legacy.txt"), `${modified.join("\n")}\n`);
+
+    // Old clients send bare {file, hunkIndex}: U0 splits these far-apart
+    // changes into two hunks, index 1 is the second change.
+    revertHunks(repo, [{ file: "legacy.txt", hunkIndex: 1 }]);
+
+    const expected = [...original];
+    expected[2] = "changed two";
+    expect(readFileSync(join(repo, "legacy.txt"), "utf-8")).toBe(
+      `${expected.join("\n")}\n`,
+    );
   });
 });
