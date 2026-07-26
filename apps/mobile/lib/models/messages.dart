@@ -1648,28 +1648,34 @@ sealed class ServerMessage {
       // ---- Git Operations (Phase 1-3) ----
       'git_stage_result' => GitStageResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_unstage_result' => GitUnstageResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_unstage_hunks_result' => GitUnstageHunksResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_commit_result' => GitCommitResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         commitHash: json['commitHash'] as String?,
         message: json['message'] as String?,
         error: json['error'] as String?,
       ),
       'git_push_result' => GitPushResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_branches_result' => GitBranchesResultMessage(
         current: json['current'] as String? ?? '',
+        projectPath: _nonEmptyString(json['projectPath']),
         branches:
             (json['branches'] as List?)?.whereType<String>().toList() ??
             const [],
@@ -1692,26 +1698,32 @@ sealed class ServerMessage {
       ),
       'git_create_branch_result' => GitCreateBranchResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_checkout_branch_result' => GitCheckoutBranchResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_revert_file_result' => GitRevertFileResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_revert_hunks_result' => GitRevertHunksResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_fetch_result' => GitFetchResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         error: json['error'] as String?,
       ),
       'git_pull_result' => GitPullResultMessage(
         success: json['success'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
         message: json['message'] as String?,
         error: json['error'] as String?,
       ),
@@ -1736,6 +1748,7 @@ sealed class ServerMessage {
         behind: json['behind'] as int? ?? 0,
         branch: json['branch'] as String? ?? '',
         hasUpstream: json['hasUpstream'] as bool? ?? false,
+        projectPath: _nonEmptyString(json['projectPath']),
       ),
       _ => ErrorMessage(message: 'Unknown message type: ${json['type']}'),
     };
@@ -4102,32 +4115,52 @@ class MessageImagesResultMessage implements ServerMessage {
 }
 
 // ---- Git Operations (Phase 1-3) ----
+// Git results are broadcast to every listener; [projectPath] (echoed by the
+// Bridge since the crosstalk fix) lets views bound to different projects
+// discard each other's results. Old Bridges omit it → accept everything.
 
 class GitStageResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitStageResultMessage({required this.success, this.error});
+  const GitStageResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitUnstageResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitUnstageResultMessage({required this.success, this.error});
+  const GitUnstageResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitUnstageHunksResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitUnstageHunksResultMessage({required this.success, this.error});
+  const GitUnstageHunksResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitCommitResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? commitHash;
   final String? message;
   final String? error;
   const GitCommitResultMessage({
     required this.success,
+    this.projectPath,
     this.commitHash,
     this.message,
     this.error,
@@ -4136,8 +4169,13 @@ class GitCommitResultMessage implements ServerMessage {
 
 class GitPushResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitPushResultMessage({required this.success, this.error});
+  const GitPushResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitBranchRemoteStatus {
@@ -4163,12 +4201,14 @@ class GitBranchRemoteStatus {
 class GitBranchesResultMessage implements ServerMessage {
   final String current;
   final List<String> branches;
+  final String? projectPath;
   final List<String> checkedOutBranches;
   final Map<String, GitBranchRemoteStatus> remoteStatusByBranch;
   final String? error;
   const GitBranchesResultMessage({
     required this.current,
     required this.branches,
+    this.projectPath,
     this.checkedOutBranches = const [],
     this.remoteStatusByBranch = const {},
     this.error,
@@ -4177,39 +4217,70 @@ class GitBranchesResultMessage implements ServerMessage {
 
 class GitCreateBranchResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitCreateBranchResultMessage({required this.success, this.error});
+  const GitCreateBranchResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitCheckoutBranchResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitCheckoutBranchResultMessage({required this.success, this.error});
+  const GitCheckoutBranchResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitRevertFileResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitRevertFileResultMessage({required this.success, this.error});
+  const GitRevertFileResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitRevertHunksResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitRevertHunksResultMessage({required this.success, this.error});
+  const GitRevertHunksResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitFetchResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? error;
-  const GitFetchResultMessage({required this.success, this.error});
+  const GitFetchResultMessage({
+    required this.success,
+    this.projectPath,
+    this.error,
+  });
 }
 
 class GitPullResultMessage implements ServerMessage {
   final bool success;
+  final String? projectPath;
   final String? message;
   final String? error;
-  const GitPullResultMessage({required this.success, this.message, this.error});
+  const GitPullResultMessage({
+    required this.success,
+    this.projectPath,
+    this.message,
+    this.error,
+  });
 }
 
 class GitStatusResultMessage implements ServerMessage {
@@ -4250,11 +4321,13 @@ class GitRemoteStatusResultMessage implements ServerMessage {
   final int behind;
   final String branch;
   final bool hasUpstream;
+  final String? projectPath;
   const GitRemoteStatusResultMessage({
     required this.ahead,
     required this.behind,
     required this.branch,
     required this.hasUpstream,
+    this.projectPath,
   });
 }
 

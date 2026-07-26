@@ -1034,12 +1034,30 @@ export type ServerMessage = (
       errorCode?: string;
     }
   // ---- Git Operations (Phase 1-3) ----
-  | { type: "git_stage_result"; success: boolean; error?: string }
-  | { type: "git_unstage_result"; success: boolean; error?: string }
-  | { type: "git_unstage_hunks_result"; success: boolean; error?: string }
+  // Every git result echoes the request's projectPath so app-side views bound
+  // to different projects can discard each other's broadcast results.
+  | {
+      type: "git_stage_result";
+      success: boolean;
+      projectPath?: string;
+      error?: string;
+    }
+  | {
+      type: "git_unstage_result";
+      success: boolean;
+      projectPath?: string;
+      error?: string;
+    }
+  | {
+      type: "git_unstage_hunks_result";
+      success: boolean;
+      projectPath?: string;
+      error?: string;
+    }
   | {
       type: "git_commit_result";
       success: boolean;
+      projectPath?: string;
       commitHash?: string;
       message?: string;
       error?: string;
@@ -1047,12 +1065,14 @@ export type ServerMessage = (
   | {
       type: "git_push_result";
       success: boolean;
+      projectPath?: string;
       error?: string;
     }
   | {
       type: "git_branches_result";
       current: string;
       branches: string[];
+      projectPath?: string;
       checkedOutBranches?: string[];
       remoteStatusByBranch?: Record<
         string,
@@ -1060,14 +1080,40 @@ export type ServerMessage = (
       >;
       error?: string;
     }
-  | { type: "git_create_branch_result"; success: boolean; error?: string }
-  | { type: "git_checkout_branch_result"; success: boolean; error?: string }
-  | { type: "git_revert_file_result"; success: boolean; error?: string }
-  | { type: "git_revert_hunks_result"; success: boolean; error?: string }
-  | { type: "git_fetch_result"; success: boolean; error?: string }
+  | {
+      type: "git_create_branch_result";
+      success: boolean;
+      projectPath?: string;
+      error?: string;
+    }
+  | {
+      type: "git_checkout_branch_result";
+      success: boolean;
+      projectPath?: string;
+      error?: string;
+    }
+  | {
+      type: "git_revert_file_result";
+      success: boolean;
+      projectPath?: string;
+      error?: string;
+    }
+  | {
+      type: "git_revert_hunks_result";
+      success: boolean;
+      projectPath?: string;
+      error?: string;
+    }
+  | {
+      type: "git_fetch_result";
+      success: boolean;
+      projectPath?: string;
+      error?: string;
+    }
   | {
       type: "git_pull_result";
       success: boolean;
+      projectPath?: string;
       message?: string;
       error?: string;
     }
@@ -1094,6 +1140,7 @@ export type ServerMessage = (
       behind: number;
       branch: string;
       hasUpstream: boolean;
+      projectPath?: string;
     }
   | LocalFeatureServerMessage
   | FileTransferServerMessage

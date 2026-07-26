@@ -490,7 +490,14 @@ class GitViewCubit extends Cubit<GitViewState> {
     );
   }
 
+  /// Git results are broadcast to every listener; one stamped with another
+  /// projectPath belongs to a different project's view. Old Bridges echo no
+  /// projectPath — accept those.
+  bool _isForeignProject(String? resultProjectPath) =>
+      resultProjectPath != null && resultProjectPath != _projectPath;
+
   void _onStageResult(GitStageResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.success) {
       emit(state.copyWith(staging: false));
       if (_pendingSwitchToStaged) {
@@ -507,6 +514,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onRevertResult(GitRevertFileResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.success) {
       emit(state.copyWith(staging: false));
       refreshDiffOnly(requestStatus: true);
@@ -516,6 +524,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onRevertHunksResult(GitRevertHunksResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.success) {
       emit(state.copyWith(staging: false));
       refreshDiffOnly(requestStatus: true);
@@ -525,6 +534,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onUnstageResult(GitUnstageResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.success) {
       emit(state.copyWith(staging: false));
       if (_pendingSwitchToUnstaged) {
@@ -541,6 +551,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onUnstageHunksResult(GitUnstageHunksResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.success) {
       emit(state.copyWith(staging: false));
       refreshDiffOnly(requestStatus: true);
@@ -561,6 +572,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onFetchResult(GitFetchResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     emit(state.copyWith(fetching: false));
     // After fetch, request remote status to get ahead/behind counts
     final projectPath = _projectPath;
@@ -570,6 +582,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onRemoteStatus(GitRemoteStatusResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     emit(
       state.copyWith(
         commitsAhead: result.ahead,
@@ -588,6 +601,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onPullResult(GitPullResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     emit(state.copyWith(pulling: false));
     if (result.success) {
       refresh(); // refresh diff + remote status
@@ -605,6 +619,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onPushResult(GitPushResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     emit(state.copyWith(pushing: false));
     if (result.success) {
       refresh();
@@ -614,6 +629,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onCommitResult(GitCommitResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.success) {
       refresh();
     }
@@ -624,12 +640,14 @@ class GitViewCubit extends Cubit<GitViewState> {
   // ---------------------------------------------------------------------------
 
   void _onBranchesResult(GitBranchesResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.error == null) {
       emit(state.copyWith(currentBranch: result.current));
     }
   }
 
   void _onCheckoutResult(GitCheckoutBranchResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.success) {
       // Refresh diff + branch + remote status after checkout
       refresh();

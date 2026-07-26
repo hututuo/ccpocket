@@ -153,6 +153,7 @@ class MockDiffBridgeService extends BridgeService {
   void emitUnstageHunksResult(GitUnstageHunksResultMessage msg) =>
       _unstageHunksController.add(msg);
   void emitFetchResult(GitFetchResultMessage msg) => _fetchController.add(msg);
+  void emitPullResult(GitPullResultMessage msg) => _pullController.add(msg);
   void emitStopped(String sessionId) => _stoppedController.add(sessionId);
   void emitRemoteStatus(GitRemoteStatusResultMessage msg) =>
       _remoteStatusController.add(msg);
@@ -385,6 +386,79 @@ void main() {
 
       expect(cubit.state.loading, false);
       expect(cubit.state.files, isEmpty);
+    });
+  });
+
+  group('GitViewCubit - project crosstalk filtering', () {
+    test('ignores git results stamped with another projectPath', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/home/user/project',
+      );
+      addTearDown(() {
+        cubit.close();
+        mockBridge.dispose();
+      });
+
+      cubit.pull();
+      mockBridge.emitRemoteStatus(
+        const GitRemoteStatusResultMessage(
+          ahead: 7,
+          behind: 3,
+          branch: 'other',
+          hasUpstream: true,
+          projectPath: '/home/user/other-project',
+        ),
+      );
+      mockBridge.emitPullResult(
+        const GitPullResultMessage(
+          success: false,
+          error: 'merge conflict in other project',
+          projectPath: '/home/user/other-project',
+        ),
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.commitsAhead, 0);
+      expect(cubit.state.commitsBehind, 0);
+      expect(cubit.state.hasUpstream, false);
+      expect(cubit.state.pulling, true);
+      expect(cubit.state.error, isNull);
+    });
+
+    test('applies own-project and legacy unstamped results', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/home/user/project',
+      );
+      addTearDown(() {
+        cubit.close();
+        mockBridge.dispose();
+      });
+
+      mockBridge.emitRemoteStatus(
+        const GitRemoteStatusResultMessage(
+          ahead: 2,
+          behind: 1,
+          branch: 'main',
+          hasUpstream: true,
+          projectPath: '/home/user/project',
+        ),
+      );
+      cubit.pull();
+      // Old Bridges echo no projectPath; those results must still apply.
+      mockBridge.emitPullResult(
+        const GitPullResultMessage(success: false, error: 'conflict'),
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.commitsAhead, 2);
+      expect(cubit.state.commitsBehind, 1);
+      expect(cubit.state.hasUpstream, true);
+      expect(cubit.state.pulling, false);
+      expect(cubit.state.error, 'conflict');
     });
   });
 

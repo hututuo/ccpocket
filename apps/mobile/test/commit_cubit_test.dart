@@ -162,6 +162,61 @@ void main() {
       );
     });
 
+    test('ignores commit results stamped with another projectPath', () async {
+      cubit.toggleAutoGenerate();
+      cubit.setMessage('feat: mine');
+      cubit.commit();
+
+      mockBridge.emitCommit(
+        const GitCommitResultMessage(
+          success: false,
+          error: 'other project failed',
+          projectPath: '/other',
+        ),
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.status, CommitStatus.committing);
+      expect(cubit.state.error, isNull);
+
+      mockBridge.emitCommit(
+        const GitCommitResultMessage(
+          success: true,
+          commitHash: 'abc',
+          projectPath: '/p',
+        ),
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.status, CommitStatus.success);
+    });
+
+    test('ignores push results stamped with another projectPath', () async {
+      cubit.commitAndPush();
+      mockBridge.emitCommit(
+        const GitCommitResultMessage(success: true, commitHash: 'abc'),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.status, CommitStatus.pushing);
+
+      mockBridge.emitPush(
+        const GitPushResultMessage(
+          success: false,
+          error: 'other push failed',
+          projectPath: '/other',
+        ),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.status, CommitStatus.pushing);
+      expect(cubit.state.error, isNull);
+
+      mockBridge.emitPush(
+        const GitPushResultMessage(success: true, projectPath: '/p'),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.status, CommitStatus.success);
+    });
+
     test('updateStagedSummary updates counts', () {
       cubit.updateStagedSummary(fileCount: 3, insertions: 42, deletions: 8);
 

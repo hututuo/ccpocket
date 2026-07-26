@@ -117,6 +117,35 @@ void main() {
       expect(cubit.state.error, 'not a git repo');
     });
 
+    test('ignores branch results stamped with another projectPath', () async {
+      cubit.loadBranches();
+      mockBridge.emitBranches(
+        const GitBranchesResultMessage(
+          current: 'other-branch',
+          branches: ['other-branch'],
+          projectPath: '/other',
+        ),
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.loading, true);
+      expect(cubit.state.current, isNull);
+      expect(cubit.state.branches, isEmpty);
+
+      mockBridge.emitBranches(
+        const GitBranchesResultMessage(
+          current: 'main',
+          branches: ['main', 'dev'],
+          projectPath: '/p',
+        ),
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.loading, false);
+      expect(cubit.state.current, 'main');
+      expect(cubit.state.branches, ['main', 'dev']);
+    });
+
     test('search filters branches locally', () async {
       cubit.loadBranches();
       mockBridge.emitBranches(

@@ -8412,11 +8412,16 @@ export class BridgeWebSocketServer {
         try {
           if (msg.files?.length) stageFiles(msg.projectPath, msg.files);
           if (msg.hunks?.length) stageHunks(msg.projectPath, msg.hunks);
-          this.send(ws, { type: "git_stage_result", success: true });
+          this.send(ws, {
+            type: "git_stage_result",
+            success: true,
+            projectPath: msg.projectPath,
+          });
         } catch (err) {
           this.send(ws, {
             type: "git_stage_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8430,11 +8435,16 @@ export class BridgeWebSocketServer {
         }
         try {
           unstageFiles(msg.projectPath, msg.files ?? []);
-          this.send(ws, { type: "git_unstage_result", success: true });
+          this.send(ws, {
+            type: "git_unstage_result",
+            success: true,
+            projectPath: msg.projectPath,
+          });
         } catch (err) {
           this.send(ws, {
             type: "git_unstage_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8448,11 +8458,16 @@ export class BridgeWebSocketServer {
         }
         try {
           unstageHunks(msg.projectPath, msg.hunks);
-          this.send(ws, { type: "git_unstage_hunks_result", success: true });
+          this.send(ws, {
+            type: "git_unstage_hunks_result",
+            success: true,
+            projectPath: msg.projectPath,
+          });
         } catch (err) {
           this.send(ws, {
             type: "git_unstage_hunks_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8504,6 +8519,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "git_commit_result",
             success: true,
+            projectPath: msg.projectPath,
             commitHash: result.hash,
             message: result.message,
           });
@@ -8511,6 +8527,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "git_commit_result",
             success: false,
+            projectPath: msg.projectPath,
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -8527,11 +8544,13 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "git_push_result",
             success: true,
+            projectPath: msg.projectPath,
           });
         } catch (err) {
           this.send(ws, {
             type: "git_push_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8549,6 +8568,7 @@ export class BridgeWebSocketServer {
             type: "git_branches_result",
             current: result.current,
             branches: result.branches,
+            projectPath: msg.projectPath,
             checkedOutBranches: result.checkedOutBranches,
             remoteStatusByBranch: result.remoteStatusByBranch,
           });
@@ -8557,6 +8577,7 @@ export class BridgeWebSocketServer {
             type: "git_branches_result",
             current: "",
             branches: [],
+            projectPath: msg.projectPath,
             remoteStatusByBranch: {},
             error: String(err),
           });
@@ -8571,11 +8592,16 @@ export class BridgeWebSocketServer {
         }
         try {
           createBranch(msg.projectPath, msg.name, msg.checkout);
-          this.send(ws, { type: "git_create_branch_result", success: true });
+          this.send(ws, {
+            type: "git_create_branch_result",
+            success: true,
+            projectPath: msg.projectPath,
+          });
         } catch (err) {
           this.send(ws, {
             type: "git_create_branch_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8589,11 +8615,16 @@ export class BridgeWebSocketServer {
         }
         try {
           checkoutBranch(msg.projectPath, msg.branch);
-          this.send(ws, { type: "git_checkout_branch_result", success: true });
+          this.send(ws, {
+            type: "git_checkout_branch_result",
+            success: true,
+            projectPath: msg.projectPath,
+          });
         } catch (err) {
           this.send(ws, {
             type: "git_checkout_branch_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8607,11 +8638,16 @@ export class BridgeWebSocketServer {
         }
         try {
           revertFiles(msg.projectPath, msg.files);
-          this.send(ws, { type: "git_revert_file_result", success: true });
+          this.send(ws, {
+            type: "git_revert_file_result",
+            success: true,
+            projectPath: msg.projectPath,
+          });
         } catch (err) {
           this.send(ws, {
             type: "git_revert_file_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8625,11 +8661,16 @@ export class BridgeWebSocketServer {
         }
         try {
           revertHunks(msg.projectPath, msg.hunks);
-          this.send(ws, { type: "git_revert_hunks_result", success: true });
+          this.send(ws, {
+            type: "git_revert_hunks_result",
+            success: true,
+            projectPath: msg.projectPath,
+          });
         } catch (err) {
           this.send(ws, {
             type: "git_revert_hunks_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8643,11 +8684,16 @@ export class BridgeWebSocketServer {
         }
         try {
           gitFetch(msg.projectPath);
-          this.send(ws, { type: "git_fetch_result", success: true });
+          this.send(ws, {
+            type: "git_fetch_result",
+            success: true,
+            projectPath: msg.projectPath,
+          });
         } catch (err) {
           this.send(ws, {
             type: "git_fetch_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8665,12 +8711,14 @@ export class BridgeWebSocketServer {
             this.send(ws, {
               type: "git_pull_result",
               success: true,
+              projectPath: msg.projectPath,
               message: result.message,
             });
           } else {
             this.send(ws, {
               type: "git_pull_result",
               success: false,
+              projectPath: msg.projectPath,
               error: result.message,
             });
           }
@@ -8678,6 +8726,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "git_pull_result",
             success: false,
+            projectPath: msg.projectPath,
             error: String(err),
           });
         }
@@ -8756,6 +8805,7 @@ export class BridgeWebSocketServer {
             behind: result.behind,
             branch: result.branch,
             hasUpstream: result.hasUpstream,
+            projectPath: msg.projectPath,
           });
         } catch (err) {
           this.send(ws, {
@@ -8764,6 +8814,7 @@ export class BridgeWebSocketServer {
             behind: 0,
             branch: "",
             hasUpstream: false,
+            projectPath: msg.projectPath,
           });
         }
         break;

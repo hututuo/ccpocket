@@ -81,7 +81,14 @@ class CommitCubit extends Cubit<CommitState> {
     );
   }
 
+  /// Git results are broadcast to every listener; one stamped with another
+  /// projectPath belongs to a different project's commit flow. Old Bridges
+  /// echo no projectPath — accept those.
+  bool _isForeignProject(String? resultProjectPath) =>
+      resultProjectPath != null && resultProjectPath != _projectPath;
+
   void _onCommitResult(GitCommitResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (!result.success) {
       emit(state.copyWith(status: CommitStatus.error, error: result.error));
       return;
@@ -98,6 +105,7 @@ class CommitCubit extends Cubit<CommitState> {
   }
 
   void _onPushResult(GitPushResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (!result.success) {
       emit(state.copyWith(status: CommitStatus.error, error: result.error));
       return;

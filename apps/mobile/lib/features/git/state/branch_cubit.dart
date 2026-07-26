@@ -60,7 +60,14 @@ class BranchCubit extends Cubit<BranchState> {
 
   // ---- Callbacks ----
 
+  /// Git results are broadcast to every listener; one stamped with another
+  /// projectPath belongs to a different project's branch view. Old Bridges
+  /// echo no projectPath — accept those.
+  bool _isForeignProject(String? resultProjectPath) =>
+      resultProjectPath != null && resultProjectPath != _projectPath;
+
   void _onBranchesResult(GitBranchesResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (result.error != null) {
       emit(state.copyWith(loading: false, error: result.error));
       return;
@@ -77,6 +84,7 @@ class BranchCubit extends Cubit<BranchState> {
   }
 
   void _onCreateResult(GitCreateBranchResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (!result.success) {
       emit(state.copyWith(creating: false, error: result.error));
       return;
@@ -87,6 +95,7 @@ class BranchCubit extends Cubit<BranchState> {
   }
 
   void _onCheckoutResult(GitCheckoutBranchResultMessage result) {
+    if (_isForeignProject(result.projectPath)) return;
     if (!result.success) {
       emit(state.copyWith(loading: false, error: result.error));
       return;
