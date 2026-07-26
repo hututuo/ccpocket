@@ -212,6 +212,40 @@ void main() {
           );
         },
       );
+
+      test(
+        'slows the flush cadence once the accumulated text is large',
+        () async {
+          // Every flush re-parses the whole text through Markdown; a long
+          // message must not keep flushing at the short-message cadence.
+          final coalesced = StreamingStateCubit(
+            coalesceInterval: const Duration(milliseconds: 20),
+          );
+          addTearDown(coalesced.close);
+
+          coalesced.appendText(
+            'x' * (StreamingStateCubit.largeTextThreshold + 1),
+          );
+          // Let the first (immediate) cycle's trailing timer finish.
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+
+          coalesced.appendText('head');
+          coalesced.appendText('-tail');
+          // The immediate emit publishes 'head'; the queued '-tail' now sits
+          // behind a widened (6x = 120ms) timer instead of the base 20ms.
+          expect(coalesced.state.text.endsWith('head'), isTrue);
+
+          await Future<void>.delayed(const Duration(milliseconds: 40));
+          expect(
+            coalesced.state.text.endsWith('head'),
+            isTrue,
+            reason: 'the widened interval must not flush at the base cadence',
+          );
+
+          await Future<void>.delayed(const Duration(milliseconds: 160));
+          expect(coalesced.state.text.endsWith('head-tail'), isTrue);
+        },
+      );
     });
   });
 }

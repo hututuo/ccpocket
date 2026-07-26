@@ -20,9 +20,25 @@ class StreamingStateCubit extends Cubit<StreamingState> {
   /// copying and full Markdown rebuilds for every network chunk.
   final Duration coalesceInterval;
 
+  /// Accumulated lengths past which the flush cadence slows down.
+  ///
+  /// Every flush re-parses the whole accumulated text through Markdown, so
+  /// the per-flush cost grows with the message. Widening the interval as
+  /// the text grows keeps the total parse work per second roughly flat for
+  /// long code-heavy responses instead of quadratic.
+  static const int mediumTextThreshold = 8 * 1024;
+  static const int largeTextThreshold = 32 * 1024;
+
   Timer? _flushTimer;
   StringBuffer _pendingText = StringBuffer();
   StringBuffer _pendingThinking = StringBuffer();
+
+  Duration get _effectiveCoalesceInterval {
+    final length = state.text.length + state.thinking.length;
+    if (length >= largeTextThreshold) return coalesceInterval * 6;
+    if (length >= mediumTextThreshold) return coalesceInterval * 3;
+    return coalesceInterval;
+  }
 
   void appendText(String text) {
     _append(text: text);
@@ -49,7 +65,7 @@ class StreamingStateCubit extends Cubit<StreamingState> {
   }
 
   void _scheduleFlush() {
-    _flushTimer = Timer(coalesceInterval, _flushPending);
+    _flushTimer = Timer(_effectiveCoalesceInterval, _flushPending);
   }
 
   void _flushPending() {
