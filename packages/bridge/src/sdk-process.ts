@@ -801,7 +801,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       this.queryInstance.close();
       this.queryInstance = null;
     }
-    this.pendingPermissions.clear();
+    this.denyAllPendingPermissions("Session stopped");
     this.userMessageResolve = null;
     this.toolCallsSinceLastResult = 0;
     this.fileEditsSinceLastResult = 0;
@@ -822,7 +822,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       this.queryInstance.interrupt().catch((err) => {
         console.error("[sdk-process] Interrupt error:", err);
       });
-      this.pendingPermissions.clear();
+      this.denyAllPendingPermissions("Interrupted by user");
     }
   }
 
@@ -922,6 +922,19 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     images: Array<{ base64: string; mimeType: string }>,
   ): boolean {
     return this.dispatchInputWithImages(text, images).queued;
+  }
+
+  /**
+   * Deny and drop every outstanding permission request. Clearing the map
+   * without resolving strands the promise the SDK's canUseTool awaits (and
+   * disarms its abort listener, which checks map membership), leaving the
+   * query hung inside the tool-permission gate.
+   */
+  private denyAllPendingPermissions(message: string): void {
+    for (const pending of this.pendingPermissions.values()) {
+      pending.resolve({ behavior: "deny", message });
+    }
+    this.pendingPermissions.clear();
   }
 
   /**
@@ -1385,7 +1398,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         }
         break;
       case "result":
-        this.pendingPermissions.clear();
+        this.denyAllPendingPermissions("Turn already completed");
         this.setStatus("idle");
         break;
     }

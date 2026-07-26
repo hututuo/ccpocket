@@ -742,6 +742,58 @@ describe("SdkProcess.approveAlways", () => {
   });
 });
 
+describe("SdkProcess pending permission teardown", () => {
+  /** Inject a pending permission whose resolver is observable. */
+  function setupPendingPermission() {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+    const resolve = vi.fn();
+    internal.pendingPermissions.set("tool-1", {
+      resolve,
+      toolName: "Bash",
+      input: { command: "ls" },
+    });
+    return { proc, internal, resolve };
+  }
+
+  it("interrupt denies the outstanding canUseTool promise instead of stranding it", () => {
+    const { proc, internal, resolve } = setupPendingPermission();
+    internal.queryInstance = {
+      interrupt: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+    };
+
+    proc.interrupt();
+
+    expect(resolve).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: "deny" }),
+    );
+    expect(internal.pendingPermissions.size).toBe(0);
+  });
+
+  it("a result message denies outstanding canUseTool promises instead of stranding them", () => {
+    const { internal, resolve } = setupPendingPermission();
+
+    internal.updateStatusFromMessage({ type: "result" });
+
+    expect(resolve).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: "deny" }),
+    );
+    expect(internal.pendingPermissions.size).toBe(0);
+  });
+
+  it("stop denies outstanding canUseTool promises instead of stranding them", () => {
+    const { proc, internal, resolve } = setupPendingPermission();
+
+    proc.stop();
+
+    expect(resolve).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: "deny" }),
+    );
+    expect(internal.pendingPermissions.size).toBe(0);
+  });
+});
+
 describe("SdkProcess input dispatch", () => {
   it("queues and requests interrupt while a turn is running", () => {
     const proc = new SdkProcess();
