@@ -21,6 +21,9 @@ export type LocalFeatureInputAdmission =
   | { action: "queue"; reason: string }
   | { action: "reject"; reason: string };
 
+export type LocalFeatureClientDeliveryMode =
+  "interactive" | "notifications_only";
+
 export interface LocalFeatureInputMessage {
   type: "input";
   sessionId?: string;
@@ -60,6 +63,8 @@ export interface LocalFeatureRuntime {
   readonly fileBrowser?: FileBrowserManager;
   getSession(sessionId: string): LocalFeatureSession | undefined;
   getCodexThreadId(session: LocalFeatureSession): string | undefined;
+  getProviderSessionId?(session: LocalFeatureSession): string | undefined;
+  getClientDeliveryMode?(client: object): LocalFeatureClientDeliveryMode;
   getActiveCodexProcess(): CodexProcess | null;
   createStandaloneCodexProcess(
     timeoutMs?: number,
@@ -159,6 +164,10 @@ export interface LocalFeatureHandler {
   sessionMessage?(session: LocalFeatureSession, message: ServerMessage): void;
   /** Observe one provider catalog/content invalidation without owning its watcher. */
   sessionCatalogChanged?(change: SessionCatalogChange): void;
+  clientDeliveryModeChanged?(
+    client: object,
+    mode: LocalFeatureClientDeliveryMode,
+  ): void;
   capabilitiesChanged?(client: object): void;
   disconnect?(client: object): void;
   close?(): void | Promise<void>;

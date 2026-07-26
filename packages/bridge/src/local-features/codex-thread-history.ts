@@ -19,8 +19,17 @@ export function codexThreadToServerMessages(
   const thread = Array.isArray(threadOrTurns)
     ? { turns: threadOrTurns }
     : threadOrTurns;
+  return sessionHistoryToServerMessages(codexThreadToSessionHistory(thread), {
+    idPrefix: options.idPrefix,
+  });
+}
+
+export function sessionHistoryToServerMessages(
+  history: readonly SessionHistoryMessage[],
+  options: { idPrefix?: string } = {},
+): ServerMessage[] {
   const idPrefix = options.idPrefix ?? "thread-history";
-  return codexThreadToSessionHistory(thread).flatMap((message, index) =>
+  return history.flatMap((message, index) =>
     sessionHistoryMessageToServerMessages(message, index, idPrefix),
   );
 }
@@ -41,6 +50,7 @@ function sessionHistoryMessageToServerMessages(
         ...(history.isMeta ? { isMeta: true } : {}),
         ...(history.imageCount ? { imageCount: history.imageCount } : {}),
         ...(history.timestamp ? { timestamp: history.timestamp } : {}),
+        ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
       },
     ];
   }
@@ -55,6 +65,7 @@ function sessionHistoryMessageToServerMessages(
           history.toolUseId ?? history.uuid ?? `${idPrefix}-tool-${index}`,
         content,
         ...(history.toolName ? { toolName: history.toolName } : {}),
+        ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
       },
     ];
   }
@@ -67,13 +78,12 @@ function sessionHistoryMessageToServerMessages(
       type: "assistant",
       message: { id, role: "assistant", content, model: "" },
       ...(history.uuid ? { messageUuid: history.uuid } : {}),
+      ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
     },
   ];
 }
 
-function historyContentText(
-  content: SessionHistoryMessage["content"],
-): string {
+function historyContentText(content: SessionHistoryMessage["content"]): string {
   if (typeof content === "string") return content;
   return content
     .flatMap((item) => {

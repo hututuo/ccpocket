@@ -3,6 +3,7 @@ import type { ServerMessage } from "../parser.js";
 import type { SessionCatalogChange } from "../session-catalog-monitor.js";
 import type {
   LocalFeatureHandler,
+  LocalFeatureClientDeliveryMode,
   LocalFeatureInputAdmission,
   LocalFeatureInputMessage,
   LocalFeatureRuntime,
@@ -111,6 +112,15 @@ export class LocalFeaturesController {
   sessionCatalogChanged(change: SessionCatalogChange): void {
     for (const handler of new Set(this.handlers.values())) {
       handler.sessionCatalogChanged?.(change);
+    }
+  }
+
+  clientDeliveryModeChanged(
+    client: object,
+    mode: LocalFeatureClientDeliveryMode,
+  ): void {
+    for (const handler of new Set(this.handlers.values())) {
+      handler.clientDeliveryModeChanged?.(client, mode);
     }
   }
 

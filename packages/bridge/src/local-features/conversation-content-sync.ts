@@ -1,0 +1,1040 @@
+import { createHash } from "node:crypto";
+
+import { selectTurnAwareHistoryWindow } from "../history-window.js";
+import type { ServerMessage } from "../parser.js";
+import {
+  getAllRecentSessions,
+  getCodexSessionHistory,
+  getSessionHistory,
+  type SessionIndexEntry,
+} from "../sessions-index.js";
+import type { SessionCatalogChange } from "../session-catalog-monitor.js";
+import { sessionHistoryToServerMessages } from "./codex-thread-history.js";
+import {
+  CONVERSATION_CONTENT_EVENT_CAPABILITY,
+  type ConversationContentClientMessage,
+  type ConversationContentEntry,
+  type ConversationContentProvider,
+  type ConversationContentServerMessage,
+  type ConversationContentTarget,
+} from "./slots/conversation-content-protocol.js";
+import type {
+  LocalFeatureClientDeliveryMode,
+  LocalFeatureHandleContext,
+  LocalFeatureHandler,
+  LocalFeatureRuntime,
+  LocalFeatureSession,
+} from "./runtime.js";
+
+const DEFAULT_HOT_CONVERSATION_LIMIT = 10;
+const DEFAULT_MAX_CATALOG_ENTRIES = 10_000;
+const DEFAULT_MAX_CACHED_CONVERSATIONS = 32;
+const DEFAULT_COLD_SCAN_MIN_MS = 45_000;
+const DEFAULT_COLD_SCAN_MAX_MS = 5 * 60_000;
+const DEFAULT_MAX_PAGE_ENTRIES = 32;
+const DEFAULT_MAX_PAGE_BYTES = 256 * 1024;
+const DEFAULT_MAX_PATCH_BYTES = 256 * 1024;
+const DEFAULT_EVENT_BATCH_MS = 75;
+const MAX_TOOL_RESULT_TEXT = 64 * 1024;
+const MAX_ASSISTANT_TEXT = 128 * 1024;
+const MAX_TOOL_INPUT_JSON = 32 * 1024;
+
+type ConversationKey = string;
+
+interface ClientSubscription {
+  subscriptionId: string;
+  cursors: Map<ConversationKey, string>;
+  pendingRevisions: Map<ConversationKey, string>;
+  focusedKey?: ConversationKey;
+  interactive: boolean;
+}
+
+interface CatalogRecord {
+  target: ConversationContentTarget;
+  modified: string;
+}
+
+interface QueueTask extends ConversationContentTarget {
+  key: ConversationKey;
+  priority: number;
+  sequence: number;
+  reason: string;
+}
+
+interface SnapshotEntry extends ConversationContentEntry {
+  sourceIndex: number;
+}
+
+interface ConversationSnapshot extends ConversationContentTarget {
+  revision: string;
+  entries: SnapshotEntry[];
+  hasEarlier: boolean;
+  sourceEntryCount: number;
+}
+
+interface ConversationContentSyncOptions {
+  catalogReader?: () => Promise<SessionIndexEntry[]>;
+  historyReader?: (
+    target: ConversationContentTarget,
+  ) => Promise<ServerMessage[]>;
+  hotConversationLimit?: number;
+  maxCatalogEntries?: number;
+  maxCachedConversations?: number;
+  coldScanMinMs?: number;
+  coldScanMaxMs?: number;
+  maxPageEntries?: number;
+  maxPageBytes?: number;
+  maxPatchBytes?: number;
+}
+
+/**
+ * One Bridge-owned scheduler for every durable conversation.
+ *
+ * Mobile sends one foreground subscription and ACKs committed revisions. The
+ * scheduler owns provider change detection, bounded catalog compensation,
+ * de-duplication, history reads, patch calculation and multi-client reuse.
+ * It never creates one runtime, watcher or timer per conversation.
+ */
+export class ConversationContentSyncFeatureHandler implements LocalFeatureHandler {
+  readonly messageTypes = [
+    "conversation_content_subscribe",
+    "conversation_content_focus",
+    "conversation_content_ack",
+    "conversation_content_unsubscribe",
+  ] as const;
+
+  private readonly catalogReader: () => Promise<SessionIndexEntry[]>;
+  private readonly historyReader: (
+    target: ConversationContentTarget,
+  ) => Promise<ServerMessage[]>;
+  private readonly hotConversationLimit: number;
+  private readonly maxCatalogEntries: number;
+  private readonly maxCachedConversations: number;
+  private readonly coldScanMinMs: number;
+  private readonly coldScanMaxMs: number;
+  private readonly maxPageEntries: number;
+  private readonly maxPageBytes: number;
+  private readonly maxPatchBytes: number;
+
+  private readonly clients = new Map<object, ClientSubscription>();
+  private readonly catalog = new Map<ConversationKey, CatalogRecord>();
+  private readonly queue = new Map<ConversationKey, QueueTask>();
+  private readonly inFlightKeys = new Set<ConversationKey>();
+  private readonly snapshots = new Map<
+    ConversationKey,
+    ConversationSnapshot[]
+  >();
+  private queueSequence = 0;
+  private draining = false;
+  private drainTimer?: ReturnType<typeof setTimeout>;
+  private catalogFlight?: Promise<void>;
+  private catalogDirty = false;
+  private catalogInitialized = false;
+  private coldScanTimer?: ReturnType<typeof setTimeout>;
+  private closed = false;
+
+  constructor(
+    private readonly runtime: LocalFeatureRuntime,
+    options: ConversationContentSyncOptions = {},
+  ) {
+    this.maxCatalogEntries = positiveInteger(
+      options.maxCatalogEntries,
+      DEFAULT_MAX_CATALOG_ENTRIES,
+    );
+    this.catalogReader =
+      options.catalogReader ??
+      (async () =>
+        (
+          await getAllRecentSessions({
+            limit: this.maxCatalogEntries,
+            offset: 0,
+          })
+        ).sessions);
+    this.historyReader = options.historyReader ?? readDurableHistory;
+    this.hotConversationLimit = positiveInteger(
+      options.hotConversationLimit,
+      DEFAULT_HOT_CONVERSATION_LIMIT,
+    );
+    this.maxCachedConversations = positiveInteger(
+      options.maxCachedConversations,
+      DEFAULT_MAX_CACHED_CONVERSATIONS,
+    );
+    this.coldScanMinMs = positiveInteger(
+      options.coldScanMinMs,
+      DEFAULT_COLD_SCAN_MIN_MS,
+    );
+    this.coldScanMaxMs = Math.max(
+      this.coldScanMinMs,
+      positiveInteger(options.coldScanMaxMs, DEFAULT_COLD_SCAN_MAX_MS),
+    );
+    this.maxPageEntries = positiveInteger(
+      options.maxPageEntries,
+      DEFAULT_MAX_PAGE_ENTRIES,
+    );
+    this.maxPageBytes = positiveInteger(
+      options.maxPageBytes,
+      DEFAULT_MAX_PAGE_BYTES,
+    );
+    this.maxPatchBytes = positiveInteger(
+      options.maxPatchBytes,
+      DEFAULT_MAX_PATCH_BYTES,
+    );
+  }
+
+  async handle(
+    message: ConversationContentClientMessage,
+    context: LocalFeatureHandleContext,
+  ): Promise<void> {
+    if (
+      !this.runtime.supports(
+        context.client,
+        CONVERSATION_CONTENT_EVENT_CAPABILITY,
+      )
+    ) {
+      return;
+    }
+    if (this.closed) return;
+
+    if (message.type === "conversation_content_subscribe") {
+      this.subscribe(context.client, message);
+      return;
+    }
+    if (message.type === "conversation_content_ack") {
+      this.ack(context.client, message);
+      return;
+    }
+    if (message.type === "conversation_content_focus") {
+      this.focus(context.client, message);
+      return;
+    }
+    this.unsubscribe(context.client, message);
+  }
+
+  capabilitiesChanged(client: object): void {
+    if (!this.runtime.supports(client, CONVERSATION_CONTENT_EVENT_CAPABILITY)) {
+      this.disconnect(client);
+    }
+  }
+
+  clientDeliveryModeChanged(
+    client: object,
+    mode: LocalFeatureClientDeliveryMode,
+  ): void {
+    const subscription = this.clients.get(client);
+    if (!subscription) return;
+    subscription.interactive = mode === "interactive";
+    subscription.pendingRevisions.clear();
+    if (!subscription.interactive) {
+      if (!this.hasInteractiveClients()) {
+        this.queue.clear();
+        this.cancelDrainTimer();
+        this.cancelColdScan();
+      }
+      return;
+    }
+    this.warmSubscription(subscription);
+  }
+
+  sessionCatalogChanged(change: SessionCatalogChange): void {
+    if (!this.hasInteractiveClients()) return;
+    if (change.provider && change.providerSessionId) {
+      const target = {
+        provider: change.provider,
+        providerSessionId: change.providerSessionId,
+      };
+      this.enqueue(target, this.focusPriority(target, 1), "provider_change");
+      return;
+    }
+    void this.refreshCatalog();
+  }
+
+  sessionMessage(session: LocalFeatureSession, _message: ServerMessage): void {
+    if (!this.hasInteractiveClients()) return;
+    const provider = session.provider;
+    if (provider !== "claude" && provider !== "codex") return;
+    const providerSessionId =
+      this.runtime.getProviderSessionId?.(session) ??
+      (provider === "codex"
+        ? this.runtime.getCodexThreadId(session)
+        : undefined);
+    if (!providerSessionId) return;
+    const target: ConversationContentTarget = { provider, providerSessionId };
+    this.enqueue(target, this.focusPriority(target, 1), "live_runtime");
+  }
+
+  disconnect(client: object): void {
+    this.clients.delete(client);
+    if (!this.hasInteractiveClients()) {
+      this.queue.clear();
+      this.cancelDrainTimer();
+      this.cancelColdScan();
+    }
+  }
+
+  close(): void {
+    this.closed = true;
+    this.clients.clear();
+    this.queue.clear();
+    this.cancelDrainTimer();
+    this.cancelColdScan();
+  }
+
+  private subscribe(
+    client: object,
+    message: Extract<
+      ConversationContentClientMessage,
+      { type: "conversation_content_subscribe" }
+    >,
+  ): void {
+    const bridgeInstanceId = this.runtime.bridgeInstanceId;
+    if (!bridgeInstanceId) {
+      this.send(client, {
+        type: CONVERSATION_CONTENT_EVENT_CAPABILITY,
+        event: "error",
+        subscriptionId: message.requestId,
+        bridgeInstanceId: "unavailable",
+        requestId: message.requestId,
+        errorCode: "invalid_state",
+        error: "Bridge instance identity is unavailable",
+      });
+      return;
+    }
+
+    const cursors = new Map<ConversationKey, string>();
+    for (const cursor of message.knownRevisions) {
+      cursors.set(targetKey(cursor), cursor.revision);
+    }
+    const subscription: ClientSubscription = {
+      subscriptionId: message.requestId,
+      cursors,
+      pendingRevisions: new Map(),
+      focusedKey: message.focused ? targetKey(message.focused) : undefined,
+      interactive:
+        (this.runtime.getClientDeliveryMode?.(client) ?? "interactive") ===
+        "interactive",
+    };
+    this.clients.set(client, subscription);
+    this.send(client, {
+      type: CONVERSATION_CONTENT_EVENT_CAPABILITY,
+      event: "subscribed",
+      requestId: message.requestId,
+      subscriptionId: message.requestId,
+      bridgeInstanceId,
+      hotConversationLimit: this.hotConversationLimit,
+    });
+    if (subscription.interactive) this.warmSubscription(subscription);
+  }
+
+  private ack(
+    client: object,
+    message: Extract<
+      ConversationContentClientMessage,
+      { type: "conversation_content_ack" }
+    >,
+  ): void {
+    const subscription = this.clients.get(client);
+    if (
+      !subscription ||
+      subscription.subscriptionId !== message.subscriptionId
+    ) {
+      return;
+    }
+    const key = targetKey(message);
+    const pending = subscription.pendingRevisions.get(key);
+    if (pending !== message.revision) return;
+    subscription.pendingRevisions.delete(key);
+    subscription.cursors.set(key, message.revision);
+  }
+
+  private focus(
+    client: object,
+    message: Extract<
+      ConversationContentClientMessage,
+      { type: "conversation_content_focus" }
+    >,
+  ): void {
+    const subscription = this.clients.get(client);
+    if (
+      !subscription ||
+      subscription.subscriptionId !== message.subscriptionId
+    ) {
+      this.sendError(
+        client,
+        message.subscriptionId,
+        message.requestId,
+        "stale_subscription",
+        "Conversation content subscription is no longer active",
+      );
+      return;
+    }
+    subscription.focusedKey = message.focused
+      ? targetKey(message.focused)
+      : undefined;
+    this.send(client, {
+      type: CONVERSATION_CONTENT_EVENT_CAPABILITY,
+      event: "focus_applied",
+      requestId: message.requestId,
+      subscriptionId: subscription.subscriptionId,
+      bridgeInstanceId: this.runtime.bridgeInstanceId!,
+      ...(message.focused ? { focused: message.focused } : {}),
+    });
+    if (message.focused && subscription.interactive) {
+      this.enqueue(message.focused, 0, "focused");
+    }
+  }
+
+  private unsubscribe(
+    client: object,
+    message: Extract<
+      ConversationContentClientMessage,
+      { type: "conversation_content_unsubscribe" }
+    >,
+  ): void {
+    const subscription = this.clients.get(client);
+    if (
+      !subscription ||
+      subscription.subscriptionId !== message.subscriptionId
+    ) {
+      return;
+    }
+    this.clients.delete(client);
+    this.send(client, {
+      type: CONVERSATION_CONTENT_EVENT_CAPABILITY,
+      event: "unsubscribed",
+      requestId: message.requestId,
+      subscriptionId: message.subscriptionId,
+      bridgeInstanceId: this.runtime.bridgeInstanceId!,
+    });
+    if (!this.hasInteractiveClients()) {
+      this.queue.clear();
+      this.cancelDrainTimer();
+      this.cancelColdScan();
+    }
+  }
+
+  private warmSubscription(subscription: ClientSubscription): void {
+    if (!subscription.interactive || this.closed) return;
+    if (subscription.focusedKey) {
+      const focused = parseTargetKey(subscription.focusedKey);
+      if (focused) this.enqueue(focused, 0, "focused");
+    }
+    if (this.catalogInitialized) this.reuseOrEnqueueHotCatalog();
+    void this.refreshCatalog();
+  }
+
+  private refreshCatalog(): Promise<void> {
+    if (this.closed || !this.hasInteractiveClients()) {
+      return Promise.resolve();
+    }
+    if (this.catalogFlight) {
+      this.catalogDirty = true;
+      return this.catalogFlight;
+    }
+    const flight = (async () => {
+      do {
+        this.catalogDirty = false;
+        const sessions = await this.catalogReader();
+        if (this.closed || !this.hasInteractiveClients()) return;
+        this.applyCatalog(sessions);
+      } while (this.catalogDirty);
+    })()
+      .catch((error) => {
+        this.sendFocusedErrors(
+          "catalog_read_failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      })
+      .finally(() => {
+        if (this.catalogFlight === flight) this.catalogFlight = undefined;
+        this.scheduleColdScan();
+      });
+    this.catalogFlight = flight;
+    return flight;
+  }
+
+  private applyCatalog(sessions: readonly SessionIndexEntry[]): void {
+    const wasInitialized = this.catalogInitialized;
+    const next = new Map<ConversationKey, CatalogRecord>();
+    for (const session of sessions.slice(0, this.maxCatalogEntries)) {
+      const target = {
+        provider: session.provider,
+        providerSessionId: session.sessionId,
+      };
+      next.set(targetKey(target), {
+        target,
+        modified: session.modified,
+      });
+    }
+
+    if (this.catalogInitialized) {
+      for (const [key, record] of next) {
+        const previous = this.catalog.get(key);
+        if (!previous || previous.modified !== record.modified) {
+          this.enqueue(
+            record.target,
+            this.focusPriority(record.target, 3),
+            previous ? "cold_revision" : "new_conversation",
+          );
+        }
+      }
+    }
+    this.catalog.clear();
+    for (const [key, record] of next) this.catalog.set(key, record);
+    this.catalogInitialized = true;
+    if (!wasInitialized) this.reuseOrEnqueueHotCatalog();
+  }
+
+  private reuseOrEnqueueHotCatalog(): void {
+    let count = 0;
+    for (const [key, record] of this.catalog) {
+      if (count >= this.hotConversationLimit) break;
+      const cached = this.snapshots.get(key)?.at(-1);
+      if (cached && !this.inFlightKeys.has(key) && !this.queue.has(key)) {
+        this.publishSnapshot(key, cached);
+      } else {
+        this.enqueue(
+          record.target,
+          this.focusPriority(record.target, 2),
+          "hot_catalog",
+        );
+      }
+      count += 1;
+    }
+  }
+
+  private enqueue(
+    target: ConversationContentTarget,
+    priority: number,
+    reason: string,
+  ): void {
+    if (this.closed || !this.hasInteractiveClients()) return;
+    const key = targetKey(target);
+    const existing = this.queue.get(key);
+    if (existing) {
+      const previousPriority = existing.priority;
+      existing.priority = Math.min(existing.priority, priority);
+      existing.reason = priority < previousPriority ? reason : existing.reason;
+      return;
+    }
+    this.queue.set(key, {
+      ...target,
+      key,
+      priority,
+      sequence: ++this.queueSequence,
+      reason,
+    });
+    this.scheduleDrain();
+  }
+
+  private scheduleDrain(): void {
+    if (this.draining || this.closed) return;
+    const hasImmediate = [...this.queue.values()].some(
+      (task) => task.priority === 0,
+    );
+    if (hasImmediate) {
+      this.cancelDrainTimer();
+      this.draining = true;
+      queueMicrotask(() => void this.drain());
+      return;
+    }
+    if (this.drainTimer) return;
+    this.drainTimer = setTimeout(() => {
+      this.drainTimer = undefined;
+      if (this.draining || this.closed) return;
+      this.draining = true;
+      void this.drain();
+    }, DEFAULT_EVENT_BATCH_MS);
+    this.drainTimer.unref?.();
+  }
+
+  private cancelDrainTimer(): void {
+    if (this.drainTimer) clearTimeout(this.drainTimer);
+    this.drainTimer = undefined;
+  }
+
+  private async drain(): Promise<void> {
+    try {
+      while (!this.closed && this.hasInteractiveClients()) {
+        const task = this.nextTask();
+        if (!task) break;
+        this.queue.delete(task.key);
+        this.inFlightKeys.add(task.key);
+        try {
+          const messages = await this.historyReader(task);
+          if (this.closed || !this.hasInteractiveClients()) break;
+          const snapshot = buildSnapshot(task, messages);
+          this.rememberSnapshot(task.key, snapshot);
+          this.publishSnapshot(task.key, snapshot);
+        } catch (error) {
+          this.sendTargetErrors(
+            task,
+            "history_read_failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        } finally {
+          this.inFlightKeys.delete(task.key);
+        }
+      }
+    } finally {
+      this.draining = false;
+      if (!this.closed && this.hasInteractiveClients() && this.queue.size > 0) {
+        this.scheduleDrain();
+      }
+    }
+  }
+
+  private nextTask(): QueueTask | undefined {
+    let selected: QueueTask | undefined;
+    for (const task of this.queue.values()) {
+      if (
+        !selected ||
+        task.priority < selected.priority ||
+        (task.priority === selected.priority &&
+          task.sequence < selected.sequence)
+      ) {
+        selected = task;
+      }
+    }
+    return selected;
+  }
+
+  private publishSnapshot(
+    key: ConversationKey,
+    snapshot: ConversationSnapshot,
+  ): void {
+    for (const [client, subscription] of [...this.clients]) {
+      if (!subscription.interactive || !this.clientReady(client)) continue;
+      if (subscription.pendingRevisions.get(key) === snapshot.revision) {
+        continue;
+      }
+      const knownRevision = subscription.cursors.get(key);
+      if (knownRevision === snapshot.revision) {
+        subscription.pendingRevisions.delete(key);
+        continue;
+      }
+      const base = knownRevision
+        ? this.findSnapshot(key, knownRevision)
+        : undefined;
+      const patched =
+        base != null && this.sendPatch(client, subscription, base, snapshot);
+      if (!patched) this.sendSnapshot(client, subscription, snapshot);
+      subscription.pendingRevisions.set(key, snapshot.revision);
+    }
+  }
+
+  private sendPatch(
+    client: object,
+    subscription: ClientSubscription,
+    base: ConversationSnapshot,
+    snapshot: ConversationSnapshot,
+  ): boolean {
+    const baseById = new Map(
+      base.entries.map((entry) => [entry.entryId, entry]),
+    );
+    const nextIds = new Set(snapshot.entries.map((entry) => entry.entryId));
+    const upserts = snapshot.entries.filter((entry) => {
+      const previous = baseById.get(entry.entryId);
+      return (
+        !previous ||
+        previous.contentHash !== entry.contentHash ||
+        previous.index !== entry.index
+      );
+    });
+    const deletes = base.entries
+      .filter((entry) => !nextIds.has(entry.entryId))
+      .map((entry) => entry.entryId);
+    const message: ConversationContentServerMessage = {
+      ...this.eventBase(subscription),
+      ...snapshotTarget(snapshot),
+      event: "patch",
+      baseRevision: base.revision,
+      revision: snapshot.revision,
+      upserts: upserts.map(toWireEntry),
+      deletes,
+      hasEarlier: snapshot.hasEarlier,
+      sourceEntryCount: snapshot.sourceEntryCount,
+    };
+    if (
+      Buffer.byteLength(JSON.stringify(message), "utf8") > this.maxPatchBytes
+    ) {
+      return false;
+    }
+    this.send(client, message);
+    return true;
+  }
+
+  private sendSnapshot(
+    client: object,
+    subscription: ClientSubscription,
+    snapshot: ConversationSnapshot,
+  ): void {
+    const pages = paginateEntries(
+      snapshot.entries,
+      this.maxPageEntries,
+      this.maxPageBytes,
+    );
+    this.send(client, {
+      ...this.eventBase(subscription),
+      ...snapshotTarget(snapshot),
+      event: "snapshot_begin",
+      revision: snapshot.revision,
+      entryCount: snapshot.entries.length,
+      pageCount: pages.length,
+      hasEarlier: snapshot.hasEarlier,
+      sourceEntryCount: snapshot.sourceEntryCount,
+    });
+    for (const [pageIndex, entries] of pages.entries()) {
+      this.send(client, {
+        ...this.eventBase(subscription),
+        ...snapshotTarget(snapshot),
+        event: "snapshot_page",
+        revision: snapshot.revision,
+        pageIndex,
+        pageCount: pages.length,
+        entries: entries.map(toWireEntry),
+      });
+    }
+    this.send(client, {
+      ...this.eventBase(subscription),
+      ...snapshotTarget(snapshot),
+      event: "snapshot_complete",
+      revision: snapshot.revision,
+      entryCount: snapshot.entries.length,
+      hasEarlier: snapshot.hasEarlier,
+      sourceEntryCount: snapshot.sourceEntryCount,
+    });
+  }
+
+  private eventBase(subscription: ClientSubscription) {
+    return {
+      type: CONVERSATION_CONTENT_EVENT_CAPABILITY,
+      subscriptionId: subscription.subscriptionId,
+      bridgeInstanceId: this.runtime.bridgeInstanceId!,
+    } as const;
+  }
+
+  private rememberSnapshot(
+    key: ConversationKey,
+    snapshot: ConversationSnapshot,
+  ): void {
+    const previous = this.snapshots.get(key) ?? [];
+    const revisions = previous
+      .filter((value) => value.revision !== snapshot.revision)
+      .slice(-1);
+    this.snapshots.delete(key);
+    this.snapshots.set(key, [...revisions, snapshot]);
+    while (this.snapshots.size > this.maxCachedConversations) {
+      const oldest = this.snapshots.keys().next().value;
+      if (!oldest) break;
+      this.snapshots.delete(oldest);
+    }
+  }
+
+  private findSnapshot(
+    key: ConversationKey,
+    revision: string,
+  ): ConversationSnapshot | undefined {
+    return this.snapshots
+      .get(key)
+      ?.find((snapshot) => snapshot.revision === revision);
+  }
+
+  private focusPriority(
+    target: ConversationContentTarget,
+    fallback: number,
+  ): number {
+    const key = targetKey(target);
+    for (const subscription of this.clients.values()) {
+      if (subscription.interactive && subscription.focusedKey === key) return 0;
+    }
+    return fallback;
+  }
+
+  private scheduleColdScan(): void {
+    this.cancelColdScan();
+    if (this.closed || !this.hasInteractiveClients()) return;
+    const scaled = this.coldScanMinMs + this.catalog.size * 20;
+    const delay = Math.min(this.coldScanMaxMs, scaled);
+    this.coldScanTimer = setTimeout(() => {
+      this.coldScanTimer = undefined;
+      void this.refreshCatalog();
+    }, delay);
+    this.coldScanTimer.unref?.();
+  }
+
+  private cancelColdScan(): void {
+    if (this.coldScanTimer) clearTimeout(this.coldScanTimer);
+    this.coldScanTimer = undefined;
+  }
+
+  private hasInteractiveClients(): boolean {
+    for (const subscription of this.clients.values()) {
+      if (subscription.interactive) return true;
+    }
+    return false;
+  }
+
+  private clientReady(client: object): boolean {
+    return (
+      (this.runtime.isClientOpen?.(client) ?? true) &&
+      this.runtime.supports(client, CONVERSATION_CONTENT_EVENT_CAPABILITY)
+    );
+  }
+
+  private sendFocusedErrors(errorCode: string, error: string): void {
+    for (const [client, subscription] of this.clients) {
+      if (!subscription.interactive || !subscription.focusedKey) continue;
+      const target = parseTargetKey(subscription.focusedKey);
+      if (!target) continue;
+      this.sendError(
+        client,
+        subscription.subscriptionId,
+        undefined,
+        errorCode,
+        error,
+        target,
+      );
+    }
+  }
+
+  private sendTargetErrors(
+    target: ConversationContentTarget,
+    errorCode: string,
+    error: string,
+  ): void {
+    const key = targetKey(target);
+    for (const [client, subscription] of this.clients) {
+      if (!subscription.interactive || subscription.focusedKey !== key)
+        continue;
+      this.sendError(
+        client,
+        subscription.subscriptionId,
+        undefined,
+        errorCode,
+        error,
+        target,
+      );
+    }
+  }
+
+  private sendError(
+    client: object,
+    subscriptionId: string,
+    requestId: string | undefined,
+    errorCode: string,
+    error: string,
+    target?: ConversationContentTarget,
+  ): void {
+    this.send(client, {
+      type: CONVERSATION_CONTENT_EVENT_CAPABILITY,
+      event: "error",
+      subscriptionId,
+      bridgeInstanceId: this.runtime.bridgeInstanceId ?? "unavailable",
+      ...(requestId ? { requestId } : {}),
+      ...(target ?? {}),
+      errorCode,
+      error,
+    });
+  }
+
+  private send(
+    client: object,
+    message: ConversationContentServerMessage,
+  ): void {
+    if (!this.clientReady(client)) return;
+    this.runtime.send(client, message);
+  }
+}
+
+async function readDurableHistory(
+  target: ConversationContentTarget,
+): Promise<ServerMessage[]> {
+  const history =
+    target.provider === "codex"
+      ? await getCodexSessionHistory(target.providerSessionId)
+      : await getSessionHistory(target.providerSessionId);
+  return sessionHistoryToServerMessages(history, {
+    idPrefix: `conversation-content-${target.provider}`,
+  });
+}
+
+function buildSnapshot(
+  target: ConversationContentTarget,
+  rawMessages: readonly ServerMessage[],
+): ConversationSnapshot {
+  const source = rawMessages.map((message, sourceIndex) => ({
+    sourceIndex,
+    message: boundHistoryMessage(message),
+  }));
+  const selected = selectTurnAwareHistoryWindow(source);
+  const usedIds = new Map<string, number>();
+  const entries: SnapshotEntry[] = selected.map((value) => {
+    const message = value.message;
+    const baseId = messageIdentity(message, value.sourceIndex);
+    const occurrence = (usedIds.get(baseId) ?? 0) + 1;
+    usedIds.set(baseId, occurrence);
+    const entryId = occurrence === 1 ? baseId : `${baseId}:${occurrence}`;
+    const serialized = JSON.stringify(message);
+    return {
+      entryId,
+      index: value.sourceIndex,
+      sourceIndex: value.sourceIndex,
+      contentHash: sha256(serialized),
+      message,
+    };
+  });
+  const hasEarlier = (selected[0]?.sourceIndex ?? 0) > 0;
+  const revision = sha256(
+    JSON.stringify({
+      sourceEntryCount: source.length,
+      hasEarlier,
+      entries: entries.map((entry) => [
+        entry.entryId,
+        entry.index,
+        entry.contentHash,
+      ]),
+    }),
+  );
+  return {
+    ...target,
+    revision,
+    entries,
+    hasEarlier,
+    sourceEntryCount: source.length,
+  };
+}
+
+function boundHistoryMessage(message: ServerMessage): ServerMessage {
+  if (message.type === "tool_result") {
+    return {
+      ...message,
+      content: boundedText(message.content, MAX_TOOL_RESULT_TEXT),
+    };
+  }
+  if (message.type !== "assistant") return message;
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: message.message.content.map((content) => {
+        if (content.type === "text") {
+          return {
+            ...content,
+            text: boundedText(content.text, MAX_ASSISTANT_TEXT),
+          };
+        }
+        if (content.type === "thinking") {
+          return {
+            ...content,
+            thinking: boundedText(content.thinking, MAX_ASSISTANT_TEXT),
+          };
+        }
+        if (content.type !== "tool_use") return content;
+        const encoded = JSON.stringify(content.input);
+        if (Buffer.byteLength(encoded, "utf8") <= MAX_TOOL_INPUT_JSON) {
+          return content;
+        }
+        return {
+          ...content,
+          input: {
+            ccpocketTruncated: true,
+            preview: boundedText(encoded, MAX_TOOL_INPUT_JSON),
+          },
+        };
+      }),
+    },
+  };
+}
+
+function boundedText(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  let end = Math.min(value.length, maxBytes);
+  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) {
+    end = Math.floor(end * 0.9);
+  }
+  return `${value.slice(0, end)}\n…[truncated; load details on demand]`;
+}
+
+function messageIdentity(message: ServerMessage, index: number): string {
+  if (message.type === "user_input") {
+    return `user:${message.userMessageUuid ?? sha256(JSON.stringify(message))}`;
+  }
+  if (message.type === "assistant") {
+    return `assistant:${message.messageUuid ?? message.message.id}`;
+  }
+  if (message.type === "tool_result") {
+    return `tool-result:${message.toolUseId}`;
+  }
+  return `message:${message.type}:${index}`;
+}
+
+function paginateEntries(
+  entries: readonly SnapshotEntry[],
+  maxEntries: number,
+  maxBytes: number,
+): SnapshotEntry[][] {
+  if (entries.length === 0) return [];
+  const pages: SnapshotEntry[][] = [];
+  let page: SnapshotEntry[] = [];
+  let pageBytes = 0;
+  for (const entry of entries) {
+    const entryBytes = Buffer.byteLength(JSON.stringify(entry), "utf8");
+    if (
+      page.length > 0 &&
+      (page.length >= maxEntries || pageBytes + entryBytes > maxBytes)
+    ) {
+      pages.push(page);
+      page = [];
+      pageBytes = 0;
+    }
+    page.push(entry);
+    pageBytes += entryBytes;
+  }
+  if (page.length > 0) pages.push(page);
+  return pages;
+}
+
+function toWireEntry(entry: SnapshotEntry): ConversationContentEntry {
+  return {
+    entryId: entry.entryId,
+    index: entry.index,
+    contentHash: entry.contentHash,
+    message: entry.message,
+  };
+}
+
+function snapshotTarget(
+  snapshot: ConversationSnapshot,
+): ConversationContentTarget {
+  return {
+    provider: snapshot.provider,
+    providerSessionId: snapshot.providerSessionId,
+  };
+}
+
+function targetKey(target: ConversationContentTarget): ConversationKey {
+  return `${target.provider}\0${target.providerSessionId}`;
+}
+
+function parseTargetKey(
+  key: ConversationKey,
+): ConversationContentTarget | null {
+  const separator = key.indexOf("\0");
+  if (separator <= 0 || separator >= key.length - 1) return null;
+  const provider = key.slice(0, separator);
+  if (provider !== "claude" && provider !== "codex") return null;
+  return {
+    provider,
+    providerSessionId: key.slice(separator + 1),
+  };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
+}

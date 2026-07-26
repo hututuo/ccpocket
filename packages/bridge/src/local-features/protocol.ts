@@ -20,6 +20,11 @@ import {
   type ConversationMirrorServerMessage,
 } from "./slots/conversation-mirror-protocol.js";
 import {
+  conversationContentProtocolContribution,
+  type ConversationContentClientMessage,
+  type ConversationContentServerMessage,
+} from "./slots/conversation-content-protocol.js";
+import {
   fileBrowserProtocolContribution,
   type FileBrowserClientMessage,
   type FileBrowserServerMessage,
@@ -60,9 +65,7 @@ export type {
   AutoApprovalClientMessage,
   AutoApprovalStateMessage,
 } from "./slots/auto-approval-protocol.js";
-export {
-  AUTO_APPROVAL_STATE_CAPABILITY,
-} from "./slots/auto-approval-protocol.js";
+export { AUTO_APPROVAL_STATE_CAPABILITY } from "./slots/auto-approval-protocol.js";
 export type {
   CodexCoreAction,
   CodexCoreActionStatus,
@@ -114,9 +117,16 @@ export type {
   ConversationMirrorServerMessage,
   ConversationMirrorThreadStatus,
 } from "./slots/conversation-mirror-protocol.js";
-export {
-  CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY,
-} from "./slots/conversation-mirror-protocol.js";
+export type {
+  ConversationContentClientMessage,
+  ConversationContentCursor,
+  ConversationContentEntry,
+  ConversationContentProvider,
+  ConversationContentServerMessage,
+  ConversationContentTarget,
+} from "./slots/conversation-content-protocol.js";
+export { CONVERSATION_CONTENT_EVENT_CAPABILITY } from "./slots/conversation-content-protocol.js";
+export { CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY } from "./slots/conversation-mirror-protocol.js";
 export {
   FILE_BROWSER_CAPABILITY,
   FILE_BROWSER_DEFAULT_PAGE_SIZE,
@@ -162,6 +172,7 @@ export type LocalFeatureClientMessage =
   | CodexCoreActionsClientMessage
   | CodexDesktopContinuityClientMessage
   | ConversationMirrorClientMessage
+  | ConversationContentClientMessage
   | FileBrowserClientMessage
   | SessionInsightsClientMessage
   | SubagentsClientMessage
@@ -174,6 +185,7 @@ export type LocalFeatureServerMessage =
   | CodexCoreActionsServerMessage
   | CodexDesktopContinuityEventMessage
   | ConversationMirrorServerMessage
+  | ConversationContentServerMessage
   | FileBrowserServerMessage
   | SessionInsightsServerMessage
   | SubagentsServerMessage
@@ -186,6 +198,7 @@ const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   codexCoreActionsProtocolContribution,
   codexDesktopContinuityProtocolContribution,
   conversationMirrorProtocolContribution,
+  conversationContentProtocolContribution,
   fileBrowserProtocolContribution,
   sessionInsightsProtocolContribution,
   subagentsProtocolContribution,
@@ -201,9 +214,9 @@ const LOCAL_SERVER_TYPES = new Set<string>(
   CONTRIBUTIONS.flatMap((contribution) => contribution.serverTypes),
 );
 
-export function isLocalFeatureServerMessage(
-  message: { type: string },
-): message is LocalFeatureServerMessage {
+export function isLocalFeatureServerMessage(message: {
+  type: string;
+}): message is LocalFeatureServerMessage {
   return isLocalFeatureServerMessageType(message.type);
 }
 

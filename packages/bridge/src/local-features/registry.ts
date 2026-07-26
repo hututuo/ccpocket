@@ -4,6 +4,7 @@ import { createAutoApprovalHandlers } from "./slots/auto-approval.js";
 import { createCodexCoreActionsHandlers } from "./slots/codex-core-actions.js";
 import { createCodexDesktopContinuityHandlers } from "./slots/codex-desktop-continuity.js";
 import { createConversationMirrorHandlers } from "./slots/conversation-mirror.js";
+import { createConversationContentHandlers } from "./slots/conversation-content.js";
 import { createFileBrowserHandlers } from "./slots/file-browser.js";
 import { createSessionInsightsHandlers } from "./slots/session-insights.js";
 import { createSideChatHandlers } from "./slots/side-chat.js";
@@ -22,6 +23,7 @@ export function createLocalFeaturesController(
     ...createCodexCoreActionsHandlers(runtime),
     ...createCodexDesktopContinuityHandlers(runtime),
     ...createConversationMirrorHandlers(runtime),
+    ...createConversationContentHandlers(runtime),
     ...createFileBrowserHandlers(runtime),
     ...createSessionInsightsHandlers(runtime),
     ...createSubagentsHandlers(runtime),

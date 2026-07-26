@@ -116,6 +116,25 @@ describe("LocalFeaturesController", () => {
     expect(capabilitiesChanged).toHaveBeenCalledWith(client);
   });
 
+  it("forwards client delivery mode changes once per registered handler", () => {
+    const clientDeliveryModeChanged = vi.fn();
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage", "get_session_usage"],
+      handle: async () => {},
+      clientDeliveryModeChanged,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+    const client = {};
+
+    controller.clientDeliveryModeChanged(client, "notifications_only");
+
+    expect(clientDeliveryModeChanged).toHaveBeenCalledOnce();
+    expect(clientDeliveryModeChanged).toHaveBeenCalledWith(
+      client,
+      "notifications_only",
+    );
+  });
+
   it("keeps the no-admission path synchronous and composes async gates", async () => {
     const passive: LocalFeatureHandler = {
       messageTypes: ["get_context_usage"],

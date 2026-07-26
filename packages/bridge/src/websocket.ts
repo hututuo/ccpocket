@@ -163,6 +163,7 @@ import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import {
+  CONVERSATION_CONTENT_EVENT_CAPABILITY,
   EPHEMERAL_SIDE_CHAT_CAPABILITY,
   FILE_BROWSER_CAPABILITY,
   isLocalFeatureServerMessageType,
@@ -1427,6 +1428,13 @@ export class BridgeWebSocketServer {
       getSession: (sessionId) => this.sessionManager.get(sessionId),
       getCodexThreadId: (session) =>
         this.codexThreadIdForSession(session as SessionInfo),
+      getProviderSessionId: (rawSession) =>
+        this.providerSessionIdForSession(rawSession as SessionInfo),
+      getClientDeliveryMode: (client) =>
+        this.backgroundDeliveryClients.get(client as WebSocket)?.mode ===
+        "notifications_only"
+          ? "notifications_only"
+          : "interactive",
       getActiveCodexProcess: () => this.getActiveCodexProcess(),
       createStandaloneCodexProcess: (requestTimeoutMs, projectPath) =>
         this.createStandaloneCodexProcess(
@@ -3848,6 +3856,7 @@ export class BridgeWebSocketServer {
       } else {
         this.backgroundDeliveryClients.delete(ws);
       }
+      this.localFeatures.clientDeliveryModeChanged(ws, msg.mode);
       this.refreshSessionCatalogMonitorState();
       this.send(ws, {
         type: CLIENT_DELIVERY_MODE_STATE_MESSAGE,
@@ -9629,6 +9638,7 @@ export class BridgeWebSocketServer {
         SESSION_REQUEST_CORRELATION_CAPABILITY,
         SESSION_CATALOG_WATCH_CAPABILITY,
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
+        CONVERSATION_CONTENT_EVENT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
@@ -9692,6 +9702,7 @@ export class BridgeWebSocketServer {
         SESSION_REQUEST_CORRELATION_CAPABILITY,
         SESSION_CATALOG_WATCH_CAPABILITY,
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
+        CONVERSATION_CONTENT_EVENT_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
