@@ -283,6 +283,93 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("rejects prompt history entries with malformed optional fields", () => {
+    const base = { text: "/test", projectPath: "/repo" };
+    const invalidEntries = [
+      { ...base, createdAt: 1735689600000 },
+      { ...base, deletedAt: 42 },
+      { ...base, commandKind: "bogus" },
+      { ...base, clientStats: "junk" },
+      {
+        ...base,
+        clientStats: {
+          phone: { useCount: -1, lastUsedAt: "2026-01-01T00:00:00.000Z" },
+        },
+      },
+      {
+        ...base,
+        clientStats: {
+          phone: { useCount: 1.5, lastUsedAt: "2026-01-01T00:00:00.000Z" },
+        },
+      },
+      {
+        ...base,
+        sessionStats: {
+          "session-a": { useCount: 1 },
+        },
+      },
+    ];
+    for (const entry of invalidEntries) {
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type: "import_prompt_history_v1",
+            clientId: "phone",
+            entries: [entry],
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type: "sync_prompt_history",
+            clientId: "phone",
+            entries: [entry],
+          }),
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("parses prompt history entries with all optional fields populated", () => {
+    const entry = {
+      id: "ph_abc123",
+      text: "/test",
+      projectPath: "/repo",
+      useCount: 2,
+      totalUseCount: 5,
+      isFavorite: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastUsedAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+      favoriteUpdatedAt: "2026-01-02T00:00:00.000Z",
+      deletedAt: "2026-01-03T00:00:00.000Z",
+      commandKind: "slash",
+      clientStats: {
+        phone: {
+          useCount: 3,
+          lastUsedAt: "2026-01-02T00:00:00.000Z",
+          clientName: "iPhone",
+        },
+      },
+      sessionStats: {
+        "session-a": { useCount: 2, lastUsedAt: "2026-01-02T00:00:00.000Z" },
+      },
+    };
+    const msg = parseClientMessage(
+      JSON.stringify({
+        type: "import_prompt_history_v1",
+        clientId: "phone",
+        entries: [entry],
+      }),
+    );
+    expect(msg).toEqual({
+      type: "import_prompt_history_v1",
+      clientId: "phone",
+      entries: [entry],
+    });
+  });
+
   it("rejects migration import modes because v1 import is replace-only", () => {
     expect(
       parseClientMessage(

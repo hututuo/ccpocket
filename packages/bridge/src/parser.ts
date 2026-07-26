@@ -1182,6 +1182,30 @@ export function parseClientMessage(data: string): ClientMessage | null {
       const allowed = new Set(allowedKeys);
       return Object.keys(msg).every((key) => allowed.has(key));
     };
+    const isPromptHistoryStatRecord = (
+      value: unknown,
+      allowClientName: boolean,
+    ): boolean => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+      }
+      return Object.values(value as Record<string, unknown>).every((stat) => {
+        if (!stat || typeof stat !== "object" || Array.isArray(stat)) {
+          return false;
+        }
+        const record = stat as Record<string, unknown>;
+        if (!Number.isInteger(record.useCount) || Number(record.useCount) < 0)
+          return false;
+        if (typeof record.lastUsedAt !== "string") return false;
+        if (
+          allowClientName &&
+          record.clientName !== undefined &&
+          typeof record.clientName !== "string"
+        )
+          return false;
+        return true;
+      });
+    };
     const isPromptHistoryEntry = (value: unknown): boolean => {
       if (!value || typeof value !== "object") return false;
       const entry = value as Record<string, unknown>;
@@ -1206,6 +1230,32 @@ export function parseClientMessage(data: string): ClientMessage | null {
       if (
         entry.isFavorite !== undefined &&
         typeof entry.isFavorite !== "boolean"
+      )
+        return false;
+      for (const key of [
+        "createdAt",
+        "lastUsedAt",
+        "updatedAt",
+        "favoriteUpdatedAt",
+        "deletedAt",
+      ] as const) {
+        if (entry[key] !== undefined && typeof entry[key] !== "string")
+          return false;
+      }
+      if (
+        entry.commandKind !== undefined &&
+        (typeof entry.commandKind !== "string" ||
+          !["none", "slash", "skill"].includes(entry.commandKind))
+      )
+        return false;
+      if (
+        entry.clientStats !== undefined &&
+        !isPromptHistoryStatRecord(entry.clientStats, true)
+      )
+        return false;
+      if (
+        entry.sessionStats !== undefined &&
+        !isPromptHistoryStatRecord(entry.sessionStats, false)
       )
         return false;
       return true;

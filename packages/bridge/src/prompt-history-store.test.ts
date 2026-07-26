@@ -7,6 +7,7 @@ import {
   promptHistoryStoreFileForPort,
   promptHistoryId,
   PromptHistoryStore,
+  type PromptHistoryImportEntry,
 } from "./prompt-history-store.js";
 
 let tempDir: string | undefined;
@@ -121,6 +122,26 @@ describe("PromptHistoryStore", () => {
       id: promptHistoryId("new", "/repo"),
       totalUseCount: 4,
     });
+  });
+
+  it("restores previous entries when a v1 import fails mid-batch", async () => {
+    const store = await makeStore();
+    await store.record({
+      text: "seed",
+      projectPath: "/repo",
+      clientId: "phone",
+    });
+
+    const badBatch = [
+      { text: "ok", projectPath: "/repo" },
+      { text: "broken", projectPath: "/repo", clientStats: "junk" },
+    ] as unknown as PromptHistoryImportEntry[];
+
+    await expect(store.importEntries(badBatch, "phone")).rejects.toThrow();
+
+    const entries = store.list();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].id).toBe(promptHistoryId("seed", "/repo"));
   });
 
   it("detects slash and skill command kinds", () => {

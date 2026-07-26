@@ -276,41 +276,47 @@ export class PromptHistoryStore {
     clientId: string,
     clientName?: string,
   ): Promise<{ imported: number; entries: PromptHistoryEntry[] }> {
-    this.data.entries = [];
+    const previous = this.data.entries;
+    try {
+      this.data.entries = [];
 
-    let imported = 0;
-    for (const raw of entries) {
-      const text = normalizeText(raw.text);
-      if (!text) continue;
-      const projectPath = normalizeProjectPath(raw.projectPath);
-      const id = raw.id ?? promptHistoryId(text, projectPath);
-      const now = isoNow();
-      const useCount = Math.max(1, raw.totalUseCount ?? raw.useCount ?? 1);
-      const createdAt = raw.createdAt ?? now;
-      const lastUsedAt = raw.lastUsedAt ?? raw.updatedAt ?? now;
-      const updatedAt = raw.updatedAt ?? lastUsedAt;
-      const incoming: PromptHistoryEntry = {
-        id,
-        text,
-        projectPath,
-        totalUseCount: useCount,
-        isFavorite: raw.isFavorite ?? false,
-        createdAt,
-        lastUsedAt,
-        updatedAt,
-        favoriteUpdatedAt: raw.favoriteUpdatedAt ?? (raw.isFavorite ? updatedAt : undefined),
-        deletedAt: raw.deletedAt,
-        commandKind: raw.commandKind ?? detectPromptCommandKind(text),
-        clientStats: raw.clientStats ?? {},
-        sessionStats: raw.sessionStats ?? {},
-      };
-      this.incrementClientStat(incoming, clientId, clientName, lastUsedAt, useCount);
-      this.mergeEntry(incoming);
-      imported += 1;
+      let imported = 0;
+      for (const raw of entries) {
+        const text = normalizeText(raw.text);
+        if (!text) continue;
+        const projectPath = normalizeProjectPath(raw.projectPath);
+        const id = raw.id ?? promptHistoryId(text, projectPath);
+        const now = isoNow();
+        const useCount = Math.max(1, raw.totalUseCount ?? raw.useCount ?? 1);
+        const createdAt = raw.createdAt ?? now;
+        const lastUsedAt = raw.lastUsedAt ?? raw.updatedAt ?? now;
+        const updatedAt = raw.updatedAt ?? lastUsedAt;
+        const incoming: PromptHistoryEntry = {
+          id,
+          text,
+          projectPath,
+          totalUseCount: useCount,
+          isFavorite: raw.isFavorite ?? false,
+          createdAt,
+          lastUsedAt,
+          updatedAt,
+          favoriteUpdatedAt: raw.favoriteUpdatedAt ?? (raw.isFavorite ? updatedAt : undefined),
+          deletedAt: raw.deletedAt,
+          commandKind: raw.commandKind ?? detectPromptCommandKind(text),
+          clientStats: raw.clientStats ?? {},
+          sessionStats: raw.sessionStats ?? {},
+        };
+        this.incrementClientStat(incoming, clientId, clientName, lastUsedAt, useCount);
+        this.mergeEntry(incoming);
+        imported += 1;
+      }
+
+      await this.saveBumped();
+      return { imported, entries: this.list() };
+    } catch (error) {
+      this.data.entries = previous;
+      throw error;
     }
-
-    await this.saveBumped();
-    return { imported, entries: this.list() };
   }
 
   async mergeClientEntries(entries: PromptHistoryImportEntry[]): Promise<void> {
