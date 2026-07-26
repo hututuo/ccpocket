@@ -7,6 +7,7 @@ import '../../../core/logger.dart';
 import '../../../models/messages.dart';
 import '../../../models/new_session_tab.dart';
 import '../../../services/bridge_service.dart';
+import '../cache/session_catalog_cache_repository.dart';
 import 'session_list_state.dart';
 
 const _collapsedProjectPathsKey = 'session_list_collapsed_project_paths';
@@ -92,24 +93,49 @@ List<T> prioritizePinned<T>(
 /// a skeleton loading state.
 class SessionListCubit extends Cubit<SessionListState> {
   final BridgeService _bridge;
+  final SessionCatalogCacheRepository? _catalogCache;
   StreamSubscription<RecentSessionsMessage>? _recentSub;
   StreamSubscription<List<String>>? _projectHistorySub;
+  StreamSubscription<BridgeConnectionState>? _connectionSub;
+  StreamSubscription<List<SessionInfo>>? _sessionIdentitySub;
+  final _catalogSnapshotChanges = StreamController<void>.broadcast();
   Timer? _searchDebounce;
   late final Future<void> _preferencesLoaded;
   Future<void> _preferenceWriteSerial = Future<void>.value();
   SessionCatalogQuery _query = const SessionCatalogQuery();
   Set<String> _authoritativeProjectHistory = const {};
+  List<RecentSession> _cachedSessions = const [];
+  String? _loadedCacheFingerprint;
+  int? _loadedCacheCatalogRevision;
+  bool _loadedCacheComplete = false;
+  String? _catalogExpansionRequestKey;
   int _filterMutationRevision = 0;
   int _queryRequestRevision = 0;
+  int _cacheLoadGeneration = 0;
+  int _networkCatalogSerial = 0;
 
-  SessionListCubit({required BridgeService bridge})
-    : _bridge = bridge,
-      super(const SessionListState()) {
+  SessionListCubit({
+    required BridgeService bridge,
+    SessionCatalogCacheRepository? catalogCache,
+  }) : _bridge = bridge,
+       _catalogCache = catalogCache,
+       super(const SessionListState()) {
     _recentSub = _bridge.recentSessionResponses.listen(_onSessionsUpdate);
     _projectHistorySub = _bridge.projectHistoryStream.listen(
       _onProjectHistoryUpdate,
     );
     _preferencesLoaded = _loadPreferences();
+    if (_catalogCache != null) {
+      _connectionSub = _bridge.connectionStatus.listen((connectionState) {
+        if (connectionState != BridgeConnectionState.disconnected) {
+          unawaited(_loadCatalogCacheForCurrentTarget());
+        }
+      });
+      _sessionIdentitySub = _bridge.sessionList.listen((_) {
+        unawaited(_loadCatalogCacheForCurrentTarget());
+      });
+      unawaited(_loadCatalogCacheForCurrentTarget());
+    }
   }
 
   Future<void> _loadPreferences() async {
@@ -149,19 +175,89 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   String? get currentProjectFilter => _query.projectPath;
 
-  bool get hasCatalogSnapshot => !state.isInitialLoading;
+  Stream<void> get catalogSnapshotChanges => _catalogSnapshotChanges.stream;
+
+  bool get hasUsableCatalogForCurrentTarget {
+    if (_bridge.hasAuthoritativeRecentSessionsForCurrentConnection) return true;
+    final target = _currentCacheTarget();
+    return target != null &&
+        _loadedCacheComplete &&
+        _loadedCacheFingerprint == target.fingerprint;
+  }
 
   void _onSessionsUpdate(RecentSessionsMessage response) {
     if (!_query.matches(response)) return;
-    final sessions = response.sessions;
+    _networkCatalogSerial++;
+    final cache = _catalogCache;
+    final cacheTarget = _currentCacheTarget();
+    if (cache != null && cacheTarget != null) {
+      unawaited(
+        cache
+            .upsertResponse(target: cacheTarget, response: response)
+            .catchError((Object error, StackTrace stackTrace) {
+              logger.warning(
+                '[SessionListCubit] Failed to persist session catalog cache',
+                error,
+                stackTrace,
+              );
+            }),
+      );
+    }
+
+    var sessions = response.sessions;
+    var hasMore = response.hasMore;
     final projectPath = response.projectPath;
     final isProjectPage =
         response.requestScope == 'project' &&
         projectPath != null &&
         projectPath.isNotEmpty;
+    final canReuseCompleteCache =
+        !isProjectPage &&
+        (response.offset ?? 0) == 0 &&
+        (response.requestScope == null || response.requestScope == 'list') &&
+        _loadedCacheComplete &&
+        response.catalogRevision != null &&
+        response.catalogRevision == _loadedCacheCatalogRevision &&
+        _loadedCacheFingerprint == _currentCacheTarget()?.fingerprint;
+    final canDisplayLegacyCompleteCache =
+        !isProjectPage &&
+        (response.offset ?? 0) == 0 &&
+        (response.requestScope == null || response.requestScope == 'list') &&
+        _loadedCacheComplete &&
+        response.catalogRevision == null &&
+        _loadedCacheCatalogRevision == null &&
+        _loadedCacheFingerprint == _currentCacheTarget()?.fingerprint;
+    if (canReuseCompleteCache || canDisplayLegacyCompleteCache) {
+      _cachedSessions = _mergeCachedSessions(
+        _cachedSessions,
+        response.sessions,
+      );
+      sessions = _filterCachedSessions(_cachedSessions);
+      hasMore = false;
+    } else if (response.catalogRevision != null &&
+        response.catalogRevision != _loadedCacheCatalogRevision) {
+      _loadedCacheComplete = false;
+      _loadedCacheCatalogRevision = response.catalogRevision;
+    }
+    final isCompleteCatalogResponse =
+        response.requestScope == 'catalog' &&
+        (response.offset ?? 0) == 0 &&
+        response.projectPath == null &&
+        response.provider == null &&
+        response.namedOnly != true &&
+        (response.searchQuery == null || response.searchQuery!.isEmpty) &&
+        !response.hasMore;
+    if (isCompleteCatalogResponse) {
+      _cachedSessions = response.sessions;
+      _loadedCacheFingerprint = _currentCacheTarget()?.fingerprint;
+      _loadedCacheCatalogRevision = response.catalogRevision;
+      _loadedCacheComplete = true;
+      _catalogSnapshotChanges.add(null);
+    }
+
     final newPaths = sessions
-        .map((s) => s.projectPath)
-        .where((p) => p.isNotEmpty)
+        .map((session) => session.projectPath)
+        .where((path) => path.isNotEmpty)
         .toSet();
     final merged = {..._authoritativeProjectHistory, ...newPaths};
 
@@ -173,7 +269,7 @@ class SessionListCubit extends Cubit<SessionListState> {
           accumulatedProjectPaths: merged,
           loadingProjectPaths: {...state.loadingProjectPaths}
             ..remove(projectPath),
-          exhaustedProjectPaths: response.hasMore
+          exhaustedProjectPaths: hasMore
               ? ({...state.exhaustedProjectPaths}..remove(projectPath))
               : {...state.exhaustedProjectPaths, projectPath},
         ),
@@ -181,7 +277,6 @@ class SessionListCubit extends Cubit<SessionListState> {
       return;
     }
 
-    final hasMore = response.hasMore;
     final finishesPagination =
         response.requestScope == null ||
         response.requestScope == 'list' ||
@@ -206,6 +301,10 @@ class SessionListCubit extends Cubit<SessionListState> {
             : state.loadingProjectPaths,
         exhaustedProjectPaths: exhaustedProjectPaths,
       ),
+    );
+    _requestExpandedCatalogIfNeeded(
+      response,
+      canReuseCompleteCache: canReuseCompleteCache,
     );
   }
 
@@ -455,6 +554,7 @@ class SessionListCubit extends Cubit<SessionListState> {
   void handleDisconnect() {
     _searchDebounce?.cancel();
     _queryRequestRevision++;
+    _catalogExpansionRequestKey = null;
     emit(
       state.copyWith(
         loadingProjectPaths: const {},
@@ -478,6 +578,147 @@ class SessionListCubit extends Cubit<SessionListState> {
   }
 
   // ---- Private helpers ----
+
+  SessionCatalogCacheTarget? _currentCacheTarget() {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: _bridge.bridgeInstanceId,
+      logicalConnectionIdentity: _bridge.logicalConnectionIdentity,
+      websocketUrl: _bridge.lastUrl,
+    );
+    return target.isValid ? target : null;
+  }
+
+  Future<void> _loadCatalogCacheForCurrentTarget() async {
+    final cache = _catalogCache;
+    final target = _currentCacheTarget();
+    if (cache == null || target == null) return;
+    final generation = ++_cacheLoadGeneration;
+    final networkSerial = _networkCatalogSerial;
+    await _preferencesLoaded;
+    if (isClosed || generation != _cacheLoadGeneration) return;
+    try {
+      final snapshot = await cache.load(target);
+      if (isClosed ||
+          generation != _cacheLoadGeneration ||
+          target.fingerprint != _currentCacheTarget()?.fingerprint) {
+        return;
+      }
+      if (snapshot == null) {
+        if (_loadedCacheFingerprint == target.fingerprint) {
+          _loadedCacheFingerprint = null;
+          _loadedCacheCatalogRevision = null;
+          _loadedCacheComplete = false;
+          _cachedSessions = const [];
+          _catalogSnapshotChanges.add(null);
+        }
+        return;
+      }
+      _loadedCacheFingerprint = target.fingerprint;
+      _loadedCacheCatalogRevision = snapshot.catalogRevision;
+      _loadedCacheComplete = snapshot.isComplete;
+      _cachedSessions = snapshot.sessions;
+      if (networkSerial == _networkCatalogSerial &&
+          !_bridge.hasAuthoritativeRecentSessionsForCurrentConnection) {
+        final visibleSessions = _filterCachedSessions(snapshot.sessions);
+        emit(
+          state.copyWith(
+            sessions: visibleSessions,
+            hasMore: false,
+            isLoadingMore: false,
+            isInitialLoading: false,
+            accumulatedProjectPaths: {
+              ..._authoritativeProjectHistory,
+              ...snapshot.sessions
+                  .map((session) => session.projectPath)
+                  .where((path) => path.isNotEmpty),
+            },
+            loadingProjectPaths: const {},
+          ),
+        );
+      }
+      _catalogSnapshotChanges.add(null);
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[SessionListCubit] Failed to load session catalog cache',
+        error,
+        stackTrace,
+      );
+    }
+  }
+
+  List<RecentSession> _filterCachedSessions(Iterable<RecentSession> sessions) {
+    final projectPath = _query.projectPath;
+    final projectKey = projectPath == null
+        ? null
+        : _normalizedProjectPath(projectPath);
+    final provider = _query.provider;
+    final namedOnly = _query.namedOnly == true;
+    final searchQuery = _query.searchQuery?.trim().toLowerCase();
+    return sessions
+        .where((session) {
+          if (projectKey != null &&
+              _normalizedProjectPath(session.projectPath) != projectKey) {
+            return false;
+          }
+          if (provider != null && session.provider != provider) return false;
+          if (namedOnly &&
+              (session.name == null || session.name!.trim().isEmpty)) {
+            return false;
+          }
+          if (searchQuery == null || searchQuery.isEmpty) return true;
+          return [
+            session.name,
+            session.summary,
+            session.firstPrompt,
+            session.lastPrompt,
+            session.projectPath,
+            session.sessionId,
+          ].whereType<String>().any(
+            (value) => value.toLowerCase().contains(searchQuery),
+          );
+        })
+        .toList(growable: false);
+  }
+
+  static List<RecentSession> _mergeCachedSessions(
+    Iterable<RecentSession> cached,
+    Iterable<RecentSession> live,
+  ) {
+    final merged = <String, RecentSession>{
+      for (final session in cached) recentSessionPinKey(session): session,
+      for (final session in live) recentSessionPinKey(session): session,
+    }.values.toList();
+    merged.sort((left, right) {
+      final modifiedOrder = right.modified.compareTo(left.modified);
+      if (modifiedOrder != 0) return modifiedOrder;
+      return right.created.compareTo(left.created);
+    });
+    return List<RecentSession>.unmodifiable(merged);
+  }
+
+  void _requestExpandedCatalogIfNeeded(
+    RecentSessionsMessage response, {
+    required bool canReuseCompleteCache,
+  }) {
+    if (canReuseCompleteCache ||
+        !response.hasMore ||
+        (response.offset ?? 0) != 0 ||
+        (response.requestScope != null && response.requestScope != 'list')) {
+      return;
+    }
+    final requestKey = [
+      _bridge.authoritativeSessionListGeneration,
+      response.catalogRevision ?? -1,
+      response.queryGeneration ?? -1,
+      response.provider ?? '',
+      response.namedOnly == true ? 1 : 0,
+      response.searchQuery ?? '',
+      response.projectPath ?? '',
+    ].join('\n');
+    if (_catalogExpansionRequestKey == requestKey) return;
+    _catalogExpansionRequestKey = requestKey;
+    _bridge.requestRecentSessionsCatalog();
+  }
 
   /// Send a re-fetch request with all current filters applied.
   void _requestWithCurrentFilters() {
@@ -542,11 +783,15 @@ class SessionListCubit extends Cubit<SessionListState> {
   };
 
   @override
-  Future<void> close() {
+  Future<void> close() async {
+    _cacheLoadGeneration++;
     _searchDebounce?.cancel();
-    _recentSub?.cancel();
-    _projectHistorySub?.cancel();
-    return super.close();
+    await _recentSub?.cancel();
+    await _projectHistorySub?.cancel();
+    await _connectionSub?.cancel();
+    await _sessionIdentitySub?.cancel();
+    await _catalogSnapshotChanges.close();
+    await super.close();
   }
 }
 

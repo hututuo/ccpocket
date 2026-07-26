@@ -4446,6 +4446,40 @@ class RecentSession {
     );
   }
 
+  Map<String, dynamic> toJson() => {
+    'sessionId': sessionId,
+    'provider': provider,
+    'permissionMode': rawPermissionMode,
+    'forkedFromThreadId': forkedFromThreadId,
+    'name': name,
+    'agentNickname': agentNickname,
+    'agentRole': agentRole,
+    'summary': summary,
+    'firstPrompt': firstPrompt,
+    'lastPrompt': lastPrompt,
+    'created': created,
+    'modified': modified,
+    'gitBranch': gitBranch,
+    'projectPath': projectPath,
+    'resumeCwd': resumeCwd,
+    'isSidechain': isSidechain,
+    'executionMode': executionMode,
+    'planMode': planMode,
+    'codexSettings': {
+      'approvalPolicy': codexApprovalPolicy,
+      'approvalsReviewer': codexApprovalsReviewer,
+      'codexPermissionsMode': codexPermissionsMode,
+      'sandboxMode': codexSandboxMode,
+      'model': codexModel,
+      'profile': codexProfile,
+      'modelReasoningEffort': codexModelReasoningEffort,
+      'serviceTier': codexServiceTier,
+      'networkAccessEnabled': codexNetworkAccessEnabled,
+      'webSearchMode': codexWebSearchMode,
+      'additionalWritableRoots': codexAdditionalWritableRoots,
+    },
+  };
+
   /// Extract project name from path (last segment)
   String get projectName {
     return pathBasename(projectPath);
@@ -4464,6 +4498,7 @@ class RecentSession {
       sessionId: sessionId,
       provider: provider,
       rawPermissionMode: rawPermissionMode,
+      forkedFromThreadId: forkedFromThreadId,
       name: clearName ? null : (name ?? this.name),
       agentNickname: agentNickname,
       agentRole: agentRole,
@@ -4478,6 +4513,7 @@ class RecentSession {
       isSidechain: isSidechain,
       codexApprovalPolicy: codexApprovalPolicy,
       codexApprovalsReviewer: codexApprovalsReviewer,
+      codexPermissionsMode: codexPermissionsMode,
       executionMode: executionMode,
       planMode: planMode,
       codexSandboxMode: codexSandboxMode,
@@ -4500,6 +4536,7 @@ class RecentSession {
       sessionId: sessionId,
       provider: provider,
       rawPermissionMode: rawPermissionMode,
+      forkedFromThreadId: forkedFromThreadId,
       name: name,
       agentNickname: agentNickname,
       agentRole: agentRole,

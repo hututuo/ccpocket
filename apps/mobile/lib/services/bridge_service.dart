@@ -372,6 +372,7 @@ class BridgeService implements BridgeServiceBase {
   static const _sessionCatalogRefreshRequestTimeout = Duration(seconds: 15);
   static const _sessionCatalogRefreshMinLimit = 20;
   static const _sessionCatalogRefreshMaxLimit = 200;
+  static const _sessionCatalogCacheWarmLimit = 1000;
   static const _sessionHistorySyncTimeout = Duration(seconds: 20);
 
   // Auto-reconnect
@@ -3257,6 +3258,21 @@ class BridgeService implements BridgeServiceBase {
       projectPath: projectPath ?? _currentProjectFilter,
       requestScope: 'list',
       startsNewQuery: startsNewQuery,
+    );
+  }
+
+  /// Warms the rebuildable local metadata cache without changing the active
+  /// list query generation. The response remains filter-compatible with the
+  /// currently visible catalog and is bounded by the Bridge scan limit.
+  void requestRecentSessionsCatalog({
+    int limit = _sessionCatalogCacheWarmLimit,
+  }) {
+    _sendRecentSessionsRequest(
+      limit: limit,
+      offset: 0,
+      projectPath: _currentProjectFilter,
+      requestScope: 'catalog',
+      startsNewQuery: false,
     );
   }
 

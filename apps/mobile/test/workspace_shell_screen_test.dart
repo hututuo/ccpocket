@@ -37,6 +37,8 @@ class _MockBridgeService extends BridgeService {
   final _stoppedSessionsController = StreamController<String>.broadcast();
   final _recentSessionsController =
       StreamController<List<RecentSession>>.broadcast();
+  final _recentSessionResponsesController =
+      StreamController<RecentSessionsMessage>.broadcast();
   final _galleryController = StreamController<List<GalleryImage>>.broadcast();
   final _projectHistoryController = StreamController<List<String>>.broadcast();
   final _fileListController = StreamController<List<String>>.broadcast();
@@ -45,6 +47,7 @@ class _MockBridgeService extends BridgeService {
   List<SessionInfo> _sessions = const [];
   List<GalleryImage> _images = const [];
   bool _hasAuthoritativeSessionList = false;
+  RecentSessionsMessage? _lastRecentSessionsMessage;
   final String? _lastUrl;
   bool disconnectCalled = false;
 
@@ -72,6 +75,10 @@ class _MockBridgeService extends BridgeService {
       _recentSessionsController.stream;
 
   @override
+  Stream<RecentSessionsMessage> get recentSessionResponses =>
+      _recentSessionResponsesController.stream;
+
+  @override
   Stream<List<GalleryImage>> get galleryStream => _galleryController.stream;
 
   @override
@@ -92,6 +99,10 @@ class _MockBridgeService extends BridgeService {
       isConnected && _hasAuthoritativeSessionList;
 
   @override
+  bool get hasAuthoritativeRecentSessionsForCurrentConnection =>
+      isConnected && _lastRecentSessionsMessage != null;
+
+  @override
   String? get lastUrl => _lastUrl;
 
   @override
@@ -102,6 +113,10 @@ class _MockBridgeService extends BridgeService {
 
   @override
   bool get recentSessionsHasMore => false;
+
+  @override
+  RecentSessionsMessage? get lastRecentSessionsMessage =>
+      _lastRecentSessionsMessage;
 
   @override
   String? get currentProjectFilter => null;
@@ -121,6 +136,16 @@ class _MockBridgeService extends BridgeService {
     _sessions = sessions;
     _hasAuthoritativeSessionList = true;
     _activeSessionsController.add(sessions);
+    if (_lastRecentSessionsMessage == null) {
+      emitRecentSessions(const []);
+    }
+  }
+
+  void emitRecentSessions(List<RecentSession> sessions) {
+    final response = RecentSessionsMessage(sessions: sessions);
+    _lastRecentSessionsMessage = response;
+    _recentSessionResponsesController.add(response);
+    _recentSessionsController.add(sessions);
   }
 
   void emitStopped(String sessionId) {
@@ -193,6 +218,7 @@ class _MockBridgeService extends BridgeService {
     _activeSessionsController.close();
     _stoppedSessionsController.close();
     _recentSessionsController.close();
+    _recentSessionResponsesController.close();
     _galleryController.close();
     _projectHistoryController.close();
     _fileListController.close();

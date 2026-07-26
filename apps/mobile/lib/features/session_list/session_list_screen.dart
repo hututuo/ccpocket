@@ -313,6 +313,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<BridgeConnectionState>? _archiveConnectionSub;
   StreamSubscription<RecentSessionsMessage>? _catalogReadinessSub;
   StreamSubscription<List<SessionInfo>>? _sessionListReadinessSub;
+  StreamSubscription<void>? _catalogCacheReadinessSub;
   late final SessionArchivePendingRequests _archivePendingRequests;
   int _lastCatalogBootstrapGeneration = -1;
 
@@ -346,13 +347,14 @@ class _SessionListScreenState extends State<SessionListScreen>
     WidgetsBinding.instance.addObserver(this);
     // session_created navigation (the only manual subscription)
     final bridge = context.read<BridgeService>();
+    final sessionListCubit = context.read<SessionListCubit>();
     _connectionUiGate.update(
       state: bridge.currentBridgeConnectionState,
       targetKey: _connectionUiTargetKey(bridge),
       hasAuthoritativeSessionList:
           bridge.hasAuthoritativeSessionListForCurrentConnection,
       hasAuthoritativeRecentSessions:
-          bridge.hasAuthoritativeRecentSessionsForCurrentConnection,
+          sessionListCubit.hasUsableCatalogForCurrentTarget,
     );
     _desktopContinuityTracker = DesktopSessionListContinuityTracker(bridge);
     _archivePendingRequests = SessionArchivePendingRequests(
@@ -367,6 +369,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     _catalogReadinessSub = bridge.recentSessionResponses.listen((_) {
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
     });
+    _catalogCacheReadinessSub = sessionListCubit.catalogSnapshotChanges.listen(
+      (_) => _syncConnectionUiGate(
+        bridge,
+        bridge.currentBridgeConnectionState,
+      ),
+    );
     _sessionListReadinessSub = bridge.sessionList.listen((_) {
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
       _refreshCatalogAfterAuthoritativeSessionList(bridge);
@@ -694,6 +702,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     _archiveConnectionSub?.cancel();
     _catalogReadinessSub?.cancel();
     _sessionListReadinessSub?.cancel();
+    _catalogCacheReadinessSub?.cancel();
     _archivePendingRequests.dispose();
     _activeSessionsSub?.cancel();
     _desktopContinuityTracker.close();
@@ -740,11 +749,13 @@ class _SessionListScreenState extends State<SessionListScreen>
       hasAuthoritativeSessionList:
           bridge.hasAuthoritativeSessionListForCurrentConnection,
       hasAuthoritativeRecentSessions:
-          bridge.hasAuthoritativeRecentSessionsForCurrentConnection,
+          context
+              .read<SessionListCubit>()
+              .hasUsableCatalogForCurrentTarget,
     );
     final isApplicationReady =
         bridge.hasAuthoritativeSessionListForCurrentConnection &&
-        bridge.hasAuthoritativeRecentSessionsForCurrentConnection;
+        context.read<SessionListCubit>().hasUsableCatalogForCurrentTarget;
     final stopAutoConnecting =
         _isAutoConnecting &&
         (isApplicationReady || state == BridgeConnectionState.disconnected);
@@ -2052,7 +2063,9 @@ class _SessionListScreenState extends State<SessionListScreen>
         bridge.hasAuthoritativeSessionListForCurrentConnection;
     final hasAuthoritativeRecentSessions =
         widget.debugRecentSessions != null ||
-        bridge.hasAuthoritativeRecentSessionsForCurrentConnection;
+        context
+            .read<SessionListCubit>()
+            .hasUsableCatalogForCurrentTarget;
     final connectionState = widget.debugRecentSessions != null
         ? BridgeConnectionState.connected
         : _connectionUiGate.presentationState(

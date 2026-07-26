@@ -1117,6 +1117,50 @@ void main() {
       expect(session.codexAdditionalWritableRoots, ['/tmp/shared']);
     });
 
+    test('RecentSession cache serialization and rename preserve identity', () {
+      final original = RecentSession.fromJson({
+        'sessionId': 's-cache',
+        'provider': 'codex',
+        'permissionMode': 'default',
+        'forkedFromThreadId': 'parent-thread',
+        'name': 'Before rename',
+        'summary': 'Cached summary',
+        'firstPrompt': 'hello',
+        'lastPrompt': 'continue',
+        'created': '2026-02-13T00:00:00Z',
+        'modified': '2026-02-13T00:01:00Z',
+        'gitBranch': 'feature/cache',
+        'projectPath': '/tmp/project',
+        'resumeCwd': '/tmp/worktree',
+        'isSidechain': false,
+        'executionMode': 'default',
+        'planMode': true,
+        'codexSettings': {
+          'approvalPolicy': 'on-request',
+          'approvalsReviewer': 'auto_review',
+          'codexPermissionsMode': 'autoReview',
+          'sandboxMode': 'workspace-write',
+          'model': 'gpt-5.3-codex-spark',
+          'profile': 'ccpocket',
+          'modelReasoningEffort': 'high',
+          'serviceTier': 'fast',
+          'networkAccessEnabled': true,
+          'webSearchMode': 'live',
+          'additionalWritableRoots': ['/tmp/shared'],
+        },
+      });
+
+      final restored = RecentSession.fromJson(original.toJson());
+      final renamed = restored.copyWithName(name: 'After rename');
+
+      expect(restored.forkedFromThreadId, 'parent-thread');
+      expect(restored.codexPermissionsMode, 'autoReview');
+      expect(restored.codexAdditionalWritableRoots, ['/tmp/shared']);
+      expect(renamed.name, 'After rename');
+      expect(renamed.forkedFromThreadId, 'parent-thread');
+      expect(renamed.codexPermissionsMode, 'autoReview');
+    });
+
     test('SessionListMessage parses model metadata', () {
       final msg = ServerMessage.fromJson({
         'type': 'session_list',

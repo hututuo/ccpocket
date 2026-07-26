@@ -47,6 +47,8 @@ import 'features/mobile_host/mobile_host_service.dart';
 import 'features/mobile_update/mobile_update_restart_prompt.dart';
 import 'features/mobile_update/mobile_update_service.dart';
 import 'features/permission_management/permission_host_service.dart';
+import 'features/session_list/cache/session_catalog_cache_database.dart';
+import 'features/session_list/cache/session_catalog_cache_repository.dart';
 import 'features/session_list/state/session_list_cubit.dart';
 import 'features/git/state/git_status_cubit.dart';
 import 'features/git/state/git_view_cache_service.dart';
@@ -240,6 +242,9 @@ void main() async {
     database: conversationMirrorDatabase,
   );
   unawaited(conversationMirrorService.initialize());
+  final sessionCatalogCache = SessionCatalogCacheRepository(
+    SessionCatalogCacheDatabase(),
+  );
   final backgroundSyncHost = MethodChannelBackgroundSyncHost(
     supportsContinuation: mobileHostSnapshot.supports(
       MobileHostCapability.backgroundContinuation,
@@ -404,6 +409,11 @@ void main() async {
           lazy: false,
           dispose: (service) => unawaited(service.close()),
         ),
+        RepositoryProvider<SessionCatalogCacheRepository>(
+          create: (_) => sessionCatalogCache,
+          lazy: false,
+          dispose: (repository) => unawaited(repository.close()),
+        ),
         RepositoryProvider<DraftService>.value(value: draftService),
         RepositoryProvider<InAppReviewService>(
           create: (_) => inAppReviewService,
@@ -466,8 +476,10 @@ void main() async {
           ),
           BlocProvider(create: (_) => ServerDiscoveryCubit()),
           BlocProvider(
-            create: (ctx) =>
-                SessionListCubit(bridge: ctx.read<BridgeService>()),
+            create: (ctx) => SessionListCubit(
+              bridge: ctx.read<BridgeService>(),
+              catalogCache: ctx.read<SessionCatalogCacheRepository>(),
+            ),
           ),
           BlocProvider(
             create: (_) => MachineManagerCubit(

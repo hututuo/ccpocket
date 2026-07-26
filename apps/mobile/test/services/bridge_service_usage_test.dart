@@ -185,6 +185,16 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
+      bridge.requestRecentSessionsCatalog();
+      final warmRequest = outgoing
+          .map(
+            (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+          )
+          .singleWhere((message) => message['type'] == 'list_recent_sessions');
+      expect(warmRequest['requestScope'], 'catalog');
+      expect(warmRequest['limit'], 1000);
+      outgoing.clear();
+
       bridge.switchFilter(searchQuery: 'old');
       bridge.switchFilter(searchQuery: 'new');
       final requests = outgoing
