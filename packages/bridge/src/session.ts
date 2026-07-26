@@ -660,6 +660,24 @@ export class SessionManager {
       // or cancel racing an in-flight RPC cannot be mistaken for the snapshot
       // that was actually sent.
       session.codexQueuedInput = replacementSession.codexQueuedInput;
+      // Carry the user-echo dedup state across the swap. Losing it made the
+      // app-server echo of an already-published user turn look brand new on
+      // the fresh runtime, re-inserting the same input into history.
+      session.codexLatestUserInput = replacementSession.codexLatestUserInput;
+      session.pendingCodexUserEchoUuids =
+        replacementSession.pendingCodexUserEchoUuids;
+      if (replacementSession.codexUserTurnUuidByRawId) {
+        // The staged seed may know turns the rollout persisted after the old
+        // runtime seeded, while the old runtime holds live-echo mappings the
+        // rollout has not flushed yet. Merge, letting the live mapping win:
+        // its uuids are the ones clients have already rendered.
+        const merged = new Map(session.codexUserTurnUuidByRawId ?? []);
+        for (const [rawId, uuid] of replacementSession
+          .codexUserTurnUuidByRawId) {
+          merged.set(rawId, uuid);
+        }
+        session.codexUserTurnUuidByRawId = merged;
+      }
       session.codexGoal = replacementSession.codexGoal;
       session.codexGoalUpdatedAt = replacementSession.codexGoalUpdatedAt;
       session.codexGoalOperationSequence =

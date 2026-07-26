@@ -414,6 +414,56 @@ describe("SessionManager codex path", () => {
     expect(codexInstances[0].stop).toHaveBeenCalledOnce();
   });
 
+  it("carries the user-echo dedup state across a Codex replacement", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-dedup" },
+    );
+    const originalSession = manager.get(sessionId)!;
+    // Live dedup state accumulated while the old runtime owned the slot.
+    originalSession.codexLatestUserInput = {
+      type: "user_input",
+      text: "latest input",
+      sessionId,
+    } as (typeof originalSession)["codexLatestUserInput"];
+    originalSession.pendingCodexUserEchoUuids = new Set([
+      "ccpocket-codex-user-turn-00000001",
+    ]);
+    originalSession.codexUserTurnUuidByRawId = new Map([
+      ["raw-live-1", "ccpocket-codex-user-turn-00000001"],
+    ]);
+
+    const replacementPromise = manager.replaceCodexSession(
+      sessionId,
+      "/tmp/project-codex",
+      [{ role: "assistant", content: [{ type: "text", text: "desktop" }] }],
+      undefined,
+      { threadId: "thread-dedup" },
+      1_000,
+    );
+    codexInstances[1].emit("input_ready");
+    await expect(replacementPromise).resolves.toBe(sessionId);
+
+    const replacement = manager.get(sessionId)!;
+    expect(replacement).not.toBe(originalSession);
+    // Without these, the app-server echo of an already-published user turn
+    // is treated as a brand-new message — the "duplicated twice" symptom.
+    expect(replacement.codexLatestUserInput?.text).toBe("latest input");
+    expect(
+      replacement.pendingCodexUserEchoUuids?.has(
+        "ccpocket-codex-user-turn-00000001",
+      ),
+    ).toBe(true);
+    expect(replacement.codexUserTurnUuidByRawId?.get("raw-live-1")).toBe(
+      "ccpocket-codex-user-turn-00000001",
+    );
+  });
+
   it("keeps the old Codex runtime when a staged replacement exits", async () => {
     const manager = new SessionManager(() => {});
     const sessionId = manager.create(
