@@ -274,6 +274,8 @@ const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
 const SESSION_ACTIVITY_AT_CAPABILITY = "session_activity_at_v1";
 const SESSION_REQUEST_CORRELATION_CAPABILITY = "session_request_correlation_v1";
 const SESSION_CATALOG_WATCH_CAPABILITY = "session_catalog_watch_v1";
+const SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY =
+  "session_catalog_request_correlation_v1";
 const SESSION_CATALOG_CHANGED_MESSAGE = "session_catalog_changed_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
@@ -1159,6 +1161,7 @@ export interface BridgeServerOptions {
 
 export interface SessionCatalogMonitorControl {
   readonly isActive: boolean;
+  readonly currentRevision?: number;
   start(): Promise<void>;
   close(): void;
 }
@@ -7051,6 +7054,13 @@ export class BridgeWebSocketServer {
               offset: msg.offset,
               projectPath: msg.projectPath,
               requestScope: msg.requestScope,
+              requestId: msg.requestId,
+              queryGeneration: msg.queryGeneration,
+              catalogRevision:
+                this.sessionCatalogMonitor.currentRevision ?? 0,
+              provider: msg.provider,
+              namedOnly: msg.namedOnly,
+              searchQuery: msg.searchQuery,
             } as Record<string, unknown>);
           })
           .catch((err) => {
@@ -9594,6 +9604,7 @@ export class BridgeWebSocketServer {
     this.send(ws, {
       type: "session_list",
       sessions,
+      bridgeInstanceId: this.bridgeInstanceId,
       allowedDirs: this.allowedDirs,
       claudeModels: this.claudeModels,
       claudeModelEfforts: this.claudeModelEfforts,
@@ -9619,6 +9630,7 @@ export class BridgeWebSocketServer {
         SESSION_ACTIVITY_AT_CAPABILITY,
         SESSION_REQUEST_CORRELATION_CAPABILITY,
         SESSION_CATALOG_WATCH_CAPABILITY,
+        SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
@@ -9657,6 +9669,7 @@ export class BridgeWebSocketServer {
     this.broadcast({
       type: "session_list",
       sessions,
+      bridgeInstanceId: this.bridgeInstanceId,
       allowedDirs: this.allowedDirs,
       claudeModels: this.claudeModels,
       claudeModelEfforts: this.claudeModelEfforts,
@@ -9682,6 +9695,7 @@ export class BridgeWebSocketServer {
         SESSION_ACTIVITY_AT_CAPABILITY,
         SESSION_REQUEST_CORRELATION_CAPABILITY,
         SESSION_CATALOG_WATCH_CAPABILITY,
+        SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer

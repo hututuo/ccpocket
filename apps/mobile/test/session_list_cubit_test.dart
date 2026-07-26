@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/session_list/state/session_list_state.dart';
@@ -12,8 +13,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 class MockBridgeService extends BridgeService {
   final _recentSessionsController =
       StreamController<List<RecentSession>>.broadcast();
+  final _recentSessionResponsesController =
+      StreamController<RecentSessionsMessage>.broadcast();
   final _projectHistoryController = StreamController<List<String>>.broadcast();
   final sentMessages = <ClientMessage>[];
+  int sessionListRequestCount = 0;
 
   bool _hasMore = false;
   String? _projectFilter;
@@ -22,6 +26,10 @@ class MockBridgeService extends BridgeService {
   @override
   Stream<List<RecentSession>> get recentSessionsStream =>
       _recentSessionsController.stream;
+
+  @override
+  Stream<RecentSessionsMessage> get recentSessionResponses =>
+      _recentSessionResponsesController.stream;
 
   @override
   Stream<List<String>> get projectHistoryStream =>
@@ -44,7 +52,14 @@ class MockBridgeService extends BridgeService {
       sessions: sessions,
       hasMore: hasMore,
     );
+    emitResponse(_lastRecentSessionsMessage!);
     _recentSessionsController.add(sessions);
+  }
+
+  void emitResponse(RecentSessionsMessage response) {
+    _lastRecentSessionsMessage = response;
+    _hasMore = response.hasMore;
+    _recentSessionResponsesController.add(response);
   }
 
   void emitProjectSessions(
@@ -57,7 +72,9 @@ class MockBridgeService extends BridgeService {
       hasMore: hasMore,
       projectPath: projectPath,
       requestScope: 'project',
+      queryGeneration: 1,
     );
+    emitResponse(_lastRecentSessionsMessage!);
     _recentSessionsController.add(sessions);
   }
 
@@ -71,7 +88,9 @@ class MockBridgeService extends BridgeService {
   }
 
   @override
-  void requestSessionList() {}
+  void requestSessionList() {
+    sessionListRequestCount++;
+  }
 
   @override
   void requestRecentSessions({int? limit, int? offset, String? projectPath}) {
@@ -133,6 +152,7 @@ class MockBridgeService extends BridgeService {
   @override
   void dispose() {
     _recentSessionsController.close();
+    _recentSessionResponsesController.close();
     _projectHistoryController.close();
   }
 }
@@ -304,7 +324,7 @@ void main() {
     });
 
     test(
-      'non-project response marks loaded projects exhausted when no more pages',
+      'top-level exhaustion applies only to projects in that response',
       () async {
         mockBridge.emitSessions([
           _session(id: 's1', projectPath: '/a/proj1'),
@@ -352,17 +372,67 @@ void main() {
       expect(cubit.state.accumulatedProjectPaths, {'/a/proj1', '/c/proj3'});
     });
 
-    test('selectProject triggers server re-fetch with isInitialLoading', () {
-      cubit.selectProject('/a/proj1');
+    test('empty project history authoritatively clears stale paths', () async {
+      mockBridge.emitProjectHistory(['/stale/project']);
+      await Future.microtask(() {});
+      expect(cubit.state.accumulatedProjectPaths, {'/stale/project'});
 
-      expect(cubit.state.isInitialLoading, isTrue);
-      expect(mockBridge.sentMessages, isNotEmpty);
+      mockBridge.emitProjectHistory(const []);
+      await Future.microtask(() {});
+
+      expect(cubit.state.accumulatedProjectPaths, isEmpty);
     });
 
-    test('selectProject(null) triggers re-fetch', () {
+    test('refresh restores persisted filters before its first query', () async {
+      await cubit.close();
+      mockBridge.dispose();
+      SharedPreferences.setMockInitialValues({
+        'session_list_provider': 'codex',
+        'session_list_named_only': true,
+      });
+      mockBridge = MockBridgeService();
+      cubit = SessionListCubit(bridge: mockBridge);
+
+      await cubit.refresh();
+
+      final request =
+          jsonDecode(mockBridge.sentMessages.last.toJson())
+              as Map<String, dynamic>;
+      expect(request['provider'], 'codex');
+      expect(request['namedOnly'], isTrue);
+    });
+
+    test(
+      'catalog bootstrap does not recursively request session list',
+      () async {
+        await cubit.refreshCatalog();
+
+        expect(mockBridge.sessionListRequestCount, 0);
+        expect(mockBridge.sentMessages, hasLength(1));
+
+        await cubit.refresh();
+
+        expect(mockBridge.sessionListRequestCount, 1);
+      },
+    );
+
+    test(
+      'selectProject triggers server re-fetch with isInitialLoading',
+      () async {
+        cubit.selectProject('/a/proj1');
+        await Future.microtask(() {});
+
+        expect(cubit.state.isInitialLoading, isTrue);
+        expect(mockBridge.sentMessages, isNotEmpty);
+      },
+    );
+
+    test('selectProject(null) triggers re-fetch', () async {
       cubit.selectProject('/a/proj1');
+      await Future.microtask(() {});
       mockBridge.sentMessages.clear();
       cubit.selectProject(null);
+      await Future.microtask(() {});
 
       expect(cubit.state.isInitialLoading, isTrue);
       expect(mockBridge.sentMessages, isNotEmpty);
@@ -387,16 +457,50 @@ void main() {
       expect(cubit.state.isInitialLoading, isTrue);
     });
 
-    test('toggleProviderFilter triggers server re-fetch', () {
+    test(
+      'correlated stale search result cannot overwrite current query',
+      () async {
+        cubit.setSearchQuery('current');
+        await Future.delayed(const Duration(milliseconds: 350));
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [_session(id: 'stale')],
+            queryGeneration: 1,
+            searchQuery: 'previous',
+            requestScope: 'list',
+          ),
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.sessions, isEmpty);
+        expect(cubit.state.isInitialLoading, isTrue);
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [_session(id: 'current')],
+            queryGeneration: 2,
+            searchQuery: 'current',
+            requestScope: 'list',
+          ),
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.sessions.single.sessionId, 'current');
+        expect(cubit.state.isInitialLoading, isFalse);
+      },
+    );
+
+    test('toggleProviderFilter triggers server re-fetch', () async {
       cubit.toggleProviderFilter();
+      await Future.microtask(() {});
 
       expect(cubit.state.providerFilter, isNot(equals(null)));
       expect(cubit.state.isInitialLoading, isTrue);
       expect(mockBridge.sentMessages, isNotEmpty);
     });
 
-    test('enabled agents constrain provider filter', () {
+    test('enabled agents constrain provider filter', () async {
       cubit.applyEnabledAgents(const [NewSessionTab.codex]);
+      await Future.microtask(() {});
 
       expect(cubit.state.providerFilter, ProviderFilter.codex);
       expect(
@@ -415,8 +519,9 @@ void main() {
       expect(mockBridge.sentMessages, isEmpty);
     });
 
-    test('toggleNamedOnly triggers server re-fetch', () {
+    test('toggleNamedOnly triggers server re-fetch', () async {
       cubit.toggleNamedOnly();
+      await Future.microtask(() {});
 
       expect(cubit.state.namedOnly, isTrue);
       expect(cubit.state.isInitialLoading, isTrue);
@@ -424,6 +529,8 @@ void main() {
     });
 
     test('loadMore sets isLoadingMore and calls bridge', () async {
+      mockBridge.emitSessions([_session(id: 's0')], hasMore: true);
+      await Future.microtask(() {});
       cubit.loadMore();
 
       expect(cubit.state.isLoadingMore, isTrue);
@@ -431,6 +538,8 @@ void main() {
     });
 
     test('loadMore isLoadingMore resets when sessions arrive', () async {
+      mockBridge.emitSessions([_session(id: 's0')], hasMore: true);
+      await Future.microtask(() {});
       cubit.loadMore();
       expect(cubit.state.isLoadingMore, isTrue);
 
@@ -439,6 +548,16 @@ void main() {
       await Future.microtask(() {});
 
       expect(cubit.state.isLoadingMore, isFalse);
+    });
+
+    test('loadMore ignores duplicate in-flight requests', () async {
+      mockBridge.emitSessions([_session(id: 's0')], hasMore: true);
+      await Future.microtask(() {});
+
+      cubit.loadMore();
+      cubit.loadMore();
+
+      expect(mockBridge.sentMessages, hasLength(1));
     });
 
     test(
@@ -460,6 +579,21 @@ void main() {
         expect(json, contains('"offset":2'));
         expect(json, contains('"limit":20'));
         expect(json, contains('"requestScope":"project"'));
+      },
+    );
+
+    test(
+      'project pagination normalizes trailing separators for offsets',
+      () async {
+        mockBridge.emitSessions([
+          _session(id: 's1', projectPath: '/a/proj1/'),
+        ], hasMore: true);
+        await Future.microtask(() {});
+
+        cubit.loadMoreProject('/a/proj1');
+
+        final json = mockBridge.sentMessages.last.toJson();
+        expect(json, contains('"offset":1'));
       },
     );
 
@@ -499,7 +633,7 @@ void main() {
       },
     );
 
-    test('disconnect reset preserves expanded project display limit', () async {
+    test('disconnect preserves expanded project display limit', () async {
       mockBridge.emitSessions([
         for (var i = 0; i < 7; i++)
           _session(id: 's$i', projectPath: '/a/proj1'),
@@ -507,7 +641,7 @@ void main() {
       await Future.microtask(() {});
       cubit.loadMoreProject('/a/proj1');
 
-      cubit.resetFilters();
+      cubit.handleDisconnect();
 
       expect(cubit.state.projectSessionDisplayLimits['/a/proj1'], 25);
     });
@@ -527,8 +661,7 @@ void main() {
     );
 
     test('toggleProjectCollapsed persists collapsed project path', () async {
-      cubit.toggleProjectCollapsed('/a/proj1');
-      await Future.microtask(() {});
+      await cubit.toggleProjectCollapsed('/a/proj1');
 
       expect(cubit.state.collapsedProjectPaths, contains('/a/proj1'));
       final prefs = await SharedPreferences.getInstance();
@@ -538,13 +671,20 @@ void main() {
       );
     });
 
-    test('resetFilters clears all filter state', () {
+    test('disconnect preserves user filters and cached catalog', () async {
+      mockBridge.emitSessions([_session(id: 's1')]);
+      await Future.microtask(() {});
       cubit.setSearchQuery('test');
 
-      cubit.resetFilters();
+      cubit.handleDisconnect();
 
-      expect(cubit.state.searchQuery, isEmpty);
-      expect(cubit.state.accumulatedProjectPaths, isEmpty);
+      expect(cubit.state.searchQuery, 'test');
+      expect(cubit.state.sessions.single.sessionId, 's1');
+      expect(
+        cubit.state.accumulatedProjectPaths,
+        contains('/home/user/project-a'),
+      );
+      expect(cubit.state.isInitialLoading, isFalse);
     });
 
     test('initial state has isInitialLoading true', () {
@@ -569,50 +709,22 @@ void main() {
       expect(cubit.state.isInitialLoading, isFalse);
     });
 
-    test('resetFilters restores isInitialLoading to true', () async {
+    test('disconnect keeps a usable loaded catalog visible', () async {
       mockBridge.emitSessions([_session(id: 's1')]);
       await Future.microtask(() {});
       expect(cubit.state.isInitialLoading, isFalse);
 
-      cubit.resetFilters();
+      cubit.handleDisconnect();
 
-      expect(cubit.state.isInitialLoading, isTrue);
+      expect(cubit.state.isInitialLoading, isFalse);
+      expect(cubit.state.sessions.single.sessionId, 's1');
     });
 
-    test('resetFilters clears sessions list', () async {
-      mockBridge.emitSessions([_session(id: 's1'), _session(id: 's2')]);
-      await Future.microtask(() {});
-      expect(cubit.state.sessions, hasLength(2));
-
-      cubit.resetFilters();
+    test('disconnect without a catalog retains the initial skeleton', () {
+      cubit.handleDisconnect();
 
       expect(cubit.state.sessions, isEmpty);
+      expect(cubit.state.isInitialLoading, isTrue);
     });
-
-    test(
-      'skeleton condition: sessions empty + isInitialLoading after reset',
-      () async {
-        // Simulate: connected, sessions loaded
-        mockBridge.emitSessions([_session(id: 's1')]);
-        await Future.microtask(() {});
-        expect(cubit.state.sessions, isNotEmpty);
-        expect(cubit.state.isInitialLoading, isFalse);
-
-        // Simulate: disconnect → resetFilters
-        cubit.resetFilters();
-
-        // After reset, skeleton condition should be met:
-        // sessions empty + isInitialLoading true
-        expect(cubit.state.sessions, isEmpty);
-        expect(cubit.state.isInitialLoading, isTrue);
-
-        // Simulate: reconnect → sessions arrive again
-        mockBridge.emitSessions([_session(id: 's2')]);
-        await Future.microtask(() {});
-
-        expect(cubit.state.sessions, hasLength(1));
-        expect(cubit.state.isInitialLoading, isFalse);
-      },
-    );
   });
 }

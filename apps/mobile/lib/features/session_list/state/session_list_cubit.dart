@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/logger.dart';
 import '../../../models/messages.dart';
 import '../../../models/new_session_tab.dart';
 import '../../../services/bridge_service.dart';
@@ -13,6 +14,33 @@ const _pinnedSessionKeysKey = 'session_list_pinned_session_keys_v1';
 const _pinnedProjectPathsKey = 'session_list_pinned_project_paths_v1';
 const _projectInitialSessionDisplayLimit = 5;
 const _projectSessionDisplayPageSize = 20;
+
+class SessionCatalogQuery {
+  const SessionCatalogQuery({
+    this.projectPath,
+    this.provider,
+    this.namedOnly,
+    this.searchQuery,
+  });
+
+  final String? projectPath;
+  final String? provider;
+  final bool? namedOnly;
+  final String? searchQuery;
+
+  bool matches(RecentSessionsMessage response) {
+    // Older Bridges do not echo request correlation. BridgeService keeps
+    // their per-socket list generation as the compatibility boundary.
+    if (response.queryGeneration == null) return true;
+    final targetsAnotherList =
+        response.requestScope != 'project' &&
+        response.projectPath != projectPath;
+    return !targetsAnotherList &&
+        response.provider == provider &&
+        response.namedOnly == namedOnly &&
+        response.searchQuery == searchQuery;
+  }
+}
 
 String sessionPinKey({
   required String? provider,
@@ -64,15 +92,20 @@ List<T> prioritizePinned<T>(
 /// a skeleton loading state.
 class SessionListCubit extends Cubit<SessionListState> {
   final BridgeService _bridge;
-  StreamSubscription<List<RecentSession>>? _recentSub;
+  StreamSubscription<RecentSessionsMessage>? _recentSub;
   StreamSubscription<List<String>>? _projectHistorySub;
   Timer? _searchDebounce;
   late final Future<void> _preferencesLoaded;
+  Future<void> _preferenceWriteSerial = Future<void>.value();
+  SessionCatalogQuery _query = const SessionCatalogQuery();
+  Set<String> _authoritativeProjectHistory = const {};
+  int _filterMutationRevision = 0;
+  int _queryRequestRevision = 0;
 
   SessionListCubit({required BridgeService bridge})
     : _bridge = bridge,
       super(const SessionListState()) {
-    _recentSub = _bridge.recentSessionsStream.listen(_onSessionsUpdate);
+    _recentSub = _bridge.recentSessionResponses.listen(_onSessionsUpdate);
     _projectHistorySub = _bridge.projectHistoryStream.listen(
       _onProjectHistoryUpdate,
     );
@@ -80,6 +113,7 @@ class SessionListCubit extends Cubit<SessionListState> {
   }
 
   Future<void> _loadPreferences() async {
+    final mutationRevision = _filterMutationRevision;
     final prefs = await SharedPreferences.getInstance();
     final providerStr = prefs.getString('session_list_provider');
     final namedOnly = prefs.getBool('session_list_named_only');
@@ -100,32 +134,36 @@ class SessionListCubit extends Cubit<SessionListState> {
     }
 
     if (isClosed) return;
+    final filtersWereNotChanged = mutationRevision == _filterMutationRevision;
     emit(
       state.copyWith(
-        providerFilter: provider,
-        namedOnly: namedOnly ?? false,
+        providerFilter: filtersWereNotChanged ? provider : state.providerFilter,
+        namedOnly: filtersWereNotChanged ? namedOnly ?? false : state.namedOnly,
         collapsedProjectPaths: collapsedProjectPaths,
         pinnedSessionKeys: pinnedSessionKeys,
         pinnedProjectPaths: pinnedProjectPaths,
       ),
     );
+    _query = _queryForState();
   }
 
-  void _onSessionsUpdate(List<RecentSession> sessions) {
-    final response = _bridge.lastRecentSessionsMessage;
-    final projectPath = response?.projectPath;
+  String? get currentProjectFilter => _query.projectPath;
+
+  bool get hasCatalogSnapshot => !state.isInitialLoading;
+
+  void _onSessionsUpdate(RecentSessionsMessage response) {
+    if (!_query.matches(response)) return;
+    final sessions = response.sessions;
+    final projectPath = response.projectPath;
     final isProjectPage =
-        response?.requestScope == 'project' &&
+        response.requestScope == 'project' &&
         projectPath != null &&
         projectPath.isNotEmpty;
     final newPaths = sessions
         .map((s) => s.projectPath)
         .where((p) => p.isNotEmpty)
         .toSet();
-    final current = state.accumulatedProjectPaths;
-    final merged = newPaths.difference(current).isNotEmpty
-        ? {...current, ...newPaths}
-        : current;
+    final merged = {..._authoritativeProjectHistory, ...newPaths};
 
     if (isProjectPage) {
       emit(
@@ -135,7 +173,7 @@ class SessionListCubit extends Cubit<SessionListState> {
           accumulatedProjectPaths: merged,
           loadingProjectPaths: {...state.loadingProjectPaths}
             ..remove(projectPath),
-          exhaustedProjectPaths: response!.hasMore
+          exhaustedProjectPaths: response.hasMore
               ? ({...state.exhaustedProjectPaths}..remove(projectPath))
               : {...state.exhaustedProjectPaths, projectPath},
         ),
@@ -143,27 +181,47 @@ class SessionListCubit extends Cubit<SessionListState> {
       return;
     }
 
-    final hasMore = _bridge.recentSessionsHasMore;
+    final hasMore = response.hasMore;
+    final finishesPagination =
+        response.requestScope == null ||
+        response.requestScope == 'list' ||
+        response.requestScope == 'append';
+    final exhaustedProjectPaths = {...state.exhaustedProjectPaths};
+    if (!hasMore) {
+      exhaustedProjectPaths.addAll(newPaths);
+      final filteredProjectPath = response.projectPath;
+      if (filteredProjectPath != null && filteredProjectPath.isNotEmpty) {
+        exhaustedProjectPaths.add(filteredProjectPath);
+      }
+    }
     emit(
       state.copyWith(
         sessions: sessions,
         hasMore: hasMore,
-        isLoadingMore: false,
+        isLoadingMore: finishesPagination ? false : state.isLoadingMore,
         isInitialLoading: false,
         accumulatedProjectPaths: merged,
-        loadingProjectPaths: const {},
-        exhaustedProjectPaths: hasMore ? const {} : merged,
+        loadingProjectPaths: response.requestScope == 'list'
+            ? const {}
+            : state.loadingProjectPaths,
+        exhaustedProjectPaths: exhaustedProjectPaths,
       ),
     );
   }
 
   void _onProjectHistoryUpdate(List<String> projects) {
-    if (projects.isEmpty) return;
-    final current = state.accumulatedProjectPaths;
-    final newPaths = projects.toSet();
-    if (newPaths.difference(current).isNotEmpty) {
-      emit(state.copyWith(accumulatedProjectPaths: {...current, ...newPaths}));
-    }
+    _authoritativeProjectHistory = projects.toSet();
+    final sessionPaths = state.sessions
+        .map((session) => session.projectPath)
+        .where((path) => path.isNotEmpty);
+    emit(
+      state.copyWith(
+        accumulatedProjectPaths: {
+          ..._authoritativeProjectHistory,
+          ...sessionPaths,
+        },
+      ),
+    );
   }
 
   // ---- Filter commands (all trigger server re-fetch) ----
@@ -171,22 +229,37 @@ class SessionListCubit extends Cubit<SessionListState> {
   /// Switch project filter. Resets sessions on the server side and fetches
   /// from offset 0 for the selected project.
   void selectProject(String? projectPath) {
-    emit(state.copyWith(isInitialLoading: true));
-    _bridge.switchFilter(
+    _filterMutationRevision++;
+    _query = SessionCatalogQuery(
       projectPath: projectPath,
       provider: _providerToString(state.providerFilter),
       namedOnly: state.namedOnly ? true : null,
       searchQuery: state.searchQuery.isNotEmpty ? state.searchQuery : null,
     );
+    emit(
+      state.copyWith(
+        isInitialLoading: true,
+        loadingProjectPaths: const {},
+        exhaustedProjectPaths: const {},
+      ),
+    );
+    _requestWithCurrentFilters();
   }
 
   /// Set search query with debounce (server-side).
   void setSearchQuery(String query) {
+    _filterMutationRevision++;
     emit(state.copyWith(searchQuery: query));
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 300), () {
       if (isClosed) return;
-      emit(state.copyWith(isInitialLoading: true));
+      emit(
+        state.copyWith(
+          isInitialLoading: true,
+          loadingProjectPaths: const {},
+          exhaustedProjectPaths: const {},
+        ),
+      );
       _requestWithCurrentFilters();
     });
   }
@@ -207,11 +280,20 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   void setProviderFilter(ProviderFilter next) {
     if (state.providerFilter == next) return;
-    emit(state.copyWith(providerFilter: next, isInitialLoading: true));
+    _filterMutationRevision++;
+    emit(
+      state.copyWith(
+        providerFilter: next,
+        isInitialLoading: true,
+        loadingProjectPaths: const {},
+        exhaustedProjectPaths: const {},
+      ),
+    );
     _requestWithCurrentFilters();
-    // Persist preference in background (fire-and-forget).
-    SharedPreferences.getInstance().then(
-      (prefs) => prefs.setString('session_list_provider', next.name),
+    unawaited(
+      _queuePreferenceWrite(
+        (prefs) => prefs.setString('session_list_provider', next.name),
+      ),
     );
   }
 
@@ -222,18 +304,28 @@ class SessionListCubit extends Cubit<SessionListState> {
   }
 
   /// Toggle named-only filter on/off.
-  void toggleNamedOnly() async {
+  void toggleNamedOnly() {
     final next = !state.namedOnly;
-    emit(state.copyWith(namedOnly: next, isInitialLoading: true));
+    _filterMutationRevision++;
+    emit(
+      state.copyWith(
+        namedOnly: next,
+        isInitialLoading: true,
+        loadingProjectPaths: const {},
+        exhaustedProjectPaths: const {},
+      ),
+    );
     _requestWithCurrentFilters();
-    // Persist preference in background (fire-and-forget).
-    SharedPreferences.getInstance().then(
-      (prefs) => prefs.setBool('session_list_named_only', next),
+    unawaited(
+      _queuePreferenceWrite(
+        (prefs) => prefs.setBool('session_list_named_only', next),
+      ),
     );
   }
 
   /// Load more sessions (pagination).
   void loadMore() {
+    if (state.isLoadingMore || !state.hasMore) return;
     emit(state.copyWith(isLoadingMore: true));
     _bridge.loadMoreRecentSessions();
   }
@@ -244,8 +336,12 @@ class SessionListCubit extends Cubit<SessionListState> {
         state.loadingProjectPaths.contains(projectPath)) {
       return;
     }
+    final projectKey = _normalizedProjectPath(projectPath);
     final loadedCount = state.sessions
-        .where((session) => session.projectPath == projectPath)
+        .where(
+          (session) =>
+              _normalizedProjectPath(session.projectPath) == projectKey,
+        )
         .length;
     final currentLimit =
         state.projectSessionDisplayLimits[projectPath] ??
@@ -274,15 +370,18 @@ class SessionListCubit extends Cubit<SessionListState> {
     );
   }
 
-  void toggleProjectCollapsed(String projectPath) {
+  Future<void> toggleProjectCollapsed(String projectPath) async {
     if (projectPath.isEmpty) return;
+    await _preferencesLoaded;
+    if (isClosed) return;
     final next = {...state.collapsedProjectPaths};
     if (!next.remove(projectPath)) {
       next.add(projectPath);
     }
     emit(state.copyWith(collapsedProjectPaths: next));
-    SharedPreferences.getInstance().then(
-      (prefs) => prefs.setStringList(_collapsedProjectPathsKey, next.toList()),
+    await _queuePreferenceWrite(
+      (prefs) =>
+          prefs.setStringList(_collapsedProjectPathsKey, next.toList()..sort()),
     );
   }
 
@@ -330,32 +429,37 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   Future<void> _persistStringSet(String key, Set<String> values) async {
     final sorted = values.toList()..sort();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(key, sorted);
+    await _queuePreferenceWrite((prefs) => prefs.setStringList(key, sorted));
   }
 
   /// Request fresh data from the server.
-  void refresh() {
+  Future<void> refresh() async {
+    await _preferencesLoaded;
+    if (isClosed) return;
     _bridge.requestSessionList();
-    _requestWithCurrentFilters();
-    _bridge.requestProjectHistory();
+    await refreshCatalog();
   }
 
-  /// Reset server-backed filter state (used on disconnect).
-  /// User-expanded project display limits survive reconnect and refresh.
-  void resetFilters() {
+  /// Refresh catalog metadata without recursively requesting another
+  /// authoritative session-list snapshot.
+  Future<void> refreshCatalog() async {
+    await _preferencesLoaded;
+    if (isClosed) return;
+    _bridge.requestProjectHistory();
+    final requestRevision = ++_queryRequestRevision;
+    await _requestWithCurrentFiltersAfterPreferences(requestRevision);
+  }
+
+  /// Ends connection-scoped work while retaining user intent and the last
+  /// usable in-memory catalog for a same-target reconnect.
+  void handleDisconnect() {
     _searchDebounce?.cancel();
+    _queryRequestRevision++;
     emit(
       state.copyWith(
-        sessions: const [],
-        searchQuery: '',
-        accumulatedProjectPaths: const {},
         loadingProjectPaths: const {},
-        exhaustedProjectPaths: const {},
         isLoadingMore: false,
-        isInitialLoading: true,
-        providerFilter: ProviderFilter.all,
-        namedOnly: false,
+        isInitialLoading: state.sessions.isEmpty,
       ),
     );
   }
@@ -377,12 +481,57 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   /// Send a re-fetch request with all current filters applied.
   void _requestWithCurrentFilters() {
+    final requestRevision = ++_queryRequestRevision;
+    unawaited(_requestWithCurrentFiltersAfterPreferences(requestRevision));
+  }
+
+  Future<void> _requestWithCurrentFiltersAfterPreferences(
+    int requestRevision,
+  ) async {
+    await _preferencesLoaded;
+    if (isClosed || requestRevision != _queryRequestRevision) return;
+    _query = _queryForState();
     _bridge.switchFilter(
-      projectPath: _bridge.currentProjectFilter,
-      provider: _providerToString(state.providerFilter),
-      namedOnly: state.namedOnly ? true : null,
-      searchQuery: state.searchQuery.isNotEmpty ? state.searchQuery : null,
+      projectPath: _query.projectPath,
+      provider: _query.provider,
+      namedOnly: _query.namedOnly,
+      searchQuery: _query.searchQuery,
     );
+  }
+
+  SessionCatalogQuery _queryForState() => SessionCatalogQuery(
+    projectPath: _query.projectPath,
+    provider: _providerToString(state.providerFilter),
+    namedOnly: state.namedOnly ? true : null,
+    searchQuery: state.searchQuery.isNotEmpty ? state.searchQuery : null,
+  );
+
+  Future<void> _queuePreferenceWrite(
+    Future<bool> Function(SharedPreferences prefs) write,
+  ) {
+    final next = _preferenceWriteSerial.then((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      await write(prefs);
+    });
+    _preferenceWriteSerial = next.catchError((
+      Object error,
+      StackTrace stackTrace,
+    ) {
+      logger.warning(
+        '[SessionListCubit] Failed to persist session-list preference',
+        error,
+        stackTrace,
+      );
+    });
+    return _preferenceWriteSerial;
+  }
+
+  static String _normalizedProjectPath(String value) {
+    var normalized = value.trim().replaceAll('\\', '/');
+    while (normalized.length > 1 && normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized;
   }
 
   /// Convert [ProviderFilter] enum to the wire-format string (or null for all).

@@ -420,6 +420,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get connectToBridgeServer => '连接到 Bridge 服务';
 
   @override
+  String get connectingToBridge => '正在安全连接 Bridge…';
+
+  @override
+  String get loadingSessionStatus => '已连接，正在载入会话运行状态…';
+
+  @override
+  String get loadingConversationCatalog => '运行状态已就绪，正在载入绘画目录…';
+
+  @override
   String get orConnectManually => '或手动连接';
 
   @override

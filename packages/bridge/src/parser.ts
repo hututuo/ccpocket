@@ -340,6 +340,8 @@ export type ClientMessage =
       offset?: number;
       projectPath?: string;
       requestScope?: "list" | "append" | "project" | "catalog";
+      requestId?: string;
+      queryGeneration?: number;
       provider?: "claude" | "codex";
       namedOnly?: boolean;
       searchQuery?: string;
@@ -1771,6 +1773,65 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "list_recent_sessions":
+        if (
+          msg.limit !== undefined &&
+          (typeof msg.limit !== "number" ||
+            !Number.isSafeInteger(msg.limit) ||
+            msg.limit <= 0)
+        )
+          return null;
+        if (
+          msg.offset !== undefined &&
+          (typeof msg.offset !== "number" ||
+            !Number.isSafeInteger(msg.offset) ||
+            msg.offset < 0)
+        )
+          return null;
+        if (
+          msg.projectPath !== undefined &&
+          (typeof msg.projectPath !== "string" ||
+            msg.projectPath.length > 4_096)
+        )
+          return null;
+        if (
+          msg.requestScope !== undefined &&
+          msg.requestScope !== "list" &&
+          msg.requestScope !== "append" &&
+          msg.requestScope !== "project" &&
+          msg.requestScope !== "catalog"
+        )
+          return null;
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.length === 0 ||
+            msg.requestId.length > 128)
+        )
+          return null;
+        if (
+          msg.queryGeneration !== undefined &&
+          (typeof msg.queryGeneration !== "number" ||
+            !Number.isSafeInteger(msg.queryGeneration) ||
+            msg.queryGeneration < 0)
+        )
+          return null;
+        if (
+          msg.provider !== undefined &&
+          msg.provider !== "claude" &&
+          msg.provider !== "codex"
+        )
+          return null;
+        if (
+          msg.namedOnly !== undefined &&
+          typeof msg.namedOnly !== "boolean"
+        )
+          return null;
+        if (
+          msg.searchQuery !== undefined &&
+          (typeof msg.searchQuery !== "string" ||
+            msg.searchQuery.length > 512)
+        )
+          return null;
         break;
       case "resume_session":
         if (

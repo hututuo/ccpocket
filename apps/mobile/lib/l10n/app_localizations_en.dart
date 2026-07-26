@@ -429,6 +429,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get connectToBridgeServer => 'Connect to Bridge Server';
 
   @override
+  String get connectingToBridge => 'Connecting securely to Bridge…';
+
+  @override
+  String get loadingSessionStatus => 'Connected. Loading live session status…';
+
+  @override
+  String get loadingConversationCatalog =>
+      'Session status is ready. Loading your conversation catalog…';
+
+  @override
   String get orConnectManually => 'or connect manually';
 
   @override

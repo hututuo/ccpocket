@@ -1120,6 +1120,7 @@ void main() {
     test('SessionListMessage parses model metadata', () {
       final msg = ServerMessage.fromJson({
         'type': 'session_list',
+        'bridgeInstanceId': 'bridge-machine-a',
         'sessions': const [
           {
             'id': 's1',
@@ -1153,6 +1154,7 @@ void main() {
 
       expect(msg, isA<SessionListMessage>());
       final sessionList = msg as SessionListMessage;
+      expect(sessionList.bridgeInstanceId, 'bridge-machine-a');
       expect(sessionList.claudeModels, ['claude-opus-4-7', 'claude-haiku-4-6']);
       expect(sessionList.claudeModelEfforts['claude-opus-4-7'], [
         'low',
@@ -1226,6 +1228,12 @@ void main() {
         'offset': 40,
         'projectPath': '/tmp/project',
         'requestScope': 'project',
+        'requestId': 'catalog-7-12',
+        'queryGeneration': 7,
+        'catalogRevision': 23,
+        'provider': 'codex',
+        'namedOnly': true,
+        'searchQuery': 'needle',
       });
 
       expect(msg, isA<RecentSessionsMessage>());
@@ -1235,6 +1243,12 @@ void main() {
       expect(recentSessions.offset, 40);
       expect(recentSessions.projectPath, '/tmp/project');
       expect(recentSessions.requestScope, 'project');
+      expect(recentSessions.requestId, 'catalog-7-12');
+      expect(recentSessions.queryGeneration, 7);
+      expect(recentSessions.catalogRevision, 23);
+      expect(recentSessions.provider, 'codex');
+      expect(recentSessions.namedOnly, isTrue);
+      expect(recentSessions.searchQuery, 'needle');
     });
 
     test('RecentSession parses resumeCwd for worktree resume target', () {

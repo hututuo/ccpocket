@@ -167,6 +167,9 @@
   "deleteMachineConfirm": "Delete \"{displayName}\"? This will remove all saved credentials.",
 
   "connectToBridgeServer": "Connect to Bridge Server",
+  "connectingToBridge": "Connecting securely to Bridge…",
+  "loadingSessionStatus": "Connected. Loading live session status…",
+  "loadingConversationCatalog": "Session status is ready. Loading your conversation catalog…",
   "orConnectManually": "or connect manually",
   "serverUrl": "Server URL",
   "serverUrlHint": "ws://<host-ip>:8765",

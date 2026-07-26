@@ -423,6 +423,15 @@ class AppLocalizationsJa extends AppLocalizations {
   String get connectToBridgeServer => 'Bridge Server に接続';
 
   @override
+  String get connectingToBridge => 'Bridge に安全に接続しています…';
+
+  @override
+  String get loadingSessionStatus => '接続しました。セッション状態を読み込んでいます…';
+
+  @override
+  String get loadingConversationCatalog => 'セッション状態の準備が完了しました。会話一覧を読み込んでいます…';
+
+  @override
   String get orConnectManually => 'または手動で接続';
 
   @override

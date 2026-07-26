@@ -925,9 +925,9 @@ describe("parseClientMessage", () => {
     expect(msg).toEqual({ type: "list_recent_sessions" });
   });
 
-  it("parses list_recent_sessions with offset and projectPath", () => {
+  it("parses list_recent_sessions with correlation and filters", () => {
     const msg = parseClientMessage(
-      '{"type":"list_recent_sessions","limit":10,"offset":20,"projectPath":"/tmp/project","requestScope":"project"}',
+      '{"type":"list_recent_sessions","limit":10,"offset":20,"projectPath":"/tmp/project","requestScope":"project","requestId":"catalog-1","queryGeneration":7,"provider":"codex","namedOnly":true,"searchQuery":"needle"}',
     );
     expect(msg).toEqual({
       type: "list_recent_sessions",
@@ -935,7 +935,33 @@ describe("parseClientMessage", () => {
       offset: 20,
       projectPath: "/tmp/project",
       requestScope: "project",
+      requestId: "catalog-1",
+      queryGeneration: 7,
+      provider: "codex",
+      namedOnly: true,
+      searchQuery: "needle",
     });
+  });
+
+  it.each([
+    { limit: 0 },
+    { limit: 1.5 },
+    { offset: -1 },
+    { offset: 1.5 },
+    { requestScope: "other" },
+    { requestId: "" },
+    { requestId: "r".repeat(129) },
+    { queryGeneration: -1 },
+    { queryGeneration: 1.5 },
+    { provider: "other" },
+    { namedOnly: "true" },
+    { searchQuery: "q".repeat(513) },
+  ])("rejects invalid recent-session request fields: %o", (fields) => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({ type: "list_recent_sessions", ...fields }),
+      ),
+    ).toBeNull();
   });
 
   it("parses resume_session message", () => {

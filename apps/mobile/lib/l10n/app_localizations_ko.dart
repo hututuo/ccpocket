@@ -424,6 +424,15 @@ class AppLocalizationsKo extends AppLocalizations {
   String get connectToBridgeServer => 'Bridge 서버에 연결';
 
   @override
+  String get connectingToBridge => 'Bridge에 안전하게 연결하는 중…';
+
+  @override
+  String get loadingSessionStatus => '연결되었습니다. 세션 상태를 불러오는 중…';
+
+  @override
+  String get loadingConversationCatalog => '세션 상태가 준비되었습니다. 대화 목록을 불러오는 중…';
+
+  @override
   String get orConnectManually => '또는 수동으로 연결';
 
   @override

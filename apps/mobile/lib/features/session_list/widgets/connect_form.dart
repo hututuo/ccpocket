@@ -28,6 +28,7 @@ class ConnectForm extends StatelessWidget {
   final ValueChanged<MachineWithStatus>? onStopMachine;
   final VoidCallback? onAddMachine;
   final VoidCallback? onRefreshMachines;
+  final String? connectionProgressLabel;
 
   const ConnectForm({
     super.key,
@@ -49,6 +50,7 @@ class ConnectForm extends StatelessWidget {
     this.onStopMachine,
     this.onAddMachine,
     this.onRefreshMachines,
+    this.connectionProgressLabel,
   });
 
   bool get _hasMachineHandlers =>
@@ -99,6 +101,47 @@ class ConnectForm extends StatelessWidget {
             l.connectToBridgeServer,
             style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
           ),
+          if (connectionProgressLabel != null) ...[
+            const SizedBox(height: 16),
+            Semantics(
+              liveRegion: true,
+              label: connectionProgressLabel,
+              child: Container(
+                key: const ValueKey('bridge_connection_progress'),
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primaryContainer.withValues(alpha: 0.55),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.28),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        connectionProgressLabel!,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
 
           // Machines section (favorites + recent)

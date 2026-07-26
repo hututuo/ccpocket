@@ -66,12 +66,12 @@ const _sessionRequestUuid = Uuid();
 // ---- Testable helpers (top-level) ----
 
 /// Keeps the connected home visible only after this exact Bridge target has
-/// produced an authoritative session snapshot.
+/// produced authoritative active-session and recent-session snapshots.
 ///
 /// A WebSocket upgrade is transport readiness, not application readiness. The
 /// latch survives a same-target reconnect so an already-open home does not
-/// flash back to the connection picker, but a new target must prove itself
-/// independently.
+/// flash back to the connection picker, but a new target must prove both
+/// application datasets independently.
 class SessionHomeConnectionGate {
   bool _hasReadyTarget = false;
   String? _readyTargetKey;
@@ -82,6 +82,7 @@ class SessionHomeConnectionGate {
     required BridgeConnectionState state,
     required String targetKey,
     required bool hasAuthoritativeSessionList,
+    required bool hasAuthoritativeRecentSessions,
   }) {
     final previousReady = _hasReadyTarget;
     final previousKey = _readyTargetKey;
@@ -92,7 +93,8 @@ class SessionHomeConnectionGate {
       _readyTargetKey = null;
     }
     if (state == BridgeConnectionState.connected &&
-        hasAuthoritativeSessionList) {
+        hasAuthoritativeSessionList &&
+        hasAuthoritativeRecentSessions) {
       _hasReadyTarget = true;
       _readyTargetKey = targetKey;
     }
@@ -102,9 +104,10 @@ class SessionHomeConnectionGate {
   BridgeConnectionState presentationState({
     required BridgeConnectionState transportState,
     required bool hasAuthoritativeSessionList,
+    required bool hasAuthoritativeRecentSessions,
   }) {
     if (transportState == BridgeConnectionState.connected &&
-        !hasAuthoritativeSessionList) {
+        (!hasAuthoritativeSessionList || !hasAuthoritativeRecentSessions)) {
       return _hasReadyTarget
           ? BridgeConnectionState.reconnecting
           : BridgeConnectionState.connecting;
@@ -308,7 +311,10 @@ class _SessionListScreenState extends State<SessionListScreen>
   // pending operation that owns them. This listener never navigates by itself.
   StreamSubscription<ServerMessage>? _messageSub;
   StreamSubscription<BridgeConnectionState>? _archiveConnectionSub;
+  StreamSubscription<RecentSessionsMessage>? _catalogReadinessSub;
+  StreamSubscription<List<SessionInfo>>? _sessionListReadinessSub;
   late final SessionArchivePendingRequests _archivePendingRequests;
+  int _lastCatalogBootstrapGeneration = -1;
 
   // macOS app update
   AppUpdateInfo? _appUpdateInfo;
@@ -345,6 +351,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       targetKey: _connectionUiTargetKey(bridge),
       hasAuthoritativeSessionList:
           bridge.hasAuthoritativeSessionListForCurrentConnection,
+      hasAuthoritativeRecentSessions:
+          bridge.hasAuthoritativeRecentSessionsForCurrentConnection,
     );
     _desktopContinuityTracker = DesktopSessionListContinuityTracker(bridge);
     _archivePendingRequests = SessionArchivePendingRequests(
@@ -355,6 +363,13 @@ class _SessionListScreenState extends State<SessionListScreen>
         _archivePendingRequests.connectionLost();
       }
       _syncConnectionUiGate(bridge, status);
+    });
+    _catalogReadinessSub = bridge.recentSessionResponses.listen((_) {
+      _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+    });
+    _sessionListReadinessSub = bridge.sessionList.listen((_) {
+      _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+      _refreshCatalogAfterAuthoritativeSessionList(bridge);
     });
     _messageSub = bridge.messages.listen((msg) {
       if (msg is SystemMessage &&
@@ -406,6 +421,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       _updateUnseenSessions(sessions);
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
     });
+    _refreshCatalogAfterAuthoritativeSessionList(bridge);
     unawaited(_loadMacOSNativeAppBannerState());
     _checkAppUpdate();
   }
@@ -661,9 +677,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (state == AppLifecycleState.resumed) {
       final bridge = context.read<BridgeService>();
       bridge.ensureConnected();
-      if (bridge.isConnected) {
-        bridge.requestSessionList();
-        bridge.requestRecentSessions(projectPath: bridge.currentProjectFilter);
+      if (bridge.hasAuthoritativeSessionListForCurrentConnection) {
+        unawaited(context.read<SessionListCubit>().refresh());
       }
     }
   }
@@ -677,6 +692,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
     _messageSub?.cancel();
     _archiveConnectionSub?.cancel();
+    _catalogReadinessSub?.cancel();
+    _sessionListReadinessSub?.cancel();
     _archivePendingRequests.dispose();
     _activeSessionsSub?.cancel();
     _desktopContinuityTracker.close();
@@ -710,7 +727,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       unawaited(tunnelService.closeAll());
     }
     WorkspaceShellScreen.maybeOf(context)?.resetWorkspace();
-    context.read<SessionListCubit>().resetFilters();
+    context.read<SessionListCubit>().handleDisconnect();
   }
 
   void _syncConnectionUiGate(
@@ -722,15 +739,29 @@ class _SessionListScreenState extends State<SessionListScreen>
       targetKey: _connectionUiTargetKey(bridge),
       hasAuthoritativeSessionList:
           bridge.hasAuthoritativeSessionListForCurrentConnection,
+      hasAuthoritativeRecentSessions:
+          bridge.hasAuthoritativeRecentSessionsForCurrentConnection,
     );
+    final isApplicationReady =
+        bridge.hasAuthoritativeSessionListForCurrentConnection &&
+        bridge.hasAuthoritativeRecentSessionsForCurrentConnection;
     final stopAutoConnecting =
         _isAutoConnecting &&
-        (bridge.hasAuthoritativeSessionListForCurrentConnection ||
-            state == BridgeConnectionState.disconnected);
+        (isApplicationReady || state == BridgeConnectionState.disconnected);
     if (!mounted || (!changed && !stopAutoConnecting)) return;
     setState(() {
       if (stopAutoConnecting) _isAutoConnecting = false;
     });
+  }
+
+  void _refreshCatalogAfterAuthoritativeSessionList(BridgeService bridge) {
+    if (!mounted || !bridge.hasAuthoritativeSessionListForCurrentConnection) {
+      return;
+    }
+    final generation = bridge.authoritativeSessionListGeneration;
+    if (generation == _lastCatalogBootstrapGeneration) return;
+    _lastCatalogBootstrapGeneration = generation;
+    unawaited(context.read<SessionListCubit>().refreshCatalog());
   }
 
   String _connectionUiTargetKey(BridgeService bridge) {
@@ -866,9 +897,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  void _refresh() {
-    context.read<SessionListCubit>().refresh();
+  Future<void> _refresh() async {
     final machineManagerCubit = context.read<MachineManagerCubit?>();
+    await context.read<SessionListCubit>().refresh();
     if (machineManagerCubit != null) {
       unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
     }
@@ -1518,7 +1549,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         projectPath: session.projectPath,
       );
       // Also refresh from server to confirm persistence
-      context.read<BridgeService>().requestRecentSessions();
+      unawaited(context.read<SessionListCubit>().refresh());
       return;
     }
 
@@ -2019,11 +2050,15 @@ class _SessionListScreenState extends State<SessionListScreen>
     final hasAuthoritativeSessionList =
         widget.debugRecentSessions != null ||
         bridge.hasAuthoritativeSessionListForCurrentConnection;
+    final hasAuthoritativeRecentSessions =
+        widget.debugRecentSessions != null ||
+        bridge.hasAuthoritativeRecentSessionsForCurrentConnection;
     final connectionState = widget.debugRecentSessions != null
         ? BridgeConnectionState.connected
         : _connectionUiGate.presentationState(
             transportState: transportConnectionState,
             hasAuthoritativeSessionList: hasAuthoritativeSessionList,
+            hasAuthoritativeRecentSessions: hasAuthoritativeRecentSessions,
           );
     final sessions = context.watch<ActiveSessionsCubit>().state;
     final recentSessionsList = _factualRecentSessions(
@@ -2042,6 +2077,16 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
 
     final l = AppLocalizations.of(context);
+    final connectionProgressLabel = switch (transportConnectionState) {
+      BridgeConnectionState.connected when !hasAuthoritativeSessionList =>
+        l.loadingSessionStatus,
+      BridgeConnectionState.connected when !hasAuthoritativeRecentSessions =>
+        l.loadingConversationCatalog,
+      BridgeConnectionState.connecting ||
+      BridgeConnectionState.reconnecting => l.connectingToBridge,
+      _ when _isAutoConnecting => l.connectingToBridge,
+      _ => null,
+    };
 
     // Try to get MachineManagerCubit if available
     final machineManagerCubit = context.watch<MachineManagerCubit?>();
@@ -2058,9 +2103,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         builder: (context, unseenSessionIds) =>
             BlocListener<ConnectionCubit, BridgeConnectionState>(
               listener: (context, nextState) {
-                if (nextState == BridgeConnectionState.connected) {
-                  context.read<SessionListCubit>().refresh();
-                }
+                _syncConnectionUiGate(bridge, nextState);
               },
               child: CallbackShortcuts(
                 bindings: <ShortcutActivator, VoidCallback>{
@@ -2099,6 +2142,7 @@ class _SessionListScreenState extends State<SessionListScreen>
                       machineState: machineState,
                       machineManagerCubit: machineManagerCubit,
                       connectedBridgeLabel: connectedBridgeLabel,
+                      connectionProgressLabel: connectionProgressLabel,
                     ),
                   ),
                 ),
@@ -2215,6 +2259,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     required MachineManagerState? machineState,
     required MachineManagerCubit? machineManagerCubit,
     required String? connectedBridgeLabel,
+    required String? connectionProgressLabel,
   }) {
     final chrome = resolveWorkspacePaneChrome(
       platform: Theme.of(context).platform,
@@ -2234,6 +2279,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       machineState: machineState,
       machineManagerCubit: machineManagerCubit,
       connectedBridgeLabel: connectedBridgeLabel,
+      connectionProgressLabel: connectionProgressLabel,
     );
 
     if (widget.embedded) {
@@ -2336,11 +2382,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     required MachineManagerState? machineState,
     required MachineManagerCubit? machineManagerCubit,
     required String? connectedBridgeLabel,
+    required String? connectionProgressLabel,
   }) {
-    if (_isAutoConnecting) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
     if (showConnectedUI) {
       final bridge = context.read<BridgeService>();
       final settingsState = context.watch<SettingsCubit>().state;
@@ -2366,7 +2409,7 @@ class _SessionListScreenState extends State<SessionListScreen>
           final offlinePendingActions =
               snapshot.data ?? const <OfflinePendingAction>[];
           return RefreshIndicator(
-            onRefresh: () async => _refresh(),
+            onRefresh: _refresh,
             child: HomeContent(
               key: _homeContentKey,
               connectionState: connectionState,
@@ -2388,7 +2431,9 @@ class _SessionListScreenState extends State<SessionListScreen>
               hasMoreSessions: slState.hasMore,
               archivingSessionIds: _archivePendingRequests.identityKeys,
               unseenSessionIds: unseenSessionIds,
-              currentProjectFilter: bridge.currentProjectFilter,
+              currentProjectFilter: context
+                  .read<SessionListCubit>()
+                  .currentProjectFilter,
               onNewSession: _showNewSessionDialog,
               onTapRunning:
                   (
@@ -2471,8 +2516,9 @@ class _SessionListScreenState extends State<SessionListScreen>
               onLoadMore: () => context.read<SessionListCubit>().loadMore(),
               onLoadMoreProject: (path) =>
                   context.read<SessionListCubit>().loadMoreProject(path),
-              onToggleProjectCollapsed: (path) =>
-                  context.read<SessionListCubit>().toggleProjectCollapsed(path),
+              onToggleProjectCollapsed: (path) => unawaited(
+                context.read<SessionListCubit>().toggleProjectCollapsed(path),
+              ),
               onToggleProjectPinned: (path) =>
                   context.read<SessionListCubit>().toggleProjectPinned(path),
               providerFilter: effectiveProviderFilter,
@@ -2527,10 +2573,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       );
     }
 
-    if (connectionState == BridgeConnectionState.connecting) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
     return _ConnectFormWidget(
       discoveredServers: discoveredServers,
       machines: machineState?.machines ?? [],
@@ -2556,6 +2598,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       onStopMachine: _stopMachine,
       onAddMachine: _addMachine,
       onRefreshMachines: () => machineManagerCubit?.refreshAll(),
+      connectionProgressLabel: connectionProgressLabel,
     );
   }
 
@@ -3052,6 +3095,7 @@ class _ConnectFormWidget extends StatelessWidget {
   final ValueChanged<MachineWithStatus> onStopMachine;
   final VoidCallback onAddMachine;
   final VoidCallback? onRefreshMachines;
+  final String? connectionProgressLabel;
 
   const _ConnectFormWidget({
     required this.discoveredServers,
@@ -3071,6 +3115,7 @@ class _ConnectFormWidget extends StatelessWidget {
     required this.onStopMachine,
     required this.onAddMachine,
     this.onRefreshMachines,
+    this.connectionProgressLabel,
   });
 
   @override
@@ -3094,6 +3139,7 @@ class _ConnectFormWidget extends StatelessWidget {
       onStopMachine: onStopMachine,
       onAddMachine: onAddMachine,
       onRefreshMachines: onRefreshMachines,
+      connectionProgressLabel: connectionProgressLabel,
     );
   }
 }

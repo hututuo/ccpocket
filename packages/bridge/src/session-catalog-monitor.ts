@@ -114,6 +114,10 @@ export class SessionCatalogMonitor {
     return this.active;
   }
 
+  get currentRevision(): number {
+    return this.revision;
+  }
+
   start(): Promise<void> {
     if (this.active) return this.scanPromise ?? Promise.resolve();
     this.active = true;

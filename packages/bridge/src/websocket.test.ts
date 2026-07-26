@@ -1787,7 +1787,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         offset: 40,
         projectPath: "/tmp/project",
         requestScope: "project",
+        requestId: "catalog-7-12",
+        queryGeneration: 7,
         provider: "claude",
+        namedOnly: true,
+        searchQuery: "needle",
       },
       ws,
     );
@@ -1805,7 +1809,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       offset: 40,
       projectPath: "/tmp/project",
       requestScope: "project",
+      requestId: "catalog-7-12",
+      queryGeneration: 7,
+      provider: "claude",
+      namedOnly: true,
+      searchQuery: "needle",
     });
+    expect(recent.catalogRevision).toEqual(expect.any(Number));
 
     bridge.close();
   });
@@ -2345,6 +2355,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .map((c: unknown[]) => JSON.parse(c[0] as string))
       .find((msg: any) => msg.type === "session_list");
 
+    expect(sessionList.bridgeInstanceId).toBe((bridge as any).bridgeInstanceId);
+    expect(sessionList.bridgeCapabilities).toContain(
+      "session_catalog_request_correlation_v1",
+    );
     expect(sessionList.codexModels).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",

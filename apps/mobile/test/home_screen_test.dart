@@ -1,7 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
 
+import 'package:ccpocket/features/session_list/widgets/connect_form.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/features/session_list/session_list_screen.dart';
 import 'package:ccpocket/features/settings/state/settings_state.dart';
@@ -63,18 +66,41 @@ void main() {
         state: BridgeConnectionState.connected,
         targetKey: 'machine:a',
         hasAuthoritativeSessionList: false,
+        hasAuthoritativeRecentSessions: false,
       );
 
       expect(gate.hasReadyTarget, isFalse);
       final presentation = gate.presentationState(
         transportState: BridgeConnectionState.connected,
         hasAuthoritativeSessionList: false,
+        hasAuthoritativeRecentSessions: false,
       );
       expect(presentation, BridgeConnectionState.connecting);
       expect(gate.shouldShowConnectedUi(presentation), isFalse);
     });
 
-    test('latches only after the current Bridge publishes its session list', () {
+    test('active sessions alone do not expose placeholder catalog rows', () {
+      final gate = SessionHomeConnectionGate();
+
+      gate.update(
+        state: BridgeConnectionState.connected,
+        targetKey: 'machine:a',
+        hasAuthoritativeSessionList: true,
+        hasAuthoritativeRecentSessions: false,
+      );
+
+      expect(gate.hasReadyTarget, isFalse);
+      expect(
+        gate.presentationState(
+          transportState: BridgeConnectionState.connected,
+          hasAuthoritativeSessionList: true,
+          hasAuthoritativeRecentSessions: false,
+        ),
+        BridgeConnectionState.connecting,
+      );
+    });
+
+    test('latches only after both current Bridge catalogs arrive', () {
       final gate = SessionHomeConnectionGate();
 
       expect(
@@ -82,6 +108,7 @@ void main() {
           state: BridgeConnectionState.connected,
           targetKey: 'machine:a',
           hasAuthoritativeSessionList: true,
+          hasAuthoritativeRecentSessions: true,
         ),
         isTrue,
       );
@@ -98,12 +125,14 @@ void main() {
           state: BridgeConnectionState.connected,
           targetKey: 'machine:a',
           hasAuthoritativeSessionList: true,
+          hasAuthoritativeRecentSessions: true,
         );
 
       gate.update(
         state: BridgeConnectionState.reconnecting,
         targetKey: 'machine:a',
         hasAuthoritativeSessionList: false,
+        hasAuthoritativeRecentSessions: false,
       );
       expect(
         gate.shouldShowConnectedUi(BridgeConnectionState.reconnecting),
@@ -113,6 +142,7 @@ void main() {
       final upgradedButNotReady = gate.presentationState(
         transportState: BridgeConnectionState.connected,
         hasAuthoritativeSessionList: false,
+        hasAuthoritativeRecentSessions: false,
       );
       expect(upgradedButNotReady, BridgeConnectionState.reconnecting);
       expect(gate.shouldShowConnectedUi(upgradedButNotReady), isTrue);
@@ -124,6 +154,7 @@ void main() {
           state: BridgeConnectionState.connected,
           targetKey: 'machine:a',
           hasAuthoritativeSessionList: true,
+          hasAuthoritativeRecentSessions: true,
         );
 
       expect(
@@ -131,6 +162,7 @@ void main() {
           state: BridgeConnectionState.connecting,
           targetKey: 'machine:b',
           hasAuthoritativeSessionList: false,
+          hasAuthoritativeRecentSessions: false,
         ),
         isTrue,
       );
@@ -148,6 +180,7 @@ void main() {
         state: BridgeConnectionState.reconnecting,
         targetKey: 'machine:a',
         hasAuthoritativeSessionList: false,
+        hasAuthoritativeRecentSessions: false,
       );
 
       expect(
@@ -155,6 +188,30 @@ void main() {
         isFalse,
       );
     });
+  });
+
+  testWidgets('connection progress stays within the connection picker', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('zh'),
+        home: Scaffold(
+          body: ConnectForm(
+            discoveredServers: const [],
+            onScanQrCode: () {},
+            onConnectToDiscovered: (_) {},
+            connectionProgressLabel: '正在载入绘画目录…',
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('bridge_connection_progress')), findsOne);
+    expect(find.text('正在载入绘画目录…'), findsOne);
+    expect(find.text('连接到 Bridge 服务'), findsOne);
   });
 
   group('projectCounts', () {
@@ -405,17 +462,27 @@ void main() {
       expect(decoded.containsKey('projectPath'), isFalse);
     });
 
-    test('serializes with offset and projectPath', () {
+    test('serializes with correlation, filters, offset and projectPath', () {
       final msg = ClientMessage.listRecentSessions(
         limit: 10,
         offset: 20,
         projectPath: '/tmp/project',
+        requestId: 'catalog-7-12',
+        queryGeneration: 7,
+        provider: 'codex',
+        namedOnly: true,
+        searchQuery: 'needle',
       );
       final decoded = jsonDecode(msg.toJson()) as Map<String, dynamic>;
       expect(decoded['type'], 'list_recent_sessions');
       expect(decoded['limit'], 10);
       expect(decoded['offset'], 20);
       expect(decoded['projectPath'], '/tmp/project');
+      expect(decoded['requestId'], 'catalog-7-12');
+      expect(decoded['queryGeneration'], 7);
+      expect(decoded['provider'], 'codex');
+      expect(decoded['namedOnly'], isTrue);
+      expect(decoded['searchQuery'], 'needle');
     });
 
     test('omits null optional params', () {

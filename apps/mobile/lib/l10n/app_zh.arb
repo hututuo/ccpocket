@@ -143,6 +143,9 @@
   "deleteMachineConfirm": "要删除“{displayName}”吗？这会移除所有已保存的凭据。",
 
   "connectToBridgeServer": "连接到 Bridge 服务",
+  "connectingToBridge": "正在安全连接 Bridge…",
+  "loadingSessionStatus": "已连接，正在载入会话运行状态…",
+  "loadingConversationCatalog": "运行状态已就绪，正在载入绘画目录…",
   "orConnectManually": "或手动连接",
   "serverUrl": "服务器 URL",
   "serverUrlHint": "ws://<host-ip>:8765",

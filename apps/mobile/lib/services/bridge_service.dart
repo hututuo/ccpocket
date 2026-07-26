@@ -190,6 +190,8 @@ class BridgeService implements BridgeServiceBase {
   final _sessionStoppedController = StreamController<String>.broadcast();
   final _recentSessionsController =
       StreamController<List<RecentSession>>.broadcast();
+  final _recentSessionResponsesController =
+      StreamController<RecentSessionsMessage>.broadcast();
   final _galleryController = StreamController<List<GalleryImage>>.broadcast();
   final _fileListController = StreamController<List<String>>.broadcast();
   final _fileListMessageController =
@@ -263,6 +265,7 @@ class BridgeService implements BridgeServiceBase {
   bool _hasAuthoritativeSessionListForCurrentConnection = false;
   List<RecentSession> _recentSessions = [];
   RecentSessionsMessage? _lastRecentSessionsMessage;
+  String? _bridgeInstanceId;
   List<GalleryImage> _galleryImages = [];
   List<String> _projectHistory = [];
   List<String> _allowedDirs = [];
@@ -359,6 +362,12 @@ class BridgeService implements BridgeServiceBase {
   bool _sessionCatalogRefreshInFlight = false;
   bool _sessionCatalogRefreshDirty = false;
   int _lastSessionCatalogRevision = 0;
+  int _recentSessionsQueryGeneration = 0;
+  int _recentSessionsRequestSequence = 0;
+  final Map<String, String> _latestRecentSessionRequestByScope = {};
+  _RecentSessionsRequest? _legacyRecentSessionsRequestInFlight;
+  final List<_RecentSessionsRequest> _legacyRecentSessionsRequestQueue = [];
+  static const _maxLegacyRecentSessionsRequestQueue = 32;
   static const _sessionCatalogRefreshDebounce = Duration(milliseconds: 250);
   static const _sessionCatalogRefreshRequestTimeout = Duration(seconds: 15);
   static const _sessionCatalogRefreshMinLimit = 20;
@@ -398,10 +407,14 @@ class BridgeService implements BridgeServiceBase {
       _authoritativeSessionListGeneration;
   bool get hasAuthoritativeSessionListForCurrentConnection =>
       isConnected && _hasAuthoritativeSessionListForCurrentConnection;
+  bool get hasAuthoritativeRecentSessionsForCurrentConnection =>
+      isConnected && _lastRecentSessionsMessage != null;
   @override
   Stream<String> get stoppedSessions => _sessionStoppedController.stream;
   Stream<List<RecentSession>> get recentSessionsStream =>
       _recentSessionsController.stream;
+  Stream<RecentSessionsMessage> get recentSessionResponses =>
+      _recentSessionResponsesController.stream;
   Stream<List<GalleryImage>> get galleryStream => _galleryController.stream;
   Stream<List<String>> get projectHistoryStream =>
       _projectHistoryController.stream;
@@ -489,6 +502,7 @@ class BridgeService implements BridgeServiceBase {
   bool get recentSessionsHasMore => _recentSessionsHasMore;
   RecentSessionsMessage? get lastRecentSessionsMessage =>
       _lastRecentSessionsMessage;
+  String? get bridgeInstanceId => _bridgeInstanceId;
   String? get currentProjectFilter => _currentProjectFilter;
   List<GalleryImage> get galleryImages => _galleryImages;
   List<String> get projectHistory => _projectHistory;
@@ -512,6 +526,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(pushRegistrationStatusBridgeCapability);
   bool get supportsSessionCatalogWatch =>
       _bridgeCapabilities.contains(sessionCatalogWatchCapability);
+  bool get supportsSessionCatalogRequestCorrelation =>
+      _bridgeCapabilities.contains(sessionCatalogRequestCorrelationCapability);
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>
       _desiredClientDeliveryMode;
   String? get promptHistoryBridgeId => _promptHistoryBridgeId;
@@ -1382,6 +1398,7 @@ class BridgeService implements BridgeServiceBase {
         (!_sameBridgeTarget(previousUrl, url) ||
             _logicalConnectionIdentity != nextLogicalIdentity);
     _connectionEpoch++;
+    _resetLegacyRecentSessionsTransport();
     _failPendingHistoryRequests(clearCursors: false);
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
@@ -1523,6 +1540,7 @@ class BridgeService implements BridgeServiceBase {
             switch (msg) {
               case SessionListMessage(
                 :final sessions,
+                :final bridgeInstanceId,
                 :final allowedDirs,
                 :final claudeModels,
                 :final claudeModelEfforts,
@@ -1537,6 +1555,8 @@ class BridgeService implements BridgeServiceBase {
               ):
                 _hasAuthoritativeSessionListForCurrentConnection = true;
                 _authoritativeSessionListGeneration++;
+                _bridgeInstanceId = bridgeInstanceId;
+                _rememberPromptHistoryBridgeId(bridgeInstanceId);
                 final externalBySession = <String, bool>{
                   for (final session in _sessions)
                     if (session.externalDesktopTurnActive) session.id: true,
@@ -1562,6 +1582,7 @@ class BridgeService implements BridgeServiceBase {
                 _codexAutoReviewPolicyController.add(codexAutoReviewDisabled);
                 _bridgeVersion = bridgeVersion;
                 _bridgeCapabilities = bridgeCapabilities.toSet();
+                _sendNextLegacyRecentSessionsRequest();
                 // Catalog metadata belongs to the same authoritative
                 // session-list snapshot. Publish it before notifying session
                 // listeners so already-open chats never observe the previous
@@ -1570,19 +1591,25 @@ class BridgeService implements BridgeServiceBase {
                 _codexModelCatalogController.add(_codexModelCatalogRevision);
                 _clearPendingStartActionsForSessions(_sessions);
                 _sessionListController.add(_sessions);
-              case RecentSessionsMessage(:final sessions, :final hasMore):
-                _lastRecentSessionsMessage = msg;
+              case RecentSessionsMessage():
+                final recentResponse = _correlateRecentSessionsResponse(msg);
+                if (recentResponse == null ||
+                    !_isCurrentRecentSessionsResponse(recentResponse)) {
+                  break;
+                }
+                final sessions = recentResponse.sessions;
+                final hasMore = recentResponse.hasMore;
                 final isProjectMerge =
-                    msg.requestScope == 'project' &&
-                    msg.projectPath != null &&
-                    msg.projectPath!.isNotEmpty;
+                    recentResponse.requestScope == 'project' &&
+                    recentResponse.projectPath != null &&
+                    recentResponse.projectPath!.isNotEmpty;
                 if (isProjectMerge) {
                   _recentSessions = _mergeRecentSessions(
                     _recentSessions,
                     sessions,
                   );
-                } else if (msg.requestScope == 'catalog') {
-                  final catalogLimit = msg.limit ?? sessions.length;
+                } else if (recentResponse.requestScope == 'catalog') {
+                  final catalogLimit = recentResponse.limit ?? sessions.length;
                   _recentSessionsHasMore =
                       hasMore || _recentSessions.length > catalogLimit;
                   _recentSessions = _replaceRecentSessionsCatalogPrefix(
@@ -1593,8 +1620,8 @@ class BridgeService implements BridgeServiceBase {
                   _finishSessionCatalogRefresh();
                 } else {
                   _recentSessionsHasMore = hasMore;
-                  if (msg.requestScope == 'append' ||
-                      (msg.requestScope == null && _appendMode)) {
+                  if (recentResponse.requestScope == 'append' ||
+                      (recentResponse.requestScope == null && _appendMode)) {
                     _recentSessions = _mergeRecentSessions(
                       _recentSessions,
                       sessions,
@@ -1604,6 +1631,27 @@ class BridgeService implements BridgeServiceBase {
                   }
                   _appendMode = false;
                 }
+                final response = RecentSessionsMessage(
+                  sessions: List<RecentSession>.unmodifiable(_recentSessions),
+                  hasMore: isProjectMerge ? hasMore : _recentSessionsHasMore,
+                  limit: recentResponse.limit,
+                  offset: recentResponse.offset,
+                  projectPath: recentResponse.projectPath,
+                  requestScope: recentResponse.requestScope,
+                  requestId: recentResponse.requestId,
+                  queryGeneration: recentResponse.queryGeneration,
+                  catalogRevision: recentResponse.catalogRevision,
+                  provider: recentResponse.provider,
+                  namedOnly: recentResponse.namedOnly,
+                  searchQuery: recentResponse.searchQuery,
+                );
+                _lastRecentSessionsMessage = response;
+                final revision = recentResponse.catalogRevision;
+                if (revision != null &&
+                    revision > _lastSessionCatalogRevision) {
+                  _lastSessionCatalogRevision = revision;
+                }
+                _recentSessionResponsesController.add(response);
                 _recentSessionsController.add(_recentSessions);
               case SessionCatalogChangedMessage(:final revision):
                 _handleSessionCatalogChanged(revision);
@@ -1947,9 +1995,13 @@ class BridgeService implements BridgeServiceBase {
     _sessions = const [];
     _recentSessions = const [];
     _lastRecentSessionsMessage = null;
+    _bridgeInstanceId = null;
     _recentSessionsHasMore = false;
     _appendMode = false;
     _currentProjectFilter = null;
+    _recentSessionsQueryGeneration++;
+    _latestRecentSessionRequestByScope.clear();
+    _resetLegacyRecentSessionsTransport();
     _galleryImages = const [];
     _projectHistory = const [];
     _allowedDirs = const [];
@@ -3197,19 +3249,14 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void requestRecentSessions({int? limit, int? offset, String? projectPath}) {
-    if (offset == null || offset == 0) {
-      _appendMode = false;
-    }
-    send(
-      ClientMessage.listRecentSessions(
-        limit: limit,
-        offset: offset,
-        projectPath: projectPath,
-        requestScope: 'list',
-        provider: _currentProvider,
-        namedOnly: _currentNamedOnly,
-        searchQuery: _currentSearchQuery,
-      ),
+    final startsNewQuery = offset == null || offset == 0;
+    if (startsNewQuery) _appendMode = false;
+    _sendRecentSessionsRequest(
+      limit: limit,
+      offset: offset,
+      projectPath: projectPath ?? _currentProjectFilter,
+      requestScope: 'list',
+      startsNewQuery: startsNewQuery,
     );
   }
 
@@ -3222,16 +3269,12 @@ class BridgeService implements BridgeServiceBase {
   }) {
     final requestedProjectPath = projectPath ?? _currentProjectFilter;
     _appendMode = true;
-    send(
-      ClientMessage.listRecentSessions(
-        limit: pageSize,
-        offset: offset ?? _recentSessions.length,
-        projectPath: requestedProjectPath,
-        requestScope: requestScope,
-        provider: _currentProvider,
-        namedOnly: _currentNamedOnly,
-        searchQuery: _currentSearchQuery,
-      ),
+    _sendRecentSessionsRequest(
+      limit: pageSize,
+      offset: offset ?? _recentSessions.length,
+      projectPath: requestedProjectPath,
+      requestScope: requestScope,
+      startsNewQuery: false,
     );
   }
 
@@ -3240,16 +3283,12 @@ class BridgeService implements BridgeServiceBase {
   void switchProjectFilter(String? projectPath, {int pageSize = 20}) {
     _currentProjectFilter = projectPath;
     _appendMode = false;
-    send(
-      ClientMessage.listRecentSessions(
-        limit: pageSize,
-        offset: 0,
-        projectPath: projectPath,
-        requestScope: 'list',
-        provider: _currentProvider,
-        namedOnly: _currentNamedOnly,
-        searchQuery: _currentSearchQuery,
-      ),
+    _sendRecentSessionsRequest(
+      limit: pageSize,
+      offset: 0,
+      projectPath: projectPath,
+      requestScope: 'list',
+      startsNewQuery: true,
     );
   }
 
@@ -3266,18 +3305,138 @@ class BridgeService implements BridgeServiceBase {
     _currentNamedOnly = namedOnly;
     _currentSearchQuery = searchQuery;
     _appendMode = false;
-    send(
-      ClientMessage.listRecentSessions(
-        limit: pageSize,
-        offset: 0,
-        projectPath: projectPath,
-        requestScope: 'list',
-        provider: provider,
-        namedOnly: namedOnly,
-        searchQuery: searchQuery,
-      ),
+    _sendRecentSessionsRequest(
+      limit: pageSize,
+      offset: 0,
+      projectPath: projectPath,
+      requestScope: 'list',
+      startsNewQuery: true,
     );
   }
+
+  void _sendRecentSessionsRequest({
+    required String requestScope,
+    required bool startsNewQuery,
+    int? limit,
+    int? offset,
+    String? projectPath,
+  }) {
+    if (startsNewQuery) {
+      _recentSessionsQueryGeneration++;
+      _latestRecentSessionRequestByScope.clear();
+    }
+    final requestId =
+        'catalog-$_connectionEpoch-$_recentSessionsQueryGeneration-'
+        '${++_recentSessionsRequestSequence}';
+    final scopeKey = _recentSessionRequestScopeKey(requestScope, projectPath);
+    _latestRecentSessionRequestByScope[scopeKey] = requestId;
+    final request = _RecentSessionsRequest(
+      limit: limit,
+      offset: offset,
+      projectPath: projectPath,
+      requestScope: requestScope,
+      requestId: requestId,
+      queryGeneration: _recentSessionsQueryGeneration,
+      provider: _currentProvider,
+      namedOnly: _currentNamedOnly,
+      searchQuery: _currentSearchQuery,
+    );
+    if (supportsSessionCatalogRequestCorrelation) {
+      send(request.toClientMessage());
+      return;
+    }
+    _enqueueLegacyRecentSessionsRequest(
+      request,
+      startsNewQuery: startsNewQuery,
+    );
+  }
+
+  void _enqueueLegacyRecentSessionsRequest(
+    _RecentSessionsRequest request, {
+    required bool startsNewQuery,
+  }) {
+    if (startsNewQuery) {
+      _legacyRecentSessionsRequestQueue.clear();
+    } else {
+      final scopeKey = _recentSessionRequestScopeKey(
+        request.requestScope,
+        request.projectPath,
+      );
+      _legacyRecentSessionsRequestQueue.removeWhere(
+        (queued) =>
+            _recentSessionRequestScopeKey(
+              queued.requestScope,
+              queued.projectPath,
+            ) ==
+            scopeKey,
+      );
+    }
+    _legacyRecentSessionsRequestQueue.add(request);
+    if (_legacyRecentSessionsRequestQueue.length >
+        _maxLegacyRecentSessionsRequestQueue) {
+      _legacyRecentSessionsRequestQueue.removeAt(0);
+    }
+    _sendNextLegacyRecentSessionsRequest();
+  }
+
+  void _sendNextLegacyRecentSessionsRequest() {
+    if (_legacyRecentSessionsRequestInFlight != null ||
+        _legacyRecentSessionsRequestQueue.isEmpty ||
+        !isConnected) {
+      return;
+    }
+    final request = _legacyRecentSessionsRequestQueue.removeAt(0);
+    _legacyRecentSessionsRequestInFlight = request;
+    send(request.toClientMessage());
+  }
+
+  RecentSessionsMessage? _correlateRecentSessionsResponse(
+    RecentSessionsMessage response,
+  ) {
+    final inFlight = _legacyRecentSessionsRequestInFlight;
+    if (inFlight == null) {
+      return response.requestId == null &&
+              supportsSessionCatalogRequestCorrelation
+          ? null
+          : response;
+    }
+
+    if (response.requestId != null &&
+        response.requestId != inFlight.requestId) {
+      return response;
+    }
+    _legacyRecentSessionsRequestInFlight = null;
+    _sendNextLegacyRecentSessionsRequest();
+    if (response.requestId != null) return response;
+    return inFlight.correlate(response);
+  }
+
+  void _resetLegacyRecentSessionsTransport() {
+    _legacyRecentSessionsRequestInFlight = null;
+    _legacyRecentSessionsRequestQueue.clear();
+  }
+
+  bool _isCurrentRecentSessionsResponse(RecentSessionsMessage message) {
+    final responseGeneration = message.queryGeneration;
+    if (responseGeneration != null &&
+        responseGeneration != _recentSessionsQueryGeneration) {
+      return false;
+    }
+    final requestId = message.requestId;
+    if (requestId == null) {
+      return false;
+    }
+    final scopeKey = _recentSessionRequestScopeKey(
+      message.requestScope ?? 'list',
+      message.projectPath,
+    );
+    return _latestRecentSessionRequestByScope[scopeKey] == requestId;
+  }
+
+  static String _recentSessionRequestScopeKey(
+    String requestScope,
+    String? projectPath,
+  ) => '$requestScope\n${projectPath ?? ''}';
 
   void _handleSessionCatalogChanged(int revision) {
     if (revision <= 0 || revision <= _lastSessionCatalogRevision) return;
@@ -3320,16 +3479,12 @@ class BridgeService implements BridgeServiceBase {
       _sessionCatalogRefreshMinLimit,
       min(_recentSessions.length, _sessionCatalogRefreshMaxLimit),
     );
-    send(
-      ClientMessage.listRecentSessions(
-        limit: limit,
-        offset: 0,
-        projectPath: _currentProjectFilter,
-        requestScope: 'catalog',
-        provider: _currentProvider,
-        namedOnly: _currentNamedOnly,
-        searchQuery: _currentSearchQuery,
-      ),
+    _sendRecentSessionsRequest(
+      limit: limit,
+      offset: 0,
+      projectPath: _currentProjectFilter,
+      requestScope: 'catalog',
+      startsNewQuery: false,
     );
     _sessionCatalogRefreshTimeout?.cancel();
     _sessionCatalogRefreshTimeout = Timer(
@@ -4934,6 +5089,7 @@ class BridgeService implements BridgeServiceBase {
     _codexModelCatalogController.close();
     _sessionStoppedController.close();
     _recentSessionsController.close();
+    _recentSessionResponsesController.close();
     _galleryController.close();
     _fileListController.close();
     _fileListMessageController.close();
@@ -5004,6 +5160,58 @@ class _PendingPermissionChange {
   final String sessionId;
   final String permissionChangeId;
   final Timer timer;
+}
+
+class _RecentSessionsRequest {
+  const _RecentSessionsRequest({
+    required this.limit,
+    required this.offset,
+    required this.projectPath,
+    required this.requestScope,
+    required this.requestId,
+    required this.queryGeneration,
+    required this.provider,
+    required this.namedOnly,
+    required this.searchQuery,
+  });
+
+  final int? limit;
+  final int? offset;
+  final String? projectPath;
+  final String requestScope;
+  final String requestId;
+  final int queryGeneration;
+  final String? provider;
+  final bool? namedOnly;
+  final String? searchQuery;
+
+  ClientMessage toClientMessage() => ClientMessage.listRecentSessions(
+    limit: limit,
+    offset: offset,
+    projectPath: projectPath,
+    requestScope: requestScope,
+    requestId: requestId,
+    queryGeneration: queryGeneration,
+    provider: provider,
+    namedOnly: namedOnly,
+    searchQuery: searchQuery,
+  );
+
+  RecentSessionsMessage correlate(RecentSessionsMessage response) =>
+      RecentSessionsMessage(
+        sessions: response.sessions,
+        hasMore: response.hasMore,
+        limit: response.limit ?? limit,
+        offset: response.offset ?? offset,
+        projectPath: response.projectPath ?? projectPath,
+        requestScope: response.requestScope ?? requestScope,
+        requestId: requestId,
+        queryGeneration: queryGeneration,
+        catalogRevision: response.catalogRevision,
+        provider: provider,
+        namedOnly: namedOnly,
+        searchQuery: searchQuery,
+      );
 }
 
 class _DeliveryPendingInputState {

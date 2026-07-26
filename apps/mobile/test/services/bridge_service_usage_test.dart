@@ -162,6 +162,158 @@ void main() {
       bridge.dispose();
     });
 
+    test('correlated catalog responses ignore superseded queries', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+      server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+      final outgoing = <ClientMessage>[];
+      final responses = <RecentSessionsMessage>[];
+      final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+      final responseSubscription = bridge.recentSessionResponses.listen(
+        responses.add,
+      );
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      final socket = await socketReady.future;
+      socket.add(
+        jsonEncode({
+          'type': 'session_list',
+          'bridgeInstanceId': 'bridge-a',
+          'sessions': [],
+          'bridgeCapabilities': [sessionCatalogRequestCorrelationCapability],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      bridge.switchFilter(searchQuery: 'old');
+      bridge.switchFilter(searchQuery: 'new');
+      final requests = outgoing
+          .map(
+            (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+          )
+          .where((message) => message['type'] == 'list_recent_sessions')
+          .toList();
+      expect(requests, hasLength(2));
+      final oldRequest = requests.first;
+      final newRequest = requests.last;
+      expect(bridge.bridgeInstanceId, 'bridge-a');
+
+      Map<String, dynamic> session(String id, String prompt) => {
+        'sessionId': id,
+        'provider': 'codex',
+        'firstPrompt': prompt,
+        'created': '2026-07-26T00:00:00Z',
+        'modified': '2026-07-26T00:00:01Z',
+        'gitBranch': '',
+        'projectPath': '/project',
+        'isSidechain': false,
+      };
+
+      void sendResponse(
+        Map<String, dynamic> request,
+        String id,
+        String prompt,
+      ) {
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': [session(id, prompt)],
+            'hasMore': false,
+            'limit': request['limit'],
+            'offset': request['offset'],
+            'projectPath': request['projectPath'],
+            'requestScope': request['requestScope'],
+            'requestId': request['requestId'],
+            'queryGeneration': request['queryGeneration'],
+            'catalogRevision': 9,
+            'provider': request['provider'],
+            'namedOnly': request['namedOnly'],
+            'searchQuery': request['searchQuery'],
+          }),
+        );
+      }
+
+      sendResponse(newRequest, 'new-session', 'new result');
+      sendResponse(oldRequest, 'old-session', 'stale result');
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+
+      expect(bridge.recentSessions.single.sessionId, 'new-session');
+      expect(responses, hasLength(1));
+      expect(responses.single.searchQuery, 'new');
+
+      bridge.disconnect();
+      await responseSubscription.cancel();
+      await socket.close();
+      await server.close(force: true);
+      bridge.dispose();
+    });
+
+    test(
+      'legacy catalog requests serialize and discard stale results',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': const <String>[],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        bridge.switchFilter(searchQuery: 'old');
+        bridge.switchFilter(searchQuery: 'new');
+        List<Map<String, dynamic>> requests() => outgoing
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .where((message) => message['type'] == 'list_recent_sessions')
+            .toList();
+        expect(requests(), hasLength(1));
+        expect(requests().single['searchQuery'], 'old');
+
+        Map<String, dynamic> response(String id, String prompt) => {
+          'type': 'recent_sessions',
+          'sessions': [
+            {
+              'sessionId': id,
+              'provider': 'codex',
+              'firstPrompt': prompt,
+              'created': '2026-07-26T00:00:00Z',
+              'modified': '2026-07-26T00:00:01Z',
+              'gitBranch': '',
+              'projectPath': '/project',
+              'isSidechain': false,
+            },
+          ],
+          'hasMore': false,
+        };
+
+        socket.add(jsonEncode(response('old-session', 'stale result')));
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        expect(bridge.recentSessions, isEmpty);
+        expect(requests(), hasLength(2));
+        expect(requests().last['searchQuery'], 'new');
+
+        socket.add(jsonEncode(response('new-session', 'new result')));
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        expect(bridge.recentSessions.single.sessionId, 'new-session');
+        expect(bridge.lastRecentSessionsMessage?.searchQuery, 'new');
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
     test(
       'catalog invalidation refreshes a bounded metadata window without activating sessions',
       () async {
@@ -182,6 +334,8 @@ void main() {
             'bridgeCapabilities': [sessionCatalogWatchCapability],
           }),
         );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        bridge.requestRecentSessions();
         socket.add(
           jsonEncode({
             'type': 'recent_sessions',
@@ -696,8 +850,7 @@ void main() {
         server.transform(WebSocketTransformer()).listen((socket) {
           socketReady.complete(socket);
           socket.listen((data) {
-            final request =
-                jsonDecode(data as String) as Map<String, dynamic>;
+            final request = jsonDecode(data as String) as Map<String, dynamic>;
             if (request['type'] != 'get_history_page') return;
             pageRequestCount++;
             Future<void>.delayed(const Duration(milliseconds: 20), () {
@@ -806,8 +959,7 @@ void main() {
         server.transform(WebSocketTransformer()).listen((socket) {
           socketReady.complete(socket);
           socket.listen((data) {
-            final request =
-                jsonDecode(data as String) as Map<String, dynamic>;
+            final request = jsonDecode(data as String) as Map<String, dynamic>;
             if (request['type'] != 'get_history_tool_details') return;
             requests.add(request);
             if (requests.length == 1) {
@@ -821,10 +973,7 @@ void main() {
                       'toolUseId': 'tool-1',
                       'toolName': 'Read',
                       'input': {'file_path': '/tmp/a.txt'},
-                      'result': {
-                        'content': 'contents',
-                        'toolName': 'Read',
-                      },
+                      'result': {'content': 'contents', 'toolName': 'Read'},
                     },
                   ],
                 }),
@@ -923,38 +1072,41 @@ void main() {
       },
     );
 
-    test('history tool details remain available from a local mirror offline', () async {
-      final bridge = BridgeService();
-      bridge.configureSessionHistoryToolDetails(({
-        required runtimeSessionId,
-        required toolUseIds,
-      }) async {
-        expect(runtimeSessionId, 's1');
-        expect(toolUseIds, ['tool-local', 'missing']);
-        return const [
-          HistoryToolDetail(
-            toolUseId: 'tool-local',
-            toolName: 'Read',
-            input: {'file_path': '/tmp/local.txt'},
-            result: ToolResultMessage(
+    test(
+      'history tool details remain available from a local mirror offline',
+      () async {
+        final bridge = BridgeService();
+        bridge.configureSessionHistoryToolDetails(({
+          required runtimeSessionId,
+          required toolUseIds,
+        }) async {
+          expect(runtimeSessionId, 's1');
+          expect(toolUseIds, ['tool-local', 'missing']);
+          return const [
+            HistoryToolDetail(
               toolUseId: 'tool-local',
               toolName: 'Read',
-              content: 'local contents',
+              input: {'file_path': '/tmp/local.txt'},
+              result: ToolResultMessage(
+                toolUseId: 'tool-local',
+                toolName: 'Read',
+                content: 'local contents',
+              ),
             ),
-          ),
-        ];
-      });
+          ];
+        });
 
-      final details = await bridge.requestHistoryToolDetails(
-        runtimeSessionId: 's1',
-        toolUseIds: const ['tool-local', 'missing'],
-      );
+        final details = await bridge.requestHistoryToolDetails(
+          runtimeSessionId: 's1',
+          toolUseIds: const ['tool-local', 'missing'],
+        );
 
-      expect(details, hasLength(1));
-      expect(details?.single.toolUseId, 'tool-local');
-      expect(details?.single.result?.content, 'local contents');
-      bridge.dispose();
-    });
+        expect(details, hasLength(1));
+        expect(details?.single.toolUseId, 'tool-local');
+        expect(details?.single.result?.content, 'local contents');
+        bridge.dispose();
+      },
+    );
 
     test('requestSessionHistory uses last complete cached sequence', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

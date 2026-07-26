@@ -1231,6 +1231,7 @@ sealed class ServerMessage {
         sessions: (json['sessions'] as List)
             .map((s) => SessionInfo.fromJson(s as Map<String, dynamic>))
             .toList(),
+        bridgeInstanceId: json['bridgeInstanceId'] as String?,
         allowedDirs:
             (json['allowedDirs'] as List?)?.map((e) => e as String).toList() ??
             const [],
@@ -1288,6 +1289,12 @@ sealed class ServerMessage {
         offset: json['offset'] as int?,
         projectPath: json['projectPath'] as String?,
         requestScope: json['requestScope'] as String?,
+        requestId: json['requestId'] as String?,
+        queryGeneration: (json['queryGeneration'] as num?)?.toInt(),
+        catalogRevision: (json['catalogRevision'] as num?)?.toInt(),
+        provider: json['provider'] as String?,
+        namedOnly: json['namedOnly'] as bool?,
+        searchQuery: json['searchQuery'] as String?,
       ),
       sessionCatalogChangedMessageType => SessionCatalogChangedMessage(
         revision: (json['revision'] as num?)?.toInt() ?? 0,
@@ -3119,6 +3126,7 @@ class ThinkingDeltaMessage implements ServerMessage {
 
 class SessionListMessage implements ServerMessage {
   final List<SessionInfo> sessions;
+  final String? bridgeInstanceId;
   final List<String> allowedDirs;
   final List<String> claudeModels;
   final Map<String, List<String>> claudeModelEfforts;
@@ -3132,6 +3140,7 @@ class SessionListMessage implements ServerMessage {
   final List<String> bridgeCapabilities;
   const SessionListMessage({
     required this.sessions,
+    this.bridgeInstanceId,
     this.allowedDirs = const [],
     this.claudeModels = const [],
     this.claudeModelEfforts = const {},
@@ -3153,6 +3162,12 @@ class RecentSessionsMessage implements ServerMessage {
   final int? offset;
   final String? projectPath;
   final String? requestScope;
+  final String? requestId;
+  final int? queryGeneration;
+  final int? catalogRevision;
+  final String? provider;
+  final bool? namedOnly;
+  final String? searchQuery;
   const RecentSessionsMessage({
     required this.sessions,
     this.hasMore = false,
@@ -3160,6 +3175,12 @@ class RecentSessionsMessage implements ServerMessage {
     this.offset,
     this.projectPath,
     this.requestScope,
+    this.requestId,
+    this.queryGeneration,
+    this.catalogRevision,
+    this.provider,
+    this.namedOnly,
+    this.searchQuery,
   });
 }
 
@@ -4780,6 +4801,8 @@ const historyToolDetailCapability = 'history_tool_detail_v1';
 const sessionActivityAtCapability = 'session_activity_at_v1';
 const sessionRequestCorrelationCapability = 'session_request_correlation_v1';
 const sessionCatalogWatchCapability = 'session_catalog_watch_v1';
+const sessionCatalogRequestCorrelationCapability =
+    'session_catalog_request_correlation_v1';
 const sessionCatalogChangedMessageType = 'session_catalog_changed_v1';
 
 class ClientMessage {
@@ -5307,6 +5330,8 @@ class ClientMessage {
     int? offset,
     String? projectPath,
     String? requestScope,
+    String? requestId,
+    int? queryGeneration,
     String? provider,
     bool? namedOnly,
     String? searchQuery,
@@ -5317,6 +5342,8 @@ class ClientMessage {
       'offset': ?offset,
       'projectPath': ?projectPath,
       'requestScope': ?requestScope,
+      'requestId': ?requestId,
+      'queryGeneration': ?queryGeneration,
       'provider': ?provider,
       'namedOnly': ?namedOnly,
       'searchQuery': ?searchQuery,

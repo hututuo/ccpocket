@@ -882,6 +882,24 @@ abstract class AppLocalizations {
   /// **'Bridge Server に接続'**
   String get connectToBridgeServer;
 
+  /// No description provided for @connectingToBridge.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge に安全に接続しています…'**
+  String get connectingToBridge;
+
+  /// No description provided for @loadingSessionStatus.
+  ///
+  /// In ja, this message translates to:
+  /// **'接続しました。セッション状態を読み込んでいます…'**
+  String get loadingSessionStatus;
+
+  /// No description provided for @loadingConversationCatalog.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッション状態の準備が完了しました。会話一覧を読み込んでいます…'**
+  String get loadingConversationCatalog;
+
   /// No description provided for @orConnectManually.
   ///
   /// In ja, this message translates to:
