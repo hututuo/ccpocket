@@ -121,6 +121,7 @@ Widget _buildHomeContent({
                   gitBranch,
                   worktreePath,
                   provider,
+                  durableProviderSessionId,
                   permissionMode,
                   sandboxMode,
                   approvalPolicy,

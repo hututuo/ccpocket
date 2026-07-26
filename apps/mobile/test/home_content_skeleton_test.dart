@@ -19,6 +19,20 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:skeletonizer/src/widgets/skeletonizer.dart';
 
+typedef _RunningSessionTap =
+    void Function(
+      String sessionId, {
+      String? projectPath,
+      String? gitBranch,
+      String? worktreePath,
+      String? provider,
+      String? durableProviderSessionId,
+      String? permissionMode,
+      String? sandboxMode,
+      String? approvalPolicy,
+      String? approvalsReviewer,
+    });
+
 /// Minimal mock for BridgeService that satisfies SessionListCubit.
 class _MockBridgeService extends BridgeService {
   final _recentSessionsController =
@@ -101,6 +115,7 @@ Widget _buildHomeContent({
   bool isInitialLoading = false,
   bool showMacOSNativeAppBanner = false,
   VoidCallback? onDismissMacOSNativeAppBanner,
+  _RunningSessionTap? onTapRunning,
   required SessionListCubit cubit,
   required DraftService draftService,
   required RevenueCatService revenueCatService,
@@ -137,12 +152,14 @@ Widget _buildHomeContent({
             currentProjectFilter: currentProjectFilter,
             onNewSession: () {},
             onTapRunning:
+                onTapRunning ??
                 (
                   id, {
                   projectPath,
                   gitBranch,
                   worktreePath,
                   provider,
+                  durableProviderSessionId,
                   permissionMode,
                   sandboxMode,
                   approvalPolicy,
@@ -202,6 +219,53 @@ void main() {
   });
 
   group('HomeContent skeleton', () {
+    testWidgets(
+      'running conversation forwards its durable provider identity on open',
+      (tester) async {
+        String? openedRuntimeId;
+        String? openedDurableId;
+        await tester.pumpWidget(
+          _buildHomeContent(
+            sessions: [
+              _runningSession(
+                id: 'runtime-1',
+                providerSessionId: 'thread-1',
+              ),
+            ],
+            onTapRunning:
+                (
+                  sessionId, {
+                  projectPath,
+                  gitBranch,
+                  worktreePath,
+                  provider,
+                  durableProviderSessionId,
+                  permissionMode,
+                  sandboxMode,
+                  approvalPolicy,
+                  approvalsReviewer,
+                }) {
+                  openedRuntimeId = sessionId;
+                  openedDurableId = durableProviderSessionId;
+                },
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pump();
+
+        await tester.tap(
+          find.byKey(const ValueKey('running_session_runtime-1')),
+        );
+        await tester.pump();
+
+        expect(openedRuntimeId, 'runtime-1');
+        expect(openedDurableId, 'thread-1');
+      },
+    );
+
     testWidgets('shows Skeletonizer when isInitialLoading is true and '
         'no sessions exist', (tester) async {
       await tester.pumpWidget(

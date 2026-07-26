@@ -1720,7 +1720,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (widget.embedded) {
       widget.onSelectWorkspaceSession?.call(
         WorkspaceSessionSelection(
-          sessionId: durableProviderSessionId ?? sessionId,
+          sessionId: isPending && durableProviderSessionId != null
+              ? durableProviderSessionId
+              : sessionId,
           durableProviderSessionId: durableProviderSessionId,
           projectPath: projectPath,
           gitBranch: gitBranch,
@@ -2459,6 +2461,7 @@ class _SessionListScreenState extends State<SessionListScreen>
                     String? gitBranch,
                     String? worktreePath,
                     String? provider,
+                    String? durableProviderSessionId,
                     String? permissionMode,
                     String? sandboxMode,
                     String? approvalPolicy,
@@ -2469,6 +2472,7 @@ class _SessionListScreenState extends State<SessionListScreen>
                     gitBranch: gitBranch,
                     worktreePath: worktreePath,
                     provider: provider == 'codex' ? Provider.codex : null,
+                    durableProviderSessionId: durableProviderSessionId,
                     permissionMode: permissionMode,
                     sandboxMode: sandboxMode,
                     approvalPolicy: approvalPolicy,
