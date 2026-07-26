@@ -5,6 +5,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../theme/app_theme.dart';
 import '../../../utils/diff_parser.dart';
+import '../../../utils/image_decode_size.dart';
 import 'diff_image_viewer.dart';
 
 /// Formats a byte count into a human-readable string.
@@ -384,6 +385,12 @@ class _ImageContent extends StatelessWidget {
     return Image.memory(
       bytes,
       fit: BoxFit.contain,
+      // Inline panel capped at 200 logical px tall; the tap-through
+      // viewer decodes at full size. Diff PNGs can be multi-megapixel.
+      cacheWidth: decodeWidthForLogical(
+        context,
+        MediaQuery.sizeOf(context).width,
+      ),
       errorBuilder: (_, _, _) =>
           Center(child: Icon(Icons.broken_image, color: appColors.subtleText)),
     );

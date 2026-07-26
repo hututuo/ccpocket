@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
 import '../../../theme/app_spacing.dart';
+import '../../../utils/image_decode_size.dart';
 import '../generated_image_preview_item.dart';
 import '../generated_image_preview_screen.dart';
 
@@ -257,12 +258,20 @@ class _GeneratedImageThumbnail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Grid tiles are at most half the screen wide; bound by the full
+    // width so cover-fit of wide sources stays crisp. The preview page
+    // re-decodes at full size for zooming.
+    final decodeWidth = decodeWidthForLogical(
+      context,
+      MediaQuery.sizeOf(context).width,
+    );
     final bytes = item.bytes;
     if (bytes != null) {
       return Image.memory(
         bytes,
         fit: fit,
         gaplessPlayback: true,
+        cacheWidth: decodeWidth,
         errorBuilder: (_, _, _) => const _ThumbnailLoadFailure(),
       );
     }
@@ -273,6 +282,7 @@ class _GeneratedImageThumbnail extends StatelessWidget {
       cache: true,
       cacheKey: item.cacheKey,
       cacheMaxAge: _cacheMaxAge,
+      cacheWidth: decodeWidth,
       loadStateChanged: (state) {
         return switch (state.extendedImageLoadState) {
           LoadState.loading => const ColoredBox(

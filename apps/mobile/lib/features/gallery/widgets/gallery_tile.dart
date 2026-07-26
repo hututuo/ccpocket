@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../../models/messages.dart';
 import '../../../theme/app_theme.dart';
+import '../../../utils/image_decode_size.dart';
 
 const _kCacheMaxAge = Duration(days: 7);
 
@@ -47,6 +48,15 @@ class GalleryTile extends StatelessWidget {
                     fit: BoxFit.cover,
                     cache: true,
                     cacheMaxAge: _kCacheMaxAge,
+                    // Half-screen tile, but bound by full screen width:
+                    // cover-fit of a landscape screenshot into the tall
+                    // 0.75-aspect tile is height-dominant and needs the
+                    // extra width to stay crisp. Still ~6x less memory
+                    // than a full-resolution screenshot decode.
+                    cacheWidth: decodeWidthForLogical(
+                      context,
+                      MediaQuery.sizeOf(context).width,
+                    ),
                     loadStateChanged: (state) {
                       switch (state.extendedImageLoadState) {
                         case LoadState.loading:

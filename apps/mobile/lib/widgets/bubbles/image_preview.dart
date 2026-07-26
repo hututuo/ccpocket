@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../models/messages.dart';
+import '../../utils/image_decode_size.dart';
 import '../workspace_pane_chrome.dart';
 
 const _kCacheMaxAge = Duration(days: 7);
@@ -57,6 +58,11 @@ class _SingleImage extends StatelessWidget {
   Widget build(BuildContext context) {
     final url = '$httpBaseUrl${image.url}';
     final dataBytes = _decodeDataImageUrl(url);
+    // In-bubble preview; the full-screen viewer re-decodes at full size.
+    final decodeWidth = decodeWidthForLogical(
+      context,
+      MediaQuery.sizeOf(context).width,
+    );
     return GestureDetector(
       onTap: () => _openFullScreen(context, url),
       child: ClipRRect(
@@ -65,12 +71,17 @@ class _SingleImage extends StatelessWidget {
           width: double.infinity,
           height: 180,
           child: dataBytes != null
-              ? Image.memory(dataBytes, fit: BoxFit.cover)
+              ? Image.memory(
+                  dataBytes,
+                  fit: BoxFit.cover,
+                  cacheWidth: decodeWidth,
+                )
               : ExtendedImage.network(
                   url,
                   fit: BoxFit.cover,
                   cache: true,
                   cacheMaxAge: _kCacheMaxAge,
+                  cacheWidth: decodeWidth,
                   loadStateChanged: (state) {
                     switch (state.extendedImageLoadState) {
                       case LoadState.loading:
@@ -119,18 +130,30 @@ class _ImageThumbnail extends StatelessWidget {
   Widget build(BuildContext context) {
     final url = '$httpBaseUrl${image.url}';
     final dataBytes = _decodeDataImageUrl(url);
+    // Horizontal strip thumbnail; width is intrinsic (aspect x height) but
+    // never usefully exceeds the screen width.
+    final decodeWidth = decodeWidthForLogical(
+      context,
+      MediaQuery.sizeOf(context).width,
+    );
     return GestureDetector(
       onTap: () => _openFullScreen(context, url),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: dataBytes != null
-            ? Image.memory(dataBytes, height: height, fit: BoxFit.cover)
+            ? Image.memory(
+                dataBytes,
+                height: height,
+                fit: BoxFit.cover,
+                cacheWidth: decodeWidth,
+              )
             : ExtendedImage.network(
                 url,
                 height: height,
                 fit: BoxFit.cover,
                 cache: true,
                 cacheMaxAge: _kCacheMaxAge,
+                cacheWidth: decodeWidth,
                 loadStateChanged: (state) {
                   switch (state.extendedImageLoadState) {
                     case LoadState.loading:

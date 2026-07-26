@@ -9,6 +9,7 @@ import '../models/messages.dart';
 import '../services/native_paste_bridge.dart';
 import '../utils/platform_helper.dart';
 import '../utils/diff_parser.dart';
+import '../utils/image_decode_size.dart';
 import 'bubbles/image_preview.dart';
 
 enum ChatFileAttachmentStatus { uploading, ready, failed }
@@ -524,6 +525,9 @@ class _ImagePreview extends StatelessWidget {
                       height: 80,
                       width: 80,
                       fit: BoxFit.cover,
+                      // 2x the tile: cover-fit of a wide source into a
+                      // square box needs width beyond the box to stay crisp.
+                      cacheWidth: decodeWidthForLogical(context, 160),
                     ),
                   ),
                 ),

@@ -6,6 +6,7 @@ import '../../models/messages.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/command_parser.dart';
+import '../../utils/image_decode_size.dart';
 import '../adaptive_context_menu.dart';
 import '../chat_message_timestamp.dart';
 
@@ -174,6 +175,10 @@ class _StandardBubble extends StatelessWidget {
                                   bytes,
                                   width: imageBytesList.length == 1 ? 200 : 120,
                                   fit: BoxFit.cover,
+                                  cacheWidth: decodeWidthForLogical(
+                                    context,
+                                    200,
+                                  ),
                                   errorBuilder: (context, error, stackTrace) =>
                                       Container(
                                         width: imageBytesList.length == 1
@@ -193,6 +198,10 @@ class _StandardBubble extends StatelessWidget {
                                     '$httpBaseUrl$url',
                                     width: imageUrls.length == 1 ? 200 : 120,
                                     fit: BoxFit.cover,
+                                    cacheWidth: decodeWidthForLogical(
+                                      context,
+                                      200,
+                                    ),
                                     errorBuilder:
                                         (context, error, stackTrace) =>
                                             Container(

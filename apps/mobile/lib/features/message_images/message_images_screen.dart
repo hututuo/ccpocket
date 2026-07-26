@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
+import '../../utils/image_decode_size.dart';
 import '../../widgets/bubbles/image_preview.dart';
 import '../../widgets/workspace_pane_chrome.dart';
 
@@ -257,7 +258,16 @@ class _MultiImageList extends StatelessWidget {
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: _NetworkImage(url: url, placeholderHeight: 200),
+            child: _NetworkImage(
+              url: url,
+              placeholderHeight: 200,
+              // List entries render at screen width; the full-screen
+              // viewer pushed on tap decodes at full size.
+              cacheWidth: decodeWidthForLogical(
+                context,
+                MediaQuery.sizeOf(context).width,
+              ),
+            ),
           ),
         );
       },
@@ -270,11 +280,13 @@ class _NetworkImage extends StatelessWidget {
   final String url;
   final double? placeholderHeight;
   final double failedIconSize;
+  final int? cacheWidth;
 
   const _NetworkImage({
     required this.url,
     this.placeholderHeight,
     this.failedIconSize = 32,
+    this.cacheWidth,
   });
 
   @override
@@ -284,6 +296,7 @@ class _NetworkImage extends StatelessWidget {
       fit: BoxFit.contain,
       cache: true,
       cacheMaxAge: const Duration(days: 7),
+      cacheWidth: cacheWidth,
       loadStateChanged: (state) {
         switch (state.extendedImageLoadState) {
           case LoadState.loading:
