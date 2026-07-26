@@ -1566,6 +1566,7 @@ class BridgeService implements BridgeServiceBase {
             switch (msg) {
               case SessionListMessage(
                 :final sessions,
+                :final droppedSessionCount,
                 :final bridgeInstanceId,
                 :final allowedDirs,
                 :final claudeModels,
@@ -1579,6 +1580,13 @@ class BridgeService implements BridgeServiceBase {
                 :final bridgeVersion,
                 :final bridgeCapabilities,
               ):
+                if (droppedSessionCount > 0) {
+                  logger.warning(
+                    'session_list contained $droppedSessionCount malformed '
+                    'session entries; showing the remaining '
+                    '${sessions.length}',
+                  );
+                }
                 _hasAuthoritativeSessionListForCurrentConnection = true;
                 _authoritativeSessionListGeneration++;
                 _bridgeInstanceId = bridgeInstanceId;

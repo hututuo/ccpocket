@@ -103,7 +103,11 @@ class ConversationContentWireEntry {
         'Conversation content message must be a map.',
       );
     }
-    final entry = ConversationContentWireEntry(
+    // Decoding stays lazy (same as ConversationMirrorWireEntry): eagerly
+    // decoding thousands of entries here blocks the main thread, and one
+    // undecodable entry would reject the whole frame instead of only
+    // invalidating the window that contains it.
+    return ConversationContentWireEntry(
       entryId: _conversationContentRequiredString(
         json,
         'entryId',
@@ -119,8 +123,6 @@ class ConversationContentWireEntry {
         Map<String, dynamic>.from(rawMessage),
       ),
     );
-    entry.decodeMessage();
-    return entry;
   }
 }
 

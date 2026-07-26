@@ -32,6 +32,44 @@ void main() {
     expect(event.entries.single.decodeMessage(), isA<StatusMessage>());
   });
 
+  test('accepts a page whose entry payload only fails to decode lazily', () {
+    // Decoding is lazy (same as the mirror slot): one undecodable message
+    // must not reject the whole frame at parse time, and fromJson must not
+    // walk thousands of payloads on the main thread.
+    final message = ServerMessage.fromJson(<String, dynamic>{
+      'type': conversationContentEventCapability,
+      'event': 'snapshot_page',
+      'subscriptionId': 'subscription-1',
+      'bridgeInstanceId': 'bridge-1',
+      'provider': 'codex',
+      'providerSessionId': 'thread-1',
+      'revision': 'revision-1',
+      'pageIndex': 0,
+      'pageCount': 1,
+      'entries': [
+        {
+          'entryId': 'entry-1',
+          'index': 0,
+          'contentHash': 'hash-1',
+          'message': {'type': 'status', 'status': 'idle'},
+        },
+        {
+          'entryId': 'entry-2',
+          'index': 1,
+          'contentHash': 'hash-2',
+          // stream_delta requires a text field, so this decodes with an
+          // error — but only when decodeMessage() is actually called.
+          'message': {'type': 'stream_delta'},
+        },
+      ],
+    });
+
+    final event = message as ConversationContentEventMessage;
+    expect(event.entries, hasLength(2));
+    expect(event.entries.first.decodeMessage(), isA<StatusMessage>());
+    expect(() => event.entries.last.decodeMessage(), throwsA(anything));
+  });
+
   test('rejects malformed or incomplete snapshot events', () {
     expect(
       () => ServerMessage.fromJson(<String, dynamic>{

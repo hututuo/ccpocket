@@ -1991,4 +1991,137 @@ void main() {
       expect(deleteJson['confirmDescendantDeletion'], isTrue);
     });
   });
+
+  group('Guardian approval status parsing', () {
+    test('keeps recognized wire literals', () {
+      expect(
+        GuardianApprovalStatus.fromString('approved'),
+        GuardianApprovalStatus.approved,
+      );
+      expect(
+        GuardianApprovalStatus.fromString('denied'),
+        GuardianApprovalStatus.denied,
+      );
+      expect(
+        GuardianApprovalStatus.fromString('timedOut'),
+        GuardianApprovalStatus.timedOut,
+      );
+      expect(
+        GuardianApprovalStatus.fromString('aborted'),
+        GuardianApprovalStatus.aborted,
+      );
+    });
+
+    test('missing status still means approved for old Bridges', () {
+      // Old Bridges emit guardian_approval only for approved reviews and
+      // omit the status field entirely.
+      expect(
+        GuardianApprovalStatus.fromString(null),
+        GuardianApprovalStatus.approved,
+      );
+    });
+
+    test('fails closed on unrecognized status literals', () {
+      expect(
+        GuardianApprovalStatus.fromString('escalated'),
+        GuardianApprovalStatus.denied,
+      );
+      final message =
+          ServerMessage.fromJson({
+                'type': 'guardian_approval',
+                'risk': 'high',
+                'status': 'someFutureStatus',
+                'reason': 'reason',
+              })
+              as GuardianApprovalMessage;
+      expect(message.status, GuardianApprovalStatus.denied);
+    });
+  });
+
+  group('session_list parsing resilience', () {
+    Map<String, dynamic> validSession(String id) => {
+      'id': id,
+      'provider': 'codex',
+      'projectPath': '/tmp/project',
+      'status': 'idle',
+      'createdAt': '',
+      'lastActivityAt': '',
+    };
+
+    test('skips malformed session entries and counts them', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'session_list',
+                'sessions': [
+                  validSession('s1'),
+                  'not-a-map',
+                  {'id': 42, 'projectPath': '/tmp/project'},
+                  validSession('s2'),
+                ],
+              })
+              as SessionListMessage;
+
+      expect(msg.sessions.map((s) => s.id), ['s1', 's2']);
+      expect(msg.droppedSessionCount, 2);
+    });
+
+    test('parses a fully valid list with zero drops', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'session_list',
+                'sessions': [validSession('s1')],
+              })
+              as SessionListMessage;
+
+      expect(msg.sessions.single.id, 's1');
+      expect(msg.droppedSessionCount, 0);
+    });
+
+    test('a malformed pendingPermission does not drop the session', () {
+      final withBadPermission = validSession('s1')
+        ..['pendingPermission'] = {
+          // Missing toolName and input.
+          'toolUseId': 'tool-1',
+        };
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'session_list',
+                'sessions': [withBadPermission],
+              })
+              as SessionListMessage;
+
+      expect(msg.sessions.single.id, 's1');
+      expect(msg.sessions.single.pendingPermission, isNull);
+      expect(msg.droppedSessionCount, 0);
+    });
+  });
+
+  group('string list parsing drops non-string elements eagerly', () {
+    test('file_list files never throw at iteration time', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'file_list',
+                'files': ['a.txt', 42, 'b.txt'],
+              })
+              as FileListMessage;
+
+      // The old lazy cast<String>() deferred the TypeError to first access
+      // (widget build time); iterating here must be safe.
+      expect(msg.files.toList(), ['a.txt', 'b.txt']);
+    });
+
+    test('git_branches_result branches never throw at iteration time', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'git_branches_result',
+                'current': 'main',
+                'branches': ['main', 7, 'dev'],
+                'checkedOutBranches': ['main', true],
+              })
+              as GitBranchesResultMessage;
+
+      expect(msg.branches.toList(), ['main', 'dev']);
+      expect(msg.checkedOutBranches.toList(), ['main']);
+    });
+  });
 }

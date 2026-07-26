@@ -797,6 +797,72 @@ List<ArtifactRef> _parseArtifactRefs(dynamic value) {
       .toList(growable: false);
 }
 
+/// Parse session_list tolerantly: one malformed session entry must not
+/// blank the whole home screen, so bad entries are skipped and counted.
+SessionListMessage _sessionListFromJson(Map<String, dynamic> json) {
+  final sessions = <SessionInfo>[];
+  var dropped = 0;
+  final rawSessions = json['sessions'];
+  if (rawSessions is List) {
+    for (final entry in rawSessions) {
+      try {
+        sessions.add(
+          SessionInfo.fromJson(Map<String, dynamic>.from(entry as Map)),
+        );
+      } catch (_) {
+        dropped++;
+      }
+    }
+  }
+  return SessionListMessage(
+    sessions: sessions,
+    droppedSessionCount: dropped,
+    bridgeInstanceId: json['bridgeInstanceId'] as String?,
+    allowedDirs:
+        (json['allowedDirs'] as List?)?.whereType<String>().toList() ??
+        const [],
+    claudeModels:
+        (json['claudeModels'] as List?)?.whereType<String>().toList() ??
+        const [],
+    claudeModelEfforts:
+        (json['claudeModelEfforts'] as Map?)?.map(
+          (key, value) => MapEntry(
+            key as String,
+            (value as List?)?.whereType<String>().toList() ?? const [],
+          ),
+        ) ??
+        const {},
+    codexModels:
+        (json['codexModels'] as List?)?.whereType<String>().toList() ??
+        const [],
+    codexModelReasoningEfforts:
+        (json['codexModelReasoningEfforts'] as Map?)?.map(
+          (key, value) => MapEntry(
+            key as String,
+            (value as List?)?.whereType<String>().toList() ?? const [],
+          ),
+        ) ??
+        const {},
+    codexModelServiceTiers:
+        (json['codexModelServiceTiers'] as Map?)?.map(
+          (key, value) => MapEntry(
+            key as String,
+            (value as List?)?.whereType<String>().toList() ?? const [],
+          ),
+        ) ??
+        const {},
+    codexProfiles:
+        (json['codexProfiles'] as List?)?.whereType<String>().toList() ??
+        const [],
+    defaultCodexProfile: json['defaultCodexProfile'] as String?,
+    codexAutoReviewDisabled: json['codexAutoReviewDisabled'] as bool? ?? false,
+    bridgeVersion: json['bridgeVersion'] as String?,
+    bridgeCapabilities:
+        (json['bridgeCapabilities'] as List?)?.whereType<String>().toList() ??
+        const [],
+  );
+}
+
 /// A Bridge-owned reference to a local file mentioned by an assistant or tool
 /// result. [originalHref] preserves the assistant's text for exact UI matching;
 /// the client can resolve only the opaque [id], never an arbitrary path.
@@ -1227,59 +1293,7 @@ sealed class ServerMessage {
       ),
       'stream_delta' => StreamDeltaMessage(text: json['text'] as String),
       'thinking_delta' => ThinkingDeltaMessage(text: json['text'] as String),
-      'session_list' => SessionListMessage(
-        sessions: (json['sessions'] as List)
-            .map((s) => SessionInfo.fromJson(s as Map<String, dynamic>))
-            .toList(),
-        bridgeInstanceId: json['bridgeInstanceId'] as String?,
-        allowedDirs:
-            (json['allowedDirs'] as List?)?.map((e) => e as String).toList() ??
-            const [],
-        claudeModels:
-            (json['claudeModels'] as List?)?.map((e) => e as String).toList() ??
-            const [],
-        claudeModelEfforts:
-            (json['claudeModelEfforts'] as Map?)?.map(
-              (key, value) => MapEntry(
-                key as String,
-                (value as List?)?.whereType<String>().toList() ?? const [],
-              ),
-            ) ??
-            const {},
-        codexModels:
-            (json['codexModels'] as List?)?.map((e) => e as String).toList() ??
-            const [],
-        codexModelReasoningEfforts:
-            (json['codexModelReasoningEfforts'] as Map?)?.map(
-              (key, value) => MapEntry(
-                key as String,
-                (value as List?)?.whereType<String>().toList() ?? const [],
-              ),
-            ) ??
-            const {},
-        codexModelServiceTiers:
-            (json['codexModelServiceTiers'] as Map?)?.map(
-              (key, value) => MapEntry(
-                key as String,
-                (value as List?)?.whereType<String>().toList() ?? const [],
-              ),
-            ) ??
-            const {},
-        codexProfiles:
-            (json['codexProfiles'] as List?)
-                ?.map((e) => e as String)
-                .toList() ??
-            const [],
-        defaultCodexProfile: json['defaultCodexProfile'] as String?,
-        codexAutoReviewDisabled:
-            json['codexAutoReviewDisabled'] as bool? ?? false,
-        bridgeVersion: json['bridgeVersion'] as String?,
-        bridgeCapabilities:
-            (json['bridgeCapabilities'] as List?)
-                ?.whereType<String>()
-                .toList() ??
-            const [],
-      ),
+      'session_list' => _sessionListFromJson(json),
       'recent_sessions' => RecentSessionsMessage(
         sessions: (json['sessions'] as List)
             .map((s) => RecentSession.fromJson(s as Map<String, dynamic>))
@@ -1334,7 +1348,8 @@ sealed class ServerMessage {
         ),
         pastMessageCount: json['pastMessageCount'] as int? ?? 0,
         historySummary:
-            (json['historySummary'] as List?)?.cast<String>() ?? const [],
+            (json['historySummary'] as List?)?.whereType<String>().toList() ??
+            const [],
         debugTrace:
             (json['debugTrace'] as List?)
                 ?.map(
@@ -1367,12 +1382,12 @@ sealed class ServerMessage {
         sizeBytes: json['sizeBytes'] as int?,
       ),
       'file_list' => FileListMessage(
-        files: (json['files'] as List).cast<String>(),
+        files: (json['files'] as List).whereType<String>().toList(),
         totalFiles: json['totalFiles'] as int?,
         truncated: json['truncated'] as bool? ?? false,
       ),
       'project_history' => ProjectHistoryMessage(
-        projects: (json['projects'] as List).cast<String>(),
+        projects: (json['projects'] as List).whereType<String>().toList(),
       ),
       'diff_result' => DiffResultMessage(
         diff: json['diff'] as String? ?? '',
@@ -1408,7 +1423,10 @@ sealed class ServerMessage {
       'tool_use_summary' => ToolUseSummaryMessage(
         summary: json['summary'] as String,
         precedingToolUseIds:
-            (json['precedingToolUseIds'] as List?)?.cast<String>() ?? const [],
+            (json['precedingToolUseIds'] as List?)
+                ?.whereType<String>()
+                .toList() ??
+            const [],
       ),
       'user_input' => UserInputMessage(
         text: json['text'] as String? ?? '',
@@ -1427,7 +1445,9 @@ sealed class ServerMessage {
       ),
       'rewind_preview' => RewindPreviewMessage(
         canRewind: json['canRewind'] as bool? ?? false,
-        filesChanged: (json['filesChanged'] as List?)?.cast<String>(),
+        filesChanged: (json['filesChanged'] as List?)
+            ?.whereType<String>()
+            .toList(),
         insertions: json['insertions'] as int?,
         deletions: json['deletions'] as int?,
         error: json['error'] as String?,
@@ -1600,9 +1620,14 @@ sealed class ServerMessage {
       ),
       'git_branches_result' => GitBranchesResultMessage(
         current: json['current'] as String? ?? '',
-        branches: (json['branches'] as List?)?.cast<String>() ?? const [],
+        branches:
+            (json['branches'] as List?)?.whereType<String>().toList() ??
+            const [],
         checkedOutBranches:
-            (json['checkedOutBranches'] as List?)?.cast<String>() ?? const [],
+            (json['checkedOutBranches'] as List?)
+                ?.whereType<String>()
+                .toList() ??
+            const [],
         remoteStatusByBranch:
             (json['remoteStatusByBranch'] as Map?)?.map(
               (key, value) => MapEntry(
@@ -2206,10 +2231,16 @@ enum GuardianApprovalStatus {
   aborted;
 
   static GuardianApprovalStatus fromString(String? value) => switch (value) {
+    'approved' => GuardianApprovalStatus.approved,
     'denied' => GuardianApprovalStatus.denied,
     'timedOut' => GuardianApprovalStatus.timedOut,
     'aborted' => GuardianApprovalStatus.aborted,
-    _ => GuardianApprovalStatus.approved,
+    // Old Bridges omit the status field and emit guardian_approval only for
+    // approved reviews, so a missing status still means approved.
+    null => GuardianApprovalStatus.approved,
+    // Fail closed on unrecognized literals: a future status value must not
+    // render as an approval the user would trust.
+    _ => GuardianApprovalStatus.denied,
   };
 }
 
@@ -3119,6 +3150,10 @@ class ThinkingDeltaMessage implements ServerMessage {
 
 class SessionListMessage implements ServerMessage {
   final List<SessionInfo> sessions;
+
+  /// Malformed session entries skipped during parsing (logged by the
+  /// receiver); one bad entry must not blank the whole session list.
+  final int droppedSessionCount;
   final String? bridgeInstanceId;
   final List<String> allowedDirs;
   final List<String> claudeModels;
@@ -3133,6 +3168,7 @@ class SessionListMessage implements ServerMessage {
   final List<String> bridgeCapabilities;
   const SessionListMessage({
     required this.sessions,
+    this.droppedSessionCount = 0,
     this.bridgeInstanceId,
     this.allowedDirs = const [],
     this.claudeModels = const [],
@@ -3338,7 +3374,7 @@ class DebugReproRecipe {
       getDebugBundleMessage:
           (json['getDebugBundleMessage'] as Map<String, dynamic>?) ??
           const <String, dynamic>{},
-      notes: (json['notes'] as List?)?.cast<String>() ?? const [],
+      notes: (json['notes'] as List?)?.whereType<String>().toList() ?? const [],
     );
   }
 }
@@ -4812,17 +4848,28 @@ class SessionInfo {
       codexNativePlanModeSupported:
           json['codexNativePlanModeSupported'] as bool?,
       codexGoalControlSupported: json['codexGoalControlSupported'] as bool?,
-      pendingPermission: permJson != null
-          ? PermissionRequestMessage(
-              toolUseId: permJson['toolUseId'] as String,
-              toolName: permJson['toolName'] as String,
-              input: Map<String, dynamic>.from(permJson['input'] as Map),
-            )
-          : null,
+      pendingPermission: _pendingPermissionFromJson(permJson),
       queuedInput: queueJson != null
           ? QueuedInputItem.fromJson(queueJson)
           : null,
     );
+  }
+
+  /// A malformed pendingPermission blob degrades to "no pending permission"
+  /// instead of discarding the whole session entry.
+  static PermissionRequestMessage? _pendingPermissionFromJson(
+    Map<String, dynamic>? permJson,
+  ) {
+    if (permJson == null) return null;
+    try {
+      return PermissionRequestMessage(
+        toolUseId: permJson['toolUseId'] as String,
+        toolName: permJson['toolName'] as String,
+        input: Map<String, dynamic>.from(permJson['input'] as Map),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }
 
