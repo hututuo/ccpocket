@@ -315,6 +315,17 @@ class BridgeService implements BridgeServiceBase {
       Expando<_ExternalSessionHistoryMetadata>('externalSessionHistory');
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
   final Map<String, bool> _pendingHistoryDeltaAllowsFullFallback = {};
+
+  /// Per-session generation of history sync requests (full or delta). A
+  /// legacy `history` frame is only applied when it answers the latest
+  /// generation — see [_acceptLegacyHistoryFrame].
+  final Map<String, int> _historySyncGenerations = {};
+
+  /// FIFO fences for outstanding legacy `get_history` requests. Responses on
+  /// a WebSocket arrive in request order, so each incoming `history` frame
+  /// pops the oldest fence.
+  final Map<String, List<_LegacyHistoryFence>> _pendingLegacyHistoryFences =
+      {};
   final Map<String, _RemoteHistoryCursor> _remoteHistoryCursors = {};
   final Map<String, Completer<HistoryPageMessage>>
       _pendingRemoteHistoryPages = {};
@@ -1403,6 +1414,9 @@ class BridgeService implements BridgeServiceBase {
     _connectionEpoch++;
     _resetLegacyRecentSessionsTransport();
     _failPendingHistoryRequests(clearCursors: false);
+    // Legacy history responses in flight on the old socket can never arrive
+    // on the new connection; stale fences would desync the FIFO pairing.
+    _pendingLegacyHistoryFences.clear();
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
     final epoch = _connectionEpoch;
@@ -1506,6 +1520,15 @@ class BridgeService implements BridgeServiceBase {
               return;
             }
             if (sessionId != null) {
+              if (msg is HistoryMessage &&
+                  !_acceptLegacyHistoryFrame(sessionId)) {
+                logger.info(
+                  'Dropping stale legacy history frame for session '
+                  '$sessionId',
+                );
+                _emitSessionHistoryReconciliation(sessionId);
+                return;
+              }
               if (msg is HistoryMessage) {
                 _rememberRemoteHistoryWindow(
                   sessionId,
@@ -2024,6 +2047,8 @@ class BridgeService implements BridgeServiceBase {
     _lastUsageResult = null;
     _pendingHistoryDeltaSinceSeq.clear();
     _pendingHistoryDeltaAllowsFullFallback.clear();
+    // Frames from a torn-down socket can never arrive on the new one.
+    _pendingLegacyHistoryFences.clear();
     _sessionHistoryReconciliationGenerations.clear();
     _clearSessionHistorySyncTracking();
     _providerSessionBindingByRuntime.clear();
@@ -2223,6 +2248,7 @@ class BridgeService implements BridgeServiceBase {
     for (final sessionId in sessionIds) {
       if (allowsFullFallback[sessionId] == true) {
         _pendingForegroundHistorySyncs.add(sessionId);
+        _recordLegacyHistoryRequest(sessionId);
         send(ClientMessage.getHistory(sessionId));
       } else {
         _finishSessionHistorySync(sessionId);
@@ -3569,6 +3595,7 @@ class BridgeService implements BridgeServiceBase {
       // background request must be able to replace a stale foreground
       // permission left behind by a timed-out delta request.
       _pendingHistoryDeltaAllowsFullFallback[sessionId] = allowFullFallback;
+      _bumpHistorySyncGeneration(sessionId);
       send(
         ClientMessage.getHistoryDelta(
           sessionId,
@@ -3578,8 +3605,59 @@ class BridgeService implements BridgeServiceBase {
       return;
     }
     if (allowFullFallback) {
+      _recordLegacyHistoryRequest(sessionId);
       send(ClientMessage.getHistory(sessionId));
     }
+  }
+
+  int _bumpHistorySyncGeneration(String sessionId) {
+    return _historySyncGenerations[sessionId] =
+        (_historySyncGenerations[sessionId] ?? 0) + 1;
+  }
+
+  void _recordLegacyHistoryRequest(String sessionId) {
+    final snapshot = _runtimeStore.snapshot(sessionId);
+    _pendingLegacyHistoryFences
+        .putIfAbsent(sessionId, () => [])
+        .add(
+          _LegacyHistoryFence(
+            generation: _bumpHistorySyncGeneration(sessionId),
+            contentEpoch: snapshot.contentEpoch,
+            storeWasEmpty: snapshot.messages.isEmpty,
+          ),
+        );
+  }
+
+  /// Generation fence for legacy full-history frames (no seq information).
+  ///
+  /// Without this, a late `history` frame wholesale-replaced the runtime
+  /// store — wiping real-time messages that arrived after the frame's
+  /// content basis — and reset the seq watermark to 0, forcing the next
+  /// delta request into a full re-pull (messages vanish, then reappear).
+  bool _acceptLegacyHistoryFrame(String sessionId) {
+    final fences = _pendingLegacyHistoryFences[sessionId];
+    _LegacyHistoryFence? fence;
+    if (fences != null && fences.isNotEmpty) {
+      fence = fences.removeAt(0);
+      if (fences.isEmpty) _pendingLegacyHistoryFences.remove(sessionId);
+    }
+    final snapshot = _runtimeStore.snapshot(sessionId);
+    // Hydrating an empty store loses nothing.
+    if (snapshot.messages.isEmpty) return true;
+    // Unsolicited full frame over live content: never wholesale-replace.
+    if (fence == null) return false;
+    // A newer sync request owns the session now; this frame is stale.
+    if (fence.generation != (_historySyncGenerations[sessionId] ?? 0)) {
+      return false;
+    }
+    if (fence.storeWasEmpty) {
+      // Initial load raced by live messages: the frame is still the only
+      // backlog source — unless seq-synced content landed meanwhile, which
+      // a legacy frame (watermark reset to 0) must not destroy.
+      return snapshot.cachedHistorySeq == 0;
+    }
+    // Resync over existing content is only safe while nothing newer arrived.
+    return snapshot.contentEpoch == fence.contentEpoch;
   }
 
   void refreshBranch(String sessionId) {
@@ -5269,6 +5347,20 @@ class ArtifactSourceReadException implements Exception {
 
   @override
   String toString() => 'ArtifactSourceReadException($code): $message';
+}
+
+/// Snapshot of a session's runtime-store state taken when a legacy
+/// `get_history` request was sent, used to fence its full-frame response.
+class _LegacyHistoryFence {
+  final int generation;
+  final int contentEpoch;
+  final bool storeWasEmpty;
+
+  const _LegacyHistoryFence({
+    required this.generation,
+    required this.contentEpoch,
+    required this.storeWasEmpty,
+  });
 }
 
 /// Cached diff image data for a single file.
