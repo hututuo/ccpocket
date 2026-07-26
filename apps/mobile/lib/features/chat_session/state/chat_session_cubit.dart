@@ -99,6 +99,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final BridgeService _bridge;
   final StreamingStateCubit _streamingCubit;
   final ChatMessageHandler _handler = ChatMessageHandler();
+  final bool detachedPreview;
+  final List<ServerMessage> initialHistoryMessages;
 
   StreamSubscription<ServerMessage>? _subscription;
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
@@ -273,10 +275,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     String? initialCodexApprovalsReviewer,
     CodexPermissionsMode? initialCodexPermissionsMode,
     String? initialProjectPath,
+    this.detachedPreview = false,
+    this.initialHistoryMessages = const [],
   }) : _bridge = bridge,
        _streamingCubit = streamingCubit,
        super(
          ChatSessionState(
+           status: detachedPreview
+               ? ProcessStatus.idle
+               : ProcessStatus.starting,
            permissionMode: initialPermissionMode ?? PermissionMode.defaultMode,
            executionMode: deriveExecutionMode(
              provider: provider?.value,
@@ -326,6 +333,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
            projectPath: initialProjectPath,
          ),
        ) {
+    if (detachedPreview) {
+      _restoreInitialHistoryMessages();
+      return;
+    }
     _respondedToolUseIds.addAll(_bridge.respondedToolUseIds(sessionId));
     // Subscribe to messages for this session
     _subscription = _bridge.messagesForSession(sessionId).listen(_onMessage);
@@ -400,6 +411,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     // Re-query history while status is "starting" to handle lost broadcasts
     _startStatusRefreshTimer();
+  }
+
+  void _restoreInitialHistoryMessages() {
+    if (initialHistoryMessages.isEmpty) return;
+    try {
+      final history = HistoryMessage(messages: initialHistoryMessages);
+      final update = _handler.handle(
+        history,
+        isBackground: true,
+        isCodex: isCodex,
+        ignoredToolUseIds: const {},
+      );
+      _applyUpdate(update, history);
+      if (state.status == ProcessStatus.starting) {
+        emit(state.copyWith(status: ProcessStatus.idle));
+      }
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[session:$sessionId] Failed to decode durable cached history',
+        error,
+        stackTrace,
+      );
+    }
   }
 
   void _startStatusRefreshTimer() {
@@ -3423,6 +3457,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     Iterable<String>? mentionablePaths,
     Iterable<Map<String, String>>? additionalMentions,
   }) {
+    if (detachedPreview) return;
     final explicitMentions =
         additionalMentions?.toList(growable: false) ??
         const <Map<String, String>>[];
@@ -3555,6 +3590,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void requestGoal({bool userInitiated = false}) {
+    if (detachedPreview) return;
     if (!isCodex || state.goalMutation != null) return;
     final effectiveUserInitiated =
         userInitiated ||
@@ -3924,6 +3960,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void updateQueuedInput(QueuedInputItem item, String text) {
+    if (detachedPreview) return;
     if (!isCodex || text.trim().isEmpty) return;
     if (isDeliveryPendingQueuedInput(item)) return;
     final structuredMentions = _extractCodexStructuredInputs(text);
@@ -3962,6 +3999,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void steerQueuedInput(QueuedInputItem item) {
+    if (detachedPreview) return;
     if (!isCodex ||
         isOfflineQueuedInput(item) ||
         isDeliveryPendingQueuedInput(item)) {
@@ -3983,6 +4021,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void cancelQueuedInput(QueuedInputItem item) {
+    if (detachedPreview) return;
     if (!isCodex) return;
     if (isDeliveryPendingQueuedInput(item)) {
       final clientMessageId = deliveryPendingClientMessageId(item);
@@ -4016,6 +4055,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Approve a pending tool execution.
   void approve(String toolUseId, {bool clearContext = false}) {
+    if (detachedPreview) return;
     final isExitPlanApproval = _isExitPlanApproval(toolUseId);
     logger.info(
       '[session:$sessionId] approve toolUseId=$toolUseId'
@@ -4037,6 +4077,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Approve a tool and always allow it in the future.
   void approveAlways(String toolUseId) {
+    if (detachedPreview) return;
     final isExitPlanApproval = _isExitPlanApproval(toolUseId);
     _markToolUseResponded(toolUseId);
     _bridge.send(ClientMessage.approveAlways(toolUseId, sessionId: sessionId));
@@ -4157,6 +4198,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Reject a pending tool execution.
   void reject(String toolUseId, {String? message}) {
+    if (detachedPreview) return;
     logger.info(
       '[session:$sessionId] reject toolUseId=$toolUseId'
       '${message != null ? ' msg=$message' : ''}',
@@ -4173,6 +4215,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Answer an AskUserQuestion.
   void answer(String toolUseId, String result) {
+    if (detachedPreview) return;
     _markToolUseResponded(toolUseId);
     _bridge.send(ClientMessage.answer(toolUseId, result, sessionId: sessionId));
     _emitNextApprovalOrNone(toolUseId);
@@ -4180,11 +4223,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Interrupt the current operation.
   void interrupt() {
+    if (detachedPreview) return;
     _bridge.interrupt(sessionId);
   }
 
   /// Change permission mode for Claude sessions.
   void setPermissionMode(PermissionMode mode) {
+    if (detachedPreview) return;
     logger.info('[session:$sessionId] setPermissionMode=${mode.value}');
     _pendingPermissionRollback = state.permissionMode;
     emit(
@@ -4206,6 +4251,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setSessionModes({ExecutionMode? executionMode, bool? planMode}) {
+    if (detachedPreview) return;
     if (isCodex && isPermissionChangePending) {
       logger.warning(
         '[session:$sessionId] Permission change pending; ignoring mode update',
@@ -4291,6 +4337,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexApprovalPolicy policy, {
     String approvalsReviewer = 'user',
   }) {
+    if (detachedPreview) return;
     if (isPermissionChangePending) {
       logger.warning(
         '[session:$sessionId] Permission change pending; ignoring approval update',
@@ -4348,6 +4395,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexPermissionsMode mode, {
     CodexPermissionApplyStrategy? applyStrategy,
   }) {
+    if (detachedPreview) return;
     if (applyStrategy != null && _pendingPermissionChangeId != null) {
       logger.warning(
         '[session:$sessionId] Permission change already pending; ignoring duplicate request',
@@ -4444,6 +4492,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setCodexModel(String model, {ReasoningEffort? reasoningEffort}) {
+    if (detachedPreview) return;
     if (!isCodex) return;
     final normalizedModel = sanitizeCodexModelName(model);
     if (normalizedModel == null) return;
@@ -4474,6 +4523,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setCodexSpeed(CodexSpeed speed) {
+    if (detachedPreview) return;
     if (!isCodex || speed == CodexSpeed.unknown || speed == state.codexSpeed) {
       return;
     }
@@ -4489,6 +4539,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Change sandbox mode (Claude & Codex).
   /// Bridge destroys and resumes the session with new sandbox settings.
   void setSandboxMode(SandboxMode mode) {
+    if (detachedPreview) return;
     _pendingSandboxRollback = state.sandboxMode;
     emit(state.copyWith(sandboxMode: mode));
     if (isCodex) {
@@ -4747,6 +4798,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Stop the session.
   void stop() {
+    if (detachedPreview) return;
     _bridge.stopSession(sessionId);
   }
 
@@ -5071,6 +5123,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Resets [_pastHistoryLoaded] so the next [PastHistoryMessage] is processed,
   /// restoring approval state that may have arrived while disconnected.
   void refreshHistory() {
+    if (detachedPreview) return;
     _pastHistoryLoaded = false;
     _pastEntryCount = 0;
     _disableLocalHistoryPaging(

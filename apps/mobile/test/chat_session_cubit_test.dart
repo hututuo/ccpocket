@@ -268,6 +268,42 @@ void main() {
     });
 
     test(
+      'detached preview renders cached history without live requests or sends',
+      () async {
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialHistoryMessages: const [
+            UserInputMessage(text: 'Cached question'),
+            AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'assistant-1',
+                role: 'assistant',
+                content: [TextContent(text: 'Cached answer')],
+                model: 'gpt-test',
+              ),
+            ),
+          ],
+        );
+        addTearDown(cubit.close);
+
+        expect(cubit.state.status, ProcessStatus.idle);
+        expect(cubit.state.entries, hasLength(2));
+        expect(mockBridge.requestSessionHistoryCallCount, 0);
+
+        cubit.sendMessage('must not be sent');
+        cubit.refreshHistory();
+        await pumpEventQueue();
+
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(mockBridge.requestSessionHistoryCallCount, 0);
+      },
+    );
+
+    test(
       'Codex native Plan capability follows session_list and resets on disconnect',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);

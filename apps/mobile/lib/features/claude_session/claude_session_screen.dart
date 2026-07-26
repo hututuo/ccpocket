@@ -27,6 +27,8 @@ import '../../utils/network_endpoint.dart';
 import '../../utils/terminal_launcher.dart';
 import '../session_list/pending_session_binding.dart';
 import '../session_list/workspace_shell_screen.dart';
+import '../conversation_content_sync/conversation_content_sync_service.dart';
+import '../session_list/cache/session_catalog_cache_repository.dart';
 import '../session_link/widgets/session_unavailable_view.dart';
 import '../settings/state/settings_cubit.dart';
 import '../../widgets/approval_bar.dart';
@@ -89,6 +91,7 @@ class ClaudeSessionScreen extends StatefulWidget {
   final String? gitBranch;
   final String? worktreePath;
   final bool isPending;
+  final String? durableProviderSessionId;
   final String? initialPermissionMode;
   final String? initialSandboxMode;
   final VoidCallback? onBackToSessions;
@@ -105,6 +108,7 @@ class ClaudeSessionScreen extends StatefulWidget {
     this.gitBranch,
     this.worktreePath,
     this.isPending = false,
+    this.durableProviderSessionId,
     this.initialPermissionMode,
     this.initialSandboxMode,
     this.pendingSessionCreated,
@@ -173,6 +177,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   StreamSubscription<ServerMessage>? _pendingSub;
   StreamSubscription<ServerMessage>? _sessionSwitchSub;
   StreamSubscription<String>? _sessionStoppedSub;
+  StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
+  ConversationHotWindowSnapshot? _cachedPreview;
+  bool _loadingCachedPreview = false;
 
   @override
   void initState() {
@@ -192,8 +199,61 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     if (_isPending) {
       _listenForSessionCreated();
     }
+    _startDurablePreview();
     _listenForSessionSwitch();
     _listenForSessionStopped();
+  }
+
+  void _startDurablePreview() {
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || durableId.isEmpty) return;
+    try {
+      final sync = context.read<ConversationContentSyncService>();
+      sync.setFocusedConversation(
+        provider: Provider.claude.value,
+        providerSessionId: durableId,
+      );
+      _cachedPreviewSub = sync.updates
+          .where(
+            (update) =>
+                update.provider == Provider.claude.value &&
+                update.providerSessionId == durableId,
+          )
+          .listen((_) => _loadDurablePreview());
+      _loadDurablePreview();
+    } catch (_) {
+      // Official/isolated widget hosts may not provide the optional cache.
+    }
+  }
+
+  void _loadDurablePreview() {
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || _loadingCachedPreview) return;
+    _loadingCachedPreview = true;
+    final sync = context.read<ConversationContentSyncService>();
+    unawaited(
+      sync
+          .loadCachedWindow(
+            provider: Provider.claude.value,
+            providerSessionId: durableId,
+          )
+          .then((snapshot) {
+            if (!mounted ||
+                widget.durableProviderSessionId != durableId ||
+                !_isPending) {
+              return;
+            }
+            setState(() => _cachedPreview = snapshot);
+          })
+          .catchError((Object error) {
+            debugPrint('Failed to load cached Claude preview: $error');
+          })
+          .whenComplete(() {
+            if (mounted && widget.durableProviderSessionId == durableId) {
+              _loadingCachedPreview = false;
+            }
+          }),
+    );
   }
 
   void _listenForSessionCreated() {
@@ -413,11 +473,40 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     _pendingSub?.cancel();
     _sessionSwitchSub?.cancel();
     _sessionStoppedSub?.cancel();
+    _cachedPreviewSub?.cancel();
+    final durableId = widget.durableProviderSessionId;
+    if (durableId != null) {
+      try {
+        context.read<ConversationContentSyncService>().clearFocusedConversation(
+          provider: Provider.claude.value,
+          providerSessionId: durableId,
+        );
+      } catch (_) {}
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final durableId = widget.durableProviderSessionId;
+    final cachedPreview = _cachedPreview;
+    if (_isPending && durableId != null && cachedPreview != null) {
+      return _ChatScreenProviders(
+        key: ValueKey('durable-claude-$durableId-${cachedPreview.revision}'),
+        sessionId: durableId,
+        projectPath: _projectPath,
+        gitBranch: _gitBranch,
+        worktreePath: _worktreePath,
+        permissionMode: _permissionMode,
+        sandboxMode: _sandboxMode,
+        detachedPreview: true,
+        initialHistoryMessages: cachedPreview.entries
+            .map((entry) => entry.decodeMessage())
+            .toList(growable: false),
+        onBackToSessions: widget.onBackToSessions,
+        hideSessionBackButton: widget.hideSessionBackButton,
+      );
+    }
     if (_isPending) {
       final l = AppLocalizations.of(context);
       final shell = WorkspaceShellScreen.maybeOf(context);
@@ -449,7 +538,12 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             children: [
               const CircularProgressIndicator.adaptive(),
               const SizedBox(height: 16),
-              Text(l.creatingSession, style: const TextStyle(fontSize: 16)),
+              Text(
+                durableId == null
+                    ? l.creatingSession
+                    : l.loadingSessionStatus,
+                style: const TextStyle(fontSize: 16),
+              ),
             ],
           ),
         ),
@@ -484,6 +578,8 @@ class _ChatScreenProviders extends StatelessWidget {
   final SandboxMode? sandboxMode;
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
+  final bool detachedPreview;
+  final List<ServerMessage> initialHistoryMessages;
 
   const _ChatScreenProviders({
     super.key,
@@ -497,6 +593,8 @@ class _ChatScreenProviders extends StatelessWidget {
     this.sandboxMode,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.detachedPreview = false,
+    this.initialHistoryMessages = const [],
   });
 
   @override
@@ -516,6 +614,8 @@ class _ChatScreenProviders extends StatelessWidget {
             initialPermissionMode: permissionMode,
             initialSandboxMode: sandboxMode,
             initialProjectPath: projectPath,
+            detachedPreview: detachedPreview,
+            initialHistoryMessages: initialHistoryMessages,
           ),
         ),
       ],
@@ -526,6 +626,7 @@ class _ChatScreenProviders extends StatelessWidget {
         worktreePath: worktreePath,
         onBackToSessions: onBackToSessions,
         hideSessionBackButton: hideSessionBackButton,
+        detachedPreview: detachedPreview,
       ),
     );
   }
@@ -538,6 +639,7 @@ class _ChatScreenBody extends HookWidget {
   final String? worktreePath;
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
+  final bool detachedPreview;
 
   const _ChatScreenBody({
     required this.sessionId,
@@ -546,6 +648,7 @@ class _ChatScreenBody extends HookWidget {
     this.worktreePath,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.detachedPreview = false,
   });
 
   @override
@@ -699,6 +802,7 @@ class _ChatScreenBody extends HookWidget {
     // --- Initial requests on mount ---
     useEffect(
       () {
+        if (detachedPreview) return null;
         final bridge = context.read<BridgeService>();
         final path = gitProjectPath;
         if (!isBackground && chatFileRoot != null) {
@@ -724,6 +828,7 @@ class _ChatScreenBody extends HookWidget {
         chatFileRoot,
         gitProjectPath,
         showRemoteGitStatusBadge,
+        detachedPreview,
       ],
     );
 
@@ -783,6 +888,7 @@ class _ChatScreenBody extends HookWidget {
     // If disconnected, ensureConnected triggers reconnect → BlocListener
     // fires → refreshHistory is called there.
     useAppResumeCallback(lifecycleState, () {
+      if (detachedPreview) return;
       final bridge = context.read<BridgeService>();
       bridge.ensureConnected();
       if (bridge.isConnected) {
@@ -1356,6 +1462,7 @@ class _ChatScreenBody extends HookWidget {
                     status: status,
                     onScrollToBottom: scroll.scrollToBottom,
                     inputController: chatInputController,
+                    inputBlocked: detachedPreview,
                     initialDiffSelection: diffSelectionFromNav.value,
                     onDiffSelectionConsumed: () {
                       // Don't null — keep for AppBar navigation.

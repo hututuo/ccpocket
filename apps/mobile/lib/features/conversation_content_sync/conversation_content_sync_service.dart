@@ -177,6 +177,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
   }
 
+  void clearFocusedConversation({
+    required String provider,
+    required String providerSessionId,
+  }) {
+    if (_focused?.provider != provider ||
+        _focused?.providerSessionId != providerSessionId) {
+      return;
+    }
+    setFocusedConversation();
+  }
+
   Future<ConversationHotWindowSnapshot?> loadCachedWindow({
     required String provider,
     required String providerSessionId,

@@ -46,6 +46,8 @@ class CodexSessionCubit extends ChatSessionCubit {
     super.initialCodexApprovalsReviewer,
     super.initialCodexPermissionsMode,
     super.initialProjectPath,
+    super.detachedPreview,
+    super.initialHistoryMessages,
   }) : super(provider: Provider.codex);
 
   @override

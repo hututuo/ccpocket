@@ -272,6 +272,7 @@ class _WorkspaceToolPaneBindings {
 
 class WorkspaceSessionSelection {
   final String sessionId;
+  final String? durableProviderSessionId;
   final String? projectPath;
   final String? gitBranch;
   final String? worktreePath;
@@ -285,6 +286,7 @@ class WorkspaceSessionSelection {
 
   const WorkspaceSessionSelection({
     required this.sessionId,
+    this.durableProviderSessionId,
     this.projectPath,
     this.gitBranch,
     this.worktreePath,
@@ -1182,6 +1184,7 @@ class _WorkspaceContentHost extends StatelessWidget {
         gitBranch: selection.gitBranch,
         worktreePath: selection.worktreePath,
         isPending: selection.isPending,
+        durableProviderSessionId: selection.durableProviderSessionId,
         initialSandboxMode: selection.sandboxMode,
         initialPermissionMode: selection.permissionMode,
         initialApprovalPolicy: selection.approvalPolicy,
@@ -1199,6 +1202,7 @@ class _WorkspaceContentHost extends StatelessWidget {
         gitBranch: selection.gitBranch,
         worktreePath: selection.worktreePath,
         isPending: selection.isPending,
+        durableProviderSessionId: selection.durableProviderSessionId,
         initialPermissionMode: selection.permissionMode,
         initialSandboxMode: selection.sandboxMode,
         pendingSessionCreated: selection.pendingSessionCreated,

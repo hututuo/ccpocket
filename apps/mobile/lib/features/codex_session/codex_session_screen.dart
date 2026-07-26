@@ -35,6 +35,8 @@ import '../session_list/pending_session_binding.dart';
 import '../session_list/workspace_shell_screen.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
+import '../conversation_content_sync/conversation_content_sync_service.dart';
+import '../session_list/cache/session_catalog_cache_repository.dart';
 import '../local_session_features/host/local_session_feature.dart';
 import '../local_session_features/host/local_session_feature_host.dart';
 import '../side_chat/state/ephemeral_side_chat_registry_service.dart';
@@ -98,6 +100,7 @@ class CodexSessionScreen extends StatefulWidget {
   final String? gitBranch;
   final String? worktreePath;
   final bool isPending;
+  final String? durableProviderSessionId;
   final String? initialSandboxMode;
   final String? initialPermissionMode;
   final String? initialApprovalPolicy;
@@ -121,6 +124,7 @@ class CodexSessionScreen extends StatefulWidget {
     this.gitBranch,
     this.worktreePath,
     this.isPending = false,
+    this.durableProviderSessionId,
     this.initialSandboxMode,
     this.initialPermissionMode,
     this.initialApprovalPolicy,
@@ -201,6 +205,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   StreamSubscription<ServerMessage>? _pendingSub;
   StreamSubscription<ServerMessage>? _sandboxRestartSub;
   StreamSubscription<String>? _sessionStoppedSub;
+  StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
+  ConversationHotWindowSnapshot? _cachedPreview;
+  bool _loadingCachedPreview = false;
 
   @override
   void initState() {
@@ -224,8 +231,61 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (_isPending) {
       _listenForSessionCreated();
     }
+    _startDurablePreview();
     _listenForSandboxRestart();
     _listenForSessionStopped();
+  }
+
+  void _startDurablePreview() {
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || durableId.isEmpty) return;
+    try {
+      final sync = context.read<ConversationContentSyncService>();
+      sync.setFocusedConversation(
+        provider: Provider.codex.value,
+        providerSessionId: durableId,
+      );
+      _cachedPreviewSub = sync.updates
+          .where(
+            (update) =>
+                update.provider == Provider.codex.value &&
+                update.providerSessionId == durableId,
+          )
+          .listen((_) => _loadDurablePreview());
+      _loadDurablePreview();
+    } catch (_) {
+      // Official/isolated widget hosts may not provide the optional cache.
+    }
+  }
+
+  void _loadDurablePreview() {
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || _loadingCachedPreview) return;
+    _loadingCachedPreview = true;
+    final sync = context.read<ConversationContentSyncService>();
+    unawaited(
+      sync
+          .loadCachedWindow(
+            provider: Provider.codex.value,
+            providerSessionId: durableId,
+          )
+          .then((snapshot) {
+            if (!mounted ||
+                widget.durableProviderSessionId != durableId ||
+                !_isPending) {
+              return;
+            }
+            setState(() => _cachedPreview = snapshot);
+          })
+          .catchError((Object error) {
+            debugPrint('Failed to load cached Codex preview: $error');
+          })
+          .whenComplete(() {
+            if (mounted && widget.durableProviderSessionId == durableId) {
+              _loadingCachedPreview = false;
+            }
+          }),
+    );
   }
 
   void _listenForSessionCreated() {
@@ -457,11 +517,44 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _pendingSub?.cancel();
     _sandboxRestartSub?.cancel();
     _sessionStoppedSub?.cancel();
+    _cachedPreviewSub?.cancel();
+    final durableId = widget.durableProviderSessionId;
+    if (durableId != null) {
+      try {
+        context.read<ConversationContentSyncService>().clearFocusedConversation(
+          provider: Provider.codex.value,
+          providerSessionId: durableId,
+        );
+      } catch (_) {}
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final durableId = widget.durableProviderSessionId;
+    final cachedPreview = _cachedPreview;
+    if (_isPending && durableId != null && cachedPreview != null) {
+      return _CodexProviders(
+        key: ValueKey('durable-codex-$durableId-${cachedPreview.revision}'),
+        sessionId: durableId,
+        projectPath: _projectPath,
+        gitBranch: _gitBranch,
+        worktreePath: _worktreePath,
+        sandboxMode: _sandboxMode,
+        permissionMode: _permissionMode,
+        codexApprovalPolicy: _codexApprovalPolicy,
+        codexApprovalsReviewer: _codexApprovalsReviewer,
+        codexPermissionsMode: _codexPermissionsMode,
+        detachedPreview: true,
+        initialHistoryMessages: cachedPreview.entries
+            .map((entry) => entry.decodeMessage())
+            .toList(growable: false),
+        onBackToSessions: widget.onBackToSessions,
+        hideSessionBackButton: widget.hideSessionBackButton,
+        allowMessageFork: false,
+      );
+    }
     if (_isPending) {
       final shell = WorkspaceShellScreen.maybeOf(context);
       final chrome = _resolveSessionPaneChrome(context, shell);
@@ -493,7 +586,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
               const CircularProgressIndicator.adaptive(),
               const SizedBox(height: 16),
               Text(
-                AppLocalizations.of(context).creatingSession,
+                durableId == null
+                    ? AppLocalizations.of(context).creatingSession
+                    : AppLocalizations.of(context).loadingSessionStatus,
                 style: const TextStyle(fontSize: 16),
               ),
             ],
@@ -541,6 +636,8 @@ class _CodexProviders extends StatelessWidget {
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
   final bool allowMessageFork;
+  final bool detachedPreview;
+  final List<ServerMessage> initialHistoryMessages;
 
   const _CodexProviders({
     super.key,
@@ -558,6 +655,8 @@ class _CodexProviders extends StatelessWidget {
     this.onBackToSessions,
     this.hideSessionBackButton = false,
     this.allowMessageFork = true,
+    this.detachedPreview = false,
+    this.initialHistoryMessages = const [],
   });
 
   @override
@@ -580,6 +679,8 @@ class _CodexProviders extends StatelessWidget {
             initialCodexApprovalsReviewer: codexApprovalsReviewer,
             initialCodexPermissionsMode: codexPermissionsMode,
             initialProjectPath: projectPath,
+            detachedPreview: detachedPreview,
+            initialHistoryMessages: initialHistoryMessages,
           ),
         ),
       ],
@@ -591,6 +692,7 @@ class _CodexProviders extends StatelessWidget {
         onBackToSessions: onBackToSessions,
         hideSessionBackButton: hideSessionBackButton,
         allowMessageFork: allowMessageFork,
+        detachedPreview: detachedPreview,
       ),
     );
   }
@@ -608,6 +710,7 @@ class _CodexChatBody extends HookWidget {
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
   final bool allowMessageFork;
+  final bool detachedPreview;
 
   const _CodexChatBody({
     required this.sessionId,
@@ -617,6 +720,7 @@ class _CodexChatBody extends HookWidget {
     this.onBackToSessions,
     this.hideSessionBackButton = false,
     this.allowMessageFork = true,
+    this.detachedPreview = false,
   });
 
   @override
@@ -913,6 +1017,7 @@ class _CodexChatBody extends HookWidget {
     // --- Initial requests on mount ---
     useEffect(
       () {
+        if (detachedPreview) return null;
         final bridge = context.read<BridgeService>();
         final path = gitProjectPath;
         if (!isBackground && chatFileRoot != null) {
@@ -938,6 +1043,7 @@ class _CodexChatBody extends HookWidget {
         chatFileRoot,
         gitProjectPath,
         showRemoteGitStatusBadge,
+        detachedPreview,
       ],
     );
 
@@ -994,6 +1100,7 @@ class _CodexChatBody extends HookWidget {
     // Only triggers on genuine resume from paused/hidden/detached, not from
     // inactive (e.g. Android notification shade).
     useAppResumeCallback(lifecycleState, () {
+      if (detachedPreview) return;
       final bridge = context.read<BridgeService>();
       bridge.ensureConnected();
       if (bridge.isConnected) {
@@ -1778,7 +1885,7 @@ class _CodexChatBody extends HookWidget {
                     onScrollToBottom: scroll.scrollToBottom,
                     inputController: chatInputController,
                     hintText: l.codexMessagePlaceholder,
-                    inputBlocked: queuedInput != null,
+                    inputBlocked: detachedPreview || queuedInput != null,
                     initialDiffSelection: diffSelectionFromNav.value,
                     onDiffSelectionConsumed: () {},
                     onDiffSelectionCleared: () =>
@@ -1797,7 +1904,7 @@ class _CodexChatBody extends HookWidget {
                     ],
                   ),
                 ),
-                if (ephemeralSideChatRegistry != null)
+                if (!detachedPreview && ephemeralSideChatRegistry != null)
                   Positioned.fill(
                     child: AuxiliaryFloatingDock(
                       key: ValueKey('auxiliary_dock_$sessionId'),

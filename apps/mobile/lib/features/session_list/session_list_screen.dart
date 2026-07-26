@@ -1701,6 +1701,7 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _navigateToChat(
     String sessionId, {
+    String? durableProviderSessionId,
     String? projectPath,
     String? gitBranch,
     String? worktreePath,
@@ -1719,7 +1720,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (widget.embedded) {
       widget.onSelectWorkspaceSession?.call(
         WorkspaceSessionSelection(
-          sessionId: sessionId,
+          sessionId: durableProviderSessionId ?? sessionId,
+          durableProviderSessionId: durableProviderSessionId,
           projectPath: projectPath,
           gitBranch: gitBranch,
           worktreePath: worktreePath,
@@ -1818,6 +1820,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     }
     _navigateToChat(
       'pending_resume_$requestId',
+      durableProviderSessionId: session.sessionId,
       projectPath: result.projectPath,
       gitBranch: result.gitBranch,
       isPending: true,
@@ -1941,6 +1944,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     } else {
       _navigateToChat(
         'pending_resume_$requestId',
+        durableProviderSessionId: session.sessionId,
         projectPath: resumeProjectPath,
         gitBranch: session.gitBranch,
         isPending: true,
