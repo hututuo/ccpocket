@@ -24,40 +24,18 @@ final class DoctorRunner: Sendable {
 
     /// Run `ccpocket-bridge doctor --json` via CLI.
     private func runDoctorCLI() async throws -> DoctorReport {
-        return try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-li", "-c", "npx --yes @ccpocket/bridge@latest doctor --json"]
+        let result = try await ProcessRunner.run(
+            executablePath: "/bin/zsh",
+            arguments: ["-li", "-c", "npx --yes @ccpocket/bridge@latest doctor --json"],
+            timeout: 60,
+            mergeStandardError: false
+        )
 
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = FileHandle.nullDevice
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-                return
-            }
-
-            // Timeout (60s for doctor checks)
-            let timer = DispatchSource.makeTimerSource()
-            timer.schedule(deadline: .now() + 60)
-            timer.setEventHandler { process.terminate() }
-            timer.resume()
-
-            process.waitUntilExit()
-            timer.cancel()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-
-            do {
-                let report = try JSONDecoder().decode(DoctorReport.self, from: data)
-                continuation.resume(returning: report)
-            } catch {
-                let output = String(data: data, encoding: .utf8) ?? "(no output)"
-                continuation.resume(throwing: DoctorError.parseFailed(output: output))
-            }
+        do {
+            return try JSONDecoder().decode(DoctorReport.self, from: result.output)
+        } catch {
+            let output = String(data: result.output, encoding: .utf8) ?? "(no output)"
+            throw DoctorError.parseFailed(output: output)
         }
     }
 }

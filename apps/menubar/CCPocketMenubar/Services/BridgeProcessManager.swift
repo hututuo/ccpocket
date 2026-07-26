@@ -8,45 +8,20 @@ final class BridgeProcessManager: Sendable {
     /// Run a shell command via interactive login shell to inherit user's PATH.
     @discardableResult
     private func shell(_ command: String, timeout: TimeInterval = 30) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-li", "-c", command]
+        let result = try await ProcessRunner.run(
+            executablePath: "/bin/zsh",
+            arguments: ["-li", "-c", command],
+            timeout: timeout
+        )
+        let output = String(data: result.output, encoding: .utf8) ?? ""
 
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-                return
-            }
-
-            // Timeout handling
-            let timer = DispatchSource.makeTimerSource()
-            timer.schedule(deadline: .now() + timeout)
-            timer.setEventHandler {
-                process.terminate()
-            }
-            timer.resume()
-
-            process.waitUntilExit()
-            timer.cancel()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            if process.terminationStatus == 0 {
-                continuation.resume(returning: output)
-            } else {
-                continuation.resume(throwing: ProcessError.nonZeroExit(
-                    status: process.terminationStatus,
-                    output: output
-                ))
-            }
+        if result.terminationStatus == 0 {
+            return output
         }
+        throw ProcessError.nonZeroExit(
+            status: result.terminationStatus,
+            output: output
+        )
     }
 
     // MARK: - Service Management

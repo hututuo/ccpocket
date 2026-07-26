@@ -35,6 +35,7 @@
 		F3D2061BDBDF9570DE07F96D /* UsageViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936425EFA8842888C2FAF5F1 /* UsageViewModel.swift */; };
 		F6B2EEEAC4CA4159D547EBED /* BridgeProcessManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D01522C085AFBE48627A6F20 /* BridgeProcessManager.swift */; };
 		MOCK0001A0B1C2D3E4F50001 /* MockDoctorScenarios.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOCK0001A0B1C2D3E4F50002 /* MockDoctorScenarios.swift */; };
+		PRUN0001A0B1C2D3E4F50001 /* ProcessRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRUN0001A0B1C2D3E4F50002 /* ProcessRunner.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,6 +69,7 @@
 		F9F6D9EEF9A4E409D751F651 /* BridgeVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeVersion.swift; sourceTree = "<group>"; };
 		AAAA000000000001LOCALIZE /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		MOCK0001A0B1C2D3E4F50002 /* MockDoctorScenarios.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockDoctorScenarios.swift; sourceTree = "<group>"; };
+		PRUN0001A0B1C2D3E4F50002 /* ProcessRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessRunner.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -98,6 +100,7 @@
 				3C4227159686B17FEDEE3A9A /* DoctorRunner.swift */,
 				MOCK0001A0B1C2D3E4F50002 /* MockDoctorScenarios.swift */,
 				85F8950F2CC3D55E777965D7 /* NetworkDiscovery.swift */,
+				PRUN0001A0B1C2D3E4F50002 /* ProcessRunner.swift */,
 				DD8DE1EDA1A4027DB2BA1A1D /* QRCodeGenerator.swift */,
 			);
 			path = Services;
@@ -285,6 +288,7 @@
 				95A2815828723543B1798BA8 /* MenuBarApp.swift in Sources */,
 				MOCK0001A0B1C2D3E4F50001 /* MockDoctorScenarios.swift in Sources */,
 				56E1B7C4400C711E2B86A0B0 /* NetworkDiscovery.swift in Sources */,
+				PRUN0001A0B1C2D3E4F50001 /* ProcessRunner.swift in Sources */,
 				B2C3D4E5F6A7B8C9D0E1F2A3 /* OnboardingView.swift in Sources */,
 				40C89AE541CB62C2E52B528F /* PopoverContentView.swift in Sources */,
 				66716FF5169422740D206D28 /* QRCodeGenerator.swift in Sources */,
