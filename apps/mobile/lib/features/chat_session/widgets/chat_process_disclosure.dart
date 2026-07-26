@@ -1,12 +1,9 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../../models/messages.dart';
 import '../../../theme/app_spacing.dart';
 import '../../../theme/app_theme.dart';
 import '../../../utils/tool_categories.dart';
-import '../../../widgets/bubbles/guardian_approval_notice.dart';
 import '../../../widgets/chat_selection_actions.dart';
 import 'chat_process_layout.dart';
 
@@ -244,7 +241,7 @@ class ChatCurrentProgressHeader extends StatelessWidget {
 /// It intentionally displays only the newest invocation/result. Tapping it
 /// uses the same expansion action as the current-progress header, revealing
 /// the complete interval rather than opening a second, conflicting detail UI.
-class ChatCurrentToolActivityLine extends StatefulWidget {
+class ChatCurrentToolActivityLine extends StatelessWidget {
   const ChatCurrentToolActivityLine({
     super.key,
     required this.activity,
@@ -255,54 +252,8 @@ class ChatCurrentToolActivityLine extends StatefulWidget {
   final VoidCallback onTap;
 
   @override
-  State<ChatCurrentToolActivityLine> createState() =>
-      _ChatCurrentToolActivityLineState();
-}
-
-class _ChatCurrentToolActivityLineState
-    extends State<ChatCurrentToolActivityLine> {
-  static const _guardianVisibility = Duration(seconds: 3);
-
-  Timer? _guardianTimer;
-  String? _guardianIdentity;
-  bool _showGuardian = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _syncGuardianReview();
-  }
-
-  @override
-  void didUpdateWidget(covariant ChatCurrentToolActivityLine oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _syncGuardianReview();
-  }
-
-  @override
-  void dispose() {
-    _guardianTimer?.cancel();
-    super.dispose();
-  }
-
-  void _syncGuardianReview() {
-    final review = widget.activity.guardianReview;
-    final identity = review == null ? null : _guardianReviewIdentity(review);
-    if (identity == _guardianIdentity) return;
-    _guardianTimer?.cancel();
-    _guardianIdentity = identity;
-    _showGuardian = review != null;
-    if (review == null) return;
-    _guardianTimer = Timer(_guardianVisibility, () {
-      if (!mounted || _guardianIdentity != identity) return;
-      setState(() => _showGuardian = false);
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
-    final activity = widget.activity;
     final category = categorizeToolName(activity.name);
     final categoryColor = getToolCategoryColor(category, appColors);
     final summary = _toolActivitySummary(activity, category);
@@ -328,7 +279,7 @@ class _ChatCurrentToolActivityLineState
         child: InkWell(
           key: ValueKey('chat_current_tool_${activity.toolUseId}'),
           borderRadius: BorderRadius.circular(8),
-          onTap: widget.onTap,
+          onTap: onTap,
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 3),
             child: Row(
@@ -379,24 +330,11 @@ class _ChatCurrentToolActivityLineState
         ),
       ),
     );
-    final review = activity.guardianReview;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        toolLine,
-        if (_showGuardian && review != null)
-          KeyedSubtree(
-            key: ValueKey(
-              'chat_current_guardian_${_guardianReviewIdentity(review)}',
-            ),
-            child: GuardianApprovalNotice(message: review),
-          ),
-      ],
-    );
+    return toolLine;
   }
 }
 
-String _guardianReviewIdentity(GuardianApprovalMessage message) {
+String chatGuardianReviewIdentity(GuardianApprovalMessage message) {
   final reviewId = message.reviewId?.trim();
   if (reviewId?.isNotEmpty == true) return 'review:$reviewId';
   return [

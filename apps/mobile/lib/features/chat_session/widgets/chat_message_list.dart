@@ -12,6 +12,7 @@ import '../../../providers/bridge_cubits.dart';
 import '../../../services/bridge_service.dart';
 import '../../../utils/artifact_link_matcher.dart';
 import '../../../widgets/bubbles/assistant_bubble.dart';
+import '../../../widgets/bubbles/guardian_approval_notice.dart';
 import '../../../widgets/bubbles/todo_write_widget.dart';
 import '../../../widgets/bubbles/tool_result_bubble.dart';
 import '../../../widgets/chat_selection_actions.dart';
@@ -647,6 +648,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
         children.add(
           _ProcessDetailsViewport(
             key: ValueKey('process_details_viewport_${segment.key}'),
+            expanded: true,
             children: _buildProcessSegmentDetails(
               segment: segment,
               entries: entries,
@@ -701,28 +703,30 @@ class _ChatMessageListState extends State<ChatMessageList> {
         ),
       );
     }
-    if (currentTool != null) {
-      children.add(
-        ChatCurrentToolActivityLine(
-          activity: currentTool,
-          onTap: () => _toggleCurrentProgress(progressKey),
-        ),
-      );
-    }
-    if (expanded) {
+    if (currentTool != null || expanded) {
       children.add(
         _ProcessDetailsViewport(
-          key: ValueKey('process_details_viewport_${segment.key}'),
-          children: _buildProcessSegmentDetails(
-            segment: segment,
-            entries: entries,
-            hiddenToolUseIds: hiddenToolUseIds,
-            transcriptTailComplete: transcriptTailComplete,
-            imageItemsByAnchor: imageItemsByAnchor,
-            imageGroupMemberIndices: imageGroupMemberIndices,
-            excludedProcessEntryIndices:
-                segment.attachedGuardianEntryIndices,
-          ),
+          key: ValueKey('process_details_viewport_current_$progressKey'),
+          expanded: expanded,
+          transientGuardianReview: currentTool?.guardianReview,
+          children: expanded
+              ? _buildProcessSegmentDetails(
+                  segment: segment,
+                  entries: entries,
+                  hiddenToolUseIds: hiddenToolUseIds,
+                  transcriptTailComplete: transcriptTailComplete,
+                  imageItemsByAnchor: imageItemsByAnchor,
+                  imageGroupMemberIndices: imageGroupMemberIndices,
+                  excludedProcessEntryIndices:
+                      segment.attachedGuardianEntryIndices,
+                )
+              : [
+                  if (currentTool != null)
+                    ChatCurrentToolActivityLine(
+                      activity: currentTool,
+                      onTap: () => _toggleCurrentProgress(progressKey),
+                    ),
+                ],
         ),
       );
     }
@@ -844,7 +848,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
                 turn?.key ??
                 processLayout.latestTurnKey ??
                 'session:${widget.sessionId}';
-            final progressKey = 'live:$turnKey';
+            final progressKey = _currentProgressKey(turnKey);
             return ReadingPositionItem(
               child: _anchoredDisclosure(
                 'current:$progressKey',
@@ -896,24 +900,38 @@ class _ChatMessageListState extends State<ChatMessageList> {
                             );
                           },
                         ),
-                        if (currentTool != null)
-                          ChatCurrentToolActivityLine(
-                            activity: currentTool,
-                            onTap: () => _toggleCurrentProgress(progressKey),
-                          ),
-                        if (expanded)
-                          BlocSelector<
-                            StreamingStateCubit,
-                            StreamingState,
-                            String
-                          >(
-                            selector: (state) => state.thinking.trim(),
-                            builder: (context, thinking) {
-                              if (thinking.isEmpty) {
-                                return const SizedBox.shrink();
-                              }
-                              return ChatLiveThinkingDetails(text: thinking);
-                            },
+                        if (currentTool != null || expanded)
+                          _ProcessDetailsViewport(
+                            key: ValueKey(
+                              'live_process_details_viewport_$progressKey',
+                            ),
+                            expanded: expanded,
+                            transientGuardianReview:
+                                currentTool?.guardianReview,
+                            children: [
+                              if (currentTool != null)
+                                ChatCurrentToolActivityLine(
+                                  activity: currentTool,
+                                  onTap: () =>
+                                      _toggleCurrentProgress(progressKey),
+                                ),
+                              if (expanded)
+                                BlocSelector<
+                                  StreamingStateCubit,
+                                  StreamingState,
+                                  String
+                                >(
+                                  selector: (state) => state.thinking.trim(),
+                                  builder: (context, thinking) {
+                                    if (thinking.isEmpty) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return ChatLiveThinkingDetails(
+                                      text: thinking,
+                                    );
+                                  },
+                                ),
+                            ],
                           ),
                       ],
                     );
@@ -1009,7 +1027,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
             if (!currentSegment.showsSummaryAt(entryIndex)) {
               return const SizedBox.shrink();
             }
-            final progressKey = 'entry:${intermediateTurn!.key}';
+            final progressKey = _currentProgressKey(intermediateTurn!.key);
             return _timelineItem(
               key: 'current:$progressKey',
               entryIndex: entryIndex,
@@ -1131,10 +1149,19 @@ class _ChatMessageListState extends State<ChatMessageList> {
   }
 }
 
-class _ProcessDetailsViewport extends StatefulWidget {
-  const _ProcessDetailsViewport({super.key, required this.children});
+String _currentProgressKey(String turnKey) => 'turn:$turnKey';
 
+class _ProcessDetailsViewport extends StatefulWidget {
+  const _ProcessDetailsViewport({
+    super.key,
+    required this.expanded,
+    required this.children,
+    this.transientGuardianReview,
+  });
+
+  final bool expanded;
   final List<Widget> children;
+  final GuardianApprovalMessage? transientGuardianReview;
 
   @override
   State<_ProcessDetailsViewport> createState() =>
@@ -1144,16 +1171,69 @@ class _ProcessDetailsViewport extends StatefulWidget {
 class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
   static const _maximumVisibleRows = 8;
   static const _compactRowExtent = 44.0;
+  static const _guardianVisibility = Duration(seconds: 3);
   final ScrollController _controller = ScrollController();
+  Timer? _guardianTimer;
+  String? _guardianIdentity;
+  bool _showGuardian = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncGuardianReview();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ProcessDetailsViewport oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncGuardianReview();
+  }
 
   @override
   void dispose() {
+    _guardianTimer?.cancel();
     _controller.dispose();
     super.dispose();
   }
 
+  void _syncGuardianReview() {
+    final review = widget.transientGuardianReview;
+    final identity = review == null
+        ? null
+        : chatGuardianReviewIdentity(review);
+    if (identity == _guardianIdentity) return;
+    _guardianTimer?.cancel();
+    _guardianIdentity = identity;
+    _showGuardian = review != null;
+    if (review == null) return;
+    _guardianTimer = Timer(_guardianVisibility, () {
+      if (!mounted || _guardianIdentity != identity) return;
+      setState(() => _showGuardian = false);
+    });
+  }
+
+  List<Widget> get _visibleChildren {
+    final review = widget.transientGuardianReview;
+    return [
+      ...widget.children,
+      if (_showGuardian && review != null)
+        KeyedSubtree(
+          key: ValueKey(
+            'chat_current_guardian_${chatGuardianReviewIdentity(review)}',
+          ),
+          child: GuardianApprovalNotice(message: review),
+        ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (!widget.expanded) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: _visibleChildren,
+      );
+    }
     final media = MediaQuery.of(context);
     final textScale = media.textScaler.scale(1).clamp(1.0, 1.6).toDouble();
     final eightRowHeight = _compactRowExtent * _maximumVisibleRows * textScale;
@@ -1162,21 +1242,43 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
         ? eightRowHeight
         : screenHeightCap;
 
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: maximumHeight),
-      child: NotificationListener<ScrollNotification>(
-        // This nested viewport owns its vertical gesture. Do not let its
-        // metrics trigger the transcript's older-history pagination.
-        onNotification: (_) => true,
-        child: Scrollbar(
-          controller: _controller,
-          child: SingleChildScrollView(
-            key: const ValueKey('process_details_scroll_view'),
-            controller: _controller,
-            primary: false,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: widget.children,
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        0,
+        2,
+        0,
+        6,
+      ),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: colorScheme.outlineVariant.withValues(alpha: 0.8),
+          ),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(11),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maximumHeight),
+            child: NotificationListener<ScrollNotification>(
+              // This nested viewport owns its vertical gesture. Do not let its
+              // metrics trigger the transcript's older-history pagination.
+              onNotification: (_) => true,
+              child: Scrollbar(
+                controller: _controller,
+                child: SingleChildScrollView(
+                  key: const ValueKey('process_details_scroll_view'),
+                  controller: _controller,
+                  primary: false,
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: _visibleChildren,
+                  ),
+                ),
+              ),
             ),
           ),
         ),

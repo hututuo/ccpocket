@@ -609,9 +609,33 @@ void main() {
       await tester.pump();
 
       final currentHeader = find.byKey(
-        const ValueKey('chat_current_progress_entry:client:turn-active'),
+        const ValueKey('chat_current_progress_turn:client:turn-active'),
       );
       await tester.tap(currentHeader);
+      await tester.pump();
+      expect(
+        tester
+            .widget<ChatCurrentProgressHeader>(
+              find.byType(ChatCurrentProgressHeader),
+            )
+            .expanded,
+        isTrue,
+      );
+
+      streaming.appendThinking('streamed follow-up thought');
+      await tester.pump();
+      await tester.pump();
+      expect(
+        tester
+            .widget<ChatCurrentProgressHeader>(
+              find.byType(ChatCurrentProgressHeader),
+            )
+            .expanded,
+        isTrue,
+      );
+      expect(find.text('streamed follow-up thought'), findsOneWidget);
+
+      streaming.reset();
       await tester.pump();
       expect(
         tester
@@ -970,7 +994,7 @@ void main() {
       expect(find.text('first result'), findsNothing);
 
       final currentHeader = find.byKey(
-        const ValueKey('chat_current_progress_entry:client:turn-active'),
+        const ValueKey('chat_current_progress_turn:client:turn-active'),
       );
       final currentOutput = find.text('The second file is being checked.');
       final currentToolLine = find.byType(ChatCurrentToolActivityLine);
@@ -988,9 +1012,10 @@ void main() {
 
       expect(find.text('current thought'), findsOneWidget);
       expect(find.byType(ToolUseTile), findsOneWidget);
+      expect(find.byType(ChatCurrentToolActivityLine), findsNothing);
       expect(
         tester.getTopLeft(find.text('current thought')).dy,
-        greaterThan(tester.getBottomLeft(currentToolLine).dy),
+        greaterThan(tester.getBottomLeft(currentOutput).dy),
       );
       expect(find.text('Earlier update.'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -1051,7 +1076,7 @@ void main() {
       );
 
       final currentHeader = find.byKey(
-        const ValueKey('chat_current_progress_entry:client:turn-guardian'),
+        const ValueKey('chat_current_progress_turn:client:turn-guardian'),
       );
       await tester.tap(currentHeader);
       await tester.pump();
@@ -1061,7 +1086,7 @@ void main() {
       expect(find.byType(GuardianApprovalNotice), findsOneWidget);
       await tester.pump(const Duration(milliseconds: 200));
       expect(find.byType(GuardianApprovalNotice), findsNothing);
-      expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
+      expect(find.byType(ChatCurrentToolActivityLine), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -1109,7 +1134,7 @@ void main() {
       expect(find.text('Current progress'), findsOneWidget);
       expect(
         find.byKey(
-          const ValueKey('chat_current_progress_live:client:turn-stream'),
+          const ValueKey('chat_current_progress_turn:client:turn-stream'),
         ),
         findsOneWidget,
       );
@@ -1123,7 +1148,7 @@ void main() {
 
       await tester.tap(
         find.byKey(
-          const ValueKey('chat_current_progress_live:client:turn-stream'),
+          const ValueKey('chat_current_progress_turn:client:turn-stream'),
         ),
       );
       await tester.pump();
