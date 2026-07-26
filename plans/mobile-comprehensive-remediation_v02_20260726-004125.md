@@ -1064,9 +1064,11 @@ Sync status        cached / catalog-sync / history-delta / live / degraded / err
 
 #### 7. 前台、后台与“全部自动同步”的准确边界
 
-- **App 在前台但会话未打开**：所有会话接收轻量 catalog delta；最近热会话、运行
-  中/Needs You/未读会话按预算接收内容尾部 delta。不得为每个 catalog entry 构建
-  `ChatSessionCubit`、Markdown Widget 或完整工具树。
+- **App 在前台但会话未打开**：所有仍存在的会话都进入分层内容更新调度，而不只
+  接收目录摘要。最近热会话、运行中/Needs You/未读会话持续接收内容尾部 delta；
+  长期未活动会话也要低频检查 durable revision/cursor，发现变化后再取正文增量。
+  多会话更新采用有界串行或小并发，不能为每个 catalog entry 构建
+  `ChatSessionCubit`、Markdown Widget、完整工具树或常驻 provider runtime。
 - **当前打开会话**：最高优先级 history single-flight + live stream；只构建
   viewport 所需内容，展开详情按需加载。
 - **iOS 普通有限后台/BGAppRefresh**：只对已有 cursor 和允许的有界集合做
@@ -1077,8 +1079,9 @@ Sync status        cached / catalog-sync / history-delta / live / degraded / err
 - **进程被 iOS 回收或用户 force-quit**：不承诺实时正文同步；下次启动从持久目录
   和热缓存立即展示，再增量 catch-up。
 
-因此“后台自动刷新”不能被实现成所有会话常驻 runtime；正确体验来自持久缓存、
-Bridge 轻量增量和前台/机会性后台的有界追平。
+因此“后台自动刷新”不能被实现成所有会话常驻 runtime，也不能被曲解成“只有点开
+或发送后才更新”。正确体验来自覆盖全部 durable conversation 的分层调度、持久
+cursor、Bridge 轻量变化信号和前台/机会性后台的有界增量追平。
 
 #### 8. Bridge 目录性能方向
 
@@ -1516,7 +1519,7 @@ effective reason/permission
 | 最近使用的会话排最上面 | v01 已修 running `Map` 插入顺序；第二轮发现 client incremental replace 和多 source merge 仍可能不重排 | v01 2A.2、4.4；v02-011 | 重开 |
 | 所有会话目录和摘要跨启动缓存 | 当前 recent catalog 仍主要是进程内；冷启动无持久目录 | v02-004、v02-010、v02-011 | 待实施 |
 | 至少最近常用 10 个会话保留最近上下文，重启只追增量 | 当前 Mirror full resident 最多 8 个，且不等于默认 hot window | v02-004、v02-012 | 待实施 |
-| App 前台未点开会话时也接收轻量增量 | v01 metadata-only catalog 已存在；内容级 hot set、durable cursor 和集中 watch owner 尚未形成 | v01 4.3、4.4；v02-010 | 待实施 |
+| App 前台未点开会话时也持续更新；久未使用会话低频检查而非永不更新 | v01 metadata-only catalog 已存在；覆盖全部 durable conversation 的分层内容调度、持久 cursor 和集中 watch owner 尚未形成 | v01 4.3、4.4；v02-010、v02-015 | 待实施 |
 | iOS 后台刷新不能变成所有会话 full runtime | 已明确有限后台 delta-only、location notification-only 不同步正文，回前台再追平 | v02-010.7；`docs/mobile-background-sync.md` | 保留边界 |
 | 设置里一键清缓存，已下载历史逐项删除 | 单个 Mirror 副本删除链已有；Settings 全部副本列表、标题关联、空间统计和普通缓存清理缺失 | v02-004、v02-013 | 待实施 |
 | 已有会话显示“正在加载/同步”，只有新线程显示“正在创建” | Codex/Claude 当前共用 `isPending`，resume 仍显示 creating | v02-005、v02-012 | 待实施 |
@@ -1616,6 +1619,78 @@ effective reason/permission
 这些不是允许无限拖延的模糊项：对应诊断字段、采集层次和验收结果已经写明。缺少
 真实样本时先实现无副作用、有界、脱敏的诊断和 generation/request correlation，
 再复现；不得先按文本、时间或 project path 猜测并删除数据。
+
+### v02-015：最终确认——所有会话分层自动更新，运行时不再代表可用资格
+
+#### 1. 本轮纠正
+
+用户明确否定“未点开时只能阅读旧历史，首次发送才开始更新”的解释。最新产品
+语义是：
+
+- 不再向用户区分“已激活/未激活”；所有仍存在的 durable conversation 始终可打开、
+  可阅读、可继续使用。
+- 所有会话都属于自动更新集合，不能因为没有 runtime attachment 就永久停在旧
+  历史。`runtime attachment` 只允许作为 provider 发送/live stream 所需的内部
+  机制，不能成为目录、缓存、后台增量或 UI 可用性的前置条件。
+- 当前打开的会话在进入时立即做一次最高优先级追平，并在打开期间保持实时增量。
+- 最近使用、正在运行、Needs You、未读或近期发生变化的会话，在 App 前台即使没有
+  打开，也要持续做内容尾部增量同步。
+- 数天未活动的冷会话仍要周期性检查。用户口述的“一分钟”是节奏示例，不是硬编码
+  合同；最终周期要根据目录规模、Bridge 变化信号、网络、电量、前后台状态和真机
+  数据自适应，但不得退化成永不检查。
+
+#### 2. 调度模型
+
+建立单一 `ConversationSyncScheduler`，输入为持久目录、runtime/activity、
+Needs You、未读、当前打开、最近访问、最后 provider 活动、最后同步水位和 Bridge
+健康状态；输出为有界的 history delta 工作：
+
+```text
+P0  当前打开 / 发送前 / 审批前
+    立即提升优先级，取消等待；先按已知 cursor 拉 delta，再进入 live。
+
+P1  正在运行 / Needs You / 新未读
+    由 Bridge change signal 触发，辅以短周期有界补偿。
+
+P2  最近活跃热集合（至少最近常用 10 个）
+    App 前台持续增量，多个会话串行或极小并发；目标延迟为秒级。
+
+P3  其余冷会话
+    低频只检查 revision/cursor；仅在变化时拉正文 delta，不解析/构建 UI。
+```
+
+- 队列按 durable identity 去重，同一会话最多一个 flight；新触发只升级优先级或
+  设置 dirty latch，不能叠加重复 history 请求。
+- 调度采用公平轮转和每轮字节/条目/耗时预算，防止一个超长会话饿死其他会话。
+- Bridge 能提供 changed thread identity 时优先事件驱动；旧 Bridge 回退为分桶、
+  抖动的低频检查，不能高频全目录 × 全历史轮询。
+- 只有 storage/reducer 在后台工作；没有打开的会话不得构建 Markdown、工具详情、
+  图片、diff 或聊天 Widget。
+- App 进入 iOS 普通后台时继续服从既有系统 deadline 和 delta-only 预算；用户开启
+  location notification-only 时仍只收轻量通知，不能用本节要求突破既定隐私和
+  功耗边界。回前台后 scheduler 立即按优先级追平。
+
+#### 3. 与 runtime attachment 的关系
+
+- provider history/delta 能按 durable thread 读取时，后台同步直接使用 durable
+  identity，不为读取而 resume。
+- provider/旧 Bridge 只能对 runtime 取增量时，可维护一个有界、可回收的内部 lease
+  或使用兼容 resume，但该事实不得改变首页排序、颜色、Ready 标签或用户操作流程。
+- 首次发送可能需要建立/接管 runtime，但 attachment 在同一 durable screen 内完成；
+  不能重建页面、丢草稿、滚动、展开框或先弹出“正在创建会话”。
+- 会话已经存在 live runtime 时直接复用；不能为同一 durable thread 建第二个写者。
+
+#### 4. 验收
+
+1. 两个以上近期会话同时变化时，即使用户停留在首页或另一个会话，它们也会在有界
+   队列中依次追平；列表摘要、未读与正文 cursor 同一 generation 收敛。
+2. 当前打开会话的同步不被冷会话队列阻塞，进入后立即提升到 P0。
+3. 数天未打开的会话在低频检查发现 revision 变化后自动更新，而不是必须先点击。
+4. 数千会话下无 N 个 Cubit、N 个常驻 runtime 或 N 个高频 timer；记录实际队列
+   延迟、重复请求、读取字节、CPU、内存和电量。
+5. Bridge 断线、切换、迟到结果和 provider rewrite 不串会话、不复活旧缓存。
+6. 新 Mobile + 旧 Bridge 保持有界兼容；旧 Mobile + 新 Bridge 不受新 scheduler
+   协议影响。
 
 ## 2. 后续讨论登记方式
 
