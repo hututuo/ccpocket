@@ -12172,7 +12172,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
   });
 
   it("runs the catalog monitor only for an interactive opt-in client", async () => {
-    let notifyCatalogChanged: ((revision: number) => void) | undefined;
+    let notifyCatalogChanged:
+      | ((
+          revision: number,
+          change?: {
+            revision: number;
+            provider?: "claude" | "codex";
+            providerSessionId?: string;
+          },
+        ) => void)
+      | undefined;
     let active = false;
     const monitor = {
       get isActive() {
@@ -12194,6 +12203,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
     (bridge as any).wss.clients.add(ws);
+    const catalogChanged = vi.spyOn(
+      (bridge as any).localFeatures,
+      "sessionCatalogChanged",
+    );
 
     await (bridge as any).handleClientMessage(
       {
@@ -12208,10 +12221,19 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
     expect(monitor.start).toHaveBeenCalledOnce();
-    notifyCatalogChanged?.(3);
+    notifyCatalogChanged?.(3, {
+      revision: 3,
+      provider: "codex",
+      providerSessionId: "thread-3",
+    });
     expect(JSON.parse(ws.send.mock.calls.at(-1)[0] as string)).toMatchObject({
       type: "session_catalog_changed_v1",
       revision: 3,
+    });
+    expect(catalogChanged).toHaveBeenCalledWith({
+      revision: 3,
+      provider: "codex",
+      providerSessionId: "thread-3",
     });
 
     await (bridge as any).handleClientMessage(

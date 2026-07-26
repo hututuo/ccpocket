@@ -2,6 +2,7 @@ import type { CodexProcess } from "../codex-process.js";
 import type { FileBrowserManager } from "../file-browser-manager.js";
 import type { ImageRef } from "../image-store.js";
 import type { ClientMessage, ServerMessage } from "../parser.js";
+import type { SessionCatalogChange } from "../session-catalog-monitor.js";
 import type {
   LocalFeatureClientMessage,
   LocalFeatureServerMessage,
@@ -107,11 +108,16 @@ export interface LocalFeatureRuntime {
     sessionId: string,
     isStillSafe?: () => boolean,
   ): boolean;
-  send(client: object, message: LocalFeatureServerMessage | {
-    type: "error";
-    message: string;
-    errorCode?: string;
-  }): void;
+  send(
+    client: object,
+    message:
+      | LocalFeatureServerMessage
+      | {
+          type: "error";
+          message: string;
+          errorCode?: string;
+        },
+  ): void;
   isClientOpen?(client: object): boolean;
   supports(client: object, serverMessageType: string): boolean;
 }
@@ -151,6 +157,8 @@ export interface LocalFeatureHandler {
   externalCodexTurnId?(session: LocalFeatureSession): string | undefined;
   /** Observe one already-published session event without owning its transport. */
   sessionMessage?(session: LocalFeatureSession, message: ServerMessage): void;
+  /** Observe one provider catalog/content invalidation without owning its watcher. */
+  sessionCatalogChanged?(change: SessionCatalogChange): void;
   capabilitiesChanged?(client: object): void;
   disconnect?(client: object): void;
   close?(): void | Promise<void>;

@@ -1,7 +1,7 @@
 import { watch, type FSWatcher } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 type CatalogRootKind = "claudeProjects" | "codexRoot" | "codexSessions";
 
@@ -11,8 +11,14 @@ interface CatalogRoot {
   maxDepth: number;
 }
 
+export interface SessionCatalogChange {
+  revision: number;
+  provider?: "claude" | "codex";
+  providerSessionId?: string;
+}
+
 export interface SessionCatalogMonitorOptions {
-  onChanged: (revision: number) => void;
+  onChanged: (revision: number, change?: SessionCatalogChange) => void;
   debounceMs?: number;
   minIntervalMs?: number;
   retryMs?: number;
@@ -56,9 +62,7 @@ function boundedPositiveInteger(
   value: number | undefined,
   fallback: number,
 ): number {
-  return typeof value === "number" &&
-    Number.isFinite(value) &&
-    value >= 0
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : fallback;
 }
@@ -73,7 +77,10 @@ function boundedPositiveInteger(
  * and Codex directory trees. Directory renames trigger a bounded re-scan.
  */
 export class SessionCatalogMonitor {
-  private readonly onChanged: (revision: number) => void;
+  private readonly onChanged: (
+    revision: number,
+    change?: SessionCatalogChange,
+  ) => void;
   private readonly debounceMs: number;
   private readonly minIntervalMs: number;
   private readonly retryMs: number;
@@ -88,6 +95,8 @@ export class SessionCatalogMonitor {
   private changeTimer: NodeJS.Timeout | null = null;
   private rescanTimer: NodeJS.Timeout | null = null;
   private scanPromise: Promise<void> | null = null;
+  private pendingConversationKeys = new Set<string>();
+  private pendingUnscopedChange = false;
 
   constructor(options: SessionCatalogMonitorOptions) {
     this.onChanged = options.onChanged;
@@ -133,6 +142,8 @@ export class SessionCatalogMonitor {
     if (this.rescanTimer) clearTimeout(this.rescanTimer);
     this.changeTimer = null;
     this.rescanTimer = null;
+    this.pendingConversationKeys.clear();
+    this.pendingUnscopedChange = false;
     for (const entry of this.watchedDirectories.values()) {
       entry.watcher.close();
     }
@@ -213,7 +224,15 @@ export class SessionCatalogMonitor {
           if (!this.active) return;
           const name = filename?.toString();
           if (this.isRelevant(root, depth, eventType, name)) {
-            this.scheduleChanged();
+            const change = this.conversationChange(root, name);
+            if (
+              change ||
+              eventType === "rename" ||
+              depth >= root.maxDepth ||
+              root.kind === "codexRoot"
+            ) {
+              this.scheduleChanged(change);
+            }
           }
           if (eventType === "rename") this.scheduleRescan();
         },
@@ -249,38 +268,90 @@ export class SessionCatalogMonitor {
       );
     }
     if (filename.endsWith(".jsonl")) return true;
-    if (
-      root.kind === "claudeProjects" &&
-      filename === "sessions-index.json"
-    ) {
+    if (root.kind === "claudeProjects" && filename === "sessions-index.json") {
       return true;
     }
     return eventType === "rename" && depth < root.maxDepth;
   }
 
-  private scheduleChanged(): void {
-    if (!this.active || this.changeTimer) return;
+  private conversationChange(
+    root: CatalogRoot,
+    filename: string | undefined,
+  ): Omit<SessionCatalogChange, "revision"> | undefined {
+    if (!filename) return undefined;
+    const leaf = basename(filename);
+    if (!leaf.endsWith(".jsonl")) return undefined;
+    const stem = leaf.slice(0, -".jsonl".length);
+    if (!stem || stem.length > 512) {
+      return undefined;
+    }
+    if (root.kind === "claudeProjects") {
+      return { provider: "claude", providerSessionId: stem };
+    }
+    if (root.kind !== "codexSessions") return undefined;
+    const uuid = stem.match(
+      /(?:^|-)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+    )?.[1];
+    return {
+      provider: "codex",
+      providerSessionId: uuid ?? stem,
+    };
+  }
+
+  private scheduleChanged(
+    change?: Omit<SessionCatalogChange, "revision">,
+  ): void {
+    if (!this.active) return;
+    if (change?.provider && change.providerSessionId) {
+      this.pendingConversationKeys.add(
+        `${change.provider}\0${change.providerSessionId}`,
+      );
+    } else {
+      this.pendingUnscopedChange = true;
+    }
+    if (this.changeTimer) return;
     const now = Date.now();
     const earliest = Math.max(
       now + this.debounceMs,
       this.lastChangedAt + this.minIntervalMs,
     );
-    this.changeTimer = setTimeout(() => {
-      this.changeTimer = null;
-      if (!this.active) return;
-      this.lastChangedAt = Date.now();
-      this.revision += 1;
-      this.onChanged(this.revision);
-    }, Math.max(0, earliest - now));
+    this.changeTimer = setTimeout(
+      () => {
+        this.changeTimer = null;
+        if (!this.active) return;
+        this.lastChangedAt = Date.now();
+        this.revision += 1;
+        let change: SessionCatalogChange | undefined;
+        if (
+          !this.pendingUnscopedChange &&
+          this.pendingConversationKeys.size === 1
+        ) {
+          const [key] = this.pendingConversationKeys;
+          const separator = key!.indexOf("\0");
+          change = {
+            revision: this.revision,
+            provider: key!.slice(0, separator) as "claude" | "codex",
+            providerSessionId: key!.slice(separator + 1),
+          };
+        }
+        this.pendingConversationKeys.clear();
+        this.pendingUnscopedChange = false;
+        this.onChanged(this.revision, change ?? { revision: this.revision });
+      },
+      Math.max(0, earliest - now),
+    );
     this.changeTimer.unref?.();
   }
 
   private scheduleRescan(delayMs = 250): void {
     if (!this.active || this.rescanTimer) return;
-    this.rescanTimer = setTimeout(() => {
-      this.rescanTimer = null;
-      void this.scan();
-    }, Math.max(0, delayMs));
+    this.rescanTimer = setTimeout(
+      () => {
+        this.rescanTimer = null;
+        void this.scan();
+      },
+      Math.max(0, delayMs),
+    );
     this.rescanTimer.unref?.();
   }
 }

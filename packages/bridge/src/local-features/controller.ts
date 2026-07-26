@@ -1,5 +1,6 @@
 import type { LocalFeatureClientMessage } from "./protocol.js";
 import type { ServerMessage } from "../parser.js";
+import type { SessionCatalogChange } from "../session-catalog-monitor.js";
 import type {
   LocalFeatureHandler,
   LocalFeatureInputAdmission,
@@ -47,11 +48,7 @@ export class LocalFeaturesController {
       index: number,
     ): LocalFeatureInputAdmission | Promise<LocalFeatureInputAdmission> => {
       for (let cursor = index; cursor < handlers.length; cursor += 1) {
-        const result = handlers[cursor].admitInput?.(
-          client,
-          session,
-          message,
-        );
+        const result = handlers[cursor].admitInput?.(client, session, message);
         if (result instanceof Promise) {
           return result.then((admission) =>
             admission && admission.action !== "allow"
@@ -111,6 +108,12 @@ export class LocalFeaturesController {
     }
   }
 
+  sessionCatalogChanged(change: SessionCatalogChange): void {
+    for (const handler of new Set(this.handlers.values())) {
+      handler.sessionCatalogChanged?.(change);
+    }
+  }
+
   private async runHandler(
     client: object,
     message: Parameters<LocalFeatureHandler["handle"]>[0],
@@ -128,10 +131,7 @@ export class LocalFeaturesController {
       });
     } finally {
       active.delete(controller);
-      if (
-        active.size === 0 &&
-        this.operations.get(client) === active
-      ) {
+      if (active.size === 0 && this.operations.get(client) === active) {
         this.operations.delete(client);
       }
     }

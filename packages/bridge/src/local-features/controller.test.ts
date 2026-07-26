@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CodexProcess } from "../codex-process.js";
 import { LocalFeaturesController } from "./controller.js";
-import type {
-  LocalFeatureHandler,
-  LocalFeatureRuntime,
-} from "./runtime.js";
+import type { LocalFeatureHandler, LocalFeatureRuntime } from "./runtime.js";
 
 describe("LocalFeaturesController", () => {
   it("stays generic and dispatches only explicitly registered handlers", async () => {
@@ -47,10 +44,13 @@ describe("LocalFeaturesController", () => {
       close,
     };
     const controller = new LocalFeaturesController(runtime(), [handler]);
-    const request = controller.handle({}, {
-      type: "get_context_usage",
-      sessionId: "session-1",
-    });
+    const request = controller.handle(
+      {},
+      {
+        type: "get_context_usage",
+        sessionId: "session-1",
+      },
+    );
     await vi.waitFor(() => expect(signal).toBeDefined());
 
     await controller.close();
@@ -178,6 +178,26 @@ describe("LocalFeaturesController", () => {
 
     expect(sessionMessage).toHaveBeenCalledOnce();
     expect(sessionMessage).toHaveBeenCalledWith(session, message);
+  });
+
+  it("forwards one catalog invalidation once per registered handler", () => {
+    const sessionCatalogChanged = vi.fn();
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage", "get_session_usage"],
+      handle: async () => {},
+      sessionCatalogChanged,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+    const change = {
+      revision: 7,
+      provider: "codex" as const,
+      providerSessionId: "thread-1",
+    };
+
+    controller.sessionCatalogChanged(change);
+
+    expect(sessionCatalogChanged).toHaveBeenCalledOnce();
+    expect(sessionCatalogChanged).toHaveBeenCalledWith(change);
   });
 
   it("composes generic queued-input drain guards and blocked callbacks", () => {

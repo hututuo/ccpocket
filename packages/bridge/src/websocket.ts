@@ -16,7 +16,10 @@ import { resolve, extname, basename, relative } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
-import { SessionCatalogMonitor } from "./session-catalog-monitor.js";
+import {
+  SessionCatalogMonitor,
+  type SessionCatalogChange,
+} from "./session-catalog-monitor.js";
 import {
   artifactCandidateRootsForSession,
   SessionManager,
@@ -1155,7 +1158,7 @@ export interface BridgeServerOptions {
   fileBrowser?: FileBrowserManager;
   fileMutationAuthorizer?: FileMutationAuthorizer;
   sessionCatalogMonitorFactory?: (
-    onChanged: (revision: number) => void,
+    onChanged: (revision: number, change?: SessionCatalogChange) => void,
   ) => SessionCatalogMonitorControl;
 }
 
@@ -1329,12 +1332,12 @@ export class BridgeWebSocketServer {
     this.fileBrowser = fileBrowser ?? null;
     this.fileMutationAuthorizer = fileMutationAuthorizer ?? null;
     this.sessionCatalogMonitor = sessionCatalogMonitorFactory
-      ? sessionCatalogMonitorFactory((revision) =>
-          this.broadcastSessionCatalogChanged(revision),
+      ? sessionCatalogMonitorFactory((revision, change) =>
+          this.broadcastSessionCatalogChanged(revision, change),
         )
       : new SessionCatalogMonitor({
-          onChanged: (revision) =>
-            this.broadcastSessionCatalogChanged(revision),
+          onChanged: (revision, change) =>
+            this.broadcastSessionCatalogChanged(revision, change),
         });
     this.platform = platform ?? process.platform;
     this.fileListMaxEntries = normalizePositiveLimit(
@@ -2382,9 +2385,7 @@ export class BridgeWebSocketServer {
       childSessionId: session.id,
       parentSessionId,
       projectPath: session.projectPath,
-      ...(session.worktreePath
-        ? { worktreePath: session.worktreePath }
-        : {}),
+      ...(session.worktreePath ? { worktreePath: session.worktreePath } : {}),
       ...(session.worktreeBranch
         ? { worktreeBranch: session.worktreeBranch }
         : {}),
@@ -4922,9 +4923,7 @@ export class BridgeWebSocketServer {
               throw error;
             }
           });
-          console.log(
-            "[ws] push_unregister: token unregistered successfully",
-          );
+          console.log("[ws] push_unregister: token unregistered successfully");
           this.sendPushRegistrationResult(ws, msg, {
             operation: "unregister",
             success: true,
@@ -7056,8 +7055,7 @@ export class BridgeWebSocketServer {
               requestScope: msg.requestScope,
               requestId: msg.requestId,
               queryGeneration: msg.queryGeneration,
-              catalogRevision:
-                this.sessionCatalogMonitor.currentRevision ?? 0,
+              catalogRevision: this.sessionCatalogMonitor.currentRevision ?? 0,
               provider: msg.provider,
               namedOnly: msg.namedOnly,
               searchQuery: msg.searchQuery,
@@ -9636,9 +9634,7 @@ export class BridgeWebSocketServer {
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
           : []),
-        ...(this.fileTransfer &&
-        this.fileBrowser &&
-        this.fileMutationAuthorizer
+        ...(this.fileTransfer && this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY]
           : []),
       ],
@@ -9701,9 +9697,7 @@ export class BridgeWebSocketServer {
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
           : []),
-        ...(this.fileTransfer &&
-        this.fileBrowser &&
-        this.fileMutationAuthorizer
+        ...(this.fileTransfer && this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY]
           : []),
       ],
@@ -11260,8 +11254,12 @@ export class BridgeWebSocketServer {
     });
   }
 
-  private broadcastSessionCatalogChanged(revision: number): void {
+  private broadcastSessionCatalogChanged(
+    revision: number,
+    change?: SessionCatalogChange,
+  ): void {
     if (!this.sessionCatalogMonitor.isActive) return;
+    this.localFeatures.sessionCatalogChanged(change ?? { revision });
     this.broadcast({
       type: SESSION_CATALOG_CHANGED_MESSAGE,
       revision,
