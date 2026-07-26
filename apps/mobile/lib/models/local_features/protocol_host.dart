@@ -126,18 +126,40 @@ class LocalFeatureProtocolHost {
     _slots.expand((slot) => slot.supportedServerMessageTypes).toSet(),
   );
 
+  /// The synchronous re-entrancy depth of [tryDecode]. Carrier messages such
+  /// as `subagent_history` decode nested payloads through
+  /// [ServerMessage.fromJson] while their own slot decode is still running.
+  static int _decodeDepth = 0;
+
   static ServerMessage? tryDecode(Map<String, dynamic> json) {
     final type = json['type'];
     if (type is! String) return null;
     for (final slot in _slots) {
       if (!slot.supportedServerMessageTypes.contains(type)) continue;
-      final decoded = slot.tryDecode(json);
-      if (decoded == null) {
-        throw FormatException(
-          'Invalid local feature message for ${slot.featureId}: $type',
+      final nested = _decodeDepth > 0;
+      _decodeDepth++;
+      try {
+        final decoded = slot.tryDecode(json);
+        if (decoded == null) {
+          throw FormatException(
+            'Invalid local feature message for ${slot.featureId}: $type',
+          );
+        }
+        return decoded;
+      } catch (_) {
+        // Top-level frames keep the strict contract: the transport-level
+        // catch in BridgeService degrades exactly one frame. A malformed
+        // message nested inside another local-feature carrier degrades on
+        // its own instead, matching the tolerant unknown-type idiom in
+        // ServerMessage.fromJson, so one bad slot entry no longer discards
+        // the other slots' messages in the same batch.
+        if (!nested) rethrow;
+        return ErrorMessage(
+          message: 'Invalid local feature message for ${slot.featureId}: $type',
         );
+      } finally {
+        _decodeDepth--;
       }
-      return decoded;
     }
     return null;
   }
