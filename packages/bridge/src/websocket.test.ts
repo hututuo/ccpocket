@@ -711,7 +711,7 @@ vi.mock("./session.js", async () => {
   };
 });
 
-import { BridgeWebSocketServer } from "./websocket.js";
+import { BridgeWebSocketServer, isPrivateOrigin } from "./websocket.js";
 import { CodexProcess, CodexRpcError } from "./codex-process.js";
 import { ArtifactResolveError } from "./artifact-manager.js";
 import { GalleryStore } from "./gallery-store.js";
@@ -15274,11 +15274,59 @@ describe("BridgeWebSocketServer handshake Origin gate", () => {
         ws.on("error", () => res(false));
       });
       expect(nativeAttempt).toBe(true);
+
+      // The first-party Flutter Web build is served from the Mac itself
+      // (private/Tailscale address), so its Origin must stay connectable.
+      const webClientAttempt = await new Promise<boolean>((res) => {
+        const ws = new WsClient(url, { origin: "http://100.105.41.82:8888" });
+        ws.on("open", () => {
+          res(true);
+          ws.close();
+        });
+        ws.on("unexpected-response", () => res(false));
+        ws.on("error", () => {});
+      });
+      expect(webClientAttempt).toBe(true);
     } finally {
       await bridge.close();
       await new Promise<void>((res) => {
         httpServer.close(() => res());
       });
+    }
+  });
+
+  it("classifies origins as private strictly by hostname shape", () => {
+    for (const origin of [
+      "http://localhost:8888",
+      "http://app.localhost",
+      "http://my-mac.local:8888",
+      "http://127.0.0.1:9000",
+      "http://10.0.0.5",
+      "http://192.168.1.10:8888",
+      "http://172.16.0.2",
+      "http://172.31.255.254",
+      "http://100.64.0.1",
+      "http://100.105.41.82:8888",
+      "http://[::1]:8888",
+      "http://[fd7a:115c:a1e0::1]",
+    ]) {
+      expect(isPrivateOrigin(origin), origin).toBe(true);
+    }
+    for (const origin of [
+      "http://evil.example",
+      "https://evil.example",
+      "http://8.8.8.8",
+      "http://172.15.0.1",
+      "http://172.32.0.1",
+      "http://100.63.0.1",
+      "http://100.128.0.1",
+      "https://attacker.tail1234.ts.net",
+      "http://localhost.evil.example",
+      "http://mylocal.example",
+      "null",
+      "not a url",
+    ]) {
+      expect(isPrivateOrigin(origin), origin).toBe(false);
     }
   });
 });

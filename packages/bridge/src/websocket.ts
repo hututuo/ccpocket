@@ -293,6 +293,41 @@ const KNOWN_CODEX_GOAL_STATUSES = new Set([
   "complete",
 ]);
 
+/**
+ * True when a WebSocket Origin header points at a private/LAN host:
+ * localhost, loopback, RFC1918, Tailscale CGNAT (100.64/10), IPv6
+ * loopback/ULA/link-local, or an mDNS .local name. Public origins —
+ * the drive-by vector — stay rejected. Deliberately string-based (no
+ * DNS resolution), so a public hostname that *resolves* to a private
+ * address (DNS rebinding) is still rejected.
+ */
+export function isPrivateOrigin(origin: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    return false;
+  }
+  const bare =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+  if (bare === "localhost" || bare.endsWith(".localhost")) return true;
+  if (bare.endsWith(".local")) return true;
+  if (bare.includes(":")) {
+    return bare === "::1" || /^f[cd]/i.test(bare) || /^fe[89ab]/i.test(bare);
+  }
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare);
+  if (!ipv4) return false;
+  const a = Number(ipv4[1]);
+  const b = Number(ipv4[2]);
+  if (a === 127 || a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  return false;
+}
+
 function httpBaseUrlForWebSocketRequest(
   request?: IncomingMessage,
 ): string | undefined {
@@ -1391,17 +1426,21 @@ export class BridgeWebSocketServer {
     }
 
     // Browsers always attach an Origin header to WebSocket handshakes; the
-    // native app clients never do. Rejecting Origin-bearing handshakes closes
-    // the drive-by path (arbitrary web pages connecting to ws://127.0.0.1)
-    // with no compatibility cost for existing clients.
+    // native app clients never do. Rejecting public Origins closes the
+    // drive-by path (internet pages connecting to ws://127.0.0.1) while
+    // private Origins stay allowed for the first-party Flutter Web build
+    // served from the Mac itself (CLAUDE.md "Web確認" workflow). The check
+    // is purely string-based — no DNS resolution — so DNS rebinding cannot
+    // spoof a private hostname.
     this.wss = new WebSocketServer({
       server,
       verifyClient: (
         info: { req: IncomingMessage },
         done: (res: boolean, code?: number, message?: string) => void,
       ) => {
-        if (info.req.headers.origin !== undefined) {
-          console.log("[ws] Client rejected: browser Origin handshake");
+        const origin = info.req.headers.origin;
+        if (origin !== undefined && !isPrivateOrigin(origin)) {
+          console.log("[ws] Client rejected: non-private browser Origin");
           done(false, 403, "Forbidden");
           return;
         }
