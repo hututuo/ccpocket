@@ -8,6 +8,7 @@ import 'package:ccpocket/features/file_transfer/file_transfer_storage.dart';
 import 'package:ccpocket/features/file_transfer/received_file_inbox_banner.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -296,7 +297,9 @@ void main() {
     expect(find.text('Files received from Mac'), findsOneWidget);
     expect(find.text('report.pdf'), findsOneWidget);
     expect(
-      find.byKey(ValueKey('preview_received_file_${downloads.path}/report.pdf')),
+      find.byKey(
+        ValueKey('preview_received_file_${downloads.path}/report.pdf'),
+      ),
       findsOneWidget,
     );
     expect(
@@ -307,6 +310,63 @@ void main() {
       find.byKey(ValueKey('save_received_file_${downloads.path}/report.pdf')),
       findsOneWidget,
     );
+    service.dispose();
+  });
+
+  testWidgets('preview routes ineligible files to share instead of QuickLook', (
+    tester,
+  ) async {
+    final quickLookCalls = <MethodCall>[];
+    final shareCalls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('ccpocket/artifact_quick_look'),
+      (call) async {
+        quickLookCalls.add(call);
+        return null;
+      },
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('dev.fluttercommunity.plus/share'),
+      (call) async {
+        shareCalls.add(call);
+        return 'dev.fluttercommunity.plus/share/success';
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('ccpocket/artifact_quick_look'),
+        null,
+      );
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('dev.fluttercommunity.plus/share'),
+        null,
+      );
+    });
+
+    late FileTransferService service;
+    await tester.runAsync(() async {
+      await File('${downloads.path}/page.html').writeAsString('<p>hi</p>');
+      await File('${downloads.path}/notes.txt').writeAsString('plain');
+      service = makeService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+      await service.refreshReceivedFiles();
+    });
+    await _pumpSheet(tester, service);
+
+    await tester.tap(
+      find.byKey(ValueKey('preview_received_file_${downloads.path}/page.html')),
+    );
+    await tester.pump();
+    expect(quickLookCalls, isEmpty);
+    expect(shareCalls, hasLength(1));
+
+    await tester.tap(
+      find.byKey(ValueKey('preview_received_file_${downloads.path}/notes.txt')),
+    );
+    await tester.pump();
+    expect(quickLookCalls, hasLength(1));
+    expect(shareCalls, hasLength(1));
     service.dispose();
   });
 

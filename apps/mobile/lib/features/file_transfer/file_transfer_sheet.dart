@@ -262,6 +262,13 @@ class _ReceivedFileTile extends StatelessWidget {
   }
 
   Future<void> _preview(BuildContext context) async {
+    // Quick Look is only offered what it can render safely: HTML stays out of
+    // its WebKit preview and oversized files out of memory; both fall back to
+    // the share sheet so the user hands the file to an app of their choice.
+    if (!shouldTryQuickLookForArtifact(file.filename, '', file.sizeBytes)) {
+      await _share(context);
+      return;
+    }
     try {
       await const MethodChannelArtifactQuickLookGateway().previewFile(
         path: file.path,
@@ -305,11 +312,7 @@ class _ReceivedFileTile extends StatelessWidget {
   }
 }
 
-void _showActionError(
-  BuildContext context,
-  _TransferCopy copy,
-  Object error,
-) {
+void _showActionError(BuildContext context, _TransferCopy copy, Object error) {
   ScaffoldMessenger.of(
     context,
   ).showSnackBar(SnackBar(content: Text('${copy.failed}: $error')));
