@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`502b4252`
+核对源码基线：`7d62f978`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -38,6 +38,7 @@
 | 设置中一键清可重建缓存；已下载完整历史逐项删除 | v02-004、013、014 | `15e946b5`、`704b5e09`；`cache_management_screen.dart` | **已验证** | 12 项缓存/设置回归通过；标题读取从 N 次 SQL 降为每 300 项一批 |
 | 已有会话显示“加载/同步”，只有新线程显示“创建” | v02-005、012 | durable-open 与 pending binding 路径分离 | **已验证** | 会话直开和 pending attach 回归通过；真机文案扫描仍待本地化批次 |
 | runtime 长期停在 `starting` 时不能每 3 秒无限重读历史；弱网恢复仍要可重试 | v02-010、012 | `502b4252`；一次性退避 timer、断线暂停与重连预算 | **已验证** | 红测把旧实现虚拟 5 分钟内的 101 次请求固化；现为初始 1 次加最多 4 次指数退避，离线期间 0 次新增、重连后恢复有限预算；ChatSessionCubit 147 项全通过 |
+| 同一会话并发增量对账必须 single-flight；后台请求不能降级前台完整回退权限；重连不能让旧 socket 的请求吞掉新请求 | v02-010～012 | `7d62f978`；`BridgeService` 的连接代次、升级式 fallback 与 dirty follow-up | **已验证** | 旧实现三个并发调用会发送 3 次 delta，且最后一个后台调用可覆盖前台回退权限；现同一连接只发 1 次，响应后至多补 1 次 dirty follow-up，使用已更新 cursor。后台单独请求仍不做全量回退，前台权限只能升级；同目标重连重新发送并隔离旧代。Bridge usage + legacy fence 53 项、定向 analyze 与 diff check 全通过 |
 | 双 Cockpit/Codex 实例不能串目录、续接、未读或缓存 | v02-007、011 | `bc0601b7`、`a35cc591`、`b5963c63`；Bridge identity 分区 | **部分完成** | Mobile/Bridge 分区和迟到帧隔离已有；`CODEX_HOME`/来源注册表与真正双写冲突策略仍未完整实现 |
 | 运行蓝条与“正在同步历史”的光晕分别表达，且动画低开销 | v02-010、012、014 | 小 selector、独立 sync state、`RepaintBoundary` | **代码完成，待设备/部署** | 代码与 Widget 回归已有；需真机动画、CPU/能耗和可读性验收 |
 
@@ -95,13 +96,13 @@
 | 原始要求 | 方案位置 | 当前提交/源码证据 | 当前状态 | 验证证据与剩余门槛 |
 |---|---|---|---|---|
 | 发现确定性 bug 可顺手修，但必须先找 owning layer 和红测，不能见现象就改 | v02-006；PROJECT_HANDOFF §9 | 本轮窄提交、request/generation/Bridge partition 回归 | **持续门禁** | 所有新增修复继续要求先证实、再改、再定向回归 |
-| 会话同步、排序、折叠和进程重启整体稳定 | v02-010～013 | generation fence、half-open continuity、outbox、dedup、pagination alias、`b0255c68`、`93d02cf1`、`502b4252` | **部分完成** | watcher/provider、公平队列与 starting history 风暴已由红测闭环；session manager、真实重复事件线和 provider/source 多 Home 仍有高风险审查积压 |
+| 会话同步、排序、折叠和进程重启整体稳定 | v02-010～013 | generation fence、half-open continuity、outbox、dedup、pagination alias、`b0255c68`、`93d02cf1`、`502b4252`、`7d62f978` | **部分完成** | watcher/provider、公平队列、starting history 风暴与 delta single-flight/连接代次已由红测闭环；legacy full-history 仍无 requestId，session manager、真实重复事件线和 provider/source 多 Home 仍有高风险审查积压 |
 | 畸形或未来版本工具输入不能在展开 Diff 时崩溃整张会话卡片 | v02-006、009、014 | `0b83e6aa` 对 Edit/MultiEdit/Write 输入做完整形状校验 | **已验证** | 26 项 parser 回归通过；不完整 MultiEdit 会安全回退而不是渲染误导性局部 diff |
 | 多开 Bridge/SDK/Codex 进程不能由旧代迟到事件覆盖新代 | v02-007、010～012 | `a4dbf3c1`、`320f1189`、`a35cc591` | **已验证** | SDK 100/100、Codex 144/144 相关回归曾通过 |
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `84f2db77`，后续深链、安全与通知 ACK 提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `7d62f978`，后续深链、安全、通知 ACK、公平调度与历史仲裁提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
