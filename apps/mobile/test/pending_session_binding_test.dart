@@ -21,6 +21,43 @@ void main() {
   });
 
   group('PendingSessionBinding', () {
+    test('one page release keeps a shared binding alive for another', () {
+      var disposed = 0;
+      final binding = PendingSessionBinding(
+        kind: PendingSessionRequestKind.resume,
+        requestId: 'shared-resume',
+        provider: 'codex',
+        projectPath: '/repo',
+        providerSessionId: 'thread-shared',
+        allowLegacyFallback: false,
+        onDisposed: () => disposed += 1,
+      );
+      addTearDown(binding.dispose);
+
+      binding.retain();
+      binding.retain();
+      expect(binding.consumerCount, 2);
+
+      binding.release();
+      expect(binding.consumerCount, 1);
+      expect(binding.isDisposed, isFalse);
+      binding.accept(
+        const SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'runtime-shared',
+          provider: 'codex',
+          projectPath: '/repo',
+          resumeRequestId: 'shared-resume',
+        ),
+      );
+      expect(binding.value?.sessionId, 'runtime-shared');
+
+      binding.release();
+      expect(binding.consumerCount, 0);
+      expect(binding.isDisposed, isTrue);
+      expect(disposed, 1);
+    });
+
     test('accepts only the exact start request id on a capable Bridge', () {
       final binding = PendingSessionBinding(
         kind: PendingSessionRequestKind.start,

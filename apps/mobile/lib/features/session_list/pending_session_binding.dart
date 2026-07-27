@@ -46,6 +46,28 @@ class PendingSessionBinding extends ValueNotifier<SystemMessage?> {
   final ValueNotifier<PendingSessionFailure?> failure;
 
   bool _disposed = false;
+  int _consumerCount = 0;
+
+  bool get isDisposed => _disposed;
+  int get consumerCount => _consumerCount;
+
+  /// Keeps a shared in-flight binding alive for one pending session page.
+  ///
+  /// Multiple workspace panes can display the same durable conversation while
+  /// its runtime is attaching. Each pane owns one lease; closing one pane must
+  /// not dispose the notifier used by the others.
+  void retain() {
+    if (_disposed) return;
+    _consumerCount += 1;
+  }
+
+  void release() {
+    if (_disposed || _consumerCount == 0) return;
+    _consumerCount -= 1;
+    if (_consumerCount == 0) {
+      dispose();
+    }
+  }
 
   PendingSessionMatchQuality match(SystemMessage message) {
     if (value != null || failure.value != null) {
@@ -135,6 +157,7 @@ class PendingSessionBinding extends ValueNotifier<SystemMessage?> {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _consumerCount = 0;
     onDisposed?.call();
     failure.dispose();
     super.dispose();

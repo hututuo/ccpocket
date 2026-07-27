@@ -183,6 +183,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
   ChatComposerSubmission? _deferredSubmission;
+  PendingSessionBinding? _retainedPendingBinding;
 
   @override
   void initState() {
@@ -336,6 +337,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   void _listenForSessionCreated() {
     final pendingBinding = widget.pendingSessionCreated;
     if (pendingBinding is PendingSessionBinding) {
+      _retainPendingBinding(pendingBinding);
       final buffered = pendingBinding.value;
       if (buffered != null && buffered.sessionId != null) {
         _resolveSession(buffered);
@@ -384,6 +386,25 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         ).showSnackBar(SnackBar(content: Text(errorText)));
       }
     });
+  }
+
+  void _retainPendingBinding(PendingSessionBinding binding) {
+    if (identical(_retainedPendingBinding, binding)) return;
+    _retainedPendingBinding?.release();
+    binding.retain();
+    _retainedPendingBinding = binding;
+  }
+
+  void _detachPendingBinding(ValueNotifier<SystemMessage?>? binding) {
+    binding?.removeListener(_onPendingSessionCreated);
+    if (binding is PendingSessionBinding) {
+      binding.failure.removeListener(_onPendingSessionFailed);
+    }
+    final retained = _retainedPendingBinding;
+    if (retained != null && identical(retained, binding)) {
+      _retainedPendingBinding = null;
+      retained.release();
+    }
   }
 
   void _onPendingSessionCreated() {
@@ -520,16 +541,27 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   @override
   void didUpdateWidget(covariant ClaudeSessionScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final pendingLifecycleChanged =
+        oldWidget.pendingSessionCreated != widget.pendingSessionCreated ||
+        oldWidget.isPending != widget.isPending;
     if (oldWidget.sessionId == widget.sessionId &&
         oldWidget.projectPath == widget.projectPath &&
         oldWidget.worktreePath == widget.worktreePath &&
         oldWidget.gitBranch == widget.gitBranch &&
         oldWidget.isPending == widget.isPending &&
+        oldWidget.durableProviderSessionId ==
+            widget.durableProviderSessionId &&
+        oldWidget.pendingSessionCreated == widget.pendingSessionCreated &&
         oldWidget.initialPermissionMode == widget.initialPermissionMode &&
         oldWidget.initialSandboxMode == widget.initialSandboxMode) {
       return;
     }
 
+    if (pendingLifecycleChanged) {
+      _detachPendingBinding(oldWidget.pendingSessionCreated);
+      _pendingSub?.cancel();
+      _pendingSub = null;
+    }
     final explorerHistory = context.read<BridgeService>().getExplorerHistory(
       widget.sessionId,
     );
@@ -544,6 +576,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _explorerCurrentPath = explorerHistory.currentPath;
       _recentPeekedFiles = explorerHistory.recentPeekedFiles;
     });
+    if (_isPending && pendingLifecycleChanged) {
+      _listenForSessionCreated();
+    }
   }
 
   @override
@@ -551,12 +586,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     if (_isPending) {
       _preserveDeferredSubmissionAsDraft();
     }
-    widget.pendingSessionCreated?.removeListener(_onPendingSessionCreated);
-    final binding = widget.pendingSessionCreated;
-    if (binding is PendingSessionBinding) {
-      binding.failure.removeListener(_onPendingSessionFailed);
-      binding.dispose();
-    }
+    _detachPendingBinding(widget.pendingSessionCreated);
     _pendingSub?.cancel();
     _sessionSwitchSub?.cancel();
     _sessionStoppedSub?.cancel();

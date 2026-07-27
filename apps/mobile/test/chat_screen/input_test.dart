@@ -1,4 +1,5 @@
 import 'package:ccpocket/features/chat_session/widgets/chat_input_with_overlays.dart';
+import 'package:ccpocket/features/session_list/pending_session_binding.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -64,7 +65,14 @@ void main() {
     patrolWidgetTest(
       'H2b: durable preview queues first input and sends after runtime binds',
       ($) async {
-        final binding = ValueNotifier<SystemMessage?>(null);
+        final binding = PendingSessionBinding(
+          kind: PendingSessionRequestKind.resume,
+          requestId: 'claude-resume',
+          provider: 'claude',
+          projectPath: '/tmp/project',
+          providerSessionId: 'durable-thread',
+          allowLegacyFallback: false,
+        );
         addTearDown(binding.dispose);
         await $.pumpWidget(
           await buildTestClaudeSessionScreen(
@@ -106,7 +114,14 @@ void main() {
     patrolWidgetTest(
       'H2c: durable Codex preview sends the queued input to the bound runtime',
       ($) async {
-        final binding = ValueNotifier<SystemMessage?>(null);
+        final binding = PendingSessionBinding(
+          kind: PendingSessionRequestKind.resume,
+          requestId: 'codex-resume',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+          providerSessionId: 'durable-codex-thread',
+          allowLegacyFallback: false,
+        );
         addTearDown(binding.dispose);
         await $.pumpWidget(
           await buildTestCodexSessionScreen(
