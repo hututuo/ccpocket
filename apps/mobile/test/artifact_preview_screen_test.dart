@@ -42,6 +42,8 @@ class _FailingQuickLookPreviewer implements ArtifactQuickLookPreviewer {
 }
 
 class _FakeWebViewPlatform extends webview_platform.WebViewPlatform {
+  _FakeNavigationDelegate? lastNavigationDelegate;
+
   @override
   webview_platform.PlatformWebViewController createPlatformWebViewController(
     webview_platform.PlatformWebViewControllerCreationParams params,
@@ -50,7 +52,11 @@ class _FakeWebViewPlatform extends webview_platform.WebViewPlatform {
   @override
   webview_platform.PlatformNavigationDelegate createPlatformNavigationDelegate(
     webview_platform.PlatformNavigationDelegateCreationParams params,
-  ) => _FakeNavigationDelegate(params);
+  ) {
+    final delegate = _FakeNavigationDelegate(params);
+    lastNavigationDelegate = delegate;
+    return delegate;
+  }
 
   @override
   webview_platform.PlatformWebViewWidget createPlatformWebViewWidget(
@@ -89,6 +95,10 @@ class _FakeNavigationDelegate
     extends webview_platform.PlatformNavigationDelegate {
   _FakeNavigationDelegate(super.params) : super.implementation();
 
+  webview_platform.HttpResponseErrorCallback? onHttpError;
+  webview_platform.PageEventCallback? onPageFinished;
+  webview_platform.PageEventCallback? onPageStarted;
+
   @override
   Future<void> setOnNavigationRequest(
     webview_platform.NavigationRequestCallback onNavigationRequest,
@@ -97,17 +107,23 @@ class _FakeNavigationDelegate
   @override
   Future<void> setOnPageStarted(
     webview_platform.PageEventCallback onPageStarted,
-  ) async {}
+  ) async {
+    this.onPageStarted = onPageStarted;
+  }
 
   @override
   Future<void> setOnPageFinished(
     webview_platform.PageEventCallback onPageFinished,
-  ) async {}
+  ) async {
+    this.onPageFinished = onPageFinished;
+  }
 
   @override
   Future<void> setOnHttpError(
     webview_platform.HttpResponseErrorCallback onHttpError,
-  ) async {}
+  ) async {
+    this.onHttpError = onHttpError;
+  }
 
   @override
   Future<void> setOnProgress(
@@ -247,6 +263,130 @@ void main() {
       isFalse,
     );
   });
+
+  testWidgets(
+    'iOS HTTP errors without request metadata fail the pending main frame',
+    (tester) async {
+      final webViewPlatform = _FakeWebViewPlatform();
+      webview_platform.WebViewPlatform.instance = webViewPlatform;
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: ArtifactPreviewScreen(
+            previewUrl: preview,
+            filename: 'report.html',
+            mimeType: 'text/html',
+            sizeBytes: 512,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final delegate = webViewPlatform.lastNavigationDelegate!;
+      delegate.onPageStarted!(embeddedArtifactPreviewUri(preview).toString());
+      delegate.onHttpError!(
+        const webview_platform.HttpResponseError(
+          response: webview_platform.WebResourceResponse(
+            uri: null,
+            statusCode: 404,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Retry'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'metadata-free subframe errors do not replace a finished preview',
+    (tester) async {
+      final webViewPlatform = _FakeWebViewPlatform();
+      webview_platform.WebViewPlatform.instance = webViewPlatform;
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: ArtifactPreviewScreen(
+            previewUrl: preview,
+            filename: 'report.html',
+            mimeType: 'text/html',
+            sizeBytes: 512,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final delegate = webViewPlatform.lastNavigationDelegate!;
+      final embedded = embeddedArtifactPreviewUri(preview).toString();
+      delegate.onPageStarted!(embedded);
+      delegate.onPageFinished!(embedded);
+      delegate.onHttpError!(
+        const webview_platform.HttpResponseError(
+          response: webview_platform.WebResourceResponse(
+            uri: null,
+            statusCode: 404,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Retry'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'iOS metadata-free token expiry refreshes the pending main frame once',
+    (tester) async {
+      final webViewPlatform = _FakeWebViewPlatform();
+      webview_platform.WebViewPlatform.instance = webViewPlatform;
+      var refreshCalls = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: ArtifactPreviewScreen(
+            previewUrl: preview,
+            filename: 'report.html',
+            mimeType: 'text/html',
+            sizeBytes: 512,
+            accessRefresher: () async {
+              refreshCalls += 1;
+              return ArtifactPreviewAccess(
+                previewUrl: Uri.parse(
+                  'http://100.105.41.82:8765/artifacts/$tokenB',
+                ),
+                expiresAt: DateTime.now()
+                    .add(const Duration(minutes: 5))
+                    .toIso8601String(),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final delegate = webViewPlatform.lastNavigationDelegate!;
+      delegate.onPageStarted!(embeddedArtifactPreviewUri(preview).toString());
+      delegate.onHttpError!(
+        const webview_platform.HttpResponseError(
+          response: webview_platform.WebResourceResponse(
+            uri: null,
+            statusCode: 404,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(refreshCalls, 1);
+      expect(find.text('Retry'), findsNothing);
+    },
+  );
 
   testWidgets('Office preview uses injected Quick Look and gates actions', (
     tester,

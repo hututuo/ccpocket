@@ -58,6 +58,12 @@ bool isAllowedArtifactPreviewNavigation(Uri previewUrl, Uri candidate) {
       candidate.path.startsWith('/artifacts/assets/');
 }
 
+bool _isSameArtifactPreviewDocument(Uri expected, Uri candidate) =>
+    candidate.scheme == expected.scheme &&
+    candidate.host == expected.host &&
+    candidate.port == expected.port &&
+    candidate.path == expected.path;
+
 @visibleForTesting
 bool artifactPreviewRequiresJavaScript(String filename, String mimeType) {
   return isHtmlArtifact(filename, mimeType) ||
@@ -128,6 +134,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   var _handlingBack = false;
   var _webViewCanGoBack = false;
   var _webAccessRefreshAttempted = false;
+  var _mainFrameLoadPending = false;
   Future<bool>? _accessRefreshAttempt;
 
   @override
@@ -196,6 +203,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
 
   void _initializeWebPreview() {
     if (_controller != null) return;
+    _mainFrameLoadPending = true;
     _controller = WebViewController()
       ..setJavaScriptMode(
         artifactPreviewRequiresJavaScript(widget.filename, widget.mimeType)
@@ -208,8 +216,13 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
           onProgress: (progress) {
             if (mounted) setState(() => _pageProgress = progress);
           },
-          onPageStarted: (_) {
-            if (mounted) {
+          onPageStarted: (url) {
+            final started = Uri.tryParse(url);
+            final isMainFrame =
+                started != null &&
+                _isSameArtifactPreviewDocument(_embeddedUrl, started);
+            if (isMainFrame) _mainFrameLoadPending = true;
+            if (isMainFrame && mounted) {
               setState(() {
                 _mainFrameError = null;
                 _pageProgress = 0;
@@ -217,8 +230,13 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
             }
             unawaited(_refreshWebViewBackState());
           },
-          onPageFinished: (_) {
-            if (mounted) setState(() => _pageProgress = 100);
+          onPageFinished: (url) {
+            final finished = Uri.tryParse(url);
+            final isMainFrame =
+                finished != null &&
+                _isSameArtifactPreviewDocument(_embeddedUrl, finished);
+            if (isMainFrame) _mainFrameLoadPending = false;
+            if (isMainFrame && mounted) setState(() => _pageProgress = 100);
             unawaited(_refreshWebViewBackState());
           },
           onWebResourceError: (error) {
@@ -231,14 +249,19 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
                     failedUrl?.port == _embeddedUrl.port &&
                     failedUrl?.path == _embeddedUrl.path);
             if (isMainFrame && mounted) {
+              _mainFrameLoadPending = false;
               setState(() => _mainFrameError = error.description);
             }
           },
           onHttpError: (error) {
             final statusCode = error.response?.statusCode ?? 0;
-            final isMainFrame =
-                error.request?.uri.path == _previewUrl.path ||
-                error.request?.uri.path == _embeddedUrl.path;
+            final requestUri = error.request?.uri;
+            final responseUri = error.response?.uri;
+            final isMainFrame = requestUri != null
+                ? _isSameArtifactPreviewDocument(_embeddedUrl, requestUri)
+                : responseUri != null
+                ? _isSameArtifactPreviewDocument(_embeddedUrl, responseUri)
+                : _mainFrameLoadPending;
             if (isMainFrame &&
                 !_webAccessRefreshAttempted &&
                 widget.accessRefresher != null &&
@@ -248,6 +271,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
               return;
             }
             if (isMainFrame && mounted) {
+              _mainFrameLoadPending = false;
               setState(() => _mainFrameError = 'HTTP $statusCode');
             }
           },
@@ -277,6 +301,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
         _mainFrameError = null;
         _pageProgress = 0;
       });
+      _mainFrameLoadPending = true;
       await controller.loadRequest(_embeddedUrl);
     } catch (_) {
       if (mounted) {
