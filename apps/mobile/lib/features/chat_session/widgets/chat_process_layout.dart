@@ -194,12 +194,14 @@ class ChatProcessLayout {
     this._turnsByEntryIndex, {
     required this.latestTurnKey,
     this.latestTurn,
+    this.turnKeyAliases = const {},
   });
 
   final Map<int, ChatProcessSegmentLayout> _segmentsByEntryIndex;
   final Map<int, ChatProcessTurnLayout> _turnsByEntryIndex;
   final String? latestTurnKey;
   final ChatProcessTurnLayout? latestTurn;
+  final Map<String, String> turnKeyAliases;
 
   ChatProcessSegmentLayout? segmentForEntry(int index) =>
       _segmentsByEntryIndex[index];
@@ -221,6 +223,7 @@ ChatProcessLayout buildChatProcessLayout(
 }) {
   final segmentsByIndex = <int, ChatProcessSegmentLayout>{};
   final turnsByIndex = <int, ChatProcessTurnLayout>{};
+  final turnKeyAliases = <String, String>{};
   String? latestTurnKey;
   ChatProcessTurnLayout? latestTurn;
 
@@ -240,9 +243,17 @@ ChatProcessLayout buildChatProcessLayout(
     // after its UserChatEntry has already been paged out. Treat that leading
     // range as one partial turn so its thought/tool hierarchy keeps the same
     // two-level disclosure instead of falling back to independent bubbles.
-    final turnKey = userEntry == null
-        ? _partialTurnKey(entries, turnContentStart, turnEnd)
-        : _turnKey(userEntry);
+    final partialTurnKey = _partialTurnKey(
+      entries,
+      turnContentStart,
+      turnEnd,
+    );
+    final turnKey = userEntry == null ? partialTurnKey : _turnKey(userEntry);
+    if (userEntry != null &&
+        partialTurnKey != 'partial:empty' &&
+        partialTurnKey != turnKey) {
+      turnKeyAliases[partialTurnKey] = turnKey;
+    }
     final isLatestTurn = turnEnd == entries.length;
     final isActive = isLatestTurn && latestTurnIsActive;
     final usesTransientCurrentOutput = isActive && hasTransientCurrentOutput;
@@ -594,6 +605,7 @@ ChatProcessLayout buildChatProcessLayout(
     Map.unmodifiable(turnsByIndex),
     latestTurnKey: latestTurnKey,
     latestTurn: latestTurn,
+    turnKeyAliases: Map.unmodifiable(turnKeyAliases),
   );
 }
 

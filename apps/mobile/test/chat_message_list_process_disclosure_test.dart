@@ -64,6 +64,19 @@ class _Bridge extends BridgeService {
   }
 }
 
+class _MutableChatSessionCubit extends ChatSessionCubit {
+  _MutableChatSessionCubit({
+    required super.sessionId,
+    required super.bridge,
+    required super.streamingCubit,
+    required super.provider,
+  });
+
+  void prependEntryForTest(ChatEntry entry) {
+    emit(state.copyWith(entries: [entry, ...state.entries]));
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -841,7 +854,7 @@ void main() {
 
       final bridge = _Bridge();
       final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
-      final cubit = ChatSessionCubit(
+      final cubit = _MutableChatSessionCubit(
         sessionId: 'session-partial-window',
         bridge: bridge,
         streamingCubit: streaming,
@@ -896,6 +909,25 @@ void main() {
       expect(find.byType(ChatProcessDisclosure), findsNWidgets(13));
       expect(find.text('Retained update 0'), findsOneWidget);
       expect(find.text('Retained thought 0'), findsNothing);
+
+      cubit.prependEntryForTest(
+        UserChatEntry(
+          'Restored prompt from the older page',
+          clientMessageId: 'restored-partial-turn',
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        find.byKey(
+          const ValueKey(
+            'chat_intermediate_disclosure_client:restored-partial-turn',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Retained update 0'), findsOneWidget);
+      expect(find.byType(ChatProcessDisclosure), findsNWidgets(13));
       expect(tester.takeException(), isNull);
       await cubit.close();
     },

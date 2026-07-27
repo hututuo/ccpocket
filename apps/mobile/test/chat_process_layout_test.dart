@@ -583,6 +583,45 @@ void main() {
       expect(initialKey, contains('tool:stable-tool-id'));
     },
   );
+
+  test('maps a paged partial turn key to its restored user turn key', () {
+    final partialEntries = <ChatEntry>[
+      ServerChatEntry(
+        _assistant('paged-update', const [
+          ThinkingContent(thinking: 'checking'),
+          TextContent(text: 'Still working.'),
+          ToolUseContent(
+            id: 'paged-tool',
+            name: 'Read',
+            input: {'file_path': 'paged.txt'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'paged-tool',
+          toolName: 'Read',
+          content: 'contents',
+        ),
+      ),
+      ServerChatEntry(
+        _assistant('paged-final', const [TextContent(text: 'Done')]),
+      ),
+    ];
+    final partialLayout = buildChatProcessLayout(partialEntries);
+    final partialKey = partialLayout.turnForEntry(0)!.key;
+    expect(partialKey, 'partial:id:paged-update');
+
+    final restoredEntries = <ChatEntry>[
+      UserChatEntry('inspect', clientMessageId: 'paged-user-turn'),
+      ...partialEntries,
+    ];
+    final restoredLayout = buildChatProcessLayout(restoredEntries);
+    final restoredKey = restoredLayout.turnForEntry(1)!.key;
+
+    expect(restoredKey, 'client:paged-user-turn');
+    expect(restoredLayout.turnKeyAliases[partialKey], restoredKey);
+  });
 }
 
 AssistantServerMessage _assistant(String id, List<AssistantContent> content) =>

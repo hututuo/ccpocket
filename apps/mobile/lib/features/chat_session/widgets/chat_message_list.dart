@@ -241,11 +241,43 @@ class _ChatMessageListState extends State<ChatMessageList> {
       latestTurnIsActive: latestTurnIsActive,
       hasTransientCurrentOutput: hasTransientCurrentOutput,
     );
+    _migratePartialTurnDisclosureState(layout.turnKeyAliases);
     _processLayoutEntries = entries;
     _processLayoutLatestTurnIsActive = latestTurnIsActive;
     _processLayoutHasTransientCurrentOutput = hasTransientCurrentOutput;
     _cachedProcessLayout = layout;
     return layout;
+  }
+
+  void _migratePartialTurnDisclosureState(
+    Map<String, String> turnKeyAliases,
+  ) {
+    for (final alias in turnKeyAliases.entries) {
+      final partialKey = alias.key;
+      final canonicalKey = alias.value;
+      if (_expandedIntermediateTurns.remove(partialKey)) {
+        _expandedIntermediateTurns.add(canonicalKey);
+      }
+
+      final partialProgressKey = _currentProgressKey(partialKey);
+      if (_expandedCurrentProgress.remove(partialProgressKey)) {
+        _expandedCurrentProgress.add(_currentProgressKey(canonicalKey));
+      }
+
+      final segmentPrefix = '$partialKey:segment:';
+      final migratedSegments = <String>[];
+      for (final segmentKey in _expandedProcessSegments) {
+        if (!segmentKey.startsWith(segmentPrefix)) continue;
+        migratedSegments.add(
+          '$canonicalKey:segment:${segmentKey.substring(segmentPrefix.length)}',
+        );
+      }
+      if (migratedSegments.isEmpty) continue;
+      _expandedProcessSegments.removeWhere(
+        (segmentKey) => segmentKey.startsWith(segmentPrefix),
+      );
+      _expandedProcessSegments.addAll(migratedSegments);
+    }
   }
 
   /// Keeps a user-triggered height change inside the viewport's layout pass.
