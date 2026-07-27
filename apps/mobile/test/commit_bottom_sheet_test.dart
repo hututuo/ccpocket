@@ -157,6 +157,11 @@ void main() {
 
       expect(find.byKey(const ValueKey('commit_progress')), findsOneWidget);
       expect(find.text('Committing...'), findsOneWidget);
+
+      mockBridge.emitCommit(
+        const GitCommitResultMessage(success: true, commitHash: 'done'),
+      );
+      await tester.pump();
     });
 
     testWidgets('shows success state after commit', (tester) async {

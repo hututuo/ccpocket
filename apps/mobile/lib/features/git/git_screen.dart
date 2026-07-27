@@ -142,10 +142,13 @@ class _GitScreenState extends State<GitScreen> {
           ),
         if (isProjectMode)
           BlocProvider(
-            create: (_) => CommitCubit(
+            create: (providerContext) => CommitCubit(
               bridge: bridge,
               projectPath: widget.projectPath!,
               sessionId: widget.sessionId,
+              onLegacyRepositoryChanged: providerContext
+                  .read<GitViewCubit>()
+                  .refreshAfterLegacyRepositoryChange,
             ),
           ),
       ],

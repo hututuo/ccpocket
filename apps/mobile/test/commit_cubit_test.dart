@@ -12,6 +12,8 @@ class MockCommitBridgeService extends BridgeService {
   final _commitController =
       StreamController<GitCommitResultMessage>.broadcast();
   final _pushController = StreamController<GitPushResultMessage>.broadcast();
+  final _connectionController =
+      StreamController<BridgeConnectionState>.broadcast();
   final sentMessages = <ClientMessage>[];
 
   @override
@@ -22,17 +24,24 @@ class MockCommitBridgeService extends BridgeService {
   Stream<GitPushResultMessage> get gitPushResults => _pushController.stream;
 
   @override
+  Stream<BridgeConnectionState> get connectionStatus =>
+      _connectionController.stream;
+
+  @override
   void send(ClientMessage message) {
     sentMessages.add(message);
   }
 
   void emitCommit(GitCommitResultMessage msg) => _commitController.add(msg);
   void emitPush(GitPushResultMessage msg) => _pushController.add(msg);
+  void emitConnection(BridgeConnectionState state) =>
+      _connectionController.add(state);
 
   @override
   void dispose() {
     _commitController.close();
     _pushController.close();
+    _connectionController.close();
   }
 }
 
@@ -40,10 +49,16 @@ void main() {
   group('CommitCubit', () {
     late MockCommitBridgeService mockBridge;
     late CommitCubit cubit;
+    late int legacyRepositoryChanges;
 
     setUp(() {
       mockBridge = MockCommitBridgeService();
-      cubit = CommitCubit(bridge: mockBridge, projectPath: '/p');
+      legacyRepositoryChanges = 0;
+      cubit = CommitCubit(
+        bridge: mockBridge,
+        projectPath: '/p',
+        onLegacyRepositoryChanged: () => legacyRepositoryChanges += 1,
+      );
     });
 
     tearDown(() {
@@ -105,6 +120,7 @@ void main() {
 
       expect(cubit.state.status, CommitStatus.success);
       expect(cubit.state.commitHash, 'abc123');
+      expect(legacyRepositoryChanges, 1);
     });
 
     test('failed commit sets error status', () async {
@@ -143,6 +159,7 @@ void main() {
       await Future.microtask(() {});
 
       expect(cubit.state.status, CommitStatus.success);
+      expect(legacyRepositoryChanges, 1);
     });
 
     test('commitAndPush stops on commit failure', () async {
@@ -189,6 +206,7 @@ void main() {
       await Future.microtask(() {});
 
       expect(cubit.state.status, CommitStatus.success);
+      expect(legacyRepositoryChanges, 0);
     });
 
     test('ignores push results stamped with another projectPath', () async {
@@ -215,6 +233,66 @@ void main() {
       );
       await Future.microtask(() {});
       expect(cubit.state.status, CommitStatus.success);
+    });
+
+    test(
+      'legacy commit results are owned by only one concurrent flow',
+      () async {
+        final second = CommitCubit(bridge: mockBridge, projectPath: '/other');
+        addTearDown(second.close);
+
+        cubit.commit();
+        second.commit();
+
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'git_commit',
+          ),
+          hasLength(1),
+        );
+        expect(second.state.status, CommitStatus.error);
+        expect(second.state.error, contains('Another Git change'));
+
+        mockBridge.emitCommit(
+          const GitCommitResultMessage(success: true, commitHash: 'owner-only'),
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, CommitStatus.success);
+        expect(cubit.state.commitHash, 'owner-only');
+        expect(second.state.status, CommitStatus.error);
+      },
+    );
+
+    test(
+      'commit timeout quarantines late legacy results until reconnect',
+      () async {
+        await cubit.close();
+        cubit = CommitCubit(
+          bridge: mockBridge,
+          projectPath: '/p',
+          operationTimeout: const Duration(milliseconds: 5),
+        );
+
+        cubit.commit();
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+
+        expect(cubit.state.status, CommitStatus.error);
+        expect(cubit.state.error, contains('timed out'));
+        final sentBeforeRetry = mockBridge.sentMessages.length;
+        cubit.commit();
+        expect(mockBridge.sentMessages, hasLength(sentBeforeRetry));
+        expect(cubit.state.error, contains('Another Git change'));
+      },
+    );
+
+    test('disconnect terminates a pending commit immediately', () async {
+      cubit.commit();
+      mockBridge.emitConnection(BridgeConnectionState.disconnected);
+      await Future.microtask(() {});
+
+      expect(cubit.state.status, CommitStatus.error);
+      expect(cubit.state.error, contains('disconnected'));
     });
 
     test('updateStagedSummary updates counts', () {

@@ -153,6 +153,8 @@ class SessionLinkResolveResult {
 }
 
 class BridgeService implements BridgeServiceBase {
+  static const gitMutationOperationLane = 'git-mutation';
+  static final Object _gitOperationQuarantine = Object();
   void Function(ClientMessage message)? onOutgoingMessage;
   FutureOr<void> Function()? onDisconnect;
 
@@ -258,6 +260,7 @@ class BridgeService implements BridgeServiceBase {
       StreamController<GitStatusResultMessage>.broadcast();
   final _gitRemoteStatusResultController =
       StreamController<GitRemoteStatusResultMessage>.broadcast();
+  final Map<String, Object> _gitOperationLaneOwners = {};
   BridgeConnectionState _connectionState = BridgeConnectionState.disconnected;
   final List<ClientMessage> _messageQueue = [];
   List<SessionInfo> _sessions = [];
@@ -499,6 +502,45 @@ class BridgeService implements BridgeServiceBase {
       _gitStatusResultController.stream;
   Stream<GitRemoteStatusResultMessage> get gitRemoteStatusResults =>
       _gitRemoteStatusResultController.stream;
+
+  /// Serializes Git operations whose legacy Bridge responses carried no
+  /// request or project identity. Current callers may still use the same lane
+  /// for destructive operations so two views cannot mutate repositories
+  /// concurrently and then consume each other's broadcast result.
+  bool tryAcquireGitOperationLane(String lane, Object owner) {
+    final current = _gitOperationLaneOwners[lane];
+    if (current != null && !identical(current, owner)) return false;
+    _gitOperationLaneOwners[lane] = owner;
+    return true;
+  }
+
+  bool ownsGitOperationLane(String lane, Object owner) =>
+      identical(_gitOperationLaneOwners[lane], owner);
+
+  bool isGitOperationLaneQuarantined(String lane) =>
+      identical(_gitOperationLaneOwners[lane], _gitOperationQuarantine);
+
+  void releaseGitOperationLane(String lane, Object owner) {
+    if (identical(_gitOperationLaneOwners[lane], owner)) {
+      _gitOperationLaneOwners.remove(lane);
+    }
+  }
+
+  /// Keeps an uncorrelated legacy lane closed after timeout. A late response
+  /// must not be handed to the next view; reconnecting clears the quarantine
+  /// together with the old socket generation.
+  void quarantineGitOperationLane(String lane, Object owner) {
+    if (identical(_gitOperationLaneOwners[lane], owner)) {
+      _gitOperationLaneOwners[lane] = _gitOperationQuarantine;
+    }
+  }
+
+  void releaseGitOperationLanes(Object owner) {
+    _gitOperationLaneOwners.removeWhere(
+      (_, current) => identical(current, owner),
+    );
+  }
+
   BridgeConnectionState get currentBridgeConnectionState => _connectionState;
   @override
   bool get isConnected => _connectionState == BridgeConnectionState.connected;
@@ -1302,6 +1344,7 @@ class BridgeService implements BridgeServiceBase {
   void _setBridgeConnectionState(BridgeConnectionState state) {
     if (state != BridgeConnectionState.connected) {
       _hasAuthoritativeSessionListForCurrentConnection = false;
+      _gitOperationLaneOwners.clear();
     }
     _connectionState = state;
     _connectionController.add(state);
@@ -5276,6 +5319,7 @@ class BridgeService implements BridgeServiceBase {
     _gitPullResultController.close();
     _gitStatusResultController.close();
     _gitRemoteStatusResultController.close();
+    _gitOperationLaneOwners.clear();
     clearDiffImageCache();
   }
 }

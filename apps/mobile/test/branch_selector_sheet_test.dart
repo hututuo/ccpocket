@@ -32,6 +32,8 @@ class MockBranchBridgeService extends BridgeService {
 
   void emitBranches(GitBranchesResultMessage msg) =>
       _branchesController.add(msg);
+  void emitCheckout(GitCheckoutBranchResultMessage msg) =>
+      _checkoutController.add(msg);
 
   @override
   void dispose() {
@@ -199,13 +201,30 @@ void main() {
 
       // Tap non-current branch
       await tester.tap(find.text('feat/login'));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       // Should have sent checkout message
       expect(
         mockBridge.sentMessages.any((m) => m.type == 'git_checkout_branch'),
         isTrue,
       );
+      // Keep the owning sheet alive until the legacy result and refreshed
+      // branch list arrive.
+      expect(find.byType(DraggableScrollableSheet), findsOneWidget);
+
+      mockBridge.emitCheckout(
+        const GitCheckoutBranchResultMessage(success: true),
+      );
+      await tester.pump();
+      mockBridge.emitBranches(
+        const GitBranchesResultMessage(
+          current: 'feat/login',
+          branches: ['main', 'feat/login'],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(DraggableScrollableSheet), findsNothing);
     });
 
     testWidgets('create branch button opens dialog', (tester) async {

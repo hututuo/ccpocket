@@ -54,10 +54,7 @@ class _GitHeaderControls extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: _BranchSelectorButton(
-            state: state,
-            projectPath: cubit.projectPath,
-          ),
+          child: _BranchSelectorButton(state: state, cubit: cubit),
         ),
         const SizedBox(width: 8),
         _SyncActionRow(state: state, cubit: cubit),
@@ -68,14 +65,15 @@ class _GitHeaderControls extends StatelessWidget {
 
 class _BranchSelectorButton extends StatelessWidget {
   final GitViewState state;
-  final String? projectPath;
+  final GitViewCubit cubit;
 
-  const _BranchSelectorButton({required this.state, required this.projectPath});
+  const _BranchSelectorButton({required this.state, required this.cubit});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final displayName = state.currentBranch ?? '...';
+    final projectPath = cubit.projectPath;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -88,7 +86,12 @@ class _BranchSelectorButton extends StatelessWidget {
           child: InkWell(
             key: const ValueKey('branch_selector_button'),
             onTap: projectPath != null
-                ? () => showBranchSelectorSheet(context, projectPath!)
+                ? () => showBranchSelectorSheet(
+                    context,
+                    projectPath,
+                    onLegacyRepositoryChanged:
+                        cubit.refreshAfterLegacyBranchChange,
+                  )
                 : null,
             borderRadius: BorderRadius.circular(14),
             child: Padding(

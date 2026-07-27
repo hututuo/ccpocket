@@ -9,7 +9,11 @@ import '../state/branch_cubit.dart';
 import '../state/branch_state.dart';
 
 /// Shows the branch selector bottom sheet.
-void showBranchSelectorSheet(BuildContext context, String projectPath) {
+void showBranchSelectorSheet(
+  BuildContext context,
+  String projectPath, {
+  ValueChanged<String?>? onLegacyRepositoryChanged,
+}) {
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -18,6 +22,7 @@ void showBranchSelectorSheet(BuildContext context, String projectPath) {
       create: (_) => BranchCubit(
         bridge: context.read<BridgeService>(),
         projectPath: projectPath,
+        onLegacyRepositoryChanged: onLegacyRepositoryChanged,
       )..loadBranches(),
       child: const _BranchSelectorContent(),
     ),
@@ -33,6 +38,7 @@ class _BranchSelectorContent extends StatefulWidget {
 
 class _BranchSelectorContentState extends State<_BranchSelectorContent> {
   final _searchController = TextEditingController();
+  String? _pendingCheckoutBranch;
 
   @override
   void dispose() {
@@ -42,7 +48,17 @@ class _BranchSelectorContentState extends State<_BranchSelectorContent> {
 
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<BranchCubit, BranchState>(
+    return BlocConsumer<BranchCubit, BranchState>(
+      listener: (context, state) {
+        final pendingBranch = _pendingCheckoutBranch;
+        if (pendingBranch != null &&
+            !state.loading &&
+            !state.creating &&
+            state.error == null &&
+            state.current == pendingBranch) {
+          Navigator.of(context).pop();
+        }
+      },
       builder: (context, state) {
         final cubit = context.read<BranchCubit>();
         final cs = Theme.of(context).colorScheme;
@@ -191,8 +207,8 @@ class _BranchSelectorContentState extends State<_BranchSelectorContent> {
                               onTap: isDisabled
                                   ? null
                                   : () {
+                                      _pendingCheckoutBranch = branch;
                                       cubit.checkout(branch);
-                                      Navigator.of(context).pop();
                                     },
                             );
                           },
@@ -234,6 +250,7 @@ class _BranchSelectorContentState extends State<_BranchSelectorContent> {
               onPressed: () {
                 final name = nameController.text.trim();
                 if (name.isNotEmpty) {
+                  _pendingCheckoutBranch = name;
                   cubit.createBranch(name);
                   Navigator.of(dialogContext).pop();
                 }

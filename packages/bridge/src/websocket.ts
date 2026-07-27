@@ -281,6 +281,10 @@ const SESSION_CATALOG_WATCH_CAPABILITY = "session_catalog_watch_v1";
 const SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY =
   "session_catalog_request_correlation_v1";
 const SESSION_CATALOG_CHANGED_MESSAGE = "session_catalog_changed_v1";
+const GIT_DIFF_REQUEST_CORRELATION_CAPABILITY =
+  "git_diff_request_correlation_v1";
+const GIT_PROJECT_RESULT_CORRELATION_CAPABILITY =
+  "git_project_result_correlation_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
@@ -10025,6 +10029,8 @@ export class BridgeWebSocketServer {
         SESSION_CATALOG_WATCH_CAPABILITY,
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         CONVERSATION_CONTENT_EVENT_CAPABILITY,
+        GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
+        GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
@@ -10089,6 +10095,8 @@ export class BridgeWebSocketServer {
         SESSION_CATALOG_WATCH_CAPABILITY,
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         CONVERSATION_CONTENT_EVENT_CAPABILITY,
+        GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
+        GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer

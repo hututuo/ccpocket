@@ -97,6 +97,14 @@ diff --git a/e.dart b/e.dart
 
 /// Mock BridgeService that exposes controllable streams for diff + staging + remote.
 class MockDiffBridgeService extends BridgeService {
+  MockDiffBridgeService({
+    this.advertisedCapabilities = const {
+      gitDiffRequestCorrelationCapability,
+      gitProjectResultCorrelationCapability,
+    },
+  });
+
+  final Set<String> advertisedCapabilities;
   final _diffController = StreamController<DiffResultMessage>.broadcast();
   final _diffImageController =
       StreamController<DiffImageResultMessage>.broadcast();
@@ -116,11 +124,16 @@ class MockDiffBridgeService extends BridgeService {
       StreamController<GitBranchesResultMessage>.broadcast();
   final _checkoutController =
       StreamController<GitCheckoutBranchResultMessage>.broadcast();
+  final _connectionController =
+      StreamController<BridgeConnectionState>.broadcast();
   final _revertFileController =
       StreamController<GitRevertFileResultMessage>.broadcast();
   final _revertHunksController =
       StreamController<GitRevertHunksResultMessage>.broadcast();
   final sentMessages = <ClientMessage>[];
+
+  @override
+  Set<String> get bridgeCapabilities => advertisedCapabilities;
 
   @override
   Stream<DiffResultMessage> get diffResults => _diffController.stream;
@@ -154,6 +167,9 @@ class MockDiffBridgeService extends BridgeService {
   Stream<GitCheckoutBranchResultMessage> get gitCheckoutBranchResults =>
       _checkoutController.stream;
   @override
+  Stream<BridgeConnectionState> get connectionStatus =>
+      _connectionController.stream;
+  @override
   Stream<GitRevertFileResultMessage> get gitRevertFileResults =>
       _revertFileController.stream;
   @override
@@ -165,7 +181,29 @@ class MockDiffBridgeService extends BridgeService {
     sentMessages.add(message);
   }
 
-  void emitDiff(DiffResultMessage msg) => _diffController.add(msg);
+  void emitDiff(DiffResultMessage msg) {
+    if (msg.requestId != null ||
+        !advertisedCapabilities.contains(gitDiffRequestCorrelationCapability)) {
+      _diffController.add(msg);
+      return;
+    }
+    final requests = sentMessages
+        .where((message) => message.type == 'get_diff')
+        .toList(growable: false);
+    final requestId = requests.isEmpty
+        ? null
+        : (_messageJson(requests.last)['requestId'] as String?);
+    _diffController.add(
+      DiffResultMessage(
+        diff: msg.diff,
+        error: msg.error,
+        errorCode: msg.errorCode,
+        imageChanges: msg.imageChanges,
+        requestId: requestId,
+      ),
+    );
+  }
+
   void emitDiffImage(DiffImageResultMessage msg) =>
       _diffImageController.add(msg);
   void emitStageResult(GitStageResultMessage msg) => _stageController.add(msg);
@@ -175,6 +213,8 @@ class MockDiffBridgeService extends BridgeService {
       _unstageHunksController.add(msg);
   void emitFetchResult(GitFetchResultMessage msg) => _fetchController.add(msg);
   void emitPullResult(GitPullResultMessage msg) => _pullController.add(msg);
+  void emitConnection(BridgeConnectionState state) =>
+      _connectionController.add(state);
   void emitStopped(String sessionId) => _stoppedController.add(sessionId);
   void emitRemoteStatus(GitRemoteStatusResultMessage msg) =>
       _remoteStatusController.add(msg);
@@ -197,6 +237,7 @@ class MockDiffBridgeService extends BridgeService {
     _remoteStatusController.close();
     _branchesController.close();
     _checkoutController.close();
+    _connectionController.close();
     _revertFileController.close();
     _revertHunksController.close();
   }
@@ -348,6 +389,25 @@ void main() {
 
       expect(cubit.state.loading, true);
       expect(cubit.state.files, isEmpty);
+    });
+
+    test('disconnect terminates pending diff and fetch state', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/home/user/project',
+      );
+      addTearDown(() {
+        cubit.close();
+        mockBridge.dispose();
+      });
+
+      mockBridge.emitConnection(BridgeConnectionState.disconnected);
+      await Future.microtask(() {});
+
+      expect(cubit.state.loading, false);
+      expect(cubit.state.fetching, false);
+      expect(cubit.state.errorCode, 'bridge_disconnected');
     });
 
     test('sends getDiff, gitFetch, and gitBranches on init', () {
@@ -1020,7 +1080,9 @@ void main() {
     });
 
     test('accepts diff_result without requestId from an old Bridge', () async {
-      final mockBridge = MockDiffBridgeService();
+      final mockBridge = MockDiffBridgeService(
+        advertisedCapabilities: const {},
+      );
       final cubit = GitViewCubit(
         bridge: mockBridge,
         projectPath: '/home/user/project',
@@ -1034,6 +1096,82 @@ void main() {
       await Future.microtask(() {});
       expect(cubit.state.files, hasLength(3));
       expect(cubit.state.loading, isFalse);
+    });
+
+    test(
+      'legacy diff requests are serialized and routed to one view',
+      () async {
+        final mockBridge = MockDiffBridgeService(
+          advertisedCapabilities: const {},
+        );
+        final first = GitViewCubit(bridge: mockBridge, projectPath: '/repo/a');
+        final second = GitViewCubit(bridge: mockBridge, projectPath: '/repo/b');
+        addTearDown(() async {
+          await first.close();
+          await second.close();
+          mockBridge.dispose();
+        });
+
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'get_diff',
+          ),
+          hasLength(1),
+        );
+
+        mockBridge.emitDiff(const DiffResultMessage(diff: _sampleDiff));
+        await Future.microtask(() {});
+        expect(first.state.files, hasLength(1));
+        expect(second.state.files, isEmpty);
+
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'get_diff',
+          ),
+          hasLength(2),
+        );
+
+        mockBridge.emitDiff(const DiffResultMessage(diff: _multiFileDiff));
+        await Future.microtask(() {});
+        expect(first.state.files, hasLength(1));
+        expect(second.state.files, hasLength(3));
+      },
+    );
+
+    test('timed-out legacy diff quarantines late unscoped results', () async {
+      final mockBridge = MockDiffBridgeService(
+        advertisedCapabilities: const {},
+      );
+      final first = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/repo/a',
+        operationTimeout: const Duration(milliseconds: 5),
+      );
+      final second = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/repo/b',
+        operationTimeout: const Duration(milliseconds: 5),
+      );
+      addTearDown(() async {
+        await first.close();
+        await second.close();
+        mockBridge.dispose();
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 130));
+
+      expect(
+        mockBridge.sentMessages.where((message) => message.type == 'get_diff'),
+        hasLength(1),
+      );
+      expect(first.state.errorCode, 'git_request_timeout');
+      expect(second.state.errorCode, 'git_legacy_request_quarantined');
+
+      mockBridge.emitDiff(const DiffResultMessage(diff: _multiFileDiff));
+      await Future.microtask(() {});
+      expect(first.state.files, isEmpty);
+      expect(second.state.files, isEmpty);
     });
 
     test('stageHunk sends git_stage with fingerprinted hunk', () async {

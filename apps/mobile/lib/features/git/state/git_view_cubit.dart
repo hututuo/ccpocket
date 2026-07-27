@@ -17,6 +17,8 @@ typedef _LegacyDiffImageKey = ({BridgeService bridge, String filePath});
 /// - [initialDiff] provided → parse immediately (individual tool result).
 /// - [projectPath] provided → request `git diff` from Bridge and subscribe.
 class GitViewCubit extends Cubit<GitViewState> {
+  static const _legacyDiffLane = 'git-diff-legacy';
+
   final BridgeService _bridge;
   StreamSubscription<DiffResultMessage>? _diffSub;
   StreamSubscription<DiffImageResultMessage>? _diffImageSub;
@@ -32,6 +34,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   StreamSubscription<GitRevertHunksResultMessage>? _revertHunksSub;
   StreamSubscription<GitBranchesResultMessage>? _branchesSub;
   StreamSubscription<GitCheckoutBranchResultMessage>? _checkoutSub;
+  StreamSubscription<BridgeConnectionState>? _connectionSub;
   final String? _projectPath;
   final String? _sessionId;
   final void Function({bool forceRemote})? _onStatusRefreshRequested;
@@ -41,6 +44,9 @@ class GitViewCubit extends Cubit<GitViewState> {
   Timer? _fetchTimeout;
   Timer? _pullTimeout;
   Timer? _pushTimeout;
+  Timer? _legacyDiffAcquireTimer;
+  bool? _queuedLegacyDiffStaged;
+  String? _pendingMutation;
 
   GitViewCubit({
     required BridgeService bridge,
@@ -80,6 +86,7 @@ class GitViewCubit extends Cubit<GitViewState> {
       _remoteStatusSub = _bridge.gitRemoteStatusResults.listen(_onRemoteStatus);
       _branchesSub = _bridge.gitBranchesResults.listen(_onBranchesResult);
       _checkoutSub = _bridge.gitCheckoutBranchResults.listen(_onCheckoutResult);
+      _connectionSub = _bridge.connectionStatus.listen(_onConnectionState);
       // Fetch on init to get fresh remote state + current branch
       _fetchAndUpdateStatus();
       _bridge.send(ClientMessage.gitBranches(projectPath));
@@ -116,10 +123,54 @@ class GitViewCubit extends Cubit<GitViewState> {
   /// are discarded.
   String? _pendingDiffRequestId;
 
+  bool get _supportsCorrelatedDiff =>
+      _bridge.bridgeCapabilities.contains(gitDiffRequestCorrelationCapability);
+
   /// Send get_diff stamped with a fresh requestId. The Bridge echoes it in
   /// diff_result so each cubit consumes only its own response; old Bridges
-  /// ignore the extra key and echo nothing (legacy single-session mode).
+  /// ignore the extra key and echo nothing. Those legacy requests share one
+  /// Bridge-level lane so a response can reach only its actual owner.
   void _sendGetDiff(String projectPath, {required bool staged}) {
+    if (!_supportsCorrelatedDiff) {
+      if (_bridge.isGitOperationLaneQuarantined(_legacyDiffLane)) {
+        _legacyDiffAcquireTimer?.cancel();
+        _legacyDiffAcquireTimer = null;
+        _queuedLegacyDiffStaged = null;
+        emit(
+          state.copyWith(
+            loading: false,
+            error:
+                'The legacy Bridge did not finish the previous Git request. '
+                'Reconnect before retrying.',
+            errorCode: 'git_legacy_request_quarantined',
+          ),
+        );
+        return;
+      }
+      if (_pendingDiffRequestId != null &&
+          _bridge.ownsGitOperationLane(_legacyDiffLane, this)) {
+        _queuedLegacyDiffStaged = staged;
+        return;
+      }
+      if (!_bridge.tryAcquireGitOperationLane(_legacyDiffLane, this)) {
+        _queuedLegacyDiffStaged = staged;
+        _legacyDiffAcquireTimer ??= Timer(
+          const Duration(milliseconds: 100),
+          () {
+            _legacyDiffAcquireTimer = null;
+            if (isClosed) return;
+            final queued = _queuedLegacyDiffStaged;
+            if (queued == null) return;
+            _queuedLegacyDiffStaged = null;
+            _sendGetDiff(projectPath, staged: queued);
+          },
+        );
+        return;
+      }
+    }
+    _legacyDiffAcquireTimer?.cancel();
+    _legacyDiffAcquireTimer = null;
+    _queuedLegacyDiffStaged = null;
     _clearPendingDiffImageRequests();
     if (state.loadingImageIndices.isNotEmpty) {
       emit(state.copyWith(loadingImageIndices: const {}));
@@ -130,6 +181,17 @@ class GitViewCubit extends Cubit<GitViewState> {
     _diffTimeout = Timer(operationTimeout, () {
       if (isClosed || _pendingDiffRequestId != requestId) return;
       _pendingDiffRequestId = null;
+      if (_supportsCorrelatedDiff) {
+        _bridge.releaseGitOperationLane(_legacyDiffLane, this);
+      } else {
+        _bridge.quarantineGitOperationLane(_legacyDiffLane, this);
+      }
+      final queued = _queuedLegacyDiffStaged;
+      _queuedLegacyDiffStaged = null;
+      if (queued != null && _supportsCorrelatedDiff) {
+        _sendGetDiff(projectPath, staged: queued);
+        return;
+      }
       emit(
         state.copyWith(
           loading: false,
@@ -146,13 +208,26 @@ class GitViewCubit extends Cubit<GitViewState> {
   void _requestDiff(String projectPath) {
     _diffSub = _bridge.diffResults.listen((result) {
       // A requestId that isn't ours means another session's diff or a stale
-      // response from a superseded request (e.g. rapid mode switch) — drop
-      // it. No requestId means an old Bridge; accept for compatibility.
+      // response from a superseded request (e.g. rapid mode switch) — drop it.
+      // A legacy response has no identity and is accepted only by the owner of
+      // the single compatibility lane.
       final requestId = result.requestId;
       if (requestId != null && requestId != _pendingDiffRequestId) return;
+      if (requestId == null &&
+          (_supportsCorrelatedDiff ||
+              !_bridge.ownsGitOperationLane(_legacyDiffLane, this))) {
+        return;
+      }
       _diffTimeout?.cancel();
       _diffTimeout = null;
       _pendingDiffRequestId = null;
+      _bridge.releaseGitOperationLane(_legacyDiffLane, this);
+      final queued = _queuedLegacyDiffStaged;
+      _queuedLegacyDiffStaged = null;
+      if (queued != null) {
+        _sendGetDiff(projectPath, staged: queued);
+        return;
+      }
       if (result.error != null) {
         emit(
           state.copyWith(
@@ -201,6 +276,23 @@ class GitViewCubit extends Cubit<GitViewState> {
   /// Refresh after an external agent turn changed files.
   void refreshAfterExternalChange() {
     refreshDiffOnly(requestStatus: true);
+  }
+
+  /// Refresh after a repository mutation completed on a legacy Bridge whose
+  /// broadcast result carried no project path.
+  void refreshAfterLegacyRepositoryChange({bool branchChanged = false}) {
+    refresh();
+    if (!branchChanged) return;
+    if (_sessionId != null) {
+      _bridge.send(ClientMessage.refreshBranch(_sessionId));
+    }
+  }
+
+  void refreshAfterLegacyBranchChange(String? currentBranch) {
+    if (currentBranch != null) {
+      emit(state.copyWith(currentBranch: currentBranch));
+    }
+    refreshAfterLegacyRepositoryChange(branchChanged: true);
   }
 
   bool get _stagedParamForMode => state.viewMode == GitViewMode.staged;
@@ -472,6 +564,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void stageFile(int fileIdx) {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
+    if (!_beginMutation('stage')) return;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
     _bridge.send(
@@ -486,6 +579,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void unstageFile(int fileIdx) {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
+    if (!_beginMutation('unstage')) return;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
     _bridge.send(
@@ -512,6 +606,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void stageHunk(int fileIdx, int hunkIdx) {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
+    if (!_beginMutation('stage')) return;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
     _bridge.send(
@@ -522,6 +617,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void unstageHunk(int fileIdx, int hunkIdx) {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
+    if (!_beginMutation('unstage_hunks')) return;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
     _bridge.send(
@@ -533,6 +629,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void revertFile(int fileIdx) {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
+    if (!_beginMutation('revert_file')) return;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
     _bridge.send(
@@ -543,6 +640,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void revertHunk(int fileIdx, int hunkIdx) {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
+    if (!_beginMutation('revert_hunks')) return;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
     _bridge.send(
@@ -557,6 +655,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void stageAll() {
     final projectPath = _projectPath;
     if (projectPath == null || state.files.isEmpty) return;
+    if (!_beginMutation('stage')) return;
     _pendingSwitchToStaged = true;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
@@ -572,6 +671,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void unstageAll() {
     final projectPath = _projectPath;
     if (projectPath == null || state.files.isEmpty) return;
+    if (!_beginMutation('unstage')) return;
     _pendingSwitchToUnstaged = true;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
@@ -587,6 +687,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   void revertAll() {
     final projectPath = _projectPath;
     if (projectPath == null || state.files.isEmpty) return;
+    if (!_beginMutation('revert_file')) return;
     emit(state.copyWith(staging: true));
     _scheduleStagingTimeout();
     _bridge.send(
@@ -603,10 +704,57 @@ class GitViewCubit extends Cubit<GitViewState> {
   bool _isForeignProject(String? resultProjectPath) =>
       resultProjectPath != null && resultProjectPath != _projectPath;
 
+  bool _beginMutation(String operation) {
+    if (_pendingMutation != null ||
+        !_bridge.tryAcquireGitOperationLane(
+          BridgeService.gitMutationOperationLane,
+          this,
+        )) {
+      emit(
+        state.copyWith(
+          error:
+              'Another Git change is still pending. Wait for it to finish '
+              'before starting a new one.',
+          errorCode: 'git_operation_busy',
+        ),
+      );
+      return false;
+    }
+    _pendingMutation = operation;
+    return true;
+  }
+
+  bool _acceptMutationResult(String operation, String? resultProjectPath) {
+    return !_isForeignProject(resultProjectPath) &&
+        _pendingMutation == operation &&
+        _bridge.ownsGitOperationLane(
+          BridgeService.gitMutationOperationLane,
+          this,
+        );
+  }
+
+  void _completeMutation() {
+    _pendingMutation = null;
+    _bridge.releaseGitOperationLane(
+      BridgeService.gitMutationOperationLane,
+      this,
+    );
+  }
+
+  void _quarantineTimedOutMutation() {
+    if (_pendingMutation == null) return;
+    _pendingMutation = null;
+    _bridge.quarantineGitOperationLane(
+      BridgeService.gitMutationOperationLane,
+      this,
+    );
+  }
+
   void _scheduleStagingTimeout() {
     _stagingTimeout?.cancel();
     _stagingTimeout = Timer(operationTimeout, () {
       if (isClosed || !state.staging) return;
+      _quarantineTimedOutMutation();
       _pendingSwitchToStaged = false;
       _pendingSwitchToUnstaged = false;
       emit(
@@ -622,10 +770,11 @@ class GitViewCubit extends Cubit<GitViewState> {
   void _completeStagingRequest() {
     _stagingTimeout?.cancel();
     _stagingTimeout = null;
+    _completeMutation();
   }
 
   void _onStageResult(GitStageResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    if (!_acceptMutationResult('stage', result.projectPath)) return;
     _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
@@ -643,7 +792,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onRevertResult(GitRevertFileResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    if (!_acceptMutationResult('revert_file', result.projectPath)) return;
     _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
@@ -654,7 +803,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onRevertHunksResult(GitRevertHunksResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    if (!_acceptMutationResult('revert_hunks', result.projectPath)) return;
     _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
@@ -665,7 +814,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onUnstageResult(GitUnstageResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    if (!_acceptMutationResult('unstage', result.projectPath)) return;
     _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
@@ -683,7 +832,7 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onUnstageHunksResult(GitUnstageHunksResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    if (!_acceptMutationResult('unstage_hunks', result.projectPath)) return;
     _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
@@ -746,10 +895,12 @@ class GitViewCubit extends Cubit<GitViewState> {
   void pull() {
     final projectPath = _projectPath;
     if (projectPath == null) return;
+    if (!_beginMutation('pull')) return;
     emit(state.copyWith(pulling: true));
     _pullTimeout?.cancel();
     _pullTimeout = Timer(operationTimeout, () {
       if (isClosed || !state.pulling) return;
+      _quarantineTimedOutMutation();
       emit(
         state.copyWith(
           pulling: false,
@@ -762,9 +913,10 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onPullResult(GitPullResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    if (!_acceptMutationResult('pull', result.projectPath)) return;
     _pullTimeout?.cancel();
     _pullTimeout = null;
+    _completeMutation();
     emit(state.copyWith(pulling: false));
     if (result.success) {
       refresh(); // refresh diff + remote status
@@ -777,10 +929,12 @@ class GitViewCubit extends Cubit<GitViewState> {
   void push() {
     final projectPath = _projectPath;
     if (projectPath == null) return;
+    if (!_beginMutation('push')) return;
     emit(state.copyWith(pushing: true));
     _pushTimeout?.cancel();
     _pushTimeout = Timer(operationTimeout, () {
       if (isClosed || !state.pushing) return;
+      _quarantineTimedOutMutation();
       emit(
         state.copyWith(
           pushing: false,
@@ -793,9 +947,10 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onPushResult(GitPushResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    if (!_acceptMutationResult('push', result.projectPath)) return;
     _pushTimeout?.cancel();
     _pushTimeout = null;
+    _completeMutation();
     emit(state.copyWith(pushing: false));
     if (result.success) {
       refresh();
@@ -805,7 +960,11 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onCommitResult(GitCommitResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    // A pathless result belongs to a legacy CommitCubit that owns the
+    // destructive lane. It cannot safely be attributed to this view.
+    if (result.projectPath == null || _isForeignProject(result.projectPath)) {
+      return;
+    }
     if (result.success) {
       refresh();
     }
@@ -823,19 +982,52 @@ class GitViewCubit extends Cubit<GitViewState> {
   }
 
   void _onCheckoutResult(GitCheckoutBranchResultMessage result) {
-    if (_isForeignProject(result.projectPath)) return;
+    // Legacy checkout results are consumed by the BranchCubit lane owner.
+    if (result.projectPath == null || _isForeignProject(result.projectPath)) {
+      return;
+    }
     if (result.success) {
       // Refresh diff + branch + remote status after checkout
       refresh();
-      final projectPath = _projectPath;
-      if (projectPath != null) {
-        _bridge.send(ClientMessage.gitBranches(projectPath));
-      }
       // Update session branch info so session list card reflects the change
       if (_sessionId != null) {
         _bridge.send(ClientMessage.refreshBranch(_sessionId));
       }
     }
+  }
+
+  void _onConnectionState(BridgeConnectionState connectionState) {
+    if (connectionState == BridgeConnectionState.connected) return;
+    final hadPendingOperation =
+        _pendingDiffRequestId != null ||
+        _pendingMutation != null ||
+        state.staging ||
+        state.fetching ||
+        state.pulling ||
+        state.pushing;
+    if (!hadPendingOperation) return;
+
+    _diffTimeout?.cancel();
+    _stagingTimeout?.cancel();
+    _fetchTimeout?.cancel();
+    _pullTimeout?.cancel();
+    _pushTimeout?.cancel();
+    _legacyDiffAcquireTimer?.cancel();
+    _pendingDiffRequestId = null;
+    _pendingMutation = null;
+    _queuedLegacyDiffStaged = null;
+    _bridge.releaseGitOperationLanes(this);
+    emit(
+      state.copyWith(
+        loading: false,
+        staging: false,
+        fetching: false,
+        pulling: false,
+        pushing: false,
+        error: 'The Bridge disconnected before the Git operation completed.',
+        errorCode: 'bridge_disconnected',
+      ),
+    );
   }
 
   @override
@@ -845,6 +1037,17 @@ class GitViewCubit extends Cubit<GitViewState> {
     _fetchTimeout?.cancel();
     _pullTimeout?.cancel();
     _pushTimeout?.cancel();
+    _legacyDiffAcquireTimer?.cancel();
+    if (_pendingDiffRequestId != null && !_supportsCorrelatedDiff) {
+      _bridge.quarantineGitOperationLane(_legacyDiffLane, this);
+    }
+    if (_pendingMutation != null) {
+      _bridge.quarantineGitOperationLane(
+        BridgeService.gitMutationOperationLane,
+        this,
+      );
+    }
+    _bridge.releaseGitOperationLanes(this);
     _clearPendingDiffImageRequests();
     _diffSub?.cancel();
     _diffImageSub?.cancel();
@@ -860,6 +1063,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     _remoteStatusSub?.cancel();
     _branchesSub?.cancel();
     _checkoutSub?.cancel();
+    _connectionSub?.cancel();
     return super.close();
   }
 }

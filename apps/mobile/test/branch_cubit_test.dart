@@ -53,10 +53,21 @@ void main() {
   group('BranchCubit', () {
     late MockBranchBridgeService mockBridge;
     late BranchCubit cubit;
+    late int legacyRepositoryChanges;
+    String? lastLegacyBranch;
 
     setUp(() {
       mockBridge = MockBranchBridgeService();
-      cubit = BranchCubit(bridge: mockBridge, projectPath: '/p');
+      legacyRepositoryChanges = 0;
+      lastLegacyBranch = null;
+      cubit = BranchCubit(
+        bridge: mockBridge,
+        projectPath: '/p',
+        onLegacyRepositoryChanged: (branch) {
+          legacyRepositoryChanges += 1;
+          lastLegacyBranch = branch;
+        },
+      );
     });
 
     tearDown(() {
@@ -195,6 +206,17 @@ void main() {
         mockBridge.sentMessages.where((m) => m.type == 'git_branches').length,
         1,
       );
+      expect(legacyRepositoryChanges, 0);
+
+      mockBridge.emitBranches(
+        const GitBranchesResultMessage(
+          current: 'feat/new',
+          branches: ['main', 'feat/new'],
+        ),
+      );
+      await Future.microtask(() {});
+      expect(legacyRepositoryChanges, 1);
+      expect(lastLegacyBranch, 'feat/new');
     });
 
     test('createBranch failure sets error', () async {
@@ -232,7 +254,34 @@ void main() {
         mockBridge.sentMessages.where((m) => m.type == 'git_branches').length,
         1,
       );
+      expect(legacyRepositoryChanges, 0);
+
+      mockBridge.emitBranches(
+        const GitBranchesResultMessage(
+          current: 'feat/login',
+          branches: ['main', 'feat/login'],
+        ),
+      );
+      await Future.microtask(() {});
+      expect(legacyRepositoryChanges, 1);
+      expect(lastLegacyBranch, 'feat/login');
     });
+
+    test(
+      'project-stamped branch result does not use legacy callback',
+      () async {
+        cubit.checkout('feat/login');
+        mockBridge.emitCheckout(
+          const GitCheckoutBranchResultMessage(
+            success: true,
+            projectPath: '/p',
+          ),
+        );
+        await Future.microtask(() {});
+
+        expect(legacyRepositoryChanges, 0);
+      },
+    );
 
     test('failed checkout sets error', () async {
       cubit.checkout('nonexistent');
