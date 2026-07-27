@@ -128,6 +128,15 @@ class DatabaseService {
     ''');
 
     await db.execute('''
+      CREATE TABLE IF NOT EXISTS prompt_history_pending_local (
+        id TEXT NOT NULL,
+        bridge_id TEXT NOT NULL,
+        pending_local_at TEXT NOT NULL,
+        PRIMARY KEY (id, bridge_id)
+      )
+    ''');
+
+    await db.execute('''
       CREATE TABLE IF NOT EXISTS prompt_history_sync_status (
         bridge_id TEXT PRIMARY KEY,
         bridge_url TEXT NOT NULL,

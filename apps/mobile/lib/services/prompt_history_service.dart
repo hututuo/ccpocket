@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
@@ -221,6 +222,16 @@ class PromptHistorySyncTarget {
   });
 }
 
+class _PendingPromptCacheRow {
+  const _PendingPromptCacheRow({
+    required this.row,
+    required this.pendingLocalAt,
+  });
+
+  final Map<String, Object?> row;
+  final String pendingLocalAt;
+}
+
 /// Service for managing Prompt History 2.0 cache and Bridge sync.
 ///
 /// The Bridge is the SSoT. The local database is a cache plus a retained 1.0
@@ -244,10 +255,21 @@ class PromptHistoryService {
 
   final DatabaseService _dbService;
   final Map<String, Future<String?>> _bridgeSyncsInFlight = {};
+  Future<void>? _pendingLocalTableReady;
+  Future<void> _cacheMutationTail = Future<void>.value();
 
   PromptHistoryService(this._dbService);
 
   Future<Database?> get _db => _dbService.database;
+
+  Future<T> _serializeCacheMutation<T>(Future<T> Function() operation) {
+    final result = _cacheMutationTail.then((_) => operation());
+    _cacheMutationTail = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
+  }
 
   Future<String> get clientDeviceId async {
     final prefs = await SharedPreferences.getInstance();
@@ -727,28 +749,35 @@ class PromptHistoryService {
     if (id.startsWith('v1_')) {
       return _toggleLegacyFavorite(int.parse(id.substring(3)));
     }
-    final db = await _db;
-    if (db == null) return false;
     final sourceWhere = _sourceWhereClause(id, sources);
-    final rows = await db.query(
-      'prompt_history_cache',
-      where: '${sourceWhere.where} AND deleted_at IS NULL',
-      whereArgs: sourceWhere.args,
-    );
-    if (rows.isEmpty) return false;
+    final mutation = await _serializeCacheMutation(() async {
+      final db = await _db;
+      if (db == null) return null;
+      final rows = await db.query(
+        'prompt_history_cache',
+        where: '${sourceWhere.where} AND deleted_at IS NULL',
+        whereArgs: sourceWhere.args,
+      );
+      if (rows.isEmpty) return null;
 
-    final newValue = !rows.any((row) => (row['is_favorite'] as int? ?? 0) == 1);
-    final now = DateTime.now().toUtc().toIso8601String();
-    await db.update(
-      'prompt_history_cache',
-      {
-        'is_favorite': newValue ? 1 : 0,
-        'favorite_updated_at': now,
-        'updated_at': now,
-      },
-      where: sourceWhere.where,
-      whereArgs: sourceWhere.args,
-    );
+      final newValue = !rows.any(
+        (row) => (row['is_favorite'] as int? ?? 0) == 1,
+      );
+      final now = DateTime.now().toUtc().toIso8601String();
+      await db.update(
+        'prompt_history_cache',
+        {
+          'is_favorite': newValue ? 1 : 0,
+          'favorite_updated_at': now,
+          'updated_at': now,
+        },
+        where: sourceWhere.where,
+        whereArgs: sourceWhere.args,
+      );
+      await _markPendingRows(db, rows, now);
+      return (value: newValue, updatedAt: now);
+    });
+    if (mutation == null) return false;
     for (final mutationId in _mutationIdsForConnectedBridge(
       id,
       sources,
@@ -758,12 +787,12 @@ class PromptHistoryService {
         ClientMessage.mutatePromptHistory(
           id: mutationId,
           action: 'favorite',
-          isFavorite: newValue,
-          updatedAt: now,
+          isFavorite: mutation.value,
+          updatedAt: mutation.updatedAt,
         ),
       );
     }
-    return newValue;
+    return mutation.value;
   }
 
   Future<void> delete(
@@ -775,16 +804,27 @@ class PromptHistoryService {
       await _deleteLegacy(int.parse(id.substring(3)));
       return;
     }
-    final db = await _db;
-    if (db == null) return;
     final now = DateTime.now().toUtc().toIso8601String();
     final sourceWhere = _sourceWhereClause(id, sources);
-    await db.update(
-      'prompt_history_cache',
-      {'deleted_at': now, 'updated_at': now},
-      where: sourceWhere.where,
-      whereArgs: sourceWhere.args,
-    );
+    final cacheAvailable = await _serializeCacheMutation(() async {
+      final db = await _db;
+      if (db == null) return false;
+      final rows = await db.query(
+        'prompt_history_cache',
+        columns: ['id', 'bridge_id'],
+        where: sourceWhere.where,
+        whereArgs: sourceWhere.args,
+      );
+      await db.update(
+        'prompt_history_cache',
+        {'deleted_at': now, 'updated_at': now},
+        where: sourceWhere.where,
+        whereArgs: sourceWhere.args,
+      );
+      await _markPendingRows(db, rows, now);
+      return true;
+    });
+    if (!cacheAvailable) return;
     for (final mutationId in _mutationIdsForConnectedBridge(
       id,
       sources,
@@ -962,6 +1002,32 @@ class PromptHistoryService {
     required String clientName,
     required String usedAt,
     String? sessionId,
+  }) {
+    return _serializeCacheMutation(
+      () => _recordCacheUseLocked(
+        bridgeId: bridgeId,
+        bridgeUrl: bridgeUrl,
+        bridgeName: bridgeName,
+        text: text,
+        projectPath: projectPath,
+        clientId: clientId,
+        clientName: clientName,
+        usedAt: usedAt,
+        sessionId: sessionId,
+      ),
+    );
+  }
+
+  Future<void> _recordCacheUseLocked({
+    required String bridgeId,
+    required String bridgeUrl,
+    required String bridgeName,
+    required String text,
+    required String projectPath,
+    required String clientId,
+    required String clientName,
+    required String usedAt,
+    String? sessionId,
   }) async {
     final db = await _db;
     if (db == null) return;
@@ -974,41 +1040,45 @@ class PromptHistoryService {
     );
 
     if (rows.isEmpty) {
-      await _upsertCacheEntries(
-        bridgeId: bridgeId,
-        bridgeUrl: bridgeUrl,
-        bridgeName: bridgeName,
-        revision: 0,
-        syncedAt: usedAt,
-        entries: [
-          PromptHistoryServerEntry(
-            id: id,
-            text: text,
-            projectPath: projectPath,
-            totalUseCount: 1,
-            isFavorite: false,
-            createdAt: usedAt,
+      final entry = PromptHistoryServerEntry(
+        id: id,
+        text: text,
+        projectPath: projectPath,
+        totalUseCount: 1,
+        isFavorite: false,
+        createdAt: usedAt,
+        lastUsedAt: usedAt,
+        updatedAt: usedAt,
+        commandKind: _detectCommandKind(text),
+        clientStats: {
+          clientId: PromptHistoryClientStat(
+            useCount: 1,
             lastUsedAt: usedAt,
-            updatedAt: usedAt,
-            commandKind: _detectCommandKind(text),
-            clientStats: {
-              clientId: PromptHistoryClientStat(
-                useCount: 1,
-                lastUsedAt: usedAt,
-                clientName: clientName,
-              ),
-            },
-            sessionStats: sessionId == null
-                ? const {}
-                : {
-                    sessionId: PromptHistorySessionStat(
-                      useCount: 1,
-                      lastUsedAt: usedAt,
-                    ),
-                  },
+            clientName: clientName,
           ),
-        ],
+        },
+        sessionStats: sessionId == null
+            ? const {}
+            : {
+                sessionId: PromptHistorySessionStat(
+                  useCount: 1,
+                  lastUsedAt: usedAt,
+                ),
+              },
       );
+      await db.insert(
+        'prompt_history_cache',
+        _cacheRowForServerEntry(
+          entry,
+          bridgeId: bridgeId,
+          bridgeUrl: bridgeUrl,
+          bridgeName: bridgeName,
+          revision: 0,
+          syncedAt: usedAt,
+        ),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      await _markPendingLocal(db, id, bridgeId, usedAt);
       return;
     }
 
@@ -1046,14 +1116,92 @@ class PromptHistoryService {
         'session_stats_json': jsonEncode(
           sessions.map((key, value) => MapEntry(key, value.toJson())),
         ),
-        'synced_at': usedAt,
       },
       where: 'id = ? AND bridge_id = ?',
       whereArgs: [id, bridgeId],
     );
+    await _markPendingLocal(db, id, bridgeId, usedAt);
   }
 
+  Future<void> _ensurePendingLocalTable(Database db) {
+    return _pendingLocalTableReady ??= _initializePendingLocalTable(db);
+  }
+
+  Future<void> _initializePendingLocalTable(Database db) async {
+    try {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS prompt_history_pending_local (
+          id TEXT NOT NULL,
+          bridge_id TEXT NOT NULL,
+          pending_local_at TEXT NOT NULL,
+          PRIMARY KEY (id, bridge_id)
+        )
+      ''');
+    } catch (_) {
+      _pendingLocalTableReady = null;
+      rethrow;
+    }
+  }
+
+  Future<void> _markPendingLocal(
+    Database db,
+    String id,
+    String bridgeId,
+    String pendingLocalAt,
+  ) async {
+    await _ensurePendingLocalTable(db);
+    await db.insert('prompt_history_pending_local', {
+      'id': id,
+      'bridge_id': bridgeId,
+      'pending_local_at': pendingLocalAt,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> _markPendingRows(
+    Database db,
+    Iterable<Map<String, Object?>> rows,
+    String pendingLocalAt,
+  ) async {
+    await _ensurePendingLocalTable(db);
+    final batch = db.batch();
+    for (final row in rows) {
+      final id = row['id'];
+      final bridgeId = row['bridge_id'];
+      if (id is! String || bridgeId is! String) continue;
+      batch.insert(
+        'prompt_history_pending_local',
+        {'id': id, 'bridge_id': bridgeId, 'pending_local_at': pendingLocalAt},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  String _pendingSourceKey(String id, String bridgeId) => '$bridgeId\u0000$id';
+
   Future<void> _upsertCacheEntries({
+    required String bridgeId,
+    List<String> aliasBridgeIds = const [],
+    required String bridgeUrl,
+    required String bridgeName,
+    required int revision,
+    required String syncedAt,
+    required List<PromptHistoryServerEntry> entries,
+  }) {
+    return _serializeCacheMutation(
+      () => _upsertCacheEntriesLocked(
+        bridgeId: bridgeId,
+        aliasBridgeIds: aliasBridgeIds,
+        bridgeUrl: bridgeUrl,
+        bridgeName: bridgeName,
+        revision: revision,
+        syncedAt: syncedAt,
+        entries: entries,
+      ),
+    );
+  }
+
+  Future<void> _upsertCacheEntriesLocked({
     required String bridgeId,
     List<String> aliasBridgeIds = const [],
     required String bridgeUrl,
@@ -1064,41 +1212,174 @@ class PromptHistoryService {
   }) async {
     final db = await _db;
     if (db == null) return;
+    await _ensurePendingLocalTable(db);
+    final scopedBridgeIds = {bridgeId, ...aliasBridgeIds};
+    final placeholders = List.filled(scopedBridgeIds.length, '?').join(',');
+    final existingRows = await db.query(
+      'prompt_history_cache',
+      where: 'bridge_id IN ($placeholders)',
+      whereArgs: scopedBridgeIds.toList(),
+    );
+    final pendingMarkers = await db.query(
+      'prompt_history_pending_local',
+      where: 'bridge_id IN ($placeholders)',
+      whereArgs: scopedBridgeIds.toList(),
+    );
+    final pendingBySource = <String, String>{};
+    for (final marker in pendingMarkers) {
+      final id = marker['id'];
+      final sourceBridgeId = marker['bridge_id'];
+      final pendingLocalAt = marker['pending_local_at'];
+      if (id is String &&
+          sourceBridgeId is String &&
+          pendingLocalAt is String &&
+          pendingLocalAt.isNotEmpty) {
+        pendingBySource[_pendingSourceKey(id, sourceBridgeId)] = pendingLocalAt;
+      }
+    }
+    final remoteEntries = {for (final entry in entries) entry.id: entry};
+    final pendingRows = <String, _PendingPromptCacheRow>{};
+    for (final row in existingRows) {
+      final id = row['id'];
+      final sourceBridgeId = row['bridge_id'];
+      if (id is! String || sourceBridgeId is! String) continue;
+      final pendingLocalAt =
+          pendingBySource[_pendingSourceKey(id, sourceBridgeId)];
+      if (pendingLocalAt == null) continue;
+      final remote = remoteEntries[id];
+      if (remote != null &&
+          _compareIso(remote.updatedAt, pendingLocalAt) >= 0) {
+        continue;
+      }
+      final current = pendingRows[id];
+      if (current == null ||
+          _compareIso(pendingLocalAt, current.pendingLocalAt) > 0) {
+        pendingRows[id] = _PendingPromptCacheRow(
+          row: Map<String, Object?>.from(row),
+          pendingLocalAt: pendingLocalAt,
+        );
+      }
+    }
+
     final batch = db.batch();
-    for (final id in {bridgeId, ...aliasBridgeIds}) {
+    for (final id in scopedBridgeIds) {
       batch.delete(
         'prompt_history_cache',
         where: 'bridge_id = ?',
         whereArgs: [id],
       );
+      batch.delete(
+        'prompt_history_pending_local',
+        where: 'bridge_id = ?',
+        whereArgs: [id],
+      );
     }
     for (final entry in entries) {
-      batch.insert('prompt_history_cache', {
-        'id': entry.id,
-        'bridge_id': bridgeId,
-        'bridge_url': bridgeUrl,
-        'bridge_name': bridgeName,
-        'text': entry.text,
-        'project_path': entry.projectPath,
-        'total_use_count': entry.totalUseCount,
-        'is_favorite': entry.isFavorite ? 1 : 0,
-        'created_at': entry.createdAt,
-        'last_used_at': entry.lastUsedAt,
-        'updated_at': entry.updatedAt,
-        'favorite_updated_at': entry.favoriteUpdatedAt,
-        'deleted_at': entry.deletedAt,
-        'command_kind': entry.commandKind,
-        'client_stats_json': jsonEncode(
-          entry.clientStats.map((key, value) => MapEntry(key, value.toJson())),
+      if (pendingRows.containsKey(entry.id)) continue;
+      batch.insert(
+        'prompt_history_cache',
+        _cacheRowForServerEntry(
+          entry,
+          bridgeId: bridgeId,
+          bridgeUrl: bridgeUrl,
+          bridgeName: bridgeName,
+          revision: revision,
+          syncedAt: syncedAt,
         ),
-        'session_stats_json': jsonEncode(
-          entry.sessionStats.map((key, value) => MapEntry(key, value.toJson())),
-        ),
-        'synced_revision': revision,
-        'synced_at': syncedAt,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    for (final pending in pendingRows.values) {
+      final row = pending.row;
+      row
+        ..['bridge_id'] = bridgeId
+        ..['bridge_url'] = bridgeUrl
+        ..['bridge_name'] = bridgeName;
+      batch.insert(
+        'prompt_history_cache',
+        row,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      batch.insert(
+        'prompt_history_pending_local',
+        {
+          'id': row['id'],
+          'bridge_id': bridgeId,
+          'pending_local_at': pending.pendingLocalAt,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     }
     await batch.commit(noResult: true);
+  }
+
+  Map<String, Object?> _cacheRowForServerEntry(
+    PromptHistoryServerEntry entry, {
+    required String bridgeId,
+    required String bridgeUrl,
+    required String bridgeName,
+    required int revision,
+    required String syncedAt,
+  }) {
+    return {
+      'id': entry.id,
+      'bridge_id': bridgeId,
+      'bridge_url': bridgeUrl,
+      'bridge_name': bridgeName,
+      'text': entry.text,
+      'project_path': entry.projectPath,
+      'total_use_count': entry.totalUseCount,
+      'is_favorite': entry.isFavorite ? 1 : 0,
+      'created_at': entry.createdAt,
+      'last_used_at': entry.lastUsedAt,
+      'updated_at': entry.updatedAt,
+      'favorite_updated_at': entry.favoriteUpdatedAt,
+      'deleted_at': entry.deletedAt,
+      'command_kind': entry.commandKind,
+      'client_stats_json': jsonEncode(
+        entry.clientStats.map((key, value) => MapEntry(key, value.toJson())),
+      ),
+      'session_stats_json': jsonEncode(
+        entry.sessionStats.map((key, value) => MapEntry(key, value.toJson())),
+      ),
+      'synced_revision': revision,
+      'synced_at': syncedAt,
+    };
+  }
+
+  @visibleForTesting
+  Future<void> replaceCacheSnapshotForTest({
+    required String bridgeId,
+    required String syncedAt,
+    required List<PromptHistoryServerEntry> entries,
+  }) {
+    return _upsertCacheEntries(
+      bridgeId: bridgeId,
+      bridgeUrl: 'ws://test.invalid',
+      bridgeName: bridgeId,
+      revision: 1,
+      syncedAt: syncedAt,
+      entries: entries,
+    );
+  }
+
+  @visibleForTesting
+  Future<void> recordCacheUseForTest({
+    required String bridgeId,
+    required String text,
+    required String projectPath,
+    required String usedAt,
+  }) {
+    return _recordCacheUse(
+      bridgeId: bridgeId,
+      bridgeUrl: 'ws://test.invalid',
+      bridgeName: bridgeId,
+      text: text,
+      projectPath: projectPath,
+      clientId: 'test-client',
+      clientName: 'Test Client',
+      usedAt: usedAt,
+    );
   }
 
   Future<void> _upsertSyncStatus({

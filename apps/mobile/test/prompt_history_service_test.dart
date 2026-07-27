@@ -4,7 +4,7 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/database_service.dart';
 import 'package:ccpocket/services/prompt_history_service.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
   test('bridgeIdForUrl canonicalizes IPv6 and default ports', () {
@@ -36,6 +36,136 @@ void main() {
     final next = service.syncBridge(target);
     expect(next, isNot(same(first)));
     expect(await next, isNull);
+  });
+
+  group('optimistic cache reconciliation', () {
+    late Database database;
+    late PromptHistoryService service;
+
+    setUpAll(sqfliteFfiInit);
+
+    setUp(() async {
+      database = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await database.execute('''
+        CREATE TABLE prompt_history_cache (
+          id TEXT NOT NULL,
+          bridge_id TEXT NOT NULL,
+          bridge_url TEXT NOT NULL,
+          bridge_name TEXT NOT NULL DEFAULT '',
+          text TEXT NOT NULL,
+          project_path TEXT NOT NULL DEFAULT '',
+          total_use_count INTEGER NOT NULL DEFAULT 0,
+          is_favorite INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          last_used_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          favorite_updated_at TEXT,
+          deleted_at TEXT,
+          command_kind TEXT NOT NULL DEFAULT 'none',
+          client_stats_json TEXT NOT NULL DEFAULT '{}',
+          session_stats_json TEXT NOT NULL DEFAULT '{}',
+          synced_revision INTEGER NOT NULL DEFAULT 0,
+          synced_at TEXT NOT NULL,
+          PRIMARY KEY (id, bridge_id)
+        )
+      ''');
+      service = PromptHistoryService(_StaticDatabaseService(database));
+    });
+
+    tearDown(() => database.close());
+
+    test('a new optimistic prompt does not erase sibling cache rows', () async {
+      await service.recordCacheUseForTest(
+        bridgeId: 'bridge-a',
+        text: 'first prompt',
+        projectPath: '/repo',
+        usedAt: '2026-01-01T00:00:00Z',
+      );
+      await service.recordCacheUseForTest(
+        bridgeId: 'bridge-a',
+        text: 'second prompt',
+        projectPath: '/repo',
+        usedAt: '2026-01-01T00:00:01Z',
+      );
+
+      final rows = await database.query('prompt_history_cache');
+      expect(rows.map((row) => row['text']).toSet(), {
+        'first prompt',
+        'second prompt',
+      });
+    });
+
+    test('stale sync cannot overwrite an unacknowledged local use', () async {
+      const firstUse = '2026-01-01T00:00:00Z';
+      const secondUse = '2026-01-01T00:00:01Z';
+      await service.recordCacheUseForTest(
+        bridgeId: 'bridge-a',
+        text: 'tracked prompt',
+        projectPath: '/repo',
+        usedAt: firstUse,
+      );
+      final initial = (await database.query(
+        'prompt_history_cache',
+        limit: 1,
+      )).single;
+      final id = initial['id']! as String;
+
+      await service.replaceCacheSnapshotForTest(
+        bridgeId: 'bridge-a',
+        syncedAt: firstUse,
+        entries: [
+          _serverEntry(
+            id: id,
+            text: 'tracked prompt',
+            useCount: 1,
+            updatedAt: firstUse,
+          ),
+        ],
+      );
+      await service.recordCacheUseForTest(
+        bridgeId: 'bridge-a',
+        text: 'tracked prompt',
+        projectPath: '/repo',
+        usedAt: secondUse,
+      );
+
+      await service.replaceCacheSnapshotForTest(
+        bridgeId: 'bridge-a',
+        syncedAt: secondUse,
+        entries: [
+          _serverEntry(
+            id: id,
+            text: 'tracked prompt',
+            useCount: 1,
+            updatedAt: firstUse,
+          ),
+        ],
+      );
+      var row = (await database.query('prompt_history_cache', limit: 1)).single;
+      expect(row['total_use_count'], 2);
+      var pending = (await database.query(
+        'prompt_history_pending_local',
+        limit: 1,
+      )).single;
+      expect(pending['pending_local_at'], secondUse);
+
+      await service.replaceCacheSnapshotForTest(
+        bridgeId: 'bridge-a',
+        syncedAt: secondUse,
+        entries: [
+          _serverEntry(
+            id: id,
+            text: 'tracked prompt',
+            useCount: 2,
+            updatedAt: secondUse,
+          ),
+        ],
+      );
+      row = (await database.query('prompt_history_cache', limit: 1)).single;
+      expect(row['total_use_count'], 2);
+      final pendingRows = await database.query('prompt_history_pending_local');
+      expect(pendingRows, isEmpty);
+    });
   });
 
   group('PromptHistoryEntry', () {
@@ -306,6 +436,41 @@ class _BlockingDatabaseService extends DatabaseService {
   void complete(Database? database) {
     _database.complete(database);
   }
+}
+
+class _StaticDatabaseService extends DatabaseService {
+  _StaticDatabaseService(this.value);
+
+  final Database value;
+
+  @override
+  Future<Database?> get database async => value;
+}
+
+PromptHistoryServerEntry _serverEntry({
+  required String id,
+  required String text,
+  required int useCount,
+  required String updatedAt,
+}) {
+  return PromptHistoryServerEntry(
+    id: id,
+    text: text,
+    projectPath: '/repo',
+    totalUseCount: useCount,
+    isFavorite: false,
+    createdAt: '2026-01-01T00:00:00Z',
+    lastUsedAt: updatedAt,
+    updatedAt: updatedAt,
+    commandKind: 'none',
+    clientStats: {
+      'test-client': PromptHistoryClientStat(
+        useCount: useCount,
+        lastUsedAt: updatedAt,
+      ),
+    },
+    sessionStats: const {},
+  );
 }
 
 PromptHistoryEntry _entry({
