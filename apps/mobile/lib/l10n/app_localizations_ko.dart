@@ -1190,6 +1190,10 @@ class AppLocalizationsKo extends AppLocalizations {
   String get queuedLocally => '로컬에서 대기 중';
 
   @override
+  String get queuedSubmissionSaveFailed =>
+      '대기 메시지를 저장하지 못했습니다. 텍스트와 첨부 파일은 입력창에 그대로 있습니다.';
+
+  @override
   String get processingOnBridge => 'Bridge에서 처리 중';
 
   @override

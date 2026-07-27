@@ -111,4 +111,80 @@ void main() {
       expect(result![0].mimeType, 'image/jpeg');
     });
   });
+
+  group('Pending submission persistence', () {
+    PendingChatSubmissionDraft submission(String clientMessageId) {
+      return PendingChatSubmissionDraft(
+        clientMessageId: clientMessageId,
+        text: 'Review @lib/main.dart',
+        images: [
+          (bytes: Uint8List.fromList([7, 8, 9]), mimeType: 'image/png'),
+        ],
+        mentionablePaths: const ['lib/main.dart'],
+        additionalMentions: const [
+          {'name': 'report.json', 'path': '/tmp/report.json'},
+        ],
+      );
+    }
+
+    test('survives service recreation with every attachment', () async {
+      await draftService.savePendingSubmission(
+        'session-1',
+        submission('client-1'),
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      final restored = DraftService(prefs).getPendingSubmission('session-1');
+
+      expect(restored, isNotNull);
+      expect(restored!.clientMessageId, 'client-1');
+      expect(restored.text, 'Review @lib/main.dart');
+      expect(restored.images.single.bytes, [7, 8, 9]);
+      expect(restored.images.single.mimeType, 'image/png');
+      expect(restored.mentionablePaths, ['lib/main.dart']);
+      expect(restored.additionalMentions, [
+        {'name': 'report.json', 'path': '/tmp/report.json'},
+      ]);
+    });
+
+    test('does not overwrite a different queued submission', () async {
+      await draftService.savePendingSubmission(
+        'session-1',
+        submission('client-1'),
+      );
+
+      await expectLater(
+        draftService.savePendingSubmission('session-1', submission('client-2')),
+        throwsStateError,
+      );
+      expect(
+        draftService.getPendingSubmission('session-1')?.clientMessageId,
+        'client-1',
+      );
+    });
+
+    test('deletes only the matching queued submission', () async {
+      await draftService.savePendingSubmission(
+        'session-1',
+        submission('client-1'),
+      );
+
+      expect(
+        draftService.deletePendingSubmission(
+          'session-1',
+          clientMessageId: 'client-2',
+        ),
+        isFalse,
+      );
+      expect(draftService.getPendingSubmission('session-1'), isNotNull);
+      expect(
+        draftService.deletePendingSubmission(
+          'session-1',
+          clientMessageId: 'client-1',
+        ),
+        isTrue,
+      );
+      expect(draftService.getPendingSubmission('session-1'), isNull);
+    });
+  });
 }

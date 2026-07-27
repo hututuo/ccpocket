@@ -465,6 +465,7 @@
   "pendingActionProcessingResumeTitle": "正在加载会话历史",
   "tooltipCancelPendingAction": "取消等待中的操作",
   "queuedLocally": "已在本地排队",
+  "queuedSubmissionSaveFailed": "无法保存这条排队消息，文字和附件仍保留在输入框中。",
   "processingOnBridge": "Bridge 正在处理",
   "offlinePendingNewSessionTitle": "新会话等待中",
   "offlinePendingResumeTitle": "恢复等待中",

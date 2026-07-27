@@ -4232,6 +4232,26 @@ void main() {
       ]);
     });
 
+    test('sendMessage preserves a caller-supplied delivery identity', () async {
+      final cubit = createCubit('s1', provider: Provider.claude);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      cubit.sendMessage(
+        'Deliver once',
+        clientMessageId: 'persisted-submission-1',
+      );
+
+      final json =
+          jsonDecode(mockBridge.sentMessages.single.toJson())
+              as Map<String, dynamic>;
+      expect(json['clientMessageId'], 'persisted-submission-1');
+      expect(
+        cubit.state.entries.whereType<UserChatEntry>().single.clientMessageId,
+        'persisted-submission-1',
+      );
+    });
+
     test('codex command-like text with a dropped file remains a message', () async {
       final cubit = createCubit('s1', provider: Provider.codex);
       addTearDown(cubit.close);

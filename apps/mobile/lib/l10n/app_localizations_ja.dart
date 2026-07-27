@@ -1189,6 +1189,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get queuedLocally => 'ローカルでキュー中';
 
   @override
+  String get queuedSubmissionSaveFailed =>
+      'このキューメッセージを保存できませんでした。テキストと添付ファイルは入力欄に残っています。';
+
+  @override
   String get processingOnBridge => 'Bridge で処理中';
 
   @override

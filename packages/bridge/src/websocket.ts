@@ -4542,6 +4542,23 @@ export class BridgeWebSocketServer {
         const codexSkills = msg.skills ?? (msg.skill ? [msg.skill] : []);
         const codexMentions = msg.mentions ?? [];
 
+        if (clientMessageId) {
+          const priorAdmission = this.findAcceptedClientInput(
+            session,
+            clientMessageId,
+          );
+          if (priorAdmission) {
+            this.send(ws, {
+              type: "input_ack",
+              sessionId: session.id,
+              clientMessageId,
+              acceptedSeq: priorAdmission.acceptedSeq,
+              queued: priorAdmission.queued,
+            });
+            break;
+          }
+        }
+
         // A compact/review RPC can be accepted before app-server publishes the
         // corresponding turn/started notification. During that narrow window
         // the Codex input loop is still waiting, but consuming it would race a
@@ -11796,6 +11813,27 @@ export class BridgeWebSocketServer {
       }
       return false;
     });
+  }
+
+  private findAcceptedClientInput(
+    session: SessionInfo,
+    clientMessageId: string,
+  ): { acceptedSeq: number; queued: boolean } | null {
+    if (session.codexQueuedInput?.clientMessageId === clientMessageId) {
+      return { acceptedSeq: session.historyRevision, queued: true };
+    }
+
+    for (let index = session.historyEntries.length - 1; index >= 0; index--) {
+      const entry = session.historyEntries[index];
+      const message = entry.message;
+      if (
+        message.type === "user_input" &&
+        message.clientMessageId === clientMessageId
+      ) {
+        return { acceptedSeq: entry.seq, queued: false };
+      }
+    }
+    return null;
   }
 
   private sendCodexQueueState(

@@ -3487,6 +3487,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Send a user message, optionally with image attachments.
   void sendMessage(
     String text, {
+    String? clientMessageId,
     List<({Uint8List bytes, String mimeType})>? images,
     Iterable<String>? mentionablePaths,
     Iterable<Map<String, String>>? additionalMentions,
@@ -3529,7 +3530,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     if (isCodex && state.queuedInput != null) return;
 
-    final clientMessageId = _uuid.v4();
+    final effectiveClientMessageId = clientMessageId?.trim().isNotEmpty == true
+        ? clientMessageId!.trim()
+        : _uuid.v4();
     final isOffline = !_bridge.isConnected;
     final baseSeq = isOffline
         ? _bridge.cachedSessionHistorySeq(sessionId)
@@ -3553,7 +3556,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       final entry = UserChatEntry(
         text,
         sessionId: sessionId,
-        clientMessageId: clientMessageId,
+        clientMessageId: effectiveClientMessageId,
         imageBytesList: images?.map((i) => i.bytes).toList(),
         status: isOffline ? MessageStatus.queued : MessageStatus.sending,
         messageUuid: isCodex ? _nextOptimisticCodexUserTurnUuid() : null,
@@ -3563,7 +3566,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       emit(
         state.copyWith(
           queuedInput: QueuedInputItem(
-            itemId: '$offlineQueuedInputPrefix$clientMessageId',
+            itemId: '$offlineQueuedInputPrefix$effectiveClientMessageId',
             text: text,
             createdAt: DateTime.now().toUtc().toIso8601String(),
             imageCount: images?.length ?? 0,
@@ -3584,7 +3587,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     final deliveryPendingItem = isCodex && !isOffline
         ? QueuedInputItem(
-            itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
+            itemId:
+                '$deliveryPendingQueuedInputPrefix$effectiveClientMessageId',
             text: text,
             createdAt: DateTime.now().toUtc().toIso8601String(),
             imageCount: images?.length ?? 0,
@@ -3593,7 +3597,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           )
         : null;
     if (deliveryPendingItem != null) {
-      _deliveryPendingInputs[clientMessageId] = deliveryPendingItem;
+      _deliveryPendingInputs[effectiveClientMessageId] = deliveryPendingItem;
       _bridge.setDeliveryPendingInput(
         sessionId,
         deliveryPendingItem,
@@ -3605,7 +3609,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ClientMessage.input(
         text,
         sessionId: sessionId,
-        clientMessageId: clientMessageId,
+        clientMessageId: effectiveClientMessageId,
         baseSeq: baseSeq,
         images: imagePayloads,
         skill: structuredMentions.skills.isNotEmpty
@@ -3617,7 +3621,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
     if (isCodex && !isOffline) {
       _scheduleDeliveryPendingQueue(
-        clientMessageId: clientMessageId,
+        clientMessageId: effectiveClientMessageId,
         item: deliveryPendingItem!,
       );
     }

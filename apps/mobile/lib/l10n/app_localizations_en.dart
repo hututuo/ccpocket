@@ -1230,6 +1230,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get queuedLocally => 'Queued locally';
 
   @override
+  String get queuedSubmissionSaveFailed =>
+      'Couldn’t save this queued message. Your text and attachments are still here.';
+
+  @override
   String get processingOnBridge => 'Processing on Bridge';
 
   @override

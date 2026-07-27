@@ -486,6 +486,7 @@
   "pendingActionProcessingResumeTitle": "セッション履歴を読み込んでいます",
   "tooltipCancelPendingAction": "待機中の操作をキャンセル",
   "queuedLocally": "ローカルでキュー中",
+  "queuedSubmissionSaveFailed": "このキューメッセージを保存できませんでした。テキストと添付ファイルは入力欄に残っています。",
   "processingOnBridge": "Bridge で処理中",
   "offlinePendingNewSessionTitle": "新規セッション待機中",
   "offlinePendingResumeTitle": "再開待機中",

@@ -440,6 +440,7 @@
   "pendingActionProcessingResumeTitle": "세션 기록을 불러오는 중",
   "tooltipCancelPendingAction": "대기 중인 작업 취소",
   "queuedLocally": "로컬에서 대기 중",
+  "queuedSubmissionSaveFailed": "대기 메시지를 저장하지 못했습니다. 텍스트와 첨부 파일은 입력창에 그대로 있습니다.",
   "processingOnBridge": "Bridge에서 처리 중",
   "offlinePendingNewSessionTitle": "새 세션 대기 중",
   "offlinePendingResumeTitle": "재개 대기 중",

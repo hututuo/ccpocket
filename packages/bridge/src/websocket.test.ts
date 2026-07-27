@@ -13332,6 +13332,79 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("acks a retried clientMessageId without delivering it twice", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-idempotent-input",
+        provider: "claude",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const sessionId = created.sessionId as string;
+    const session = (bridge as any).sessionManager.get(sessionId);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "input",
+        sessionId,
+        text: "send exactly once",
+        clientMessageId: "cm-idempotent-1",
+        baseSeq: 0,
+      },
+      ws,
+    );
+    const firstAck = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "input_ack");
+    const historyLength = session.historyEntries.length;
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "input",
+        sessionId,
+        text: "different retry body must not run",
+        clientMessageId: "cm-idempotent-1",
+        baseSeq: 0,
+      },
+      ws,
+    );
+    const retryAck = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "input_ack");
+    const retryFrames = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+
+    expect(retryAck).toMatchObject({
+      type: "input_ack",
+      sessionId,
+      clientMessageId: "cm-idempotent-1",
+      acceptedSeq: firstAck.acceptedSeq,
+      queued: firstAck.queued,
+    });
+    expect(session.historyEntries).toHaveLength(historyLength);
+    expect(
+      retryFrames.filter((message: any) => message.type === "user_input"),
+    ).toHaveLength(0);
+
+    bridge.close();
+  });
+
   it("broadcasts accepted claude user input to other connected clients", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

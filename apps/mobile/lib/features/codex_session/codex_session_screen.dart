@@ -229,6 +229,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       widget.initialApprovalPolicy,
     );
     _codexApprovalsReviewer = widget.initialApprovalsReviewer;
+    _restoreDeferredSubmission();
     final explorerHistory = bridge.getExplorerHistory(_sessionId);
     _explorerCurrentPath = explorerHistory.currentPath;
     _recentPeekedFiles = explorerHistory.recentPeekedFiles;
@@ -309,8 +310,36 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _consumeDeferredSubmission(ChatComposerSubmission submission) {
-    if (!mounted || _deferredSubmission != submission) return;
+    if (_deferredSubmission != submission) return;
+    final durableId = widget.durableProviderSessionId;
+    if (durableId != null && durableId.isNotEmpty) {
+      context.read<DraftService>().deletePendingSubmission(
+        durableId,
+        clientMessageId: submission.clientMessageId,
+      );
+    }
+    if (!mounted) {
+      _deferredSubmission = null;
+      return;
+    }
     setState(() => _deferredSubmission = null);
+  }
+
+  void _restoreDeferredSubmission() {
+    if (!_isPending) return;
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || durableId.isEmpty) return;
+    final submission = context
+        .read<DraftService>()
+        .getPendingSubmission(durableId);
+    if (submission == null) return;
+    _deferredSubmission = (
+      clientMessageId: submission.clientMessageId,
+      text: submission.text,
+      images: submission.images.isEmpty ? null : submission.images,
+      mentionablePaths: submission.mentionablePaths,
+      additionalMentions: submission.additionalMentions,
+    );
   }
 
   void _preserveDeferredSubmissionAsDraft() {
@@ -320,18 +349,22 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
     final draftService = context.read<DraftService>();
-    final existingText = draftService.getDraft(durableId)?.trim();
-    final recoveredText = existingText == null || existingText.isEmpty
-        ? submission.text
-        : '${submission.text}\n\n$existingText';
-    final existingImages = draftService.getImageDraft(durableId) ?? const [];
-    final recoveredImages = [...?submission.images, ...existingImages];
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      draftService.saveDraft(durableId, recoveredText);
-      if (recoveredImages.isNotEmpty) {
-        draftService.saveImageDraft(durableId, recoveredImages);
-      }
-    });
+    unawaited(
+      draftService
+          .savePendingSubmission(
+            durableId,
+            PendingChatSubmissionDraft(
+              clientMessageId: submission.clientMessageId,
+              text: submission.text,
+              images: submission.images ?? const [],
+              mentionablePaths: submission.mentionablePaths,
+              additionalMentions: submission.additionalMentions,
+            ),
+          )
+          .catchError((Object error) {
+            debugPrint('Failed to preserve deferred Codex input: $error');
+          }),
+    );
   }
 
   void _listenForSessionCreated() {
@@ -765,6 +798,7 @@ class _CodexProviders extends StatelessWidget {
                 if (cubit.isClosed) return;
                 cubit.sendMessage(
                   submission.text,
+                  clientMessageId: submission.clientMessageId,
                   images: submission.images,
                   mentionablePaths: submission.mentionablePaths,
                   additionalMentions: submission.additionalMentions,

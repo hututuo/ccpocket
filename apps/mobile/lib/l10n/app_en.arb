@@ -481,6 +481,7 @@
   "pendingActionProcessingResumeTitle": "Loading session history",
   "tooltipCancelPendingAction": "Cancel pending action",
   "queuedLocally": "Queued locally",
+  "queuedSubmissionSaveFailed": "Couldn’t save this queued message. Your text and attachments are still here.",
   "processingOnBridge": "Processing on Bridge",
   "offlinePendingNewSessionTitle": "New session pending",
   "offlinePendingResumeTitle": "Resume pending",

@@ -2298,6 +2298,12 @@ abstract class AppLocalizations {
   /// **'ローカルでキュー中'**
   String get queuedLocally;
 
+  /// No description provided for @queuedSubmissionSaveFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'このキューメッセージを保存できませんでした。テキストと添付ファイルは入力欄に残っています。'**
+  String get queuedSubmissionSaveFailed;
+
   /// No description provided for @processingOnBridge.
   ///
   /// In ja, this message translates to:

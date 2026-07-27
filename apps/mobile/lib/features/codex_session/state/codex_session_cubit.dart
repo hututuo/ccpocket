@@ -53,6 +53,7 @@ class CodexSessionCubit extends ChatSessionCubit {
   @override
   void sendMessage(
     String text, {
+    String? clientMessageId,
     List<({Uint8List bytes, String mimeType})>? images,
     Iterable<String>? mentionablePaths,
     Iterable<Map<String, String>>? additionalMentions,
@@ -102,6 +103,7 @@ class CodexSessionCubit extends ChatSessionCubit {
     }
     super.sendMessage(
       text,
+      clientMessageId: clientMessageId,
       images: images,
       mentionablePaths: mentionablePaths,
       additionalMentions: additionalMentions,

@@ -9,6 +9,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:super_clipboard/super_clipboard.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../l10n/app_localizations.dart';
 import '../../../utils/composer_tokens.dart';
@@ -43,6 +44,7 @@ import '../state/chat_session_cubit.dart';
 enum _CompletionOverlay { slash, dollar, file }
 
 typedef ChatComposerSubmission = ({
+  String clientMessageId,
   String text,
   List<({Uint8List bytes, String mimeType})>? images,
   List<String> mentionablePaths,
@@ -144,6 +146,7 @@ class ChatInputWithOverlays extends HookWidget {
     final attachedFiles = useState<List<ChatFileAttachment>>([]);
     final fileDropActive = useState(false);
     final fileDropSequence = useRef(0);
+    final submitInFlight = useState(false);
 
     // Restore image draft on mount
     useEffect(() {
@@ -704,8 +707,8 @@ class ChatInputWithOverlays extends HookWidget {
       }
     }
 
-    void sendMessage() {
-      if (inputBlocked) return;
+    Future<void> sendMessage() async {
+      if (inputBlocked || submitInFlight.value) return;
       final text = inputController.text.trim();
       if (attachedFiles.value.any(
         (file) => file.status == ChatFileAttachmentStatus.uploading,
@@ -762,22 +765,62 @@ class ChatInputWithOverlays extends HookWidget {
           : readyFiles.isNotEmpty
           ? 'Please review the attached files.'
           : 'What is in this image?';
+      final referencedProjectFiles = projectFiles
+          .where((path) => messageToSend.contains('@$path'))
+          .toList(growable: false);
       final submission = (
+        clientMessageId: const Uuid().v4(),
         text: messageToSend,
         images: images,
-        mentionablePaths: List<String>.unmodifiable(projectFiles),
+        mentionablePaths: List<String>.unmodifiable(referencedProjectFiles),
         additionalMentions: List<Map<String, String>>.unmodifiable(
           readyFiles.map(
             (file) => {'name': file.filename, 'path': file.path!},
           ),
         ),
       );
-      final accepted = onSubmit?.call(submission) ?? true;
-      if (!accepted) return;
+      final draftService = context.read<DraftService>();
+      if (onSubmit != null) {
+        submitInFlight.value = true;
+        try {
+          await draftService.savePendingSubmission(
+            sessionId,
+            PendingChatSubmissionDraft(
+              clientMessageId: submission.clientMessageId,
+              text: submission.text,
+              images: submission.images ?? const [],
+              mentionablePaths: submission.mentionablePaths,
+              additionalMentions: submission.additionalMentions,
+            ),
+          );
+          if (!context.mounted || !onSubmit!(submission)) {
+            draftService.deletePendingSubmission(
+              sessionId,
+              clientMessageId: submission.clientMessageId,
+            );
+            return;
+          }
+        } catch (error) {
+          draftService.deletePendingSubmission(
+            sessionId,
+            clientMessageId: submission.clientMessageId,
+          );
+          debugPrint('Failed to persist deferred submission: $error');
+          if (context.mounted) {
+            showDropMessage(
+              AppLocalizations.of(context).queuedSubmissionSaveFailed,
+            );
+          }
+          return;
+        } finally {
+          submitInFlight.value = false;
+        }
+      }
 
       if (onSubmit == null) {
         cubit.sendMessage(
           submission.text,
+          clientMessageId: submission.clientMessageId,
           images: submission.images,
           mentionablePaths: submission.mentionablePaths,
           additionalMentions: submission.additionalMentions,
@@ -792,7 +835,6 @@ class ChatInputWithOverlays extends HookWidget {
         onDiffSelectionCleared?.call();
       }
       inputController.clear();
-      final draftService = context.read<DraftService>();
       draftService.deleteDraft(sessionId);
       draftService.deleteImageDraft(sessionId);
       onScrollToBottom();
@@ -1188,6 +1230,7 @@ class ChatInputWithOverlays extends HookWidget {
                 status: status,
                 hasInputText:
                     !inputBlocked &&
+                    !submitInFlight.value &&
                     (hasInputText.value ||
                         attachedImages.value.isNotEmpty ||
                         attachedFiles.value.any(

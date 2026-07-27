@@ -1174,6 +1174,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get queuedLocally => '已在本地排队';
 
   @override
+  String get queuedSubmissionSaveFailed => '无法保存这条排队消息，文字和附件仍保留在输入框中。';
+
+  @override
   String get processingOnBridge => 'Bridge 正在处理';
 
   @override
