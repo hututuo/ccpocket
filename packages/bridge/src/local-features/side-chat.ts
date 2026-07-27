@@ -1045,8 +1045,10 @@ function asSideChatParentProcess(
 ): CodexProcess | null {
   if (session.provider !== "codex" || !session.process) return null;
   const process = session.process as Partial<CodexProcess>;
+  // approvalPolicy is deliberately not part of this duck-check: it is
+  // undefined while the policy is unknown (e.g. a Desktop-resumed thread),
+  // and inheritedStartOptions already falls back to "on-request".
   return typeof process.model === "string" &&
-    typeof process.approvalPolicy === "string" &&
     typeof process.approvalsReviewer === "string" &&
     typeof process.serviceTier === "string"
     ? (session.process as CodexProcess)

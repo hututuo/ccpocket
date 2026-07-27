@@ -355,6 +355,31 @@ describe("SideChatFeatureHandler", () => {
     child.ready();
   });
 
+  it("opens a side chat when the parent approval policy is unknown", async () => {
+    // A Desktop-resumed thread can have no known approval policy; the parent
+    // getter then reports undefined instead of a fabricated value, and the
+    // fork must still open with the restrictive fallback.
+    const parent = parentProcess();
+    (parent as { approvalPolicy?: string }).approvalPolicy = undefined;
+    const child = new FakeCodexProcess();
+    const state = harness({ parent, children: [child] });
+
+    await new SideChatFeatureHandler().handle(
+      openMessage(),
+      context(state.runtime, {}),
+    );
+
+    expect(
+      state.sent
+        .map((entry) => entry.message)
+        .filter((message) => message.event === "error"),
+    ).toEqual([]);
+    expect(child.start.mock.calls[0]?.[1]).toMatchObject({
+      approvalPolicy: "on-request",
+    });
+    child.ready();
+  });
+
   it("isolates identical parent sessions by owner and never broadcasts child events", async () => {
     const parent = parentProcess();
     const childA = new FakeCodexProcess();
