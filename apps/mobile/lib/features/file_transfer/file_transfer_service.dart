@@ -936,6 +936,20 @@ class FileTransferService extends ChangeNotifier {
           final candidate = _completionRecoveryQueue.removeFirst();
           if (candidate.checkpoint.expiresAt.isAfter(_clock().toUtc())) {
             work = candidate;
+          } else {
+            // A completed receive can sit in the acknowledgement retry queue
+            // until its bounded tombstone expires. Dropping it must also
+            // release the in-memory retry/dedupe state and durable tombstone.
+            _knownReceiveIds.remove(candidate.checkpoint.transferId);
+            _completionRecoveryAttempts.remove(candidate.checkpoint.transferId);
+            try {
+              await _storage.deleteReceive(
+                candidate.checkpoint,
+                deletePartial: true,
+              );
+            } catch (_) {
+              // A later startup sweep can retry durable metadata cleanup.
+            }
           }
         }
         if (work == null) {
@@ -2299,6 +2313,11 @@ class FileTransferService extends ChangeNotifier {
             // Metadata remains the last durable cleanup marker, so a later
             // recovery can retry without losing ownership of the stage.
           }
+          _completeDiscardedUpload(
+            checkpoint,
+            errorCode: 'checkpoint_expired',
+            error: 'The pending upload expired before it could resume.',
+          );
           continue;
         }
         UploadTransferSecret? secret;
@@ -2309,6 +2328,11 @@ class FileTransferService extends ChangeNotifier {
           try {
             await _storage.deleteUpload(checkpoint, deleteStaged: true);
           } catch (_) {}
+          _completeDiscardedUpload(
+            checkpoint,
+            errorCode: 'resume_token_invalid',
+            error: 'The pending upload resume token is invalid.',
+          );
           continue;
         } catch (_) {
           // A transient Keychain read failure is not proof that the secret is
@@ -2320,6 +2344,11 @@ class FileTransferService extends ChangeNotifier {
           try {
             await _storage.deleteUpload(checkpoint, deleteStaged: true);
           } catch (_) {}
+          _completeDiscardedUpload(
+            checkpoint,
+            errorCode: 'bridge_identity_changed',
+            error: 'The pending upload belongs to a different Bridge.',
+          );
           continue;
         }
         if (!_uploadRecoveryQueue.any(
@@ -2563,6 +2592,29 @@ class FileTransferService extends ChangeNotifier {
       _uploadMutationAuthorizations.remove(work.checkpoint.transferId);
       await _storage.deleteUpload(work.checkpoint, deleteStaged: true);
     }
+  }
+
+  void _completeDiscardedUpload(
+    UploadTransferCheckpoint checkpoint, {
+    required String errorCode,
+    required String error,
+  }) {
+    _uploadRecoveryQueue.removeWhere(
+      (queued) => queued.localId == checkpoint.localId,
+    );
+    _uploadMutationAuthorizations.remove(checkpoint.transferId);
+    // Recovery usually runs after a process restart, when no caller is
+    // awaiting this local id. If the checkpoint was discarded in the same
+    // process, however, the drag/drop ticket must reach a terminal result.
+    if (!_uploadCompletions.containsKey(checkpoint.localId)) return;
+    _remember(
+      _recordForUpload(
+        checkpoint,
+        FileTransferStatus.failed,
+        errorCode: errorCode,
+        error: error,
+      ),
+    );
   }
 
   Future<void> _markTransientStorage(String logicalIdentity) async {

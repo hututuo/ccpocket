@@ -593,6 +593,40 @@ void main() {
   );
 
   test(
+    'expired completion recovery deletes its stale tombstone',
+    () async {
+      final checkpoint = await seedCompletedReceive(notificationPending: true);
+      SharedPreferences.setMockInitialValues({
+        'file_transfer_v2_auto_resume': false,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final failingNotifications = _CountingThrowingNotifications();
+      var now = _fixtureNow();
+      bridge.autoDownloadResumeSize = 3;
+      final service = createService(
+        client: MockClient.streaming((request, body) async {
+          throw StateError('completed receives must not transfer bytes');
+        }),
+        preferences: preferences,
+        notificationsOverride: failingNotifications,
+        clock: () => now,
+        completionRecoveryRetryDelay: const Duration(milliseconds: 20),
+      );
+
+      await service.initialize();
+      await _waitUntil(() => failingNotifications.attempts >= 1);
+      now = checkpoint.expiresAt.add(const Duration(seconds: 1));
+      await _waitUntilAsync(
+        () async => (await storage.loadReceives('machine-1')).isEmpty,
+      );
+
+      expect(service.queuedReceiveCount, 0);
+      expect(service.queuedReceiveBytes, 0);
+      service.dispose();
+    },
+  );
+
+  test(
     'recovery rebuilds the download URL for the current same-machine origin',
     () async {
       final initialCheckpoint = storage.newReceiveCheckpoint(
@@ -2460,6 +2494,65 @@ void main() {
         ),
         isEmpty,
       );
+      service.dispose();
+    },
+  );
+
+  test(
+    'discarding a queued expired upload completes its drag/drop ticket',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'file_transfer_v2_auto_resume': false,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final service = createService(
+        client: MockClient.streaming((request, body) async {
+          throw const SocketException('offline');
+        }),
+        preferences: preferences,
+      );
+
+      bridge.emit(_offer());
+      await _waitUntil(() => service.queuedReceiveCount == 1);
+      await service.startQueuedTransfers();
+      await _waitUntil(() => service.pausedTransfer != null);
+
+      final ticket = await service.enqueueDroppedFile(
+        filename: 'queued.bin',
+        bytes: Stream<List<int>>.value(const [9]),
+        expectedSizeBytes: 1,
+      );
+      expect(service.queuedUploadCount, 1);
+      final queued = (await storage.loadUploads('machine-1')).single;
+      await storage.saveUpload(
+        queued.copyWith(
+          expiresAt: _fixtureNow().subtract(const Duration(days: 1)),
+        ),
+      );
+
+      bridge.onSend = (json) {
+        if (json['type'] != 'file_transfer_cancel_v2') return;
+        scheduleMicrotask(() {
+          bridge.emit(
+            FileTransferCancelResultMessage(
+              requestId: json['requestId'] as String,
+              transferId: json['transferId'] as String,
+              direction: FileTransferCancelDirection.download,
+              success: true,
+            ),
+          );
+        });
+      };
+      await service.cancelTransfer(service.pausedTransfer!.id);
+      await service.initialize();
+
+      final result = await ticket.completion.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(result.status, FileTransferStatus.failed);
+      expect(result.errorCode, 'checkpoint_expired');
+      expect(service.queuedUploadCount, 0);
+      expect(await storage.loadUploads('machine-1'), isEmpty);
       service.dispose();
     },
   );
