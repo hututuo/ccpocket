@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -110,13 +112,123 @@ void main() {
       expect(result, isNotNull);
       expect(result![0].mimeType, 'image/jpeg');
     });
+
+    test(
+      'does not decode persisted image drafts during construction',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'draft_image_v1_session-lazy': '[{"b64":"AQID","mime":"image/png"}]',
+        });
+        final prefs = await SharedPreferences.getInstance();
+        var decodeCalls = 0;
+        final service = DraftService(
+          prefs,
+          imageListDecoder: (value) {
+            decodeCalls++;
+            expect(value, contains('AQID'));
+            return [
+              (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
+            ];
+          },
+        );
+
+        expect(decodeCalls, 0);
+        expect(service.getImageDraft('session-lazy')?.single.bytes, [1, 2, 3]);
+        expect(decodeCalls, 1);
+      },
+    );
+
+    test('a slow image draft write cannot overwrite a newer draft', () async {
+      final first = Completer<String>();
+      final second = Completer<String>();
+      var encodeCalls = 0;
+      final prefs = await SharedPreferences.getInstance();
+      final service = DraftService(
+        prefs,
+        imageListEncoder: (_) {
+          encodeCalls++;
+          return encodeCalls == 1 ? first.future : second.future;
+        },
+      );
+
+      service.saveImageDraft('session-race', [
+        (bytes: Uint8List.fromList([1]), mimeType: 'image/png'),
+      ]);
+      service.saveImageDraft('session-race', [
+        (bytes: Uint8List.fromList([2]), mimeType: 'image/png'),
+      ]);
+      expect(encodeCalls, 2);
+
+      second.complete(
+        jsonEncode([
+          {'b64': 'Ag==', 'mime': 'image/png'},
+        ]),
+      );
+      await Future<void>.delayed(Duration.zero);
+      first.complete(
+        jsonEncode([
+          {'b64': 'AQ==', 'mime': 'image/png'},
+        ]),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final restored = DraftService(prefs);
+      expect(restored.getImageDraft('session-race')?.single.bytes, [2]);
+    });
+
+    test(
+      'deleting an image draft fences an unfinished persistence write',
+      () async {
+        final encoded = Completer<String>();
+        final prefs = await SharedPreferences.getInstance();
+        final service = DraftService(
+          prefs,
+          imageListEncoder: (_) => encoded.future,
+        );
+
+        service.saveImageDraft('session-delete', [
+          (bytes: Uint8List.fromList([1]), mimeType: 'image/png'),
+        ]);
+        service.deleteImageDraft('session-delete');
+        encoded.complete(
+          jsonEncode([
+            {'b64': 'AQ==', 'mime': 'image/png'},
+          ]),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(prefs.getString('draft_image_v1_session-delete'), isNull);
+        expect(service.getImageDraft('session-delete'), isNull);
+      },
+    );
+
+    test('migrates a cold persisted image draft without decoding it', () async {
+      SharedPreferences.setMockInitialValues({
+        'draft_image_v1_pending-cold': '[{"b64":"BAU=","mime":"image/jpeg"}]',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final service = DraftService(
+        prefs,
+        imageListDecoder: (_) => throw StateError('must stay lazy'),
+      );
+
+      service.migrateImageDraft('pending-cold', 'real-cold');
+      await Future<void>.delayed(Duration.zero);
+
+      final restored = DraftService(prefs);
+      expect(restored.getImageDraft('pending-cold'), isNull);
+      expect(restored.getImageDraft('real-cold')?.single.bytes, [4, 5]);
+    });
   });
 
   group('Pending submission persistence', () {
-    PendingChatSubmissionDraft submission(String clientMessageId) {
+    PendingChatSubmissionDraft submission(
+      String clientMessageId, {
+      String text = 'Review @lib/main.dart',
+    }) {
       return PendingChatSubmissionDraft(
         clientMessageId: clientMessageId,
-        text: 'Review @lib/main.dart',
+        text: text,
         images: [
           (bytes: Uint8List.fromList([7, 8, 9]), mimeType: 'image/png'),
         ],
@@ -185,6 +297,204 @@ void main() {
         isTrue,
       );
       expect(draftService.getPendingSubmission('session-1'), isNull);
+    });
+
+    test(
+      'does not decode a persisted submission during construction',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'draft_pending_submission_v1_session-lazy': jsonEncode({
+            'clientMessageId': 'client-lazy',
+            'text': 'Lazy submission',
+            'images': const [],
+            'mentionablePaths': const [],
+            'additionalMentions': const [],
+          }),
+        });
+        final prefs = await SharedPreferences.getInstance();
+        var decodeCalls = 0;
+        final service = DraftService(
+          prefs,
+          pendingSubmissionDecoder: (value) {
+            decodeCalls++;
+            expect(value, contains('client-lazy'));
+            return PendingChatSubmissionDraft(
+              clientMessageId: 'client-lazy',
+              text: 'Lazy submission',
+            );
+          },
+        );
+
+        expect(decodeCalls, 0);
+        expect(
+          service.getPendingSubmission('session-lazy')?.clientMessageId,
+          'client-lazy',
+        );
+        expect(decodeCalls, 1);
+      },
+    );
+
+    test(
+      'a slow same-id submission save cannot overwrite a newer edit',
+      () async {
+        final first = Completer<String>();
+        final second = Completer<String>();
+        var encodeCalls = 0;
+        final prefs = await SharedPreferences.getInstance();
+        final service = DraftService(
+          prefs,
+          pendingSubmissionEncoder: (_) {
+            encodeCalls++;
+            return encodeCalls == 1 ? first.future : second.future;
+          },
+        );
+
+        final firstSave = service.savePendingSubmission(
+          'session-race',
+          submission('same-client', text: 'First text'),
+        );
+        final secondSave = service.savePendingSubmission(
+          'session-race',
+          submission('same-client', text: 'Second text'),
+        );
+        expect(encodeCalls, 2);
+
+        second.complete(
+          jsonEncode({
+            'clientMessageId': 'same-client',
+            'text': 'Second text',
+            'images': const [],
+            'mentionablePaths': const [],
+            'additionalMentions': const [],
+          }),
+        );
+        first.complete(
+          jsonEncode({
+            'clientMessageId': 'same-client',
+            'text': 'First text',
+            'images': const [],
+            'mentionablePaths': const [],
+            'additionalMentions': const [],
+          }),
+        );
+        await Future.wait([firstSave, secondSave]);
+
+        final restored = DraftService(prefs);
+        expect(
+          restored.getPendingSubmission('session-race')?.text,
+          'Second text',
+        );
+      },
+    );
+
+    test(
+      'a superseded encoder failure does not reject the newer edit',
+      () async {
+        final first = Completer<String>();
+        final second = Completer<String>();
+        var encodeCalls = 0;
+        final prefs = await SharedPreferences.getInstance();
+        final service = DraftService(
+          prefs,
+          pendingSubmissionEncoder: (_) {
+            encodeCalls++;
+            return encodeCalls == 1 ? first.future : second.future;
+          },
+        );
+
+        final firstSave = service.savePendingSubmission(
+          'session-superseded',
+          submission('same-client', text: 'First text'),
+        );
+        final secondSave = service.savePendingSubmission(
+          'session-superseded',
+          submission('same-client', text: 'Second text'),
+        );
+        second.complete(
+          jsonEncode({
+            'clientMessageId': 'same-client',
+            'text': 'Second text',
+            'images': const [],
+            'mentionablePaths': const [],
+            'additionalMentions': const [],
+          }),
+        );
+        first.completeError(StateError('stale encoder failed'));
+
+        await Future.wait([firstSave, secondSave]);
+        final restored = DraftService(prefs);
+        expect(
+          restored.getPendingSubmission('session-superseded')?.text,
+          'Second text',
+        );
+      },
+    );
+
+    test(
+      'deleting a submission fences an unfinished persistence write',
+      () async {
+        final encoded = Completer<String>();
+        final prefs = await SharedPreferences.getInstance();
+        final service = DraftService(
+          prefs,
+          pendingSubmissionEncoder: (_) => encoded.future,
+        );
+
+        final save = service.savePendingSubmission(
+          'session-delete',
+          submission('client-delete'),
+        );
+        expect(
+          service.deletePendingSubmission(
+            'session-delete',
+            clientMessageId: 'client-delete',
+          ),
+          isTrue,
+        );
+        encoded.complete(
+          jsonEncode({
+            'clientMessageId': 'client-delete',
+            'text': 'Deleted submission',
+            'images': const [],
+            'mentionablePaths': const [],
+            'additionalMentions': const [],
+          }),
+        );
+        await save;
+
+        expect(
+          prefs.getString('draft_pending_submission_v1_session-delete'),
+          isNull,
+        );
+        expect(service.getPendingSubmission('session-delete'), isNull);
+      },
+    );
+
+    test('migrates a cold persisted submission without decoding it', () async {
+      SharedPreferences.setMockInitialValues({
+        'draft_pending_submission_v1_pending-cold': jsonEncode({
+          'clientMessageId': 'client-cold',
+          'text': 'Cold submission',
+          'images': const [],
+          'mentionablePaths': const [],
+          'additionalMentions': const [],
+        }),
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final service = DraftService(
+        prefs,
+        pendingSubmissionDecoder: (_) => throw StateError('must stay lazy'),
+      );
+
+      service.migratePendingSubmission('pending-cold', 'real-cold');
+      await Future<void>.delayed(Duration.zero);
+
+      final restored = DraftService(prefs);
+      expect(restored.getPendingSubmission('pending-cold'), isNull);
+      expect(
+        restored.getPendingSubmission('real-cold')?.clientMessageId,
+        'client-cold',
+      );
     });
   });
 }

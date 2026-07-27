@@ -1,7 +1,97 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show SynchronousFuture, compute;
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../core/logger.dart';
+
+typedef DraftImageAttachment = ({Uint8List bytes, String mimeType});
+typedef DraftImageListEncoder =
+    Future<String> Function(List<DraftImageAttachment> images);
+typedef DraftImageListDecoder =
+    List<DraftImageAttachment> Function(String value);
+typedef PendingSubmissionEncoder =
+    Future<String> Function(PendingChatSubmissionDraft submission);
+typedef PendingSubmissionDecoder =
+    PendingChatSubmissionDraft? Function(String value);
+
+Future<String> _defaultDraftImageListEncoder(
+  List<DraftImageAttachment> images,
+) {
+  final payload = [
+    for (final image in images)
+      <String, Object>{'bytes': image.bytes, 'mime': image.mimeType},
+  ];
+  final byteCount = images.fold<int>(
+    0,
+    (total, image) => total + image.bytes.length,
+  );
+  if (byteCount <= 64 * 1024) {
+    return SynchronousFuture(_encodeDraftImageList(payload));
+  }
+  return compute(
+    _encodeDraftImageList,
+    payload,
+    debugLabel: 'draft-image-base64',
+  );
+}
+
+String _encodeDraftImageList(List<Map<String, Object>> images) => jsonEncode([
+  for (final image in images)
+    {
+      'b64': base64Encode(image['bytes']! as Uint8List),
+      'mime': image['mime']! as String,
+    },
+]);
+
+Future<String> _defaultPendingSubmissionEncoder(
+  PendingChatSubmissionDraft submission,
+) {
+  final payload = <String, Object?>{
+    'clientMessageId': submission.clientMessageId,
+    'text': submission.text,
+    'images': [
+      for (final image in submission.images)
+        <String, Object>{'bytes': image.bytes, 'mime': image.mimeType},
+    ],
+    'mentionablePaths': List<String>.of(submission.mentionablePaths),
+    'additionalMentions': [
+      for (final mention in submission.additionalMentions)
+        Map<String, String>.of(mention),
+    ],
+  };
+  final byteCount = submission.images.fold<int>(
+    0,
+    (total, image) => total + image.bytes.length,
+  );
+  if (byteCount <= 64 * 1024) {
+    return SynchronousFuture(_encodePendingSubmissionPayload(payload));
+  }
+  return compute(
+    _encodePendingSubmissionPayload,
+    payload,
+    debugLabel: 'pending-submission-base64',
+  );
+}
+
+String _encodePendingSubmissionPayload(Map<String, Object?> payload) {
+  final rawImages = payload['images']! as List;
+  return jsonEncode({
+    'clientMessageId': payload['clientMessageId'],
+    'text': payload['text'],
+    'images': [
+      for (final rawImage in rawImages)
+        {
+          'b64': base64Encode((rawImage as Map)['bytes']! as Uint8List),
+          'mime': rawImage['mime']! as String,
+        },
+    ],
+    'mentionablePaths': payload['mentionablePaths'],
+    'additionalMentions': payload['additionalMentions'],
+  });
+}
 
 class PendingChatSubmissionDraft {
   final String clientMessageId;
@@ -29,16 +119,35 @@ class PendingChatSubmissionDraft {
 /// [SharedPreferences] for persistence across app restarts.
 class DraftService {
   final SharedPreferences _prefs;
+  final DraftImageListEncoder _imageListEncoder;
+  final DraftImageListDecoder _imageListDecoder;
+  final PendingSubmissionEncoder _pendingSubmissionEncoder;
+  final PendingSubmissionDecoder _pendingSubmissionDecoder;
   final Map<String, String> _cache = {};
   final Map<String, List<({Uint8List bytes, String mimeType})>> _imageCache =
       {};
+  final Map<String, String> _encodedImageDrafts = {};
+  final Map<String, int> _imageWriteGenerations = {};
   final Map<String, PendingChatSubmissionDraft> _pendingSubmissionCache = {};
+  final Map<String, String> _encodedPendingSubmissions = {};
+  final Map<String, int> _pendingWriteGenerations = {};
 
   static const _prefix = 'draft_v1_';
   static const _imagePrefix = 'draft_image_v1_';
   static const _pendingSubmissionPrefix = 'draft_pending_submission_v1_';
 
-  DraftService(this._prefs) {
+  DraftService(
+    this._prefs, {
+    DraftImageListEncoder? imageListEncoder,
+    DraftImageListDecoder? imageListDecoder,
+    PendingSubmissionEncoder? pendingSubmissionEncoder,
+    PendingSubmissionDecoder? pendingSubmissionDecoder,
+  }) : _imageListEncoder = imageListEncoder ?? _defaultDraftImageListEncoder,
+       _imageListDecoder = imageListDecoder ?? _decodeImageDraftList,
+       _pendingSubmissionEncoder =
+           pendingSubmissionEncoder ?? _defaultPendingSubmissionEncoder,
+       _pendingSubmissionDecoder =
+           pendingSubmissionDecoder ?? _decodePendingSubmission {
     _loadAll();
   }
 
@@ -48,18 +157,14 @@ class DraftService {
       if (key.startsWith(_pendingSubmissionPrefix)) {
         final sessionId = key.substring(_pendingSubmissionPrefix.length);
         final value = _prefs.getString(key);
-        final decoded = value == null ? null : _decodePendingSubmission(value);
-        if (decoded != null) {
-          _pendingSubmissionCache[sessionId] = decoded;
+        if (value != null && value.isNotEmpty) {
+          _encodedPendingSubmissions[sessionId] = value;
         }
       } else if (key.startsWith(_imagePrefix)) {
         final sessionId = key.substring(_imagePrefix.length);
         final value = _prefs.getString(key);
         if (value != null && value.isNotEmpty) {
-          final decoded = _decodeImageDraftList(value);
-          if (decoded.isNotEmpty) {
-            _imageCache[sessionId] = decoded;
-          }
+          _encodedImageDrafts[sessionId] = value;
         }
       } else if (key.startsWith(_prefix)) {
         final sessionId = key.substring(_prefix.length);
@@ -122,109 +227,247 @@ class DraftService {
       deleteImageDraft(sessionId);
       return;
     }
-    _imageCache[sessionId] = images;
-    final jsonList = images
-        .map((img) => {'b64': base64Encode(img.bytes), 'mime': img.mimeType})
-        .toList();
-    _prefs.setString('$_imagePrefix$sessionId', jsonEncode(jsonList));
+    final snapshot = List<DraftImageAttachment>.unmodifiable(images);
+    _imageCache[sessionId] = snapshot;
+    _encodedImageDrafts.remove(sessionId);
+    final generation = _nextImageWriteGeneration(sessionId);
+    unawaited(_persistImageDraft(sessionId, snapshot, generation));
   }
 
   /// Retrieve the image drafts for [sessionId], or `null` if none exists.
-  List<({Uint8List bytes, String mimeType})>? getImageDraft(String sessionId) =>
-      _imageCache[sessionId];
+  List<({Uint8List bytes, String mimeType})>? getImageDraft(String sessionId) {
+    final cached = _imageCache[sessionId];
+    if (cached != null) return cached;
+    final encoded = _encodedImageDrafts[sessionId];
+    if (encoded == null) return null;
+    final decoded = _imageListDecoder(encoded);
+    if (decoded.isEmpty) {
+      _encodedImageDrafts.remove(sessionId);
+      unawaited(_prefs.remove('$_imagePrefix$sessionId'));
+      return null;
+    }
+    final snapshot = List<DraftImageAttachment>.unmodifiable(decoded);
+    _imageCache[sessionId] = snapshot;
+    return snapshot;
+  }
 
   /// Remove the image draft for [sessionId] (e.g. after sending or clearing).
   void deleteImageDraft(String sessionId) {
+    _nextImageWriteGeneration(sessionId);
     _imageCache.remove(sessionId);
+    _encodedImageDrafts.remove(sessionId);
     _prefs.remove('$_imagePrefix$sessionId');
   }
 
   /// Migrate an image draft from [oldId] to [newId].
   void migrateImageDraft(String oldId, String newId) {
     final data = _imageCache[oldId];
-    if (data == null) return;
-    _imageCache[newId] = data;
-    // Re-encode for the new key.
-    final jsonList = data
-        .map((img) => {'b64': base64Encode(img.bytes), 'mime': img.mimeType})
-        .toList();
-    _prefs.setString('$_imagePrefix$newId', jsonEncode(jsonList));
-    deleteImageDraft(oldId);
+    final encoded = _encodedImageDrafts[oldId];
+    if (encoded != null) {
+      final generation = _nextImageWriteGeneration(newId);
+      if (data == null) {
+        _imageCache.remove(newId);
+      } else {
+        _imageCache[newId] = data;
+      }
+      _encodedImageDrafts[newId] = encoded;
+      unawaited(_storeEncodedImageDraft(newId, encoded, generation));
+      deleteImageDraft(oldId);
+      return;
+    }
+    if (data != null) {
+      saveImageDraft(newId, data);
+      deleteImageDraft(oldId);
+      return;
+    }
+  }
+
+  int _nextImageWriteGeneration(String sessionId) {
+    final generation = (_imageWriteGenerations[sessionId] ?? 0) + 1;
+    _imageWriteGenerations[sessionId] = generation;
+    return generation;
+  }
+
+  Future<void> _persistImageDraft(
+    String sessionId,
+    List<DraftImageAttachment> images,
+    int generation,
+  ) async {
+    try {
+      final encoded = await _imageListEncoder(images);
+      await _storeEncodedImageDraft(sessionId, encoded, generation);
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[draft] Failed to persist image draft for $sessionId',
+        error,
+        stackTrace,
+      );
+    }
+  }
+
+  Future<void> _storeEncodedImageDraft(
+    String sessionId,
+    String encoded,
+    int generation,
+  ) async {
+    if (_imageWriteGenerations[sessionId] != generation ||
+        (!_imageCache.containsKey(sessionId) &&
+            !_encodedImageDrafts.containsKey(sessionId))) {
+      return;
+    }
+    _encodedImageDrafts[sessionId] = encoded;
+    final saved = await _prefs.setString('$_imagePrefix$sessionId', encoded);
+    if (!saved) {
+      throw StateError('SharedPreferences rejected the image draft');
+    }
   }
 
   Future<void> savePendingSubmission(
     String sessionId,
     PendingChatSubmissionDraft submission,
   ) async {
-    final existing = _pendingSubmissionCache[sessionId];
+    final existing = getPendingSubmission(sessionId);
     if (existing != null &&
         existing.clientMessageId != submission.clientMessageId) {
       throw StateError('A different submission is already queued');
     }
 
-    final encoded = _encodePendingSubmission(submission);
+    final existingEncoded = _encodedPendingSubmissions[sessionId];
     _pendingSubmissionCache[sessionId] = submission;
+    _encodedPendingSubmissions.remove(sessionId);
+    final generation = _nextPendingWriteGeneration(sessionId);
     try {
-      final saved = await _prefs.setString(
-        '$_pendingSubmissionPrefix$sessionId',
-        encoded,
-      );
-      if (!saved) {
-        throw StateError('SharedPreferences rejected the queued submission');
+      final encoded = await _pendingSubmissionEncoder(submission);
+      if (_pendingWriteGenerations[sessionId] != generation) {
+        return;
       }
-    } catch (_) {
+      await _storeEncodedPendingSubmission(sessionId, encoded, generation);
+    } catch (error) {
+      if (_pendingWriteGenerations[sessionId] != generation) {
+        return;
+      }
       if (existing == null) {
         _pendingSubmissionCache.remove(sessionId);
       } else {
         _pendingSubmissionCache[sessionId] = existing;
       }
+      if (existingEncoded == null) {
+        _encodedPendingSubmissions.remove(sessionId);
+      } else {
+        _encodedPendingSubmissions[sessionId] = existingEncoded;
+      }
       rethrow;
     }
   }
 
-  PendingChatSubmissionDraft? getPendingSubmission(String sessionId) =>
-      _pendingSubmissionCache[sessionId];
+  PendingChatSubmissionDraft? getPendingSubmission(String sessionId) {
+    final cached = _pendingSubmissionCache[sessionId];
+    if (cached != null) return cached;
+    final encoded = _encodedPendingSubmissions[sessionId];
+    if (encoded == null) return null;
+    final decoded = _pendingSubmissionDecoder(encoded);
+    if (decoded == null) {
+      _encodedPendingSubmissions.remove(sessionId);
+      unawaited(_prefs.remove('$_pendingSubmissionPrefix$sessionId'));
+      return null;
+    }
+    _pendingSubmissionCache[sessionId] = decoded;
+    return decoded;
+  }
 
   bool deletePendingSubmission(String sessionId, {String? clientMessageId}) {
-    final existing = _pendingSubmissionCache[sessionId];
+    final existing = getPendingSubmission(sessionId);
     if (existing == null ||
         (clientMessageId != null &&
             existing.clientMessageId != clientMessageId)) {
       return false;
     }
+    _nextPendingWriteGeneration(sessionId);
     _pendingSubmissionCache.remove(sessionId);
+    _encodedPendingSubmissions.remove(sessionId);
     _prefs.remove('$_pendingSubmissionPrefix$sessionId');
     return true;
   }
 
   void migratePendingSubmission(String oldId, String newId) {
     final submission = _pendingSubmissionCache[oldId];
-    if (submission == null) return;
-    _pendingSubmissionCache[newId] = submission;
-    _prefs.setString(
-      '$_pendingSubmissionPrefix$newId',
-      _encodePendingSubmission(submission),
-    );
-    deletePendingSubmission(oldId);
+    final encoded = _encodedPendingSubmissions[oldId];
+    if (submission == null && encoded == null) return;
+
+    _nextPendingWriteGeneration(oldId);
+    _pendingSubmissionCache.remove(oldId);
+    _encodedPendingSubmissions.remove(oldId);
+    _prefs.remove('$_pendingSubmissionPrefix$oldId');
+
+    final generation = _nextPendingWriteGeneration(newId);
+    if (encoded != null) {
+      if (submission == null) {
+        _pendingSubmissionCache.remove(newId);
+      } else {
+        _pendingSubmissionCache[newId] = submission;
+      }
+      _encodedPendingSubmissions[newId] = encoded;
+      unawaited(
+        _storeEncodedPendingSubmission(newId, encoded, generation).catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          logger.warning(
+            '[draft] Failed to migrate queued submission to $newId',
+            error,
+            stackTrace,
+          );
+        }),
+      );
+      return;
+    }
+
+    _pendingSubmissionCache[newId] = submission!;
+    _encodedPendingSubmissions.remove(newId);
+    unawaited(_persistPendingSubmission(newId, submission, generation));
   }
 
-  static String _encodePendingSubmission(
+  int _nextPendingWriteGeneration(String sessionId) {
+    final generation = (_pendingWriteGenerations[sessionId] ?? 0) + 1;
+    _pendingWriteGenerations[sessionId] = generation;
+    return generation;
+  }
+
+  Future<void> _persistPendingSubmission(
+    String sessionId,
     PendingChatSubmissionDraft submission,
-  ) {
-    return jsonEncode({
-      'clientMessageId': submission.clientMessageId,
-      'text': submission.text,
-      'images': submission.images
-          .map(
-            (image) => {
-              'b64': base64Encode(image.bytes),
-              'mime': image.mimeType,
-            },
-          )
-          .toList(growable: false),
-      'mentionablePaths': submission.mentionablePaths,
-      'additionalMentions': submission.additionalMentions,
-    });
+    int generation,
+  ) async {
+    try {
+      final encoded = await _pendingSubmissionEncoder(submission);
+      await _storeEncodedPendingSubmission(sessionId, encoded, generation);
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[draft] Failed to persist migrated submission for $sessionId',
+        error,
+        stackTrace,
+      );
+    }
+  }
+
+  Future<void> _storeEncodedPendingSubmission(
+    String sessionId,
+    String encoded,
+    int generation,
+  ) async {
+    if (_pendingWriteGenerations[sessionId] != generation ||
+        (!_pendingSubmissionCache.containsKey(sessionId) &&
+            !_encodedPendingSubmissions.containsKey(sessionId))) {
+      return;
+    }
+    _encodedPendingSubmissions[sessionId] = encoded;
+    final saved = await _prefs.setString(
+      '$_pendingSubmissionPrefix$sessionId',
+      encoded,
+    );
+    if (!saved) {
+      throw StateError('SharedPreferences rejected the queued submission');
+    }
   }
 
   static PendingChatSubmissionDraft? _decodePendingSubmission(String value) {
