@@ -132,6 +132,114 @@ abstract class AppLocalizations {
   /// **'削除'**
   String get remove;
 
+  /// No description provided for @open.
+  ///
+  /// In ja, this message translates to:
+  /// **'開く'**
+  String get open;
+
+  /// No description provided for @submit.
+  ///
+  /// In ja, this message translates to:
+  /// **'送信'**
+  String get submit;
+
+  /// No description provided for @confirmWithCount.
+  ///
+  /// In ja, this message translates to:
+  /// **'確認（{count}件）'**
+  String confirmWithCount(int count);
+
+  /// No description provided for @reviewYourAnswers.
+  ///
+  /// In ja, this message translates to:
+  /// **'回答を確認'**
+  String get reviewYourAnswers;
+
+  /// No description provided for @groupedSessions.
+  ///
+  /// In ja, this message translates to:
+  /// **'グループ'**
+  String get groupedSessions;
+
+  /// No description provided for @sessionListView.
+  ///
+  /// In ja, this message translates to:
+  /// **'リスト'**
+  String get sessionListView;
+
+  /// No description provided for @tooltipToggleRecentGrouping.
+  ///
+  /// In ja, this message translates to:
+  /// **'最近のセッションのグループ表示を切り替え'**
+  String get tooltipToggleRecentGrouping;
+
+  /// No description provided for @loadMore.
+  ///
+  /// In ja, this message translates to:
+  /// **'さらに読み込む'**
+  String get loadMore;
+
+  /// No description provided for @worktreesTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Worktree'**
+  String get worktreesTitle;
+
+  /// No description provided for @removeWorktreeTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Worktreeを削除'**
+  String get removeWorktreeTitle;
+
+  /// No description provided for @removeWorktreeConfirm.
+  ///
+  /// In ja, this message translates to:
+  /// **'ブランチ「{branch}」のWorktreeを削除しますか？\nパス: {path}'**
+  String removeWorktreeConfirm(String branch, String path);
+
+  /// No description provided for @noWorktreesFound.
+  ///
+  /// In ja, this message translates to:
+  /// **'Worktreeが見つかりません'**
+  String get noWorktreesFound;
+
+  /// No description provided for @mainRepository.
+  ///
+  /// In ja, this message translates to:
+  /// **'メインリポジトリ'**
+  String get mainRepository;
+
+  /// No description provided for @sessionShortTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッション {id}'**
+  String sessionShortTitle(String id);
+
+  /// No description provided for @debugBundlePromptCopied.
+  ///
+  /// In ja, this message translates to:
+  /// **'Agent用プロンプトをコピーしました。AIチャットに貼り付けてください。'**
+  String get debugBundlePromptCopied;
+
+  /// No description provided for @debugBundleBuildFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'デバッグバンドルを作成できませんでした'**
+  String get debugBundleBuildFailed;
+
+  /// No description provided for @copyCodexCliJoinCommand.
+  ///
+  /// In ja, this message translates to:
+  /// **'Codex CLI参加コマンドをコピー'**
+  String get copyCodexCliJoinCommand;
+
+  /// No description provided for @codexCliJoinCommandCopied.
+  ///
+  /// In ja, this message translates to:
+  /// **'Codex CLI参加コマンドをコピーしました'**
+  String get codexCliJoinCommandCopied;
+
   /// No description provided for @removeProjectTitle.
   ///
   /// In ja, this message translates to:

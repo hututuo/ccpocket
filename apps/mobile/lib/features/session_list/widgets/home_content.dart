@@ -898,6 +898,7 @@ class _LoadMoreRecentSessionsButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Center(
       child: isLoadingMore
           ? const Padding(
@@ -912,7 +913,7 @@ class _LoadMoreRecentSessionsButton extends StatelessWidget {
               key: const ValueKey('load_more_button'),
               onPressed: onLoadMore,
               icon: const Icon(Icons.expand_more, size: 18),
-              label: const Text('Load More'),
+              label: Text(l.loadMore),
             ),
     );
   }

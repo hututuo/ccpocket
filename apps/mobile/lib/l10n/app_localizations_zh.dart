@@ -24,6 +24,66 @@ class AppLocalizationsZh extends AppLocalizations {
   String get remove => '移除';
 
   @override
+  String get open => '打开';
+
+  @override
+  String get submit => '提交';
+
+  @override
+  String confirmWithCount(int count) {
+    return '确认（$count 项）';
+  }
+
+  @override
+  String get reviewYourAnswers => '检查你的回答';
+
+  @override
+  String get groupedSessions => '分组';
+
+  @override
+  String get sessionListView => '列表';
+
+  @override
+  String get tooltipToggleRecentGrouping => '切换最近会话的分组方式';
+
+  @override
+  String get loadMore => '加载更多';
+
+  @override
+  String get worktreesTitle => '工作树';
+
+  @override
+  String get removeWorktreeTitle => '移除工作树';
+
+  @override
+  String removeWorktreeConfirm(String branch, String path) {
+    return '要移除分支“$branch”的工作树吗？\n路径：$path';
+  }
+
+  @override
+  String get noWorktreesFound => '未找到工作树';
+
+  @override
+  String get mainRepository => '主仓库';
+
+  @override
+  String sessionShortTitle(String id) {
+    return '会话 $id';
+  }
+
+  @override
+  String get debugBundlePromptCopied => '已复制 Agent 排查提示，请粘贴到 AI 对话中。';
+
+  @override
+  String get debugBundleBuildFailed => '生成调试包失败';
+
+  @override
+  String get copyCodexCliJoinCommand => '复制 Codex CLI 加入命令';
+
+  @override
+  String get codexCliJoinCommandCopied => '已复制 Codex CLI 加入命令';
+
+  @override
   String get removeProjectTitle => '移除项目';
 
   @override

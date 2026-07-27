@@ -1290,7 +1290,7 @@ class _ChatScreenBody extends HookWidget {
                             minWidth: 32,
                             minHeight: 32,
                           ),
-                          tooltip: 'Explore',
+                          tooltip: l.explorer,
                           onPressed: () async {
                             final shell = WorkspaceShellScreen.maybeOf(context);
                             final initialPath =

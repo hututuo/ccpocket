@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
+
 /// A text widget that truncates to [maxLines] with a "more" link
 /// positioned inline at the bottom-right, maximising visible text.
 ///
@@ -31,6 +33,7 @@ class _ExpandableSummaryTextState extends State<ExpandableSummaryText> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final style = widget.style ?? DefaultTextStyle.of(context).style;
     final linkColor = Theme.of(context).colorScheme.primary;
     final linkStyle = style.copyWith(
@@ -77,7 +80,7 @@ class _ExpandableSummaryTextState extends State<ExpandableSummaryText> {
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
                   onTap: () => setState(() => _expanded = false),
-                  child: Text('less', style: linkStyle),
+                  child: Text(l.showLess, style: linkStyle),
                 ),
               ),
             ],
@@ -109,7 +112,7 @@ class _ExpandableSummaryTextState extends State<ExpandableSummaryText> {
                     ),
                   ),
                   padding: const EdgeInsets.only(left: 32),
-                  child: Text('more', style: linkStyle),
+                  child: Text(l.showMore, style: linkStyle),
                 ),
               ),
             ),

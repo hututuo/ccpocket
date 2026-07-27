@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../l10n/app_localizations.dart';
 import '../models/messages.dart';
 import '../services/bridge_service.dart';
 
@@ -17,6 +18,7 @@ Future<void> copyDebugBundleForAgent(
 }) async {
   final bridge = context.read<BridgeService>();
   final messenger = ScaffoldMessenger.of(context);
+  final l = AppLocalizations.of(context);
   final completer = Completer<DebugBundleMessage>();
 
   late final StreamSubscription<DebugBundleMessage> sub;
@@ -36,15 +38,9 @@ Future<void> copyDebugBundleForAgent(
     final bundle = await completer.future.timeout(timeout);
     final text = buildAgentInvestigationPrompt(bundle);
     await Clipboard.setData(ClipboardData(text: text));
-    messenger.showSnackBar(
-      const SnackBar(
-        content: Text('Agent prompt copied. Paste it into your AI chat.'),
-      ),
-    );
+    messenger.showSnackBar(SnackBar(content: Text(l.debugBundlePromptCopied)));
   } catch (_) {
-    messenger.showSnackBar(
-      const SnackBar(content: Text('Failed to build debug bundle')),
-    );
+    messenger.showSnackBar(SnackBar(content: Text(l.debugBundleBuildFailed)));
   } finally {
     await sub.cancel();
   }

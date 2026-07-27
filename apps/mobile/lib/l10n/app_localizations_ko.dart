@@ -24,6 +24,66 @@ class AppLocalizationsKo extends AppLocalizations {
   String get remove => '제거';
 
   @override
+  String get open => '열기';
+
+  @override
+  String get submit => '제출';
+
+  @override
+  String confirmWithCount(int count) {
+    return '확인($count개)';
+  }
+
+  @override
+  String get reviewYourAnswers => '답변 검토';
+
+  @override
+  String get groupedSessions => '그룹';
+
+  @override
+  String get sessionListView => '목록';
+
+  @override
+  String get tooltipToggleRecentGrouping => '최근 세션 그룹 표시 전환';
+
+  @override
+  String get loadMore => '더 불러오기';
+
+  @override
+  String get worktreesTitle => 'Worktree';
+
+  @override
+  String get removeWorktreeTitle => 'Worktree 제거';
+
+  @override
+  String removeWorktreeConfirm(String branch, String path) {
+    return '\"$branch\" 브랜치의 Worktree를 제거할까요?\n경로: $path';
+  }
+
+  @override
+  String get noWorktreesFound => 'Worktree를 찾을 수 없습니다';
+
+  @override
+  String get mainRepository => '기본 저장소';
+
+  @override
+  String sessionShortTitle(String id) {
+    return '세션 $id';
+  }
+
+  @override
+  String get debugBundlePromptCopied => 'Agent용 프롬프트를 복사했습니다. AI 채팅에 붙여 넣으세요.';
+
+  @override
+  String get debugBundleBuildFailed => '디버그 번들을 만들지 못했습니다';
+
+  @override
+  String get copyCodexCliJoinCommand => 'Codex CLI 참여 명령 복사';
+
+  @override
+  String get codexCliJoinCommandCopied => 'Codex CLI 참여 명령을 복사했습니다';
+
+  @override
   String get removeProjectTitle => '프로젝트 제거';
 
   @override

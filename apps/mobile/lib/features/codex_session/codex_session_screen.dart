@@ -1537,7 +1537,7 @@ class _CodexChatBody extends HookWidget {
                             minWidth: 32,
                             minHeight: 32,
                           ),
-                          tooltip: 'Explore',
+                          tooltip: l.explorer,
                           onPressed: () async {
                             final shell = WorkspaceShellScreen.maybeOf(context);
                             final initialPath =
@@ -1652,7 +1652,7 @@ class _CodexChatBody extends HookWidget {
                             minWidth: 32,
                             minHeight: 32,
                           ),
-                          tooltip: 'Copy Codex CLI join command',
+                          tooltip: l.copyCodexCliJoinCommand,
                           onPressed: () => _copyCodexCliJoinCommand(
                             context,
                             codexCliJoinCommand.value!,
@@ -1722,12 +1722,15 @@ class _CodexChatBody extends HookWidget {
                               .terminalApp;
                           final l = AppLocalizations.of(context);
                           return [
-                            const PopupMenuItem(
-                              key: ValueKey('menu_rename'),
+                            PopupMenuItem(
+                              key: const ValueKey('menu_rename'),
                               value: 'rename',
                               child: ListTile(
-                                leading: Icon(Icons.edit_outlined, size: 20),
-                                title: Text('Rename'),
+                                leading: const Icon(
+                                  Icons.edit_outlined,
+                                  size: 20,
+                                ),
+                                title: Text(l.rename),
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
                               ),
@@ -1774,25 +1777,28 @@ class _CodexChatBody extends HookWidget {
                                 ),
                               ),
                             if (effectiveProjectPath != null)
-                              const PopupMenuItem(
-                                key: ValueKey('menu_screenshot'),
+                              PopupMenuItem(
+                                key: const ValueKey('menu_screenshot'),
                                 value: 'screenshot',
                                 child: ListTile(
-                                  leading: Icon(
+                                  leading: const Icon(
                                     Icons.screenshot_monitor,
                                     size: 20,
                                   ),
-                                  title: Text('Screenshot'),
+                                  title: Text(l.screenshot),
                                   dense: true,
                                   contentPadding: EdgeInsets.zero,
                                 ),
                               ),
-                            const PopupMenuItem(
-                              key: ValueKey('menu_gallery'),
+                            PopupMenuItem(
+                              key: const ValueKey('menu_gallery'),
                               value: 'gallery',
                               child: ListTile(
-                                leading: Icon(Icons.collections, size: 20),
-                                title: Text('Gallery'),
+                                leading: const Icon(
+                                  Icons.collections,
+                                  size: 20,
+                                ),
+                                title: Text(l.gallery),
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
                               ),
@@ -2803,8 +2809,9 @@ Future<void> _copyCodexCliJoinCommand(
 ) async {
   await Clipboard.setData(ClipboardData(text: command));
   if (!context.mounted) return;
+  final l = AppLocalizations.of(context);
   ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(content: Text('Codex CLI join command copied')),
+    SnackBar(content: Text(l.codexCliJoinCommandCopied)),
   );
 }
 

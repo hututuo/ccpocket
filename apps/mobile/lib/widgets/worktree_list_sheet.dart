@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
 import '../models/messages.dart';
 import '../services/bridge_service.dart';
 import '../theme/app_theme.dart';
@@ -84,18 +85,16 @@ class _WorktreeListContentState extends State<_WorktreeListContent> {
       widget.currentWorktreePath == wt.worktreePath;
 
   void _confirmRemove(WorktreeInfo wt) {
+    final l = AppLocalizations.of(context);
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Remove Worktree'),
-        content: Text(
-          'Remove worktree on branch "${wt.branch}"?\n'
-          'Path: ${wt.worktreePath}',
-        ),
+        title: Text(l.removeWorktreeTitle),
+        content: Text(l.removeWorktreeConfirm(wt.branch, wt.worktreePath)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
+            child: Text(l.cancel),
           ),
           TextButton(
             onPressed: () {
@@ -103,7 +102,7 @@ class _WorktreeListContentState extends State<_WorktreeListContent> {
               widget.bridge.removeWorktree(widget.projectPath, wt.worktreePath);
             },
             child: Text(
-              'Remove',
+              l.remove,
               style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ),
@@ -114,6 +113,7 @@ class _WorktreeListContentState extends State<_WorktreeListContent> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     return Padding(
       padding: EdgeInsets.only(
@@ -144,9 +144,12 @@ class _WorktreeListContentState extends State<_WorktreeListContent> {
               children: [
                 Icon(Icons.account_tree_outlined, size: 20),
                 const SizedBox(width: 8),
-                const Text(
-                  'Worktrees',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                Text(
+                  l.worktreesTitle,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
@@ -162,7 +165,7 @@ class _WorktreeListContentState extends State<_WorktreeListContent> {
               padding: const EdgeInsets.all(32),
               child: Center(
                 child: Text(
-                  'No worktrees found',
+                  l.noWorktreesFound,
                   style: TextStyle(color: appColors.subtleText),
                 ),
               ),
@@ -202,6 +205,7 @@ class _MainRepoTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final cs = Theme.of(context).colorScheme;
 
@@ -218,7 +222,7 @@ class _MainRepoTile extends StatelessWidget {
           color: isCurrent ? cs.primary : appColors.subtleText,
         ),
         title: Text(
-          'main repo',
+          l.mainRepository,
           style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w600,
@@ -250,6 +254,7 @@ class _WorktreeTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final cs = Theme.of(context).colorScheme;
 
@@ -282,7 +287,7 @@ class _WorktreeTile extends StatelessWidget {
             : IconButton(
                 icon: Icon(Icons.delete_outline, size: 20, color: cs.error),
                 onPressed: onRemove,
-                tooltip: 'Remove worktree',
+                tooltip: l.removeWorktreeTitle,
               ),
       ),
     );

@@ -1600,6 +1600,7 @@ class _OpenButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Align(
       alignment: Alignment.centerRight,
       child: SizedBox(
@@ -1607,7 +1608,7 @@ class _OpenButton extends StatelessWidget {
         child: OutlinedButton.icon(
           onPressed: onTap,
           icon: const Icon(Icons.open_in_new, size: 14),
-          label: const Text('Open'),
+          label: Text(l.open),
           style: OutlinedButton.styleFrom(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             textStyle: const TextStyle(fontSize: 13),
@@ -1769,6 +1770,7 @@ class _ConfirmButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.only(top: 2),
       child: SizedBox(
@@ -1779,7 +1781,7 @@ class _ConfirmButton extends StatelessWidget {
               ? () => onConfirmMultiSelect(questionIndex)
               : null,
           icon: const Icon(Icons.check, size: 16),
-          label: Text('Confirm (${selected.length})'),
+          label: Text(l.confirmWithCount(selected.length)),
           style: FilledButton.styleFrom(
             textStyle: const TextStyle(fontSize: 13),
             backgroundColor: statusColor.withValues(alpha: 0.15),
@@ -1839,7 +1841,7 @@ class _OtherAnswerSection extends StatelessWidget {
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
                 decoration: InputDecoration(
-                  hintText: 'Type your answer...',
+                  hintText: l.typeYourAnswer,
                   hintStyle: TextStyle(
                     fontSize: 13,
                     color: statusColor.withValues(alpha: 0.4),
@@ -1911,7 +1913,7 @@ class _OtherAnswerSection extends StatelessWidget {
             textStyle: const TextStyle(fontSize: 12),
             foregroundColor: statusColor.withValues(alpha: 0.7),
           ),
-          child: const Text('Other answer...'),
+          child: Text(l.otherAnswer),
         ),
       ),
     );
@@ -2170,6 +2172,7 @@ class _SummaryPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final cs = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(right: 4),
@@ -2178,7 +2181,7 @@ class _SummaryPage extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            'Review your answers',
+            l.reviewYourAnswers,
             style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w600,
@@ -2214,7 +2217,10 @@ class _SummaryPage extends StatelessWidget {
                         borderRadius: BorderRadius.circular(6),
                       ),
                     ),
-                    child: const Text('Cancel', style: TextStyle(fontSize: 13)),
+                    child: Text(
+                      l.cancel,
+                      style: const TextStyle(fontSize: 13),
+                    ),
                   ),
                 ),
               ),
@@ -2237,10 +2243,10 @@ class _SummaryPage extends StatelessWidget {
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
-                      children: const [
+                      children: [
                         Text(
-                          'Submit',
-                          style: TextStyle(
+                          l.submit,
+                          style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),

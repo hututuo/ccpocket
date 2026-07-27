@@ -126,7 +126,7 @@ class MachineList extends StatelessWidget {
                   child: FilledButton.icon(
                     onPressed: onAddMachine,
                     icon: const Icon(Icons.add, size: 18),
-                    label: const Text('Add Machine'),
+                    label: Text(l.machineEditAddTitle),
                     style: FilledButton.styleFrom(
                       backgroundColor: colorScheme.primary,
                       foregroundColor: colorScheme.onPrimary,

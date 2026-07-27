@@ -24,6 +24,66 @@ class AppLocalizationsJa extends AppLocalizations {
   String get remove => '削除';
 
   @override
+  String get open => '開く';
+
+  @override
+  String get submit => '送信';
+
+  @override
+  String confirmWithCount(int count) {
+    return '確認（$count件）';
+  }
+
+  @override
+  String get reviewYourAnswers => '回答を確認';
+
+  @override
+  String get groupedSessions => 'グループ';
+
+  @override
+  String get sessionListView => 'リスト';
+
+  @override
+  String get tooltipToggleRecentGrouping => '最近のセッションのグループ表示を切り替え';
+
+  @override
+  String get loadMore => 'さらに読み込む';
+
+  @override
+  String get worktreesTitle => 'Worktree';
+
+  @override
+  String get removeWorktreeTitle => 'Worktreeを削除';
+
+  @override
+  String removeWorktreeConfirm(String branch, String path) {
+    return 'ブランチ「$branch」のWorktreeを削除しますか？\nパス: $path';
+  }
+
+  @override
+  String get noWorktreesFound => 'Worktreeが見つかりません';
+
+  @override
+  String get mainRepository => 'メインリポジトリ';
+
+  @override
+  String sessionShortTitle(String id) {
+    return 'セッション $id';
+  }
+
+  @override
+  String get debugBundlePromptCopied => 'Agent用プロンプトをコピーしました。AIチャットに貼り付けてください。';
+
+  @override
+  String get debugBundleBuildFailed => 'デバッグバンドルを作成できませんでした';
+
+  @override
+  String get copyCodexCliJoinCommand => 'Codex CLI参加コマンドをコピー';
+
+  @override
+  String get codexCliJoinCommandCopied => 'Codex CLI参加コマンドをコピーしました';
+
+  @override
   String get removeProjectTitle => 'プロジェクトを削除';
 
   @override

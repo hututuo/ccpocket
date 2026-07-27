@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/widgets/expandable_summary_text.dart';
 
 void main() {
@@ -11,8 +12,15 @@ void main() {
       'apps/mobile/fastlane/metadata/android/en-US/full_description.txt '
       'apps/mobile/fastlane/metadata/android/ja-JP/full_description.txt';
 
-  Widget buildSubject(String text, {int maxLines = 2}) {
+  Widget buildSubject(
+    String text, {
+    int maxLines = 2,
+    Locale locale = const Locale('en'),
+  }) {
     return MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      locale: locale,
       home: Scaffold(
         body: SizedBox(
           width: 300,
@@ -32,18 +40,20 @@ void main() {
 
       // Text is shown
       expect(find.text(shortText), findsOneWidget);
-      // "more" is not shown
-      expect(find.text('more'), findsNothing);
+      // The expansion action is not shown.
+      expect(find.text('Show more'), findsNothing);
     });
 
-    testWidgets('shows "more" when text overflows maxLines', (tester) async {
+    testWidgets('shows expansion action when text overflows maxLines', (
+      tester,
+    ) async {
       await tester.pumpWidget(buildSubject(longText));
       await tester.pumpAndSettle();
 
       // Text widget exists
       expect(find.byType(ExpandableSummaryText), findsOneWidget);
-      // "more" indicator is visible
-      expect(find.text('more'), findsOneWidget);
+      // Expansion indicator is visible.
+      expect(find.text('Show more'), findsOneWidget);
     });
 
     testWidgets('collapsed text uses clip overflow (no ellipsis)', (
@@ -66,15 +76,15 @@ void main() {
       expect(richText.maxLines, 2);
 
       // Tap to expand
-      await tester.tap(find.text('more'));
+      await tester.tap(find.text('Show more'));
       await tester.pumpAndSettle();
 
       // After tap, maxLines is removed (expanded)
       richText = _findMainRichText(tester);
       expect(richText.maxLines, isNull);
-      // "more" disappears, "less" appears
-      expect(find.text('more'), findsNothing);
-      expect(find.text('less'), findsOneWidget);
+      // Expand disappears, collapse appears.
+      expect(find.text('Show more'), findsNothing);
+      expect(find.text('Show less'), findsOneWidget);
     });
 
     testWidgets('collapses on second tap', (tester) async {
@@ -82,17 +92,17 @@ void main() {
       await tester.pumpAndSettle();
 
       // Expand
-      await tester.tap(find.text('more'));
+      await tester.tap(find.text('Show more'));
       await tester.pumpAndSettle();
 
       // Collapse
-      await tester.tap(find.text('less'));
+      await tester.tap(find.text('Show less'));
       await tester.pumpAndSettle();
 
       // Back to collapsed
       final richText = _findMainRichText(tester);
       expect(richText.maxLines, 2);
-      expect(find.text('more'), findsOneWidget);
+      expect(find.text('Show more'), findsOneWidget);
     });
 
     testWidgets('respects custom maxLines parameter', (tester) async {
@@ -106,10 +116,10 @@ void main() {
     testWidgets('does not show toggle for empty text', (tester) async {
       await tester.pumpWidget(buildSubject(''));
 
-      expect(find.text('more'), findsNothing);
+      expect(find.text('Show more'), findsNothing);
     });
 
-    testWidgets('"more" is positioned at bottom-right via Stack', (
+    testWidgets('expansion action is positioned at bottom-right via Stack', (
       tester,
     ) async {
       await tester.pumpWidget(buildSubject(longText));
@@ -132,6 +142,20 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('uses the selected locale for expansion actions', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        buildSubject(longText, locale: const Locale('zh')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('显示更多'), findsOneWidget);
+      await tester.tap(find.text('显示更多'));
+      await tester.pumpAndSettle();
+      expect(find.text('显示更少'), findsOneWidget);
     });
   });
 }

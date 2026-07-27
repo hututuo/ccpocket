@@ -7,6 +7,40 @@
   "save": "保存",
   "delete": "削除",
   "remove": "削除",
+  "open": "開く",
+  "submit": "送信",
+  "confirmWithCount": "確認（{count}件）",
+  "@confirmWithCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "reviewYourAnswers": "回答を確認",
+  "groupedSessions": "グループ",
+  "sessionListView": "リスト",
+  "tooltipToggleRecentGrouping": "最近のセッションのグループ表示を切り替え",
+  "loadMore": "さらに読み込む",
+  "worktreesTitle": "Worktree",
+  "removeWorktreeTitle": "Worktreeを削除",
+  "removeWorktreeConfirm": "ブランチ「{branch}」のWorktreeを削除しますか？\nパス: {path}",
+  "@removeWorktreeConfirm": {
+    "placeholders": {
+      "branch": { "type": "String" },
+      "path": { "type": "String" }
+    }
+  },
+  "noWorktreesFound": "Worktreeが見つかりません",
+  "mainRepository": "メインリポジトリ",
+  "sessionShortTitle": "セッション {id}",
+  "@sessionShortTitle": {
+    "placeholders": {
+      "id": { "type": "String" }
+    }
+  },
+  "debugBundlePromptCopied": "Agent用プロンプトをコピーしました。AIチャットに貼り付けてください。",
+  "debugBundleBuildFailed": "デバッグバンドルを作成できませんでした",
+  "copyCodexCliJoinCommand": "Codex CLI参加コマンドをコピー",
+  "codexCliJoinCommandCopied": "Codex CLI参加コマンドをコピーしました",
   "removeProjectTitle": "プロジェクトを削除",
   "removeProjectConfirm": "「{name}」を最近のプロジェクトから削除しますか？",
   "rename": "名前を変更",

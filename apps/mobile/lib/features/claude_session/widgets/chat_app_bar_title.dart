@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../theme/app_theme.dart';
 
 class ChatAppBarTitle extends StatelessWidget {
@@ -18,6 +19,7 @@ class ChatAppBarTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     if (projectPath != null && projectPath!.isNotEmpty) {
       final projectName = projectPath!.split('/').last;
@@ -57,7 +59,7 @@ class ChatAppBarTitle extends StatelessWidget {
                 ),
                 const SizedBox(width: 2),
                 Text(
-                  'worktree',
+                  l.worktree,
                   style: TextStyle(fontSize: 11, color: appColors.subtleText),
                 ),
               ],
@@ -66,6 +68,6 @@ class ChatAppBarTitle extends StatelessWidget {
         ],
       );
     }
-    return Text('Session ${sessionId.substring(0, 8)}');
+    return Text(l.sessionShortTitle(sessionId.substring(0, 8)));
   }
 }

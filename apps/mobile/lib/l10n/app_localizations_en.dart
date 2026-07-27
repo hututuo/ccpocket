@@ -24,6 +24,67 @@ class AppLocalizationsEn extends AppLocalizations {
   String get remove => 'Remove';
 
   @override
+  String get open => 'Open';
+
+  @override
+  String get submit => 'Submit';
+
+  @override
+  String confirmWithCount(int count) {
+    return 'Confirm ($count)';
+  }
+
+  @override
+  String get reviewYourAnswers => 'Review your answers';
+
+  @override
+  String get groupedSessions => 'Grouped';
+
+  @override
+  String get sessionListView => 'List';
+
+  @override
+  String get tooltipToggleRecentGrouping => 'Toggle recent session grouping';
+
+  @override
+  String get loadMore => 'Load More';
+
+  @override
+  String get worktreesTitle => 'Worktrees';
+
+  @override
+  String get removeWorktreeTitle => 'Remove Worktree';
+
+  @override
+  String removeWorktreeConfirm(String branch, String path) {
+    return 'Remove worktree on branch \"$branch\"?\nPath: $path';
+  }
+
+  @override
+  String get noWorktreesFound => 'No worktrees found';
+
+  @override
+  String get mainRepository => 'Main repository';
+
+  @override
+  String sessionShortTitle(String id) {
+    return 'Session $id';
+  }
+
+  @override
+  String get debugBundlePromptCopied =>
+      'Agent prompt copied. Paste it into your AI chat.';
+
+  @override
+  String get debugBundleBuildFailed => 'Failed to build debug bundle';
+
+  @override
+  String get copyCodexCliJoinCommand => 'Copy Codex CLI join command';
+
+  @override
+  String get codexCliJoinCommandCopied => 'Codex CLI join command copied';
+
+  @override
   String get removeProjectTitle => 'Remove Project';
 
   @override

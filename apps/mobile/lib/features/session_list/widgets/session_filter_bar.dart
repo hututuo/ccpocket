@@ -58,13 +58,14 @@ class SessionFilterBar extends StatelessWidget {
   }
 
   Widget _buildGroupingToggle(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return _ActionChip(
       key: const ValueKey('recent_grouping_toggle'),
       icon: groupRecentSessions
           ? Icons.account_tree_outlined
           : Icons.view_list_outlined,
-      label: groupRecentSessions ? 'Grouped' : 'List',
-      tooltip: 'Toggle recent session grouping',
+      label: groupRecentSessions ? l.groupedSessions : l.sessionListView,
+      tooltip: l.tooltipToggleRecentGrouping,
       onTap: onToggleRecentGrouping,
       isActive: !groupRecentSessions,
     );
