@@ -2,6 +2,7 @@ import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
+import '../../../widgets/async_data_image.dart';
 import '../generated_image_preview_item.dart';
 
 const _cacheMaxAge = Duration(days: 7);
@@ -186,6 +187,18 @@ class _GeneratedImage extends StatelessWidget {
         fit: BoxFit.contain,
         gaplessPlayback: true,
         errorBuilder: (_, _, _) => const _ImageLoadFailure(),
+      );
+    }
+    final dataUrl = item.dataUrl;
+    if (dataUrl != null) {
+      return AsyncDataImage(
+        dataUrl: dataUrl,
+        fit: BoxFit.contain,
+        gaplessPlayback: true,
+        loading: const Center(
+          child: CircularProgressIndicator(color: Colors.white),
+        ),
+        failure: const _ImageLoadFailure(),
       );
     }
 

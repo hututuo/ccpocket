@@ -1,9 +1,9 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
 import '../../models/messages.dart';
+import '../../utils/data_image_decode.dart';
 import 'generated_image_preview_item.dart';
 
 typedef GeneratedImageItemCacheKey = ({
@@ -61,12 +61,12 @@ GeneratedImagePreviewItem _itemFromImageRef({
   required int imageIndex,
   required String resolvedUrl,
 }) {
-  final bytes = _decodeDataImageUrl(resolvedUrl);
+  final dataUrl = isDataImageUrl(resolvedUrl) ? resolvedUrl : null;
   return GeneratedImagePreviewItem(
     id: '${message.toolUseId}:${image.id}',
-    url: bytes == null ? resolvedUrl : null,
-    bytes: bytes,
-    cacheKey: bytes == null
+    url: dataUrl == null ? resolvedUrl : null,
+    dataUrl: dataUrl,
+    cacheKey: dataUrl == null
         ? _generatedImageCacheKey(message, imageIndex, image.mimeType)
         : null,
     mimeType: image.mimeType,
@@ -110,18 +110,6 @@ String? _resolveImageUrl(String imageUrl, String? httpBaseUrl) {
   }
   if (httpBaseUrl == null) return null;
   return '$httpBaseUrl$imageUrl';
-}
-
-Uint8List? _decodeDataImageUrl(String url) {
-  if (!url.startsWith('data:image/')) return null;
-  const marker = ';base64,';
-  final markerIndex = url.indexOf(marker);
-  if (markerIndex == -1) return null;
-  try {
-    return base64Decode(url.substring(markerIndex + marker.length));
-  } catch (_) {
-    return null;
-  }
 }
 
 String? _readPrefixedLine(String content, String key) {

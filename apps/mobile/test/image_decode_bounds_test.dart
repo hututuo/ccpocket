@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -7,6 +8,7 @@ import 'package:ccpocket/features/generated_image_preview/widgets/generated_imag
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/theme/app_theme.dart';
+import 'package:ccpocket/utils/data_image_decode.dart';
 import 'package:ccpocket/widgets/bubbles/image_preview.dart';
 import 'package:ccpocket/widgets/bubbles/user_bubble.dart';
 import 'package:extended_image/extended_image.dart';
@@ -108,9 +110,50 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.pump();
 
     expect(find.byType(Image), findsOneWidget);
     expect(find.byType(ExtendedImage), findsNothing);
+  });
+
+  testWidgets('chat bubble waits for its asynchronous data image decoder', (
+    tester,
+  ) async {
+    final dataUrl = 'data:image/png;base64,${base64Encode(onePixelPng)}';
+    final decoded = Completer<Uint8List?>();
+    var decodeCalls = 0;
+    await tester.pumpWidget(
+      wrap(
+        ImagePreviewWidget(
+          images: [ImageRef(id: 'i1', url: dataUrl, mimeType: 'image/png')],
+          httpBaseUrl: '',
+          dataImageDecoder: (url) {
+            decodeCalls++;
+            expect(url, dataUrl);
+            return decoded.future;
+          },
+        ),
+      ),
+    );
+
+    expect(decodeCalls, 1);
+    expect(find.byType(Image), findsNothing);
+
+    decoded.complete(Uint8List.fromList(onePixelPng));
+    await tester.pump();
+    expect(find.byType(Image), findsOneWidget);
+  });
+
+  test('large data images are decoded outside the synchronous path', () async {
+    final source = Uint8List.fromList(List<int>.filled(70 * 1024, 7));
+    final dataUrl = 'data:image/png;base64,${base64Encode(source)}';
+    var completedSynchronously = false;
+
+    final decoded = decodeDataImageUrl(dataUrl);
+    decoded.then((_) => completedSynchronously = true);
+
+    expect(completedSynchronously, isFalse);
+    expect(await decoded, source);
   });
 
   test('chat bubble resolves inline, absolute, and relative image URLs', () {

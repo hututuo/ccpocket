@@ -21,7 +21,8 @@ void main() {
     ], httpBaseUrl: null);
 
     expect(items, hasLength(1));
-    expect(items.single.bytes, isNotEmpty);
+    expect(items.single.bytes, isNull);
+    expect(items.single.dataUrl, dataUrl);
     expect(items.single.url, isNull);
   });
 
@@ -122,7 +123,7 @@ void main() {
     expect(first.cacheKey, isNot(changed.cacheKey));
   });
 
-  test('reuses decoded data images from the supplied bounded cache', () {
+  test('reuses mapped data images from the supplied bounded cache', () {
     final cache = <GeneratedImageItemCacheKey, GeneratedImagePreviewItem>{};
 
     final first = generatedImageItemsFromToolResults(
@@ -138,6 +139,6 @@ void main() {
 
     expect(cache, hasLength(1));
     expect(identical(first.single, second.single), isTrue);
-    expect(identical(first.single.bytes, second.single.bytes), isTrue);
+    expect(identical(first.single.dataUrl, second.single.dataUrl), isTrue);
   });
 }

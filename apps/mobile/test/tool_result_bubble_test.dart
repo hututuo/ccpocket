@@ -313,6 +313,7 @@ void main() {
       );
       await tester.tap(find.byType(InkWell).first);
       await tester.pump();
+      await tester.pump();
 
       Uint8List bytesOfThumbnail() {
         final image = tester.widget<Image>(
@@ -372,6 +373,7 @@ void main() {
       expect(find.textContaining('/tmp/generated-image.png'), findsNothing);
 
       await tester.tap(find.byType(InkWell).first);
+      await tester.pump();
       await tester.pump();
       await tester.tap(
         find.byKey(const ValueKey('generated_image_chat_thumbnail_0')),

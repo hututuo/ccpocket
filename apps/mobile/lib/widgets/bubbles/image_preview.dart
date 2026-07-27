@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:extended_image/extended_image.dart';
@@ -6,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../models/messages.dart';
+import '../../utils/data_image_decode.dart';
 import '../../utils/image_decode_size.dart';
+import '../async_data_image.dart';
 import '../workspace_pane_chrome.dart';
 
 const _kCacheMaxAge = Duration(days: 7);
@@ -14,11 +15,13 @@ const _kCacheMaxAge = Duration(days: 7);
 class ImagePreviewWidget extends StatelessWidget {
   final List<ImageRef> images;
   final String httpBaseUrl;
+  final DataImageDecoder dataImageDecoder;
 
   const ImagePreviewWidget({
     super.key,
     required this.images,
     required this.httpBaseUrl,
+    this.dataImageDecoder = decodeDataImageUrl,
   });
 
   @override
@@ -26,7 +29,11 @@ class ImagePreviewWidget extends StatelessWidget {
     if (images.isEmpty) return const SizedBox.shrink();
 
     if (images.length == 1) {
-      return _SingleImage(image: images.first, httpBaseUrl: httpBaseUrl);
+      return _SingleImage(
+        image: images.first,
+        httpBaseUrl: httpBaseUrl,
+        dataImageDecoder: dataImageDecoder,
+      );
     }
 
     return SizedBox(
@@ -41,6 +48,7 @@ class ImagePreviewWidget extends StatelessWidget {
             image: image,
             httpBaseUrl: httpBaseUrl,
             height: 150,
+            dataImageDecoder: dataImageDecoder,
           );
         },
       ),
@@ -51,30 +59,41 @@ class ImagePreviewWidget extends StatelessWidget {
 class _SingleImage extends StatelessWidget {
   final ImageRef image;
   final String httpBaseUrl;
+  final DataImageDecoder dataImageDecoder;
 
-  const _SingleImage({required this.image, required this.httpBaseUrl});
+  const _SingleImage({
+    required this.image,
+    required this.httpBaseUrl,
+    required this.dataImageDecoder,
+  });
 
   @override
   Widget build(BuildContext context) {
     final url = resolveImagePreviewUrl(image.url, httpBaseUrl);
-    final dataBytes = _decodeDataImageUrl(url);
     // In-bubble preview; the full-screen viewer re-decodes at full size.
     final decodeWidth = decodeWidthForLogical(
       context,
       MediaQuery.sizeOf(context).width,
     );
     return GestureDetector(
-      onTap: () => _openFullScreen(context, url),
+      onTap: () => _openFullScreen(context, url, dataImageDecoder),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: SizedBox(
           width: double.infinity,
           height: 180,
-          child: dataBytes != null
-              ? Image.memory(
-                  dataBytes,
+          child: isDataImageUrl(url)
+              ? AsyncDataImage(
+                  dataUrl: url,
+                  decoder: dataImageDecoder,
                   fit: BoxFit.cover,
                   cacheWidth: decodeWidth,
+                  loading: const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  failure: const Center(
+                    child: Icon(Icons.broken_image, size: 32),
+                  ),
                 )
               : ExtendedImage.network(
                   url,
@@ -119,17 +138,18 @@ class _ImageThumbnail extends StatelessWidget {
   final ImageRef image;
   final String httpBaseUrl;
   final double height;
+  final DataImageDecoder dataImageDecoder;
 
   const _ImageThumbnail({
     required this.image,
     required this.httpBaseUrl,
     required this.height,
+    required this.dataImageDecoder,
   });
 
   @override
   Widget build(BuildContext context) {
     final url = resolveImagePreviewUrl(image.url, httpBaseUrl);
-    final dataBytes = _decodeDataImageUrl(url);
     // Horizontal strip thumbnail; width is intrinsic (aspect x height) but
     // never usefully exceeds the screen width.
     final decodeWidth = decodeWidthForLogical(
@@ -137,15 +157,30 @@ class _ImageThumbnail extends StatelessWidget {
       MediaQuery.sizeOf(context).width,
     );
     return GestureDetector(
-      onTap: () => _openFullScreen(context, url),
+      onTap: () => _openFullScreen(context, url, dataImageDecoder),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        child: dataBytes != null
-            ? Image.memory(
-                dataBytes,
+        child: isDataImageUrl(url)
+            ? AsyncDataImage(
+                dataUrl: url,
+                decoder: dataImageDecoder,
                 height: height,
                 fit: BoxFit.cover,
                 cacheWidth: decodeWidth,
+                loading: SizedBox(
+                  width: height * 0.75,
+                  height: height,
+                  child: const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+                failure: SizedBox(
+                  width: height * 0.75,
+                  height: height,
+                  child: const Center(
+                    child: Icon(Icons.broken_image, size: 24),
+                  ),
+                ),
               )
             : ExtendedImage.network(
                 url,
@@ -205,40 +240,36 @@ String resolveImagePreviewUrl(String imageUrl, String httpBaseUrl) {
   return '$httpBaseUrl/$imageUrl';
 }
 
-void _openFullScreen(BuildContext context, String url) {
-  final dataBytes = _decodeDataImageUrl(url);
+void _openFullScreen(
+  BuildContext context,
+  String url,
+  DataImageDecoder dataImageDecoder,
+) {
   Navigator.of(context).push(
     MaterialPageRoute(
       builder: (_) => FullScreenImageViewer(
-        url: dataBytes == null ? url : null,
-        bytes: dataBytes,
+        url: isDataImageUrl(url) ? null : url,
+        dataUrl: isDataImageUrl(url) ? url : null,
+        dataImageDecoder: dataImageDecoder,
       ),
     ),
   );
 }
 
-Uint8List? _decodeDataImageUrl(String url) {
-  if (!url.startsWith('data:image/')) return null;
-  final marker = ';base64,';
-  final markerIndex = url.indexOf(marker);
-  if (markerIndex == -1) return null;
-  try {
-    return base64Decode(url.substring(markerIndex + marker.length));
-  } catch (_) {
-    return null;
-  }
-}
-
 class FullScreenImageViewer extends StatelessWidget {
   final String? url;
+  final String? dataUrl;
   final Uint8List? bytes;
+  final DataImageDecoder dataImageDecoder;
   final bool isSvg;
   const FullScreenImageViewer({
     super.key,
     this.url,
+    this.dataUrl,
     this.bytes,
+    this.dataImageDecoder = decodeDataImageUrl,
     this.isSvg = false,
-  }) : assert(url != null || bytes != null);
+  }) : assert(url != null || dataUrl != null || bytes != null);
 
   @override
   Widget build(BuildContext context) {
@@ -260,6 +291,22 @@ class FullScreenImageViewer extends StatelessWidget {
               ? isSvg
                     ? SvgPicture.memory(bytes!, fit: BoxFit.contain)
                     : Image.memory(bytes!, fit: BoxFit.contain)
+              : dataUrl != null
+              ? AsyncDataImage(
+                  dataUrl: dataUrl!,
+                  decoder: dataImageDecoder,
+                  fit: BoxFit.contain,
+                  loading: const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  ),
+                  failure: const Center(
+                    child: Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.white54,
+                      size: 48,
+                    ),
+                  ),
+                )
               : ExtendedImage.network(
                   url!,
                   fit: BoxFit.contain,

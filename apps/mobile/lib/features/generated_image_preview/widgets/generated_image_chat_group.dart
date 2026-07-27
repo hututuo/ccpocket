@@ -6,7 +6,9 @@ import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
 import '../../../theme/app_spacing.dart';
+import '../../../utils/data_image_decode.dart';
 import '../../../utils/image_decode_size.dart';
+import '../../../widgets/async_data_image.dart';
 import '../generated_image_preview_item.dart';
 import '../generated_image_preview_screen.dart';
 
@@ -161,31 +163,48 @@ class _IntrinsicAspectRatioImageState
   ImageStream? _imageStream;
   ImageStreamListener? _imageStreamListener;
   double? _aspectRatio;
+  Uint8List? _resolvedDataBytes;
+  int _dataDecodeGeneration = 0;
+  bool _dependenciesReady = false;
 
   @override
   void initState() {
     super.initState();
     _aspectRatio = _pngAspectRatio(widget.item.bytes);
+    _loadDataBytes();
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _dependenciesReady = true;
     _resolveAspectRatio();
   }
 
   @override
   void didUpdateWidget(covariant _IntrinsicAspectRatioImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.item.id != widget.item.id) {
-      _aspectRatio = _pngAspectRatio(widget.item.bytes);
+    final oldItem = oldWidget.item;
+    final item = widget.item;
+    if (oldItem.id != item.id ||
+        oldItem.url != item.url ||
+        oldItem.dataUrl != item.dataUrl ||
+        !identical(oldItem.bytes, item.bytes)) {
+      _dataDecodeGeneration++;
+      _resolvedDataBytes = null;
+      _aspectRatio = _pngAspectRatio(item.bytes);
+      _loadDataBytes();
       _resolveAspectRatio();
     }
   }
 
-  ImageProvider<Object> _providerFor(GeneratedImagePreviewItem item) {
+  ImageProvider<Object>? _providerFor(GeneratedImagePreviewItem item) {
     final bytes = item.bytes;
     if (bytes != null) return MemoryImage(bytes);
+    final dataBytes = _resolvedDataBytes;
+    if (item.dataUrl != null) {
+      return dataBytes == null ? null : MemoryImage(dataBytes);
+    }
     return ExtendedNetworkImageProvider(
       item.url!,
       cache: true,
@@ -195,9 +214,9 @@ class _IntrinsicAspectRatioImageState
   }
 
   void _resolveAspectRatio() {
-    final stream = _providerFor(
-      widget.item,
-    ).resolve(createLocalImageConfiguration(context));
+    final provider = _providerFor(widget.item);
+    if (provider == null) return;
+    final stream = provider.resolve(createLocalImageConfiguration(context));
     if (stream.key == _imageStream?.key) return;
     _removeImageStreamListener();
     _imageStream = stream;
@@ -212,6 +231,27 @@ class _IntrinsicAspectRatioImageState
       },
     );
     stream.addListener(_imageStreamListener!);
+  }
+
+  void _loadDataBytes() {
+    final dataUrl = widget.item.dataUrl;
+    if (dataUrl == null) return;
+    final generation = ++_dataDecodeGeneration;
+    decodeDataImageUrl(dataUrl).then((bytes) {
+      if (!mounted || generation != _dataDecodeGeneration || bytes == null) {
+        return;
+      }
+      if (!_dependenciesReady) {
+        _resolvedDataBytes = bytes;
+        _aspectRatio = _pngAspectRatio(bytes) ?? _aspectRatio;
+        return;
+      }
+      setState(() {
+        _resolvedDataBytes = bytes;
+        _aspectRatio = _pngAspectRatio(bytes) ?? _aspectRatio;
+      });
+      _resolveAspectRatio();
+    });
   }
 
   void _removeImageStreamListener() {
@@ -273,6 +313,20 @@ class _GeneratedImageThumbnail extends StatelessWidget {
         gaplessPlayback: true,
         cacheWidth: decodeWidth,
         errorBuilder: (_, _, _) => const _ThumbnailLoadFailure(),
+      );
+    }
+    final dataUrl = item.dataUrl;
+    if (dataUrl != null) {
+      return AsyncDataImage(
+        dataUrl: dataUrl,
+        fit: fit,
+        gaplessPlayback: true,
+        cacheWidth: decodeWidth,
+        loading: const ColoredBox(
+          color: Color(0x14000000),
+          child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        ),
+        failure: const _ThumbnailLoadFailure(),
       );
     }
 
