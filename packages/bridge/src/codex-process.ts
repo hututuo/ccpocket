@@ -1843,9 +1843,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
 
     this.prepareLaunch(projectPath, options);
-    this.launchAppServer(projectPath, options);
+    const runtimeGeneration = this._runtimeGeneration;
+    this.launchAppServer(projectPath, options, runtimeGeneration);
 
-    void this.bootstrap(projectPath, options);
+    void this.bootstrap(projectPath, options, runtimeGeneration);
   }
 
   async initializeOnly(
@@ -1856,37 +1857,73 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.stop();
     }
     this.prepareLaunch(projectPath);
-    this.launchAppServer(projectPath);
+    const runtimeGeneration = this._runtimeGeneration;
+    this.launchAppServer(projectPath, undefined, runtimeGeneration);
     try {
       await this.initializeRpcConnection(requestTimeoutMs);
+      if (!this.isRuntimeActive(runtimeGeneration)) return;
       this.setStatus("idle");
     } catch (error) {
-      this.stop();
+      if (this.isRuntimeGenerationCurrent(runtimeGeneration)) {
+        this.stop();
+      }
       throw error;
     }
   }
 
   stop(): void {
-    this.stopped = true;
-
-    if (this.inputResolve) {
-      this.inputResolve({ text: "" });
-      this.inputResolve = null;
-    }
-
-    this.pendingApprovals.clear();
-    this.pendingUserInputs.clear();
-    this.clearPendingGuardianReviewWarnings();
-    this.cleanupSteerTempPaths();
-    this.rejectAllPending(new Error("stopped"));
+    this.finalizeStoppedState(new Error("stopped"));
 
     if (this.transport) {
       this.transport.stop();
       this.transport = null;
     }
 
-    this.setStatus("idle");
     console.log("[codex-process] Stopped");
+  }
+
+  private finalizeStoppedState(error: Error): void {
+    this.stopped = true;
+
+    const resolvedPermissionIds = new Set<string>();
+    if (this.pendingPlanCompletion) {
+      resolvedPermissionIds.add(this.pendingPlanCompletion.toolUseId);
+    }
+    for (const toolUseId of this.pendingApprovals.keys()) {
+      resolvedPermissionIds.add(toolUseId);
+    }
+    for (const toolUseId of this.pendingUserInputs.keys()) {
+      resolvedPermissionIds.add(toolUseId);
+    }
+
+    if (this.inputResolve) {
+      this.inputResolve({ text: "" });
+      this.inputResolve = null;
+    }
+
+    this.pendingPlanCompletion = null;
+    this._pendingPlanInput = null;
+    this._idleWhenInteractionsClear = false;
+    this.lastPlanItemText = null;
+    this.pendingApprovals.clear();
+    this.pendingUserInputs.clear();
+    this.clearPendingGuardianReviewWarnings();
+    this.cleanupSteerTempPaths();
+    this.rejectAllPending(error);
+
+    for (const toolUseId of resolvedPermissionIds) {
+      this.emitMessage({ type: "permission_resolved", toolUseId });
+    }
+
+    this.setStatus("idle");
+  }
+
+  private isRuntimeGenerationCurrent(runtimeGeneration: number): boolean {
+    return runtimeGeneration === this._runtimeGeneration;
+  }
+
+  private isRuntimeActive(runtimeGeneration: number): boolean {
+    return !this.stopped && this.isRuntimeGenerationCurrent(runtimeGeneration);
   }
 
   private prepareLaunch(
@@ -1958,6 +1995,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private launchAppServer(
     projectPath: string,
     options?: CodexStartOptions,
+    runtimeGeneration = this._runtimeGeneration,
   ): void {
     const sandboxLog = options?.sandboxMode ?? "config";
     const approvalLog = options?.approvalPolicy ?? "config";
@@ -1968,12 +2006,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
     const transport = createCodexTransport(projectPath, this.platform);
     this.transport = transport;
+    const ownsRuntime = (): boolean =>
+      this.isRuntimeGenerationCurrent(runtimeGeneration) &&
+      this.transport === transport;
 
     transport.on("data", (chunk: string) => {
+      if (!ownsRuntime() || this.stopped) return;
       this.handleStdoutChunk(chunk);
     });
 
     transport.on("log", (chunk: string) => {
+      if (!ownsRuntime() || this.stopped) return;
       const line = chunk.trim();
       if (line) {
         console.log(`[codex-process] stderr: ${line}`);
@@ -1981,25 +2024,33 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     });
 
     transport.on("error", (err) => {
-      if (this.stopped) return;
+      if (!ownsRuntime() || this.stopped) return;
       // Spawn-level failures (ENOENT) never emit "exit", so this is the only
       // chance to settle in-flight RPCs — otherwise bootstrap awaits
       // initialize forever and the session hangs instead of surfacing the
       // error. rejectAllPending also releases the core-action lock.
-      this.rejectAllPending(
-        err instanceof Error ? err : new Error(String(err)),
-      );
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.transport = null;
+      this.finalizeStoppedState(error);
+      transport.stop();
       console.error("[codex-process] app-server process error:", err);
       this.emitMessage(codexAppServerStartError(err));
-      this.setStatus("idle");
+      this.emitMessage({
+        type: "result",
+        subtype: "error",
+        error: codexErrorMessage(error),
+        sessionId: this._threadId ?? undefined,
+      });
       this.emit("exit", 1);
     });
 
     transport.on("exit", (code) => {
+      if (!ownsRuntime()) return;
       const exitCode = code ?? 0;
+      const wasStopped = this.stopped;
       this.transport = null;
-      this.rejectAllPending(new Error("codex app-server exited"));
-      if (!this.stopped && exitCode !== 0) {
+      this.finalizeStoppedState(new Error("codex app-server exited"));
+      if (!wasStopped && exitCode !== 0) {
         this.emitMessage({
           type: "error",
           message: `codex app-server exited with code ${exitCode}`,
@@ -2620,14 +2671,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private async bootstrap(
     projectPath: string,
     options?: CodexStartOptions,
+    runtimeGeneration = this._runtimeGeneration,
   ): Promise<void> {
     try {
       await this.initializeRpcConnection();
+      if (!this.isRuntimeActive(runtimeGeneration)) return;
 
-      const autoReviewDisabled =
-        options?.autoReviewDisabledByPolicy === null
-          ? (await this.readConfigRequirements()).autoReviewDisabled
-          : options?.autoReviewDisabledByPolicy === true;
+      let autoReviewDisabled = options?.autoReviewDisabledByPolicy === true;
+      if (options?.autoReviewDisabledByPolicy === null) {
+        autoReviewDisabled = (await this.readConfigRequirements())
+          .autoReviewDisabled;
+        if (!this.isRuntimeActive(runtimeGeneration)) return;
+      }
       this._autoReviewDisabledByPolicy = autoReviewDisabled;
       const effectiveApprovalsReviewer = autoReviewDisabled
         ? "user"
@@ -2650,16 +2705,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       // A requested Plan session must never silently run as an ordinary turn.
       // Block only that path on the experimental capability probe; default
       // sessions continue immediately and probe in the background below.
-      if (
-        this._collaborationMode === "plan" &&
-        !(await this.probeNativePlanModeSupport(
+      if (this._collaborationMode === "plan") {
+        const supportsNativePlanMode = await this.probeNativePlanModeSupport(
           NATIVE_PLAN_MODE_EXPLICIT_PROBE_TIMEOUT_MS,
-        ))
-      ) {
-        this._collaborationMode = "default";
-        throw this.nativePlanModeCapabilityKnown
-          ? new CodexNativePlanModeUnsupportedError()
-          : new CodexNativePlanModeProbeRetryError();
+        );
+        if (!this.isRuntimeActive(runtimeGeneration)) return;
+        if (!supportsNativePlanMode) {
+          this._collaborationMode = "default";
+          throw this.nativePlanModeCapabilityKnown
+            ? new CodexNativePlanModeUnsupportedError()
+            : new CodexNativePlanModeProbeRetryError();
+        }
       }
 
       const requestedApprovalPolicy = options?.approvalPolicy
@@ -2750,6 +2806,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         projectPath,
         options?.additionalWritableRoots,
       );
+      if (!this.isRuntimeActive(runtimeGeneration)) return;
       if (writableRoots) {
         threadConfig.sandbox_workspace_write = {
           writable_roots: writableRoots,
@@ -2766,6 +2823,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         string,
         unknown
       >;
+      if (!this.isRuntimeActive(runtimeGeneration)) return;
       const thread = response.thread as Record<string, unknown> | undefined;
       const threadId =
         typeof thread?.id === "string" ? thread.id : options?.threadId;
@@ -2905,17 +2963,19 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.setStatus("idle");
 
       await this.resumeGoalAfterBootstrap(options);
+      if (!this.isRuntimeActive(runtimeGeneration)) return;
       if (
         options?.continueInterruptedTurnAfterStart &&
         !options.resumeGoalAfterStart
       ) {
         await this.continueInterruptedTurnAfterBootstrap(options);
+        if (!this.isRuntimeActive(runtimeGeneration)) return;
       }
 
       // Fetch completion entities in background (non-blocking).
       this._projectPath = projectPath;
       setTimeout(() => {
-        if (!this.stopped) {
+        if (this.isRuntimeActive(runtimeGeneration)) {
           void this.probeNativePlanModeSupport();
           void this.probeNextTurnPermissionUpdates();
           void this.fetchCompletionEntities(projectPath);
@@ -2941,31 +3001,37 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         this.setStatus("waiting_approval");
       }
 
-      await this.runInputLoop(options);
+      await this.runInputLoop(options, runtimeGeneration);
     } catch (err) {
-      if (!this.stopped) {
-        const message = codexErrorMessage(err);
-        console.error("[codex-process] bootstrap error:", err);
-        const nativePlanModeError =
-          err instanceof CodexNativePlanModeUnsupportedError ||
-          err instanceof CodexNativePlanModeProbeRetryError;
-        this.emitMessage({
-          type: "error",
-          message: nativePlanModeError ? message : `Codex error: ${message}`,
-          ...(err instanceof CodexNativePlanModeUnsupportedError
-            ? { errorCode: "codex_native_plan_mode_unsupported" }
-            : err instanceof CodexNativePlanModeProbeRetryError
-              ? { errorCode: "codex_native_plan_mode_probe_retry" }
-              : {}),
-        });
-        this.emitMessage({
-          type: "result",
-          subtype: "error",
-          error: message,
-          sessionId: this._threadId ?? undefined,
-        });
-      }
-      this.setStatus("idle");
+      if (!this.isRuntimeActive(runtimeGeneration)) return;
+
+      const message = codexErrorMessage(err);
+      console.error("[codex-process] bootstrap error:", err);
+      const nativePlanModeError =
+        err instanceof CodexNativePlanModeUnsupportedError ||
+        err instanceof CodexNativePlanModeProbeRetryError;
+      this.emitMessage({
+        type: "error",
+        message: nativePlanModeError ? message : `Codex error: ${message}`,
+        ...(err instanceof CodexNativePlanModeUnsupportedError
+          ? { errorCode: "codex_native_plan_mode_unsupported" }
+          : err instanceof CodexNativePlanModeProbeRetryError
+            ? { errorCode: "codex_native_plan_mode_probe_retry" }
+            : {}),
+      });
+      this.emitMessage({
+        type: "result",
+        subtype: "error",
+        error: message,
+        sessionId: this._threadId ?? undefined,
+      });
+
+      const failedTransport = this.transport;
+      this.transport = null;
+      this.finalizeStoppedState(
+        err instanceof Error ? err : new Error(String(err)),
+      );
+      failedTransport?.stop();
       this.emit("exit", 1);
     }
   }
@@ -3405,8 +3471,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     });
   }
 
-  private async runInputLoop(options?: CodexStartOptions): Promise<void> {
-    while (!this.stopped) {
+  private async runInputLoop(
+    options?: CodexStartOptions,
+    runtimeGeneration = this._runtimeGeneration,
+  ): Promise<void> {
+    while (this.isRuntimeActive(runtimeGeneration)) {
       const pendingInput = await new Promise<PendingInput>((resolve) => {
         this.inputResolve = resolve;
         // If plan approval arrived before inputResolve was ready, drain it now.
@@ -3419,7 +3488,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         }
         this.emit("input_ready");
       });
-      if (this.stopped || !pendingInput.text) break;
+      if (!this.isRuntimeActive(runtimeGeneration)) break;
+      const hasInputPayload =
+        pendingInput.text.length > 0 ||
+        (pendingInput.images?.length ?? 0) > 0 ||
+        (pendingInput.skills?.length ?? 0) > 0 ||
+        (pendingInput.mentions?.length ?? 0) > 0;
+      if (!hasInputPayload) continue;
       if (!this._threadId) {
         this.emitMessage({
           type: "error",
@@ -3429,6 +3504,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
 
       const { input, tempPaths } = await this.toRpcInput(pendingInput);
+      if (!this.isRuntimeActive(runtimeGeneration)) {
+        await Promise.all(
+          tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
+        );
+        break;
+      }
       if (!input) {
         continue;
       }
@@ -3437,7 +3518,19 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       // frames. Do not let the new turn overtake the persisted update.
       try {
         await this.waitForPendingThreadSettingsUpdates();
+        if (!this.isRuntimeActive(runtimeGeneration)) {
+          await Promise.all(
+            tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
+          );
+          break;
+        }
       } catch (err) {
+        if (!this.isRuntimeActive(runtimeGeneration)) {
+          await Promise.all(
+            tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
+          );
+          break;
+        }
         const message = err instanceof Error ? err.message : String(err);
         this.emitMessage({
           type: "error",
@@ -3463,7 +3556,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.lastTokenUsage = null;
 
       const completion = await new Promise<void>((resolve, reject) => {
-        this.pendingTurnCompletion = { resolve, reject };
+        const turnCompletion = { resolve, reject };
+        this.pendingTurnCompletion = turnCompletion;
 
         const params: Record<string, unknown> = {
           threadId: this._threadId,
@@ -3533,6 +3627,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           pendingInput.clientMessageId,
         )
           .then((result) => {
+            if (!this.isRuntimeActive(runtimeGeneration)) return;
             const turn = (result as Record<string, unknown>).turn as
               Record<string, unknown> | undefined;
             if (typeof turn?.id === "string") {
@@ -3540,11 +3635,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             }
           })
           .catch((err) => {
-            this.pendingTurnCompletion = null;
+            if (this.pendingTurnCompletion === turnCompletion) {
+              this.pendingTurnCompletion = null;
+            }
             reject(err instanceof Error ? err : new Error(String(err)));
           });
       }).catch((err) => {
-        if (!this.stopped) {
+        if (this.isRuntimeActive(runtimeGeneration)) {
           const message = err instanceof Error ? err.message : String(err);
           this.emitMessage({ type: "error", message });
           this.emitMessage({
@@ -3560,6 +3657,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       await Promise.all(
         tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
       );
+      if (!this.isRuntimeActive(runtimeGeneration)) break;
       void completion;
     }
   }

@@ -375,6 +375,187 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("keeps the input loop alive after an empty submission", async () => {
+    const proc = new CodexProcess("linux");
+    let inputReadyCount = 0;
+    proc.on("input_ready", () => {
+      inputReadyCount += 1;
+    });
+
+    const inputLoop = (proc as any).runInputLoop() as Promise<void>;
+    await tick();
+    expect(inputReadyCount).toBe(1);
+
+    proc.sendInput("");
+    await tick();
+    expect(inputReadyCount).toBe(2);
+    expect(proc.isWaitingForInput).toBe(true);
+
+    proc.stop();
+    await inputLoop;
+  });
+
+  it("clears every pending interaction and resolves its mobile card on stop", () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+
+    (proc as any).pendingPlanCompletion = {
+      toolUseId: "plan-stop",
+      planText: "Do the thing",
+    };
+    (proc as any)._pendingPlanInput = "Execute the plan";
+    (proc as any)._idleWhenInteractionsClear = true;
+    (proc as any).lastPlanItemText = "Do the thing";
+    (proc as any).handleServerRequest(
+      "request-command-stop",
+      "item/commandExecution/requestApproval",
+      { itemId: "command-stop", command: "pwd" },
+    );
+    (proc as any).handleServerRequest(
+      "request-question-stop",
+      "item/tool/requestUserInput",
+      {
+        itemId: "question-stop",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Pick one",
+            options: [{ label: "A", description: "Option A" }],
+          },
+        ],
+      },
+    );
+
+    proc.stop();
+
+    expect(proc.getPendingPermission()).toBeUndefined();
+    expect((proc as any)._pendingPlanInput).toBeNull();
+    expect((proc as any)._idleWhenInteractionsClear).toBe(false);
+    expect((proc as any).lastPlanItemText).toBeNull();
+    expect(
+      messages
+        .filter((message) => message.type === "permission_resolved")
+        .map((message) => message.toolUseId)
+        .sort(),
+    ).toEqual(["command-stop", "plan-stop", "question-stop"]);
+  });
+
+  it("stops the active transport when bootstrap fails", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any).prepareLaunch("/tmp/bootstrap-failure");
+    const runtimeGeneration = (proc as any)._runtimeGeneration as number;
+    const transportStop = vi.fn();
+    (proc as any).transport = {
+      isRunning: true,
+      write() {},
+      stop: transportStop,
+      on() {
+        return this;
+      },
+    };
+    vi.spyOn(proc as any, "initializeRpcConnection").mockRejectedValue(
+      new Error("initialize failed"),
+    );
+    const exits: Array<number | null> = [];
+    proc.on("exit", (code) => exits.push(code));
+
+    await (proc as any).bootstrap(
+      "/tmp/bootstrap-failure",
+      undefined,
+      runtimeGeneration,
+    );
+
+    expect(transportStop).toHaveBeenCalledOnce();
+    expect((proc as any).transport).toBeNull();
+    expect(proc.status).toBe("idle");
+    expect(exits).toEqual([1]);
+  });
+
+  it("does not let a stale bootstrap failure stop its replacement", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any).prepareLaunch("/tmp/bootstrap-old");
+    const oldGeneration = (proc as any)._runtimeGeneration as number;
+    let rejectOldBootstrap!: (error: Error) => void;
+    vi.spyOn(proc as any, "initializeRpcConnection").mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectOldBootstrap = reject;
+        }),
+    );
+    const oldTransportStop = vi.fn();
+    (proc as any).transport = {
+      isRunning: true,
+      write() {},
+      stop: oldTransportStop,
+      on() {
+        return this;
+      },
+    };
+    const oldBootstrap = (proc as any).bootstrap(
+      "/tmp/bootstrap-old",
+      undefined,
+      oldGeneration,
+    ) as Promise<void>;
+    await tick();
+
+    proc.stop();
+    (proc as any).prepareLaunch("/tmp/bootstrap-new");
+    const newTransportStop = vi.fn();
+    const newTransport = {
+      isRunning: true,
+      write() {},
+      stop: newTransportStop,
+      on() {
+        return this;
+      },
+    };
+    (proc as any).transport = newTransport;
+    rejectOldBootstrap(new Error("late initialize failure"));
+    await oldBootstrap;
+
+    expect(oldTransportStop).toHaveBeenCalledOnce();
+    expect(newTransportStop).not.toHaveBeenCalled();
+    expect((proc as any).transport).toBe(newTransport);
+
+    proc.stop();
+  });
+
+  it("ignores late transport events from a replaced runtime", async () => {
+    const proc = new CodexProcess("linux");
+    const exits: Array<number | null> = [];
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("exit", (code) => exits.push(code));
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+
+    proc.start("/tmp/transport-old");
+    const oldChild = fakeChildren[0];
+    await tick();
+    proc.start("/tmp/transport-new");
+    const replacementTransport = (proc as any).transport;
+    const exitsAfterReplacement = exits.length;
+    const messagesAfterReplacement = messages.length;
+
+    oldChild.stdout.emit(
+      "data",
+      `${JSON.stringify({ method: "turn/started", params: { turn: { id: "stale" } } })}\n`,
+    );
+    oldChild.emit("exit", 17);
+
+    expect((proc as any).transport).toBe(replacementTransport);
+    expect(exits).toHaveLength(exitsAfterReplacement);
+    expect(messages).toHaveLength(messagesAfterReplacement);
+
+    proc.stop();
+  });
+
   it("does not resume a goal when its pending permission update fails", async () => {
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-failed-settings";
