@@ -160,6 +160,93 @@ describe("SessionCatalogMonitor", () => {
     monitor.close();
   });
 
+  it("reserves watcher capacity across provider roots before descending", async () => {
+    const base = await mkdtemp(join(tmpdir(), "ccpocket-catalog-monitor-"));
+    temporaryDirectories.push(base);
+    const claudeRoot = join(base, "claude-projects");
+    const codexRoot = join(base, "codex-sessions");
+    await mkdir(join(claudeRoot, "project-a"), { recursive: true });
+    await mkdir(codexRoot, { recursive: true });
+    const codexSession = join(codexRoot, "thread-codex.jsonl");
+    await writeFile(codexSession, '{"type":"session_meta"}\n');
+
+    const changes: Array<{
+      provider?: string;
+      providerSessionId?: string;
+    }> = [];
+    const monitor = new SessionCatalogMonitor({
+      roots: [
+        { path: claudeRoot, kind: "claudeProjects", maxDepth: 1 },
+        { path: codexRoot, kind: "codexSessions", maxDepth: 0 },
+      ],
+      maxWatchedDirectories: 2,
+      initialRevision: 0,
+      debounceMs: 10,
+      minIntervalMs: 20,
+      onChanged: (_revision, change) => changes.push(change ?? {}),
+    });
+    await monitor.start();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    changes.length = 0;
+
+    await appendFile(codexSession, '{"type":"event_msg"}\n');
+    await vi.waitFor(
+      () =>
+        expect(changes).toContainEqual({
+          revision: expect.any(Number),
+          provider: "codex",
+          providerSessionId: "thread-codex",
+        }),
+      { timeout: 2_000 },
+    );
+    monitor.close();
+  });
+
+  it("keeps capacity for a provider root that appears after startup", async () => {
+    const base = await mkdtemp(join(tmpdir(), "ccpocket-catalog-monitor-"));
+    temporaryDirectories.push(base);
+    const claudeRoot = join(base, "claude-projects");
+    const codexRoot = join(base, "codex-sessions");
+    await mkdir(join(claudeRoot, "project-a"), { recursive: true });
+
+    const changes: Array<{
+      revision?: number;
+      provider?: string;
+      providerSessionId?: string;
+    }> = [];
+    const monitor = new SessionCatalogMonitor({
+      roots: [
+        { path: claudeRoot, kind: "claudeProjects", maxDepth: 1 },
+        { path: codexRoot, kind: "codexSessions", maxDepth: 0 },
+      ],
+      maxWatchedDirectories: 2,
+      initialRevision: 0,
+      debounceMs: 10,
+      minIntervalMs: 20,
+      retryMs: 20,
+      onChanged: (_revision, change) => changes.push(change ?? {}),
+    });
+    await monitor.start();
+
+    await mkdir(codexRoot);
+    const codexSession = join(codexRoot, "thread-late.jsonl");
+    await writeFile(codexSession, '{"type":"session_meta"}\n');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    changes.length = 0;
+    await appendFile(codexSession, '{"type":"event_msg"}\n');
+
+    await vi.waitFor(
+      () =>
+        expect(changes).toContainEqual({
+          revision: expect.any(Number),
+          provider: "codex",
+          providerSessionId: "thread-late",
+        }),
+      { timeout: 2_000 },
+    );
+    monitor.close();
+  });
+
   it("uses a fresh process epoch by default", () => {
     const before = Date.now();
     const monitor = new SessionCatalogMonitor({

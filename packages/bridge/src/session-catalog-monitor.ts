@@ -1,4 +1,4 @@
-import { watch, type FSWatcher } from "node:fs";
+import { watch, type Dirent, type FSWatcher } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -38,6 +38,11 @@ interface WatchedDirectory {
   watcher: FSWatcher;
   root: CatalogRoot;
   depth: number;
+}
+
+interface RootScanState {
+  root: CatalogRoot;
+  queue: Array<{ path: string; depth: number }>;
 }
 
 const DEFAULT_DEBOUNCE_MS = 750;
@@ -117,14 +122,15 @@ export class SessionCatalogMonitor {
       DEFAULT_MIN_INTERVAL_MS,
     );
     this.retryMs = boundedPositiveInteger(options.retryMs, DEFAULT_RETRY_MS);
+    this.roots = options.roots ?? defaultRoots();
     this.maxWatchedDirectories = Math.max(
       1,
+      this.roots.length,
       boundedPositiveInteger(
         options.maxWatchedDirectories,
         DEFAULT_MAX_WATCHED_DIRECTORIES,
       ),
     );
-    this.roots = options.roots ?? defaultRoots();
     this.revision = normalizeRevisionSeed(options.initialRevision);
   }
 
@@ -173,50 +179,90 @@ export class SessionCatalogMonitor {
 
   private async installMissingWatchers(generation: number): Promise<void> {
     let missingRoot = false;
-    for (const root of this.roots) {
+    const scans: RootScanState[] = this.roots.map((root) => ({
+      root,
+      queue: [],
+    }));
+
+    // Install every provider root before spending capacity on descendants.
+    // Missing roots retain their slot so a late-created Codex directory cannot
+    // be permanently displaced by an already-large Claude project tree.
+    for (const scan of scans) {
       if (!this.active || generation !== this.generation) return;
-      const installed = await this.installRoot(root, generation);
-      missingRoot = missingRoot || !installed;
+      const installed = this.watchDirectory(scan.root.path, scan.root, 0);
+      if (!installed) {
+        missingRoot = true;
+        continue;
+      }
+      if (scan.root.maxDepth === 0) continue;
+      try {
+        const children = await readdir(scan.root.path, { withFileTypes: true });
+        this.enqueueChildDirectories(scan, scan.root.path, 0, children);
+      } catch {
+        missingRoot = true;
+      }
+    }
+
+    const reservedRootSlots = scans.reduce(
+      (count, scan) =>
+        this.watchedDirectories.has(scan.root.path) ? count : count + 1,
+      0,
+    );
+    const descendantLimit =
+      this.maxWatchedDirectories - reservedRootSlots;
+
+    // Consume one descendant from every provider root per round. The previous
+    // root-at-a-time walk let one provider exhaust the global watcher budget
+    // before later roots were considered; rescanning repeated the starvation.
+    while (
+      scans.some((scan) => scan.queue.length > 0) &&
+      this.watchedDirectories.size < descendantLimit
+    ) {
+      for (const scan of scans) {
+        if (!this.active || generation !== this.generation) return;
+        if (this.watchedDirectories.size >= descendantLimit) break;
+        const current = scan.queue.shift();
+        if (!current) continue;
+
+        const installed = this.watchDirectory(
+          current.path,
+          scan.root,
+          current.depth,
+        );
+        if (current.depth === 0 && !installed) missingRoot = true;
+        if (!installed || current.depth >= scan.root.maxDepth) continue;
+
+        try {
+          const children = await readdir(current.path, {
+            withFileTypes: true,
+          });
+          this.enqueueChildDirectories(
+            scan,
+            current.path,
+            current.depth,
+            children,
+          );
+        } catch {
+          continue;
+        }
+      }
     }
     if (missingRoot) this.scheduleRescan(this.retryMs);
   }
 
-  private async installRoot(
-    root: CatalogRoot,
-    generation: number,
-  ): Promise<boolean> {
-    const queue: Array<{ path: string; depth: number }> = [
-      { path: root.path, depth: 0 },
-    ];
-    let rootInstalled = false;
-
-    while (queue.length > 0) {
-      if (!this.active || generation !== this.generation) return rootInstalled;
-      if (this.watchedDirectories.size >= this.maxWatchedDirectories) {
-        return rootInstalled;
-      }
-
-      const current = queue.shift()!;
-      const installed = this.watchDirectory(current.path, root, current.depth);
-      if (current.depth === 0) rootInstalled = installed;
-      if (!installed || current.depth >= root.maxDepth) continue;
-
-      let children;
-      try {
-        children = await readdir(current.path, { withFileTypes: true });
-      } catch {
-        if (current.depth === 0) rootInstalled = false;
-        continue;
-      }
-      for (const child of children) {
-        if (!child.isDirectory() || child.name.startsWith(".")) continue;
-        queue.push({
-          path: join(current.path, child.name),
-          depth: current.depth + 1,
-        });
-      }
+  private enqueueChildDirectories(
+    scan: RootScanState,
+    parent: string,
+    depth: number,
+    children: Dirent[],
+  ): void {
+    for (const child of children) {
+      if (!child.isDirectory() || child.name.startsWith(".")) continue;
+      scan.queue.push({
+        path: join(parent, child.name),
+        depth: depth + 1,
+      });
     }
-    return rootInstalled;
   }
 
   private watchDirectory(
