@@ -225,6 +225,72 @@ void main() {
     });
   });
 
+  group('SessionCatalogBootstrapGate', () {
+    test('retries when session_list arrives before connected', () {
+      final gate = SessionCatalogBootstrapGate();
+
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connecting,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 1,
+        ),
+        isFalse,
+      );
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 1,
+        ),
+        isTrue,
+      );
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 1,
+        ),
+        isFalse,
+      );
+    });
+
+    test('waits for selection and claims each new generation', () {
+      final gate = SessionCatalogBootstrapGate();
+
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: true,
+          hasAuthoritativeSessionList: true,
+          generation: 2,
+        ),
+        isFalse,
+      );
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 2,
+        ),
+        isTrue,
+      );
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 3,
+        ),
+        isTrue,
+      );
+    });
+  });
+
   testWidgets('connection progress stays within the connection picker', (
     tester,
   ) async {

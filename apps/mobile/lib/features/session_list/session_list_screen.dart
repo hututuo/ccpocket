@@ -125,6 +125,32 @@ class SessionHomeConnectionGate {
   }
 }
 
+/// Claims each authoritative session-list generation exactly once after its
+/// transport is ready.
+///
+/// A local Bridge can deliver its first `session_list` frame before
+/// `WebSocketChannel.ready` publishes `connected`. Both event orderings must
+/// converge on the same catalog bootstrap instead of dropping the only trigger.
+class SessionCatalogBootstrapGate {
+  int _lastClaimedGeneration = -1;
+
+  bool claim({
+    required BridgeConnectionState connectionState,
+    required bool selectionPending,
+    required bool hasAuthoritativeSessionList,
+    required int generation,
+  }) {
+    if (connectionState != BridgeConnectionState.connected ||
+        selectionPending ||
+        !hasAuthoritativeSessionList ||
+        generation == _lastClaimedGeneration) {
+      return false;
+    }
+    _lastClaimedGeneration = generation;
+    return true;
+  }
+}
+
 /// Rejects late async work from an older connection selection.
 ///
 /// Health checks, secure-storage reads, and SSH tunnel preparation can all
@@ -366,7 +392,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<List<SessionInfo>>? _sessionListReadinessSub;
   StreamSubscription<void>? _catalogCacheReadinessSub;
   late final SessionArchivePendingRequests _archivePendingRequests;
-  int _lastCatalogBootstrapGeneration = -1;
+  final _catalogBootstrapGate = SessionCatalogBootstrapGate();
 
   // macOS app update
   AppUpdateInfo? _appUpdateInfo;
@@ -416,6 +442,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         _archivePendingRequests.connectionLost();
       }
       _syncConnectionUiGate(bridge, status);
+      _refreshCatalogAfterAuthoritativeSessionList(bridge);
     });
     _catalogReadinessSub = bridge.recentSessionResponses.listen((_) {
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
@@ -976,13 +1003,15 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _refreshCatalogAfterAuthoritativeSessionList(BridgeService bridge) {
     if (!mounted ||
-        _connectionSelectionPending ||
-        !bridge.hasAuthoritativeSessionListForCurrentConnection) {
+        !_catalogBootstrapGate.claim(
+          connectionState: bridge.currentBridgeConnectionState,
+          selectionPending: _connectionSelectionPending,
+          hasAuthoritativeSessionList:
+              bridge.hasAuthoritativeSessionListForCurrentConnection,
+          generation: bridge.authoritativeSessionListGeneration,
+        )) {
       return;
     }
-    final generation = bridge.authoritativeSessionListGeneration;
-    if (generation == _lastCatalogBootstrapGeneration) return;
-    _lastCatalogBootstrapGeneration = generation;
     unawaited(context.read<SessionListCubit>().refreshCatalog());
   }
 
