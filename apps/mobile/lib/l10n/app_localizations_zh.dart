@@ -429,6 +429,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get loadingConversationCatalog => '运行状态已就绪，正在载入绘画目录…';
 
   @override
+  String get bridgeConnectionTakingLonger =>
+      'Bridge 已连接，但绘画目录准备时间超过预期。你可以继续等待，也可以重试或取消。';
+
+  @override
+  String get bridgeConnectionAttemptFailed => 'Bridge 连接没有进入可用状态。请检查地址和凭据后重试。';
+
+  @override
+  String get externalBridgeConnectionTitle => '连接到这个 Bridge？';
+
+  @override
+  String externalBridgeConnectionBody(String target) {
+    return '其他 App 或链接请求连接到 $target。只有确认这是你信任的 Bridge 时才继续。';
+  }
+
+  @override
   String get orConnectManually => '或手动连接';
 
   @override

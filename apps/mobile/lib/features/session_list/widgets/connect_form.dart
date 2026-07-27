@@ -29,6 +29,9 @@ class ConnectForm extends StatelessWidget {
   final VoidCallback? onAddMachine;
   final VoidCallback? onRefreshMachines;
   final String? connectionProgressLabel;
+  final String? connectionNoticeLabel;
+  final VoidCallback? onCancelConnection;
+  final VoidCallback? onRetryConnection;
 
   const ConnectForm({
     super.key,
@@ -51,6 +54,9 @@ class ConnectForm extends StatelessWidget {
     this.onAddMachine,
     this.onRefreshMachines,
     this.connectionProgressLabel,
+    this.connectionNoticeLabel,
+    this.onCancelConnection,
+    this.onRetryConnection,
   });
 
   bool get _hasMachineHandlers =>
@@ -137,8 +143,74 @@ class ConnectForm extends StatelessWidget {
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ),
+                    if (onCancelConnection != null &&
+                        connectionNoticeLabel == null)
+                      TextButton(
+                        key: const ValueKey('cancel_bridge_connection'),
+                        onPressed: onCancelConnection,
+                        child: Text(l.cancel),
+                      ),
                   ],
                 ),
+              ),
+            ),
+          ],
+          if (connectionNoticeLabel != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              key: const ValueKey('bridge_connection_notice'),
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              decoration: BoxDecoration(
+                color: Theme.of(
+                  context,
+                ).colorScheme.errorContainer.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.error.withValues(alpha: 0.25),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        size: 20,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(connectionNoticeLabel!)),
+                    ],
+                  ),
+                  if (onRetryConnection != null || onCancelConnection != null)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Wrap(
+                        spacing: 4,
+                        children: [
+                          if (onCancelConnection != null)
+                            TextButton(
+                              key: const ValueKey(
+                                'cancel_bridge_connection_notice',
+                              ),
+                              onPressed: onCancelConnection,
+                              child: Text(l.cancel),
+                            ),
+                          if (onRetryConnection != null)
+                            FilledButton.tonal(
+                              key: const ValueKey('retry_bridge_connection'),
+                              onPressed: onRetryConnection,
+                              child: Text(l.retry),
+                            ),
+                        ],
+                      ),
+                    ),
+                ],
               ),
             ),
           ],

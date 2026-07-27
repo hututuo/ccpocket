@@ -125,6 +125,48 @@ class SessionHomeConnectionGate {
   }
 }
 
+/// Rejects late async work from an older connection selection.
+///
+/// Health checks, secure-storage reads, and SSH tunnel preparation can all
+/// finish after the user has selected a different Bridge. Only the latest
+/// token may start a transport or persist its target.
+class ConnectionAttemptFence {
+  int _generation = 0;
+
+  int begin() => ++_generation;
+
+  void cancel() => _generation += 1;
+
+  bool isCurrent(int token) => token == _generation;
+}
+
+Future<bool> showExternalBridgeConnectionConfirmation({
+  required BuildContext context,
+  required String target,
+}) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) {
+      final l = AppLocalizations.of(dialogContext);
+      return AlertDialog(
+        title: Text(l.externalBridgeConnectionTitle),
+        content: Text(l.externalBridgeConnectionBody(target)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(l.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(l.connect),
+          ),
+        ],
+      );
+    },
+  );
+  return confirmed ?? false;
+}
+
 bool _sameSessionRequestProject(String expected, String? actual) {
   if (actual == null || actual.isEmpty) return false;
 
@@ -294,8 +336,17 @@ class SessionListScreen extends StatefulWidget {
 
 class _SessionListScreenState extends State<SessionListScreen>
     with WidgetsBindingObserver {
+  static const _connectionReadinessWarningDelay = Duration(seconds: 15);
+
   bool _isAutoConnecting = false;
   final _connectionUiGate = SessionHomeConnectionGate();
+  final _connectionAttemptFence = ConnectionAttemptFence();
+  Timer? _connectionReadinessTimer;
+  Future<void> Function()? _retryConnectionAttempt;
+  bool _connectionAwaitingReadiness = false;
+  bool _connectionTakingLonger = false;
+  bool _connectionAttemptFailed = false;
+  bool _connectionSelectionPending = false;
 
   /// Key to access HomeContent state for programmatic search (Cmd+K).
   final _homeContentKey = GlobalKey<HomeContentState>();
@@ -487,12 +538,107 @@ class _SessionListScreenState extends State<SessionListScreen>
     setState(() => _showMacOSNativeAppBanner = false);
   }
 
+  int _beginConnectionAttempt({
+    required Future<void> Function() retry,
+    required bool autoConnecting,
+  }) {
+    final token = _connectionAttemptFence.begin();
+    _connectionReadinessTimer?.cancel();
+    _retryConnectionAttempt = retry;
+    _connectionUiGate.reset();
+    if (mounted) {
+      setState(() {
+        _isAutoConnecting = autoConnecting;
+        _connectionAwaitingReadiness = false;
+        _connectionTakingLonger = false;
+        _connectionAttemptFailed = false;
+        _connectionSelectionPending = true;
+      });
+    } else {
+      _isAutoConnecting = autoConnecting;
+      _connectionAwaitingReadiness = false;
+      _connectionTakingLonger = false;
+      _connectionAttemptFailed = false;
+      _connectionSelectionPending = true;
+    }
+    return token;
+  }
+
+  bool _isCurrentConnectionAttempt(int token) =>
+      mounted && _connectionAttemptFence.isCurrent(token);
+
+  void _armConnectionReadinessWarning(int token) {
+    if (!_isCurrentConnectionAttempt(token)) return;
+    final bridge = context.read<BridgeService>();
+    if (bridge.hasAuthoritativeSessionListForCurrentConnection &&
+        context.read<SessionListCubit>().hasUsableCatalogForCurrentTarget) {
+      setState(() {
+        _connectionSelectionPending = false;
+        _retryConnectionAttempt = null;
+      });
+      _refreshCatalogAfterAuthoritativeSessionList(bridge);
+      return;
+    }
+    _connectionReadinessTimer?.cancel();
+    setState(() {
+      _connectionSelectionPending = false;
+      _connectionAwaitingReadiness = true;
+      _connectionTakingLonger = false;
+      _connectionAttemptFailed = false;
+    });
+    _refreshCatalogAfterAuthoritativeSessionList(bridge);
+    _connectionReadinessTimer = Timer(
+      _connectionReadinessWarningDelay,
+      () {
+        if (!_isCurrentConnectionAttempt(token) ||
+            !_connectionAwaitingReadiness) {
+          return;
+        }
+        setState(() => _connectionTakingLonger = true);
+      },
+    );
+  }
+
+  void _invalidateConnectionAttempt() {
+    _connectionAttemptFence.cancel();
+    _connectionReadinessTimer?.cancel();
+    _connectionReadinessTimer = null;
+    _retryConnectionAttempt = null;
+    if (!mounted) return;
+    setState(() {
+      _isAutoConnecting = false;
+      _connectionAwaitingReadiness = false;
+      _connectionTakingLonger = false;
+      _connectionAttemptFailed = false;
+      _connectionSelectionPending = false;
+    });
+  }
+
+  Future<void> _retryCurrentConnection() async {
+    final retry = _retryConnectionAttempt;
+    if (retry == null) return;
+    await retry();
+  }
+
   void _onDeepLink() {
     final params = widget.deepLinkNotifier?.value;
     if (params == null) return;
     // Reset notifier to avoid re-triggering
     widget.deepLinkNotifier?.value = null;
-    _connectWithParams(params.serverUrl, params.token);
+    unawaited(_confirmAndConnectExternalBridge(params));
+  }
+
+  Future<void> _confirmAndConnectExternalBridge(
+    ConnectionParams params,
+  ) async {
+    final target = _bridgeLabelFromUrl(params.serverUrl);
+    if (target == null) return;
+    final confirmed = await showExternalBridgeConnectionConfirmation(
+      context: context,
+      target: target,
+    );
+    if (!mounted || !confirmed) return;
+    await _connectWithParams(params.serverUrl, params.token);
   }
 
   Future<void> _loadPreferencesAndAutoConnect() async {
@@ -500,7 +646,11 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (!mounted) return;
     final url = prefs.getString(_prefKeyUrl);
     if (url != null && url.isNotEmpty) {
-      setState(() => _isAutoConnecting = true);
+      final attempt = _beginConnectionAttempt(
+        retry: _loadPreferencesAndAutoConnect,
+        autoConnecting: true,
+      );
+      final bridge = context.read<BridgeService>();
       // Try to get API key from SecureStorage via MachineManagerCubit.
       String? apiKey;
       String? logicalConnectionIdentity;
@@ -509,12 +659,14 @@ class _SessionListScreenState extends State<SessionListScreen>
         if (uri != null) {
           final cubit = context.read<MachineManagerCubit?>();
           final machine = await findAutoConnectMachine(cubit, uri);
+          if (!_isCurrentConnectionAttempt(attempt)) return;
           if (machine != null) {
             logicalConnectionIdentity = 'machine:${machine.id}';
             apiKey = await cubit?.getApiKey(machine.id);
+            if (!_isCurrentConnectionAttempt(attempt)) return;
             if (machine.sshJumpHost?.trim().isNotEmpty == true) {
-              if (!mounted) return;
-              await _connectToMachineConfig(machine);
+              if (!_isCurrentConnectionAttempt(attempt)) return;
+              await _connectToMachineConfig(machine, autoConnecting: true);
               return;
             }
           }
@@ -522,13 +674,20 @@ class _SessionListScreenState extends State<SessionListScreen>
       } catch (_) {
         // Ignore — autoConnect falls back to legacy SharedPreferences.
       }
-      if (!mounted) return;
-      final attempted = await context.read<BridgeService>().autoConnect(
+      if (!_isCurrentConnectionAttempt(attempt)) return;
+      final attempted = await bridge.autoConnect(
         apiKey: apiKey,
         logicalConnectionIdentity: logicalConnectionIdentity,
       );
-      if (!attempted) {
-        setState(() => _isAutoConnecting = false);
+      if (!_isCurrentConnectionAttempt(attempt)) return;
+      if (attempted) {
+        _armConnectionReadinessWarning(attempt);
+      } else {
+        setState(() {
+          _isAutoConnecting = false;
+          _connectionAttemptFailed = true;
+          _connectionSelectionPending = false;
+        });
       }
     }
   }
@@ -536,24 +695,32 @@ class _SessionListScreenState extends State<SessionListScreen>
   Future<void> _connectWithParams(String rawUrl, String? apiKey) async {
     var url = rawUrl.trim();
     if (url.isEmpty) return;
+    final attempt = _beginConnectionAttempt(
+      retry: () => _connectWithParams(rawUrl, apiKey),
+      autoConnecting: false,
+    );
     // Allow shorthand: just IP or host:port without ws:// prefix
     if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
       url = 'ws://$url';
     }
 
     final machineManagerCubit = context.read<MachineManagerCubit?>();
+    final tunnelService = context.read<SshBridgeTunnelService?>();
+    final bridge = context.read<BridgeService>();
     if (machineManagerCubit != null) {
       unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
     }
 
     // Health check before connecting
     final health = await BridgeService.checkHealth(url);
-    if (health == null && mounted) {
+    if (!_isCurrentConnectionAttempt(attempt)) return;
+    if (health == null) {
       final shouldConnect = await _showSetupGuide(url);
+      if (!_isCurrentConnectionAttempt(attempt)) return;
       if (shouldConnect != true) return;
     }
 
-    if (!mounted) return;
+    if (!_isCurrentConnectionAttempt(attempt)) return;
     // Auto-save to Machines on successful health check (or user choosing to connect)
     final trimmedApiKey = apiKey?.trim() ?? '';
     String? logicalConnectionIdentity;
@@ -569,27 +736,27 @@ class _SessionListScreenState extends State<SessionListScreen>
           apiKey: trimmedApiKey.isNotEmpty ? trimmedApiKey : null,
           useSsl: uri.scheme == 'https',
         );
+        if (!_isCurrentConnectionAttempt(attempt)) return;
         logicalConnectionIdentity = 'machine:${machine.id}';
       }
     }
 
-    if (!mounted) return;
-    final tunnelService = context.read<SshBridgeTunnelService?>();
+    if (!_isCurrentConnectionAttempt(attempt)) return;
     if (tunnelService != null) {
       await tunnelService.closeAll();
     }
-    if (!mounted) return;
+    if (!_isCurrentConnectionAttempt(attempt)) return;
     var connectUrl = url;
     if (trimmedApiKey.isNotEmpty) {
       final sep = connectUrl.contains('?') ? '&' : '?';
       connectUrl = '$connectUrl${sep}token=$trimmedApiKey';
     }
-    final bridge = context.read<BridgeService>();
     bridge.connect(
       connectUrl,
       logicalConnectionIdentity: logicalConnectionIdentity,
     );
     bridge.savePreferences(url);
+    _armConnectionReadinessWarning(attempt);
   }
 
   /// Show setup guide when health check fails. Returns true if user wants
@@ -700,6 +867,8 @@ class _SessionListScreenState extends State<SessionListScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _connectionAttemptFence.cancel();
+    _connectionReadinessTimer?.cancel();
     widget.deepLinkNotifier?.removeListener(_onDeepLink);
     NotificationService.instance.removeListener(
       _handleActiveNotificationSessionChanged,
@@ -735,6 +904,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   void _disconnect() {
+    _invalidateConnectionAttempt();
     _connectionUiGate.reset();
     context.read<BridgeService>().disconnect();
     final tunnelService = context.read<SshBridgeTunnelService?>();
@@ -749,30 +919,65 @@ class _SessionListScreenState extends State<SessionListScreen>
     BridgeService bridge,
     BridgeConnectionState state,
   ) {
+    final acceptsCurrentTransport = !_connectionSelectionPending;
     final changed = _connectionUiGate.update(
       state: state,
       targetKey: _connectionUiTargetKey(bridge),
       hasAuthoritativeSessionList:
+          acceptsCurrentTransport &&
           bridge.hasAuthoritativeSessionListForCurrentConnection,
       hasAuthoritativeRecentSessions:
+          acceptsCurrentTransport &&
           context
               .read<SessionListCubit>()
               .hasUsableCatalogForCurrentTarget,
     );
     final isApplicationReady =
+        acceptsCurrentTransport &&
         bridge.hasAuthoritativeSessionListForCurrentConnection &&
         context.read<SessionListCubit>().hasUsableCatalogForCurrentTarget;
+    final readinessCompleted =
+        isApplicationReady &&
+        (_connectionAwaitingReadiness ||
+            _connectionTakingLonger ||
+            _connectionAttemptFailed ||
+            _retryConnectionAttempt != null);
+    final readinessFailed =
+        state == BridgeConnectionState.disconnected &&
+        _connectionAwaitingReadiness;
     final stopAutoConnecting =
         _isAutoConnecting &&
         (isApplicationReady || state == BridgeConnectionState.disconnected);
-    if (!mounted || (!changed && !stopAutoConnecting)) return;
+    if (readinessCompleted || readinessFailed) {
+      _connectionReadinessTimer?.cancel();
+      _connectionReadinessTimer = null;
+    }
+    if (!mounted ||
+        (!changed &&
+            !stopAutoConnecting &&
+            !readinessCompleted &&
+            !readinessFailed)) {
+      return;
+    }
     setState(() {
       if (stopAutoConnecting) _isAutoConnecting = false;
+      if (readinessCompleted) {
+        _connectionAwaitingReadiness = false;
+        _connectionTakingLonger = false;
+        _connectionAttemptFailed = false;
+        _retryConnectionAttempt = null;
+      } else if (readinessFailed) {
+        _connectionAwaitingReadiness = false;
+        _connectionTakingLonger = false;
+        _connectionAttemptFailed = true;
+      }
     });
   }
 
   void _refreshCatalogAfterAuthoritativeSessionList(BridgeService bridge) {
-    if (!mounted || !bridge.hasAuthoritativeSessionListForCurrentConnection) {
+    if (!mounted ||
+        _connectionSelectionPending ||
+        !bridge.hasAuthoritativeSessionListForCurrentConnection) {
       return;
     }
     final generation = bridge.authoritativeSessionListGeneration;
@@ -2110,12 +2315,14 @@ class _SessionListScreenState extends State<SessionListScreen>
     final bridge = context.read<BridgeService>();
     final hasAuthoritativeSessionList =
         widget.debugRecentSessions != null ||
-        bridge.hasAuthoritativeSessionListForCurrentConnection;
+        (!_connectionSelectionPending &&
+            bridge.hasAuthoritativeSessionListForCurrentConnection);
     final hasAuthoritativeRecentSessions =
         widget.debugRecentSessions != null ||
-        context
-            .read<SessionListCubit>()
-            .hasUsableCatalogForCurrentTarget;
+        (!_connectionSelectionPending &&
+            context
+                .read<SessionListCubit>()
+                .hasUsableCatalogForCurrentTarget);
     final connectionState = widget.debugRecentSessions != null
         ? BridgeConnectionState.connected
         : _connectionUiGate.presentationState(
@@ -2150,6 +2357,11 @@ class _SessionListScreenState extends State<SessionListScreen>
       _ when _isAutoConnecting => l.connectingToBridge,
       _ => null,
     };
+    final connectionNoticeLabel = _connectionAttemptFailed
+        ? l.bridgeConnectionAttemptFailed
+        : _connectionTakingLonger
+        ? l.bridgeConnectionTakingLonger
+        : null;
 
     // Try to get MachineManagerCubit if available
     final machineManagerCubit = context.watch<MachineManagerCubit?>();
@@ -2206,6 +2418,17 @@ class _SessionListScreenState extends State<SessionListScreen>
                       machineManagerCubit: machineManagerCubit,
                       connectedBridgeLabel: connectedBridgeLabel,
                       connectionProgressLabel: connectionProgressLabel,
+                      connectionNoticeLabel: connectionNoticeLabel,
+                      onCancelConnection:
+                          connectionProgressLabel != null ||
+                              connectionNoticeLabel != null
+                          ? _disconnect
+                          : null,
+                      onRetryConnection:
+                          connectionNoticeLabel != null &&
+                              _retryConnectionAttempt != null
+                          ? () => unawaited(_retryCurrentConnection())
+                          : null,
                     ),
                   ),
                 ),
@@ -2323,6 +2546,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     required MachineManagerCubit? machineManagerCubit,
     required String? connectedBridgeLabel,
     required String? connectionProgressLabel,
+    required String? connectionNoticeLabel,
+    required VoidCallback? onCancelConnection,
+    required VoidCallback? onRetryConnection,
   }) {
     final chrome = resolveWorkspacePaneChrome(
       platform: Theme.of(context).platform,
@@ -2343,6 +2569,9 @@ class _SessionListScreenState extends State<SessionListScreen>
       machineManagerCubit: machineManagerCubit,
       connectedBridgeLabel: connectedBridgeLabel,
       connectionProgressLabel: connectionProgressLabel,
+      connectionNoticeLabel: connectionNoticeLabel,
+      onCancelConnection: onCancelConnection,
+      onRetryConnection: onRetryConnection,
     );
 
     if (widget.embedded) {
@@ -2446,6 +2675,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     required MachineManagerCubit? machineManagerCubit,
     required String? connectedBridgeLabel,
     required String? connectionProgressLabel,
+    required String? connectionNoticeLabel,
+    required VoidCallback? onCancelConnection,
+    required VoidCallback? onRetryConnection,
   }) {
     if (showConnectedUI) {
       final bridge = context.read<BridgeService>();
@@ -2664,6 +2896,9 @@ class _SessionListScreenState extends State<SessionListScreen>
       onAddMachine: _addMachine,
       onRefreshMachines: () => machineManagerCubit?.refreshAll(),
       connectionProgressLabel: connectionProgressLabel,
+      connectionNoticeLabel: connectionNoticeLabel,
+      onCancelConnection: onCancelConnection,
+      onRetryConnection: onRetryConnection,
     );
   }
 
@@ -2749,8 +2984,19 @@ class _SessionListScreenState extends State<SessionListScreen>
     await _connectToMachineConfig(m.machine);
   }
 
-  Future<void> _connectToMachineConfig(Machine machine) async {
+  Future<void> _connectToMachineConfig(
+    Machine machine, {
+    bool autoConnecting = false,
+  }) async {
+    final attempt = _beginConnectionAttempt(
+      retry: () =>
+          _connectToMachineConfig(machine, autoConnecting: autoConnecting),
+      autoConnecting: autoConnecting,
+    );
     final cubit = context.read<MachineManagerCubit>();
+    final bridge = context.read<BridgeService>();
+    final tunnelService = context.read<SshBridgeTunnelService?>();
+    final messenger = ScaffoldMessenger.of(context);
     unawaited(cubit.refreshLatestBridgeVersionIfStale());
     late final String wsUrl;
     try {
@@ -2759,14 +3005,14 @@ class _SessionListScreenState extends State<SessionListScreen>
         promptForPassword: () => _promptForPassword(machine.displayName),
       );
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(e.toString())));
+      if (_isCurrentConnectionAttempt(attempt)) {
+        messenger.showSnackBar(SnackBar(content: Text(e.toString())));
       }
       return;
     }
+    if (!_isCurrentConnectionAttempt(attempt)) return;
     final apiKey = await cubit.getApiKey(machine.id);
+    if (!_isCurrentConnectionAttempt(attempt)) return;
 
     // Record connection to update lastConnected
     await cubit.recordConnection(
@@ -2776,17 +3022,16 @@ class _SessionListScreenState extends State<SessionListScreen>
       useSsl: machine.useSsl,
     );
 
-    if (!mounted) return;
-    final bridge = context.read<BridgeService>();
+    if (!_isCurrentConnectionAttempt(attempt)) return;
     bridge.connect(
       wsUrl,
       logicalConnectionIdentity: 'machine:${machine.id}',
     );
     bridge.savePreferences(machine.wsUrl);
-    final tunnelService = context.read<SshBridgeTunnelService?>();
     if (tunnelService != null) {
       unawaited(tunnelService.closeAllExcept(machine.id));
     }
+    _armConnectionReadinessWarning(attempt);
   }
 
   void _toggleFavorite(MachineWithStatus m) {
@@ -3161,6 +3406,9 @@ class _ConnectFormWidget extends StatelessWidget {
   final VoidCallback onAddMachine;
   final VoidCallback? onRefreshMachines;
   final String? connectionProgressLabel;
+  final String? connectionNoticeLabel;
+  final VoidCallback? onCancelConnection;
+  final VoidCallback? onRetryConnection;
 
   const _ConnectFormWidget({
     required this.discoveredServers,
@@ -3181,6 +3429,9 @@ class _ConnectFormWidget extends StatelessWidget {
     required this.onAddMachine,
     this.onRefreshMachines,
     this.connectionProgressLabel,
+    this.connectionNoticeLabel,
+    this.onCancelConnection,
+    this.onRetryConnection,
   });
 
   @override
@@ -3205,6 +3456,9 @@ class _ConnectFormWidget extends StatelessWidget {
       onAddMachine: onAddMachine,
       onRefreshMachines: onRefreshMachines,
       connectionProgressLabel: connectionProgressLabel,
+      connectionNoticeLabel: connectionNoticeLabel,
+      onCancelConnection: onCancelConnection,
+      onRetryConnection: onRetryConnection,
     );
   }
 }

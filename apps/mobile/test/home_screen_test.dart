@@ -205,6 +205,26 @@ void main() {
     });
   });
 
+  group('ConnectionAttemptFence', () {
+    test('only the latest async connection attempt can finish', () {
+      final fence = ConnectionAttemptFence();
+      final first = fence.begin();
+      final second = fence.begin();
+
+      expect(fence.isCurrent(first), isFalse);
+      expect(fence.isCurrent(second), isTrue);
+    });
+
+    test('cancel invalidates the currently selected connection', () {
+      final fence = ConnectionAttemptFence();
+      final attempt = fence.begin();
+
+      fence.cancel();
+
+      expect(fence.isCurrent(attempt), isFalse);
+    });
+  });
+
   testWidgets('connection progress stays within the connection picker', (
     tester,
   ) async {
@@ -227,6 +247,86 @@ void main() {
     expect(find.byKey(const ValueKey('bridge_connection_progress')), findsOne);
     expect(find.text('正在载入绘画目录…'), findsOne);
     expect(find.text('连接到 Bridge 服务'), findsOne);
+  });
+
+  testWidgets('connection picker exposes cancel and retry without navigating', (
+    tester,
+  ) async {
+    var cancelled = false;
+    var retried = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('zh'),
+        home: Scaffold(
+          body: ConnectForm(
+            discoveredServers: const [],
+            onScanQrCode: () {},
+            onConnectToDiscovered: (_) {},
+            connectionProgressLabel: '正在载入绘画目录…',
+            connectionNoticeLabel: '绘画目录准备时间超过预期',
+            onCancelConnection: () => cancelled = true,
+            onRetryConnection: () => retried = true,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('bridge_connection_progress')), findsOne);
+    expect(find.byKey(const ValueKey('bridge_connection_notice')), findsOne);
+
+    final retry = find.byKey(const ValueKey('retry_bridge_connection'));
+    await tester.ensureVisible(retry);
+    await tester.tap(retry);
+    await tester.pump();
+    expect(retried, isTrue);
+
+    final cancel = find.byKey(
+      const ValueKey('cancel_bridge_connection_notice'),
+    );
+    await tester.ensureVisible(cancel);
+    await tester.tap(cancel);
+    await tester.pump();
+    expect(cancelled, isTrue);
+    expect(find.text('连接到 Bridge 服务'), findsOne);
+  });
+
+  testWidgets('external connection links require explicit confirmation', (
+    tester,
+  ) async {
+    bool? confirmed;
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('zh'),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () async {
+                confirmed = await showExternalBridgeConnectionConfirmation(
+                  context: context,
+                  target: '100.64.1.2:8765',
+                );
+              },
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('连接到这个 Bridge？'), findsOne);
+    expect(find.textContaining('100.64.1.2:8765'), findsOne);
+    expect(find.textContaining('token='), findsNothing);
+
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(confirmed, isFalse);
   });
 
   group('projectCounts', () {

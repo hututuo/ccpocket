@@ -432,6 +432,22 @@ class AppLocalizationsJa extends AppLocalizations {
   String get loadingConversationCatalog => 'セッション状態の準備が完了しました。会話一覧を読み込んでいます…';
 
   @override
+  String get bridgeConnectionTakingLonger =>
+      'Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。';
+
+  @override
+  String get bridgeConnectionAttemptFailed =>
+      'Bridge 接続を利用可能な状態にできませんでした。アドレスと認証情報を確認して再試行してください。';
+
+  @override
+  String get externalBridgeConnectionTitle => 'この Bridge に接続しますか？';
+
+  @override
+  String externalBridgeConnectionBody(String target) {
+    return '別のアプリまたはリンクから $target への接続が要求されました。信頼できる Bridge の場合のみ続行してください。';
+  }
+
+  @override
   String get orConnectManually => 'または手動で接続';
 
   @override

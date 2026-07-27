@@ -433,6 +433,22 @@ class AppLocalizationsKo extends AppLocalizations {
   String get loadingConversationCatalog => '세션 상태가 준비되었습니다. 대화 목록을 불러오는 중…';
 
   @override
+  String get bridgeConnectionTakingLonger =>
+      'Bridge에는 연결되었지만 대화 목록 준비가 예상보다 오래 걸리고 있습니다. 계속 기다리거나 재시도 또는 취소할 수 있습니다.';
+
+  @override
+  String get bridgeConnectionAttemptFailed =>
+      'Bridge 연결이 사용 가능한 상태가 되지 않았습니다. 주소와 인증 정보를 확인한 후 다시 시도하세요.';
+
+  @override
+  String get externalBridgeConnectionTitle => '이 Bridge에 연결할까요?';
+
+  @override
+  String externalBridgeConnectionBody(String target) {
+    return '다른 앱 또는 링크에서 $target 연결을 요청했습니다. 신뢰할 수 있는 Bridge인 경우에만 계속하세요.';
+  }
+
+  @override
   String get orConnectManually => '또는 수동으로 연결';
 
   @override

@@ -439,6 +439,22 @@ class AppLocalizationsEn extends AppLocalizations {
       'Session status is ready. Loading your conversation catalog…';
 
   @override
+  String get bridgeConnectionTakingLonger =>
+      'The Bridge is connected, but the conversation catalog is taking longer than expected. You can keep waiting, retry, or cancel.';
+
+  @override
+  String get bridgeConnectionAttemptFailed =>
+      'The Bridge connection did not become ready. Check the address and credentials, then retry.';
+
+  @override
+  String get externalBridgeConnectionTitle => 'Connect to this Bridge?';
+
+  @override
+  String externalBridgeConnectionBody(String target) {
+    return 'Another app or link requested a connection to $target. Continue only if you recognize and trust this Bridge.';
+  }
+
+  @override
   String get orConnectManually => 'or connect manually';
 
   @override

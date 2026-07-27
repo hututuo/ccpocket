@@ -900,6 +900,30 @@ abstract class AppLocalizations {
   /// **'セッション状態の準備が完了しました。会話一覧を読み込んでいます…'**
   String get loadingConversationCatalog;
 
+  /// No description provided for @bridgeConnectionTakingLonger.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。'**
+  String get bridgeConnectionTakingLonger;
+
+  /// No description provided for @bridgeConnectionAttemptFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge 接続を利用可能な状態にできませんでした。アドレスと認証情報を確認して再試行してください。'**
+  String get bridgeConnectionAttemptFailed;
+
+  /// No description provided for @externalBridgeConnectionTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'この Bridge に接続しますか？'**
+  String get externalBridgeConnectionTitle;
+
+  /// No description provided for @externalBridgeConnectionBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'別のアプリまたはリンクから {target} への接続が要求されました。信頼できる Bridge の場合のみ続行してください。'**
+  String externalBridgeConnectionBody(String target);
+
   /// No description provided for @orConnectManually.
   ///
   /// In ja, this message translates to:
