@@ -1360,6 +1360,291 @@ class AppLocalizationsEn extends AppLocalizations {
   String get toolResult => 'Tool Result';
 
   @override
+  String toolDisplayRead(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Read file',
+      'other': 'Read',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadSkill(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Read Skill',
+      'other': 'Read Skill',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayFileChange(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'File change',
+      'completed': 'Edited files',
+      'result': 'File change completed',
+      'other': 'File change',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCommand(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Run command',
+      'completed': 'Ran command',
+      'result': 'Terminal command completed',
+      'other': 'Run command',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayMultipleCommands(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Run multiple commands',
+      'completed': 'Ran multiple commands',
+      'result': 'Commands completed',
+      'other': 'Run multiple commands',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySearchFiles(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Search files',
+      'other': 'Searched files',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayListFiles(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'List files',
+      'other': 'Listed files',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySearchWeb(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Search web',
+      'other': 'Searched the web',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadWebPage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Read web page',
+      'other': 'Read web page',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayStartSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Start sub-agent',
+      'other': 'Started sub-agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayGuideSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Guide sub-agent',
+      'other': 'Guided sub-agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayResumeSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Resume sub-agent',
+      'other': 'Resumed sub-agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayWaitForSubAgents(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Wait for sub-agents',
+      'other': 'Waited for sub-agents',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCloseSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Close sub-agent',
+      'other': 'Closed sub-agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayInterruptSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Interrupt sub-agent',
+      'other': 'Interrupted sub-agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayListSubAgents(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'List sub-agents',
+      'other': 'Listed sub-agents',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayInteractWithSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Interact with sub-agent',
+      'other': 'Interacted with sub-agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySubAgentActivity(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Sub-agent activity',
+      'other': 'Sub-agent activity updated',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCompactContext(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Compact context',
+      'other': 'Compacted context',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayUpdatePlan(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Update plan',
+      'other': 'Updated plan',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCreateGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Create goal',
+      'other': 'Created goal',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Read goal',
+      'other': 'Read goal',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayUpdateGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Update goal',
+      'other': 'Updated goal',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayRequestUserInput(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Request user input',
+      'other': 'Requested user input',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayWait(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Wait',
+      'other': 'Wait completed',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayViewImage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'View image',
+      'other': 'Viewed image',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayGenerateImage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Generate image',
+      'other': 'Image generation completed',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String get chatProcessRunningTitle => 'Thinking & acting';
+
+  @override
+  String get chatProcessTitle => 'Thinking & actions';
+
+  @override
+  String chatProcessItemCount(int count) {
+    return '$count items';
+  }
+
+  @override
+  String get chatProcessIntermediateUpdates => 'Intermediate updates';
+
+  @override
+  String chatProcessUpdateCount(int count) {
+    return '$count updates';
+  }
+
+  @override
+  String chatProcessUpdateDetailCount(int count, int detailCount) {
+    return '$count updates · $detailCount details';
+  }
+
+  @override
+  String get chatProcessCurrentProgress => 'Current progress';
+
+  @override
+  String get chatProcessLive => 'Live';
+
+  @override
+  String get chatProcessLatestTool => 'Latest tool';
+
+  @override
+  String get chatProcessRunningTool => 'Running';
+
+  @override
   String get answered => 'Answered';
 
   @override

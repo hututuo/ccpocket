@@ -2484,6 +2484,228 @@ abstract class AppLocalizations {
   /// **'ツール結果'**
   String get toolResult;
 
+  /// No description provided for @toolDisplayRead.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{ファイルを読み取り} other{読み取り済み}}'**
+  String toolDisplayRead(String phase);
+
+  /// No description provided for @toolDisplayReadSkill.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{Skill を読み取り} other{Skill を読み取り済み}}'**
+  String toolDisplayReadSkill(String phase);
+
+  /// No description provided for @toolDisplayFileChange.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{ファイルを変更} completed{ファイルを変更しました} result{ファイル変更が完了しました} other{ファイルを変更}}'**
+  String toolDisplayFileChange(String phase);
+
+  /// No description provided for @toolDisplayCommand.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{コマンドを実行} completed{コマンドを実行しました} result{ターミナルコマンドが完了しました} other{コマンドを実行}}'**
+  String toolDisplayCommand(String phase);
+
+  /// No description provided for @toolDisplayMultipleCommands.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{複数のコマンドを実行} completed{複数のコマンドを実行しました} result{複数のコマンドが完了しました} other{複数のコマンドを実行}}'**
+  String toolDisplayMultipleCommands(String phase);
+
+  /// No description provided for @toolDisplaySearchFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{ファイルを検索} other{ファイルを検索しました}}'**
+  String toolDisplaySearchFiles(String phase);
+
+  /// No description provided for @toolDisplayListFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{ファイル一覧を表示} other{ファイル一覧を表示しました}}'**
+  String toolDisplayListFiles(String phase);
+
+  /// No description provided for @toolDisplaySearchWeb.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{ウェブを検索} other{ウェブを検索しました}}'**
+  String toolDisplaySearchWeb(String phase);
+
+  /// No description provided for @toolDisplayReadWebPage.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{ウェブページを読み取り} other{ウェブページを読み取りました}}'**
+  String toolDisplayReadWebPage(String phase);
+
+  /// No description provided for @toolDisplayStartSubAgent.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent を開始} other{サブ Agent を開始しました}}'**
+  String toolDisplayStartSubAgent(String phase);
+
+  /// No description provided for @toolDisplayGuideSubAgent.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent を誘導} other{サブ Agent を誘導しました}}'**
+  String toolDisplayGuideSubAgent(String phase);
+
+  /// No description provided for @toolDisplayResumeSubAgent.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent を再開} other{サブ Agent を再開しました}}'**
+  String toolDisplayResumeSubAgent(String phase);
+
+  /// No description provided for @toolDisplayWaitForSubAgents.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent を待機} other{サブ Agent を待機しました}}'**
+  String toolDisplayWaitForSubAgents(String phase);
+
+  /// No description provided for @toolDisplayCloseSubAgent.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent を終了} other{サブ Agent を終了しました}}'**
+  String toolDisplayCloseSubAgent(String phase);
+
+  /// No description provided for @toolDisplayInterruptSubAgent.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent を中断} other{サブ Agent を中断しました}}'**
+  String toolDisplayInterruptSubAgent(String phase);
+
+  /// No description provided for @toolDisplayListSubAgents.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent を表示} other{サブ Agent を表示しました}}'**
+  String toolDisplayListSubAgents(String phase);
+
+  /// No description provided for @toolDisplayInteractWithSubAgent.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent と対話} other{サブ Agent と対話しました}}'**
+  String toolDisplayInteractWithSubAgent(String phase);
+
+  /// No description provided for @toolDisplaySubAgentActivity.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{サブ Agent のアクティビティ} other{サブ Agent のアクティビティを更新しました}}'**
+  String toolDisplaySubAgentActivity(String phase);
+
+  /// No description provided for @toolDisplayCompactContext.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{コンテキストを圧縮} other{コンテキストを圧縮しました}}'**
+  String toolDisplayCompactContext(String phase);
+
+  /// No description provided for @toolDisplayUpdatePlan.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{計画を更新} other{計画を更新しました}}'**
+  String toolDisplayUpdatePlan(String phase);
+
+  /// No description provided for @toolDisplayCreateGoal.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{目標を作成} other{目標を作成しました}}'**
+  String toolDisplayCreateGoal(String phase);
+
+  /// No description provided for @toolDisplayReadGoal.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{目標を確認} other{目標を確認しました}}'**
+  String toolDisplayReadGoal(String phase);
+
+  /// No description provided for @toolDisplayUpdateGoal.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{目標を更新} other{目標を更新しました}}'**
+  String toolDisplayUpdateGoal(String phase);
+
+  /// No description provided for @toolDisplayRequestUserInput.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{ユーザー入力を要求} other{ユーザー入力を要求しました}}'**
+  String toolDisplayRequestUserInput(String phase);
+
+  /// No description provided for @toolDisplayWait.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{待機} other{待機が完了しました}}'**
+  String toolDisplayWait(String phase);
+
+  /// No description provided for @toolDisplayViewImage.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{画像を表示} other{画像を表示しました}}'**
+  String toolDisplayViewImage(String phase);
+
+  /// No description provided for @toolDisplayGenerateImage.
+  ///
+  /// In ja, this message translates to:
+  /// **'{phase, select, action{画像を生成} other{画像生成が完了しました}}'**
+  String toolDisplayGenerateImage(String phase);
+
+  /// No description provided for @chatProcessRunningTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'思考・実行中'**
+  String get chatProcessRunningTitle;
+
+  /// No description provided for @chatProcessTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'思考と操作'**
+  String get chatProcessTitle;
+
+  /// No description provided for @chatProcessItemCount.
+  ///
+  /// In ja, this message translates to:
+  /// **'{count} 件'**
+  String chatProcessItemCount(int count);
+
+  /// No description provided for @chatProcessIntermediateUpdates.
+  ///
+  /// In ja, this message translates to:
+  /// **'途中経過'**
+  String get chatProcessIntermediateUpdates;
+
+  /// No description provided for @chatProcessUpdateCount.
+  ///
+  /// In ja, this message translates to:
+  /// **'{count} 件の更新'**
+  String chatProcessUpdateCount(int count);
+
+  /// No description provided for @chatProcessUpdateDetailCount.
+  ///
+  /// In ja, this message translates to:
+  /// **'{count} 件の更新 · {detailCount} 件の詳細'**
+  String chatProcessUpdateDetailCount(int count, int detailCount);
+
+  /// No description provided for @chatProcessCurrentProgress.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在の進捗'**
+  String get chatProcessCurrentProgress;
+
+  /// No description provided for @chatProcessLive.
+  ///
+  /// In ja, this message translates to:
+  /// **'進行中'**
+  String get chatProcessLive;
+
+  /// No description provided for @chatProcessLatestTool.
+  ///
+  /// In ja, this message translates to:
+  /// **'最新のツール'**
+  String get chatProcessLatestTool;
+
+  /// No description provided for @chatProcessRunningTool.
+  ///
+  /// In ja, this message translates to:
+  /// **'実行中'**
+  String get chatProcessRunningTool;
+
   /// No description provided for @answered.
   ///
   /// In ja, this message translates to:

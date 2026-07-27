@@ -1319,6 +1319,291 @@ class AppLocalizationsKo extends AppLocalizations {
   String get toolResult => '도구 결과';
 
   @override
+  String toolDisplayRead(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '파일 읽기',
+      'other': '파일을 읽음',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadSkill(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Skill 읽기',
+      'other': 'Skill을 읽음',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayFileChange(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '파일 변경',
+      'completed': '파일을 수정함',
+      'result': '파일 변경 완료',
+      'other': '파일 변경',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCommand(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '명령 실행',
+      'completed': '명령을 실행함',
+      'result': '터미널 명령 완료',
+      'other': '명령 실행',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayMultipleCommands(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '여러 명령 실행',
+      'completed': '여러 명령을 실행함',
+      'result': '여러 명령 완료',
+      'other': '여러 명령 실행',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySearchFiles(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '파일 검색',
+      'other': '파일을 검색함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayListFiles(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '파일 목록 보기',
+      'other': '파일 목록을 확인함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySearchWeb(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '웹 검색',
+      'other': '웹을 검색함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadWebPage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '웹 페이지 읽기',
+      'other': '웹 페이지를 읽음',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayStartSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent 시작',
+      'other': '하위 Agent를 시작함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayGuideSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent 안내',
+      'other': '하위 Agent를 안내함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayResumeSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent 재개',
+      'other': '하위 Agent를 재개함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayWaitForSubAgents(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent 대기',
+      'other': '하위 Agent를 기다림',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCloseSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent 종료',
+      'other': '하위 Agent를 종료함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayInterruptSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent 중단',
+      'other': '하위 Agent를 중단함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayListSubAgents(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent 보기',
+      'other': '하위 Agent를 확인함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayInteractWithSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent와 상호작용',
+      'other': '하위 Agent와 상호작용함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySubAgentActivity(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '하위 Agent 활동',
+      'other': '하위 Agent 활동 업데이트',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCompactContext(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '컨텍스트 압축',
+      'other': '컨텍스트를 압축함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayUpdatePlan(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '계획 업데이트',
+      'other': '계획을 업데이트함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCreateGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '목표 생성',
+      'other': '목표를 생성함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '목표 보기',
+      'other': '목표를 확인함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayUpdateGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '목표 업데이트',
+      'other': '목표를 업데이트함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayRequestUserInput(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '사용자 입력 요청',
+      'other': '사용자 입력을 요청함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayWait(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '대기',
+      'other': '대기 완료',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayViewImage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '이미지 보기',
+      'other': '이미지를 확인함',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayGenerateImage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '이미지 생성',
+      'other': '이미지 생성 완료',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String get chatProcessRunningTitle => '생각하고 실행하는 중';
+
+  @override
+  String get chatProcessTitle => '생각과 작업';
+
+  @override
+  String chatProcessItemCount(int count) {
+    return '$count개';
+  }
+
+  @override
+  String get chatProcessIntermediateUpdates => '중간 진행';
+
+  @override
+  String chatProcessUpdateCount(int count) {
+    return '업데이트 $count개';
+  }
+
+  @override
+  String chatProcessUpdateDetailCount(int count, int detailCount) {
+    return '업데이트 $count개 · 세부 정보 $detailCount개';
+  }
+
+  @override
+  String get chatProcessCurrentProgress => '현재 진행 상황';
+
+  @override
+  String get chatProcessLive => '진행 중';
+
+  @override
+  String get chatProcessLatestTool => '최근 도구';
+
+  @override
+  String get chatProcessRunningTool => '실행 중';
+
+  @override
   String get answered => '응답 완료';
 
   @override

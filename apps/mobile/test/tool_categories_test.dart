@@ -1,44 +1,43 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/widgets.dart';
 
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/utils/tool_categories.dart';
 
 void main() {
   group('Codex semantic tool labels', () {
     test('covers command, skill, sub-agent, and compaction activities', () {
-      expect(getToolDisplayName('MultiCommand', zh: true), '运行多个命令');
-      expect(getToolDisplayName('ReadSkill', zh: true), '读取 Skill');
-      expect(getToolDisplayName('SpawnAgent', zh: true), '开启子 Agent');
-      expect(getToolDisplayName('ResumeAgent', zh: true), '继续子 Agent');
-      expect(getToolDisplayName('InterruptAgent', zh: true), '中断子 Agent');
-      expect(getToolDisplayName('ListAgents', zh: true), '查看子 Agent');
-      expect(
-        getToolDisplayName('SubAgentInteraction', zh: true),
-        '与子 Agent 交互',
-      );
-      expect(getToolDisplayName('ContextCompaction', zh: true), '压缩上下文');
-      expect(getToolDisplayName('UpdatePlan', zh: true), '更新计划');
-      expect(getToolDisplayName('RequestUserInput', zh: true), '请求用户输入');
+      final l = lookupAppLocalizations(const Locale('zh'));
+      expect(getToolDisplayName('MultiCommand', l10n: l), '运行多个命令');
+      expect(getToolDisplayName('ReadSkill', l10n: l), '读取 Skill');
+      expect(getToolDisplayName('SpawnAgent', l10n: l), '开启子 Agent');
+      expect(getToolDisplayName('ResumeAgent', l10n: l), '继续子 Agent');
+      expect(getToolDisplayName('InterruptAgent', l10n: l), '中断子 Agent');
+      expect(getToolDisplayName('ListAgents', l10n: l), '查看子 Agent');
+      expect(getToolDisplayName('SubAgentInteraction', l10n: l), '与子 Agent 交互');
+      expect(getToolDisplayName('ContextCompaction', l10n: l), '压缩上下文');
+      expect(getToolDisplayName('UpdatePlan', l10n: l), '更新计划');
+      expect(getToolDisplayName('RequestUserInput', l10n: l), '请求用户输入');
       expect(categorizeToolName('InterruptAgent'), ToolCategory.subagent);
       expect(categorizeToolName('SubAgentInteraction'), ToolCategory.subagent);
       expect(categorizeToolName('UpdatePlan'), ToolCategory.compact);
     });
 
     test('keeps unknown future tool names intact', () {
-      expect(
-        getToolDisplayName('FutureCodexTool', zh: false),
-        'FutureCodexTool',
-      );
+      final l = lookupAppLocalizations(const Locale('en'));
+      expect(getToolDisplayName('FutureCodexTool', l10n: l), 'FutureCodexTool');
     });
 
     test('matches Codex lifecycle labels for exploration and commands', () {
+      final l = lookupAppLocalizations(const Locale('zh'));
       expect(
-        getToolDisplayName('Read', zh: true, phase: ToolDisplayPhase.completed),
+        getToolDisplayName('Read', l10n: l, phase: ToolDisplayPhase.completed),
         '已读取',
       );
       expect(
         getToolDisplayName(
           'ListFiles',
-          zh: true,
+          l10n: l,
           phase: ToolDisplayPhase.completed,
         ),
         '已列出文件',
@@ -46,18 +45,42 @@ void main() {
       expect(
         getToolDisplayName(
           'Search',
-          zh: true,
+          l10n: l,
           phase: ToolDisplayPhase.completed,
         ),
         '已搜索',
       );
       expect(
-        getToolDisplayName('Bash', zh: true, phase: ToolDisplayPhase.completed),
+        getToolDisplayName('Bash', l10n: l, phase: ToolDisplayPhase.completed),
         '已运行命令',
       );
       expect(
-        getToolDisplayName('Bash', zh: true, phase: ToolDisplayPhase.result),
+        getToolDisplayName('Bash', l10n: l, phase: ToolDisplayPhase.result),
         '终端命令已完成',
+      );
+    });
+
+    test('localizes tool names for Japanese and Korean', () {
+      final ja = lookupAppLocalizations(const Locale('ja'));
+      final ko = lookupAppLocalizations(const Locale('ko'));
+
+      expect(getToolDisplayName('Bash', l10n: ja), 'コマンドを実行');
+      expect(
+        getToolDisplayName(
+          'SpawnAgent',
+          l10n: ja,
+          phase: ToolDisplayPhase.completed,
+        ),
+        'サブ Agent を開始しました',
+      );
+      expect(getToolDisplayName('WebSearch', l10n: ko), '웹 검색');
+      expect(
+        getToolDisplayName(
+          'ImageGeneration',
+          l10n: ko,
+          phase: ToolDisplayPhase.result,
+        ),
+        '이미지 생성 완료',
       );
     });
   });

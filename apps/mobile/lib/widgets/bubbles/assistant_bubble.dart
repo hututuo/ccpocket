@@ -919,7 +919,7 @@ class _ToolUseTileState extends State<ToolUseTile> {
   Widget build(BuildContext context) {
     final displayName = getToolDisplayName(
       widget.name,
-      zh: Localizations.localeOf(context).languageCode == 'zh',
+      l10n: AppLocalizations.of(context),
       input: widget.input,
     );
     if (_expansion == ToolUseExpansion.collapsed) {

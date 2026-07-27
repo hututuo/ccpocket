@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
 import '../../../theme/app_spacing.dart';
 import '../../../theme/app_theme.dart';
@@ -26,15 +27,12 @@ class ChatProcessDisclosure extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final locale = Localizations.localeOf(context).languageCode;
-    final zh = locale == 'zh';
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final color = Theme.of(context).colorScheme.tertiary;
-    final title = running
-        ? (zh ? '正在思考与执行' : 'Thinking & acting')
-        : (zh ? '思考与执行' : 'Thinking & actions');
+    final title = running ? l.chatProcessRunningTitle : l.chatProcessTitle;
     final count = segment.detailCount;
-    final detail = count > 0 ? (zh ? '$count 项' : '$count items') : null;
+    final detail = count > 0 ? l.chatProcessItemCount(count) : null;
 
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -120,7 +118,7 @@ class ChatIntermediateOutputsDisclosure extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final color = Theme.of(context).colorScheme.secondary;
     final count = turn.intermediateOutputCount;
@@ -145,7 +143,7 @@ class ChatIntermediateOutputsDisclosure extends StatelessWidget {
                 Expanded(
                   flex: 3,
                   child: Text(
-                    zh ? '中间过程' : 'Intermediate updates',
+                    l.chatProcessIntermediateUpdates,
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -160,10 +158,8 @@ class ChatIntermediateOutputsDisclosure extends StatelessWidget {
                   flex: 2,
                   child: Text(
                     detailCount > 0
-                        ? (zh
-                              ? '$count 条更新 · $detailCount 项过程'
-                              : '$count updates · $detailCount details')
-                        : (zh ? '$count 条更新' : '$count updates'),
+                        ? l.chatProcessUpdateDetailCount(count, detailCount)
+                        : l.chatProcessUpdateCount(count),
                     style: TextStyle(fontSize: 11, color: appColors.subtleText),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -210,7 +206,7 @@ class ChatCurrentProgressHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final color = Theme.of(context).colorScheme.primary;
 
@@ -234,7 +230,7 @@ class ChatCurrentProgressHeader extends StatelessWidget {
                 Icon(Icons.pending_actions_outlined, size: 15, color: color),
                 const SizedBox(width: 7),
                 Text(
-                  zh ? '当前进度' : 'Current progress',
+                  l.chatProcessCurrentProgress,
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
@@ -243,7 +239,7 @@ class ChatCurrentProgressHeader extends StatelessWidget {
                 ),
                 const SizedBox(width: 7),
                 Text(
-                  zh ? '正在生成' : 'Live',
+                  l.chatProcessLive,
                   style: TextStyle(fontSize: 11, color: appColors.subtleText),
                 ),
                 const Spacer(),
@@ -281,14 +277,14 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final category = categorizeToolName(activity.name);
     final categoryColor = getToolCategoryColor(category, appColors);
     final summary = _toolActivitySummary(activity, category);
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
     final displayName = getToolDisplayName(
       activity.name,
-      zh: zh,
+      l10n: l,
       input: activity.input,
       phase: activity.completed
           ? ToolDisplayPhase.completed
@@ -320,8 +316,8 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
                 const SizedBox(width: 6),
                 Text(
                   activity.completed
-                      ? (zh ? '最新工具' : 'Latest tool')
-                      : (zh ? '正在使用' : 'Running'),
+                      ? l.chatProcessLatestTool
+                      : l.chatProcessRunningTool,
                   style: TextStyle(fontSize: 11, color: appColors.subtleText),
                 ),
                 const SizedBox(width: 6),

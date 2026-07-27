@@ -245,7 +245,7 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
               ? null
               : getToolDisplayName(
                   widget.message.toolName!,
-                  zh: Localizations.localeOf(context).languageCode == 'zh',
+                  l10n: l,
                   phase: ToolDisplayPhase.result,
                 ),
           category: _category,
@@ -476,7 +476,7 @@ class _ExpandedToolResult extends StatelessWidget {
         ? null
         : getToolDisplayName(
             message.toolName!,
-            zh: Localizations.localeOf(context).languageCode == 'zh',
+            l10n: l,
             phase: ToolDisplayPhase.result,
           );
     final preview = buildTextLinePreview(content, maxLines: _previewLines);

@@ -1281,6 +1281,291 @@ class AppLocalizationsZh extends AppLocalizations {
   String get toolResult => '工具结果';
 
   @override
+  String toolDisplayRead(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '读取文件',
+      'other': '已读取',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadSkill(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '读取 Skill',
+      'other': '已读取 Skill',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayFileChange(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '修改文件',
+      'completed': '已修改文件',
+      'result': '文件修改已完成',
+      'other': '修改文件',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCommand(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '运行命令',
+      'completed': '已运行命令',
+      'result': '终端命令已完成',
+      'other': '运行命令',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayMultipleCommands(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '运行多个命令',
+      'completed': '已运行多个命令',
+      'result': '多个命令已完成',
+      'other': '运行多个命令',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySearchFiles(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '搜索内容',
+      'other': '已搜索',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayListFiles(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '查看目录',
+      'other': '已列出文件',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySearchWeb(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '搜索网页',
+      'other': '已搜索网页',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadWebPage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '读取网页',
+      'other': '已读取网页',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayStartSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '开启子 Agent',
+      'other': '已开启子 Agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayGuideSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '引导子 Agent',
+      'other': '已引导子 Agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayResumeSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '继续子 Agent',
+      'other': '已继续子 Agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayWaitForSubAgents(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '等待子 Agent',
+      'other': '已等待子 Agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCloseSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '关闭子 Agent',
+      'other': '已关闭子 Agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayInterruptSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '中断子 Agent',
+      'other': '已中断子 Agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayListSubAgents(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '查看子 Agent',
+      'other': '已查看子 Agent',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayInteractWithSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '与子 Agent 交互',
+      'other': '已与子 Agent 交互',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySubAgentActivity(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '子 Agent 活动',
+      'other': '子 Agent 活动已更新',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCompactContext(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '压缩上下文',
+      'other': '已压缩上下文',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayUpdatePlan(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '更新计划',
+      'other': '已更新计划',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCreateGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '创建目标',
+      'other': '已创建目标',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '查看目标',
+      'other': '已查看目标',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayUpdateGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '更新目标',
+      'other': '已更新目标',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayRequestUserInput(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '请求用户输入',
+      'other': '已请求用户输入',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayWait(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '等待',
+      'other': '等待已完成',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayViewImage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '查看图片',
+      'other': '已查看图片',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayGenerateImage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '生成图片',
+      'other': '图片生成已完成',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String get chatProcessRunningTitle => '正在思考与执行';
+
+  @override
+  String get chatProcessTitle => '思考与执行';
+
+  @override
+  String chatProcessItemCount(int count) {
+    return '$count 项';
+  }
+
+  @override
+  String get chatProcessIntermediateUpdates => '中间过程';
+
+  @override
+  String chatProcessUpdateCount(int count) {
+    return '$count 条更新';
+  }
+
+  @override
+  String chatProcessUpdateDetailCount(int count, int detailCount) {
+    return '$count 条更新 · $detailCount 项过程';
+  }
+
+  @override
+  String get chatProcessCurrentProgress => '当前进度';
+
+  @override
+  String get chatProcessLive => '正在生成';
+
+  @override
+  String get chatProcessLatestTool => '最新工具';
+
+  @override
+  String get chatProcessRunningTool => '正在使用';
+
+  @override
   String get answered => '已回答';
 
   @override

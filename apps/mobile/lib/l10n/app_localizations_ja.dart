@@ -1300,6 +1300,291 @@ class AppLocalizationsJa extends AppLocalizations {
   String get toolResult => 'ツール結果';
 
   @override
+  String toolDisplayRead(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'ファイルを読み取り',
+      'other': '読み取り済み',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadSkill(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'Skill を読み取り',
+      'other': 'Skill を読み取り済み',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayFileChange(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'ファイルを変更',
+      'completed': 'ファイルを変更しました',
+      'result': 'ファイル変更が完了しました',
+      'other': 'ファイルを変更',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCommand(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'コマンドを実行',
+      'completed': 'コマンドを実行しました',
+      'result': 'ターミナルコマンドが完了しました',
+      'other': 'コマンドを実行',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayMultipleCommands(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '複数のコマンドを実行',
+      'completed': '複数のコマンドを実行しました',
+      'result': '複数のコマンドが完了しました',
+      'other': '複数のコマンドを実行',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySearchFiles(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'ファイルを検索',
+      'other': 'ファイルを検索しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayListFiles(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'ファイル一覧を表示',
+      'other': 'ファイル一覧を表示しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySearchWeb(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'ウェブを検索',
+      'other': 'ウェブを検索しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadWebPage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'ウェブページを読み取り',
+      'other': 'ウェブページを読み取りました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayStartSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent を開始',
+      'other': 'サブ Agent を開始しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayGuideSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent を誘導',
+      'other': 'サブ Agent を誘導しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayResumeSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent を再開',
+      'other': 'サブ Agent を再開しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayWaitForSubAgents(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent を待機',
+      'other': 'サブ Agent を待機しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCloseSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent を終了',
+      'other': 'サブ Agent を終了しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayInterruptSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent を中断',
+      'other': 'サブ Agent を中断しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayListSubAgents(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent を表示',
+      'other': 'サブ Agent を表示しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayInteractWithSubAgent(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent と対話',
+      'other': 'サブ Agent と対話しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplaySubAgentActivity(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'サブ Agent のアクティビティ',
+      'other': 'サブ Agent のアクティビティを更新しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCompactContext(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'コンテキストを圧縮',
+      'other': 'コンテキストを圧縮しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayUpdatePlan(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '計画を更新',
+      'other': '計画を更新しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayCreateGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '目標を作成',
+      'other': '目標を作成しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayReadGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '目標を確認',
+      'other': '目標を確認しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayUpdateGoal(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '目標を更新',
+      'other': '目標を更新しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayRequestUserInput(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': 'ユーザー入力を要求',
+      'other': 'ユーザー入力を要求しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayWait(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '待機',
+      'other': '待機が完了しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayViewImage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '画像を表示',
+      'other': '画像を表示しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String toolDisplayGenerateImage(String phase) {
+    String _temp0 = intl.Intl.selectLogic(phase, {
+      'action': '画像を生成',
+      'other': '画像生成が完了しました',
+    });
+    return '$_temp0';
+  }
+
+  @override
+  String get chatProcessRunningTitle => '思考・実行中';
+
+  @override
+  String get chatProcessTitle => '思考と操作';
+
+  @override
+  String chatProcessItemCount(int count) {
+    return '$count 件';
+  }
+
+  @override
+  String get chatProcessIntermediateUpdates => '途中経過';
+
+  @override
+  String chatProcessUpdateCount(int count) {
+    return '$count 件の更新';
+  }
+
+  @override
+  String chatProcessUpdateDetailCount(int count, int detailCount) {
+    return '$count 件の更新 · $detailCount 件の詳細';
+  }
+
+  @override
+  String get chatProcessCurrentProgress => '現在の進捗';
+
+  @override
+  String get chatProcessLive => '進行中';
+
+  @override
+  String get chatProcessLatestTool => '最新のツール';
+
+  @override
+  String get chatProcessRunningTool => '実行中';
+
+  @override
   String get answered => '回答済み';
 
   @override

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
 import '../theme/app_theme.dart';
 
 /// Tool category classification based on CodePilot's approach.
@@ -159,120 +160,56 @@ String getToolFullInput(ToolCategory category, Map<String, dynamic> input) {
 /// original name so newer Bridge versions remain forward compatible.
 String getToolDisplayName(
   String name, {
-  required bool zh,
+  required AppLocalizations l10n,
   Map<String, dynamic> input = const {},
   ToolDisplayPhase phase = ToolDisplayPhase.action,
 }) {
   final normalized = name == 'SubAgent' ? input['tool']?.toString() : name;
-  if (phase != ToolDisplayPhase.action) {
-    return _completedToolDisplayName(
-      (normalized ?? name).toString(),
-      zh: zh,
-      result: phase == ToolDisplayPhase.result,
-    );
-  }
+  final phaseName = phase.name;
   return switch (normalized) {
-    'Read' => zh ? '读取文件' : 'Read file',
-    'ReadSkill' => zh ? '读取 Skill' : 'Read Skill',
+    'Read' => l10n.toolDisplayRead(phaseName),
+    'ReadSkill' => l10n.toolDisplayReadSkill(phaseName),
     'Write' ||
     'Edit' ||
     'NotebookEdit' ||
     'MultiEdit' ||
-    'FileChange' => zh ? '修改文件' : 'File change',
-    'Bash' => zh ? '运行命令' : 'Run command',
-    'MultiCommand' => zh ? '运行多个命令' : 'Run multiple commands',
-    'Search' || 'Grep' => zh ? '搜索内容' : 'Search files',
-    'Glob' || 'ListFiles' => zh ? '查看目录' : 'List files',
-    'WebSearch' => zh ? '搜索网页' : 'Search web',
-    'WebFetch' => zh ? '读取网页' : 'Read web page',
+    'FileChange' => l10n.toolDisplayFileChange(phaseName),
+    'Bash' => l10n.toolDisplayCommand(phaseName),
+    'MultiCommand' => l10n.toolDisplayMultipleCommands(phaseName),
+    'Search' || 'Grep' => l10n.toolDisplaySearchFiles(phaseName),
+    'Glob' || 'ListFiles' => l10n.toolDisplayListFiles(phaseName),
+    'WebSearch' => l10n.toolDisplaySearchWeb(phaseName),
+    'WebFetch' => l10n.toolDisplayReadWebPage(phaseName),
     'spawnAgent' ||
     'spawn_agent' ||
-    'SpawnAgent' => zh ? '开启子 Agent' : 'Start sub-agent',
+    'SpawnAgent' => l10n.toolDisplayStartSubAgent(phaseName),
     'sendInput' ||
     'send_input' ||
-    'SendAgentInput' => zh ? '引导子 Agent' : 'Guide sub-agent',
+    'SendAgentInput' => l10n.toolDisplayGuideSubAgent(phaseName),
     'resumeAgent' ||
     'resume_agent' ||
-    'ResumeAgent' => zh ? '继续子 Agent' : 'Resume sub-agent',
-    'wait' || 'WaitForAgents' => zh ? '等待子 Agent' : 'Wait for sub-agents',
+    'ResumeAgent' => l10n.toolDisplayResumeSubAgent(phaseName),
+    'wait' || 'WaitForAgents' => l10n.toolDisplayWaitForSubAgents(phaseName),
     'closeAgent' ||
     'close_agent' ||
-    'CloseAgent' => zh ? '关闭子 Agent' : 'Close sub-agent',
+    'CloseAgent' => l10n.toolDisplayCloseSubAgent(phaseName),
     'interruptAgent' ||
     'interrupt_agent' ||
-    'InterruptAgent' => zh ? '中断子 Agent' : 'Interrupt sub-agent',
+    'InterruptAgent' => l10n.toolDisplayInterruptSubAgent(phaseName),
     'listAgents' ||
     'list_agents' ||
-    'ListAgents' => zh ? '查看子 Agent' : 'List sub-agents',
-    'SubAgentInteraction' => zh ? '与子 Agent 交互' : 'Interact with sub-agent',
-    'SubAgentActivity' => zh ? '子 Agent 活动' : 'Sub-agent activity',
-    'ContextCompaction' => zh ? '压缩上下文' : 'Compact context',
-    'UpdatePlan' => zh ? '更新计划' : 'Update plan',
-    'CreateGoal' => zh ? '创建目标' : 'Create goal',
-    'ReadGoal' => zh ? '查看目标' : 'Read goal',
-    'UpdateGoal' => zh ? '更新目标' : 'Update goal',
-    'RequestUserInput' => zh ? '请求用户输入' : 'Request user input',
-    'Wait' || 'Sleep' => zh ? '等待' : 'Wait',
-    'ViewImage' => zh ? '查看图片' : 'View image',
-    'ImageGeneration' => zh ? '生成图片' : 'Generate image',
-    _ => name,
-  };
-}
-
-String _completedToolDisplayName(
-  String name, {
-  required bool zh,
-  required bool result,
-}) {
-  return switch (name) {
-    'Read' => zh ? '已读取' : 'Read',
-    'ReadSkill' => zh ? '已读取 Skill' : 'Read Skill',
-    'Write' || 'Edit' || 'NotebookEdit' || 'MultiEdit' || 'FileChange' =>
-      zh
-          ? (result ? '文件修改已完成' : '已修改文件')
-          : (result ? 'File change completed' : 'Edited files'),
-    'Bash' =>
-      zh
-          ? (result ? '终端命令已完成' : '已运行命令')
-          : (result ? 'Terminal command completed' : 'Ran command'),
-    'MultiCommand' =>
-      zh
-          ? (result ? '多个命令已完成' : '已运行多个命令')
-          : (result ? 'Commands completed' : 'Ran multiple commands'),
-    'Search' || 'Grep' => zh ? '已搜索' : 'Searched files',
-    'Glob' || 'ListFiles' => zh ? '已列出文件' : 'Listed files',
-    'WebSearch' => zh ? '已搜索网页' : 'Searched the web',
-    'WebFetch' => zh ? '已读取网页' : 'Read web page',
-    'spawnAgent' ||
-    'spawn_agent' ||
-    'SpawnAgent' => zh ? '已开启子 Agent' : 'Started sub-agent',
-    'sendInput' ||
-    'send_input' ||
-    'SendAgentInput' => zh ? '已引导子 Agent' : 'Guided sub-agent',
-    'resumeAgent' ||
-    'resume_agent' ||
-    'ResumeAgent' => zh ? '已继续子 Agent' : 'Resumed sub-agent',
-    'wait' || 'WaitForAgents' => zh ? '已等待子 Agent' : 'Waited for sub-agents',
-    'closeAgent' ||
-    'close_agent' ||
-    'CloseAgent' => zh ? '已关闭子 Agent' : 'Closed sub-agent',
-    'interruptAgent' ||
-    'interrupt_agent' ||
-    'InterruptAgent' => zh ? '已中断子 Agent' : 'Interrupted sub-agent',
-    'listAgents' ||
-    'list_agents' ||
-    'ListAgents' => zh ? '已查看子 Agent' : 'Listed sub-agents',
-    'SubAgentInteraction' => zh ? '已与子 Agent 交互' : 'Interacted with sub-agent',
-    'SubAgentActivity' => zh ? '子 Agent 活动已更新' : 'Sub-agent activity updated',
-    'ContextCompaction' => zh ? '已压缩上下文' : 'Compacted context',
-    'UpdatePlan' => zh ? '已更新计划' : 'Updated plan',
-    'CreateGoal' => zh ? '已创建目标' : 'Created goal',
-    'ReadGoal' => zh ? '已查看目标' : 'Read goal',
-    'UpdateGoal' => zh ? '已更新目标' : 'Updated goal',
-    'RequestUserInput' => zh ? '已请求用户输入' : 'Requested user input',
-    'Wait' || 'Sleep' => zh ? '等待已完成' : 'Wait completed',
-    'ViewImage' => zh ? '已查看图片' : 'Viewed image',
-    'ImageGeneration' => zh ? '图片生成已完成' : 'Image generation completed',
+    'ListAgents' => l10n.toolDisplayListSubAgents(phaseName),
+    'SubAgentInteraction' => l10n.toolDisplayInteractWithSubAgent(phaseName),
+    'SubAgentActivity' => l10n.toolDisplaySubAgentActivity(phaseName),
+    'ContextCompaction' => l10n.toolDisplayCompactContext(phaseName),
+    'UpdatePlan' => l10n.toolDisplayUpdatePlan(phaseName),
+    'CreateGoal' => l10n.toolDisplayCreateGoal(phaseName),
+    'ReadGoal' => l10n.toolDisplayReadGoal(phaseName),
+    'UpdateGoal' => l10n.toolDisplayUpdateGoal(phaseName),
+    'RequestUserInput' => l10n.toolDisplayRequestUserInput(phaseName),
+    'Wait' || 'Sleep' => l10n.toolDisplayWait(phaseName),
+    'ViewImage' => l10n.toolDisplayViewImage(phaseName),
+    'ImageGeneration' => l10n.toolDisplayGenerateImage(phaseName),
     _ => name,
   };
 }
