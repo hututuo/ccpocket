@@ -36,6 +36,8 @@ type NotifyBody = {
   /** When set, only tokens with this locale receive the notification. */
   locale?: string;
   data?: Record<string, string>;
+  /** Tokens that already displayed this event through live local delivery. */
+  excludedTokens?: string[];
 };
 
 type RelayBody = RegisterBody | UnregisterBody | NotifyBody;
@@ -50,6 +52,7 @@ const MAX_NOTIFICATION_DATA_ENTRIES = 16;
 const MAX_NOTIFICATION_DATA_KEY_BYTES = 64;
 const MAX_NOTIFICATION_DATA_VALUE_BYTES = 512;
 const MAX_NOTIFICATION_PAYLOAD_BYTES = 3072;
+const MAX_EXCLUDED_TOKENS = 20;
 
 class RelayHttpError extends Error {
   constructor(
@@ -275,6 +278,21 @@ function parseRelayBody(payload: unknown): RelayBody | null {
     if (locale === null) return null;
     const data = parseNotificationData(body.data);
     if (data === null) return null;
+    let excludedTokens: string[] | undefined;
+    if (body.excludedTokens !== undefined) {
+      if (
+        !Array.isArray(body.excludedTokens) ||
+        body.excludedTokens.length > MAX_EXCLUDED_TOKENS
+      ) {
+        return null;
+      }
+      excludedTokens = [];
+      for (const rawToken of body.excludedTokens) {
+        const token = asNonEmptyString(rawToken);
+        if (!token || !isValidFcmToken(token)) return null;
+        if (!excludedTokens.includes(token)) excludedTokens.push(token);
+      }
+    }
     const dataBytes = Object.entries(data ?? {}).reduce(
       (total, [key, value]) => total + utf8Length(key) + utf8Length(value),
       0,
@@ -289,7 +307,16 @@ function parseRelayBody(payload: unknown): RelayBody | null {
     ) {
       return null;
     }
-    return { op, bridgeId: "", eventType, title, body: bodyText, locale, data };
+    return {
+      op,
+      bridgeId: "",
+      eventType,
+      title,
+      body: bodyText,
+      locale,
+      data,
+      excludedTokens,
+    };
   }
 
   return null;
@@ -386,8 +413,12 @@ async function handleNotify(body: NotifyBody): Promise<{
   deletedInvalidTokens: number;
 }> {
   const snapshot = await db.collection(`bridges/${body.bridgeId}/tokens`).get();
+  const excludedTokens = new Set(body.excludedTokens ?? []);
   const registrations = snapshot.docs
     .filter((d) => {
+      const token = asNonEmptyString(d.get("token"));
+      if (token != null && excludedTokens.has(token)) return false;
+
       // When locale is specified, only send to tokens with matching locale.
       // Legacy tokens without a locale receive only the English fallback, so
       // one old device cannot receive every localized copy.

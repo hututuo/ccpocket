@@ -173,6 +173,12 @@ describe("relay", () => {
       },
       { data: { field: "x".repeat(513) } },
       { data: { field: { nested: true } } },
+      { excludedTokens: ["short"] },
+      {
+        excludedTokens: Array.from({ length: 21 }, (_, index) =>
+          `${index}`.padEnd(32, "a"),
+        ),
+      },
     ];
 
     for (const invalid of oversizedNotificationBodies) {
@@ -316,6 +322,34 @@ describe("relay", () => {
       failureCount: 0,
       deletedInvalidTokens: 0,
     });
+  });
+
+  it("excludes only tokens whose local background delivery was acknowledged", async () => {
+    const fallbackToken = "b".repeat(32);
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) =>
+            field === "token" ? VALID_TOKEN : undefined,
+        },
+        {
+          get: (field: string) =>
+            field === "token" ? fallbackToken : undefined,
+        },
+      ],
+    });
+
+    await invoke({
+      op: "notify",
+      eventType: "session_completed",
+      title: "Done",
+      body: "Finished",
+      excludedTokens: [VALID_TOKEN],
+    });
+
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledWith(
+      expect.objectContaining({ tokens: [fallbackToken] }),
+    );
   });
 
   it("does not opt legacy tokens into intermediate progress", async () => {
