@@ -2381,27 +2381,62 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
         // Preserve local data (image bytes, timestamps) from existing entries
         // that the server history does not contain.
-        // Match by messageUuid (preferred) or text content (fallback for
-        // entries whose UUID hasn't been assigned yet).
-        final existingUserData = <String, UserChatEntry>{};
-        for (final e in existingNonPast) {
-          if (e is UserChatEntry) {
-            if (e.messageUuid != null) {
-              existingUserData[e.messageUuid!] = e;
-            } else {
-              existingUserData['text:${e.text}'] = e;
+        // Match by strong identity first. Older Bridge history can omit both
+        // ids, so text remains a last-resort fallback, but each chronological
+        // occurrence may be consumed only once. A single-value text map makes
+        // repeated prompts share the last turn's images and timestamp.
+        final existingUsers = existingNonPast
+            .whereType<UserChatEntry>()
+            .toList(growable: false);
+        final consumedExistingUserIndexes = <int>{};
+        UserChatEntry? takeExistingUserData(UserChatEntry incoming) {
+          int find(bool Function(UserChatEntry candidate) matches) {
+            for (var index = 0; index < existingUsers.length; index++) {
+              if (consumedExistingUserIndexes.contains(index)) continue;
+              if (matches(existingUsers[index])) return index;
             }
+            return -1;
           }
+
+          var matchIndex = -1;
+          final incomingUuid = incoming.messageUuid;
+          if (incomingUuid?.isNotEmpty == true) {
+            matchIndex = find(
+              (candidate) => candidate.messageUuid == incomingUuid,
+            );
+          }
+          final incomingClientId = incoming.clientMessageId;
+          if (matchIndex == -1 && incomingClientId?.isNotEmpty == true) {
+            matchIndex = find(
+              (candidate) => candidate.clientMessageId == incomingClientId,
+            );
+          }
+          if (matchIndex == -1) {
+            matchIndex = find((candidate) {
+              if (candidate.text != incoming.text) return false;
+              final candidateUuid = candidate.messageUuid;
+              if (incomingUuid?.isNotEmpty == true &&
+                  candidateUuid?.isNotEmpty == true) {
+                return false;
+              }
+              final candidateClientId = candidate.clientMessageId;
+              if (incomingClientId?.isNotEmpty == true &&
+                  candidateClientId?.isNotEmpty == true) {
+                return false;
+              }
+              return true;
+            });
+          }
+          if (matchIndex == -1) return null;
+          consumedExistingUserIndexes.add(matchIndex);
+          return existingUsers[matchIndex];
         }
-        if (existingUserData.isNotEmpty) {
+
+        if (existingUsers.isNotEmpty) {
           for (int i = 0; i < entries.length; i++) {
             final e = entries[i];
             if (e is! UserChatEntry) continue;
-            final existing =
-                (e.messageUuid != null
-                    ? existingUserData[e.messageUuid!]
-                    : null) ??
-                existingUserData['text:${e.text}'];
+            final existing = takeExistingUserData(e);
             if (existing == null) continue;
             final needsImages =
                 e.imageBytesList.isEmpty && existing.imageBytesList.isNotEmpty;

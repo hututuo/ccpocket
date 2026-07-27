@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_state.dart';
@@ -3878,6 +3879,44 @@ void main() {
         final users = cubit.state.entries.whereType<UserChatEntry>().toList();
         expect(users, hasLength(1));
         expect(users.single.text, 'Same prompt');
+      },
+    );
+
+    test(
+      'same-text UUID-less history keeps local image provenance by occurrence',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.claude);
+        addTearDown(cubit.close);
+        final firstImage = Uint8List.fromList([1, 2, 3]);
+        final secondImage = Uint8List.fromList([4, 5, 6]);
+
+        cubit.sendMessage(
+          'Same prompt',
+          clientMessageId: 'local-first',
+          images: [(bytes: firstImage, mimeType: 'image/png')],
+        );
+        cubit.sendMessage(
+          'Same prompt',
+          clientMessageId: 'local-second',
+          images: [(bytes: secondImage, mimeType: 'image/png')],
+        );
+        expect(cubit.state.entries.whereType<UserChatEntry>(), hasLength(2));
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(text: 'Same prompt'),
+              UserInputMessage(text: 'Same prompt'),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(2));
+        expect(users[0].imageBytesList.single, firstImage);
+        expect(users[1].imageBytesList.single, secondImage);
       },
     );
 
