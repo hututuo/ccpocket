@@ -261,10 +261,15 @@ class BackgroundNotificationModeController extends ChangeNotifier
     _hostStatusSub = _locationHost.statusChanges.listen(_handleHostStatus);
     _connectionSub = _delivery.connectionStates.listen(_handleConnectionState);
     _capabilitySub = _delivery.capabilityChanges.listen((_) {
+      final becameAvailable =
+          !_state.bridgeSupported && _delivery.supportsNotificationOnly;
       _replaceState(
         bridgeSupported: _delivery.supportsNotificationOnly,
         phase: _state.phase,
       );
+      if (becameAvailable && _isBackground && _state.enabled) {
+        unawaited(_recoverBackgroundMode());
+      }
     });
     final snapshot = await _locationHost.getSnapshot();
     final notificationPermissionStatus = await _notifications
@@ -408,7 +413,10 @@ class BackgroundNotificationModeController extends ChangeNotifier
     required bool hasBackgroundWork,
   }) async {
     if (!_isCurrentBackgroundOperation(operation)) return false;
-    if (!_canUseKeepAlive(hasBackgroundWork: hasBackgroundWork)) {
+    if (!_canUseKeepAlive(
+      hasBackgroundWork: hasBackgroundWork,
+      requireBackgroundWork: false,
+    )) {
       await _stopPrearmedLocation(operation);
       return false;
     }
@@ -527,14 +535,17 @@ class BackgroundNotificationModeController extends ChangeNotifier
     _replaceState(hostSnapshot: snapshot, phase: 'lifecycle_inactive');
   }
 
-  bool _canUseKeepAlive({required bool hasBackgroundWork}) {
+  bool _canUseKeepAlive({
+    required bool hasBackgroundWork,
+    bool requireBackgroundWork = true,
+  }) {
     final snapshot = _state.hostSnapshot;
     final phase = switch ((
       _state.enabled,
       _locationHost.supportsKeepAlive,
       _delivery.supportsNotificationOnly,
       _delivery.isConnected,
-      hasBackgroundWork,
+      requireBackgroundWork && !hasBackgroundWork,
       _state.notificationPermissionStatus,
       snapshot.hasAlwaysAuthorization,
       snapshot.lowPowerModeEnabled,
@@ -544,7 +555,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
       (_, false, _, _, _, _, _, _, _) => 'base_app_update_required',
       (_, _, false, _, _, _, _, _, _) => 'bridge_update_required',
       (_, _, _, false, _, _, _, _, _) => 'bridge_disconnected',
-      (_, _, _, _, false, _, _, _, _) => 'waiting_for_active_task',
+      (_, _, _, _, true, _, _, _, _) => 'waiting_for_active_task',
       (_, _, _, _, _, NotificationPermissionStatus.disabled, _, _, _) =>
         'notification_permission_required',
       (_, _, _, _, _, NotificationPermissionStatus.unavailable, _, _, _) =>

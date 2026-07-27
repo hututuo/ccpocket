@@ -135,11 +135,11 @@ void main() {
   );
 
   test(
-    'a prearmed location lease stops if active work ends before background',
+    'a prearmed location lease stops when Bridge reports no active work',
     () async {
       final preferences = await SharedPreferences.getInstance();
       final host = _FakeLocationHost(_authorizedSnapshot());
-      final delivery = _FakeDelivery(activeWorkCount: 1);
+      final delivery = _FakeDelivery(activeWorkCount: 0);
       final controller = BackgroundNotificationModeController(
         preferences: preferences,
         locationHost: host,
@@ -156,11 +156,39 @@ void main() {
 
       expect(
         await controller.enterBackground(hasBackgroundWork: false),
-        isFalse,
+        isTrue,
       );
       expect(host.active, isFalse);
       expect(host.stopCount, 1);
       expect(controller.state.phase, 'waiting_for_active_task');
+      await controller.dispose();
+    },
+  );
+
+  test(
+    'Bridge active work overrides a stale local background-work hint',
+    () async {
+      final preferences = await SharedPreferences.getInstance();
+      final host = _FakeLocationHost(_authorizedSnapshot());
+      final delivery = _FakeDelivery(activeWorkCount: 1);
+      final controller = BackgroundNotificationModeController(
+        preferences: preferences,
+        locationHost: host,
+        delivery: delivery,
+        permissionHost: PermissionHostService.test(
+          gateway: _FakePermissionGateway(),
+        ),
+        notifications: _FakePresenter(),
+      );
+      await controller.initialize();
+
+      expect(
+        await controller.enterBackground(hasBackgroundWork: false),
+        isTrue,
+      );
+      expect(delivery.modes, [BridgeClientDeliveryMode.notificationsOnly]);
+      expect(host.active, isTrue);
+      expect(controller.state.phase, 'receiving_notifications_only');
       await controller.dispose();
     },
   );
@@ -290,6 +318,41 @@ void main() {
     await controller.dispose();
   });
 
+  test(
+    'a capability advertised after background entry retries negotiation',
+    () async {
+      final preferences = await SharedPreferences.getInstance();
+      final host = _FakeLocationHost(_authorizedSnapshot());
+      final delivery = _FakeDelivery(
+        activeWorkCount: 1,
+        supportsNotificationOnly: false,
+      );
+      final controller = BackgroundNotificationModeController(
+        preferences: preferences,
+        locationHost: host,
+        delivery: delivery,
+        permissionHost: PermissionHostService.test(
+          gateway: _FakePermissionGateway(),
+        ),
+        notifications: _FakePresenter(),
+      );
+      await controller.initialize();
+
+      expect(
+        await controller.enterBackground(hasBackgroundWork: true),
+        isFalse,
+      );
+      delivery.supportsNotificationOnly = true;
+      delivery.emitCapabilityChange();
+      await _waitUntil(() => host.active);
+
+      expect(delivery.modes, [BridgeClientDeliveryMode.notificationsOnly]);
+      expect(controller.state.bridgeSupported, isTrue);
+      expect(controller.state.phase, 'receiving_notifications_only');
+      await controller.dispose();
+    },
+  );
+
   test('enabling is the only path that requests Always Location', () async {
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();
@@ -376,6 +439,16 @@ void main() {
       await controller.dispose();
     },
   );
+}
+
+Future<void> _waitUntil(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 1));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Timed out waiting for background notification state');
+    }
+    await Future<void>.delayed(Duration.zero);
+  }
 }
 
 BackgroundLocationKeepAliveSnapshot _authorizedSnapshot({
@@ -533,6 +606,10 @@ class _FakeDelivery implements BackgroundNotificationDeliveryGateway {
   void emitConnection(BridgeConnectionState state) {
     isConnected = state == BridgeConnectionState.connected;
     _connections.add(state);
+  }
+
+  void emitCapabilityChange() {
+    _capabilities.add(null);
   }
 
   void releaseNotificationMode() {
