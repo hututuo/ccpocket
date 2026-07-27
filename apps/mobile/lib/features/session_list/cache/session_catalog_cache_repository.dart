@@ -108,11 +108,40 @@ class SessionCatalogCacheStats {
   final int conversationWindows;
 }
 
+class SessionCatalogCacheIdentity {
+  const SessionCatalogCacheIdentity({
+    required this.bridgeInstanceId,
+    required this.provider,
+    required this.providerSessionId,
+  });
+
+  final String bridgeInstanceId;
+  final String provider;
+  final String providerSessionId;
+
+  bool get isValid =>
+      bridgeInstanceId.trim().isNotEmpty &&
+      provider.trim().isNotEmpty &&
+      providerSessionId.trim().isNotEmpty;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SessionCatalogCacheIdentity &&
+      other.bridgeInstanceId == bridgeInstanceId &&
+      other.provider == provider &&
+      other.providerSessionId == providerSessionId;
+
+  @override
+  int get hashCode =>
+      Object.hash(bridgeInstanceId, provider, providerSessionId);
+}
+
 class SessionCatalogCacheRepository {
   SessionCatalogCacheRepository(this.database);
 
   static const maxEntriesPerPartition = 10_000;
   static const maxHotWindowEntries = 2_000;
+  static const _maxIdentityLookupsPerQuery = 300;
 
   final SessionCatalogCacheDatabase database;
   Future<void> _mutationTail = Future<void>.value();
@@ -318,40 +347,98 @@ class SessionCatalogCacheRepository {
     required String provider,
     required String providerSessionId,
   }) async {
-    final target = SessionCatalogCacheTarget.fromBridge(
+    final identity = SessionCatalogCacheIdentity(
       bridgeInstanceId: bridgeInstanceId,
+      provider: provider,
+      providerSessionId: providerSessionId,
     );
-    if (!target.isValid ||
-        provider.trim().isEmpty ||
-        providerSessionId.trim().isEmpty) {
-      return null;
-    }
+    return (await findSessionsByIdentities([identity]))[identity];
+  }
+
+  Future<Map<SessionCatalogCacheIdentity, RecentSession>>
+  findSessionsByIdentities(
+    Iterable<SessionCatalogCacheIdentity> identities,
+  ) async {
+    final requested = identities.where((identity) => identity.isValid).toSet();
+    if (requested.isEmpty) return const {};
     await _mutationTail;
     final db = await database.database;
-    final partitionId = await _resolveReadablePartition(db, target);
-    if (partitionId == null) return null;
-    final rows = await db.query(
-      SessionCatalogCacheDatabase.entriesTable,
-      columns: ['session_json'],
-      where: 'partition_id = ? AND provider = ? AND session_id = ?',
-      whereArgs: [partitionId, provider, providerSessionId],
-      orderBy: 'modified_sort DESC, cached_at DESC',
-      limit: 1,
-    );
-    if (rows.isEmpty) return null;
-    try {
-      final decoded = jsonDecode(rows.single['session_json']! as String);
-      if (decoded is Map<String, dynamic>) {
-        return RecentSession.fromJson(decoded);
-      }
-      if (decoded is Map) {
-        return RecentSession.fromJson(Map<String, dynamic>.from(decoded));
-      }
-    } catch (_) {
-      // Display metadata is optional and the catalog is rebuildable. A damaged
-      // row must not make downloaded conversation copies unmanageable.
+
+    final lookupByStorageIdentity =
+        <
+          ({String partitionId, String provider, String providerSessionId}),
+          SessionCatalogCacheIdentity
+        >{};
+    for (final identity in requested) {
+      final partitionId = SessionCatalogCacheTarget._opaqueKey(
+        'bridge',
+        identity.bridgeInstanceId,
+      );
+      if (partitionId == null) continue;
+      lookupByStorageIdentity[(
+            partitionId: partitionId,
+            provider: identity.provider,
+            providerSessionId: identity.providerSessionId,
+          )] =
+          identity;
     }
-    return null;
+
+    final storageIdentities = lookupByStorageIdentity.keys.toList(
+      growable: false,
+    );
+    final result = <SessionCatalogCacheIdentity, RecentSession>{};
+    for (
+      var offset = 0;
+      offset < storageIdentities.length;
+      offset += _maxIdentityLookupsPerQuery
+    ) {
+      final end = (offset + _maxIdentityLookupsPerQuery).clamp(
+        0,
+        storageIdentities.length,
+      );
+      final batch = storageIdentities.sublist(offset, end);
+      final where = List.filled(
+        batch.length,
+        '(partition_id = ? AND provider = ? AND session_id = ?)',
+      ).join(' OR ');
+      final whereArgs = <Object?>[
+        for (final identity in batch) ...[
+          identity.partitionId,
+          identity.provider,
+          identity.providerSessionId,
+        ],
+      ];
+      final rows = await db.query(
+        SessionCatalogCacheDatabase.entriesTable,
+        columns: ['partition_id', 'provider', 'session_id', 'session_json'],
+        where: where,
+        whereArgs: whereArgs,
+        orderBy: 'modified_sort DESC, cached_at DESC',
+      );
+      for (final row in rows) {
+        final identity =
+            lookupByStorageIdentity[(
+              partitionId: row['partition_id']! as String,
+              provider: row['provider']! as String,
+              providerSessionId: row['session_id']! as String,
+            )];
+        if (identity == null || result.containsKey(identity)) continue;
+        try {
+          final decoded = jsonDecode(row['session_json']! as String);
+          if (decoded is Map<String, dynamic>) {
+            result[identity] = RecentSession.fromJson(decoded);
+          } else if (decoded is Map) {
+            result[identity] = RecentSession.fromJson(
+              Map<String, dynamic>.from(decoded),
+            );
+          }
+        } catch (_) {
+          // Display metadata is optional and the catalog is rebuildable. A
+          // damaged row must not hide titles that were decoded successfully.
+        }
+      }
+    }
+    return Map.unmodifiable(result);
   }
 
   Future<List<ConversationContentCursor>> knownConversationRevisions(

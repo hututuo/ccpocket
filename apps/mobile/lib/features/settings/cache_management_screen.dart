@@ -51,15 +51,21 @@ class _AppCacheManagementBackend implements CacheManagementBackend {
   @override
   Future<Map<ConversationMirrorKey, String>> localCopyDisplayNames() async {
     final cache = catalogCache;
+    final copies = localCopies;
+    final identities = <ConversationMirrorKey, SessionCatalogCacheIdentity>{
+      for (final metadata in copies)
+        metadata.key: SessionCatalogCacheIdentity(
+          bridgeInstanceId: metadata.key.bridgeInstanceId,
+          provider: metadata.key.provider,
+          providerSessionId: metadata.key.providerSessionId,
+        ),
+    };
+    final sessions = cache == null
+        ? const <SessionCatalogCacheIdentity, RecentSession>{}
+        : await cache.findSessionsByIdentities(identities.values);
     final result = <ConversationMirrorKey, String>{};
-    for (final metadata in localCopies) {
-      final session = cache == null
-          ? null
-          : await cache.findSessionByIdentity(
-              bridgeInstanceId: metadata.key.bridgeInstanceId,
-              provider: metadata.key.provider,
-              providerSessionId: metadata.key.providerSessionId,
-            );
+    for (final metadata in copies) {
+      final session = sessions[identities[metadata.key]];
       final displayName = _catalogDisplayName(session);
       final resolved = displayName ?? metadata.storedDisplayName;
       if (resolved != null) result[metadata.key] = resolved;

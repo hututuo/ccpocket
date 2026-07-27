@@ -312,6 +312,46 @@ void main() {
     },
   );
 
+  test('resolves many display identities in bounded batches', () async {
+    const sessionCount = 305;
+    final identities = <SessionCatalogCacheIdentity>[];
+    for (var index = 0; index < sessionCount; index++) {
+      final bridgeId = 'bridge-batch-$index';
+      final sessionId = 'thread-batch-$index';
+      await repository.upsertResponse(
+        target: SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: bridgeId,
+        ),
+        response: RecentSessionsMessage(
+          sessions: [_session(id: sessionId, name: 'Batch title $index')],
+        ),
+      );
+      identities.add(
+        SessionCatalogCacheIdentity(
+          bridgeInstanceId: bridgeId,
+          provider: 'codex',
+          providerSessionId: sessionId,
+        ),
+      );
+    }
+    const missing = SessionCatalogCacheIdentity(
+      bridgeInstanceId: 'bridge-missing',
+      provider: 'codex',
+      providerSessionId: 'thread-missing',
+    );
+
+    final sessions = await repository.findSessionsByIdentities([
+      ...identities,
+      identities.first,
+      missing,
+    ]);
+
+    expect(sessions, hasLength(sessionCount));
+    expect(sessions[identities.first]?.name, 'Batch title 0');
+    expect(sessions[identities.last]?.name, 'Batch title 304');
+    expect(sessions[missing], isNull);
+  });
+
   test('atomically replaces and patches a hot conversation window', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-hot',
