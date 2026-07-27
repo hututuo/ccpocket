@@ -108,7 +108,8 @@ enum ProcessStatus {
   idle,
   running,
   waitingApproval,
-  compacting;
+  compacting,
+  unknown;
 
   static ProcessStatus fromString(String value) {
     return switch (value) {
@@ -117,7 +118,7 @@ enum ProcessStatus {
       'running' => ProcessStatus.running,
       'waiting_approval' => ProcessStatus.waitingApproval,
       'compacting' => ProcessStatus.compacting,
-      _ => ProcessStatus.idle,
+      _ => ProcessStatus.unknown,
     };
   }
 }

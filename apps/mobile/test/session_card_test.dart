@@ -327,6 +327,58 @@ void main() {
       expect(visual.showPlanBadge, isTrue);
     });
 
+    test('does not expose idle as a Ready availability state', () {
+      final visual = sessionVisualStatusFor(rawStatus: 'idle');
+
+      expect(visual.primary, SessionPrimaryStatus.idle);
+      expect(visual.label, isNull);
+      expect(visual.animate, isFalse);
+    });
+
+    test('keeps unknown runtime status distinct from idle', () {
+      final visual = sessionVisualStatusFor(rawStatus: 'future_status');
+
+      expect(visual.primary, SessionPrimaryStatus.unknown);
+      expect(visual.label, 'Status unavailable');
+      expect(visual.animate, isFalse);
+    });
+
+    testWidgets('does not render Ready for an idle session', (tester) async {
+      final session = SessionInfo(
+        id: 'idle-without-ready',
+        projectPath: '/home/user/my-app',
+        status: 'idle',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+      );
+
+      await tester.pumpWidget(
+        _wrap(RunningSessionCard(session: session, onTap: () {})),
+      );
+
+      expect(find.text('Ready'), findsNothing);
+      expect(find.text('Status unavailable'), findsNothing);
+    });
+
+    testWidgets('renders an unknown runtime state without calling it Ready', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'unknown-runtime-state',
+        projectPath: '/home/user/my-app',
+        status: 'future_runtime_state',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+      );
+
+      await tester.pumpWidget(
+        _wrap(RunningSessionCard(session: session, onTap: () {})),
+      );
+
+      expect(find.text('Ready'), findsNothing);
+      expect(find.text('Status unavailable'), findsOneWidget);
+    });
+
     testWidgets('displays gitBranch and lastMessage', (tester) async {
       final session = SessionInfo(
         id: 'test-id',

@@ -4518,6 +4518,7 @@ class BridgeService implements BridgeServiceBase {
       ProcessStatus.running => 'running',
       ProcessStatus.waitingApproval => 'waiting_approval',
       ProcessStatus.compacting => 'compacting',
+      ProcessStatus.unknown => 'unknown',
     };
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx < 0) return;

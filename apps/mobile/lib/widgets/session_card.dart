@@ -103,15 +103,16 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
       planMode: session.resolvedPlanMode,
       pendingPermission: session.pendingPermission,
     );
-    final isReadyUnseen =
-        visualStatus.primary == SessionPrimaryStatus.ready && widget.isUnseen;
+    final isIdleUnseen =
+        visualStatus.primary == SessionPrimaryStatus.idle && widget.isUnseen;
     final statusColor = switch (visualStatus.primary) {
       SessionPrimaryStatus.working => appColors.statusRunning,
       SessionPrimaryStatus.needsYou => appColors.statusApproval,
-      SessionPrimaryStatus.ready =>
-        isReadyUnseen
+      SessionPrimaryStatus.idle =>
+        isIdleUnseen
             ? Theme.of(context).colorScheme.primary
             : appColors.statusIdle,
+      SessionPrimaryStatus.unknown => appColors.subtleText,
     };
 
     final permission = session.pendingPermission;
@@ -178,25 +179,32 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                   Expanded(
                     child: Row(
                       children: [
-                        _StatusDot(
-                          color: statusColor,
-                          animate: visualStatus.animate,
-                          glow: isReadyUnseen,
-                          inPlanMode:
-                              visualStatus.showPlanBadge &&
-                              visualStatus.animate,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          visualStatus.label,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: isReadyUnseen
-                                ? FontWeight.w800
-                                : FontWeight.w600,
+                        if (visualStatus.label != null) ...[
+                          _StatusDot(
                             color: statusColor,
+                            animate: visualStatus.animate,
+                            inPlanMode:
+                                visualStatus.showPlanBadge &&
+                                visualStatus.animate,
                           ),
-                        ),
+                          const SizedBox(width: 6),
+                          Text(
+                            visualStatus.label!,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: statusColor,
+                            ),
+                          ),
+                        ] else if (isIdleUnseen)
+                          Semantics(
+                            label: 'Unread',
+                            child: _StatusDot(
+                              color: statusColor,
+                              animate: false,
+                              glow: true,
+                            ),
+                          ),
                         if (session.externalDesktopTurnActive) ...[
                           const SizedBox(width: 5),
                           Icon(

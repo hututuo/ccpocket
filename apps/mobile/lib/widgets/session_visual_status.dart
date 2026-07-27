@@ -1,10 +1,10 @@
 import '../models/messages.dart';
 
-enum SessionPrimaryStatus { working, needsYou, ready }
+enum SessionPrimaryStatus { working, needsYou, idle, unknown }
 
 class SessionVisualStatus {
   final SessionPrimaryStatus primary;
-  final String label;
+  final String? label;
   final String? detail;
   final bool showPlanBadge;
   final bool animate;
@@ -71,9 +71,15 @@ SessionVisualStatus sessionVisualStatusFor({
       showPlanBadge: showPlanBadge,
       animate: true,
     ),
+    'idle' => SessionVisualStatus(
+      primary: SessionPrimaryStatus.idle,
+      label: null,
+      showPlanBadge: showPlanBadge,
+      animate: false,
+    ),
     _ => SessionVisualStatus(
-      primary: SessionPrimaryStatus.ready,
-      label: 'Ready',
+      primary: SessionPrimaryStatus.unknown,
+      label: 'Status unavailable',
       showPlanBadge: showPlanBadge,
       animate: false,
     ),

@@ -916,6 +916,17 @@ void main() {
       expect(delta.entries.single.message, isA<StatusMessage>());
     });
 
+    test('ServerMessage preserves an unknown process status', () {
+      final message =
+          ServerMessage.fromJson({
+                'type': 'status',
+                'status': 'future_runtime_state',
+              })
+              as StatusMessage;
+
+      expect(message.status, ProcessStatus.unknown);
+    });
+
     test('ServerMessage parses history_snapshot', () {
       final msg = ServerMessage.fromJson({
         'type': 'history_snapshot',
