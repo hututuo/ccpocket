@@ -162,6 +162,79 @@ void main() {
       isEmpty,
     );
   });
+
+  test('invalid snapshot backs off before resubscribing', () async {
+    final initialSubscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    initialSubscribe['_observed'] = true;
+    await service.dispose();
+    service = ConversationContentSyncService(
+      bridge: gateway,
+      cache: repository,
+      retryBaseDelay: const Duration(milliseconds: 40),
+      retryMaxDelay: const Duration(milliseconds: 80),
+    )..start(initialLifecycleState: AppLifecycleState.resumed);
+    final subscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    final subscriptionId = subscribe['requestId']! as String;
+    final subscribeCountBeforeFailure = gateway.sentTypes
+        .where((type) => type == 'conversation_content_subscribe')
+        .length;
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.subscribed,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        requestId: subscriptionId,
+        hotConversationLimit: 10,
+      ),
+    );
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.snapshotBegin,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        provider: 'codex',
+        providerSessionId: 'thread-bad',
+        revision: 'revision-bad',
+        entryCount: 1,
+        pageCount: 1,
+        hasEarlier: false,
+        sourceEntryCount: 1,
+      ),
+    );
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.snapshotComplete,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        provider: 'codex',
+        providerSessionId: 'thread-bad',
+        revision: 'revision-bad',
+        entryCount: 1,
+        hasEarlier: false,
+        sourceEntryCount: 1,
+      ),
+    );
+
+    await gateway.nextOutgoing('conversation_content_unsubscribe');
+    await Future<void>.delayed(const Duration(milliseconds: 15));
+    expect(
+      gateway.sentTypes
+          .where((type) => type == 'conversation_content_subscribe')
+          .length,
+      subscribeCountBeforeFailure,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(
+      gateway.sentTypes
+          .where((type) => type == 'conversation_content_subscribe')
+          .length,
+      subscribeCountBeforeFailure + 1,
+    );
+  });
 }
 
 ConversationContentWireEntry _wireEntry(String id, int index) {

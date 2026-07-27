@@ -102,6 +102,7 @@ class SessionCatalogCacheRepository {
 
   final SessionCatalogCacheDatabase database;
   Future<void> _mutationTail = Future<void>.value();
+  bool _closed = false;
 
   Future<SessionCatalogCacheSnapshot?> load(
     SessionCatalogCacheTarget target,
@@ -534,6 +535,8 @@ class SessionCatalogCacheRepository {
   }
 
   Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
     await _mutationTail;
     await database.close();
   }
@@ -543,6 +546,11 @@ class SessionCatalogCacheRepository {
   }
 
   Future<T> _enqueueMutationResult<T>(Future<T> Function() operation) {
+    if (_closed) {
+      return Future<T>.error(
+        StateError('Session catalog cache repository is already closed.'),
+      );
+    }
     final next = _mutationTail.then((_) => operation());
     _mutationTail = next.then<void>((_) {}).catchError((_) {});
     return next;

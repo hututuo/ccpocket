@@ -181,6 +181,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
+  bool _cachedPreviewDirty = false;
   ChatComposerSubmission? _deferredSubmission;
 
   @override
@@ -230,8 +231,13 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
   void _loadDurablePreview() {
     final durableId = widget.durableProviderSessionId;
-    if (durableId == null || _loadingCachedPreview) return;
+    if (durableId == null) return;
+    if (_loadingCachedPreview) {
+      _cachedPreviewDirty = true;
+      return;
+    }
     _loadingCachedPreview = true;
+    _cachedPreviewDirty = false;
     final sync = context.read<ConversationContentSyncService>();
     unawaited(
       sync
@@ -253,6 +259,10 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           .whenComplete(() {
             if (mounted && widget.durableProviderSessionId == durableId) {
               _loadingCachedPreview = false;
+              if (_cachedPreviewDirty) {
+                _cachedPreviewDirty = false;
+                _loadDurablePreview();
+              }
             }
           }),
     );

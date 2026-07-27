@@ -87,10 +87,17 @@ class ConversationContentCacheUpdate {
 /// against the exact durable base revision. Background lifecycle states reject
 /// body events and unsubscribe, preserving notification-only behavior.
 class ConversationContentSyncService with WidgetsBindingObserver {
-  ConversationContentSyncService({required this.bridge, required this.cache});
+  ConversationContentSyncService({
+    required this.bridge,
+    required this.cache,
+    this.retryBaseDelay = const Duration(seconds: 2),
+    this.retryMaxDelay = const Duration(seconds: 30),
+  });
 
   final ConversationContentSyncGateway bridge;
   final SessionCatalogCacheRepository cache;
+  final Duration retryBaseDelay;
+  final Duration retryMaxDelay;
 
   final StreamController<ConversationContentCacheUpdate> _updatesController =
       StreamController<ConversationContentCacheUpdate>.broadcast();
@@ -111,6 +118,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   bool _disposed = false;
   int _generation = 0;
   int _requestSequence = 0;
+  int _retryAttempt = 0;
 
   Stream<ConversationContentCacheUpdate> get updates =>
       _updatesController.stream;
@@ -163,7 +171,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (_sameTarget(_focused, next)) return;
     _focused = next;
     final subscriptionId = _activeSubscriptionId;
-    if (subscriptionId == null || !_canProcessContent) return;
+    if (subscriptionId == null) {
+      if (_canProcessContent) {
+        _retryTimer?.cancel();
+        _retryTimer = null;
+        _ensureSubscribed();
+      }
+      return;
+    }
+    if (!_canProcessContent) return;
     try {
       bridge.send(
         conversationContentFocus(
@@ -238,6 +254,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
+    _retryAttempt = 0;
   }
 
   void _ensureSubscribed() {
@@ -474,6 +491,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         revision: revision,
       ),
     );
+    _retryAttempt = 0;
   }
 
   void _handleError(ConversationContentEventMessage event) {
@@ -525,7 +543,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
 
   void _scheduleRetry() {
     if (_disposed || !_canProcessContent || _retryTimer != null) return;
-    _retryTimer = Timer(const Duration(seconds: 2), () {
+    final exponent = _retryAttempt > 8 ? 8 : _retryAttempt;
+    final multiplier = 1 << exponent;
+    final calculated = retryBaseDelay * multiplier;
+    final delay = calculated > retryMaxDelay ? retryMaxDelay : calculated;
+    _retryAttempt += 1;
+    _retryTimer = Timer(delay, () {
       _retryTimer = null;
       _ensureSubscribed();
     });
@@ -533,7 +556,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
 
   void _restartSubscription() {
     _stopSubscription(sendUnsubscribe: true);
-    _ensureSubscribed();
+    _scheduleRetry();
   }
 
   String _nextRequestId(String operation) {

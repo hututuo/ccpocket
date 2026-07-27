@@ -355,6 +355,23 @@ void main() {
       isNull,
     );
   });
+
+  test('rejects mutations after close begins', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-closed',
+    );
+    await repository.close();
+
+    await expectLater(
+      repository.upsertResponse(
+        target: target,
+        response: RecentSessionsMessage(
+          sessions: [_session(id: 'thread-after-close')],
+        ),
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
 }
 
 ConversationContentWireEntry _entry(String id, int index, String status) {
