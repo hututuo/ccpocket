@@ -1,8 +1,8 @@
 import 'package:ccpocket/features/chat_selection_add_to_conversation/chat_selection_add_to_conversation.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/services/draft_service.dart';
 import 'package:ccpocket/widgets/chat_selection_actions.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -45,12 +45,8 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         locale: const Locale('zh'),
-        supportedLocales: const [Locale('en'), Locale('zh')],
-        localizationsDelegates: const [
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
         home: Builder(
           builder: (context) {
             action = createAddToConversationSelectionAction(

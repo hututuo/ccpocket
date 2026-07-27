@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
+
 /// Displays session cost and optionally message count with context indicator.
 class CostBadge extends StatelessWidget {
   final double totalCost;
@@ -14,6 +16,7 @@ class CostBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final cs = Theme.of(context).colorScheme;
 
     // Calculate context usage percentage if message count available
@@ -33,8 +36,11 @@ class CostBadge extends StatelessWidget {
 
     return Tooltip(
       message: messageCount != null
-          ? '$messageCount messages (~${(contextPercent! * 100).toInt()}% context)'
-          : 'Session cost',
+          ? l.sessionContextUsage(
+              messageCount!,
+              (contextPercent! * 100).toInt(),
+            )
+          : l.sessionCost,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: Container(

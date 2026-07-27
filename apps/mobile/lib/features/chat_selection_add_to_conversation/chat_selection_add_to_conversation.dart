@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/app_localizations.dart';
 import '../../services/draft_service.dart';
 import '../../widgets/chat_selection_actions.dart';
 
@@ -13,7 +14,7 @@ ChatSelectionAction createAddToConversationSelectionAction({
 }) {
   return ChatSelectionAction(
     id: _addToConversationActionId,
-    label: _addToConversationLabel(context),
+    label: AppLocalizations.of(context).addToConversation,
     onSelected: (selectedText) {
       insertSelectionQuote(inputController, selectedText);
       draftService.saveDraft(sessionId, inputController.text);
@@ -64,13 +65,4 @@ void insertSelectionQuote(
     selection: TextSelection.collapsed(offset: cursorOffset),
     composing: TextRange.empty,
   );
-}
-
-String _addToConversationLabel(BuildContext context) {
-  return switch (Localizations.localeOf(context).languageCode) {
-    'zh' => '添加到会话',
-    'ja' => '会話に追加',
-    'ko' => '대화에 추가',
-    _ => 'Add to conversation',
-  };
 }

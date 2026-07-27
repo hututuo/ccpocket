@@ -84,6 +84,36 @@ class AppLocalizationsZh extends AppLocalizations {
   String get codexCliJoinCommandCopied => '已复制 Codex CLI 加入命令';
 
   @override
+  String get sessionStarted => '会话已开始';
+
+  @override
+  String get reviewSummary => '检查回答';
+
+  @override
+  String stepOfTotal(int current, int total) {
+    return '第 $current 项，共 $total 项';
+  }
+
+  @override
+  String get sessionCost => '会话费用';
+
+  @override
+  String sessionContextUsage(int count, int percent) {
+    return '$count 条消息（约占上下文 $percent%）';
+  }
+
+  @override
+  String get screenshotDeleted => '截图已删除';
+
+  @override
+  String monthsAgo(int months) {
+    return '$months 个月前';
+  }
+
+  @override
+  String get addToConversation => '添加到会话';
+
+  @override
   String get removeProjectTitle => '移除项目';
 
   @override

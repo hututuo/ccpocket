@@ -1,5 +1,6 @@
 import 'package:ccpocket/features/settings/licenses_screen.dart';
 import 'package:ccpocket/features/settings/widgets/theme_bottom_sheet.dart';
+import 'package:ccpocket/features/claude_session/widgets/cost_badge.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/theme/app_theme.dart';
@@ -8,10 +9,7 @@ import 'package:ccpocket/widgets/codex_effort_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Widget _localizedApp(
-  Widget home, {
-  Locale locale = const Locale('zh'),
-}) {
+Widget _localizedApp(Widget home, {Locale locale = const Locale('zh')}) {
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
@@ -77,6 +75,17 @@ void main() {
     expect(find.text('标准'), findsOneWidget);
     expect(find.text('快速'), findsOneWidget);
     expect(find.text('自定义'), findsOneWidget);
+  });
+
+  testWidgets('session cost tooltip follows the active locale', (tester) async {
+    await tester.pumpWidget(
+      _localizedApp(
+        const Scaffold(body: CostBadge(totalCost: 0.5, messageCount: 75)),
+      ),
+    );
+
+    final tooltip = tester.widget<Tooltip>(find.byType(Tooltip));
+    expect(tooltip.message, '75 条消息（约占上下文 50%）');
   });
 
   testWidgets('older tool detail prompt uses the selected Japanese locale', (

@@ -41,6 +41,31 @@
   "debugBundleBuildFailed": "デバッグバンドルを作成できませんでした",
   "copyCodexCliJoinCommand": "Codex CLI参加コマンドをコピー",
   "codexCliJoinCommandCopied": "Codex CLI参加コマンドをコピーしました",
+  "sessionStarted": "セッションを開始しました",
+  "reviewSummary": "回答の確認",
+  "stepOfTotal": "{total}件中{current}件目",
+  "@stepOfTotal": {
+    "placeholders": {
+      "current": { "type": "int" },
+      "total": { "type": "int" }
+    }
+  },
+  "sessionCost": "セッション費用",
+  "sessionContextUsage": "{count}件のメッセージ（コンテキスト約{percent}%）",
+  "@sessionContextUsage": {
+    "placeholders": {
+      "count": { "type": "int" },
+      "percent": { "type": "int" }
+    }
+  },
+  "screenshotDeleted": "スクリーンショットを削除しました",
+  "monthsAgo": "{months}か月前",
+  "@monthsAgo": {
+    "placeholders": {
+      "months": { "type": "int" }
+    }
+  },
+  "addToConversation": "会話に追加",
   "removeProjectTitle": "プロジェクトを削除",
   "removeProjectConfirm": "「{name}」を最近のプロジェクトから削除しますか？",
   "rename": "名前を変更",

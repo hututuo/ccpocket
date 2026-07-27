@@ -1232,6 +1232,7 @@ void main() {
             onTap: () {},
             onAnswer: (_, result) => answered = result,
           ),
+          locale: const Locale('zh'),
         ),
       );
 
@@ -1249,6 +1250,9 @@ void main() {
           .onPressed!();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('检查回答'), findsOneWidget);
+      expect(find.text('第 3 项，共 3 项'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, '提交'), findsOneWidget);
       tester
           .widget<FilledButton>(
             find.byKey(const ValueKey('ask_submit_summary_button')),

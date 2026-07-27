@@ -85,6 +85,36 @@ class AppLocalizationsEn extends AppLocalizations {
   String get codexCliJoinCommandCopied => 'Codex CLI join command copied';
 
   @override
+  String get sessionStarted => 'Session started';
+
+  @override
+  String get reviewSummary => 'Review Summary';
+
+  @override
+  String stepOfTotal(int current, int total) {
+    return '$current of $total';
+  }
+
+  @override
+  String get sessionCost => 'Session cost';
+
+  @override
+  String sessionContextUsage(int count, int percent) {
+    return '$count messages (~$percent% context)';
+  }
+
+  @override
+  String get screenshotDeleted => 'Screenshot deleted';
+
+  @override
+  String monthsAgo(int months) {
+    return '${months}mo ago';
+  }
+
+  @override
+  String get addToConversation => 'Add to conversation';
+
+  @override
   String get removeProjectTitle => 'Remove Project';
 
   @override

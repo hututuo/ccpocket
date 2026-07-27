@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/app_localizations.dart';
 import '../../models/messages.dart';
 import '../../theme/app_theme.dart';
 import '../codex_environment_summary.dart';
@@ -10,6 +11,7 @@ class SystemChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final isCodexStarted =
         message.provider == 'codex' &&
@@ -21,7 +23,7 @@ class SystemChip extends StatelessWidget {
         child: Chip(
           label: isCodexStarted
               ? CodexEnvironmentSummary(
-                  leadingLabel: 'Session started',
+                  leadingLabel: l.sessionStarted,
                   model: message.model,
                   reasoningEffort: message.modelReasoningEffort,
                   approvalPolicy: message.approvalPolicy,

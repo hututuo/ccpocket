@@ -2058,6 +2058,7 @@ class _QuestionPageView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final totalPages = isMultiQuestion
         ? questions.length + 1
         : questions.length;
@@ -2076,7 +2077,7 @@ class _QuestionPageView extends StatelessWidget {
                                   as Map<String, dynamic>)['header']
                               as String? ??
                           'Q${currentPage + 1}')
-                    : 'Review Summary',
+                    : l.reviewSummary,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
@@ -2087,7 +2088,7 @@ class _QuestionPageView extends StatelessWidget {
               ),
             ),
             Text(
-              '${currentPage + 1} of $totalPages',
+              l.stepOfTotal(currentPage + 1, totalPages),
               style: TextStyle(
                 fontSize: 11,
                 color: Theme.of(

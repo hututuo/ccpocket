@@ -84,6 +84,36 @@ class AppLocalizationsJa extends AppLocalizations {
   String get codexCliJoinCommandCopied => 'Codex CLI参加コマンドをコピーしました';
 
   @override
+  String get sessionStarted => 'セッションを開始しました';
+
+  @override
+  String get reviewSummary => '回答の確認';
+
+  @override
+  String stepOfTotal(int current, int total) {
+    return '$total件中$current件目';
+  }
+
+  @override
+  String get sessionCost => 'セッション費用';
+
+  @override
+  String sessionContextUsage(int count, int percent) {
+    return '$count件のメッセージ（コンテキスト約$percent%）';
+  }
+
+  @override
+  String get screenshotDeleted => 'スクリーンショットを削除しました';
+
+  @override
+  String monthsAgo(int months) {
+    return '$monthsか月前';
+  }
+
+  @override
+  String get addToConversation => '会話に追加';
+
+  @override
   String get removeProjectTitle => 'プロジェクトを削除';
 
   @override

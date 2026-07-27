@@ -84,6 +84,36 @@ class AppLocalizationsKo extends AppLocalizations {
   String get codexCliJoinCommandCopied => 'Codex CLI 참여 명령을 복사했습니다';
 
   @override
+  String get sessionStarted => '세션 시작됨';
+
+  @override
+  String get reviewSummary => '답변 검토';
+
+  @override
+  String stepOfTotal(int current, int total) {
+    return '$total개 중 $current';
+  }
+
+  @override
+  String get sessionCost => '세션 비용';
+
+  @override
+  String sessionContextUsage(int count, int percent) {
+    return '메시지 $count개(컨텍스트 약 $percent%)';
+  }
+
+  @override
+  String get screenshotDeleted => '스크린샷을 삭제했습니다';
+
+  @override
+  String monthsAgo(int months) {
+    return '$months개월 전';
+  }
+
+  @override
+  String get addToConversation => '대화에 추가';
+
+  @override
   String get removeProjectTitle => '프로젝트 제거';
 
   @override

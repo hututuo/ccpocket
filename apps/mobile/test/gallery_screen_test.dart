@@ -41,7 +41,11 @@ class _MockBridgeService extends BridgeService {
   }
 }
 
-Widget _wrapWithTheme(Widget child, _MockBridgeService mock) {
+Widget _wrapWithTheme(
+  Widget child,
+  _MockBridgeService mock, {
+  Locale locale = const Locale('en'),
+}) {
   return RepositoryProvider<BridgeService>.value(
     value: mock,
     child: MultiBlocProvider(
@@ -53,7 +57,7 @@ Widget _wrapWithTheme(Widget child, _MockBridgeService mock) {
       child: MaterialApp(
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
-        locale: const Locale('en'),
+        locale: locale,
         theme: AppTheme.darkTheme,
         home: child,
       ),
@@ -168,6 +172,32 @@ void main() {
       expect(find.byType(ChoiceChip), findsNothing);
       // But should show image
       expect(find.text('project-a'), findsWidgets);
+    });
+
+    testWidgets('localizes gallery age labels', (tester) async {
+      final mock = _MockBridgeService();
+      final addedAt = DateTime.now()
+          .subtract(const Duration(days: 65))
+          .toIso8601String();
+      mock.setImages([
+        GalleryImage(
+          id: 'img-localized-age',
+          url: '/api/gallery/img-localized-age',
+          mimeType: 'image/png',
+          projectPath: '/Users/demo/project-a',
+          projectName: 'project-a',
+          addedAt: addedAt,
+          sizeBytes: 123,
+        ),
+      ]);
+
+      await tester.pumpWidget(
+        _wrapWithTheme(const GalleryScreen(), mock, locale: const Locale('zh')),
+      );
+      await tester.pump();
+
+      expect(find.text('2 个月前'), findsOneWidget);
+      expect(find.text('2mo ago'), findsNothing);
     });
   });
 

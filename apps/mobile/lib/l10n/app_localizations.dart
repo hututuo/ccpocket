@@ -240,6 +240,54 @@ abstract class AppLocalizations {
   /// **'Codex CLI参加コマンドをコピーしました'**
   String get codexCliJoinCommandCopied;
 
+  /// No description provided for @sessionStarted.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッションを開始しました'**
+  String get sessionStarted;
+
+  /// No description provided for @reviewSummary.
+  ///
+  /// In ja, this message translates to:
+  /// **'回答の確認'**
+  String get reviewSummary;
+
+  /// No description provided for @stepOfTotal.
+  ///
+  /// In ja, this message translates to:
+  /// **'{total}件中{current}件目'**
+  String stepOfTotal(int current, int total);
+
+  /// No description provided for @sessionCost.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッション費用'**
+  String get sessionCost;
+
+  /// No description provided for @sessionContextUsage.
+  ///
+  /// In ja, this message translates to:
+  /// **'{count}件のメッセージ（コンテキスト約{percent}%）'**
+  String sessionContextUsage(int count, int percent);
+
+  /// No description provided for @screenshotDeleted.
+  ///
+  /// In ja, this message translates to:
+  /// **'スクリーンショットを削除しました'**
+  String get screenshotDeleted;
+
+  /// No description provided for @monthsAgo.
+  ///
+  /// In ja, this message translates to:
+  /// **'{months}か月前'**
+  String monthsAgo(int months);
+
+  /// No description provided for @addToConversation.
+  ///
+  /// In ja, this message translates to:
+  /// **'会話に追加'**
+  String get addToConversation;
+
   /// No description provided for @removeProjectTitle.
   ///
   /// In ja, this message translates to:
