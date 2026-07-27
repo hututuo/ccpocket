@@ -239,6 +239,8 @@ type PendingBackgroundPushDelivery = {
 
 const FILE_PEEK_TEXT_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
+const FILE_PEEK_PREVIEW_MAX_BYTES = 512 * 1024;
+const FILE_PEEK_PREVIEW_MAX_LINE_CHARS = 64 * 1024;
 const HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES = 64 * 1024;
 const HISTORY_TOOL_DETAIL_MAX_ATTACHMENTS = 32;
 
@@ -517,25 +519,11 @@ async function readStableTextFromHandle(
     "File is too large to preview. Maximum size is 8 MiB.",
     expectedIdentity,
   );
-  const decoder = new StringDecoder("utf8");
   const buffer = Buffer.allocUnsafe(FILE_PEEK_READ_CHUNK_BYTES);
-  const selectedLines: string[] = [];
-  let carry = "";
-  let totalLines = 0;
+  const previewChunks: Buffer[] = [];
+  let previewBytes = 0;
+  let newlineCount = 0;
   let position = 0;
-
-  const consume = (text: string): void => {
-    carry += text;
-    let newline = carry.indexOf("\n");
-    while (newline >= 0) {
-      if (selectedLines.length < maxLines) {
-        selectedLines.push(carry.slice(0, newline));
-      }
-      totalLines += 1;
-      carry = carry.slice(newline + 1);
-      newline = carry.indexOf("\n");
-    }
-  };
 
   while (true) {
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
@@ -547,11 +535,25 @@ async function readStableTextFromHandle(
         "File is too large to preview. Maximum size is 8 MiB.",
       );
     }
-    consume(decoder.write(buffer.subarray(0, bytesRead)));
+    const chunk = buffer.subarray(0, bytesRead);
+    let searchOffset = 0;
+    while (searchOffset < chunk.length) {
+      const newline = chunk.indexOf(0x0a, searchOffset);
+      if (newline < 0) break;
+      newlineCount += 1;
+      searchOffset = newline + 1;
+    }
+    if (previewBytes < FILE_PEEK_PREVIEW_MAX_BYTES) {
+      const selectedBytes = Math.min(
+        bytesRead,
+        FILE_PEEK_PREVIEW_MAX_BYTES - previewBytes,
+      );
+      // The read buffer is reused, so retain an owned copy of the bounded
+      // preview prefix rather than a subarray view.
+      previewChunks.push(Buffer.from(chunk.subarray(0, selectedBytes)));
+      previewBytes += selectedBytes;
+    }
   }
-  consume(decoder.end());
-  totalLines += 1;
-  if (selectedLines.length < maxLines) selectedLines.push(carry);
 
   const after = await handle.stat();
   if (
@@ -563,10 +565,38 @@ async function readStableTextFromHandle(
       "File changed while it was being read.",
     );
   }
+  const previewText = Buffer.concat(previewChunks, previewBytes).toString(
+    "utf8",
+  );
+  const lineLimit = Math.max(1, Math.floor(maxLines));
+  const selectedLines: string[] = [];
+  let lineStart = 0;
+  let clippedLongLine = false;
+  while (selectedLines.length < lineLimit) {
+    const newline = previewText.indexOf("\n", lineStart);
+    const lineEnd = newline < 0 ? previewText.length : newline;
+    const line = previewText.slice(lineStart, lineEnd);
+    if (line.length > FILE_PEEK_PREVIEW_MAX_LINE_CHARS) {
+      clippedLongLine = true;
+      selectedLines.push(line.slice(0, FILE_PEEK_PREVIEW_MAX_LINE_CHARS));
+    } else {
+      selectedLines.push(line);
+    }
+    if (newline < 0) break;
+    lineStart = newline + 1;
+    if (lineStart === previewText.length) {
+      if (selectedLines.length < lineLimit) selectedLines.push("");
+      break;
+    }
+  }
+  const totalLines = newlineCount + 1;
   return {
     content: selectedLines.join("\n"),
     totalLines,
-    truncated: totalLines > maxLines,
+    truncated:
+      position > previewBytes ||
+      totalLines > selectedLines.length ||
+      clippedLongLine,
   };
 }
 

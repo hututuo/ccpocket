@@ -8703,6 +8703,54 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     }
   });
 
+  it("bounds minified JSON file peek before sending it to Mobile", async () => {
+    const projectPath = mkdtempSync(resolve(tmpdir(), "ccpocket-bridge-json-"));
+    const minified = `{"payload":"${"x".repeat(1024 * 1024)}"}`;
+    writeFileSync(resolve(projectPath, "large.json"), minified);
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: [projectPath],
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    try {
+      await (bridge as any).handleClientMessage(
+        {
+          type: "read_file",
+          requestId: "file-minified-json",
+          projectPath,
+          filePath: "large.json",
+        },
+        ws,
+      );
+
+      await expect.poll(() => ws.send.mock.calls.length).toBeGreaterThan(0);
+      const response = ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find(
+          (message: any) =>
+            message.type === "file_content" &&
+            message.requestId === "file-minified-json",
+        );
+
+      expect(response).toMatchObject({
+        kind: "text",
+        language: "json",
+        totalLines: 1,
+        truncated: true,
+      });
+      expect(response.content).toHaveLength(64 * 1024);
+      expect(response.content).toMatch(/^{"payload":"x+/);
+    } finally {
+      bridge.close();
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
   it("keeps file peek inside the canonical project root", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "ccpocket-bridge-scope-"));
     const projectPath = resolve(root, "project");
