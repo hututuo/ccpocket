@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`7c91196e`
+核对源码基线：`5e1a72d0`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -88,7 +88,7 @@
 | owner 模式允许全盘只读，项目外引用不再 `path_not_allowed` | v01 11.2～11.3 | authenticated unrestricted read；`ba839504` 未认证安全回退 | **代码完成，待设备/部署** | 新旧 Bridge fallback 已测；实际运行 Bridge 的 API key/`*` 配置仍需核对 |
 | 修改/上传/删除必须密码或手机 Face ID，由 Bridge 授权；密码失败不可重连绕过 | v01 11.4 | Argon2id verifier `60bc259d`；native biometric challenge；`e95f1772` | **代码完成，待设备/部署** | 7 项 auth 测试覆盖并行失败、断线重连和限流；物理 Face ID/Secure Enclave 待验 |
 | 受限目录不能借项目、附加写目录或工作树符号链接穿出授权根；全盘 owner 模式不受误伤 | v01 11、19；v02-006 | `25b37014`、`47e2dc81`；真实路径校验、受管工作树成员校验 | **已验证** | 漏洞均先由红测复现；WebSocket + worktree 两文件 289/289 通过，覆盖 start、Git diff、附加写根、客户端工作树、未注册删除目标和前缀碰撞；`allowedDirs=[]` 的既有全盘兼容套件保持通过 |
-| JSON、单文件 HTML、网页 URL 正确分流；Quick Look 失败走本地/WebView；提供下载/分享 | v01 11.5；v02-006、014 | `3c1985e5`、`435c3613`、`a4ecdf58`、`c4b3174d`；artifact preview | **部分完成** | `.json/.html` 路由、本地大文件 Quick Look、过期 token 自动续签和条件入口回归通过；macOS gate、通用 HTTP 错误页、大/压缩 JSON 性能和真实失败样本仍待修/取证 |
+| JSON、单文件 HTML、网页 URL 正确分流；Quick Look 失败走本地/WebView；提供下载/分享 | v01 11.5；v02-006、014 | `3c1985e5`、`435c3613`、`a4ecdf58`、`c4b3174d`；`56393144`；`5e1a72d0`；artifact preview/File Peek | **部分完成** | `.json/.html` 路由、本地大文件 Quick Look、过期 token 自动续签和条件入口回归通过；iOS WKWebView 不提供 request/response URI 的主页面 401/403/404/410 已能进入错误页并续签；Bridge 给 Mobile 的文本预览限制为 512 KiB、单行限制为 64 KiB，1 MiB 单行 JSON 不再整段进入手机布局。Mobile 预览 15 项、Bridge WebSocket 253 项通过；两套下载实现、File Peek 大文件错误入口、压缩 JSON 和真实设备失败样本仍待统一/取证 |
 | Agent 输出的内联图片、绝对 URL、data URL 与相对 Bridge 路径都能正确预览 | v01 11.1、11.5；v02-006、014 | `3ac720fe` 的 `resolveImagePreviewUrl` | **已验证** | 已有 scheme 不再被错误拼接 Bridge 地址，协议相对和无斜杠相对路径统一解析；7 项图片边界回归通过 |
 | Explorer/Git 的旧 Bridge 无 requestId 时也不能串项目或无限加载 | v02-006；全局兼容门禁 | `f1f0dd04`、`3fc46236`、`935b5604`、`f8438e15`、`8374d105` | **已验证** | Explorer 16 项、Git 44 项、Bridge parser/websocket 411 项相关回归通过 |
 | Bridge/手机握手做全面安全审查，但不把密码哈希放热路径，不破坏旧客户端 | v01 11、19；decisions | Origin gate、API key、路径/TOCTOU、Argon2、capability fallback；`25b37014`、`47e2dc81` | **部分完成** | 受限项目/附加写根/工作树的 symlink 与成员校验已闭环；审批参数绑定、auto-approval state、下载 token 与协议级重放等仍需逐项判定，且不能违背用户明确的 owner 全盘只读需求 |
@@ -107,7 +107,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `7c91196e`，后续深链、安全、通知 ACK、公平调度、历史/会话管理，以及图片发送、预览和草稿性能提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `5e1a72d0`，后续深链、安全、通知 ACK、公平调度、历史/会话管理，以及图片发送、iOS HTTP 错误识别、Bridge 预览限幅和草稿性能提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
