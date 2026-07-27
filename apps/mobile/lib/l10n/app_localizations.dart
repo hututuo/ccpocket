@@ -282,6 +282,18 @@ abstract class AppLocalizations {
   /// **'コピーしました'**
   String get copied;
 
+  /// No description provided for @copiedValue.
+  ///
+  /// In ja, this message translates to:
+  /// **'「{value}」をコピーしました'**
+  String copiedValue(String value);
+
+  /// No description provided for @copiedUrl.
+  ///
+  /// In ja, this message translates to:
+  /// **'URLをコピーしました'**
+  String get copiedUrl;
+
   /// No description provided for @copiedToClipboard.
   ///
   /// In ja, this message translates to:
@@ -333,7 +345,7 @@ abstract class AppLocalizations {
   /// No description provided for @explorer.
   ///
   /// In ja, this message translates to:
-  /// **'Explorer'**
+  /// **'エクスプローラー'**
   String get explorer;
 
   /// No description provided for @gitUnavailableTip.
@@ -353,6 +365,84 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'このプロジェクトではGit機能を利用できません'**
   String get gitUnavailableHint;
+
+  /// No description provided for @errorAuthenticationTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'認証エラー'**
+  String get errorAuthenticationTitle;
+
+  /// No description provided for @errorCodexAuthenticationTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Codex 認証エラー'**
+  String get errorCodexAuthenticationTitle;
+
+  /// No description provided for @errorCodexCliNotInstalledTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Codex CLI がインストールされていません'**
+  String get errorCodexCliNotInstalledTitle;
+
+  /// No description provided for @errorPathNotAllowedTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'パスは許可されていません'**
+  String get errorPathNotAllowedTitle;
+
+  /// No description provided for @errorBridgeUpdateRequiredTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge の更新が必要です'**
+  String get errorBridgeUpdateRequiredTitle;
+
+  /// No description provided for @errorAutoModeUnavailableTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Auto モードは利用できません'**
+  String get errorAutoModeUnavailableTitle;
+
+  /// No description provided for @errorCodexWarningTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Codex の警告'**
+  String get errorCodexWarningTitle;
+
+  /// No description provided for @errorClaudeAuthLoginHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge マシンで「claude auth login」を実行してください'**
+  String get errorClaudeAuthLoginHint;
+
+  /// No description provided for @errorAnthropicApiKeyHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge マシンで ANTHROPIC_API_KEY を設定してください'**
+  String get errorAnthropicApiKeyHint;
+
+  /// No description provided for @errorOpenAiApiKeyHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge マシンの OPENAI_API_KEY を確認してください'**
+  String get errorOpenAiApiKeyHint;
+
+  /// No description provided for @errorCodexCliInstallHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge マシンに Codex CLI をインストールしてから Bridge を再起動してください'**
+  String get errorCodexCliInstallHint;
+
+  /// No description provided for @errorPathAllowedDirsHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge サーバーの BRIDGE_ALLOWED_DIRS を更新してください'**
+  String get errorPathAllowedDirsHint;
+
+  /// No description provided for @errorAutoModeUnavailableHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'ここでは Default モードを使用するか、Auto モード対応の Claude 環境に切り替えてください'**
+  String get errorAutoModeUnavailableHint;
 
   /// No description provided for @autoModeFallbackDefaultTip.
   ///
@@ -645,7 +735,7 @@ abstract class AppLocalizations {
   /// No description provided for @machineEditPort.
   ///
   /// In ja, this message translates to:
-  /// **'Port'**
+  /// **'ポート'**
   String get machineEditPort;
 
   /// No description provided for @machineEditBridgePortHint.
@@ -699,7 +789,7 @@ abstract class AppLocalizations {
   /// No description provided for @machineEditSshUsername.
   ///
   /// In ja, this message translates to:
-  /// **'SSH Username'**
+  /// **'SSH ユーザー名'**
   String get machineEditSshUsername;
 
   /// No description provided for @machineEditSshUsernameHint.
@@ -711,7 +801,7 @@ abstract class AppLocalizations {
   /// No description provided for @machineEditSshPort.
   ///
   /// In ja, this message translates to:
-  /// **'SSH Port'**
+  /// **'SSH ポート'**
   String get machineEditSshPort;
 
   /// No description provided for @machineEditSshPortHint.
@@ -729,13 +819,13 @@ abstract class AppLocalizations {
   /// No description provided for @machineEditPrivateKey.
   ///
   /// In ja, this message translates to:
-  /// **'Private Key'**
+  /// **'秘密鍵'**
   String get machineEditPrivateKey;
 
   /// No description provided for @machineEditSshPrivateKeyPem.
   ///
   /// In ja, this message translates to:
-  /// **'SSH Private Key (PEM)'**
+  /// **'SSH 秘密鍵（PEM）'**
   String get machineEditSshPrivateKeyPem;
 
   /// No description provided for @machineEditOpenSshPrivateKeyHint.
@@ -765,13 +855,13 @@ abstract class AppLocalizations {
   /// No description provided for @machineEditSshJumpHost.
   ///
   /// In ja, this message translates to:
-  /// **'SSH Jump Host'**
+  /// **'SSH 踏み台ホスト'**
   String get machineEditSshJumpHost;
 
   /// No description provided for @machineEditJumpHost.
   ///
   /// In ja, this message translates to:
-  /// **'Jump Host'**
+  /// **'踏み台ホスト'**
   String get machineEditJumpHost;
 
   /// No description provided for @machineEditJumpHostHint.
@@ -783,13 +873,13 @@ abstract class AppLocalizations {
   /// No description provided for @machineEditJumpPort.
   ///
   /// In ja, this message translates to:
-  /// **'Jump Port'**
+  /// **'踏み台ポート'**
   String get machineEditJumpPort;
 
   /// No description provided for @machineEditJumpUsername.
   ///
   /// In ja, this message translates to:
-  /// **'Jump Username'**
+  /// **'踏み台ユーザー名'**
   String get machineEditJumpUsername;
 
   /// No description provided for @machineEditJumpUsernameHint.
@@ -813,7 +903,7 @@ abstract class AppLocalizations {
   /// No description provided for @machineEditJumpPassword.
   ///
   /// In ja, this message translates to:
-  /// **'Jump Password'**
+  /// **'踏み台パスワード'**
   String get machineEditJumpPassword;
 
   /// No description provided for @machineEditSavedJumpHostPasswordIndicator.
@@ -825,7 +915,7 @@ abstract class AppLocalizations {
   /// No description provided for @machineEditJumpPrivateKeyPem.
   ///
   /// In ja, this message translates to:
-  /// **'Jump Private Key (PEM)'**
+  /// **'踏み台秘密鍵（PEM）'**
   String get machineEditJumpPrivateKeyPem;
 
   /// No description provided for @machineEditSavedJumpHostPrivateKeyIndicator.
@@ -1401,7 +1491,7 @@ abstract class AppLocalizations {
   /// No description provided for @effort.
   ///
   /// In ja, this message translates to:
-  /// **'Effort'**
+  /// **'推論強度'**
   String get effort;
 
   /// No description provided for @defaultLabel.
@@ -1485,13 +1575,13 @@ abstract class AppLocalizations {
   /// No description provided for @reasoning.
   ///
   /// In ja, this message translates to:
-  /// **'Reasoning'**
+  /// **'推論'**
   String get reasoning;
 
   /// No description provided for @webSearch.
   ///
   /// In ja, this message translates to:
-  /// **'Web Search'**
+  /// **'ウェブ検索'**
   String get webSearch;
 
   /// No description provided for @networkAccess.
@@ -4941,7 +5031,7 @@ abstract class AppLocalizations {
   /// No description provided for @supporterTitle.
   ///
   /// In ja, this message translates to:
-  /// **'Supporter'**
+  /// **'サポーター'**
   String get supporterTitle;
 
   /// No description provided for @supporterMonthlyTitle.
@@ -5631,7 +5721,7 @@ abstract class AppLocalizations {
   /// No description provided for @goalTokensUnit.
   ///
   /// In ja, this message translates to:
-  /// **'tokens'**
+  /// **'トークン'**
   String get goalTokensUnit;
 
   /// No description provided for @goalBlockedExplanation.

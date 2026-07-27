@@ -107,6 +107,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get copied => '已复制';
 
   @override
+  String copiedValue(String value) {
+    return '已复制“$value”';
+  }
+
+  @override
+  String get copiedUrl => '已复制 URL';
+
+  @override
   String get copiedToClipboard => '已复制到剪贴板';
 
   @override
@@ -141,6 +149,47 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get gitUnavailableHint => '此项目无法使用 Git 功能';
+
+  @override
+  String get errorAuthenticationTitle => '身份验证错误';
+
+  @override
+  String get errorCodexAuthenticationTitle => 'Codex 身份验证错误';
+
+  @override
+  String get errorCodexCliNotInstalledTitle => '未安装 Codex CLI';
+
+  @override
+  String get errorPathNotAllowedTitle => '路径不在允许范围内';
+
+  @override
+  String get errorBridgeUpdateRequiredTitle => '需要更新 Bridge';
+
+  @override
+  String get errorAutoModeUnavailableTitle => '自动模式不可用';
+
+  @override
+  String get errorCodexWarningTitle => 'Codex 警告';
+
+  @override
+  String get errorClaudeAuthLoginHint => '请在 Bridge 所在电脑运行“claude auth login”';
+
+  @override
+  String get errorAnthropicApiKeyHint => '请在 Bridge 所在电脑设置 ANTHROPIC_API_KEY';
+
+  @override
+  String get errorOpenAiApiKeyHint => '请检查 Bridge 所在电脑的 OPENAI_API_KEY';
+
+  @override
+  String get errorCodexCliInstallHint =>
+      '请在 Bridge 所在电脑安装 Codex CLI，然后重启 Bridge';
+
+  @override
+  String get errorPathAllowedDirsHint => '请更新 Bridge 服务端的 BRIDGE_ALLOWED_DIRS';
+
+  @override
+  String get errorAutoModeUnavailableHint =>
+      '请在此使用“默认”模式，或切换到支持“自动”模式的 Claude 环境';
 
   @override
   String get autoModeFallbackDefaultTip =>
@@ -292,7 +341,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get machineEditHostHint => '100.64.1.2';
 
   @override
-  String get machineEditPort => 'Port';
+  String get machineEditPort => '端口';
 
   @override
   String get machineEditBridgePortHint => '8765';
@@ -321,13 +370,13 @@ class AppLocalizationsZh extends AppLocalizations {
       '离线时远程启动 Bridge Server';
 
   @override
-  String get machineEditSshUsername => 'SSH Username';
+  String get machineEditSshUsername => 'SSH 用户名';
 
   @override
   String get machineEditSshUsernameHint => 'myuser';
 
   @override
-  String get machineEditSshPort => 'SSH Port';
+  String get machineEditSshPort => 'SSH 端口';
 
   @override
   String get machineEditSshPortHint => '22';
@@ -336,10 +385,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get machineEditTargetAuthentication => '目标认证';
 
   @override
-  String get machineEditPrivateKey => 'Private Key';
+  String get machineEditPrivateKey => '私钥';
 
   @override
-  String get machineEditSshPrivateKeyPem => 'SSH Private Key (PEM)';
+  String get machineEditSshPrivateKeyPem => 'SSH 私钥（PEM）';
 
   @override
   String get machineEditOpenSshPrivateKeyHint =>
@@ -356,19 +405,19 @@ class AppLocalizationsZh extends AppLocalizations {
   String get machineEditUseSshJumpHostSubtitle => '通过 bastion 或中间 SSH 主机连接';
 
   @override
-  String get machineEditSshJumpHost => 'SSH Jump Host';
+  String get machineEditSshJumpHost => 'SSH 跳板机';
 
   @override
-  String get machineEditJumpHost => 'Jump Host';
+  String get machineEditJumpHost => '跳板主机';
 
   @override
   String get machineEditJumpHostHint => 'bastion.example.com';
 
   @override
-  String get machineEditJumpPort => 'Jump Port';
+  String get machineEditJumpPort => '跳板端口';
 
   @override
-  String get machineEditJumpUsername => 'Jump Username';
+  String get machineEditJumpUsername => '跳板用户名';
 
   @override
   String get machineEditJumpUsernameHint => '留空则使用 SSH Username';
@@ -380,14 +429,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get machineEditJumpHostAuthenticationSubtitle => '留空则复用目标 SSH 认证信息';
 
   @override
-  String get machineEditJumpPassword => 'Jump Password';
+  String get machineEditJumpPassword => '跳板密码';
 
   @override
   String get machineEditSavedJumpHostPasswordIndicator =>
       'Jump Host 密码已保存。输入新内容会替换它。';
 
   @override
-  String get machineEditJumpPrivateKeyPem => 'Jump Private Key (PEM)';
+  String get machineEditJumpPrivateKeyPem => '跳板私钥（PEM）';
 
   @override
   String get machineEditSavedJumpHostPrivateKeyIndicator =>
@@ -697,7 +746,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get modelOptional => '模型（可选）';
 
   @override
-  String get effort => 'Effort';
+  String get effort => '推理强度';
 
   @override
   String get defaultLabel => '默认';
@@ -740,10 +789,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sandbox => '沙箱';
 
   @override
-  String get reasoning => 'Reasoning';
+  String get reasoning => '推理';
 
   @override
-  String get webSearch => 'Web Search';
+  String get webSearch => '网页搜索';
 
   @override
   String get networkAccess => '网络访问';
@@ -2749,7 +2798,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get rateOnStoreAndroid => '在 Google Play 评分';
 
   @override
-  String get supporterTitle => 'Supporter';
+  String get supporterTitle => '支持者';
 
   @override
   String get supporterMonthlyTitle => '每月支持';
@@ -3120,7 +3169,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get goalMutationClearing => '正在删除目标…';
 
   @override
-  String get goalTokensUnit => 'tokens';
+  String get goalTokensUnit => '个 Token';
 
   @override
   String get goalBlockedExplanation => '目标模式因多次遇到阻塞而停止。补充所需信息或修改目标后即可继续。';

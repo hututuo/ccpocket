@@ -106,6 +106,30 @@ void main() {
       expect(find.text('View steps'), findsNothing);
     });
 
+    testWidgets('localizes structured path errors without rewriting details', (
+      tester,
+    ) async {
+      const message = ErrorMessage(
+        message: '/Volumes/Research is outside the configured roots',
+        errorCode: 'path_not_allowed',
+      );
+
+      await tester.pumpWidget(
+        _wrapErrorBubble(
+          locale: const Locale('zh'),
+          child: const ErrorBubble(message: message),
+        ),
+      );
+
+      expect(find.text('路径不在允许范围内'), findsOneWidget);
+      expect(
+        find.text('/Volumes/Research is outside the configured roots'),
+        findsOneWidget,
+      );
+      expect(find.text('请更新 Bridge 服务端的 BRIDGE_ALLOWED_DIRS'), findsOneWidget);
+      expect(find.text('Path Not Allowed'), findsNothing);
+    });
+
     testWidgets('shows Codex CLI install guidance', (tester) async {
       const message = ErrorMessage(
         message:

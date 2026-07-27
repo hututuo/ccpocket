@@ -14,14 +14,14 @@ String? _errorTitle(String? errorCode, AppLocalizations l) {
   return switch (errorCode) {
     'auth_login_required' ||
     'auth_token_expired' ||
-    'auth_api_error' => 'Authentication Error',
-    'codex_auth_required' => 'Codex Authentication Error',
-    'codex_cli_not_found' => 'Codex CLI Not Installed',
-    'path_not_allowed' => 'Path Not Allowed',
+    'auth_api_error' => l.errorAuthenticationTitle,
+    'codex_auth_required' => l.errorCodexAuthenticationTitle,
+    'codex_cli_not_found' => l.errorCodexCliNotInstalledTitle,
+    'path_not_allowed' => l.errorPathNotAllowedTitle,
     'git_not_available' => l.gitUnavailableTitle,
-    'bridge_update_required' => 'Bridge Update Required',
-    'auto_mode_unavailable' => 'Auto Mode Unavailable',
-    'codex_warning' => 'Codex Warning',
+    'bridge_update_required' => l.errorBridgeUpdateRequiredTitle,
+    'auto_mode_unavailable' => l.errorAutoModeUnavailableTitle,
+    'codex_warning' => l.errorCodexWarningTitle,
     _ => null,
   };
 }
@@ -29,17 +29,14 @@ String? _errorTitle(String? errorCode, AppLocalizations l) {
 /// Maps errorCode to a short remedy hint shown below the message.
 String? _errorHint(String? errorCode, AppLocalizations l) {
   return switch (errorCode) {
-    'auth_login_required' ||
-    'auth_token_expired' => 'Run "claude auth login" on the Bridge machine',
-    'auth_api_error' => 'Set ANTHROPIC_API_KEY on the Bridge machine',
-    'codex_auth_required' => 'Check OPENAI_API_KEY on the Bridge machine',
-    'codex_cli_not_found' =>
-      'Install Codex CLI on the Bridge machine, then restart Bridge',
-    'path_not_allowed' => 'Update BRIDGE_ALLOWED_DIRS on the Bridge server',
+    'auth_login_required' || 'auth_token_expired' => l.errorClaudeAuthLoginHint,
+    'auth_api_error' => l.errorAnthropicApiKeyHint,
+    'codex_auth_required' => l.errorOpenAiApiKeyHint,
+    'codex_cli_not_found' => l.errorCodexCliInstallHint,
+    'path_not_allowed' => l.errorPathAllowedDirsHint,
     'git_not_available' => l.gitUnavailableHint,
     'bridge_update_required' => 'npm update -g @ccpocket/bridge',
-    'auto_mode_unavailable' =>
-      'Use Default mode here, or switch to a Claude environment that supports Auto mode',
+    'auto_mode_unavailable' => l.errorAutoModeUnavailableHint,
     _ => null,
   };
 }
@@ -257,7 +254,7 @@ class ErrorBubble extends StatelessWidget {
           Clipboard.setData(ClipboardData(text: command));
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Copied "$command"'),
+              content: Text(AppLocalizations.of(context).copiedValue(command)),
               duration: const Duration(seconds: 2),
             ),
           );
@@ -442,9 +439,9 @@ class _ApiKeyRequiredCard extends StatelessWidget {
               ),
             );
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Copied URL'),
-                duration: Duration(seconds: 2),
+              SnackBar(
+                content: Text(l.copiedUrl),
+                duration: const Duration(seconds: 2),
               ),
             );
           },
@@ -554,7 +551,7 @@ class _CommandChip extends StatelessWidget {
         Clipboard.setData(ClipboardData(text: copyValue));
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Copied "$copyValue"'),
+            content: Text(AppLocalizations.of(context).copiedValue(copyValue)),
             duration: const Duration(seconds: 2),
           ),
         );

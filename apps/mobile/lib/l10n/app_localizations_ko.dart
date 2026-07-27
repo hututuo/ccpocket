@@ -107,6 +107,14 @@ class AppLocalizationsKo extends AppLocalizations {
   String get copied => '복사됨';
 
   @override
+  String copiedValue(String value) {
+    return '\"$value\" 복사됨';
+  }
+
+  @override
+  String get copiedUrl => 'URL 복사됨';
+
+  @override
   String get copiedToClipboard => '클립보드에 복사됨';
 
   @override
@@ -131,7 +139,7 @@ class AppLocalizationsKo extends AppLocalizations {
   String get git => 'Git';
 
   @override
-  String get explorer => 'Explorer';
+  String get explorer => '파일 탐색기';
 
   @override
   String get gitUnavailableTip => 'Git을 찾을 수 없음 — Git 기능을 사용할 수 없습니다';
@@ -141,6 +149,49 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get gitUnavailableHint => '이 프로젝트에서는 Git 기능을 사용할 수 없습니다';
+
+  @override
+  String get errorAuthenticationTitle => '인증 오류';
+
+  @override
+  String get errorCodexAuthenticationTitle => 'Codex 인증 오류';
+
+  @override
+  String get errorCodexCliNotInstalledTitle => 'Codex CLI가 설치되지 않음';
+
+  @override
+  String get errorPathNotAllowedTitle => '허용되지 않은 경로';
+
+  @override
+  String get errorBridgeUpdateRequiredTitle => 'Bridge 업데이트 필요';
+
+  @override
+  String get errorAutoModeUnavailableTitle => 'Auto 모드를 사용할 수 없음';
+
+  @override
+  String get errorCodexWarningTitle => 'Codex 경고';
+
+  @override
+  String get errorClaudeAuthLoginHint =>
+      'Bridge 기기에서 \"claude auth login\"을 실행하세요';
+
+  @override
+  String get errorAnthropicApiKeyHint => 'Bridge 기기에 ANTHROPIC_API_KEY를 설정하세요';
+
+  @override
+  String get errorOpenAiApiKeyHint => 'Bridge 기기의 OPENAI_API_KEY를 확인하세요';
+
+  @override
+  String get errorCodexCliInstallHint =>
+      'Bridge 기기에 Codex CLI를 설치한 다음 Bridge를 다시 시작하세요';
+
+  @override
+  String get errorPathAllowedDirsHint =>
+      'Bridge 서버의 BRIDGE_ALLOWED_DIRS를 업데이트하세요';
+
+  @override
+  String get errorAutoModeUnavailableHint =>
+      '여기서는 Default 모드를 사용하거나 Auto 모드를 지원하는 Claude 환경으로 전환하세요';
 
   @override
   String get autoModeFallbackDefaultTip =>
@@ -294,7 +345,7 @@ class AppLocalizationsKo extends AppLocalizations {
   String get machineEditHostHint => '100.64.1.2';
 
   @override
-  String get machineEditPort => 'Port';
+  String get machineEditPort => '포트';
 
   @override
   String get machineEditBridgePortHint => '8765';
@@ -323,13 +374,13 @@ class AppLocalizationsKo extends AppLocalizations {
       '오프라인일 때 Bridge Server를 원격으로 시작합니다';
 
   @override
-  String get machineEditSshUsername => 'SSH Username';
+  String get machineEditSshUsername => 'SSH 사용자 이름';
 
   @override
   String get machineEditSshUsernameHint => 'myuser';
 
   @override
-  String get machineEditSshPort => 'SSH Port';
+  String get machineEditSshPort => 'SSH 포트';
 
   @override
   String get machineEditSshPortHint => '22';
@@ -338,10 +389,10 @@ class AppLocalizationsKo extends AppLocalizations {
   String get machineEditTargetAuthentication => '대상 인증';
 
   @override
-  String get machineEditPrivateKey => 'Private Key';
+  String get machineEditPrivateKey => '개인 키';
 
   @override
-  String get machineEditSshPrivateKeyPem => 'SSH Private Key (PEM)';
+  String get machineEditSshPrivateKeyPem => 'SSH 개인 키(PEM)';
 
   @override
   String get machineEditOpenSshPrivateKeyHint =>
@@ -359,19 +410,19 @@ class AppLocalizationsKo extends AppLocalizations {
       'Bastion 또는 중간 SSH 호스트를 통해 연결합니다';
 
   @override
-  String get machineEditSshJumpHost => 'SSH Jump Host';
+  String get machineEditSshJumpHost => 'SSH 점프 호스트';
 
   @override
-  String get machineEditJumpHost => 'Jump Host';
+  String get machineEditJumpHost => '점프 호스트';
 
   @override
   String get machineEditJumpHostHint => 'bastion.example.com';
 
   @override
-  String get machineEditJumpPort => 'Jump Port';
+  String get machineEditJumpPort => '점프 포트';
 
   @override
-  String get machineEditJumpUsername => 'Jump Username';
+  String get machineEditJumpUsername => '점프 사용자 이름';
 
   @override
   String get machineEditJumpUsernameHint => '비워 두면 SSH Username을 사용합니다';
@@ -384,14 +435,14 @@ class AppLocalizationsKo extends AppLocalizations {
       '비워 두면 대상 SSH 인증 정보를 재사용합니다';
 
   @override
-  String get machineEditJumpPassword => 'Jump Password';
+  String get machineEditJumpPassword => '점프 비밀번호';
 
   @override
   String get machineEditSavedJumpHostPasswordIndicator =>
       'Jump Host 비밀번호가 저장되어 있습니다. 새로 입력하면 교체됩니다.';
 
   @override
-  String get machineEditJumpPrivateKeyPem => 'Jump Private Key (PEM)';
+  String get machineEditJumpPrivateKeyPem => '점프 개인 키(PEM)';
 
   @override
   String get machineEditSavedJumpHostPrivateKeyIndicator =>
@@ -705,7 +756,7 @@ class AppLocalizationsKo extends AppLocalizations {
   String get modelOptional => '모델(선택 사항)';
 
   @override
-  String get effort => 'Effort';
+  String get effort => '추론 강도';
 
   @override
   String get defaultLabel => '기본값';
@@ -2794,7 +2845,7 @@ class AppLocalizationsKo extends AppLocalizations {
   String get rateOnStoreAndroid => 'Google Play에서 평가';
 
   @override
-  String get supporterTitle => 'Supporter';
+  String get supporterTitle => '후원자';
 
   @override
   String get supporterMonthlyTitle => '월간 Supporter';
@@ -3180,7 +3231,7 @@ class AppLocalizationsKo extends AppLocalizations {
   String get goalMutationClearing => 'Goal 삭제 중…';
 
   @override
-  String get goalTokensUnit => 'tokens';
+  String get goalTokensUnit => '토큰';
 
   @override
   String get goalBlockedExplanation =>

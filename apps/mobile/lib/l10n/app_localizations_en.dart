@@ -108,6 +108,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get copied => 'Copied';
 
   @override
+  String copiedValue(String value) {
+    return 'Copied \"$value\"';
+  }
+
+  @override
+  String get copiedUrl => 'Copied URL';
+
+  @override
   String get copiedToClipboard => 'Copied to clipboard';
 
   @override
@@ -144,6 +152,51 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get gitUnavailableHint =>
       'Git features are not available for this project';
+
+  @override
+  String get errorAuthenticationTitle => 'Authentication Error';
+
+  @override
+  String get errorCodexAuthenticationTitle => 'Codex Authentication Error';
+
+  @override
+  String get errorCodexCliNotInstalledTitle => 'Codex CLI Not Installed';
+
+  @override
+  String get errorPathNotAllowedTitle => 'Path Not Allowed';
+
+  @override
+  String get errorBridgeUpdateRequiredTitle => 'Bridge Update Required';
+
+  @override
+  String get errorAutoModeUnavailableTitle => 'Auto Mode Unavailable';
+
+  @override
+  String get errorCodexWarningTitle => 'Codex Warning';
+
+  @override
+  String get errorClaudeAuthLoginHint =>
+      'Run \"claude auth login\" on the Bridge machine';
+
+  @override
+  String get errorAnthropicApiKeyHint =>
+      'Set ANTHROPIC_API_KEY on the Bridge machine';
+
+  @override
+  String get errorOpenAiApiKeyHint =>
+      'Check OPENAI_API_KEY on the Bridge machine';
+
+  @override
+  String get errorCodexCliInstallHint =>
+      'Install Codex CLI on the Bridge machine, then restart Bridge';
+
+  @override
+  String get errorPathAllowedDirsHint =>
+      'Update BRIDGE_ALLOWED_DIRS on the Bridge server';
+
+  @override
+  String get errorAutoModeUnavailableHint =>
+      'Use Default mode here, or switch to a Claude environment that supports Auto mode';
 
   @override
   String get autoModeFallbackDefaultTip =>

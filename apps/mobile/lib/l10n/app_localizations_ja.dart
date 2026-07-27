@@ -107,6 +107,14 @@ class AppLocalizationsJa extends AppLocalizations {
   String get copied => 'コピーしました';
 
   @override
+  String copiedValue(String value) {
+    return '「$value」をコピーしました';
+  }
+
+  @override
+  String get copiedUrl => 'URLをコピーしました';
+
+  @override
   String get copiedToClipboard => 'クリップボードにコピーしました';
 
   @override
@@ -131,7 +139,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get git => 'Git';
 
   @override
-  String get explorer => 'Explorer';
+  String get explorer => 'エクスプローラー';
 
   @override
   String get gitUnavailableTip => 'Git未検出 — Git機能は利用できません';
@@ -141,6 +149,50 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get gitUnavailableHint => 'このプロジェクトではGit機能を利用できません';
+
+  @override
+  String get errorAuthenticationTitle => '認証エラー';
+
+  @override
+  String get errorCodexAuthenticationTitle => 'Codex 認証エラー';
+
+  @override
+  String get errorCodexCliNotInstalledTitle => 'Codex CLI がインストールされていません';
+
+  @override
+  String get errorPathNotAllowedTitle => 'パスは許可されていません';
+
+  @override
+  String get errorBridgeUpdateRequiredTitle => 'Bridge の更新が必要です';
+
+  @override
+  String get errorAutoModeUnavailableTitle => 'Auto モードは利用できません';
+
+  @override
+  String get errorCodexWarningTitle => 'Codex の警告';
+
+  @override
+  String get errorClaudeAuthLoginHint =>
+      'Bridge マシンで「claude auth login」を実行してください';
+
+  @override
+  String get errorAnthropicApiKeyHint =>
+      'Bridge マシンで ANTHROPIC_API_KEY を設定してください';
+
+  @override
+  String get errorOpenAiApiKeyHint => 'Bridge マシンの OPENAI_API_KEY を確認してください';
+
+  @override
+  String get errorCodexCliInstallHint =>
+      'Bridge マシンに Codex CLI をインストールしてから Bridge を再起動してください';
+
+  @override
+  String get errorPathAllowedDirsHint =>
+      'Bridge サーバーの BRIDGE_ALLOWED_DIRS を更新してください';
+
+  @override
+  String get errorAutoModeUnavailableHint =>
+      'ここでは Default モードを使用するか、Auto モード対応の Claude 環境に切り替えてください';
 
   @override
   String get autoModeFallbackDefaultTip =>
@@ -294,7 +346,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get machineEditHostHint => '100.64.1.2';
 
   @override
-  String get machineEditPort => 'Port';
+  String get machineEditPort => 'ポート';
 
   @override
   String get machineEditBridgePortHint => '8765';
@@ -323,13 +375,13 @@ class AppLocalizationsJa extends AppLocalizations {
       'オフライン時に Bridge Server をリモート起動します';
 
   @override
-  String get machineEditSshUsername => 'SSH Username';
+  String get machineEditSshUsername => 'SSH ユーザー名';
 
   @override
   String get machineEditSshUsernameHint => 'myuser';
 
   @override
-  String get machineEditSshPort => 'SSH Port';
+  String get machineEditSshPort => 'SSH ポート';
 
   @override
   String get machineEditSshPortHint => '22';
@@ -338,10 +390,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get machineEditTargetAuthentication => '接続先の認証';
 
   @override
-  String get machineEditPrivateKey => 'Private Key';
+  String get machineEditPrivateKey => '秘密鍵';
 
   @override
-  String get machineEditSshPrivateKeyPem => 'SSH Private Key (PEM)';
+  String get machineEditSshPrivateKeyPem => 'SSH 秘密鍵（PEM）';
 
   @override
   String get machineEditOpenSshPrivateKeyHint =>
@@ -358,19 +410,19 @@ class AppLocalizationsJa extends AppLocalizations {
   String get machineEditUseSshJumpHostSubtitle => '踏み台または中継 SSH ホスト経由で接続します';
 
   @override
-  String get machineEditSshJumpHost => 'SSH Jump Host';
+  String get machineEditSshJumpHost => 'SSH 踏み台ホスト';
 
   @override
-  String get machineEditJumpHost => 'Jump Host';
+  String get machineEditJumpHost => '踏み台ホスト';
 
   @override
   String get machineEditJumpHostHint => 'bastion.example.com';
 
   @override
-  String get machineEditJumpPort => 'Jump Port';
+  String get machineEditJumpPort => '踏み台ポート';
 
   @override
-  String get machineEditJumpUsername => 'Jump Username';
+  String get machineEditJumpUsername => '踏み台ユーザー名';
 
   @override
   String get machineEditJumpUsernameHint => '未入力なら SSH Username を使います';
@@ -383,14 +435,14 @@ class AppLocalizationsJa extends AppLocalizations {
       '未入力なら接続先の SSH 認証情報を再利用します';
 
   @override
-  String get machineEditJumpPassword => 'Jump Password';
+  String get machineEditJumpPassword => '踏み台パスワード';
 
   @override
   String get machineEditSavedJumpHostPasswordIndicator =>
       'Jump Host パスワードは保存済みです。新しく入力すると置き換えます。';
 
   @override
-  String get machineEditJumpPrivateKeyPem => 'Jump Private Key (PEM)';
+  String get machineEditJumpPrivateKeyPem => '踏み台秘密鍵（PEM）';
 
   @override
   String get machineEditSavedJumpHostPrivateKeyIndicator =>
@@ -705,7 +757,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get modelOptional => 'モデル（任意）';
 
   @override
-  String get effort => 'Effort';
+  String get effort => '推論強度';
 
   @override
   String get defaultLabel => 'デフォルト';
@@ -748,10 +800,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get sandbox => 'Sandbox';
 
   @override
-  String get reasoning => 'Reasoning';
+  String get reasoning => '推論';
 
   @override
-  String get webSearch => 'Web Search';
+  String get webSearch => 'ウェブ検索';
 
   @override
   String get networkAccess => 'ネットワークアクセス';
@@ -2778,7 +2830,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get rateOnStoreAndroid => 'Google Play で評価する';
 
   @override
-  String get supporterTitle => 'Supporter';
+  String get supporterTitle => 'サポーター';
 
   @override
   String get supporterMonthlyTitle => '月額サポーター';
@@ -3153,7 +3205,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get goalMutationClearing => 'Goalを削除中…';
 
   @override
-  String get goalTokensUnit => 'tokens';
+  String get goalTokensUnit => 'トークン';
 
   @override
   String get goalBlockedExplanation =>
