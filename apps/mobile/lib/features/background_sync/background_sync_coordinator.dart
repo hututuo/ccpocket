@@ -221,6 +221,12 @@ class MobileBackgroundSyncCoordinator {
       unawaited(
         _publishDartReadyForLifecycle(lifecycleGeneration, initialWatchState),
       );
+    } else {
+      // A warm-runtime BGAppRefresh can arrive before Flutter publishes a
+      // definite lifecycle state. Attach the Dart handler immediately so the
+      // native pending task can complete, but keep scheduling fail-closed until
+      // foreground/background is known.
+      unawaited(_ensureDartReady());
     }
   }
 

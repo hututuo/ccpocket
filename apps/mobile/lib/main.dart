@@ -116,6 +116,12 @@ void main() async {
   } else {
     WidgetsFlutterBinding.ensureInitialized();
   }
+  if (!kIsWeb && isMobilePlatform) {
+    // Register before runApp (and before slow startup work) so a terminated or
+    // background isolate always has its entry point available. Foreground FCM
+    // listeners remain opt-in and are attached later from app settings.
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  }
   Bloc.observer = TalkerBlocObserver(talker: logger);
 
   FlutterError.onError = (details) {
@@ -649,8 +655,6 @@ class _CcpocketAppState extends State<CcpocketApp> {
       return;
     }
     _fcmHandlersInitialized = true;
-
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
     _fcmOnMessageSub = FirebaseMessaging.onMessage.listen((message) {
       _handleForegroundFcmMessage(message);

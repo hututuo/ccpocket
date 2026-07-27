@@ -304,7 +304,7 @@ void main() {
   });
 
   test(
-    'unknown startup stays fail-closed until lifecycle is definite',
+    'unknown startup attaches refresh handler but does not schedule',
     () async {
       for (final initialState in <AppLifecycleState?>[
         null,
@@ -322,7 +322,8 @@ void main() {
         await Future<void>.delayed(Duration.zero);
 
         expect(mirror.automaticWatchRestorationStates, [false]);
-        expect(host.markReadyCount, 0);
+        expect(host.markReadyCount, 1);
+        expect(host.readySawRefreshHandler, isTrue);
         expect(host.scheduleCount, 0);
 
         await coordinator.handleLifecycleState(AppLifecycleState.resumed);
