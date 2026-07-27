@@ -72,6 +72,43 @@ export function parseAllowedDirectories(
   return entries.map((dir) => resolvePlatformPath(dir, platform));
 }
 
+export interface OwnerFileAccessPolicy {
+  fullDiskReadRequested: boolean;
+  ownerFullDiskRead: boolean;
+  allowedDirs: string[];
+}
+
+/**
+ * Resolve the one authoritative file-access policy shared by every Bridge
+ * surface.
+ *
+ * An exact `*` requests owner full-disk access, but it becomes effective only
+ * when the Bridge also requires an API key. Without that authentication
+ * boundary we deliberately fall back to the supplied safe roots instead of
+ * leaking the empty-list sentinel ("unrestricted") into older consumers.
+ */
+export function resolveOwnerFileAccessPolicy(
+  input: string | undefined,
+  apiKey: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+  defaultDirs: string[] = [],
+): OwnerFileAccessPolicy {
+  const fullDiskReadRequested = input?.trim() === "*";
+  const ownerFullDiskRead =
+    fullDiskReadRequested && Boolean(apiKey?.trim());
+  const effectiveInput =
+    fullDiskReadRequested && !ownerFullDiskRead ? undefined : input;
+  return {
+    fullDiskReadRequested,
+    ownerFullDiskRead,
+    allowedDirs: parseAllowedDirectories(
+      effectiveInput,
+      platform,
+      defaultDirs,
+    ),
+  };
+}
+
 export function isPathWithinAllowedDirectory(
   targetPath: string,
   allowedDir: string,

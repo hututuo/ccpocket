@@ -3,6 +3,7 @@ import {
   isPathWithinAllowedDirectory,
   normalizePlatformPath,
   parseAllowedDirectories,
+  resolveOwnerFileAccessPolicy,
   resolvePlatformPath,
   resolvePlatformPathFrom,
   stripWindowsExtendedPathPrefix,
@@ -73,6 +74,53 @@ describe("path-utils", () => {
       .toEqual([]);
     expect(() => parseAllowedDirectories("*, /opt/project", "linux"))
       .toThrow("must be either '*'");
+  });
+
+  it("enables owner full-disk access only behind API-key authentication", () => {
+    expect(
+      resolveOwnerFileAccessPolicy(
+        "*",
+        "owner-secret",
+        "linux",
+        ["/home/alice"],
+      ),
+    ).toEqual({
+      fullDiskReadRequested: true,
+      ownerFullDiskRead: true,
+      allowedDirs: [],
+    });
+  });
+
+  it("fails a bare full-disk request closed to the safe default roots", () => {
+    expect(
+      resolveOwnerFileAccessPolicy("*", undefined, "linux", ["/home/alice"]),
+    ).toEqual({
+      fullDiskReadRequested: true,
+      ownerFullDiskRead: false,
+      allowedDirs: ["/home/alice"],
+    });
+    expect(
+      resolveOwnerFileAccessPolicy("*", "  ", "linux", ["/home/alice"]),
+    ).toEqual({
+      fullDiskReadRequested: true,
+      ownerFullDiskRead: false,
+      allowedDirs: ["/home/alice"],
+    });
+  });
+
+  it("preserves ordinary scoped directory configuration", () => {
+    expect(
+      resolveOwnerFileAccessPolicy(
+        "/home/alice, /opt/project",
+        undefined,
+        "linux",
+        ["/fallback"],
+      ),
+    ).toEqual({
+      fullDiskReadRequested: false,
+      ownerFullDiskRead: false,
+      allowedDirs: ["/home/alice", "/opt/project"],
+    });
   });
 
   it("rejects non-empty configurations without a path", () => {

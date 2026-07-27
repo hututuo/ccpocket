@@ -20,7 +20,7 @@ import {
   promptHistoryStoreFileForPort,
   PromptHistoryStore,
 } from "./prompt-history-store.js";
-import { parseAllowedDirectories } from "./path-utils.js";
+import { resolveOwnerFileAccessPolicy } from "./path-utils.js";
 import { parseBridgePort } from "./bridge-port.js";
 import { listenForStartup } from "./server-listen.js";
 import { ArtifactStore } from "./artifact-store.js";
@@ -50,20 +50,19 @@ export async function startServer() {
   const HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
   const API_KEY = process.env.BRIDGE_API_KEY;
   const bridgeAuthenticator = new BridgeApiKeyAuthenticator(API_KEY);
-  const FULL_DISK_READ_REQUESTED =
-    process.env.BRIDGE_ALLOWED_DIRS?.trim() === "*";
-  const OWNER_FULL_DISK_READ =
-    FULL_DISK_READ_REQUESTED && Boolean(API_KEY?.trim());
+  const {
+    fullDiskReadRequested: FULL_DISK_READ_REQUESTED,
+    ownerFullDiskRead: OWNER_FULL_DISK_READ,
+    allowedDirs: ALLOWED_DIRS,
+  } = resolveOwnerFileAccessPolicy(
+    process.env.BRIDGE_ALLOWED_DIRS,
+    API_KEY,
+    process.platform,
+    [homedir()],
+  );
   const MDNS_ENABLED = shouldAdvertiseMdns(
     process.platform,
     !!process.env.BRIDGE_DISABLE_MDNS,
-  );
-
-  // Unrestricted access requires the exact value "*".
-  const ALLOWED_DIRS = parseAllowedDirectories(
-    process.env.BRIDGE_ALLOWED_DIRS,
-    process.platform,
-    [homedir()],
   );
 
   console.log("[bridge] Starting ccpocket bridge server...");
