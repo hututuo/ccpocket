@@ -1908,13 +1908,18 @@ class BridgeService implements BridgeServiceBase {
                 }
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
-              case StatusMessage(:final status, :final activityAt):
+              case StatusMessage(
+                :final status,
+                :final rawStatus,
+                :final activityAt,
+              ):
                 // Patch cached session list so the session list screen
                 // reflects status changes in real-time.
                 if (sessionId != null) {
                   _patchSessionStatus(
                     sessionId,
                     status,
+                    rawStatus: rawStatus,
                     activityAt: activityAt,
                   );
                 }
@@ -2216,8 +2221,11 @@ class BridgeService implements BridgeServiceBase {
 
     final status = msg.status;
     if (status != null) {
-      _patchSessionStatus(sessionId, status);
-      final statusMessage = StatusMessage(status: status);
+      _patchSessionStatus(sessionId, status, rawStatus: msg.rawStatus);
+      final statusMessage = StatusMessage(
+        status: status,
+        rawStatus: msg.rawStatus,
+      );
       _runtimeStore.applyServerMessage(sessionId, statusMessage);
       _taggedMessageController.add((statusMessage, sessionId));
       _messageController.add(statusMessage);
@@ -2240,8 +2248,11 @@ class BridgeService implements BridgeServiceBase {
 
     final status = msg.status;
     if (status != null) {
-      _patchSessionStatus(sessionId, status);
-      final statusMessage = StatusMessage(status: status);
+      _patchSessionStatus(sessionId, status, rawStatus: msg.rawStatus);
+      final statusMessage = StatusMessage(
+        status: status,
+        rawStatus: msg.rawStatus,
+      );
       _runtimeStore.applyServerMessage(sessionId, statusMessage);
       _taggedMessageController.add((statusMessage, sessionId));
       _messageController.add(statusMessage);
@@ -4583,16 +4594,13 @@ class BridgeService implements BridgeServiceBase {
   void _patchSessionStatus(
     String sessionId,
     ProcessStatus status, {
+    String? rawStatus,
     String? activityAt,
   }) {
-    final statusStr = switch (status) {
-      ProcessStatus.starting => 'starting',
-      ProcessStatus.idle => 'idle',
-      ProcessStatus.running => 'running',
-      ProcessStatus.waitingApproval => 'waiting_approval',
-      ProcessStatus.compacting => 'compacting',
-      ProcessStatus.unknown => 'unknown',
-    };
+    final normalizedRawStatus = rawStatus?.trim();
+    final statusStr = normalizedRawStatus?.isNotEmpty == true
+        ? normalizedRawStatus!
+        : status.wireValue;
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx < 0) return;
     final current = _sessions[idx];

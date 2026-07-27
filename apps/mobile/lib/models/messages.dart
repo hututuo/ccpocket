@@ -112,7 +112,7 @@ enum ProcessStatus {
   unknown;
 
   static ProcessStatus fromString(String value) {
-    return switch (value) {
+    return switch (value.trim()) {
       'starting' => ProcessStatus.starting,
       'idle' => ProcessStatus.idle,
       'running' => ProcessStatus.running,
@@ -121,6 +121,27 @@ enum ProcessStatus {
       _ => ProcessStatus.unknown,
     };
   }
+
+  String get wireValue => switch (this) {
+    ProcessStatus.starting => 'starting',
+    ProcessStatus.idle => 'idle',
+    ProcessStatus.running => 'running',
+    ProcessStatus.waitingApproval => 'waiting_approval',
+    ProcessStatus.compacting => 'compacting',
+    ProcessStatus.unknown => 'unknown',
+  };
+}
+
+ProcessStatus _processStatusFromJson(dynamic value) {
+  final rawStatus = _nonEmptyString(value);
+  return rawStatus == null
+      ? ProcessStatus.unknown
+      : ProcessStatus.fromString(rawStatus);
+}
+
+ProcessStatus? _optionalProcessStatusFromJson(dynamic value) {
+  final rawStatus = _nonEmptyString(value);
+  return rawStatus == null ? null : ProcessStatus.fromString(rawStatus);
 }
 
 enum CodexThreadGoalStatus {
@@ -1266,7 +1287,8 @@ sealed class ServerMessage {
         },
       ),
       'status' => StatusMessage(
-        status: ProcessStatus.fromString(json['status'] as String),
+        status: _processStatusFromJson(json['status']),
+        rawStatus: _nonEmptyString(json['status']),
         activityAt: json['activityAt'] as String?,
       ),
       'history' => HistoryMessage(
@@ -1296,18 +1318,16 @@ sealed class ServerMessage {
         fromSeq: _intFromJson(json['fromSeq']) ?? 0,
         toSeq: _intFromJson(json['toSeq']) ?? 0,
         entries: _historyEntriesFromJson(json['messages']),
-        status: json['status'] != null
-            ? ProcessStatus.fromString(json['status'] as String)
-            : null,
+        status: _optionalProcessStatusFromJson(json['status']),
+        rawStatus: _nonEmptyString(json['status']),
       ),
       'history_snapshot' => HistorySnapshotMessage(
         sessionId: json['sessionId'] as String?,
         fromSeq: _intFromJson(json['fromSeq']) ?? 0,
         toSeq: _intFromJson(json['toSeq']) ?? 0,
         entries: _historyEntriesFromJson(json['messages']),
-        status: json['status'] != null
-            ? ProcessStatus.fromString(json['status'] as String)
-            : null,
+        status: _optionalProcessStatusFromJson(json['status']),
+        rawStatus: _nonEmptyString(json['status']),
         reason: json['reason'] as String? ?? 'compacted',
         historyWindow: switch (json['historyWindow']) {
           final Map<String, dynamic> value => HistoryWindowInfo.fromJson(value),
@@ -2404,8 +2424,13 @@ GuardianApprovalMessage? _guardianReviewFromLegacyWarning(String message) {
 
 class StatusMessage implements ServerMessage {
   final ProcessStatus status;
+  final String? rawStatus;
   final String? activityAt;
-  const StatusMessage({required this.status, this.activityAt});
+
+  const StatusMessage({required this.status, this.rawStatus, this.activityAt});
+
+  String get effectiveStatus => rawStatus ?? status.wireValue;
+  bool get hasUnknownStatus => status == ProcessStatus.unknown;
 }
 
 class HistoryMessage implements ServerMessage {
@@ -2457,6 +2482,7 @@ class HistoryDeltaMessage implements ServerMessage {
   final int toSeq;
   final List<HistoryEntry> entries;
   final ProcessStatus? status;
+  final String? rawStatus;
 
   const HistoryDeltaMessage({
     this.sessionId,
@@ -2464,6 +2490,7 @@ class HistoryDeltaMessage implements ServerMessage {
     required this.toSeq,
     required this.entries,
     this.status,
+    this.rawStatus,
   });
 }
 
@@ -2560,6 +2587,7 @@ class HistorySnapshotMessage implements ServerMessage {
   final int toSeq;
   final List<HistoryEntry> entries;
   final ProcessStatus? status;
+  final String? rawStatus;
   final String reason;
   final HistoryWindowInfo? historyWindow;
 
@@ -2569,6 +2597,7 @@ class HistorySnapshotMessage implements ServerMessage {
     required this.toSeq,
     required this.entries,
     this.status,
+    this.rawStatus,
     required this.reason,
     this.historyWindow,
   });

@@ -3,6 +3,69 @@ import 'package:ccpocket/models/messages.dart';
 import 'dart:convert';
 
 void main() {
+  test(
+    'preserves future process status values without treating them as idle',
+    () {
+      final direct =
+          ServerMessage.fromJson({
+                'type': 'status',
+                'status': 'reviewing_future',
+              })
+              as StatusMessage;
+      final delta =
+          ServerMessage.fromJson({
+                'type': 'history_delta',
+                'sessionId': 'session-1',
+                'fromSeq': 1,
+                'toSeq': 1,
+                'messages': const [],
+                'status': 'queued_future',
+              })
+              as HistoryDeltaMessage;
+      final snapshot =
+          ServerMessage.fromJson({
+                'type': 'history_snapshot',
+                'sessionId': 'session-1',
+                'fromSeq': 1,
+                'toSeq': 1,
+                'messages': const [],
+                'status': 'resuming_future',
+              })
+              as HistorySnapshotMessage;
+
+      expect(direct.status, ProcessStatus.unknown);
+      expect(direct.rawStatus, 'reviewing_future');
+      expect(direct.effectiveStatus, 'reviewing_future');
+      expect(direct.hasUnknownStatus, isTrue);
+      expect(delta.status, ProcessStatus.unknown);
+      expect(delta.rawStatus, 'queued_future');
+      expect(snapshot.status, ProcessStatus.unknown);
+      expect(snapshot.rawStatus, 'resuming_future');
+    },
+  );
+
+  test('malformed process status is fail-closed instead of throwing', () {
+    final direct =
+        ServerMessage.fromJson({'type': 'status', 'status': 42})
+            as StatusMessage;
+    final delta =
+        ServerMessage.fromJson({
+              'type': 'history_delta',
+              'sessionId': 'session-1',
+              'fromSeq': 1,
+              'toSeq': 1,
+              'messages': const [],
+              'status': 42,
+            })
+            as HistoryDeltaMessage;
+
+    expect(direct.status, ProcessStatus.unknown);
+    expect(direct.rawStatus, isNull);
+    expect(direct.effectiveStatus, 'unknown');
+    expect(delta.status, isNull);
+    expect(delta.rawStatus, isNull);
+  });
+
   test('preserves exact Bridge receipt time and approximate source time', () {
     final exact = ServerMessage.fromJson({
       'type': 'assistant',

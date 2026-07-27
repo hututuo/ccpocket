@@ -567,6 +567,22 @@ void main() {
           '2026-07-25T00:00:07.000Z',
         );
 
+        socket.add(
+          jsonEncode({
+            'type': 'status',
+            'sessionId': 's1',
+            'status': 'reviewing_future',
+          }),
+        );
+        for (
+          var i = 0;
+          i < 30 && bridge.sessions.single.status != 'reviewing_future';
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(bridge.sessions.single.status, 'reviewing_future');
+
         bridge.disconnect();
         await subscription.cancel();
         await socket.close();
