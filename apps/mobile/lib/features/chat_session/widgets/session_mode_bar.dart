@@ -477,6 +477,7 @@ void showCodexPermissionsMenu(
     return;
   }
   final currentMode = chatCubit.state.codexPermissionsMode;
+  final l = AppLocalizations.of(context);
 
   showModalBottomSheet(
     context: context,
@@ -492,7 +493,7 @@ void showCodexPermissionsMenu(
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Permissions',
+                    l.permission,
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
@@ -511,12 +512,9 @@ void showCodexPermissionsMenu(
                               : sheetCs.primary)
                         : sheetCs.onSurfaceVariant,
                   ),
-                  title: Text(mode.label),
+                  title: Text(_codexPermissionsLabel(mode, l)),
                   subtitle: Text(
-                    _codexPermissionsSubtitle(
-                      mode,
-                      AppLocalizations.of(context),
-                    ),
+                    _codexPermissionsSubtitle(mode, l),
                     style: const TextStyle(fontSize: 12),
                   ),
                   trailing: mode == currentMode
@@ -766,7 +764,7 @@ void showSandboxModeMenu(
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  'Sandbox',
+                  l.sandbox,
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
@@ -785,7 +783,7 @@ void showSandboxModeMenu(
                       : _sandboxMenuIconColor(mode, isClaude, sheetCs),
                 ),
                 title: Text(
-                  _sandboxMenuTitle(mode, isClaude),
+                  _sandboxMenuTitle(mode, isClaude, l),
                   style: TextStyle(
                     color:
                         !isClaude &&
@@ -833,11 +831,15 @@ Color _sandboxMenuIconColor(SandboxMode mode, bool isClaude, ColorScheme cs) {
   return cs.onSurfaceVariant;
 }
 
-String _sandboxMenuTitle(SandboxMode mode, bool isClaude) {
+String _sandboxMenuTitle(
+  SandboxMode mode,
+  bool isClaude,
+  AppLocalizations l,
+) {
   if (isClaude) {
-    return mode == SandboxMode.on ? 'Sandbox (Safe Mode)' : 'Standard';
+    return mode == SandboxMode.on ? l.sandboxSafeMode : l.sandboxStandard;
   }
-  return mode == SandboxMode.on ? 'Sandbox On' : 'Sandbox Off';
+  return mode == SandboxMode.on ? l.sandboxOnLabel : l.sandboxOffLabel;
 }
 
 String _sandboxMenuSubtitle(
@@ -866,8 +868,8 @@ Future<void> _confirmSandboxModeChange(
 }) async {
   final l = AppLocalizations.of(context);
   final modeLabel = isClaude
-      ? (mode == SandboxMode.on ? 'Sandbox (Safe Mode)' : 'Standard')
-      : mode.label;
+      ? (mode == SandboxMode.on ? l.sandboxSafeMode : l.sandboxStandard)
+      : (mode == SandboxMode.on ? l.sandboxOnLabel : l.sandboxOffLabel);
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) {
@@ -1053,6 +1055,7 @@ class PermissionModeChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
     const purple = Color(0xFFBB86FC);
     final plan = Theme.of(context).extension<AppColors>()!.statusPlan;
     final appColors = Theme.of(context).extension<AppColors>()!;
@@ -1063,13 +1066,29 @@ class PermissionModeChip extends StatelessWidget {
     final (IconData icon, String label, Color fg) = switch (currentMode) {
       PermissionMode.defaultMode => (
         Icons.tune,
-        'Default',
+        l.permissionDefaultMode,
         cs.onSurfaceVariant,
       ),
-      PermissionMode.auto => (Icons.auto_mode_outlined, 'Auto', autoModeColor),
-      PermissionMode.acceptEdits => (Icons.edit_note, 'Edits', purple),
-      PermissionMode.plan => (Icons.assignment_outlined, 'Plan', plan),
-      PermissionMode.bypassPermissions => (Icons.flash_on, 'Bypass', cs.error),
+      PermissionMode.auto => (
+        Icons.auto_mode_outlined,
+        l.permissionAutoMode,
+        autoModeColor,
+      ),
+      PermissionMode.acceptEdits => (
+        Icons.edit_note,
+        l.permissionChipAcceptEdits,
+        purple,
+      ),
+      PermissionMode.plan => (
+        Icons.assignment_outlined,
+        l.permissionPlanMode,
+        plan,
+      ),
+      PermissionMode.bypassPermissions => (
+        Icons.flash_on,
+        l.permissionChipBypass,
+        cs.error,
+      ),
     };
 
     return Material(
@@ -1127,6 +1146,7 @@ class ExecutionModeChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
 
     // Colors aligned with Claude Code CLI
     const purple = Color(0xFFBB86FC);
@@ -1140,15 +1160,24 @@ class ExecutionModeChip extends StatelessWidget {
                   sandboxMode: null,
                 ),
             cs,
+            l,
           )
         : switch (currentMode) {
             ExecutionMode.defaultMode => (
               Icons.tune,
-              'Default',
+              l.permissionDefaultMode,
               cs.onSurfaceVariant,
             ),
-            ExecutionMode.acceptEdits => (Icons.edit_note, 'Edits', purple),
-            ExecutionMode.fullAccess => (Icons.flash_on, 'Full', cs.error),
+            ExecutionMode.acceptEdits => (
+              Icons.edit_note,
+              l.permissionChipAcceptEdits,
+              purple,
+            ),
+            ExecutionMode.fullAccess => (
+              Icons.flash_on,
+              l.executionFullShort,
+              cs.error,
+            ),
           };
 
     return Material(
@@ -1268,31 +1297,42 @@ String _codexPermissionsSubtitle(
   CodexPermissionsMode.defaultPermissions => l.sandboxRestrictedDescription,
   CodexPermissionsMode.autoReview => l.codexAutoReviewDescription,
   CodexPermissionsMode.fullAccess => l.sandboxNativeCautionDescription,
-  CodexPermissionsMode.custom => 'Codex uses permissions from config.toml',
+  CodexPermissionsMode.custom => l.codexPermissionsFromConfig,
+};
+
+String _codexPermissionsLabel(
+  CodexPermissionsMode mode,
+  AppLocalizations l,
+) => switch (mode) {
+  CodexPermissionsMode.defaultPermissions => l.codexPermissionsOnRequest,
+  CodexPermissionsMode.autoReview => l.codexAutoReview,
+  CodexPermissionsMode.fullAccess => l.codexPermissionsFullAccess,
+  CodexPermissionsMode.custom => l.codexPermissionsCustom,
 };
 
 (IconData, String, Color) _codexPermissionsChipStyle(
   CodexPermissionsMode mode,
   ColorScheme cs,
+  AppLocalizations l,
 ) => switch (mode) {
   CodexPermissionsMode.defaultPermissions => (
     _codexPermissionsIcon(mode),
-    'On Request',
+    l.codexPermissionsOnRequest,
     cs.onSurfaceVariant,
   ),
   CodexPermissionsMode.autoReview => (
     _codexPermissionsIcon(mode),
-    'Auto Review',
+    l.codexAutoReview,
     cs.primary,
   ),
   CodexPermissionsMode.fullAccess => (
     _codexPermissionsIcon(mode),
-    'Full',
+    l.executionFullShort,
     cs.error,
   ),
   CodexPermissionsMode.custom => (
     _codexPermissionsIcon(mode),
-    'Custom',
+    l.codexPermissionsCustomShort,
     cs.primary,
   ),
 };
@@ -1376,14 +1416,15 @@ class SandboxModeChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
     final isClaude = provider != Provider.codex;
 
     final (IconData icon, String label, Color fg) = switch (currentMode) {
-      SandboxMode.on => (Icons.shield_outlined, 'Sandbox', cs.tertiary),
+      SandboxMode.on => (Icons.shield_outlined, l.sandbox, cs.tertiary),
       SandboxMode.off =>
         isClaude
-            ? (Icons.code, 'Standard', cs.onSurfaceVariant)
-            : (Icons.warning_amber, 'No SB', cs.error),
+            ? (Icons.code, l.sandboxStandard, cs.onSurfaceVariant)
+            : (Icons.warning_amber, l.sandboxOffShort, cs.error),
     };
 
     return Material(

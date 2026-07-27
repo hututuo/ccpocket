@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../l10n/app_localizations.dart';
 import '../models/messages.dart';
 import 'codex_effort_motion.dart';
 
@@ -14,6 +15,15 @@ String codexModelDisplayName(String model) {
         return '${part[0].toUpperCase()}${part.substring(1)}';
       })
       .join(' ');
+}
+
+String codexSpeedDisplayLabel(BuildContext context, CodexSpeed speed) {
+  final l = AppLocalizations.of(context);
+  return switch (speed) {
+    CodexSpeed.standard => l.speedStandard,
+    CodexSpeed.fast => l.speedFast,
+    CodexSpeed.unknown => l.speedCustom,
+  };
 }
 
 const _quickEffortOrder = <ReasoningEffort>[
@@ -403,16 +413,17 @@ class CodexSpeedButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
     final isFast = speed == CodexSpeed.fast;
     final isUnknown = speed == CodexSpeed.unknown;
     return Tooltip(
       message:
           tooltip ??
           (isUnknown
-              ? 'Custom service tier (read-only)'
+              ? l.speedCustomReadOnly
               : isFast
-              ? 'Fast mode on'
-              : 'Fast mode off'),
+              ? l.speedFastOn
+              : l.speedFastOff),
       child: IconButton(
         key: ValueKey(buttonKey),
         onPressed: enabled && !isUnknown

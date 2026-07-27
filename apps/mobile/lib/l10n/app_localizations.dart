@@ -6269,6 +6269,234 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'プッシュできません'**
   String get gitPushUnavailable;
+
+  /// No description provided for @licenseSearchHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'パッケージを検索…'**
+  String get licenseSearchHint;
+
+  /// No description provided for @licenseNoPackagesFound.
+  ///
+  /// In ja, this message translates to:
+  /// **'パッケージが見つかりません'**
+  String get licenseNoPackagesFound;
+
+  /// No description provided for @licenseEntryCount.
+  ///
+  /// In ja, this message translates to:
+  /// **'ライセンス項目：{count}'**
+  String licenseEntryCount(Object count);
+
+  /// No description provided for @bridgeMachine.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge マシン'**
+  String get bridgeMachine;
+
+  /// No description provided for @bridgeNotConnected.
+  ///
+  /// In ja, this message translates to:
+  /// **'未接続'**
+  String get bridgeNotConnected;
+
+  /// No description provided for @enabledAgentsBoth.
+  ///
+  /// In ja, this message translates to:
+  /// **'両方'**
+  String get enabledAgentsBoth;
+
+  /// No description provided for @speed.
+  ///
+  /// In ja, this message translates to:
+  /// **'速度'**
+  String get speed;
+
+  /// No description provided for @readOnlyValue.
+  ///
+  /// In ja, this message translates to:
+  /// **'{value}（読み取り専用）'**
+  String readOnlyValue(Object value);
+
+  /// No description provided for @speedFastDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'1.5倍速、使用量が増えます'**
+  String get speedFastDescription;
+
+  /// No description provided for @speedDefaultDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'標準速度'**
+  String get speedDefaultDescription;
+
+  /// No description provided for @speedStandard.
+  ///
+  /// In ja, this message translates to:
+  /// **'標準'**
+  String get speedStandard;
+
+  /// No description provided for @speedFast.
+  ///
+  /// In ja, this message translates to:
+  /// **'高速'**
+  String get speedFast;
+
+  /// No description provided for @speedCustom.
+  ///
+  /// In ja, this message translates to:
+  /// **'カスタム'**
+  String get speedCustom;
+
+  /// No description provided for @speedCustomReadOnly.
+  ///
+  /// In ja, this message translates to:
+  /// **'カスタムサービス階層（読み取り専用）'**
+  String get speedCustomReadOnly;
+
+  /// No description provided for @speedFastOn.
+  ///
+  /// In ja, this message translates to:
+  /// **'高速モードはオンです'**
+  String get speedFastOn;
+
+  /// No description provided for @speedFastOff.
+  ///
+  /// In ja, this message translates to:
+  /// **'高速モードはオフです'**
+  String get speedFastOff;
+
+  /// No description provided for @currentServiceTierReadOnly.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在のサービス階層：{value}（読み取り専用）'**
+  String currentServiceTierReadOnly(Object value);
+
+  /// No description provided for @codexPermissionsOnRequest.
+  ///
+  /// In ja, this message translates to:
+  /// **'必要時に確認'**
+  String get codexPermissionsOnRequest;
+
+  /// No description provided for @codexPermissionsFullAccess.
+  ///
+  /// In ja, this message translates to:
+  /// **'フルアクセス'**
+  String get codexPermissionsFullAccess;
+
+  /// No description provided for @codexPermissionsCustom.
+  ///
+  /// In ja, this message translates to:
+  /// **'カスタム（config.toml）'**
+  String get codexPermissionsCustom;
+
+  /// No description provided for @codexPermissionsCustomShort.
+  ///
+  /// In ja, this message translates to:
+  /// **'カスタム'**
+  String get codexPermissionsCustomShort;
+
+  /// No description provided for @codexPermissionsFromConfig.
+  ///
+  /// In ja, this message translates to:
+  /// **'Codex は config.toml の権限設定を使用します'**
+  String get codexPermissionsFromConfig;
+
+  /// No description provided for @codexPermissionsFromProfile.
+  ///
+  /// In ja, this message translates to:
+  /// **'Codex は選択したプロファイルの権限設定を使用します'**
+  String get codexPermissionsFromProfile;
+
+  /// No description provided for @permissionDefaultMode.
+  ///
+  /// In ja, this message translates to:
+  /// **'デフォルト'**
+  String get permissionDefaultMode;
+
+  /// No description provided for @permissionAutoMode.
+  ///
+  /// In ja, this message translates to:
+  /// **'自動'**
+  String get permissionAutoMode;
+
+  /// No description provided for @permissionChipAcceptEdits.
+  ///
+  /// In ja, this message translates to:
+  /// **'編集'**
+  String get permissionChipAcceptEdits;
+
+  /// No description provided for @permissionPlanMode.
+  ///
+  /// In ja, this message translates to:
+  /// **'プラン'**
+  String get permissionPlanMode;
+
+  /// No description provided for @permissionChipBypass.
+  ///
+  /// In ja, this message translates to:
+  /// **'バイパス'**
+  String get permissionChipBypass;
+
+  /// No description provided for @executionFullShort.
+  ///
+  /// In ja, this message translates to:
+  /// **'フル'**
+  String get executionFullShort;
+
+  /// No description provided for @sandboxSafeMode.
+  ///
+  /// In ja, this message translates to:
+  /// **'サンドボックス（安全モード）'**
+  String get sandboxSafeMode;
+
+  /// No description provided for @sandboxStandard.
+  ///
+  /// In ja, this message translates to:
+  /// **'標準'**
+  String get sandboxStandard;
+
+  /// No description provided for @sandboxOnLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'サンドボックス有効'**
+  String get sandboxOnLabel;
+
+  /// No description provided for @sandboxOffLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'サンドボックス無効'**
+  String get sandboxOffLabel;
+
+  /// No description provided for @sandboxOffShort.
+  ///
+  /// In ja, this message translates to:
+  /// **'サンドボックスなし'**
+  String get sandboxOffShort;
+
+  /// No description provided for @effortUltraDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'使用量を増やし、タスクを自動委任します'**
+  String get effortUltraDescription;
+
+  /// No description provided for @scrollToBottom.
+  ///
+  /// In ja, this message translates to:
+  /// **'一番下へスクロール'**
+  String get scrollToBottom;
+
+  /// No description provided for @switchSession.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッションを切り替え'**
+  String get switchSession;
+
+  /// No description provided for @terminalAppNameHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'マイターミナル'**
+  String get terminalAppNameHint;
 }
 
 class _AppLocalizationsDelegate

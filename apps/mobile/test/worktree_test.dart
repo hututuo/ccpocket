@@ -255,7 +255,7 @@ void main() {
 
       final autoReviewTile = tester.widget<ListTile>(
         find.ancestor(
-          of: find.text('Auto-review'),
+          of: find.text('Auto Review'),
           matching: find.byType(ListTile),
         ),
       );

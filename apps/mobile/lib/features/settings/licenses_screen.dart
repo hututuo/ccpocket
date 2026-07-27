@@ -4,6 +4,8 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../l10n/app_localizations.dart';
+
 /// A custom license page with search functionality.
 ///
 /// Uses [LicenseRegistry.licenses] to load all licenses and groups them
@@ -56,9 +58,10 @@ class _LicensesScreenState extends State<LicensesScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Open Source Licenses')),
+      appBar: AppBar(title: Text(l.openSourceLicenses)),
       body: Column(
         children: [
           // Search bar
@@ -67,7 +70,7 @@ class _LicensesScreenState extends State<LicensesScreen> {
             child: TextField(
               controller: _searchController,
               decoration: InputDecoration(
-                hintText: 'Search packages...',
+                hintText: l.licenseSearchHint,
                 prefixIcon: Icon(
                   Icons.search,
                   size: 20,
@@ -137,7 +140,7 @@ class _FilteredLicenseList extends StatelessWidget {
     if (filtered.isEmpty) {
       return Center(
         child: Text(
-          'No packages found',
+          AppLocalizations.of(context).licenseNoPackagesFound,
           style: TextStyle(
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
@@ -168,7 +171,9 @@ class _LicensePackageTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final licenseCount = entries.length;
-    final subtitle = '$licenseCount license${licenseCount == 1 ? '' : 's'}';
+    final subtitle = AppLocalizations.of(
+      context,
+    ).licenseEntryCount(licenseCount);
 
     return ExpansionTile(
       title: Text(

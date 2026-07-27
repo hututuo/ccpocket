@@ -210,7 +210,7 @@ class _TerminalAppSheetContentState extends State<_TerminalAppSheetContent> {
                           controller: _nameCtrl,
                           decoration: InputDecoration(
                             labelText: l.terminalAppName,
-                            hintText: 'My Terminal',
+                            hintText: l.terminalAppNameHint,
                             border: const OutlineInputBorder(),
                             isDense: true,
                           ),

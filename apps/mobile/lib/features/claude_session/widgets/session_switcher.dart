@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
 import '../../../theme/app_theme.dart';
 
@@ -34,7 +35,7 @@ class SessionSwitcher extends StatelessWidget {
           ),
         ),
       ),
-      tooltip: 'Switch session',
+      tooltip: AppLocalizations.of(context).switchSession,
       onSelected: (sessionId) {
         final session = otherSessions.firstWhere((s) => s.id == sessionId);
         onSessionSelected(session);

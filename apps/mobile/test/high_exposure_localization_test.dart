@@ -1,0 +1,77 @@
+import 'package:ccpocket/features/settings/licenses_screen.dart';
+import 'package:ccpocket/features/settings/widgets/theme_bottom_sheet.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/theme/app_theme.dart';
+import 'package:ccpocket/widgets/codex_effort_slider.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+Widget _localizedApp(Widget home) {
+  return MaterialApp(
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    locale: const Locale('zh'),
+    theme: AppTheme.lightTheme,
+    home: home,
+  );
+}
+
+void main() {
+  testWidgets('theme picker exposes Chinese labels', (tester) async {
+    await tester.pumpWidget(
+      _localizedApp(
+        Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => showThemeBottomSheet(
+                context: context,
+                current: ThemeMode.system,
+                onChanged: (_) {},
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('主题'), findsOneWidget);
+    expect(find.text('跟随系统'), findsOneWidget);
+    expect(find.text('浅色'), findsOneWidget);
+    expect(find.text('深色'), findsOneWidget);
+  });
+
+  testWidgets('license screen exposes Chinese title and search hint', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_localizedApp(const LicensesScreen()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('开源许可'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '搜索软件包…'), findsOneWidget);
+  });
+
+  testWidgets('Codex speed labels follow the active locale', (tester) async {
+    await tester.pumpWidget(
+      _localizedApp(
+        Builder(
+          builder: (context) => Column(
+            children: [
+              Text(codexSpeedDisplayLabel(context, CodexSpeed.standard)),
+              Text(codexSpeedDisplayLabel(context, CodexSpeed.fast)),
+              Text(codexSpeedDisplayLabel(context, CodexSpeed.unknown)),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('标准'), findsOneWidget);
+    expect(find.text('快速'), findsOneWidget);
+    expect(find.text('自定义'), findsOneWidget);
+  });
+}

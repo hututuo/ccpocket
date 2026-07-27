@@ -2315,6 +2315,13 @@ class _OptionsSection extends StatelessWidget {
       CodexPermissionsMode.custom => Icons.settings_outlined,
     };
 
+    String codexPermissionsLabel(CodexPermissionsMode mode) => switch (mode) {
+      CodexPermissionsMode.defaultPermissions => l.codexPermissionsOnRequest,
+      CodexPermissionsMode.autoReview => l.codexAutoReview,
+      CodexPermissionsMode.fullAccess => l.codexPermissionsFullAccess,
+      CodexPermissionsMode.custom => l.codexPermissionsCustom,
+    };
+
     String codexPermissionsDescription(CodexPermissionsMode mode) =>
         switch (mode) {
           CodexPermissionsMode.defaultPermissions =>
@@ -2326,8 +2333,8 @@ class _OptionsSection extends StatelessWidget {
           CodexPermissionsMode.fullAccess => l.sandboxNativeCautionDescription,
           CodexPermissionsMode.custom =>
             selectedCodexProfile == null
-                ? 'Codex uses permissions from config.toml'
-                : 'Codex uses permissions from the selected profile',
+                ? l.codexPermissionsFromConfig
+                : l.codexPermissionsFromProfile,
         };
 
     IconData permissionIcon(PermissionMode mode) => switch (mode) {
@@ -2345,8 +2352,8 @@ class _OptionsSection extends StatelessWidget {
         : (isClaude ? Icons.code : Icons.warning_amber);
 
     String sandboxLabel(SandboxMode mode) => isClaude
-        ? (mode == SandboxMode.on ? 'Sandbox (Safe Mode)' : 'Standard')
-        : mode.label;
+        ? (mode == SandboxMode.on ? l.sandboxSafeMode : l.sandboxStandard)
+        : (mode == SandboxMode.on ? l.sandboxOnLabel : l.sandboxOffLabel);
 
     // -- Selector field widget (shows current selection with description) --
 
@@ -2564,21 +2571,21 @@ class _OptionsSection extends StatelessWidget {
           provider == Provider.codex
               ? modeSelectorField(
                   key: const ValueKey('dialog_codex_permissions_mode'),
-                  label: 'Permissions',
+                  label: l.permission,
                   icon: codexPermissionsIcon(codexPermissionsMode),
-                  title: codexPermissionsMode.label,
+                  title: codexPermissionsLabel(codexPermissionsMode),
                   subtitle: codexPermissionsDescription(codexPermissionsMode),
                   accentColor:
                       codexPermissionsMode == CodexPermissionsMode.fullAccess
                       ? Theme.of(context).colorScheme.error
                       : null,
                   onTap: () => showModeSheet<CodexPermissionsMode>(
-                    title: 'Permissions',
+                    title: l.permission,
                     subtitle: l.sheetSubtitleApproval,
                     modes: CodexPermissionsMode.values,
                     currentMode: codexPermissionsMode,
                     iconFor: codexPermissionsIcon,
-                    labelFor: (mode) => mode.label,
+                    labelFor: codexPermissionsLabel,
                     descriptionFor: codexPermissionsDescription,
                     enabledFor: (mode) =>
                         !codexAutoReviewDisabled ||
@@ -3281,16 +3288,16 @@ class _CodexModelOptions extends StatelessWidget {
           key: const ValueKey('dialog_codex_speed_advanced'),
           initialValue: speed,
           isExpanded: true,
-          decoration: buildInputDecoration('Speed'),
+          decoration: buildInputDecoration(l.speed),
           items: [
-            const DropdownMenuItem(
+            DropdownMenuItem(
               value: CodexSpeed.standard,
-              child: Text('Standard'),
+              child: Text(l.speedStandard),
             ),
             if (supportsFast)
-              const DropdownMenuItem(
+              DropdownMenuItem(
                 value: CodexSpeed.fast,
-                child: Text('Fast — 1.5× speed, more usage'),
+                child: Text('${l.speedFast} — ${l.speedFastDescription}'),
               ),
           ],
           onChanged: (value) {

@@ -3453,4 +3453,124 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get gitPushUnavailable => '当前无法推送';
+
+  @override
+  String get licenseSearchHint => '搜索软件包…';
+
+  @override
+  String get licenseNoPackagesFound => '未找到软件包';
+
+  @override
+  String licenseEntryCount(Object count) {
+    return '许可条目：$count';
+  }
+
+  @override
+  String get bridgeMachine => 'Bridge 设备';
+
+  @override
+  String get bridgeNotConnected => '尚未连接';
+
+  @override
+  String get enabledAgentsBoth => '两者';
+
+  @override
+  String get speed => '速度';
+
+  @override
+  String readOnlyValue(Object value) {
+    return '$value（只读）';
+  }
+
+  @override
+  String get speedFastDescription => '1.5 倍速度，消耗更多额度';
+
+  @override
+  String get speedDefaultDescription => '默认速度';
+
+  @override
+  String get speedStandard => '标准';
+
+  @override
+  String get speedFast => '快速';
+
+  @override
+  String get speedCustom => '自定义';
+
+  @override
+  String get speedCustomReadOnly => '自定义服务层级（只读）';
+
+  @override
+  String get speedFastOn => '快速模式已开启';
+
+  @override
+  String get speedFastOff => '快速模式已关闭';
+
+  @override
+  String currentServiceTierReadOnly(Object value) {
+    return '当前服务层级：$value（只读）';
+  }
+
+  @override
+  String get codexPermissionsOnRequest => '按需请求';
+
+  @override
+  String get codexPermissionsFullAccess => '完全访问';
+
+  @override
+  String get codexPermissionsCustom => '自定义（config.toml）';
+
+  @override
+  String get codexPermissionsCustomShort => '自定义';
+
+  @override
+  String get codexPermissionsFromConfig => 'Codex 使用 config.toml 中的权限设置';
+
+  @override
+  String get codexPermissionsFromProfile => 'Codex 使用所选 profile 中的权限设置';
+
+  @override
+  String get permissionDefaultMode => '默认';
+
+  @override
+  String get permissionAutoMode => '自动';
+
+  @override
+  String get permissionChipAcceptEdits => '编辑';
+
+  @override
+  String get permissionPlanMode => '规划';
+
+  @override
+  String get permissionChipBypass => '绕过';
+
+  @override
+  String get executionFullShort => '完整';
+
+  @override
+  String get sandboxSafeMode => '沙箱（安全模式）';
+
+  @override
+  String get sandboxStandard => '标准';
+
+  @override
+  String get sandboxOnLabel => '沙箱开启';
+
+  @override
+  String get sandboxOffLabel => '沙箱关闭';
+
+  @override
+  String get sandboxOffShort => '无沙箱';
+
+  @override
+  String get effortUltraDescription => '消耗更多额度，并自动委派任务';
+
+  @override
+  String get scrollToBottom => '滚动到底部';
+
+  @override
+  String get switchSession => '切换会话';
+
+  @override
+  String get terminalAppNameHint => '我的终端';
 }

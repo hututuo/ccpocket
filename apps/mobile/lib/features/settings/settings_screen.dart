@@ -318,10 +318,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               Icons.computer_outlined,
                               color: cs.primary,
                             ),
-                            title: const Text('Bridge machine'),
+                            title: Text(l.bridgeMachine),
                             subtitle: Text(
                               machine?.displayName ??
-                                  (bridge.lastUrl ?? 'Not connected'),
+                                  (bridge.lastUrl ?? l.bridgeNotConnected),
                             ),
                           ),
                           Divider(
@@ -607,16 +607,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           Expanded(
                             child: SegmentedButton<EnabledAgentsMode>(
                               key: const ValueKey('enabled_agents_selector'),
-                              segments: const [
+                              segments: [
                                 ButtonSegment(
                                   value: EnabledAgentsMode.both,
-                                  label: Text('Both'),
+                                  label: Text(l.enabledAgentsBoth),
                                 ),
-                                ButtonSegment(
+                                const ButtonSegment(
                                   value: EnabledAgentsMode.codex,
                                   label: Text('Codex'),
                                 ),
-                                ButtonSegment(
+                                const ButtonSegment(
                                   value: EnabledAgentsMode.claude,
                                   label: Text('Claude'),
                                 ),

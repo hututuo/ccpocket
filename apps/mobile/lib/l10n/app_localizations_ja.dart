@@ -3495,4 +3495,124 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get gitPushUnavailable => 'プッシュできません';
+
+  @override
+  String get licenseSearchHint => 'パッケージを検索…';
+
+  @override
+  String get licenseNoPackagesFound => 'パッケージが見つかりません';
+
+  @override
+  String licenseEntryCount(Object count) {
+    return 'ライセンス項目：$count';
+  }
+
+  @override
+  String get bridgeMachine => 'Bridge マシン';
+
+  @override
+  String get bridgeNotConnected => '未接続';
+
+  @override
+  String get enabledAgentsBoth => '両方';
+
+  @override
+  String get speed => '速度';
+
+  @override
+  String readOnlyValue(Object value) {
+    return '$value（読み取り専用）';
+  }
+
+  @override
+  String get speedFastDescription => '1.5倍速、使用量が増えます';
+
+  @override
+  String get speedDefaultDescription => '標準速度';
+
+  @override
+  String get speedStandard => '標準';
+
+  @override
+  String get speedFast => '高速';
+
+  @override
+  String get speedCustom => 'カスタム';
+
+  @override
+  String get speedCustomReadOnly => 'カスタムサービス階層（読み取り専用）';
+
+  @override
+  String get speedFastOn => '高速モードはオンです';
+
+  @override
+  String get speedFastOff => '高速モードはオフです';
+
+  @override
+  String currentServiceTierReadOnly(Object value) {
+    return '現在のサービス階層：$value（読み取り専用）';
+  }
+
+  @override
+  String get codexPermissionsOnRequest => '必要時に確認';
+
+  @override
+  String get codexPermissionsFullAccess => 'フルアクセス';
+
+  @override
+  String get codexPermissionsCustom => 'カスタム（config.toml）';
+
+  @override
+  String get codexPermissionsCustomShort => 'カスタム';
+
+  @override
+  String get codexPermissionsFromConfig => 'Codex は config.toml の権限設定を使用します';
+
+  @override
+  String get codexPermissionsFromProfile => 'Codex は選択したプロファイルの権限設定を使用します';
+
+  @override
+  String get permissionDefaultMode => 'デフォルト';
+
+  @override
+  String get permissionAutoMode => '自動';
+
+  @override
+  String get permissionChipAcceptEdits => '編集';
+
+  @override
+  String get permissionPlanMode => 'プラン';
+
+  @override
+  String get permissionChipBypass => 'バイパス';
+
+  @override
+  String get executionFullShort => 'フル';
+
+  @override
+  String get sandboxSafeMode => 'サンドボックス（安全モード）';
+
+  @override
+  String get sandboxStandard => '標準';
+
+  @override
+  String get sandboxOnLabel => 'サンドボックス有効';
+
+  @override
+  String get sandboxOffLabel => 'サンドボックス無効';
+
+  @override
+  String get sandboxOffShort => 'サンドボックスなし';
+
+  @override
+  String get effortUltraDescription => '使用量を増やし、タスクを自動委任します';
+
+  @override
+  String get scrollToBottom => '一番下へスクロール';
+
+  @override
+  String get switchSession => 'セッションを切り替え';
+
+  @override
+  String get terminalAppNameHint => 'マイターミナル';
 }

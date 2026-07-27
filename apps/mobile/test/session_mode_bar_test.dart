@@ -357,6 +357,9 @@ void main() {
   ) async {
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('en'),
         theme: AppTheme.darkTheme,
         home: MediaQuery(
           data: const MediaQueryData(
@@ -928,7 +931,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     await tester.dragFrom(const Offset(400, 550), const Offset(0, -360));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Auto-review'));
+    await tester.tap(find.text('Auto Review'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('Restart now'));
     await tester.pump(const Duration(milliseconds: 100));

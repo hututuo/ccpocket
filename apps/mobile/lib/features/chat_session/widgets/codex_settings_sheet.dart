@@ -104,7 +104,7 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
           speedButtonKey: 'codex_speed_button',
           speedTooltip: _unsupportedServiceTier == null
               ? null
-              : 'Current service tier: $_unsupportedServiceTier (read-only)',
+              : l.currentServiceTierReadOnly(_unsupportedServiceTier!),
           showAdvanced: _showAdvanced,
           advancedLabel: l.advanced,
           toggleButtonKey: 'codex_settings_advanced',
@@ -138,10 +138,10 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
               ),
               _SettingsRow(
                 key: const ValueKey('codex_speed_advanced'),
-                label: 'Speed',
+                label: l.speed,
                 value: _unsupportedServiceTier == null
-                    ? _speed.label
-                    : '$_unsupportedServiceTier (read-only)',
+                    ? codexSpeedDisplayLabel(context, _speed)
+                    : l.readOnlyValue(_unsupportedServiceTier!),
                 onTap: _unsupportedServiceTier == null
                     ? () => _showSpeedPicker(context)
                     : null,
@@ -172,7 +172,7 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
       selected: _effort,
       label: (effort) => effort.label,
       subtitle: (effort) => effort == ReasoningEffort.ultra
-          ? 'Uses more usage and automatic task delegation'
+          ? AppLocalizations.of(context).effortUltraDescription
           : null,
       onSelected: _selectEffort,
     );
@@ -181,12 +181,13 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
   void _showSpeedPicker(BuildContext context) {
     _showPicker<CodexSpeed>(
       context: context,
-      title: 'Speed',
+      title: AppLocalizations.of(context).speed,
       values: [CodexSpeed.standard, if (_supportsFast) CodexSpeed.fast],
       selected: _speed,
-      label: (speed) => speed.label,
-      subtitle: (speed) =>
-          speed == CodexSpeed.fast ? '1.5× speed, more usage' : 'Default speed',
+      label: (speed) => codexSpeedDisplayLabel(context, speed),
+      subtitle: (speed) => speed == CodexSpeed.fast
+          ? AppLocalizations.of(context).speedFastDescription
+          : AppLocalizations.of(context).speedDefaultDescription,
       onSelected: _selectSpeed,
     );
   }

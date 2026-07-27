@@ -3525,4 +3525,124 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get gitPushUnavailable => '푸시할 수 없음';
+
+  @override
+  String get licenseSearchHint => '패키지 검색…';
+
+  @override
+  String get licenseNoPackagesFound => '패키지를 찾을 수 없음';
+
+  @override
+  String licenseEntryCount(Object count) {
+    return '라이선스 항목: $count';
+  }
+
+  @override
+  String get bridgeMachine => 'Bridge 기기';
+
+  @override
+  String get bridgeNotConnected => '연결되지 않음';
+
+  @override
+  String get enabledAgentsBoth => '둘 다';
+
+  @override
+  String get speed => '속도';
+
+  @override
+  String readOnlyValue(Object value) {
+    return '$value(읽기 전용)';
+  }
+
+  @override
+  String get speedFastDescription => '1.5배 속도, 사용량 증가';
+
+  @override
+  String get speedDefaultDescription => '기본 속도';
+
+  @override
+  String get speedStandard => '표준';
+
+  @override
+  String get speedFast => '빠름';
+
+  @override
+  String get speedCustom => '사용자 지정';
+
+  @override
+  String get speedCustomReadOnly => '사용자 지정 서비스 등급(읽기 전용)';
+
+  @override
+  String get speedFastOn => '빠른 모드 켜짐';
+
+  @override
+  String get speedFastOff => '빠른 모드 꺼짐';
+
+  @override
+  String currentServiceTierReadOnly(Object value) {
+    return '현재 서비스 등급: $value(읽기 전용)';
+  }
+
+  @override
+  String get codexPermissionsOnRequest => '요청 시';
+
+  @override
+  String get codexPermissionsFullAccess => '전체 접근';
+
+  @override
+  String get codexPermissionsCustom => '사용자 지정(config.toml)';
+
+  @override
+  String get codexPermissionsCustomShort => '사용자 지정';
+
+  @override
+  String get codexPermissionsFromConfig => 'Codex가 config.toml의 권한 설정을 사용합니다';
+
+  @override
+  String get codexPermissionsFromProfile => 'Codex가 선택한 프로필의 권한 설정을 사용합니다';
+
+  @override
+  String get permissionDefaultMode => '기본';
+
+  @override
+  String get permissionAutoMode => '자동';
+
+  @override
+  String get permissionChipAcceptEdits => '편집';
+
+  @override
+  String get permissionPlanMode => '계획';
+
+  @override
+  String get permissionChipBypass => '우회';
+
+  @override
+  String get executionFullShort => '전체';
+
+  @override
+  String get sandboxSafeMode => '샌드박스(안전 모드)';
+
+  @override
+  String get sandboxStandard => '표준';
+
+  @override
+  String get sandboxOnLabel => '샌드박스 켜짐';
+
+  @override
+  String get sandboxOffLabel => '샌드박스 꺼짐';
+
+  @override
+  String get sandboxOffShort => '샌드박스 없음';
+
+  @override
+  String get effortUltraDescription => '사용량을 늘리고 작업을 자동 위임합니다';
+
+  @override
+  String get scrollToBottom => '맨 아래로 스크롤';
+
+  @override
+  String get switchSession => '세션 전환';
+
+  @override
+  String get terminalAppNameHint => '내 터미널';
 }

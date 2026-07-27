@@ -3609,4 +3609,127 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get gitPushUnavailable => 'Push unavailable';
+
+  @override
+  String get licenseSearchHint => 'Search packages...';
+
+  @override
+  String get licenseNoPackagesFound => 'No packages found';
+
+  @override
+  String licenseEntryCount(Object count) {
+    return 'License entries: $count';
+  }
+
+  @override
+  String get bridgeMachine => 'Bridge machine';
+
+  @override
+  String get bridgeNotConnected => 'Not connected';
+
+  @override
+  String get enabledAgentsBoth => 'Both';
+
+  @override
+  String get speed => 'Speed';
+
+  @override
+  String readOnlyValue(Object value) {
+    return '$value (read-only)';
+  }
+
+  @override
+  String get speedFastDescription => '1.5× speed, more usage';
+
+  @override
+  String get speedDefaultDescription => 'Default speed';
+
+  @override
+  String get speedStandard => 'Standard';
+
+  @override
+  String get speedFast => 'Fast';
+
+  @override
+  String get speedCustom => 'Custom';
+
+  @override
+  String get speedCustomReadOnly => 'Custom service tier (read-only)';
+
+  @override
+  String get speedFastOn => 'Fast mode on';
+
+  @override
+  String get speedFastOff => 'Fast mode off';
+
+  @override
+  String currentServiceTierReadOnly(Object value) {
+    return 'Current service tier: $value (read-only)';
+  }
+
+  @override
+  String get codexPermissionsOnRequest => 'On Request';
+
+  @override
+  String get codexPermissionsFullAccess => 'Full access';
+
+  @override
+  String get codexPermissionsCustom => 'Custom (config.toml)';
+
+  @override
+  String get codexPermissionsCustomShort => 'Custom';
+
+  @override
+  String get codexPermissionsFromConfig =>
+      'Codex uses permissions from config.toml';
+
+  @override
+  String get codexPermissionsFromProfile =>
+      'Codex uses permissions from the selected profile';
+
+  @override
+  String get permissionDefaultMode => 'Default';
+
+  @override
+  String get permissionAutoMode => 'Auto';
+
+  @override
+  String get permissionChipAcceptEdits => 'Edits';
+
+  @override
+  String get permissionPlanMode => 'Plan';
+
+  @override
+  String get permissionChipBypass => 'Bypass';
+
+  @override
+  String get executionFullShort => 'Full';
+
+  @override
+  String get sandboxSafeMode => 'Sandbox (Safe Mode)';
+
+  @override
+  String get sandboxStandard => 'Standard';
+
+  @override
+  String get sandboxOnLabel => 'Sandbox On';
+
+  @override
+  String get sandboxOffLabel => 'Sandbox Off';
+
+  @override
+  String get sandboxOffShort => 'No sandbox';
+
+  @override
+  String get effortUltraDescription =>
+      'Uses more usage and automatic task delegation';
+
+  @override
+  String get scrollToBottom => 'Scroll to bottom';
+
+  @override
+  String get switchSession => 'Switch session';
+
+  @override
+  String get terminalAppNameHint => 'My Terminal';
 }

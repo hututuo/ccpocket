@@ -2,6 +2,8 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
+
 class ScrollToBottomButton extends StatelessWidget {
   final VoidCallback onPressed;
 
@@ -15,7 +17,7 @@ class ScrollToBottomButton extends StatelessWidget {
 
     return Semantics(
       button: true,
-      label: 'Scroll to bottom',
+      label: AppLocalizations.of(context).scrollToBottom,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(18),
         child: BackdropFilter(
