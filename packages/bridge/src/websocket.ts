@@ -6812,6 +6812,19 @@ export class BridgeWebSocketServer {
           // This guarantees chat history is cleared in the mobile UI without
           // waiting for additional in-turn tool approvals.
           const pending = sdkProc.getPendingPermission(msg.id);
+          if (
+            !pending ||
+            pending.toolUseId !== msg.id ||
+            pending.toolName !== "ExitPlanMode"
+          ) {
+            this.send(ws, {
+              type: "error",
+              errorCode: "invalid_clear_context_approval",
+              message:
+                "Clear context requires the matching pending plan approval.",
+            });
+            break;
+          }
           const planText =
             typeof pending?.input.plan === "string" ? pending.input.plan : "";
 

@@ -12273,6 +12273,80 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it.each([
+    {
+      label: "stale approval",
+      pending: undefined,
+    },
+    {
+      label: "non-plan approval",
+      pending: {
+        toolUseId: "tool-exit-1",
+        toolName: "Bash",
+        input: { command: "pwd" },
+      },
+    },
+  ])(
+    "clearContext rejects an unbound $label without replacing the session",
+    async ({ pending }) => {
+      const bridge = new BridgeWebSocketServer({ server: httpServer });
+      const ws = {
+        readyState: OPEN_STATE,
+        send: vi.fn(),
+      } as any;
+
+      (bridge as any).handleClientMessage(
+        {
+          type: "start",
+          projectPath: "/tmp/project-clear-context-binding",
+          provider: "claude",
+        },
+        ws,
+      );
+      await Promise.resolve();
+
+      const sends = ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      );
+      const created = sends.find(
+        (message: any) =>
+          message.type === "system" &&
+          message.subtype === "session_created",
+      );
+      const sessionId = created.sessionId as string;
+      const session = (bridge as any).sessionManager.get(sessionId);
+      (
+        session.process.getPendingPermission as ReturnType<typeof vi.fn>
+      ).mockReturnValue(pending);
+      ws.send.mockClear();
+
+      (bridge as any).handleClientMessage(
+        {
+          type: "approve",
+          id: "tool-exit-1",
+          clearContext: true,
+          sessionId,
+        },
+        ws,
+      );
+
+      expect((bridge as any).sessionManager.get(sessionId)).toBe(session);
+      expect((bridge as any).sessionManager.list()).toHaveLength(1);
+      expect(session.process.approve).not.toHaveBeenCalled();
+      expect(
+        ws.send.mock.calls.map((call: unknown[]) =>
+          JSON.parse(call[0] as string),
+        ),
+      ).toContainEqual({
+        type: "error",
+        errorCode: "invalid_clear_context_approval",
+        message: "Clear context requires the matching pending plan approval.",
+      });
+
+      bridge.close();
+    },
+  );
+
   it("routes tool suggestion installation to the Codex process", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

@@ -308,6 +308,21 @@ void main() {
     );
   });
 
+  test('interactive permission responses are live-socket only', () {
+    final messages = <ClientMessage>[
+      ClientMessage.approve('tool-1', sessionId: 's1'),
+      ClientMessage.approveAlways('tool-1', sessionId: 's1'),
+      ClientMessage.reject('tool-1', sessionId: 's1'),
+      ClientMessage.answer('tool-1', 'Yes', sessionId: 's1'),
+      ClientMessage.installToolSuggestion('tool-1', sessionId: 's1'),
+    ];
+
+    expect(
+      messages.map((message) => message.delivery),
+      everyElement(ClientMessageDelivery.ephemeral),
+    );
+  });
+
   test('Codex Goal preserves future statuses without widening the enum', () {
     expect(
       CodexThreadGoalStatus.fromString('waitingForFutureResource'),

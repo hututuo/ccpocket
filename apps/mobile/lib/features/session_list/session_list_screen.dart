@@ -2789,44 +2789,40 @@ class _SessionListScreenState extends State<SessionListScreen>
                   unawaited(bridge.cancelOfflinePendingAction(actionId)),
               onApprovePermission:
                   (sessionId, toolUseId, {bool clearContext = false}) {
-                    final bridge = context.read<BridgeService>();
-                    bridge.markToolUseResponded(sessionId, toolUseId);
-                    bridge.send(
+                    _sendLiveSessionInteraction(
+                      sessionId,
+                      toolUseId,
                       ClientMessage.approve(
                         toolUseId,
                         sessionId: sessionId,
                         clearContext: clearContext,
                       ),
                     );
-                    bridge.clearSessionPermission(sessionId);
                   },
               onApproveAlways: (sessionId, toolUseId) {
-                final bridge = context.read<BridgeService>();
-                bridge.markToolUseResponded(sessionId, toolUseId);
-                bridge.send(
+                _sendLiveSessionInteraction(
+                  sessionId,
+                  toolUseId,
                   ClientMessage.approveAlways(toolUseId, sessionId: sessionId),
                 );
-                bridge.clearSessionPermission(sessionId);
               },
               onRejectPermission: (sessionId, toolUseId, {message}) {
-                final bridge = context.read<BridgeService>();
-                bridge.markToolUseResponded(sessionId, toolUseId);
-                bridge.send(
+                _sendLiveSessionInteraction(
+                  sessionId,
+                  toolUseId,
                   ClientMessage.reject(
                     toolUseId,
                     message: message,
                     sessionId: sessionId,
                   ),
                 );
-                bridge.clearSessionPermission(sessionId);
               },
               onAnswerQuestion: (sessionId, toolUseId, result) {
-                final bridge = context.read<BridgeService>();
-                bridge.markToolUseResponded(sessionId, toolUseId);
-                bridge.send(
+                _sendLiveSessionInteraction(
+                  sessionId,
+                  toolUseId,
                   ClientMessage.answer(toolUseId, result, sessionId: sessionId),
                 );
-                bridge.clearSessionPermission(sessionId);
               },
               onResumeSession: _resumeSession,
               onToggleRecentSessionPinned: (session) => context
@@ -2930,6 +2926,22 @@ class _SessionListScreenState extends State<SessionListScreen>
       onCancelConnection: onCancelConnection,
       onRetryConnection: onRetryConnection,
     );
+  }
+
+  bool _sendLiveSessionInteraction(
+    String sessionId,
+    String toolUseId,
+    ClientMessage message,
+  ) {
+    final bridge = context.read<BridgeService>();
+    try {
+      bridge.send(message);
+    } catch (_) {
+      return false;
+    }
+    bridge.markToolUseResponded(sessionId, toolUseId);
+    bridge.clearSessionPermission(sessionId);
+    return true;
   }
 
   void _connectToDiscovered(DiscoveredServer server) {

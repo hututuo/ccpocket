@@ -4451,6 +4451,33 @@ void main() {
     });
 
     test(
+      'disconnected approval stays visible and is not marked responded',
+      () async {
+        final cubit = createCubit('s1');
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        const permission = PermissionRequestMessage(
+          toolUseId: 'tool-live-only',
+          toolName: 'bash',
+          input: {'command': 'ls'},
+        );
+        mockBridge.emitMessage(permission, sessionId: 's1');
+        await Future.microtask(() {});
+        mockBridge.connected = false;
+
+        cubit.approve('tool-live-only');
+
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(
+          mockBridge.respondedToolUseIds('s1'),
+          isNot(contains('tool-live-only')),
+        );
+      },
+    );
+
+    test(
       'tool suggestion install keeps approval visible while pending',
       () async {
         final cubit = createCubit('s1');

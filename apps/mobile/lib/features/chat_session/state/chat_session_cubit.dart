@@ -4379,14 +4379,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       '[session:$sessionId] approve toolUseId=$toolUseId'
       '${clearContext ? ' clearContext' : ''}',
     );
-    _markToolUseResponded(toolUseId);
-    _bridge.send(
+    if (!_sendInteractiveResponse(
       ClientMessage.approve(
         toolUseId,
         clearContext: clearContext,
         sessionId: sessionId,
       ),
-    );
+    )) {
+      return;
+    }
+    _markToolUseResponded(toolUseId);
     _emitNextApprovalOrNone(
       toolUseId,
       exitPlanModeResolved: isExitPlanApproval,
@@ -4397,8 +4399,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void approveAlways(String toolUseId) {
     if (detachedPreview) return;
     final isExitPlanApproval = _isExitPlanApproval(toolUseId);
+    if (!_sendInteractiveResponse(
+      ClientMessage.approveAlways(toolUseId, sessionId: sessionId),
+    )) {
+      return;
+    }
     _markToolUseResponded(toolUseId);
-    _bridge.send(ClientMessage.approveAlways(toolUseId, sessionId: sessionId));
     _emitNextApprovalOrNone(
       toolUseId,
       exitPlanModeResolved: isExitPlanApproval,
@@ -4413,9 +4419,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     logger.info(
       '[session:$sessionId] install tool suggestion toolUseId=$toolUseId',
     );
-    _bridge.send(
+    _sendInteractiveResponse(
       ClientMessage.installToolSuggestion(toolUseId, sessionId: sessionId),
     );
+  }
+
+  bool _sendInteractiveResponse(ClientMessage message) {
+    try {
+      _bridge.send(message);
+      return true;
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[session:$sessionId] live interaction was not sent',
+        error,
+        stackTrace,
+      );
+      return false;
+    }
   }
 
   /// Find next pending permission after resolving [resolvedToolUseId].
@@ -4521,10 +4541,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       '[session:$sessionId] reject toolUseId=$toolUseId'
       '${message != null ? ' msg=$message' : ''}',
     );
+    if (!_sendInteractiveResponse(
+      ClientMessage.reject(
+        toolUseId,
+        message: message,
+        sessionId: sessionId,
+      ),
+    )) {
+      return;
+    }
     _markToolUseResponded(toolUseId);
-    _bridge.send(
-      ClientMessage.reject(toolUseId, message: message, sessionId: sessionId),
-    );
     // Rejecting ExitPlanMode means "continue planning"; it does not resolve
     // Plan mode. Also advance to any other live interaction instead of hiding
     // the entire pending queue.
@@ -4534,8 +4560,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Answer an AskUserQuestion.
   void answer(String toolUseId, String result) {
     if (detachedPreview) return;
+    if (!_sendInteractiveResponse(
+      ClientMessage.answer(toolUseId, result, sessionId: sessionId),
+    )) {
+      return;
+    }
     _markToolUseResponded(toolUseId);
-    _bridge.send(ClientMessage.answer(toolUseId, result, sessionId: sessionId));
     _emitNextApprovalOrNone(toolUseId);
   }
 

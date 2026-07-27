@@ -5452,7 +5452,7 @@ class ClientMessage {
       'id': id,
       if (clearContext) 'clearContext': true,
       'sessionId': ?sessionId,
-    });
+    }, delivery: ClientMessageDelivery.ephemeral);
   }
 
   /// Sends the existing approve wire message only on the current live socket.
@@ -5473,7 +5473,7 @@ class ClientMessage {
         'type': 'approve_always',
         'id': id,
         'sessionId': ?sessionId,
-      });
+      }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.reject(
     String id, {
@@ -5485,7 +5485,7 @@ class ClientMessage {
       'id': id,
       'message': ?message,
       'sessionId': ?sessionId,
-    });
+    }, delivery: ClientMessageDelivery.ephemeral);
   }
 
   factory ClientMessage.rejectLiveOnly(
@@ -5507,7 +5507,7 @@ class ClientMessage {
       'toolUseId': toolUseId,
       'result': result,
       'sessionId': ?sessionId,
-    });
+    }, delivery: ClientMessageDelivery.ephemeral);
   }
 
   factory ClientMessage.installToolSuggestion(
@@ -5518,7 +5518,7 @@ class ClientMessage {
       'type': 'install_tool_suggestion',
       'toolUseId': toolUseId,
       'sessionId': ?sessionId,
-    });
+    }, delivery: ClientMessageDelivery.ephemeral);
   }
 
   factory ClientMessage.getHistory(String sessionId) =>
