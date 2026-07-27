@@ -55,3 +55,20 @@ Status: built and audited; unsigned AltStore/AltServer candidate.
   performance remain unverified.
 - Current live Bridge has no connected phone at the deployment check, and the
   Mac-local Tailscale IPv4 probe timed out; phone reconnection is not claimed.
+
+## Build and cache cleanup
+
+- Removed the superseded build-202 IPA after build 203 passed the complete
+  archive audit.
+- Retained exactly two delivery IPAs: build 203 plus the older build-199
+  Shorebird baseline as a rollback source.
+- Removed the oldest inactive Bridge runtime
+  `1.69.0-compat.6-4e611c6b`; retained current compat.2 plus compat.1 rollback.
+- Removed two Xcode-created `Clone 2 of iPhone 17 Pro Max` directories from
+  `~/Library/Developer/XCTestDevices`; the user's normal iPhone 17 Pro Max
+  Simulator remains.
+- Ran `flutter clean` after packaging, removing the archive and active
+  Flutter build caches.
+- Exact old runtime, old IPA and XCTest clone removal freed
+  `7,235,140,876` bytes; the measured Flutter build and `.dart_tool` cleanup
+  removed about another 630 MiB of reproducible data.
