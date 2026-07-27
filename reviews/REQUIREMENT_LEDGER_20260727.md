@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`97fb5aab`
+核对源码基线：`f9d949f7`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -106,7 +106,7 @@
 | 图片草稿和待发送附件不能在 App 启动时全量 Base64 解码，也不能在每次编辑时阻塞 UI；慢的旧写入、删除和迁移不能复活过期草稿 | v02-006、014；全局性能门禁 | `7c91196e`；`DraftService` 的原始编码缓存、懒解码、异步编码和每会话 generation fence | **已验证** | 红测证明旧构造器会立即解码全部持久图片，注入的异步编码器也没有真正接管待发送消息；现只在首次读取对应会话时解码，64 KiB 以上编码移到 isolate，小附件保留同步 fast path。相同 client ID 的新编辑优先，过期编码失败不会拒绝新值，删除会隔离未完成写入，冷迁移直接复用旧 JSON 且存储 schema/key 不变；DraftService 23/23 与 2 文件 analyze 通过 |
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | `c2cc8379` 语义整合官方 `3289ce93`；`97fb5aab` 同步 `1.109.3` 并保持本地 build 单调递增；本轮 fetch 的 upstream/main=`82962136` | **已验证** | 同一 Claude/Codex 会话的通知或深链会优先揭示现有路由，会话 ID 重启后以实时身份而非旧参数匹配；Codex 深链保留 provider。52 项导航/解析/重启/活动会话回归通过，6 文件 analyze 无问题。官方 build `202` 低于已经交付的本地 build 204，因此本分支采用 `1.109.3+205`，未伪装成官方原始构建号 |
-| 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理。官方导航联合回归另外确认两个 WorkspaceShell 用例会因 `_LegacyExploreLane` 关闭时遗留 12 秒 quarantine timer 失败；它不在本次导航改动路径，但必须在后续性能/生命周期批次先红测再修 |
+| 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账；`f9d949f7` 收束旧 Bridge Explore lane | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理。导航联合回归暴露的 WorkspaceShell pending timer 经追踪并非产品应删的迟到帧隔离：旧 Bridge 仍必须保留 quarantine；本提交让 Bridge 流关闭时立即释放 lane/timer，并让 WorkspaceShell 测试明确声明现代 request-correlation capability。Explore + WorkspaceShell 39 项通过，生产改动另有旧 Bridge 流关闭回归 |
 | Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `97fb5aab`，后续深链、安全、通知 ACK、公平调度、历史/会话管理，图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent 统一预览、草稿性能、本地化完整性/四语言收束，以及官方 1.109.3 导航修复均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
@@ -137,9 +137,8 @@ command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（�
 ## 8. 下一实施顺序
 
 1. 继续完成剩余领域错误映射和长尾固定 UI 的四语言量化扫描；
-2. 修复 `_LegacyExploreLane` 关闭后 quarantine timer 生命周期，并复跑 WorkspaceShell；
-3. 按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
-4. 收束文件预览 HTTP/JSON 错误、下载实现和本地 HTML 安全预览；
-5. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
-6. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
-7. 最后才列出需要用户在物理 iPhone 上完成的视觉、通知、Face ID 和后台验收。
+2. 按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
+3. 收束文件预览 HTTP/JSON 错误、下载实现和本地 HTML 安全预览；
+4. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
+5. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
+6. 最后才列出需要用户在物理 iPhone 上完成的视觉、通知、Face ID 和后台验收。
