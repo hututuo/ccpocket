@@ -1799,6 +1799,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         provider: session.provider,
         providerSessionId: session.sessionId,
         projectPath: session.projectPath,
+        codexSourceId: session.codexSourceId,
       );
       // Also refresh from server to confirm persistence
       unawaited(context.read<SessionListCubit>().refresh());
@@ -1933,6 +1934,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         summary: session.summary,
         firstPrompt: session.firstPrompt,
         modified: session.modified,
+        codexSourceId: session.codexSourceId,
       );
     } catch (error) {
       _archivePendingRequests.cancel(requestId);
@@ -2236,6 +2238,7 @@ class _SessionListScreenState extends State<SessionListScreen>
           ? edited.additionalWritableRoots
           : null,
       resumeRequestId: requestId,
+      codexSourceId: isCodex ? session.codexSourceId : null,
     );
 
     // Persist per-session Claude settings for future resumes.

@@ -3858,6 +3858,7 @@ class ArchiveResultMessage implements ServerMessage {
 class ArchivedSessionRecord {
   final String sessionId;
   final String provider;
+  final String? codexSourceId;
   final String projectPath;
   final String archivedAt;
   final String? name;
@@ -3868,6 +3869,7 @@ class ArchivedSessionRecord {
   const ArchivedSessionRecord({
     required this.sessionId,
     required this.provider,
+    this.codexSourceId,
     required this.projectPath,
     required this.archivedAt,
     this.name,
@@ -3880,6 +3882,7 @@ class ArchivedSessionRecord {
       ArchivedSessionRecord(
         sessionId: json['sessionId'] as String? ?? '',
         provider: json['provider'] as String? ?? '',
+        codexSourceId: json['codexSourceId'] as String?,
         projectPath: json['projectPath'] as String? ?? '',
         archivedAt: json['archivedAt'] as String? ?? '',
         name: json['name'] as String?,
@@ -4539,6 +4542,7 @@ String pathBasename(String path) {
 class RecentSession {
   final String sessionId;
   final String? provider;
+  final String? codexSourceId;
   final String? rawPermissionMode;
   final String? forkedFromThreadId;
 
@@ -4572,6 +4576,7 @@ class RecentSession {
   const RecentSession({
     required this.sessionId,
     this.provider,
+    this.codexSourceId,
     this.rawPermissionMode,
     this.forkedFromThreadId,
     this.name,
@@ -4625,6 +4630,7 @@ class RecentSession {
     return RecentSession(
       sessionId: json['sessionId'] as String,
       provider: json['provider'] as String?,
+      codexSourceId: json['codexSourceId'] as String?,
       rawPermissionMode: json['permissionMode'] as String?,
       forkedFromThreadId: json['forkedFromThreadId'] as String?,
       name: json['name'] as String?,
@@ -4674,6 +4680,7 @@ class RecentSession {
   Map<String, dynamic> toJson() => {
     'sessionId': sessionId,
     'provider': provider,
+    'codexSourceId': codexSourceId,
     'permissionMode': rawPermissionMode,
     'forkedFromThreadId': forkedFromThreadId,
     'name': name,
@@ -4723,6 +4730,7 @@ class RecentSession {
     return RecentSession(
       sessionId: sessionId,
       provider: provider,
+      codexSourceId: codexSourceId,
       rawPermissionMode: rawPermissionMode,
       forkedFromThreadId: forkedFromThreadId,
       name: clearName ? null : (name ?? this.name),
@@ -4761,6 +4769,7 @@ class RecentSession {
     return RecentSession(
       sessionId: sessionId,
       provider: provider,
+      codexSourceId: codexSourceId,
       rawPermissionMode: rawPermissionMode,
       forkedFromThreadId: forkedFromThreadId,
       name: name,
@@ -5599,6 +5608,7 @@ class ClientMessage {
     String? provider,
     String? providerSessionId,
     String? projectPath,
+    String? codexSourceId,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'rename_session',
@@ -5607,6 +5617,7 @@ class ClientMessage {
       'provider': ?provider,
       'providerSessionId': ?providerSessionId,
       'projectPath': ?projectPath,
+      'codexSourceId': ?codexSourceId,
     });
   }
 
@@ -5660,6 +5671,7 @@ class ClientMessage {
     String? webSearchMode,
     List<String>? additionalWritableRoots,
     String? resumeRequestId,
+    String? codexSourceId,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'resume_session',
@@ -5686,6 +5698,7 @@ class ClientMessage {
       'networkAccessEnabled': ?networkAccessEnabled,
       'webSearchMode': ?webSearchMode,
       'resumeRequestId': ?resumeRequestId,
+      'codexSourceId': ?codexSourceId,
       if (additionalWritableRoots != null && additionalWritableRoots.isNotEmpty)
         'additionalWritableRoots': additionalWritableRoots,
     });
@@ -5826,11 +5839,13 @@ class ClientMessage {
   factory ClientMessage.forkRecentSession({
     required String threadId,
     required String projectPath,
+    String? codexSourceId,
   }) => ClientMessage._({
     'type': 'fork',
     'sessionId': threadId,
     'targetUuid': 'codex:user-turn:latest',
     'projectPath': projectPath,
+    'codexSourceId': ?codexSourceId,
   });
 
   factory ClientMessage.listWindows() =>
@@ -5953,6 +5968,7 @@ class ClientMessage {
     String? summary,
     String? firstPrompt,
     String? modified,
+    String? codexSourceId,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'archive_session',
@@ -5964,6 +5980,7 @@ class ClientMessage {
       'summary': ?summary,
       'firstPrompt': ?firstPrompt,
       'modified': ?modified,
+      'codexSourceId': ?codexSourceId,
     }, delivery: ClientMessageDelivery.ephemeral);
   }
 
@@ -5978,18 +5995,21 @@ class ClientMessage {
     required String sessionId,
     required String provider,
     required String projectPath,
+    String? codexSourceId,
   }) => ClientMessage._({
     'type': 'unarchive_session',
     'requestId': requestId,
     'sessionId': sessionId,
     'provider': provider,
     'projectPath': projectPath,
+    'codexSourceId': ?codexSourceId,
   }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.deleteSession({
     required String requestId,
     required String sessionId,
     required String projectPath,
+    String? codexSourceId,
   }) => ClientMessage._({
     'type': 'delete_session',
     'requestId': requestId,
@@ -5997,6 +6017,7 @@ class ClientMessage {
     'provider': 'codex',
     'projectPath': projectPath,
     'confirmDescendantDeletion': true,
+    'codexSourceId': ?codexSourceId,
   }, delivery: ClientMessageDelivery.ephemeral);
 
   // ---- Git Operations (Phase 1-3) ----

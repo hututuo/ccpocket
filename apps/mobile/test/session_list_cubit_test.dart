@@ -588,7 +588,8 @@ void main() {
 
         expect(cache.loadCalls, 2);
         expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
-        expect(cubit.state.sessions.single.sessionId, 'old-home-session');
+        expect(cubit.state.sessions, isEmpty);
+        expect(cubit.state.isInitialLoading, isTrue);
       },
     );
 

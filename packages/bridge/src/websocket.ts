@@ -1046,6 +1046,7 @@ type SessionLifecycleErrorCode =
   | "session_active"
   | "session_not_archived"
   | "archive_identity_mismatch"
+  | "codex_source_mismatch"
   | "unsupported_capability"
   | "provider_rpc_failed"
   | "local_store_failed"
@@ -2327,7 +2328,9 @@ export class BridgeWebSocketServer {
     sessionId: string,
     targetUuid: string,
     persistedProjectPath?: string,
+    codexSourceId?: string,
   ): Promise<void> {
+    this.assertCodexSourceMatches("codex", codexSourceId);
     const requestedPersistedFork = persistedProjectPath !== undefined;
     const session =
       this.sessionManager.get(sessionId) ??
@@ -2475,7 +2478,7 @@ export class BridgeWebSocketServer {
       }
 
       await this.requireArchiveStoreReady();
-      if (this.archiveStore.isArchived(threadId, "codex")) {
+      if (this.archiveStore.isArchived(threadId, "codex", this.codexSourceId)) {
         throw new Error(
           "The Codex thread is archived. Restore it before forking.",
         );
@@ -7130,7 +7133,10 @@ export class BridgeWebSocketServer {
             limit: 1,
             provider,
             sessionId: msg.sessionId,
-            archivedSessionIds: this.archiveStore.archivedIds(provider),
+            archivedSessionIds: this.archiveStore.archivedIds(
+              provider,
+              provider === "codex" ? this.codexSourceId : undefined,
+            ),
           });
           const recentSession = sessions[0];
           this.send(ws, {
@@ -7488,7 +7494,7 @@ export class BridgeWebSocketServer {
             }
             this.send(ws, {
               type: "recent_sessions",
-              sessions,
+              sessions: this.attachCodexSourceToRecentSessions(sessions),
               hasMore,
               limit: msg.limit,
               offset: msg.offset,
@@ -7544,6 +7550,26 @@ export class BridgeWebSocketServer {
           this.platform,
         );
         const provider = msg.provider ?? "claude";
+        if (
+          provider === "codex" &&
+          msg.codexSourceId !== undefined &&
+          msg.codexSourceId !== this.codexSourceId
+        ) {
+          this.sendResumeFailed(ws, {
+            provider,
+            sourceSessionId: msg.sessionId,
+            projectPath: resumeProjectPath,
+            resumeRequestId: msg.resumeRequestId,
+          });
+          this.send(ws, {
+            type: "error",
+            message:
+              "This Codex thread belongs to a different configured source.",
+            errorCode: "codex_source_mismatch",
+            sessionId: msg.sessionId,
+          });
+          break;
+        }
         if (!this.isExistingProjectPathAllowed(resumeProjectPath)) {
           this.sendResumeFailed(ws, {
             provider,
@@ -7687,7 +7713,13 @@ export class BridgeWebSocketServer {
             }
 
             await this.requireArchiveStoreReady();
-            if (this.archiveStore.isArchived(sessionRefId, "codex")) {
+            if (
+              this.archiveStore.isArchived(
+                sessionRefId,
+                "codex",
+                this.codexSourceId,
+              )
+            ) {
               throw new Error(
                 "The Codex thread is archived. Restore it before resuming.",
               );
@@ -9378,12 +9410,19 @@ export class BridgeWebSocketServer {
           msg.sessionId,
           msg.targetUuid,
           msg.projectPath,
+          msg.codexSourceId,
         ).catch((err) => {
-          const errMsg = err instanceof Error ? err.message : String(err);
+          const lifecycleFailure =
+            err instanceof SessionLifecycleError
+              ? this.classifySessionLifecycleError(err)
+              : null;
           this.send(ws, {
             type: "error",
-            message: errMsg,
-            errorCode: "fork_failed",
+            message:
+              lifecycleFailure?.message ??
+              (err instanceof Error ? err.message : String(err)),
+            errorCode: lifecycleFailure?.code ?? "fork_failed",
+            sessionId: msg.sessionId,
           });
         });
         break;
@@ -10055,6 +10094,24 @@ export class BridgeWebSocketServer {
     name: string | null,
     msg: ClientMessage,
   ): Promise<void> {
+    const renameMsg = msg as Extract<ClientMessage, { type: "rename_session" }>;
+    try {
+      if (renameMsg.provider === "codex") {
+        this.assertCodexSourceMatches("codex", renameMsg.codexSourceId);
+      }
+    } catch (error) {
+      const failure = this.classifySessionLifecycleError(error);
+      this.send(ws, {
+        type: "rename_result",
+        sessionId,
+        name,
+        success: false,
+        error: failure.message,
+        errorCode: failure.code,
+      });
+      return;
+    }
+
     // 1. Try running session first
     const runningSession = this.sessionManager.get(sessionId);
     if (runningSession) {
@@ -10089,7 +10146,6 @@ export class BridgeWebSocketServer {
     }
 
     // 2. Recent session (not running) — use provider + providerSessionId + projectPath from message
-    const renameMsg = msg as Extract<ClientMessage, { type: "rename_session" }>;
     const provider = renameMsg.provider;
     const providerSessionId = renameMsg.providerSessionId;
     const projectPath = renameMsg.projectPath;
@@ -10678,7 +10734,7 @@ export class BridgeWebSocketServer {
       provider: msg.provider,
       namedOnly: msg.namedOnly,
       searchQuery: msg.searchQuery,
-      archivedSessionKeys: this.archiveStore.archivedKeys(),
+      archivedSessionKeys: this.archiveStore.archivedKeys(this.codexSourceId),
     });
   }
 
@@ -10696,7 +10752,7 @@ export class BridgeWebSocketServer {
         projectPath: msg.projectPath,
         namedOnly: msg.namedOnly,
         searchQuery: msg.searchQuery,
-        archivedSessionKeys: this.archiveStore.archivedKeys(),
+        archivedSessionKeys: this.archiveStore.archivedKeys(this.codexSourceId),
       }),
       this.listRecentCodexSessions({
         ...msg,
@@ -10736,9 +10792,25 @@ export class BridgeWebSocketServer {
         provider: "codex",
         namedOnly: msg.namedOnly,
         searchQuery: msg.searchQuery,
-        archivedSessionKeys: this.archiveStore.archivedKeys(),
+        archivedSessionKeys: this.archiveStore.archivedKeys(this.codexSourceId),
       });
     }
+  }
+
+  private attachCodexSourceToRecentSessions(sessions: unknown[]): unknown[] {
+    return sessions.map((session) => {
+      if (
+        session === null ||
+        typeof session !== "object" ||
+        Array.isArray(session)
+      ) {
+        return session;
+      }
+      const record = session as Record<string, unknown>;
+      return record.provider === "codex"
+        ? { ...record, codexSourceId: this.codexSourceId }
+        : session;
+    });
   }
 
   private async handleArchiveSession(
@@ -10748,6 +10820,7 @@ export class BridgeWebSocketServer {
     const { sessionId, provider, requestId } = msg;
     try {
       await this.requireArchiveStoreReady();
+      this.assertCodexSourceMatches(provider, msg.codexSourceId);
       const projectPath = this.resolveLifecycleProjectPath(msg.projectPath);
       this.assertProviderSessionInactive(provider, sessionId);
       if (provider === "codex") {
@@ -10759,6 +10832,7 @@ export class BridgeWebSocketServer {
               reservation = await this.archiveStore.reserveArchiveCapacity(
                 sessionId,
                 provider,
+                this.codexSourceId,
               );
             } catch (error) {
               throw new SessionLifecycleError(
@@ -10851,7 +10925,10 @@ export class BridgeWebSocketServer {
   ): Promise<void> {
     try {
       await this.requireArchiveStoreReady();
-      const sessions = this.archiveStore.list(ARCHIVED_SESSION_LIST_LIMIT + 1);
+      const sessions = this.archiveStore.list(
+        ARCHIVED_SESSION_LIST_LIMIT + 1,
+        this.codexSourceId,
+      );
       this.send(ws, {
         type: "archived_sessions_result",
         requestId,
@@ -10890,7 +10967,11 @@ export class BridgeWebSocketServer {
               this.assertProviderSessionInactive(entry.provider, sessionId);
               await codexProcess.unarchiveThread(sessionId);
               try {
-                await this.archiveStore.unarchive(sessionId, entry.provider);
+                await this.archiveStore.unarchive(
+                  sessionId,
+                  entry.provider,
+                  entry.codexSourceId,
+                );
               } catch (storeError) {
                 try {
                   await codexProcess.archiveThread(sessionId);
@@ -10910,7 +10991,11 @@ export class BridgeWebSocketServer {
         );
       } else {
         try {
-          await this.archiveStore.unarchive(sessionId, entry.provider);
+          await this.archiveStore.unarchive(
+            sessionId,
+            entry.provider,
+            entry.codexSourceId,
+          );
         } catch (error) {
           throw new SessionLifecycleError(
             "local_store_failed",
@@ -10959,7 +11044,11 @@ export class BridgeWebSocketServer {
             this.assertProviderSessionInactive("codex", sessionId);
             await codexProcess.deleteThread(sessionId);
             try {
-              await this.archiveStore.remove(sessionId, entry.provider);
+              await this.archiveStore.remove(
+                sessionId,
+                entry.provider,
+                entry.codexSourceId,
+              );
             } catch (error) {
               throw new SessionLifecycleError(
                 "partial_failure",
@@ -10994,13 +11083,25 @@ export class BridgeWebSocketServer {
       { type: "unarchive_session" | "delete_session" }
     >,
   ) {
-    const entry = this.archiveStore
+    this.assertCodexSourceMatches(msg.provider, msg.codexSourceId);
+    const candidates = this.archiveStore
       .list()
-      .find(
+      .filter(
         (session) =>
           session.sessionId === msg.sessionId &&
           session.provider === msg.provider,
       );
+    let entry;
+    if (msg.provider === "codex" && msg.codexSourceId !== undefined) {
+      entry =
+        candidates.find(
+          (session) => session.codexSourceId === msg.codexSourceId,
+        ) ?? candidates.find((session) => session.codexSourceId === undefined);
+    } else if (candidates.length === 1) {
+      [entry] = candidates;
+    } else {
+      entry = candidates.find((session) => session.codexSourceId === undefined);
+    }
     if (!entry) {
       throw new SessionLifecycleError(
         "session_not_archived",
@@ -11016,6 +11117,23 @@ export class BridgeWebSocketServer {
       );
     }
     return { ...entry, projectPath: storedPath };
+  }
+
+  private assertCodexSourceMatches(
+    provider: Provider,
+    requestedSourceId?: string,
+  ): void {
+    if (
+      provider !== "codex" ||
+      requestedSourceId === undefined ||
+      requestedSourceId === this.codexSourceId
+    ) {
+      return;
+    }
+    throw new SessionLifecycleError(
+      "codex_source_mismatch",
+      "This Codex thread belongs to a different configured source.",
+    );
   }
 
   private resolveLifecycleProjectPath(projectPath: string): string {
@@ -11416,7 +11534,10 @@ export class BridgeWebSocketServer {
     const isStandalone = process !== this.getActiveCodexProcess();
 
     try {
-      const archivedIds = this.archiveStore.archivedIds("codex");
+      const archivedIds = this.archiveStore.archivedIds(
+        "codex",
+        this.codexSourceId,
+      );
       const visibleThreads: CodexThreadSummary[] = [];
       let cursor: string | null | undefined;
       let hasServerMore = false;

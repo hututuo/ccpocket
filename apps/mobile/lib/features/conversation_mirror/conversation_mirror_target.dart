@@ -13,6 +13,7 @@ class ConversationMirrorTarget {
   const ConversationMirrorTarget({
     required this.provider,
     required this.providerSessionId,
+    this.codexSourceId,
     required this.projectPath,
     this.resumeCwd,
     this.runtimeSessionId,
@@ -43,6 +44,7 @@ class ConversationMirrorTarget {
 
   final String provider;
   final String providerSessionId;
+  final String? codexSourceId;
   final String projectPath;
   final String? resumeCwd;
   final String? runtimeSessionId;
@@ -77,6 +79,7 @@ class ConversationMirrorTarget {
       ConversationMirrorTarget(
         provider: session.provider ?? Provider.claude.value,
         providerSessionId: session.sessionId,
+        codexSourceId: session.codexSourceId,
         projectPath: session.projectPath,
         resumeCwd: session.resumeCwd,
         name: session.name,
@@ -108,6 +111,7 @@ class ConversationMirrorTarget {
   static ConversationMirrorTarget? fromRunning(
     SessionInfo session, {
     String? providerSessionId,
+    String? codexSourceId,
   }) {
     final provider = session.provider ?? Provider.claude.value;
     final durableId =
@@ -116,6 +120,7 @@ class ConversationMirrorTarget {
     return ConversationMirrorTarget(
       provider: provider,
       providerSessionId: durableId,
+      codexSourceId: provider == Provider.codex.value ? codexSourceId : null,
       projectPath: session.projectPath,
       resumeCwd: session.worktreePath,
       runtimeSessionId: session.id,
@@ -157,6 +162,7 @@ class ConversationMirrorTarget {
   RecentSession toRecentSession() => RecentSession(
     sessionId: providerSessionId,
     provider: provider,
+    codexSourceId: codexSourceId,
     rawPermissionMode: rawPermissionMode,
     name: name,
     agentNickname: agentNickname,

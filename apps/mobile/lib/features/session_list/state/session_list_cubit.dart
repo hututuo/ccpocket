@@ -615,6 +615,29 @@ class SessionListCubit extends Cubit<SessionListState> {
         return;
       }
       if (snapshot == null) {
+        final sourceChanged =
+            (_bridge.codexSourceId?.isNotEmpty ?? false) &&
+            _loadedCacheFingerprint != null &&
+            _loadedCacheFingerprint != target.fingerprint;
+        if (sourceChanged &&
+            networkSerial == _networkCatalogSerial &&
+            !_bridge.hasAuthoritativeRecentSessionsForCurrentConnection) {
+          _loadedCacheFingerprint = null;
+          _loadedCacheCatalogRevision = null;
+          _loadedCacheComplete = false;
+          _cachedSessions = const [];
+          emit(
+            state.copyWith(
+              sessions: const [],
+              hasMore: false,
+              isLoadingMore: false,
+              isInitialLoading: true,
+              loadingProjectPaths: const {},
+            ),
+          );
+          _catalogSnapshotChanges.add(null);
+          return;
+        }
         if (_loadedCacheFingerprint == target.fingerprint) {
           _loadedCacheFingerprint = null;
           _loadedCacheCatalogRevision = null;

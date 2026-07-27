@@ -128,6 +128,7 @@ void main() {
       ClientMessage.forkRecentSession(
         threadId: 'thread-1',
         projectPath: '/tmp/project',
+        codexSourceId: 'codex-home-source-a',
       ).toJson(),
     );
     expect(json, {
@@ -135,6 +136,7 @@ void main() {
       'sessionId': 'thread-1',
       'targetUuid': 'codex:user-turn:latest',
       'projectPath': '/tmp/project',
+      'codexSourceId': 'codex-home-source-a',
     });
   });
 
@@ -1153,6 +1155,7 @@ void main() {
         provider: 'codex',
         additionalWritableRoots: const ['/tmp/shared', '/tmp/tools'],
         resumeRequestId: 'link-request-1',
+        codexSourceId: 'codex-home-source-a',
       );
 
       final json = jsonDecode(msg.toJson()) as Map<String, dynamic>;
@@ -1160,6 +1163,7 @@ void main() {
       expect(json['sessionId'], 'session-1');
       expect(json['additionalWritableRoots'], ['/tmp/shared', '/tmp/tools']);
       expect(json['resumeRequestId'], 'link-request-1');
+      expect(json['codexSourceId'], 'codex-home-source-a');
     });
 
     test('ClientMessage.steerQueuedInput serializes codex queued item', () {
@@ -1210,6 +1214,7 @@ void main() {
       final original = RecentSession.fromJson({
         'sessionId': 's-cache',
         'provider': 'codex',
+        'codexSourceId': 'codex-home-source-a',
         'permissionMode': 'default',
         'forkedFromThreadId': 'parent-thread',
         'name': 'Before rename',
@@ -1243,10 +1248,12 @@ void main() {
       final renamed = restored.copyWithName(name: 'After rename');
 
       expect(restored.forkedFromThreadId, 'parent-thread');
+      expect(restored.codexSourceId, 'codex-home-source-a');
       expect(restored.codexPermissionsMode, 'autoReview');
       expect(restored.codexAdditionalWritableRoots, ['/tmp/shared']);
       expect(renamed.name, 'After rename');
       expect(renamed.forkedFromThreadId, 'parent-thread');
+      expect(renamed.codexSourceId, 'codex-home-source-a');
       expect(renamed.codexPermissionsMode, 'autoReview');
     });
 
@@ -2007,6 +2014,7 @@ void main() {
                   {
                     'sessionId': 'thread-1',
                     'provider': 'codex',
+                    'codexSourceId': 'codex-home-source-a',
                     'projectPath': '/project',
                     'archivedAt': '2026-07-18T00:00:00Z',
                     'name': 'Named thread',
@@ -2017,6 +2025,7 @@ void main() {
       expect(list.requestId, 'list-1');
       expect(list.truncated, isTrue);
       expect(list.sessions.single.displayTitle, 'Named thread');
+      expect(list.sessions.single.codexSourceId, 'codex-home-source-a');
 
       final result =
           ServerMessage.fromJson({
@@ -2056,11 +2065,16 @@ void main() {
         provider: 'codex',
         projectPath: '/project',
         name: 'Named thread',
+        codexSourceId: 'codex-home-source-a',
       );
       expect(archive.delivery, ClientMessageDelivery.ephemeral);
       expect(
         jsonDecode(archive.toJson()),
         containsPair('requestId', 'archive-1'),
+      );
+      expect(
+        jsonDecode(archive.toJson()),
+        containsPair('codexSourceId', 'codex-home-source-a'),
       );
 
       final unarchive = ClientMessage.unarchiveSession(
@@ -2068,18 +2082,25 @@ void main() {
         sessionId: 'thread-1',
         provider: 'codex',
         projectPath: '/project',
+        codexSourceId: 'codex-home-source-a',
       );
       expect(unarchive.delivery, ClientMessageDelivery.ephemeral);
+      expect(
+        jsonDecode(unarchive.toJson()),
+        containsPair('codexSourceId', 'codex-home-source-a'),
+      );
 
       final delete = ClientMessage.deleteSession(
         requestId: 'delete-1',
         sessionId: 'thread-1',
         projectPath: '/project',
+        codexSourceId: 'codex-home-source-a',
       );
       final deleteJson = jsonDecode(delete.toJson()) as Map<String, dynamic>;
       expect(delete.delivery, ClientMessageDelivery.ephemeral);
       expect(deleteJson['provider'], 'codex');
       expect(deleteJson['confirmDescendantDeletion'], isTrue);
+      expect(deleteJson['codexSourceId'], 'codex-home-source-a');
     });
   });
 

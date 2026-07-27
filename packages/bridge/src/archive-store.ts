@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 export interface ArchivedSession {
   sessionId: string;
   provider: "claude" | "codex";
+  /** Opaque Bridge-defined identity for the Codex Home that owns the thread. */
+  codexSourceId?: string;
   projectPath: string;
   archivedAt: string;
   /** Best-effort local display metadata captured when the phone archives. */
@@ -18,7 +20,11 @@ export interface ArchivedSession {
 export function archiveIdentityKey(
   provider: ArchivedSession["provider"],
   sessionId: string,
+  codexSourceId?: string,
 ): string {
+  if (provider === "codex" && codexSourceId) {
+    return `${provider}\u0000${codexSourceId}\u0000${sessionId}`;
+  }
   return `${provider}\u0000${sessionId}`;
 }
 
@@ -30,6 +36,7 @@ interface ArchiveStoreData {
 export interface ArchiveCapacityReservation {
   readonly sessionId: string;
   readonly provider: ArchivedSession["provider"];
+  readonly codexSourceId?: string;
   readonly identityKey: string;
   readonly token: symbol | null;
   readonly alreadyArchived: boolean;
@@ -75,7 +82,11 @@ export class ArchiveStore {
         this.data = { version: 1, archivedSessions };
         this.cache = new Set(
           archivedSessions.map((session) =>
-            archiveIdentityKey(session.provider, session.sessionId),
+            archiveIdentityKey(
+              session.provider,
+              session.sessionId,
+              session.codexSourceId,
+            ),
           ),
         );
       } else {
@@ -106,8 +117,13 @@ export class ArchiveStore {
       ArchivedSession,
       "name" | "summary" | "firstPrompt" | "modified"
     > = {},
+    codexSourceId?: string,
   ): Promise<void> {
-    const reservation = await this.reserveArchiveCapacity(sessionId, provider);
+    const reservation = await this.reserveArchiveCapacity(
+      sessionId,
+      provider,
+      codexSourceId,
+    );
     try {
       await this.commitReservedArchive(reservation, projectPath, metadata);
     } finally {
@@ -126,24 +142,41 @@ export class ArchiveStore {
   async reserveArchiveCapacity(
     sessionId: string,
     provider: ArchivedSession["provider"],
+    codexSourceId?: string,
   ): Promise<ArchiveCapacityReservation> {
-    const identityKey = archiveIdentityKey(provider, sessionId);
+    const identityKey = archiveIdentityKey(provider, sessionId, codexSourceId);
+    const legacyIdentityKey =
+      provider === "codex" && codexSourceId
+        ? archiveIdentityKey(provider, sessionId)
+        : undefined;
     for (;;) {
       const result = await this.mutate(async () => {
-        if (this.cache.has(identityKey)) {
+        const archivedIdentityKey = this.cache.has(identityKey)
+          ? identityKey
+          : legacyIdentityKey && this.cache.has(legacyIdentityKey)
+            ? legacyIdentityKey
+            : undefined;
+        if (archivedIdentityKey) {
           return {
             kind: "reservation" as const,
             value: {
               sessionId,
               provider,
-              identityKey,
+              ...(provider === "codex" && codexSourceId
+                ? { codexSourceId }
+                : {}),
+              identityKey: archivedIdentityKey,
               token: null,
               alreadyArchived: true,
             } satisfies ArchiveCapacityReservation,
           };
         }
 
-        const owner = this.archiveReservations.get(identityKey);
+        const owner =
+          this.archiveReservations.get(identityKey) ??
+          (legacyIdentityKey
+            ? this.archiveReservations.get(legacyIdentityKey)
+            : undefined);
         if (owner) {
           return { kind: "wait" as const, value: owner.released };
         }
@@ -173,6 +206,7 @@ export class ArchiveStore {
           value: {
             sessionId,
             provider,
+            ...(provider === "codex" && codexSourceId ? { codexSourceId } : {}),
             identityKey,
             token,
             alreadyArchived: false,
@@ -209,6 +243,9 @@ export class ArchiveStore {
       const entry: ArchivedSession = {
         sessionId: reservation.sessionId,
         provider: reservation.provider,
+        ...(reservation.codexSourceId
+          ? { codexSourceId: reservation.codexSourceId }
+          : {}),
         projectPath,
         archivedAt: new Date().toISOString(),
         ...sanitizeDisplayMetadata(metadata),
@@ -235,26 +272,70 @@ export class ArchiveStore {
   isArchived(
     sessionId: string,
     provider: ArchivedSession["provider"],
+    codexSourceId?: string,
   ): boolean {
-    return this.cache.has(archiveIdentityKey(provider, sessionId));
+    const sourceKey = archiveIdentityKey(provider, sessionId, codexSourceId);
+    return (
+      this.cache.has(sourceKey) ||
+      (provider === "codex" &&
+        codexSourceId !== undefined &&
+        this.cache.has(archiveIdentityKey(provider, sessionId)))
+    );
   }
 
   /** Return the full set of archived session IDs (for bulk filtering). */
-  archivedIds(provider: ArchivedSession["provider"]): ReadonlySet<string> {
+  archivedIds(
+    provider: ArchivedSession["provider"],
+    codexSourceId?: string,
+  ): ReadonlySet<string> {
     return new Set(
       this.data.archivedSessions
-        .filter((session) => session.provider === provider)
+        .filter(
+          (session) =>
+            session.provider === provider &&
+            (provider !== "codex" ||
+              codexSourceId === undefined ||
+              session.codexSourceId === undefined ||
+              session.codexSourceId === codexSourceId),
+        )
         .map((session) => session.sessionId),
     );
   }
 
-  archivedKeys(): ReadonlySet<string> {
-    return new Set(this.cache);
+  archivedKeys(codexSourceId?: string): ReadonlySet<string> {
+    return new Set(
+      this.data.archivedSessions
+        .filter(
+          (session) =>
+            session.provider !== "codex" ||
+            codexSourceId === undefined ||
+            session.codexSourceId === undefined ||
+            session.codexSourceId === codexSourceId,
+        )
+        .map((session) =>
+          archiveIdentityKey(session.provider, session.sessionId),
+        ),
+    );
   }
 
-  /** Return immutable snapshots, newest archive first. */
-  list(limit = MAX_ARCHIVED_SESSIONS): ArchivedSession[] {
+  /**
+   * Return immutable snapshots, newest archive first.
+   *
+   * A selected Codex source sees its own source-bound rows plus legacy rows
+   * created before source identity existed. Claude rows remain global.
+   */
+  list(
+    limit = MAX_ARCHIVED_SESSIONS,
+    codexSourceId?: string,
+  ): ArchivedSession[] {
     return this.data.archivedSessions
+      .filter(
+        (session) =>
+          session.provider !== "codex" ||
+          codexSourceId === undefined ||
+          session.codexSourceId === undefined ||
+          session.codexSourceId === codexSourceId,
+      )
       .map((session) => ({ ...session }))
       .sort((left, right) => right.archivedAt.localeCompare(left.archivedAt))
       .slice(0, Math.max(0, limit));
@@ -264,16 +345,18 @@ export class ArchiveStore {
   async unarchive(
     sessionId: string,
     provider: ArchivedSession["provider"],
+    codexSourceId?: string,
   ): Promise<ArchivedSession | null> {
-    return this.removeEntry(sessionId, provider, "Unarchived");
+    return this.removeEntry(sessionId, provider, "Unarchived", codexSourceId);
   }
 
   /** Remove bookkeeping after the provider permanently deletes a thread. */
   async remove(
     sessionId: string,
     provider: ArchivedSession["provider"],
+    codexSourceId?: string,
   ): Promise<ArchivedSession | null> {
-    return this.removeEntry(sessionId, provider, "Removed");
+    return this.removeEntry(sessionId, provider, "Removed", codexSourceId);
   }
 
   // ---- internal ----
@@ -282,13 +365,32 @@ export class ArchiveStore {
     sessionId: string,
     provider: ArchivedSession["provider"],
     action: "Unarchived" | "Removed",
+    codexSourceId?: string,
   ): Promise<ArchivedSession | null> {
     let removed: ArchivedSession | null = null;
     await this.mutate(async () => {
-      const index = this.data.archivedSessions.findIndex(
-        (session) =>
-          session.sessionId === sessionId && session.provider === provider,
-      );
+      const candidates = this.data.archivedSessions
+        .map((session, index) => ({ session, index }))
+        .filter(
+          ({ session }) =>
+            session.sessionId === sessionId && session.provider === provider,
+        );
+      let index = -1;
+      if (provider === "codex" && codexSourceId !== undefined) {
+        index =
+          candidates.find(
+            ({ session }) => session.codexSourceId === codexSourceId,
+          )?.index ??
+          candidates.find(({ session }) => session.codexSourceId === undefined)
+            ?.index ??
+          -1;
+      } else if (candidates.length === 1) {
+        index = candidates[0].index;
+      } else {
+        index =
+          candidates.find(({ session }) => session.codexSourceId === undefined)
+            ?.index ?? -1;
+      }
       if (index < 0) return;
       removed = { ...this.data.archivedSessions[index] };
       const next = [...this.data.archivedSessions];
@@ -324,7 +426,11 @@ export class ArchiveStore {
     this.data = next;
     this.cache = new Set(
       archivedSessions.map((session) =>
-        archiveIdentityKey(session.provider, session.sessionId),
+        archiveIdentityKey(
+          session.provider,
+          session.sessionId,
+          session.codexSourceId,
+        ),
       ),
     );
   }
@@ -352,6 +458,7 @@ export class ArchiveStore {
 
 const MAX_ARCHIVED_SESSIONS = 10_000;
 const MAX_SESSION_ID_LENGTH = 256;
+const MAX_CODEX_SOURCE_ID_LENGTH = 128;
 const MAX_PROJECT_PATH_LENGTH = 16_384;
 const MAX_DISPLAY_TEXT_LENGTH = 16_384;
 
@@ -381,8 +488,20 @@ function parseArchivedSessions(value: unknown[]): ArchivedSession[] {
     ) {
       throw new Error(`Invalid archived session at index ${index}`);
     }
+    const codexSourceId =
+      entry.codexSourceId === undefined
+        ? undefined
+        : boundedString(entry.codexSourceId, MAX_CODEX_SOURCE_ID_LENGTH);
+    if (
+      entry.codexSourceId !== undefined &&
+      (!codexSourceId ||
+        codexSourceId.trim() !== codexSourceId ||
+        provider !== "codex")
+    ) {
+      throw new Error(`Invalid archived session source at index ${index}`);
+    }
     validateOptionalDisplayMetadata(entry, index);
-    const identityKey = archiveIdentityKey(provider, sessionId);
+    const identityKey = archiveIdentityKey(provider, sessionId, codexSourceId);
     if (seen.has(identityKey)) {
       throw new Error(`Duplicate archived session at index ${index}`);
     }
@@ -390,6 +509,7 @@ function parseArchivedSessions(value: unknown[]): ArchivedSession[] {
     sessions.push({
       sessionId,
       provider,
+      ...(codexSourceId ? { codexSourceId } : {}),
       projectPath,
       archivedAt,
       ...sanitizeDisplayMetadata(entry),

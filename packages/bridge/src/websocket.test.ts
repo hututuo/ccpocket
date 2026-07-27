@@ -1028,6 +1028,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(reserveArchiveCapacity).toHaveBeenCalledWith(
       "thread-archive",
       "codex",
+      expect.stringMatching(/^codex-home-[0-9a-f]{24}$/),
     );
     expect(archiveThread).toHaveBeenCalledWith("thread-archive");
     expect(commitReservedArchive).not.toHaveBeenCalled();
@@ -1284,7 +1285,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
 
     await vi.waitFor(() => {
-      expect(unarchive).toHaveBeenCalledWith("thread-restore", "codex");
+      expect(unarchive).toHaveBeenCalledWith(
+        "thread-restore",
+        "codex",
+        undefined,
+      );
     });
     expect(unarchiveThread).toHaveBeenCalledWith("thread-restore");
     expect(unarchiveThread.mock.invocationCallOrder[0]).toBeLessThan(
@@ -1323,6 +1328,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       expect(ws.send).toHaveBeenCalled();
     });
     const result = JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string);
+    expect((bridge as any).archiveStore.list).toHaveBeenCalledWith(
+      1_001,
+      expect.stringMatching(/^codex-home-[0-9a-f]{24}$/),
+    );
     expect(result).toMatchObject({
       type: "archived_sessions_result",
       requestId: "list-request",
@@ -1369,7 +1378,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
 
     await vi.waitFor(() => {
-      expect(remove).toHaveBeenCalledWith("thread-delete", "codex");
+      expect(remove).toHaveBeenCalledWith("thread-delete", "codex", undefined);
     });
     expect(deleteThread).toHaveBeenCalledWith("thread-delete");
     expect(deleteThread.mock.invocationCallOrder[0]).toBeLessThan(
@@ -1821,6 +1830,150 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       searchQuery: "needle",
     });
     expect(recent.catalogRevision).toEqual(expect.any(Number));
+
+    bridge.close();
+  });
+
+  it("binds Codex catalog rows and lifecycle mutations to one source Home", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    await (bridge as any).archiveStoreReady;
+    const sourceId = (bridge as any).codexSourceId as string;
+    const otherSourceId = `${sourceId}-other`;
+
+    expect(
+      (bridge as any).attachCodexSourceToRecentSessions([
+        { sessionId: "codex-thread", provider: "codex" },
+        { sessionId: "claude-thread", provider: "claude" },
+      ]),
+    ).toEqual([
+      {
+        sessionId: "codex-thread",
+        provider: "codex",
+        codexSourceId: sourceId,
+      },
+      { sessionId: "claude-thread", provider: "claude" },
+    ]);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "codex-thread",
+        projectPath: "/project",
+        provider: "codex",
+        resumeRequestId: "resume-wrong-source",
+        codexSourceId: otherSourceId,
+      },
+      ws,
+    );
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) => message.errorCode === "codex_source_mismatch"),
+    ).toMatchObject({
+      type: "error",
+      sessionId: "codex-thread",
+    });
+
+    const runningLookup = vi
+      .spyOn((bridge as any).sessionManager, "get")
+      .mockReturnValue({ provider: "codex" } as any);
+    const renameRunning = vi.fn();
+    (bridge as any).sessionManager.renameSession = renameRunning;
+    ws.send.mockClear();
+    await (bridge as any).handleRenameSession(ws, "codex-thread", "renamed", {
+      type: "rename_session",
+      sessionId: "codex-thread",
+      provider: "codex",
+      providerSessionId: "codex-thread",
+      projectPath: "/project",
+      codexSourceId: otherSourceId,
+    });
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "rename_result",
+      success: false,
+      errorCode: "codex_source_mismatch",
+    });
+    expect(renameRunning).not.toHaveBeenCalled();
+    runningLookup.mockRestore();
+    delete (bridge as any).sessionManager.renameSession;
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "fork",
+        sessionId: "codex-thread",
+        targetUuid: "codex:user-turn:latest",
+        projectPath: "/project",
+        codexSourceId: otherSourceId,
+      },
+      ws,
+    );
+    await vi.waitFor(() => {
+      expect(
+        JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string),
+      ).toMatchObject({
+        type: "error",
+        sessionId: "codex-thread",
+        errorCode: "codex_source_mismatch",
+      });
+    });
+
+    ws.send.mockClear();
+    (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        requestId: "archive-wrong-source",
+        sessionId: "codex-thread",
+        provider: "codex",
+        projectPath: "/project",
+        codexSourceId: otherSourceId,
+      },
+      ws,
+    );
+    await vi.waitFor(() => {
+      expect(
+        JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string),
+      ).toMatchObject({
+        type: "archive_result",
+        requestId: "archive-wrong-source",
+        success: false,
+        errorCode: "codex_source_mismatch",
+      });
+    });
+
+    for (const [type, resultType] of [
+      ["unarchive_session", "unarchive_result"],
+      ["delete_session", "delete_session_result"],
+    ] as const) {
+      ws.send.mockClear();
+      (bridge as any).handleClientMessage(
+        {
+          type,
+          requestId: `${type}-wrong-source`,
+          sessionId: "codex-thread",
+          provider: "codex",
+          projectPath: "/project",
+          ...(type === "delete_session"
+            ? { confirmDescendantDeletion: true }
+            : {}),
+          codexSourceId: otherSourceId,
+        },
+        ws,
+      );
+      await vi.waitFor(() => {
+        expect(
+          JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string),
+        ).toMatchObject({
+          type: resultType,
+          success: false,
+          errorCode: "codex_source_mismatch",
+        });
+      });
+    }
 
     bridge.close();
   });

@@ -3897,6 +3897,7 @@ class BridgeService implements BridgeServiceBase {
     String? webSearchMode,
     List<String>? additionalWritableRoots,
     String? resumeRequestId,
+    String? codexSourceId,
   }) {
     send(
       ClientMessage.resumeSession(
@@ -3924,6 +3925,7 @@ class BridgeService implements BridgeServiceBase {
         webSearchMode: webSearchMode,
         additionalWritableRoots: additionalWritableRoots,
         resumeRequestId: resumeRequestId,
+        codexSourceId: codexSourceId,
       ),
     );
   }
@@ -4532,6 +4534,7 @@ class BridgeService implements BridgeServiceBase {
     String? provider,
     String? providerSessionId,
     String? projectPath,
+    String? codexSourceId,
   }) {
     send(
       ClientMessage.renameSession(
@@ -4540,6 +4543,7 @@ class BridgeService implements BridgeServiceBase {
         provider: provider,
         providerSessionId: providerSessionId,
         projectPath: projectPath,
+        codexSourceId: codexSourceId,
       ),
     );
   }
@@ -4553,6 +4557,7 @@ class BridgeService implements BridgeServiceBase {
     String? summary,
     String? firstPrompt,
     String? modified,
+    String? codexSourceId,
   }) {
     send(
       ClientMessage.archiveSession(
@@ -4564,6 +4569,7 @@ class BridgeService implements BridgeServiceBase {
         summary: summary,
         firstPrompt: firstPrompt,
         modified: modified,
+        codexSourceId: codexSourceId,
       ),
     );
   }

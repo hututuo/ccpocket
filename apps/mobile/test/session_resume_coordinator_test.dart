@@ -102,4 +102,28 @@ void main() {
     expect(result.disposition, SessionResumeDisposition.alreadyQueued);
     expect(bridge.sentMessages, isEmpty);
   });
+
+  test('binds a Codex resume to the catalog source that produced it', () async {
+    const codexSession = RecentSession(
+      sessionId: 'codex-thread',
+      provider: 'codex',
+      codexSourceId: 'codex-home-source-a',
+      firstPrompt: 'Continue Codex',
+      created: '2026-07-24T00:00:00Z',
+      modified: '2026-07-24T01:00:00Z',
+      gitBranch: 'main',
+      projectPath: '/workspace/app',
+      isSidechain: false,
+    );
+
+    final result = await SessionResumeCoordinator(
+      bridge: bridge,
+    ).resume(codexSession, resumeRequestId: 'codex-resume-1');
+
+    expect(result.disposition, SessionResumeDisposition.dispatched);
+    final message =
+        jsonDecode(bridge.sentMessages.single.toJson()) as Map<String, dynamic>;
+    expect(message['provider'], 'codex');
+    expect(message['codexSourceId'], 'codex-home-source-a');
+  });
 }

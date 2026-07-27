@@ -160,6 +160,76 @@ describe("ArchiveStore", () => {
     expect(store.isArchived("same-id", "claude")).toBe(false);
   });
 
+  it("keeps identical Codex thread ids separate across source Homes", async () => {
+    const { store, dir } = await createStore();
+    await store.archive(
+      "same-id",
+      "codex",
+      "/project/a",
+      {},
+      "codex-home-source-a",
+    );
+    await store.archive(
+      "same-id",
+      "codex",
+      "/project/b",
+      {},
+      "codex-home-source-b",
+    );
+
+    expect(store.list()).toHaveLength(2);
+    expect(store.isArchived("same-id", "codex", "codex-home-source-a")).toBe(
+      true,
+    );
+    expect(store.isArchived("same-id", "codex", "codex-home-source-b")).toBe(
+      true,
+    );
+    expect(store.list(10, "codex-home-source-a")).toMatchObject([
+      {
+        sessionId: "same-id",
+        codexSourceId: "codex-home-source-a",
+      },
+    ]);
+    expect(store.archivedIds("codex", "codex-home-source-a")).toEqual(
+      new Set(["same-id"]),
+    );
+
+    await store.unarchive("same-id", "codex", "codex-home-source-a");
+    expect(store.isArchived("same-id", "codex", "codex-home-source-a")).toBe(
+      false,
+    );
+    expect(store.isArchived("same-id", "codex", "codex-home-source-b")).toBe(
+      true,
+    );
+
+    const reloaded = new ArchiveStore(dir);
+    await reloaded.init();
+    expect(reloaded.list()).toMatchObject([
+      {
+        sessionId: "same-id",
+        codexSourceId: "codex-home-source-b",
+      },
+    ]);
+  });
+
+  it("keeps legacy Codex archives globally compatible after source binding", async () => {
+    const { store } = await createStore();
+    await store.archive("legacy-id", "codex", "/project/legacy");
+
+    await store.archive(
+      "legacy-id",
+      "codex",
+      "/project/source",
+      {},
+      "codex-home-source-a",
+    );
+
+    expect(store.list()).toHaveLength(1);
+    expect(store.isArchived("legacy-id", "codex", "codex-home-source-a")).toBe(
+      true,
+    );
+  });
+
   it("persists unarchive and permanent-delete removal independently", async () => {
     const { store, dir } = await createStore();
     await store.archive("restore-me", "codex", "/project/a");

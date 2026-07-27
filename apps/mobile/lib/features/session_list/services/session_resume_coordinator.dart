@@ -287,6 +287,7 @@ class SessionResumeCoordinator {
           ? codexSettings?.additionalWritableRoots
           : null,
       resumeRequestId: resumeRequestId,
+      codexSourceId: isCodex ? session.codexSourceId : null,
     );
 
     if (isCodex) {

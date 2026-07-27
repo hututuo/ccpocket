@@ -39,6 +39,7 @@ class _ArchiveBridge extends BridgeService {
 const _archived = ArchivedSessionRecord(
   sessionId: 'thread-1',
   provider: 'codex',
+  codexSourceId: 'codex-home-source-a',
   projectPath: '/project',
   archivedAt: '2026-07-18T00:00:00Z',
   name: 'Archived thread',
@@ -112,6 +113,10 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     final restored = cubit.unarchive(_archived);
+    expect(
+      jsonDecode(bridge.sent.last.toJson()),
+      containsPair('codexSourceId', 'codex-home-source-a'),
+    );
     bridge.messagesController.add(
       const SessionLifecycleResultMessage(
         type: 'unarchive_result',
@@ -175,6 +180,7 @@ void main() {
           jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
       expect(sent['type'], 'delete_session');
       expect(sent['confirmDescendantDeletion'], isTrue);
+      expect(sent['codexSourceId'], 'codex-home-source-a');
       bridge.messagesController.add(
         const SessionLifecycleResultMessage(
           type: 'delete_session_result',

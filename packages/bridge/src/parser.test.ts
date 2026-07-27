@@ -1166,7 +1166,7 @@ describe("parseClientMessage", () => {
 
   it("parses resume_session with provider", () => {
     const msg = parseClientMessage(
-      '{"type":"resume_session","sessionId":"s3","projectPath":"/p","provider":"codex","profile":"ccpocket","approvalsReviewer":"auto_review","additionalWritableRoots":["/tmp/extra"],"resumeRequestId":"link-request-1"}',
+      '{"type":"resume_session","sessionId":"s3","projectPath":"/p","provider":"codex","profile":"ccpocket","approvalsReviewer":"auto_review","additionalWritableRoots":["/tmp/extra"],"resumeRequestId":"link-request-1","codexSourceId":"codex-home-source-a"}',
     );
     expect(msg).toEqual({
       type: "resume_session",
@@ -1177,6 +1177,7 @@ describe("parseClientMessage", () => {
       approvalsReviewer: "auto_review",
       additionalWritableRoots: ["/tmp/extra"],
       resumeRequestId: "link-request-1",
+      codexSourceId: "codex-home-source-a",
     });
   });
 
@@ -1186,6 +1187,22 @@ describe("parseClientMessage", () => {
         '{"type":"resume_session","sessionId":"s3","projectPath":"/p","resumeRequestId":42}',
       ),
     ).toBeNull();
+  });
+
+  it("rejects blank or oversized Codex source identities", () => {
+    for (const codexSourceId of [" ", "x".repeat(129)]) {
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type: "resume_session",
+            sessionId: "s3",
+            projectPath: "/p",
+            provider: "codex",
+            codexSourceId,
+          }),
+        ),
+      ).toBeNull();
+    }
   });
 
   it("rejects empty or oversized resume request ids", () => {
@@ -1464,13 +1481,14 @@ describe("parseClientMessage", () => {
   it("parses a persisted Codex fork request from the session list", () => {
     expect(
       parseClientMessage(
-        '{"type":"fork","sessionId":"thread-1","targetUuid":"codex:user-turn:latest","projectPath":"/tmp/project"}',
+        '{"type":"fork","sessionId":"thread-1","targetUuid":"codex:user-turn:latest","projectPath":"/tmp/project","codexSourceId":"codex-home-source-a"}',
       ),
     ).toEqual({
       type: "fork",
       sessionId: "thread-1",
       targetUuid: "codex:user-turn:latest",
       projectPath: "/tmp/project",
+      codexSourceId: "codex-home-source-a",
     });
   });
 
@@ -1754,9 +1772,14 @@ describe("parseClientMessage", () => {
           name: "Named thread",
           firstPrompt: "hello",
           modified: "2026-07-18T10:00:00Z",
+          codexSourceId: "codex-home-source-a",
         }),
       ),
-    ).toMatchObject({ type: "archive_session", requestId: "archive-1" });
+    ).toMatchObject({
+      type: "archive_session",
+      requestId: "archive-1",
+      codexSourceId: "codex-home-source-a",
+    });
     expect(
       parseClientMessage(
         '{"type":"list_archived_sessions","requestId":"list-1"}',
@@ -1764,14 +1787,22 @@ describe("parseClientMessage", () => {
     ).toEqual({ type: "list_archived_sessions", requestId: "list-1" });
     expect(
       parseClientMessage(
-        '{"type":"unarchive_session","requestId":"restore-1","sessionId":"thread-1","provider":"codex","projectPath":"/project"}',
+        '{"type":"unarchive_session","requestId":"restore-1","sessionId":"thread-1","provider":"codex","projectPath":"/project","codexSourceId":"codex-home-source-a"}',
       ),
-    ).toMatchObject({ type: "unarchive_session", sessionId: "thread-1" });
+    ).toMatchObject({
+      type: "unarchive_session",
+      sessionId: "thread-1",
+      codexSourceId: "codex-home-source-a",
+    });
     expect(
       parseClientMessage(
-        '{"type":"delete_session","requestId":"delete-1","sessionId":"thread-1","provider":"codex","projectPath":"/project","confirmDescendantDeletion":true}',
+        '{"type":"delete_session","requestId":"delete-1","sessionId":"thread-1","provider":"codex","projectPath":"/project","confirmDescendantDeletion":true,"codexSourceId":"codex-home-source-a"}',
       ),
-    ).toMatchObject({ type: "delete_session", sessionId: "thread-1" });
+    ).toMatchObject({
+      type: "delete_session",
+      sessionId: "thread-1",
+      codexSourceId: "codex-home-source-a",
+    });
   });
 
   it("fails closed for unsafe lifecycle request shapes", () => {
@@ -1817,6 +1848,19 @@ describe("parseClientMessage", () => {
             provider: "codex",
             projectPath: "x".repeat(16_385),
             confirmDescendantDeletion: true,
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type,
+            requestId: "request-1",
+            sessionId: "thread-1",
+            provider: "codex",
+            projectPath: "/project",
+            confirmDescendantDeletion: true,
+            codexSourceId: " ",
           }),
         ),
       ).toBeNull();

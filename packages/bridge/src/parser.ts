@@ -323,6 +323,7 @@ export type ClientMessage =
       provider?: string;
       providerSessionId?: string;
       projectPath?: string;
+      codexSourceId?: string;
     }
   | { type: "get_history"; sessionId: string }
   | { type: "get_history_delta"; sessionId: string; sinceSeq: number }
@@ -390,6 +391,7 @@ export type ClientMessage =
       webSearchMode?: string;
       additionalWritableRoots?: string[];
       resumeRequestId?: string;
+      codexSourceId?: string;
     }
   | { type: "list_gallery"; project?: string; sessionId?: string }
   | {
@@ -444,6 +446,7 @@ export type ClientMessage =
       targetUuid: string;
       /** Present only when forking a persisted conversation from the list. */
       projectPath?: string;
+      codexSourceId?: string;
     }
   | { type: "list_windows" }
   | {
@@ -513,6 +516,7 @@ export type ClientMessage =
       summary?: string;
       firstPrompt?: string;
       modified?: string;
+      codexSourceId?: string;
     }
   | { type: "list_archived_sessions"; requestId: string }
   | {
@@ -521,6 +525,7 @@ export type ClientMessage =
       sessionId: string;
       provider: Provider;
       projectPath: string;
+      codexSourceId?: string;
     }
   | {
       type: "delete_session";
@@ -529,6 +534,7 @@ export type ClientMessage =
       provider: "codex";
       projectPath: string;
       confirmDescendantDeletion: true;
+      codexSourceId?: string;
     }
   | { type: "refresh_branch"; sessionId: string }
   // ---- Git Operations (Phase 1-3) ----
@@ -1847,6 +1853,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "rename_session":
         if (typeof msg.sessionId !== "string") return null;
+        if (
+          msg.codexSourceId !== undefined &&
+          !isValidWireIdentifier(msg.codexSourceId, 128)
+        )
+          return null;
         break;
       case "get_history":
         if (typeof msg.sessionId !== "string") return null;
@@ -2016,6 +2027,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (
           typeof msg.sessionId !== "string" ||
           typeof msg.projectPath !== "string"
+        )
+          return null;
+        if (
+          msg.codexSourceId !== undefined &&
+          !isValidWireIdentifier(msg.codexSourceId, 128)
         )
           return null;
         if (
@@ -2275,6 +2291,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
             typeof msg.projectPath !== "string")
         )
           return null;
+        if (
+          msg.codexSourceId !== undefined &&
+          !isValidWireIdentifier(msg.codexSourceId, 128)
+        )
+          return null;
         break;
       case "list_windows":
         break;
@@ -2487,6 +2508,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         if (msg.provider !== "claude" && msg.provider !== "codex") return null;
         if (
+          msg.codexSourceId !== undefined &&
+          !isValidWireIdentifier(msg.codexSourceId, 128)
+        )
+          return null;
+        if (
           typeof msg.projectPath !== "string" ||
           msg.projectPath.length === 0 ||
           msg.projectPath.length > 16_384
@@ -2535,6 +2561,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
           msg.projectPath.length > 16_384
         )
           return null;
+        if (
+          msg.codexSourceId !== undefined &&
+          !isValidWireIdentifier(msg.codexSourceId, 128)
+        )
+          return null;
         break;
       case "delete_session":
         if (
@@ -2549,6 +2580,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
           msg.projectPath.length === 0 ||
           msg.projectPath.length > 16_384 ||
           msg.confirmDescendantDeletion !== true
+        )
+          return null;
+        if (
+          msg.codexSourceId !== undefined &&
+          !isValidWireIdentifier(msg.codexSourceId, 128)
         )
           return null;
         break;

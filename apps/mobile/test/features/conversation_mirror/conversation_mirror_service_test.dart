@@ -540,13 +540,17 @@ void main() {
       codexModelReasoningEffort: 'ultra',
     );
 
-    final target = ConversationMirrorTarget.fromRunning(running)!;
+    final target = ConversationMirrorTarget.fromRunning(
+      running,
+      codexSourceId: 'codex-home-source-a',
+    )!;
     final recent = target.toRecentSession();
 
     expect(target.providerSessionId, 'durable-thread-id');
     expect(target.runtimeSessionId, 'runtime-only-id');
     expect(target.effectiveProjectPath, '/tmp/base-project-worktrees/feature');
     expect(recent.sessionId, 'durable-thread-id');
+    expect(recent.codexSourceId, 'codex-home-source-a');
     expect(recent.resumeCwd, '/tmp/base-project-worktrees/feature');
     expect(recent.codexModelReasoningEffort, 'ultra');
   });

@@ -8,8 +8,15 @@ import '../../services/bridge_service.dart';
 
 const codexSessionLifecycleCapability = 'codex_session_lifecycle_v1';
 
-String archivedSessionIdentityKey(ArchivedSessionRecord session) =>
-    providerSessionIdentityKey(session.provider, session.sessionId);
+String archivedSessionIdentityKey(ArchivedSessionRecord session) {
+  final sourceId = session.codexSourceId;
+  if (session.provider == Provider.codex.value &&
+      sourceId != null &&
+      sourceId.isNotEmpty) {
+    return '${session.provider}\u0000$sourceId\u0000${session.sessionId}';
+  }
+  return providerSessionIdentityKey(session.provider, session.sessionId);
+}
 
 enum _SessionArchiveRequestKind { list, unarchive, delete }
 
@@ -126,6 +133,7 @@ class SessionArchiveCubit extends Cubit<SessionArchiveState> {
         sessionId: session.sessionId,
         provider: session.provider,
         projectPath: session.projectPath,
+        codexSourceId: session.codexSourceId,
       ),
     );
   }
@@ -139,6 +147,7 @@ class SessionArchiveCubit extends Cubit<SessionArchiveState> {
         requestId: requestId,
         sessionId: session.sessionId,
         projectPath: session.projectPath,
+        codexSourceId: session.codexSourceId,
       ),
     );
   }

@@ -65,6 +65,7 @@ ConversationMirrorTarget? _targetForRuntime(
   return ConversationMirrorTarget.fromRunning(
     session,
     providerSessionId: durableId,
+    codexSourceId: bridge.codexSourceId,
   );
 }
 
