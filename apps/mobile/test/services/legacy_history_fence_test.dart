@@ -317,4 +317,41 @@ void main() {
       expect(bridge.cachedSessionHistorySeq('s1'), 2);
     },
   );
+
+  test(
+    'an offline queued history request keeps ownership after reconnect',
+    () async {
+      bridge.dispose();
+      await server.close(force: true);
+
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+      server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+      bridge = BridgeService();
+      bridge.requestSessionHistory('s-offline');
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      socket = await socketReady.future;
+      incoming = socket
+          .map((data) => jsonDecode(data as String) as Map<String, dynamic>)
+          .asBroadcastStream();
+
+      await incoming.firstWhere((m) => m['type'] == 'get_history');
+
+      socket.add(jsonEncode(assistantJson('live-A', session: 's-offline')));
+      await pump();
+
+      socket.add(
+        jsonEncode(
+          historyFrame('s-offline', [
+            assistantJson('h0', session: 's-offline'),
+            assistantJson('live-A', session: 's-offline'),
+          ]),
+        ),
+      );
+      await pump();
+
+      expect(assistantTexts(bridge, 's-offline'), ['h0', 'live-A']);
+    },
+  );
 }

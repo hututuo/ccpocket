@@ -2253,7 +2253,6 @@ class BridgeService implements BridgeServiceBase {
     for (final sessionId in sessionIds) {
       if (allowsFullFallback[sessionId] == true) {
         _pendingForegroundHistorySyncs.add(sessionId);
-        _recordLegacyHistoryRequest(sessionId);
         send(ClientMessage.getHistory(sessionId));
       } else {
         _finishSessionHistorySync(sessionId);
@@ -2380,6 +2379,12 @@ class BridgeService implements BridgeServiceBase {
       final historySyncSessionId = _beginPendingSessionHistorySync(message);
       try {
         _channel!.sink.add(message.toJson());
+        if (message.type == 'get_history' && historySyncSessionId != null) {
+          // Legacy history ownership belongs to the socket that actually sent
+          // the request. Recording it while an offline message is merely
+          // queued loses the fence when connect() advances the socket epoch.
+          _recordLegacyHistoryRequest(historySyncSessionId);
+        }
       } catch (error, stackTrace) {
         if (historySyncSessionId != null) {
           _finishSessionHistorySync(historySyncSessionId);
@@ -3609,7 +3614,6 @@ class BridgeService implements BridgeServiceBase {
       return;
     }
     if (allowFullFallback) {
-      _recordLegacyHistoryRequest(sessionId);
       send(ClientMessage.getHistory(sessionId));
     }
   }
