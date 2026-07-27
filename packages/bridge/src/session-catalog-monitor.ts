@@ -24,6 +24,14 @@ export interface SessionCatalogMonitorOptions {
   retryMs?: number;
   maxWatchedDirectories?: number;
   roots?: CatalogRoot[];
+  /**
+   * Test seam for the process-epoch revision seed.
+   *
+   * Production revisions start from the current epoch time instead of zero so
+   * a Bridge restart cannot accidentally reuse a complete mobile cache whose
+   * in-memory counter happened to reach the same value in an earlier process.
+   */
+  initialRevision?: number;
 }
 
 interface WatchedDirectory {
@@ -90,7 +98,7 @@ export class SessionCatalogMonitor {
 
   private active = false;
   private generation = 0;
-  private revision = 0;
+  private revision: number;
   private lastChangedAt = 0;
   private changeTimer: NodeJS.Timeout | null = null;
   private rescanTimer: NodeJS.Timeout | null = null;
@@ -117,6 +125,7 @@ export class SessionCatalogMonitor {
       ),
     );
     this.roots = options.roots ?? defaultRoots();
+    this.revision = normalizeRevisionSeed(options.initialRevision);
   }
 
   get isActive(): boolean {
@@ -354,4 +363,19 @@ export class SessionCatalogMonitor {
     );
     this.rescanTimer.unref?.();
   }
+}
+
+function normalizeRevisionSeed(value: number | undefined): number {
+  if (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0
+  ) {
+    return value;
+  }
+  // Equality, not wall-clock meaning, is the cache contract. Date.now() gives
+  // every normal Bridge process a fresh, safely representable epoch while
+  // remaining monotonic for the existing client-side `revision > previous`
+  // invalidation check.
+  return Date.now();
 }

@@ -30,6 +30,7 @@ describe("SessionCatalogMonitor", () => {
     }> = [];
     const monitor = new SessionCatalogMonitor({
       roots: [{ path: root, kind: "claudeProjects", maxDepth: 1 }],
+      initialRevision: 0,
       debounceMs: 20,
       minIntervalMs: 40,
       retryMs: 50,
@@ -69,6 +70,7 @@ describe("SessionCatalogMonitor", () => {
     }> = [];
     const monitor = new SessionCatalogMonitor({
       roots: [{ path: root, kind: "codexSessions", maxDepth: 0 }],
+      initialRevision: 0,
       debounceMs: 10,
       minIntervalMs: 20,
       onChanged: (revision, change) => changes.push(change ?? { revision }),
@@ -107,6 +109,7 @@ describe("SessionCatalogMonitor", () => {
     }> = [];
     const monitor = new SessionCatalogMonitor({
       roots: [{ path: root, kind: "claudeProjects", maxDepth: 1 }],
+      initialRevision: 0,
       debounceMs: 20,
       minIntervalMs: 40,
       onChanged: (revision, change) => changes.push(change ?? { revision }),
@@ -129,6 +132,7 @@ describe("SessionCatalogMonitor", () => {
     const revisions: number[] = [];
     const monitor = new SessionCatalogMonitor({
       roots: [{ path: root, kind: "claudeProjects", maxDepth: 1 }],
+      initialRevision: 0,
       debounceMs: 10,
       minIntervalMs: 20,
       retryMs: 50,
@@ -153,6 +157,17 @@ describe("SessionCatalogMonitor", () => {
       () => expect(revisions.at(-1)).toBeGreaterThan(firstRevision),
       { timeout: 2_000 },
     );
+    monitor.close();
+  });
+
+  it("uses a fresh process epoch by default", () => {
+    const before = Date.now();
+    const monitor = new SessionCatalogMonitor({
+      roots: [],
+      onChanged: () => {},
+    });
+    expect(monitor.currentRevision).toBeGreaterThanOrEqual(before);
+    expect(monitor.currentRevision).toBeLessThanOrEqual(Date.now());
     monitor.close();
   });
 });

@@ -113,6 +113,7 @@ class SessionListCubit extends Cubit<SessionListState> {
   int _queryRequestRevision = 0;
   int _cacheLoadGeneration = 0;
   int _networkCatalogSerial = 0;
+  String? _lastCacheLoadFingerprint;
 
   SessionListCubit({
     required BridgeService bridge,
@@ -219,15 +220,7 @@ class SessionListCubit extends Cubit<SessionListState> {
         response.catalogRevision != null &&
         response.catalogRevision == _loadedCacheCatalogRevision &&
         _loadedCacheFingerprint == _currentCacheTarget()?.fingerprint;
-    final canDisplayLegacyCompleteCache =
-        !isProjectPage &&
-        (response.offset ?? 0) == 0 &&
-        (response.requestScope == null || response.requestScope == 'list') &&
-        _loadedCacheComplete &&
-        response.catalogRevision == null &&
-        _loadedCacheCatalogRevision == null &&
-        _loadedCacheFingerprint == _currentCacheTarget()?.fingerprint;
-    if (canReuseCompleteCache || canDisplayLegacyCompleteCache) {
+    if (canReuseCompleteCache) {
       _cachedSessions = _mergeCachedSessions(
         _cachedSessions,
         response.sessions,
@@ -575,6 +568,7 @@ class SessionListCubit extends Cubit<SessionListState> {
     _loadedCacheCatalogRevision = null;
     _loadedCacheComplete = false;
     _cachedSessions = const [];
+    _lastCacheLoadFingerprint = _currentCacheTarget()?.fingerprint;
     _catalogSnapshotChanges.add(null);
   }
 
@@ -606,6 +600,8 @@ class SessionListCubit extends Cubit<SessionListState> {
     final cache = _catalogCache;
     final target = _currentCacheTarget();
     if (cache == null || target == null) return;
+    if (_lastCacheLoadFingerprint == target.fingerprint) return;
+    _lastCacheLoadFingerprint = target.fingerprint;
     final generation = ++_cacheLoadGeneration;
     final networkSerial = _networkCatalogSerial;
     await _preferencesLoaded;
@@ -652,6 +648,10 @@ class SessionListCubit extends Cubit<SessionListState> {
       }
       _catalogSnapshotChanges.add(null);
     } catch (error, stackTrace) {
+      if (generation == _cacheLoadGeneration &&
+          _lastCacheLoadFingerprint == target.fingerprint) {
+        _lastCacheLoadFingerprint = null;
+      }
       logger.warning(
         '[SessionListCubit] Failed to load session catalog cache',
         error,
@@ -703,11 +703,23 @@ class SessionListCubit extends Cubit<SessionListState> {
       for (final session in live) recentSessionPinKey(session): session,
     }.values.toList();
     merged.sort((left, right) {
-      final modifiedOrder = right.modified.compareTo(left.modified);
+      final modifiedOrder = _compareIsoTimestamps(
+        right.modified,
+        left.modified,
+      );
       if (modifiedOrder != 0) return modifiedOrder;
-      return right.created.compareTo(left.created);
+      return _compareIsoTimestamps(right.created, left.created);
     });
     return List<RecentSession>.unmodifiable(merged);
+  }
+
+  static int _compareIsoTimestamps(String left, String right) {
+    final leftTime = DateTime.tryParse(left);
+    final rightTime = DateTime.tryParse(right);
+    if (leftTime != null && rightTime != null) {
+      return leftTime.toUtc().compareTo(rightTime.toUtc());
+    }
+    return left.compareTo(right);
   }
 
   void _requestExpandedCatalogIfNeeded(

@@ -195,11 +195,15 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
   final writes =
       <({SessionCatalogCacheTarget target, RecentSessionsMessage response})>[];
   int clearCalls = 0;
+  int loadCalls = 0;
 
   @override
   Future<SessionCatalogCacheSnapshot?> load(
     SessionCatalogCacheTarget target,
-  ) async => snapshots[target.fingerprint];
+  ) async {
+    loadCalls++;
+    return snapshots[target.fingerprint];
+  }
 
   @override
   Future<void> upsertResponse({
@@ -222,12 +226,13 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
 RecentSession _session({
   required String id,
   String projectPath = '/home/user/project-a',
+  String modified = '2025-01-01T00:00:00Z',
 }) {
   return RecentSession(
     sessionId: id,
     firstPrompt: 'test prompt',
     created: '2025-01-01T00:00:00Z',
-    modified: '2025-01-01T00:00:00Z',
+    modified: modified,
     gitBranch: 'main',
     projectPath: projectPath,
     isSidechain: false,
@@ -622,6 +627,125 @@ void main() {
         );
         expect(cubit.state.hasMore, isFalse);
         expect(mockBridge.catalogRequestCount, 0);
+      },
+    );
+
+    test(
+      'complete cache merge sorts mixed ISO offsets by actual time',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testBridgeInstanceId = 'bridge-a'
+          ..testLastUrl = 'wss://mac-a.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        final target = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: mockBridge.testBridgeInstanceId,
+          websocketUrl: mockBridge.testLastUrl,
+        );
+        cache.snapshots[target.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'bridge-a',
+          sessions: [
+            _session(id: 'actually-newer', modified: '2026-07-25T00:30:00Z'),
+            _session(
+              id: 'actually-older',
+              modified: '2026-07-25T08:15:00+08:00',
+            ),
+          ],
+          catalogRevision: 9,
+          isComplete: true,
+          cachedAt: DateTime.utc(2026, 7, 25),
+        );
+        cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+        await pumpEventQueue();
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [
+              _session(id: 'actually-newer', modified: '2026-07-25T00:30:00Z'),
+            ],
+            hasMore: true,
+            requestScope: 'list',
+            offset: 0,
+            catalogRevision: 9,
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(cubit.state.sessions.map((session) => session.sessionId), [
+          'actually-newer',
+          'actually-older',
+        ]);
+      },
+    );
+
+    test(
+      'legacy live response does not freeze a complete cache from an older Bridge',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testBridgeInstanceId = 'bridge-a'
+          ..testLastUrl = 'wss://legacy.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        final target = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: mockBridge.testBridgeInstanceId,
+          websocketUrl: mockBridge.testLastUrl,
+        );
+        cache.snapshots[target.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'bridge-a',
+          sessions: [
+            _session(id: 'stale-deleted-session'),
+            _session(id: 'live-session'),
+          ],
+          catalogRevision: null,
+          isComplete: true,
+          cachedAt: DateTime.utc(2026, 7, 25),
+        );
+        cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+        await pumpEventQueue();
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [_session(id: 'live-session')],
+            hasMore: true,
+            requestScope: 'list',
+            offset: 0,
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(cubit.state.sessions.map((session) => session.sessionId), [
+          'live-session',
+        ]);
+        expect(cubit.state.hasMore, isTrue);
+      },
+    );
+
+    test(
+      'runtime session broadcasts do not repeatedly decode the catalog',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testBridgeInstanceId = 'bridge-a'
+          ..testLastUrl = 'wss://mac-a.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+        await pumpEventQueue();
+        expect(cache.loadCalls, 1);
+
+        mockBridge.emitSessionIdentity();
+        mockBridge.emitSessionIdentity();
+        mockBridge.emitSessionIdentity();
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, 1);
+
+        mockBridge.testBridgeInstanceId = 'bridge-b';
+        mockBridge.emitSessionIdentity();
+        await pumpEventQueue();
+        expect(cache.loadCalls, 2);
       },
     );
 
