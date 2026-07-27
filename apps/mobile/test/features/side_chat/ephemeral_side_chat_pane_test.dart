@@ -55,6 +55,9 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
   bool isConnected = false;
 
   @override
+  String? logicalConnectionIdentity;
+
+  @override
   Stream<BridgeConnectionState> get connectionStatus => const Stream.empty();
 
   @override

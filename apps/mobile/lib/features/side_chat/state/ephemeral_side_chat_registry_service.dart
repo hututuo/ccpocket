@@ -8,6 +8,7 @@ import '../../../services/bridge_service.dart';
 
 abstract interface class EphemeralSideChatBridgeGateway {
   bool get isConnected;
+  String? get logicalConnectionIdentity;
   Set<String> get capabilities;
   Stream<BridgeConnectionState> get connectionStatus;
   Stream<void> get capabilityChanges;
@@ -24,6 +25,9 @@ class BridgeServiceEphemeralSideChatGateway
 
   @override
   bool get isConnected => _bridge.isConnected;
+
+  @override
+  String? get logicalConnectionIdentity => _bridge.logicalConnectionIdentity;
 
   @override
   Set<String> get capabilities => _bridge.bridgeCapabilities;
@@ -63,6 +67,7 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
   }) : this._(bridge, requestTimeout);
 
   EphemeralSideChatRegistryService._(this._bridge, this._requestTimeout) {
+    _synchronizeBridgeScope();
     _messageSubscription = _bridge.messages.listen(_onMessage);
     _connectionSubscription = _bridge.connectionStatus.listen(
       _onConnectionState,
@@ -90,6 +95,8 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
   Future<void>? _refreshFuture;
   bool _disposed = false;
   bool? _lastSupported;
+  bool _bridgeScopeInitialized = false;
+  String? _bridgeScopeIdentity;
 
   bool get isSupported =>
       _bridge.capabilities.contains(ephemeralSideChatCapability);
@@ -111,6 +118,7 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
       _entriesById[childSessionId];
 
   Future<EphemeralSideChatEntry> open(String parentSessionId) {
+    _synchronizeBridgeScope();
     _requireAvailable();
     final requestId = const Uuid().v4();
     final completer = Completer<EphemeralSideChatEntry>();
@@ -142,6 +150,7 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
   }
 
   Future<void> refresh() {
+    _synchronizeBridgeScope();
     if (!_bridge.isConnected || !isSupported) {
       return Future<void>.value();
     }
@@ -178,6 +187,7 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
   }
 
   Future<void> close(String childSessionId) {
+    _synchronizeBridgeScope();
     _requireAvailable();
     final requestId = const Uuid().v4();
     final completer = Completer<void>();
@@ -218,6 +228,7 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
   }
 
   void _onConnectionState(BridgeConnectionState state) {
+    _synchronizeBridgeScope();
     if (state == BridgeConnectionState.connected) {
       _reconcileCapability();
       return;
@@ -227,6 +238,7 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
 
   void _reconcileCapability() {
     if (_disposed || !_bridge.isConnected) return;
+    _synchronizeBridgeScope();
     final supported = isSupported;
     final capabilityChanged = _lastSupported != supported;
     _lastSupported = supported;
@@ -244,17 +256,19 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
   }
 
   void _onMessage(LocalFeatureServerMessage message) {
+    _synchronizeBridgeScope();
     if (message is EphemeralSideChatOpenedMessage) {
       final pending = _pendingOpens.remove(message.requestId);
-      pending?.timer.cancel();
+      if (pending == null) return;
+      pending.timer.cancel();
       final entry = message.entry;
       if (entry != null) {
         _entriesById[entry.childSessionId] = entry;
         notifyListeners();
-        if (pending != null && !pending.completer.isCompleted) {
+        if (!pending.completer.isCompleted) {
           pending.completer.complete(entry);
         }
-      } else if (pending != null && !pending.completer.isCompleted) {
+      } else if (!pending.completer.isCompleted) {
         pending.completer.completeError(
           StateError(message.error ?? 'Unable to open the side chat.'),
         );
@@ -263,13 +277,16 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
     }
 
     if (message is EphemeralSideChatRegistryMessage) {
+      final requestId = message.requestId;
+      if (requestId != null &&
+          !_pendingRegistryRequests.containsKey(requestId)) {
+        return;
+      }
       final entries = message.entries;
       if (entries != null) {
         _replaceEntries(entries);
-        final requestId = message.requestId;
         if (requestId != null) _completeRegistryRequest(requestId);
       } else {
-        final requestId = message.requestId;
         if (requestId != null) {
           _failRegistryRequest(
             requestId,
@@ -307,7 +324,27 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
   }
 
   void _removeStoppedSession(String sessionId) {
+    _synchronizeBridgeScope();
     if (_entriesById.remove(sessionId) != null) notifyListeners();
+  }
+
+  void _synchronizeBridgeScope() {
+    if (_disposed) return;
+    final rawIdentity = _bridge.logicalConnectionIdentity?.trim();
+    final nextIdentity = rawIdentity?.isNotEmpty == true ? rawIdentity : null;
+    if (!_bridgeScopeInitialized) {
+      _bridgeScopeInitialized = true;
+      _bridgeScopeIdentity = nextIdentity;
+      return;
+    }
+    if (_bridgeScopeIdentity == nextIdentity) return;
+
+    _bridgeScopeIdentity = nextIdentity;
+    _lastSupported = null;
+    _failPending(StateError('Bridge changed during the side chat request.'));
+    final hadEntries = _entriesById.isNotEmpty;
+    _entriesById.clear();
+    if (hadEntries || _bridge.isConnected) notifyListeners();
   }
 
   void _completeRegistryRequest(String requestId) {

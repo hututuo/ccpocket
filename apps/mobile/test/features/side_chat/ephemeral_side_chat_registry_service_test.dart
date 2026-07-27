@@ -18,6 +18,9 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
   bool isConnected = false;
 
   @override
+  String? logicalConnectionIdentity;
+
+  @override
   Set<String> capabilities = {};
 
   @override
@@ -177,6 +180,69 @@ void main() {
       gateway.isConnected = true;
       gateway.connectionController.add(BridgeConnectionState.connected);
       expect(service.entries, isEmpty);
+
+      service.dispose();
+      await gateway.close();
+    },
+  );
+
+  test(
+    'clears old entries and rejects late responses when the Bridge changes',
+    () async {
+      final gateway = _Gateway()
+        ..logicalConnectionIdentity = 'bridge-a'
+        ..capabilities = {ephemeralSideChatCapability}
+        ..isConnected = true;
+      final service = EphemeralSideChatRegistryService(
+        bridge: gateway,
+        requestTimeout: const Duration(seconds: 1),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final firstRequestId = gateway.sentJson(0)['requestId'] as String;
+      gateway.messageController.add(
+        EphemeralSideChatRegistryMessage(
+          requestId: firstRequestId,
+          entries: [_entry(childSessionId: 'child-a')],
+        ),
+      );
+      expect(service.entries.single.childSessionId, 'child-a');
+      await Future<void>.delayed(Duration.zero);
+
+      final oldRefresh = service.refresh();
+      final oldRefreshExpectation = expectLater(oldRefresh, throwsStateError);
+      final oldRequestId = gateway.sentJson(1)['requestId'] as String;
+      gateway.logicalConnectionIdentity = 'bridge-b';
+      gateway.connectionController.add(BridgeConnectionState.connecting);
+      await oldRefreshExpectation;
+      expect(service.entries, isEmpty);
+
+      gateway.connectionController.add(BridgeConnectionState.connected);
+      final currentRequestId = gateway.sentJson(2)['requestId'] as String;
+      gateway.messageController.add(
+        EphemeralSideChatRegistryMessage(
+          requestId: oldRequestId,
+          entries: [_entry(childSessionId: 'stale-child')],
+        ),
+      );
+      expect(service.entries, isEmpty);
+
+      gateway.messageController.add(
+        EphemeralSideChatRegistryMessage(
+          requestId: currentRequestId,
+          entries: [_entry(childSessionId: 'child-b')],
+        ),
+      );
+      expect(service.entries.single.childSessionId, 'child-b');
+
+      gateway.messageController.add(
+        EphemeralSideChatOpenedMessage(
+          parentSessionId: 'parent-1',
+          requestId: 'late-open-from-bridge-a',
+          entry: _entry(childSessionId: 'late-child'),
+        ),
+      );
+      expect(service.entries.single.childSessionId, 'child-b');
 
       service.dispose();
       await gateway.close();

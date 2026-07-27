@@ -21,6 +21,9 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
   bool isConnected = false;
 
   @override
+  String? logicalConnectionIdentity;
+
+  @override
   Set<String> capabilities = {ephemeralSideChatCapability};
 
   @override
