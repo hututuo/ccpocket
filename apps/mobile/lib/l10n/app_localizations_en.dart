@@ -1660,6 +1660,21 @@ class AppLocalizationsEn extends AppLocalizations {
   String get screenshot => 'Screenshot';
 
   @override
+  String get screenshotSaved => 'Screenshot saved';
+
+  @override
+  String get screenshotFailed => 'Screenshot failed';
+
+  @override
+  String get fullScreen => 'Full Screen';
+
+  @override
+  String get captureEntireDesktop => 'Capture entire desktop';
+
+  @override
+  String get noWindowsFound => 'No windows found';
+
+  @override
   String get debug => 'Debug';
 
   @override

@@ -646,6 +646,11 @@
   "messageHistory": "Message History",
   "viewChanges": "View Changes",
   "screenshot": "Screenshot",
+  "screenshotSaved": "Screenshot saved",
+  "screenshotFailed": "Screenshot failed",
+  "fullScreen": "Full Screen",
+  "captureEntireDesktop": "Capture entire desktop",
+  "noWindowsFound": "No windows found",
 
   "debug": "Debug",
   "logs": "Logs",

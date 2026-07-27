@@ -3024,6 +3024,36 @@ abstract class AppLocalizations {
   /// **'スクリーンショット'**
   String get screenshot;
 
+  /// No description provided for @screenshotSaved.
+  ///
+  /// In ja, this message translates to:
+  /// **'スクリーンショットを保存しました'**
+  String get screenshotSaved;
+
+  /// No description provided for @screenshotFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'スクリーンショットの保存に失敗しました'**
+  String get screenshotFailed;
+
+  /// No description provided for @fullScreen.
+  ///
+  /// In ja, this message translates to:
+  /// **'フルスクリーン'**
+  String get fullScreen;
+
+  /// No description provided for @captureEntireDesktop.
+  ///
+  /// In ja, this message translates to:
+  /// **'デスクトップ全体を撮影'**
+  String get captureEntireDesktop;
+
+  /// No description provided for @noWindowsFound.
+  ///
+  /// In ja, this message translates to:
+  /// **'ウインドウが見つかりません'**
+  String get noWindowsFound;
+
   /// No description provided for @debug.
   ///
   /// In ja, this message translates to:

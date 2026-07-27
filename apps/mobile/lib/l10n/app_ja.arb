@@ -666,6 +666,11 @@
   "messageHistory": "メッセージ履歴",
   "viewChanges": "変更を確認",
   "screenshot": "スクリーンショット",
+  "screenshotSaved": "スクリーンショットを保存しました",
+  "screenshotFailed": "スクリーンショットの保存に失敗しました",
+  "fullScreen": "フルスクリーン",
+  "captureEntireDesktop": "デスクトップ全体を撮影",
+  "noWindowsFound": "ウインドウが見つかりません",
 
   "debug": "デバッグ",
   "logs": "ログ",

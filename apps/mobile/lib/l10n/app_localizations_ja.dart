@@ -1593,6 +1593,21 @@ class AppLocalizationsJa extends AppLocalizations {
   String get screenshot => 'スクリーンショット';
 
   @override
+  String get screenshotSaved => 'スクリーンショットを保存しました';
+
+  @override
+  String get screenshotFailed => 'スクリーンショットの保存に失敗しました';
+
+  @override
+  String get fullScreen => 'フルスクリーン';
+
+  @override
+  String get captureEntireDesktop => 'デスクトップ全体を撮影';
+
+  @override
+  String get noWindowsFound => 'ウインドウが見つかりません';
+
+  @override
   String get debug => 'デバッグ';
 
   @override

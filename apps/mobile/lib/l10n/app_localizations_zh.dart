@@ -1570,6 +1570,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get screenshot => '截图';
 
   @override
+  String get screenshotSaved => '截图已保存';
+
+  @override
+  String get screenshotFailed => '截图失败';
+
+  @override
+  String get fullScreen => '全屏';
+
+  @override
+  String get captureEntireDesktop => '截取整个桌面';
+
+  @override
+  String get noWindowsFound => '未找到窗口';
+
+  @override
   String get debug => '调试';
 
   @override

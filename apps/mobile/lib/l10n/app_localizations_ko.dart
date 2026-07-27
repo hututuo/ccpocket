@@ -1610,6 +1610,21 @@ class AppLocalizationsKo extends AppLocalizations {
   String get screenshot => '스크린샷';
 
   @override
+  String get screenshotSaved => '스크린샷을 저장했습니다';
+
+  @override
+  String get screenshotFailed => '스크린샷 저장에 실패했습니다';
+
+  @override
+  String get fullScreen => '전체 화면';
+
+  @override
+  String get captureEntireDesktop => '전체 데스크톱 캡처';
+
+  @override
+  String get noWindowsFound => '창을 찾을 수 없습니다';
+
+  @override
   String get debug => '디버그';
 
   @override
