@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`e984ca36`
+核对源码基线：`f70db62d`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -53,6 +53,7 @@
 | 展开后 thinking、工具和结果在同一个框内；折叠时才在当前进度显示摘要 | v02-009、013 | unified process surface 与 current-progress selector | **已验证** | process tree/viewport 回归通过；流式真机会话视觉待复核 |
 | 中间过程/工具/最终回复不能整段重复两次 | v02-010、012；v02-014.9 | canonical identity、history generation、dedup state | **部分完成** | 多条已知重复路径已修；仍缺用户真实故障会话的 raw→Bridge→Mirror→reducer→render 五层快照 |
 | UUID 回填和原地历史修订必须让断线/后台客户端收到，且不能靠追加重复消息实现 | v02-010～012 | `e984ca36`；通用 history mutation reset revision | **已验证** | 红测证明旧实现只改旧 seq，`getHistorySince` 永远返回空 delta；现仅在 UUID/时间确有变化时推进 revision，并通过旧客户端已支持的 reset snapshot 返回原位置的单份消息；相同回声不重复推进版本 |
+| 两条无 UUID、文本相同的用户消息不能互相串图片或时间来源 | v02-010～013 | `f70db62d`；历史替换时的强身份优先、按出现顺序单次消费 | **已验证** | 红测中旧单值 text map 让第一条 `[1,2,3]` 图片错误变成第二条 `[4,5,6]`；现 UUID/clientMessageId 优先，文本仅作一次性顺序兜底，两个明确不同的强身份不强并；ChatSessionCubit 148 项通过 |
 | 消息显示电脑实际接收时间到秒；时间紧凑融入消息，不占整行 | v02-005、009、013 | `receivedAt` provenance、`ChatMessageTimestamp`、`e0fa43f0` | **已验证** | 混合 ISO 时间比较和多类消息布局回归通过；长文本视觉待验收 |
 | Guardian 风险归到对应工具下，只显示最新一条并 3 秒消失 | v01 8.3；v02-009 | approval tool identity + timed notice | **已验证** | `guardian_approval_notice_test.dart` 等回归保留 |
 | Plan 首次退出未选择后，审批仍能恢复 | v01 8.2；v02-014 | Bridge pending ledger、Mobile pending merge | **已验证** | plan permission restart 和重叠恢复回归通过 |
@@ -103,7 +104,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `e984ca36`，后续深链、安全、通知 ACK、公平调度与历史/会话管理提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `f70db62d`，后续深链、安全、通知 ACK、公平调度与历史/会话管理提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
