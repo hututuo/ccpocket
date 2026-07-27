@@ -4158,6 +4158,204 @@ abstract class AppLocalizations {
   /// **'コマンド・スキルを入力'**
   String get tooltipSlashCommand;
 
+  /// No description provided for @slashCommandsTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'コマンド'**
+  String get slashCommandsTitle;
+
+  /// No description provided for @slashCommandsProject.
+  ///
+  /// In ja, this message translates to:
+  /// **'プロジェクト'**
+  String get slashCommandsProject;
+
+  /// No description provided for @slashCommandsSkills.
+  ///
+  /// In ja, this message translates to:
+  /// **'スキル'**
+  String get slashCommandsSkills;
+
+  /// No description provided for @slashCommandsApps.
+  ///
+  /// In ja, this message translates to:
+  /// **'アプリ'**
+  String get slashCommandsApps;
+
+  /// No description provided for @slashCommandsPlugins.
+  ///
+  /// In ja, this message translates to:
+  /// **'プラグイン'**
+  String get slashCommandsPlugins;
+
+  /// No description provided for @slashCommandsBuiltIn.
+  ///
+  /// In ja, this message translates to:
+  /// **'組み込み'**
+  String get slashCommandsBuiltIn;
+
+  /// No description provided for @slashCommandCompactDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'会話のコンテキストを圧縮'**
+  String get slashCommandCompactDescription;
+
+  /// No description provided for @slashCommandPlanDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'プランモードに切り替え'**
+  String get slashCommandPlanDescription;
+
+  /// No description provided for @slashCommandGoalDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'目標を設定または管理'**
+  String get slashCommandGoalDescription;
+
+  /// No description provided for @slashCommandClearDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'会話を消去'**
+  String get slashCommandClearDescription;
+
+  /// No description provided for @slashCommandHelpDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'ヘルプを表示'**
+  String get slashCommandHelpDescription;
+
+  /// No description provided for @slashCommandContextDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'コンテキスト使用量を表示'**
+  String get slashCommandContextDescription;
+
+  /// No description provided for @slashCommandCostDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'コスト概要を表示'**
+  String get slashCommandCostDescription;
+
+  /// No description provided for @slashCommandInitDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'プロジェクトを初期化'**
+  String get slashCommandInitDescription;
+
+  /// No description provided for @slashCommandReviewDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'コードレビュー'**
+  String get slashCommandReviewDescription;
+
+  /// No description provided for @slashCommandModelDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'モデルを切り替え'**
+  String get slashCommandModelDescription;
+
+  /// No description provided for @slashCommandSkillsDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'利用可能なスキルを表示'**
+  String get slashCommandSkillsDescription;
+
+  /// No description provided for @slashCommandStatusDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'状態を表示'**
+  String get slashCommandStatusDescription;
+
+  /// No description provided for @slashCommandMemoryDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'CLAUDE.md を編集'**
+  String get slashCommandMemoryDescription;
+
+  /// No description provided for @slashCommandConfigDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'設定を開く'**
+  String get slashCommandConfigDescription;
+
+  /// No description provided for @slashCommandPermissionsDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'権限を表示'**
+  String get slashCommandPermissionsDescription;
+
+  /// No description provided for @slashCommandPrCommentsDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'PR コメントを表示'**
+  String get slashCommandPrCommentsDescription;
+
+  /// No description provided for @slashCommandReleaseNotesDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'リリースノートを表示'**
+  String get slashCommandReleaseNotesDescription;
+
+  /// No description provided for @slashCommandSecurityReviewDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'セキュリティレビューを実行'**
+  String get slashCommandSecurityReviewDescription;
+
+  /// No description provided for @slashCommandResumeDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッションを再開'**
+  String get slashCommandResumeDescription;
+
+  /// No description provided for @slashCommandRenameDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッション名を変更'**
+  String get slashCommandRenameDescription;
+
+  /// No description provided for @slashCommandDoctorDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'ヘルスチェックを実行'**
+  String get slashCommandDoctorDescription;
+
+  /// No description provided for @slashCommandMcpDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'MCP サーバーを管理'**
+  String get slashCommandMcpDescription;
+
+  /// No description provided for @slashCommandExportDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'会話をエクスポート'**
+  String get slashCommandExportDescription;
+
+  /// No description provided for @slashCommandAddDirDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'ディレクトリを追加'**
+  String get slashCommandAddDirDescription;
+
+  /// No description provided for @slashCommandRewindDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'前の時点に巻き戻す'**
+  String get slashCommandRewindDescription;
+
+  /// No description provided for @slashCommandVimDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'Vim モードを有効化'**
+  String get slashCommandVimDescription;
+
+  /// No description provided for @slashCommandLoginDescription.
+  ///
+  /// In ja, this message translates to:
+  /// **'アカウントを切り替え'**
+  String get slashCommandLoginDescription;
+
   /// No description provided for @tooltipMention.
   ///
   /// In ja, this message translates to:

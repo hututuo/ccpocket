@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
 import '../theme/app_theme.dart';
 import 'slash_command_sheet.dart';
 
@@ -62,6 +63,7 @@ class _SlashCommandOverlayState extends State<SlashCommandOverlay> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final appColors = Theme.of(context).extension<AppColors>()!;
+    final l10n = AppLocalizations.of(context);
     return Material(
       elevation: 4,
       borderRadius: BorderRadius.circular(12),
@@ -131,13 +133,7 @@ class _SlashCommandOverlayState extends State<SlashCommandOverlay> {
                           borderRadius: BorderRadius.circular(3),
                         ),
                         child: Text(
-                          switch (cmd.category) {
-                            SlashCommandCategory.project => 'project',
-                            SlashCommandCategory.skill => 'skill',
-                            SlashCommandCategory.app => 'app',
-                            SlashCommandCategory.plugin => 'plugin',
-                            SlashCommandCategory.builtin => 'builtin',
-                          },
+                          localizedSlashCommandCategory(l10n, cmd.category),
                           style: TextStyle(
                             fontSize: 8,
                             fontWeight: FontWeight.w600,
@@ -149,7 +145,7 @@ class _SlashCommandOverlayState extends State<SlashCommandOverlay> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        cmd.description,
+                        localizedSlashCommandDescription(l10n, cmd),
                         style: TextStyle(
                           fontSize: 12,
                           color: appColors.subtleText,

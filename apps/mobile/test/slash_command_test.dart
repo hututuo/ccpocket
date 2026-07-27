@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/chat_message_handler.dart';
+import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/file_mention_overlay.dart';
+import 'package:ccpocket/widgets/slash_command_overlay.dart';
 import 'package:ccpocket/widgets/slash_command_sheet.dart';
 
 void main() {
@@ -129,6 +132,76 @@ void main() {
       expect(cmd.insertText, r'$flutter-ui-design ');
       expect(cmd.category, SlashCommandCategory.skill);
       expect(cmd.skillInfo?.path, '/tmp/flutter-ui-design/SKILL.md');
+    });
+  });
+
+  group('SlashCommand localization', () {
+    testWidgets(
+      'sheet localizes built-in descriptions and preserves provider copy',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: const Locale('zh'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            theme: AppTheme.lightTheme,
+            home: Scaffold(
+              body: SlashCommandSheet(
+                commands: const [
+                  SlashCommand(
+                    command: r'$calendar',
+                    description: 'Provider supplied summary',
+                    icon: Icons.apps_outlined,
+                    category: SlashCommandCategory.app,
+                    usesProviderDescription: true,
+                  ),
+                  SlashCommand(
+                    command: '/compact',
+                    description: 'Compact conversation',
+                    icon: Icons.compress,
+                  ),
+                ],
+                onSelect: (_) {},
+              ),
+            ),
+          ),
+        );
+
+        expect(find.text('命令'), findsOneWidget);
+        expect(find.text('内置'), findsOneWidget);
+        expect(find.text('压缩对话上下文'), findsOneWidget);
+        expect(find.text('Provider supplied summary'), findsOneWidget);
+      },
+    );
+
+    testWidgets('completion overlay localizes category and description', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('ko'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          theme: AppTheme.lightTheme,
+          home: Scaffold(
+            body: SlashCommandOverlay(
+              filteredCommands: const [
+                SlashCommand(
+                  command: '/review',
+                  description: 'Code review',
+                  icon: Icons.rate_review_outlined,
+                  category: SlashCommandCategory.project,
+                ),
+              ],
+              onSelect: (_) {},
+              onDismiss: () {},
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('프로젝트'), findsOneWidget);
+      expect(find.text('코드 리뷰'), findsOneWidget);
     });
   });
 

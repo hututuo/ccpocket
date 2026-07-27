@@ -2281,6 +2281,105 @@ class AppLocalizationsEn extends AppLocalizations {
   String get tooltipSlashCommand => 'Insert command or skill';
 
   @override
+  String get slashCommandsTitle => 'Commands';
+
+  @override
+  String get slashCommandsProject => 'Project';
+
+  @override
+  String get slashCommandsSkills => 'Skills';
+
+  @override
+  String get slashCommandsApps => 'Apps';
+
+  @override
+  String get slashCommandsPlugins => 'Plugins';
+
+  @override
+  String get slashCommandsBuiltIn => 'Built-in';
+
+  @override
+  String get slashCommandCompactDescription => 'Compact conversation';
+
+  @override
+  String get slashCommandPlanDescription => 'Switch to Plan mode';
+
+  @override
+  String get slashCommandGoalDescription => 'Set or manage a goal';
+
+  @override
+  String get slashCommandClearDescription => 'Clear conversation';
+
+  @override
+  String get slashCommandHelpDescription => 'Show help';
+
+  @override
+  String get slashCommandContextDescription => 'Show context usage';
+
+  @override
+  String get slashCommandCostDescription => 'Show cost summary';
+
+  @override
+  String get slashCommandInitDescription => 'Initialize project';
+
+  @override
+  String get slashCommandReviewDescription => 'Code review';
+
+  @override
+  String get slashCommandModelDescription => 'Switch model';
+
+  @override
+  String get slashCommandSkillsDescription => 'List available skills';
+
+  @override
+  String get slashCommandStatusDescription => 'Show status';
+
+  @override
+  String get slashCommandMemoryDescription => 'Edit CLAUDE.md';
+
+  @override
+  String get slashCommandConfigDescription => 'Open settings';
+
+  @override
+  String get slashCommandPermissionsDescription => 'View permissions';
+
+  @override
+  String get slashCommandPrCommentsDescription => 'View PR comments';
+
+  @override
+  String get slashCommandReleaseNotesDescription => 'View release notes';
+
+  @override
+  String get slashCommandSecurityReviewDescription => 'Run a security review';
+
+  @override
+  String get slashCommandResumeDescription => 'Resume session';
+
+  @override
+  String get slashCommandRenameDescription => 'Rename session';
+
+  @override
+  String get slashCommandDoctorDescription => 'Run health checks';
+
+  @override
+  String get slashCommandMcpDescription => 'Manage MCP servers';
+
+  @override
+  String get slashCommandExportDescription => 'Export conversation';
+
+  @override
+  String get slashCommandAddDirDescription => 'Add directories';
+
+  @override
+  String get slashCommandRewindDescription => 'Rewind to a previous point';
+
+  @override
+  String get slashCommandVimDescription => 'Enable Vim mode';
+
+  @override
+  String get slashCommandLoginDescription => 'Switch accounts';
+
+  @override
   String get tooltipMention => 'Mention file or plugin';
 
   @override

@@ -2204,6 +2204,105 @@ class AppLocalizationsJa extends AppLocalizations {
   String get tooltipSlashCommand => 'コマンド・スキルを入力';
 
   @override
+  String get slashCommandsTitle => 'コマンド';
+
+  @override
+  String get slashCommandsProject => 'プロジェクト';
+
+  @override
+  String get slashCommandsSkills => 'スキル';
+
+  @override
+  String get slashCommandsApps => 'アプリ';
+
+  @override
+  String get slashCommandsPlugins => 'プラグイン';
+
+  @override
+  String get slashCommandsBuiltIn => '組み込み';
+
+  @override
+  String get slashCommandCompactDescription => '会話のコンテキストを圧縮';
+
+  @override
+  String get slashCommandPlanDescription => 'プランモードに切り替え';
+
+  @override
+  String get slashCommandGoalDescription => '目標を設定または管理';
+
+  @override
+  String get slashCommandClearDescription => '会話を消去';
+
+  @override
+  String get slashCommandHelpDescription => 'ヘルプを表示';
+
+  @override
+  String get slashCommandContextDescription => 'コンテキスト使用量を表示';
+
+  @override
+  String get slashCommandCostDescription => 'コスト概要を表示';
+
+  @override
+  String get slashCommandInitDescription => 'プロジェクトを初期化';
+
+  @override
+  String get slashCommandReviewDescription => 'コードレビュー';
+
+  @override
+  String get slashCommandModelDescription => 'モデルを切り替え';
+
+  @override
+  String get slashCommandSkillsDescription => '利用可能なスキルを表示';
+
+  @override
+  String get slashCommandStatusDescription => '状態を表示';
+
+  @override
+  String get slashCommandMemoryDescription => 'CLAUDE.md を編集';
+
+  @override
+  String get slashCommandConfigDescription => '設定を開く';
+
+  @override
+  String get slashCommandPermissionsDescription => '権限を表示';
+
+  @override
+  String get slashCommandPrCommentsDescription => 'PR コメントを表示';
+
+  @override
+  String get slashCommandReleaseNotesDescription => 'リリースノートを表示';
+
+  @override
+  String get slashCommandSecurityReviewDescription => 'セキュリティレビューを実行';
+
+  @override
+  String get slashCommandResumeDescription => 'セッションを再開';
+
+  @override
+  String get slashCommandRenameDescription => 'セッション名を変更';
+
+  @override
+  String get slashCommandDoctorDescription => 'ヘルスチェックを実行';
+
+  @override
+  String get slashCommandMcpDescription => 'MCP サーバーを管理';
+
+  @override
+  String get slashCommandExportDescription => '会話をエクスポート';
+
+  @override
+  String get slashCommandAddDirDescription => 'ディレクトリを追加';
+
+  @override
+  String get slashCommandRewindDescription => '前の時点に巻き戻す';
+
+  @override
+  String get slashCommandVimDescription => 'Vim モードを有効化';
+
+  @override
+  String get slashCommandLoginDescription => 'アカウントを切り替え';
+
+  @override
   String get tooltipMention => 'ファイル・プラグインをメンション';
 
   @override

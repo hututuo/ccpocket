@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../l10n/app_localizations.dart';
 import '../models/messages.dart'
     show CodexAppMetadata, CodexPluginMetadata, CodexSkillMetadata;
 import '../theme/app_theme.dart';
@@ -15,6 +16,7 @@ class SlashCommand {
   final String description;
   final IconData icon;
   final SlashCommandCategory category;
+  final bool usesProviderDescription;
 
   /// Codex skill metadata (null for non-skill commands).
   final CodexSkillInfo? skillInfo;
@@ -27,6 +29,7 @@ class SlashCommand {
     required this.description,
     required this.icon,
     this.category = SlashCommandCategory.builtin,
+    this.usesProviderDescription = false,
     this.skillInfo,
     this.appInfo,
     this.pluginInfo,
@@ -122,6 +125,54 @@ const knownCommands = <String, ({String description, IconData icon})>{
   'login': (description: 'Switch accounts', icon: Icons.login),
 };
 
+String localizedSlashCommandDescription(
+  AppLocalizations l10n,
+  SlashCommand command,
+) {
+  if (command.usesProviderDescription) return command.description;
+  return switch (command.command) {
+    '/compact' => l10n.slashCommandCompactDescription,
+    '/plan' => l10n.slashCommandPlanDescription,
+    '/goal' => l10n.slashCommandGoalDescription,
+    '/clear' => l10n.slashCommandClearDescription,
+    '/help' => l10n.slashCommandHelpDescription,
+    '/context' => l10n.slashCommandContextDescription,
+    '/cost' => l10n.slashCommandCostDescription,
+    '/init' => l10n.slashCommandInitDescription,
+    '/review' => l10n.slashCommandReviewDescription,
+    '/model' => l10n.slashCommandModelDescription,
+    '/skills' => l10n.slashCommandSkillsDescription,
+    '/status' => l10n.slashCommandStatusDescription,
+    '/memory' => l10n.slashCommandMemoryDescription,
+    '/config' => l10n.slashCommandConfigDescription,
+    '/permissions' => l10n.slashCommandPermissionsDescription,
+    '/pr-comments' => l10n.slashCommandPrCommentsDescription,
+    '/release-notes' => l10n.slashCommandReleaseNotesDescription,
+    '/security-review' => l10n.slashCommandSecurityReviewDescription,
+    '/resume' => l10n.slashCommandResumeDescription,
+    '/rename' => l10n.slashCommandRenameDescription,
+    '/doctor' => l10n.slashCommandDoctorDescription,
+    '/mcp' => l10n.slashCommandMcpDescription,
+    '/export' => l10n.slashCommandExportDescription,
+    '/add-dir' => l10n.slashCommandAddDirDescription,
+    '/rewind' => l10n.slashCommandRewindDescription,
+    '/vim' => l10n.slashCommandVimDescription,
+    '/login' => l10n.slashCommandLoginDescription,
+    _ => command.description,
+  };
+}
+
+String localizedSlashCommandCategory(
+  AppLocalizations l10n,
+  SlashCommandCategory category,
+) => switch (category) {
+  SlashCommandCategory.project => l10n.slashCommandsProject,
+  SlashCommandCategory.skill => l10n.slashCommandsSkills,
+  SlashCommandCategory.app => l10n.slashCommandsApps,
+  SlashCommandCategory.plugin => l10n.slashCommandsPlugins,
+  SlashCommandCategory.builtin => l10n.slashCommandsBuiltIn,
+};
+
 // ---- Factory ----
 
 SlashCommand buildSlashCommand(
@@ -140,6 +191,7 @@ SlashCommand buildSlashCommand(
     description: description,
     icon: icon,
     category: category,
+    usesProviderDescription: skillMeta != null,
     skillInfo: skillMeta != null
         ? CodexSkillInfo(
             name: skillMeta.name,
@@ -157,6 +209,7 @@ SlashCommand buildSlashSkill(CodexSkillMetadata skillMeta) {
     description: skillMeta.summary,
     icon: knownCommands[skillMeta.name]?.icon ?? Icons.extension,
     category: SlashCommandCategory.skill,
+    usesProviderDescription: true,
     skillInfo: CodexSkillInfo(
       name: skillMeta.name,
       path: skillMeta.path,
@@ -171,6 +224,7 @@ SlashCommand buildDollarSkill(CodexSkillMetadata skillMeta) {
     description: skillMeta.summary,
     icon: Icons.extension,
     category: SlashCommandCategory.skill,
+    usesProviderDescription: true,
     skillInfo: CodexSkillInfo(
       name: skillMeta.name,
       path: skillMeta.path,
@@ -185,6 +239,7 @@ SlashCommand buildDollarApp(CodexAppMetadata appMeta) {
     description: appMeta.description,
     icon: Icons.apps_outlined,
     category: SlashCommandCategory.app,
+    usesProviderDescription: true,
     appInfo: CodexAppInfo(
       id: appMeta.id,
       name: appMeta.label,
@@ -199,6 +254,7 @@ SlashCommand buildAtPlugin(CodexPluginMetadata pluginMeta) {
     description: pluginMeta.summary,
     icon: Icons.extension_outlined,
     category: SlashCommandCategory.plugin,
+    usesProviderDescription: true,
     pluginInfo: CodexPluginInfo(
       id: pluginMeta.id,
       name: pluginMeta.label,
@@ -298,6 +354,7 @@ class SlashCommandSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
+    final l10n = AppLocalizations.of(context);
 
     // Group by category
     final builtin = commands
@@ -331,13 +388,16 @@ class SlashCommandSheet extends StatelessWidget {
               ),
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.only(left: 16, bottom: 8),
+          Padding(
+            padding: const EdgeInsets.only(left: 16, bottom: 8),
             child: Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Commands',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                l10n.slashCommandsTitle,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ),
@@ -349,7 +409,7 @@ class SlashCommandSheet extends StatelessWidget {
                 children: [
                   if (project.isNotEmpty) ...[
                     _SectionHeader(
-                      label: 'Project',
+                      label: l10n.slashCommandsProject,
                       accentColor: Theme.of(context).colorScheme.secondary,
                     ),
                     for (final cmd in project)
@@ -357,7 +417,7 @@ class SlashCommandSheet extends StatelessWidget {
                   ],
                   if (skills.isNotEmpty) ...[
                     _SectionHeader(
-                      label: 'Skills',
+                      label: l10n.slashCommandsSkills,
                       accentColor: Theme.of(context).colorScheme.tertiary,
                     ),
                     for (final cmd in skills)
@@ -365,7 +425,7 @@ class SlashCommandSheet extends StatelessWidget {
                   ],
                   if (apps.isNotEmpty) ...[
                     _SectionHeader(
-                      label: 'Apps',
+                      label: l10n.slashCommandsApps,
                       accentColor: Theme.of(context).colorScheme.primary,
                     ),
                     for (final cmd in apps)
@@ -373,7 +433,7 @@ class SlashCommandSheet extends StatelessWidget {
                   ],
                   if (plugins.isNotEmpty) ...[
                     _SectionHeader(
-                      label: 'Plugins',
+                      label: l10n.slashCommandsPlugins,
                       accentColor: Theme.of(context).colorScheme.primary,
                     ),
                     for (final cmd in plugins)
@@ -384,7 +444,7 @@ class SlashCommandSheet extends StatelessWidget {
                         skills.isNotEmpty ||
                         apps.isNotEmpty ||
                         plugins.isNotEmpty)
-                      const _SectionHeader(label: 'Built-in'),
+                      _SectionHeader(label: l10n.slashCommandsBuiltIn),
                     for (final cmd in builtin)
                       _CommandTile(command: cmd, onSelect: onSelect),
                   ],
@@ -433,6 +493,7 @@ class _CommandTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final colorScheme = Theme.of(context).colorScheme;
+    final l10n = AppLocalizations.of(context);
     final iconColor = switch (command.category) {
       SlashCommandCategory.project => colorScheme.secondary,
       SlashCommandCategory.skill => colorScheme.tertiary,
@@ -463,13 +524,7 @@ class _CommandTile extends StatelessWidget {
                 borderRadius: BorderRadius.circular(4),
               ),
               child: Text(
-                command.category == SlashCommandCategory.project
-                    ? 'project'
-                    : command.category == SlashCommandCategory.app
-                    ? 'app'
-                    : command.category == SlashCommandCategory.plugin
-                    ? 'plugin'
-                    : 'skill',
+                localizedSlashCommandCategory(l10n, command.category),
                 style: TextStyle(
                   fontSize: 9,
                   fontWeight: FontWeight.w600,
@@ -480,7 +535,10 @@ class _CommandTile extends StatelessWidget {
           ],
         ],
       ),
-      subtitle: Text(command.description, style: const TextStyle(fontSize: 13)),
+      subtitle: Text(
+        localizedSlashCommandDescription(l10n, command),
+        style: const TextStyle(fontSize: 13),
+      ),
       dense: true,
       onTap: () {
         HapticFeedback.selectionClick();

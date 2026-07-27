@@ -2220,6 +2220,105 @@ class AppLocalizationsKo extends AppLocalizations {
   String get tooltipSlashCommand => '명령 또는 스킬 삽입';
 
   @override
+  String get slashCommandsTitle => '명령';
+
+  @override
+  String get slashCommandsProject => '프로젝트';
+
+  @override
+  String get slashCommandsSkills => '스킬';
+
+  @override
+  String get slashCommandsApps => '앱';
+
+  @override
+  String get slashCommandsPlugins => '플러그인';
+
+  @override
+  String get slashCommandsBuiltIn => '기본 제공';
+
+  @override
+  String get slashCommandCompactDescription => '대화 컨텍스트 압축';
+
+  @override
+  String get slashCommandPlanDescription => '계획 모드로 전환';
+
+  @override
+  String get slashCommandGoalDescription => '목표 설정 또는 관리';
+
+  @override
+  String get slashCommandClearDescription => '대화 지우기';
+
+  @override
+  String get slashCommandHelpDescription => '도움말 보기';
+
+  @override
+  String get slashCommandContextDescription => '컨텍스트 사용량 보기';
+
+  @override
+  String get slashCommandCostDescription => '비용 요약 보기';
+
+  @override
+  String get slashCommandInitDescription => '프로젝트 초기화';
+
+  @override
+  String get slashCommandReviewDescription => '코드 리뷰';
+
+  @override
+  String get slashCommandModelDescription => '모델 전환';
+
+  @override
+  String get slashCommandSkillsDescription => '사용 가능한 스킬 보기';
+
+  @override
+  String get slashCommandStatusDescription => '상태 보기';
+
+  @override
+  String get slashCommandMemoryDescription => 'CLAUDE.md 편집';
+
+  @override
+  String get slashCommandConfigDescription => '설정 열기';
+
+  @override
+  String get slashCommandPermissionsDescription => '권한 보기';
+
+  @override
+  String get slashCommandPrCommentsDescription => 'PR 댓글 보기';
+
+  @override
+  String get slashCommandReleaseNotesDescription => '릴리스 노트 보기';
+
+  @override
+  String get slashCommandSecurityReviewDescription => '보안 리뷰 실행';
+
+  @override
+  String get slashCommandResumeDescription => '세션 재개';
+
+  @override
+  String get slashCommandRenameDescription => '세션 이름 변경';
+
+  @override
+  String get slashCommandDoctorDescription => '상태 점검 실행';
+
+  @override
+  String get slashCommandMcpDescription => 'MCP 서버 관리';
+
+  @override
+  String get slashCommandExportDescription => '대화 내보내기';
+
+  @override
+  String get slashCommandAddDirDescription => '디렉터리 추가';
+
+  @override
+  String get slashCommandRewindDescription => '이전 시점으로 되돌리기';
+
+  @override
+  String get slashCommandVimDescription => 'Vim 모드 사용';
+
+  @override
+  String get slashCommandLoginDescription => '계정 전환';
+
+  @override
   String get tooltipMention => '파일 또는 플러그인 멘션';
 
   @override

@@ -2177,6 +2177,105 @@ class AppLocalizationsZh extends AppLocalizations {
   String get tooltipSlashCommand => '输入命令或技能';
 
   @override
+  String get slashCommandsTitle => '命令';
+
+  @override
+  String get slashCommandsProject => '项目';
+
+  @override
+  String get slashCommandsSkills => '技能';
+
+  @override
+  String get slashCommandsApps => '应用';
+
+  @override
+  String get slashCommandsPlugins => '插件';
+
+  @override
+  String get slashCommandsBuiltIn => '内置';
+
+  @override
+  String get slashCommandCompactDescription => '压缩对话上下文';
+
+  @override
+  String get slashCommandPlanDescription => '切换到计划模式';
+
+  @override
+  String get slashCommandGoalDescription => '设置或管理目标';
+
+  @override
+  String get slashCommandClearDescription => '清空对话';
+
+  @override
+  String get slashCommandHelpDescription => '显示帮助';
+
+  @override
+  String get slashCommandContextDescription => '查看上下文用量';
+
+  @override
+  String get slashCommandCostDescription => '查看费用摘要';
+
+  @override
+  String get slashCommandInitDescription => '初始化项目';
+
+  @override
+  String get slashCommandReviewDescription => '代码审查';
+
+  @override
+  String get slashCommandModelDescription => '切换模型';
+
+  @override
+  String get slashCommandSkillsDescription => '列出可用技能';
+
+  @override
+  String get slashCommandStatusDescription => '查看状态';
+
+  @override
+  String get slashCommandMemoryDescription => '编辑 CLAUDE.md';
+
+  @override
+  String get slashCommandConfigDescription => '打开设置';
+
+  @override
+  String get slashCommandPermissionsDescription => '查看权限';
+
+  @override
+  String get slashCommandPrCommentsDescription => '查看 PR 评论';
+
+  @override
+  String get slashCommandReleaseNotesDescription => '查看发布说明';
+
+  @override
+  String get slashCommandSecurityReviewDescription => '执行安全审查';
+
+  @override
+  String get slashCommandResumeDescription => '恢复会话';
+
+  @override
+  String get slashCommandRenameDescription => '重命名会话';
+
+  @override
+  String get slashCommandDoctorDescription => '运行健康检查';
+
+  @override
+  String get slashCommandMcpDescription => '管理 MCP 服务器';
+
+  @override
+  String get slashCommandExportDescription => '导出对话';
+
+  @override
+  String get slashCommandAddDirDescription => '添加目录';
+
+  @override
+  String get slashCommandRewindDescription => '回退到之前的位置';
+
+  @override
+  String get slashCommandVimDescription => '启用 Vim 模式';
+
+  @override
+  String get slashCommandLoginDescription => '切换账户';
+
+  @override
   String get tooltipMention => '提及文件或插件';
 
   @override
