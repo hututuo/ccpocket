@@ -2,7 +2,7 @@
 
 最后核对：2026-07-27  
 当前分支：`fix/mobile-comprehensive-v02-20260726`  
-核对 HEAD：`704b5e09`  
+核对 HEAD：`f23c9187`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -67,20 +67,21 @@
 
 | 原始要求 | 方案位置 | 当前提交/源码证据 | 当前状态 | 验证证据与剩余门槛 |
 |---|---|---|---|---|
-| approval/question/completion/failure/progress 分级通知真正生效并本地化 | v01 10.1～10.5；v02-014 | Bridge projector、Cloud filter、Mobile notification preferences；`967210ff` | **代码完成，待设备/部署** | Bridge/Mobile/Cloud 定向测试已有；progress 默认关闭，必须显式开启；真实 Cloud/Bridge/FCM/APNs 未重新部署验证 |
-| Always Location 后台保活时只收轻量投影，不解析/渲染正文；回前台增量追平 | v01 10.1～10.2；v02-015 | background-location host、delivery mode、notification-only whitelist | **代码完成，待设备/部署** | Simulator/单测证明接线；物理 iPhone 权限、系统回收、低电量、温控、AltStore entitlement 未验收 |
+| approval/question/completion/failure/progress 分级通知真正生效并本地化 | v01 10.1～10.5；v02-014 | Bridge projector、Cloud filter、Mobile notification preferences；`967210ff`、`029eb93c` | **代码完成，待设备/部署** | FCM 后台 handler 已提前到 `runApp` 前注册，未知冷启动生命周期也会先挂接 BGAppRefresh handler；Bridge/Mobile/Cloud 定向测试已有；progress 默认关闭，必须显式开启；真实 Cloud/Bridge/FCM/APNs 未重新部署验证 |
+| Always Location 后台保活时只收轻量投影，不解析/渲染正文；回前台增量追平 | v01 10.1～10.2；v02-015 | background-location host、delivery mode、notification-only whitelist；`b84a926a` | **代码完成，待设备/部署** | 后台协商现在以 Bridge 返回的真实 active work 为准，并处理 capability 晚到；Simulator/单测证明接线；物理 iPhone 权限、系统回收、低电量、温控、AltStore entitlement 未验收 |
 | 会话完成后列表显示未读蓝点，打开可见后再清除 | v01 10.3；v02-014 | durable unread ledger；`bc0601b7` 按 Bridge 隔离 | **代码完成，待设备/部署** | 多 Bridge ledger 回归通过；需真实通知→列表→打开闭环 |
 | 长按通知可 Allow/Reject，Bridge 最终权威复核 | v01 10.4～10.5 | iOS notification category/action + opaque identity；`3226eafb` | **代码完成，待设备/部署** | 小数秒 action 解析已回归；物理 iPhone 长按动作、Face ID/签名待验 |
-| 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | ARB + 多个 feature strings | **部分完成** | 通知/文件/辅助入口已覆盖四语言；会话状态、Git、Explore、文件传输、审批等仍存在硬编码英文，当前正在修复 |
+| FCM 与定位保活 WebSocket 不能让同一事件重复弹两次 | v01 10；v02-014～015 | FCM relay 与 `background_notification_v1` 是两条独立投递通道 | **部分完成** | 当前协议没有可让 Cloud 排除同一在线 WS 客户端的 token/client identity，也不能靠后台注销 FCM（会破坏 iOS 挂起后的兜底）；需设计 additive delivery-id/token identity 去重后再改 |
+| 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | `5562e535`、`5cd90b8f`、`50e60902`、`f23c9187`；ARB + feature strings | **部分完成** | 会话状态/审批、Explore、Git、文件传输界面/收件横幅/本地通知已补四语言；QR、截图、主题/许可、slash command、部分机器管理和错误提示仍需逐项收口 |
 
 ## 5. 文件、预览与安全
 
 | 原始要求 | 方案位置 | 当前提交/源码证据 | 当前状态 | 验证证据与剩余门槛 |
 |---|---|---|---|---|
-| 手动文件管理与 Agent 引用保留两套入口，但共享同一读取、预览、下载和分享能力 | v01 11.1；v02-014 | artifact registry/candidate、file browser、统一 preview route | **部分完成** | 既有路径自动链接未重复造轮子；两套下载实现、token 续签和部分错误展示仍需统一 |
+| 手动文件管理与 Agent 引用保留两套入口，但共享同一读取、预览、下载和分享能力 | v01 11.1；v02-014 | artifact registry/candidate、file browser、统一 preview route；`c4b3174d` | **部分完成** | 既有路径自动链接未重复造轮子；两种入口都能在 Quick Look、分享、下载及 401/403/404 后续签同一 preview access；仍有两套下载实现和部分错误展示待统一 |
 | owner 模式允许全盘只读，项目外引用不再 `path_not_allowed` | v01 11.2～11.3 | authenticated unrestricted read；`ba839504` 未认证安全回退 | **代码完成，待设备/部署** | 新旧 Bridge fallback 已测；实际运行 Bridge 的 API key/`*` 配置仍需核对 |
 | 修改/上传/删除必须密码或手机 Face ID，由 Bridge 授权；密码失败不可重连绕过 | v01 11.4 | Argon2id verifier `60bc259d`；native biometric challenge；`e95f1772` | **代码完成，待设备/部署** | 7 项 auth 测试覆盖并行失败、断线重连和限流；物理 Face ID/Secure Enclave 待验 |
-| JSON、单文件 HTML、网页 URL 正确分流；Quick Look 失败走本地/WebView；提供下载/分享 | v01 11.5；v02-006、014 | `3c1985e5`、`435c3613`、`a4ecdf58`；artifact preview | **部分完成** | `.json/.html` 路由和本地大文件 Quick Look 回归通过；macOS gate、过期 token 重签、HTTP 错误页、大 JSON 性能和真实失败样本仍待修/取证 |
+| JSON、单文件 HTML、网页 URL 正确分流；Quick Look 失败走本地/WebView；提供下载/分享 | v01 11.5；v02-006、014 | `3c1985e5`、`435c3613`、`a4ecdf58`、`c4b3174d`；artifact preview | **部分完成** | `.json/.html` 路由、本地大文件 Quick Look、过期 token 自动续签和条件入口回归通过；macOS gate、通用 HTTP 错误页、大/压缩 JSON 性能和真实失败样本仍待修/取证 |
 | Explorer/Git 的旧 Bridge 无 requestId 时也不能串项目或无限加载 | v02-006；全局兼容门禁 | `f1f0dd04`、`3fc46236`、`935b5604`、`f8438e15`、`8374d105` | **已验证** | Explorer 16 项、Git 44 项、Bridge parser/websocket 411 项相关回归通过 |
 | Bridge/手机握手做全面安全审查，但不把密码哈希放热路径，不破坏旧客户端 | v01 11、19；decisions | Origin gate、API key、路径/TOCTOU、Argon2、capability fallback | **部分完成** | 多项安全修复已有；symlink/TOCTOU、审批参数绑定、auto-approval state 等审查积压仍需逐项判定，且不能违背用户明确的 owner 全盘只读需求 |
 
@@ -94,7 +95,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | 历史 build 203/Bridge 部署提交仅是旧 HEAD 证据 | **未完成** | 当前 `704b5e09` 尚未构建新 IPA、部署新 Bridge、安装真机或发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | 历史 build 203/Bridge 部署提交仅是旧 HEAD 证据 | **未完成** | 当前 `f23c9187` 尚未构建新 IPA、部署新 Bridge、安装真机或发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -112,15 +113,16 @@
 - 分页后展开状态 key 迁移：`8d04d5ed`
 - 文件密码限流跨重连、并行尝试生效：`e95f1772`
 
-P3 的缓存标题 N+1 已由 `704b5e09` 改成每 300 个身份一批。剩余 P3
-“硬编码英文”不是一个点，而是第 4 节登记的系统性本地化工作，不能以修少量文案
-关闭。
+P3 的缓存标题 N+1 已由 `704b5e09` 改成每 300 个身份一批。硬编码英文已经
+继续按功能域拆分：`5562e535`（会话状态/审批）、`5cd90b8f`（Explore）、
+`50e60902`（Git）、`f23c9187`（文件传输界面与通知）。第 4 节列出的长尾
+仍然是系统性本地化工作，不能因这些高曝光面已完成就提前关闭。
 
 ## 8. 下一实施顺序
 
-1. 先完成高曝光固定 UI 的四语言本地化与 ARB key 一致性；
-2. 再核对通知端到端双投递、冷后台 lifecycle 和 action；
-3. 收束文件预览、token 续签、HTTP/JSON 错误与下载实现；
+1. 继续完成剩余高曝光固定 UI 的四语言本地化与 ARB key 一致性；
+2. 设计兼容旧端的通知 delivery-id/token identity，解决 FCM + WS 双投递；
+3. 收束文件预览 HTTP/JSON 错误、下载实现和本地 HTML 安全预览；
 4. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
 5. fetch/语义合并最新 upstream；
 6. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
