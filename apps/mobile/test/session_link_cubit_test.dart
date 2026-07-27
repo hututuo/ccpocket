@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 class _SessionLinkBridge extends BridgeService {
   final controller = StreamController<ServerMessage>.broadcast();
   late SessionLinkResolveResult result;
+  Object? resolveError;
 
   @override
   Stream<ServerMessage> get messages => controller.stream;
@@ -20,6 +21,8 @@ class _SessionLinkBridge extends BridgeService {
     String provider = 'claude',
     Duration timeout = const Duration(seconds: 10),
   }) async {
+    final error = resolveError;
+    if (error != null) throw error;
     return result;
   }
 
@@ -213,4 +216,21 @@ void main() {
 
     expect(cubit.state, const SessionLinkState.unavailable());
   });
+
+  test(
+    'shows unavailable instead of staying resolving after an error',
+    () async {
+      bridge.resolveError = StateError('connection stream closed');
+      final cubit = SessionLinkCubit(
+        bridge: bridge,
+        sourceSessionId: 'missing',
+        provider: 'claude',
+      );
+      addTearDown(cubit.close);
+
+      await cubit.resolve();
+
+      expect(cubit.state, const SessionLinkState.unavailable());
+    },
+  );
 }

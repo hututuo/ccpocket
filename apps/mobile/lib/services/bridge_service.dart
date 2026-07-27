@@ -3329,6 +3329,8 @@ class BridgeService implements BridgeServiceBase {
             .timeout(timeout);
       } on TimeoutException {
         return const SessionLinkResolveResult.unavailable();
+      } on StateError {
+        return const SessionLinkResolveResult.unavailable();
       }
       if (!isConnected) {
         return const SessionLinkResolveResult.unavailable();

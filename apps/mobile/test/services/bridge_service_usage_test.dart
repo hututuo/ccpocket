@@ -1527,6 +1527,23 @@ void main() {
       },
     );
 
+    test(
+      'resolveSessionLink fails closed when the connection stream closes',
+      () async {
+        final bridge = BridgeService();
+        final resolution = bridge.resolveSessionLink(
+          'claude-uuid',
+          timeout: const Duration(seconds: 1),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        bridge.dispose();
+
+        final result = await resolution;
+        expect(result.support, SessionLinkResolveSupport.unavailable);
+      },
+    );
+
     test('session list preserves visible delivery pending input', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();

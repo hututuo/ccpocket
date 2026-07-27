@@ -36,6 +36,17 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
   Future<void> resolve() async {
     if (_started) return;
     _started = true;
+    try {
+      await _resolveOnce();
+    } catch (_) {
+      await _cancelResumeSubscription();
+      if (!isClosed) {
+        emit(const SessionLinkState.unavailable());
+      }
+    }
+  }
+
+  Future<void> _resolveOnce() async {
     final result = await _bridge.resolveSessionLink(
       _sourceSessionId,
       provider: _provider,
