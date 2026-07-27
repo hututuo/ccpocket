@@ -117,9 +117,18 @@ Future<Widget> buildTestClaudeSessionScreen({
   required MockBridgeService bridge,
   String sessionId = testSessionId,
   String? projectPath,
+  bool isPending = false,
+  String? durableProviderSessionId,
+  ValueNotifier<SystemMessage?>? pendingSessionCreated,
 }) => _buildTestSessionScreen(
   bridge: bridge,
-  child: ClaudeSessionScreen(sessionId: sessionId, projectPath: projectPath),
+  child: ClaudeSessionScreen(
+    sessionId: sessionId,
+    projectPath: projectPath,
+    isPending: isPending,
+    durableProviderSessionId: durableProviderSessionId,
+    pendingSessionCreated: pendingSessionCreated,
+  ),
 );
 
 Future<Widget> _buildTestSessionScreen({
@@ -175,9 +184,18 @@ Future<Widget> buildTestCodexSessionScreen({
   required MockBridgeService bridge,
   String sessionId = testSessionId,
   String? projectPath,
+  bool isPending = false,
+  String? durableProviderSessionId,
+  ValueNotifier<SystemMessage?>? pendingSessionCreated,
 }) => _buildTestSessionScreen(
   bridge: bridge,
-  child: CodexSessionScreen(sessionId: sessionId, projectPath: projectPath),
+  child: CodexSessionScreen(
+    sessionId: sessionId,
+    projectPath: projectPath,
+    isPending: isPending,
+    durableProviderSessionId: durableProviderSessionId,
+    pendingSessionCreated: pendingSessionCreated,
+  ),
 );
 
 // ---------------------------------------------------------------------------

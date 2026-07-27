@@ -61,6 +61,89 @@ void main() {
       expect(textField.controller?.text, isEmpty);
     });
 
+    patrolWidgetTest(
+      'H2b: durable preview queues first input and sends after runtime binds',
+      ($) async {
+        final binding = ValueNotifier<SystemMessage?>(null);
+        addTearDown(binding.dispose);
+        await $.pumpWidget(
+          await buildTestClaudeSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-runtime',
+            isPending: true,
+            durableProviderSessionId: 'durable-thread',
+            pendingSessionCreated: binding,
+          ),
+        );
+        await pumpN($.tester);
+
+        expect($(#message_input), findsOneWidget);
+        await $.tester.enterText(
+          find.byKey(const ValueKey('message_input')),
+          'Send after attaching',
+        );
+        await pumpN($.tester);
+        await $(#send_button).tap();
+        await pumpN($.tester);
+
+        expect(findSentMessage(bridge, 'input'), isNull);
+        expect(find.text('Send after attaching'), findsOneWidget);
+
+        binding.value = const SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'live-runtime',
+          projectPath: '/tmp/project',
+        );
+        await pumpN($.tester);
+
+        final input = findSentMessage(bridge, 'input');
+        expect(input, isNotNull);
+        expect(input!['sessionId'], 'live-runtime');
+        expect(input['text'], 'Send after attaching');
+      },
+    );
+
+    patrolWidgetTest(
+      'H2c: durable Codex preview sends the queued input to the bound runtime',
+      ($) async {
+        final binding = ValueNotifier<SystemMessage?>(null);
+        addTearDown(binding.dispose);
+        await $.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-codex-runtime',
+            isPending: true,
+            durableProviderSessionId: 'durable-codex-thread',
+            pendingSessionCreated: binding,
+          ),
+        );
+        await pumpN($.tester);
+
+        await $.tester.enterText(
+          find.byKey(const ValueKey('message_input')),
+          'Continue the Codex task',
+        );
+        await pumpN($.tester);
+        await $(#send_button).tap();
+        await pumpN($.tester);
+        expect(findSentMessage(bridge, 'input'), isNull);
+
+        binding.value = const SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'live-codex-runtime',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        );
+        await pumpN($.tester);
+
+        final input = findSentMessage(bridge, 'input');
+        expect(input, isNotNull);
+        expect(input!['sessionId'], 'live-codex-runtime');
+        expect(input['text'], 'Continue the Codex task');
+        await $.tester.pump(const Duration(milliseconds: 700));
+      },
+    );
+
     patrolWidgetTest('H3: Running shows stop button', ($) async {
       await $.pumpWidget(await buildTestChatScreen(bridge: bridge));
       await pumpN($.tester);

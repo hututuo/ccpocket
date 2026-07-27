@@ -300,6 +300,50 @@ void main() {
 
         expect(mockBridge.sentMessages, isEmpty);
         expect(mockBridge.requestSessionHistoryCallCount, 0);
+
+        expect(cubit.showDeferredSubmission('Queued while attaching'), isTrue);
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().last.status,
+          MessageStatus.queued,
+        );
+
+        cubit.updateDetachedPreviewHistory(const [
+          UserInputMessage(text: 'Cached question'),
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-1',
+              role: 'assistant',
+              content: [TextContent(text: 'Cached answer')],
+              model: 'gpt-test',
+            ),
+          ),
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-2',
+              role: 'assistant',
+              content: [TextContent(text: 'New cached increment')],
+              model: 'gpt-test',
+            ),
+          ),
+        ]);
+
+        expect(
+          cubit.state.entries
+              .whereType<UserChatEntry>()
+              .map((entry) => entry.text),
+          contains('Queued while attaching'),
+        );
+        expect(
+          cubit.state.entries
+              .whereType<ServerChatEntry>()
+              .where(
+                (entry) =>
+                    entry.message is AssistantServerMessage &&
+                    (entry.message as AssistantServerMessage).message.id ==
+                        'assistant-2',
+              ),
+          hasLength(1),
+        );
       },
     );
 

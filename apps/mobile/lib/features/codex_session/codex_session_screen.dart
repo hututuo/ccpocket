@@ -53,6 +53,7 @@ import '../chat_session/state/streaming_state_cubit.dart';
 import '../chat_session/widgets/chat_input_with_overlays.dart';
 import '../chat_session/widgets/bottom_overlay_layout.dart';
 import '../chat_session/widgets/chat_message_list.dart';
+import '../chat_session/widgets/durable_session_preview.dart';
 import '../chat_session/widgets/reconnect_banner.dart';
 import '../chat_session/widgets/scroll_to_bottom_button.dart';
 import '../chat_session/widgets/session_mode_bar.dart';
@@ -208,6 +209,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
+  ChatComposerSubmission? _deferredSubmission;
 
   @override
   void initState() {
@@ -288,6 +290,38 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     );
   }
 
+  bool _queueDeferredSubmission(ChatComposerSubmission submission) {
+    if (!_isPending || _deferredSubmission != null) return false;
+    setState(() => _deferredSubmission = submission);
+    return true;
+  }
+
+  void _consumeDeferredSubmission(ChatComposerSubmission submission) {
+    if (!mounted || _deferredSubmission != submission) return;
+    setState(() => _deferredSubmission = null);
+  }
+
+  void _preserveDeferredSubmissionAsDraft() {
+    final submission = _deferredSubmission;
+    if (submission == null) return;
+    _deferredSubmission = null;
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || durableId.isEmpty) return;
+    final draftService = context.read<DraftService>();
+    final existingText = draftService.getDraft(durableId)?.trim();
+    final recoveredText = existingText == null || existingText.isEmpty
+        ? submission.text
+        : '${submission.text}\n\n$existingText';
+    final existingImages = draftService.getImageDraft(durableId) ?? const [];
+    final recoveredImages = [...?submission.images, ...existingImages];
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      draftService.saveDraft(durableId, recoveredText);
+      if (recoveredImages.isNotEmpty) {
+        draftService.saveImageDraft(durableId, recoveredImages);
+      }
+    });
+  }
+
   void _listenForSessionCreated() {
     final pendingBinding = widget.pendingSessionCreated;
     if (pendingBinding is PendingSessionBinding) {
@@ -349,6 +383,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     binding.failure.removeListener(_onPendingSessionFailed);
     _pendingSub?.cancel();
     _pendingSub = null;
+    _preserveDeferredSubmissionAsDraft();
     final messenger = ScaffoldMessenger.of(context);
     final text =
         binding.failure.value?.errorMessage ??
@@ -423,6 +458,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final draftService = context.read<DraftService>();
     draftService.migrateDraft(oldId, newId);
     draftService.migrateImageDraft(oldId, newId);
+    final durableId = widget.durableProviderSessionId;
+    if (durableId != null && durableId != oldId && durableId != newId) {
+      draftService.migrateDraft(durableId, newId);
+      draftService.migrateImageDraft(durableId, newId);
+    }
     setState(() {
       _sessionId = newId;
       _projectPath = msg.projectPath ?? _projectPath;
@@ -508,6 +548,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
   @override
   void dispose() {
+    if (_isPending) {
+      _preserveDeferredSubmissionAsDraft();
+    }
     widget.pendingSessionCreated?.removeListener(_onPendingSessionCreated);
     final binding = widget.pendingSessionCreated;
     if (binding is PendingSessionBinding) {
@@ -534,9 +577,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   Widget build(BuildContext context) {
     final durableId = widget.durableProviderSessionId;
     final cachedPreview = _cachedPreview;
-    if (_isPending && durableId != null && cachedPreview != null) {
+    if (_isPending && durableId != null) {
       return _CodexProviders(
-        key: ValueKey('durable-codex-$durableId-${cachedPreview.revision}'),
+        key: ValueKey('durable-codex-$durableId'),
         sessionId: durableId,
         projectPath: _projectPath,
         gitBranch: _gitBranch,
@@ -547,9 +590,14 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         codexApprovalsReviewer: _codexApprovalsReviewer,
         codexPermissionsMode: _codexPermissionsMode,
         detachedPreview: true,
-        initialHistoryMessages: cachedPreview.entries
-            .map((entry) => entry.decodeMessage())
-            .toList(growable: false),
+        previewRevision: cachedPreview?.revision ?? '',
+        initialHistoryMessages:
+            cachedPreview?.entries
+                .map((entry) => entry.decodeMessage())
+                .toList(growable: false) ??
+            const [],
+        deferredSubmissionPending: _deferredSubmission != null,
+        onDeferredSubmit: _queueDeferredSubmission,
         onBackToSessions: widget.onBackToSessions,
         hideSessionBackButton: widget.hideSessionBackButton,
         allowMessageFork: false,
@@ -610,6 +658,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       codexApprovalPolicy: _codexApprovalPolicy,
       codexApprovalsReviewer: _codexApprovalsReviewer,
       codexPermissionsMode: _codexPermissionsMode,
+      initialSubmission: _deferredSubmission,
+      onInitialSubmissionConsumed: _consumeDeferredSubmission,
       onBackToSessions: widget.onBackToSessions,
       hideSessionBackButton: widget.hideSessionBackButton,
       allowMessageFork: widget.allowMessageFork,
@@ -637,7 +687,12 @@ class _CodexProviders extends StatelessWidget {
   final bool hideSessionBackButton;
   final bool allowMessageFork;
   final bool detachedPreview;
+  final String previewRevision;
   final List<ServerMessage> initialHistoryMessages;
+  final bool deferredSubmissionPending;
+  final ChatComposerSubmitCallback? onDeferredSubmit;
+  final ChatComposerSubmission? initialSubmission;
+  final ValueChanged<ChatComposerSubmission>? onInitialSubmissionConsumed;
 
   const _CodexProviders({
     super.key,
@@ -656,7 +711,12 @@ class _CodexProviders extends StatelessWidget {
     this.hideSessionBackButton = false,
     this.allowMessageFork = true,
     this.detachedPreview = false,
+    this.previewRevision = '',
     this.initialHistoryMessages = const [],
+    this.deferredSubmissionPending = false,
+    this.onDeferredSubmit,
+    this.initialSubmission,
+    this.onInitialSubmissionConsumed,
   });
 
   @override
@@ -667,32 +727,54 @@ class _CodexProviders extends StatelessWidget {
         BlocProvider(create: (_) => StreamingStateCubit()),
         // Register as ChatSessionCubit so shared widgets can find it.
         BlocProvider<ChatSessionCubit>(
-          create: (context) => CodexSessionCubit(
-            sessionId: sessionId,
-            bridge: bridge,
-            streamingCubit: context.read<StreamingStateCubit>(),
-            initialExplorerCurrentPath: explorerCurrentPath,
-            initialRecentPeekedFiles: recentPeekedFiles,
-            initialSandboxMode: sandboxMode,
-            initialPermissionMode: permissionMode,
-            initialCodexApprovalPolicy: codexApprovalPolicy,
-            initialCodexApprovalsReviewer: codexApprovalsReviewer,
-            initialCodexPermissionsMode: codexPermissionsMode,
-            initialProjectPath: projectPath,
-            detachedPreview: detachedPreview,
-            initialHistoryMessages: initialHistoryMessages,
-          ),
+          create: (context) {
+            final cubit = CodexSessionCubit(
+              sessionId: sessionId,
+              bridge: bridge,
+              streamingCubit: context.read<StreamingStateCubit>(),
+              initialExplorerCurrentPath: explorerCurrentPath,
+              initialRecentPeekedFiles: recentPeekedFiles,
+              initialSandboxMode: sandboxMode,
+              initialPermissionMode: permissionMode,
+              initialCodexApprovalPolicy: codexApprovalPolicy,
+              initialCodexApprovalsReviewer: codexApprovalsReviewer,
+              initialCodexPermissionsMode: codexPermissionsMode,
+              initialProjectPath: projectPath,
+              detachedPreview: detachedPreview,
+              initialHistoryMessages: initialHistoryMessages,
+            );
+            final submission = initialSubmission;
+            if (!detachedPreview && submission != null) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (cubit.isClosed) return;
+                cubit.sendMessage(
+                  submission.text,
+                  images: submission.images,
+                  mentionablePaths: submission.mentionablePaths,
+                  additionalMentions: submission.additionalMentions,
+                );
+                onInitialSubmissionConsumed?.call(submission);
+              });
+            }
+            return cubit;
+          },
         ),
       ],
-      child: _CodexChatBody(
-        sessionId: sessionId,
-        projectPath: projectPath,
-        gitBranch: gitBranch,
-        worktreePath: worktreePath,
-        onBackToSessions: onBackToSessions,
-        hideSessionBackButton: hideSessionBackButton,
-        allowMessageFork: allowMessageFork,
-        detachedPreview: detachedPreview,
+      child: DurableSessionPreviewUpdater(
+        revision: previewRevision,
+        messages: initialHistoryMessages,
+        child: _CodexChatBody(
+          sessionId: sessionId,
+          projectPath: projectPath,
+          gitBranch: gitBranch,
+          worktreePath: worktreePath,
+          onBackToSessions: onBackToSessions,
+          hideSessionBackButton: hideSessionBackButton,
+          allowMessageFork: allowMessageFork,
+          detachedPreview: detachedPreview,
+          deferredSubmissionPending: deferredSubmissionPending,
+          onDeferredSubmit: onDeferredSubmit,
+        ),
       ),
     );
   }
@@ -711,6 +793,8 @@ class _CodexChatBody extends HookWidget {
   final bool hideSessionBackButton;
   final bool allowMessageFork;
   final bool detachedPreview;
+  final bool deferredSubmissionPending;
+  final ChatComposerSubmitCallback? onDeferredSubmit;
 
   const _CodexChatBody({
     required this.sessionId,
@@ -721,6 +805,8 @@ class _CodexChatBody extends HookWidget {
     this.hideSessionBackButton = false,
     this.allowMessageFork = true,
     this.detachedPreview = false,
+    this.deferredSubmissionPending = false,
+    this.onDeferredSubmit,
   });
 
   @override
@@ -834,6 +920,18 @@ class _CodexChatBody extends HookWidget {
     );
     final parentState = context
         .findAncestorStateOfType<_CodexSessionScreenState>();
+    bool submitWhileAttaching(ChatComposerSubmission submission) {
+      final accepted = onDeferredSubmit?.call(submission) ?? false;
+      if (!accepted) return false;
+      chatSessionCubit.showDeferredSubmission(
+        submission.text,
+        images: submission.images,
+      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l.queuedLocally)));
+      return true;
+    }
     final canCopyCodexCliJoinCommand =
         codexCliJoinCommand.value != null &&
         _hasSentUserMessage(sessionState.entries);
@@ -1632,6 +1730,10 @@ class _CodexChatBody extends HookWidget {
                 if (bridgeState == BridgeConnectionState.reconnecting ||
                     bridgeState == BridgeConnectionState.disconnected)
                   ReconnectBanner(bridgeState: bridgeState),
+                if (detachedPreview)
+                  DurableSessionBindingBanner(
+                    messageQueued: deferredSubmissionPending,
+                  ),
                 if (!isBackground)
                   ...LocalSessionFeatureHost.statusWidgets(localFeatureContext),
                 Expanded(
@@ -1885,7 +1987,10 @@ class _CodexChatBody extends HookWidget {
                     onScrollToBottom: scroll.scrollToBottom,
                     inputController: chatInputController,
                     hintText: l.codexMessagePlaceholder,
-                    inputBlocked: detachedPreview || queuedInput != null,
+                    inputBlocked:
+                        (detachedPreview && deferredSubmissionPending) ||
+                        queuedInput != null,
+                    onSubmit: detachedPreview ? submitWhileAttaching : null,
                     initialDiffSelection: diffSelectionFromNav.value,
                     onDiffSelectionConsumed: () {},
                     onDiffSelectionCleared: () =>

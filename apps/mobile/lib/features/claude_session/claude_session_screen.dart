@@ -47,6 +47,7 @@ import '../chat_session/state/streaming_state_cubit.dart';
 import '../chat_session/widgets/bottom_overlay_layout.dart';
 import '../chat_session/widgets/chat_input_with_overlays.dart';
 import '../chat_session/widgets/chat_message_list.dart';
+import '../chat_session/widgets/durable_session_preview.dart';
 import '../chat_session/widgets/reconnect_banner.dart';
 import '../chat_session/widgets/scroll_to_bottom_button.dart';
 import '../chat_session/widgets/session_mode_bar.dart';
@@ -180,6 +181,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
+  ChatComposerSubmission? _deferredSubmission;
 
   @override
   void initState() {
@@ -256,6 +258,41 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     );
   }
 
+  bool _queueDeferredSubmission(ChatComposerSubmission submission) {
+    if (!_isPending || _deferredSubmission != null) return false;
+    setState(() => _deferredSubmission = submission);
+    return true;
+  }
+
+  void _consumeDeferredSubmission(ChatComposerSubmission submission) {
+    if (!mounted || _deferredSubmission != submission) return;
+    setState(() => _deferredSubmission = null);
+  }
+
+  void _preserveDeferredSubmissionAsDraft() {
+    final submission = _deferredSubmission;
+    if (submission == null) return;
+    _deferredSubmission = null;
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || durableId.isEmpty) return;
+    final draftService = context.read<DraftService>();
+    final existingText = draftService.getDraft(durableId)?.trim();
+    final recoveredText = existingText == null || existingText.isEmpty
+        ? submission.text
+        : '${submission.text}\n\n$existingText';
+    final existingImages = draftService.getImageDraft(durableId) ?? const [];
+    final recoveredImages = [
+      ...?submission.images,
+      ...existingImages,
+    ];
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      draftService.saveDraft(durableId, recoveredText);
+      if (recoveredImages.isNotEmpty) {
+        draftService.saveImageDraft(durableId, recoveredImages);
+      }
+    });
+  }
+
   void _listenForSessionCreated() {
     final pendingBinding = widget.pendingSessionCreated;
     if (pendingBinding is PendingSessionBinding) {
@@ -299,6 +336,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         _pendingSub?.cancel();
         _pendingSub = null;
         widget.pendingSessionCreated?.removeListener(_onPendingSessionCreated);
+        _preserveDeferredSubmissionAsDraft();
         final errorText = msg.message;
         context.router.maybePop();
         ScaffoldMessenger.of(
@@ -327,6 +365,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     binding.failure.removeListener(_onPendingSessionFailed);
     _pendingSub?.cancel();
     _pendingSub = null;
+    _preserveDeferredSubmissionAsDraft();
     final messenger = ScaffoldMessenger.of(context);
     final text =
         binding.failure.value?.errorMessage ??
@@ -370,6 +409,11 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final draftService = context.read<DraftService>();
     draftService.migrateDraft(oldId, newId);
     draftService.migrateImageDraft(oldId, newId);
+    final durableId = widget.durableProviderSessionId;
+    if (durableId != null && durableId != oldId && durableId != newId) {
+      draftService.migrateDraft(durableId, newId);
+      draftService.migrateImageDraft(durableId, newId);
+    }
     setState(() {
       _sessionId = newId;
       _projectPath = msg.projectPath ?? _projectPath;
@@ -464,6 +508,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
   @override
   void dispose() {
+    if (_isPending) {
+      _preserveDeferredSubmissionAsDraft();
+    }
     widget.pendingSessionCreated?.removeListener(_onPendingSessionCreated);
     final binding = widget.pendingSessionCreated;
     if (binding is PendingSessionBinding) {
@@ -490,9 +537,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   Widget build(BuildContext context) {
     final durableId = widget.durableProviderSessionId;
     final cachedPreview = _cachedPreview;
-    if (_isPending && durableId != null && cachedPreview != null) {
+    if (_isPending && durableId != null) {
       return _ChatScreenProviders(
-        key: ValueKey('durable-claude-$durableId-${cachedPreview.revision}'),
+        key: ValueKey('durable-claude-$durableId'),
         sessionId: durableId,
         projectPath: _projectPath,
         gitBranch: _gitBranch,
@@ -500,9 +547,14 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         permissionMode: _permissionMode,
         sandboxMode: _sandboxMode,
         detachedPreview: true,
-        initialHistoryMessages: cachedPreview.entries
-            .map((entry) => entry.decodeMessage())
-            .toList(growable: false),
+        previewRevision: cachedPreview?.revision ?? '',
+        initialHistoryMessages:
+            cachedPreview?.entries
+                .map((entry) => entry.decodeMessage())
+                .toList(growable: false) ??
+            const [],
+        deferredSubmissionPending: _deferredSubmission != null,
+        onDeferredSubmit: _queueDeferredSubmission,
         onBackToSessions: widget.onBackToSessions,
         hideSessionBackButton: widget.hideSessionBackButton,
       );
@@ -560,6 +612,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       recentPeekedFiles: _recentPeekedFiles,
       permissionMode: _permissionMode,
       sandboxMode: _sandboxMode,
+      initialSubmission: _deferredSubmission,
+      onInitialSubmissionConsumed: _consumeDeferredSubmission,
       onBackToSessions: widget.onBackToSessions,
       hideSessionBackButton: widget.hideSessionBackButton,
     );
@@ -579,7 +633,12 @@ class _ChatScreenProviders extends StatelessWidget {
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
   final bool detachedPreview;
+  final String previewRevision;
   final List<ServerMessage> initialHistoryMessages;
+  final bool deferredSubmissionPending;
+  final ChatComposerSubmitCallback? onDeferredSubmit;
+  final ChatComposerSubmission? initialSubmission;
+  final ValueChanged<ChatComposerSubmission>? onInitialSubmissionConsumed;
 
   const _ChatScreenProviders({
     super.key,
@@ -594,7 +653,12 @@ class _ChatScreenProviders extends StatelessWidget {
     this.onBackToSessions,
     this.hideSessionBackButton = false,
     this.detachedPreview = false,
+    this.previewRevision = '',
     this.initialHistoryMessages = const [],
+    this.deferredSubmissionPending = false,
+    this.onDeferredSubmit,
+    this.initialSubmission,
+    this.onInitialSubmissionConsumed,
   });
 
   @override
@@ -604,29 +668,51 @@ class _ChatScreenProviders extends StatelessWidget {
       providers: [
         BlocProvider(create: (_) => StreamingStateCubit()),
         BlocProvider(
-          create: (context) => ChatSessionCubit(
-            sessionId: sessionId,
-            provider: Provider.claude,
-            bridge: bridge,
-            streamingCubit: context.read<StreamingStateCubit>(),
-            initialExplorerCurrentPath: explorerCurrentPath,
-            initialRecentPeekedFiles: recentPeekedFiles,
-            initialPermissionMode: permissionMode,
-            initialSandboxMode: sandboxMode,
-            initialProjectPath: projectPath,
-            detachedPreview: detachedPreview,
-            initialHistoryMessages: initialHistoryMessages,
-          ),
+          create: (context) {
+            final cubit = ChatSessionCubit(
+              sessionId: sessionId,
+              provider: Provider.claude,
+              bridge: bridge,
+              streamingCubit: context.read<StreamingStateCubit>(),
+              initialExplorerCurrentPath: explorerCurrentPath,
+              initialRecentPeekedFiles: recentPeekedFiles,
+              initialPermissionMode: permissionMode,
+              initialSandboxMode: sandboxMode,
+              initialProjectPath: projectPath,
+              detachedPreview: detachedPreview,
+              initialHistoryMessages: initialHistoryMessages,
+            );
+            final submission = initialSubmission;
+            if (!detachedPreview && submission != null) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (cubit.isClosed) return;
+                cubit.sendMessage(
+                  submission.text,
+                  images: submission.images,
+                  mentionablePaths: submission.mentionablePaths,
+                  additionalMentions: submission.additionalMentions,
+                );
+                onInitialSubmissionConsumed?.call(submission);
+              });
+            }
+            return cubit;
+          },
         ),
       ],
-      child: _ChatScreenBody(
-        sessionId: sessionId,
-        projectPath: projectPath,
-        gitBranch: gitBranch,
-        worktreePath: worktreePath,
-        onBackToSessions: onBackToSessions,
-        hideSessionBackButton: hideSessionBackButton,
-        detachedPreview: detachedPreview,
+      child: DurableSessionPreviewUpdater(
+        revision: previewRevision,
+        messages: initialHistoryMessages,
+        child: _ChatScreenBody(
+          sessionId: sessionId,
+          projectPath: projectPath,
+          gitBranch: gitBranch,
+          worktreePath: worktreePath,
+          onBackToSessions: onBackToSessions,
+          hideSessionBackButton: hideSessionBackButton,
+          detachedPreview: detachedPreview,
+          deferredSubmissionPending: deferredSubmissionPending,
+          onDeferredSubmit: onDeferredSubmit,
+        ),
       ),
     );
   }
@@ -640,6 +726,8 @@ class _ChatScreenBody extends HookWidget {
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
   final bool detachedPreview;
+  final bool deferredSubmissionPending;
+  final ChatComposerSubmitCallback? onDeferredSubmit;
 
   const _ChatScreenBody({
     required this.sessionId,
@@ -649,6 +737,8 @@ class _ChatScreenBody extends HookWidget {
     this.onBackToSessions,
     this.hideSessionBackButton = false,
     this.detachedPreview = false,
+    this.deferredSubmissionPending = false,
+    this.onDeferredSubmit,
   });
 
   @override
@@ -742,6 +832,19 @@ class _ChatScreenBody extends HookWidget {
     );
     final parentState = context
         .findAncestorStateOfType<_ClaudeSessionScreenState>();
+    bool submitWhileAttaching(ChatComposerSubmission submission) {
+      final accepted = onDeferredSubmit?.call(submission) ?? false;
+      if (!accepted) return false;
+      chatSessionCubit.showDeferredSubmission(
+        submission.text,
+        images: submission.images,
+      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l.queuedLocally)));
+      return true;
+    }
+
     void handleExploreResult(ExploreScreenResult result) {
       if (!context.mounted) return;
       parentState?.updateExplorerState(
@@ -1335,6 +1438,10 @@ class _ChatScreenBody extends HookWidget {
                 if (bridgeState == BridgeConnectionState.reconnecting ||
                     bridgeState == BridgeConnectionState.disconnected)
                   ReconnectBanner(bridgeState: bridgeState),
+                if (detachedPreview)
+                  DurableSessionBindingBanner(
+                    messageQueued: deferredSubmissionPending,
+                  ),
                 Expanded(
                   child: BottomOverlayLayout(
                     overlay:
@@ -1462,7 +1569,9 @@ class _ChatScreenBody extends HookWidget {
                     status: status,
                     onScrollToBottom: scroll.scrollToBottom,
                     inputController: chatInputController,
-                    inputBlocked: detachedPreview,
+                    inputBlocked:
+                        detachedPreview && deferredSubmissionPending,
+                    onSubmit: detachedPreview ? submitWhileAttaching : null,
                     initialDiffSelection: diffSelectionFromNav.value,
                     onDiffSelectionConsumed: () {
                       // Don't null — keep for AppBar navigation.

@@ -42,6 +42,16 @@ import '../state/chat_session_cubit.dart';
 
 enum _CompletionOverlay { slash, dollar, file }
 
+typedef ChatComposerSubmission = ({
+  String text,
+  List<({Uint8List bytes, String mimeType})>? images,
+  List<String> mentionablePaths,
+  List<Map<String, String>> additionalMentions,
+});
+
+typedef ChatComposerSubmitCallback =
+    bool Function(ChatComposerSubmission submission);
+
 /// Manages the chat input bar together with slash-command and @-mention
 /// overlays using [OverlayPortal].
 ///
@@ -72,6 +82,11 @@ class ChatInputWithOverlays extends HookWidget {
   /// When true, composing remains available but sending is disabled.
   final bool inputBlocked;
 
+  /// Optional delivery boundary used while a durable conversation is visible
+  /// before its live runtime has attached. Returning false keeps the composer
+  /// contents intact.
+  final ChatComposerSubmitCallback? onSubmit;
+
   const ChatInputWithOverlays({
     super.key,
     required this.sessionId,
@@ -84,6 +99,7 @@ class ChatInputWithOverlays extends HookWidget {
     this.onOpenGitScreen,
     this.hintText,
     this.inputBlocked = false,
+    this.onSubmit,
   });
 
   @override
@@ -714,23 +730,14 @@ class ChatInputWithOverlays extends HookWidget {
 
       final cubit = context.read<ChatSessionCubit>();
 
-      // Capture and clear attached images
+      // Capture attachments without clearing them until the delivery boundary
+      // accepts the submission.
       List<({Uint8List bytes, String mimeType})>? images;
       if (attachedImages.value.isNotEmpty) {
         images = List.of(attachedImages.value);
-        attachedImages.value = [];
       }
-      attachedFiles.value = attachedFiles.value
-          .where((file) => !readyFiles.any((ready) => ready.id == file.id))
-          .toList(growable: false);
 
-      // Capture and clear diff selection
-      DiffSelection? selection;
-      if (attachedDiffSelection.value != null) {
-        selection = attachedDiffSelection.value;
-        attachedDiffSelection.value = null;
-        onDiffSelectionCleared?.call();
-      }
+      final selection = attachedDiffSelection.value;
 
       // Build final message text with the requested diff prepended.
       var finalText = text;
@@ -755,14 +762,35 @@ class ChatInputWithOverlays extends HookWidget {
           : readyFiles.isNotEmpty
           ? 'Please review the attached files.'
           : 'What is in this image?';
-      cubit.sendMessage(
-        messageToSend,
+      final submission = (
+        text: messageToSend,
         images: images,
-        mentionablePaths: projectFiles,
-        additionalMentions: readyFiles.map(
-          (file) => {'name': file.filename, 'path': file.path!},
+        mentionablePaths: List<String>.unmodifiable(projectFiles),
+        additionalMentions: List<Map<String, String>>.unmodifiable(
+          readyFiles.map(
+            (file) => {'name': file.filename, 'path': file.path!},
+          ),
         ),
       );
+      final accepted = onSubmit?.call(submission) ?? true;
+      if (!accepted) return;
+
+      if (onSubmit == null) {
+        cubit.sendMessage(
+          submission.text,
+          images: submission.images,
+          mentionablePaths: submission.mentionablePaths,
+          additionalMentions: submission.additionalMentions,
+        );
+      }
+      attachedImages.value = [];
+      attachedFiles.value = attachedFiles.value
+          .where((file) => !readyFiles.any((ready) => ready.id == file.id))
+          .toList(growable: false);
+      if (selection != null) {
+        attachedDiffSelection.value = null;
+        onDiffSelectionCleared?.call();
+      }
       inputController.clear();
       final draftService = context.read<DraftService>();
       draftService.deleteDraft(sessionId);

@@ -414,9 +414,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _restoreInitialHistoryMessages() {
-    if (initialHistoryMessages.isEmpty) return;
+    updateDetachedPreviewHistory(initialHistoryMessages);
+  }
+
+  /// Reconciles a newer durable cache snapshot without recreating the screen
+  /// or its disclosure/scroll state.
+  void updateDetachedPreviewHistory(List<ServerMessage> messages) {
+    if (!detachedPreview || messages.isEmpty || isClosed) return;
     try {
-      final history = HistoryMessage(messages: initialHistoryMessages);
+      final history = HistoryMessage(messages: messages);
       final update = _handler.handle(
         history,
         isBackground: true,
@@ -434,6 +440,32 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         stackTrace,
       );
     }
+  }
+
+  /// Adds the user's first message to a detached durable view while the live
+  /// runtime attaches. The owning screen later replays the same submission
+  /// through a newly bound cubit.
+  bool showDeferredSubmission(
+    String text, {
+    List<({Uint8List bytes, String mimeType})>? images,
+  }) {
+    if (!detachedPreview || isClosed || text.trim().isEmpty) return false;
+    emit(
+      state.copyWith(
+        entries: [
+          ...state.entries,
+          UserChatEntry(
+            text,
+            sessionId: sessionId,
+            imageBytesList: images?.map((image) => image.bytes).toList(),
+            imageCount: images?.length ?? 0,
+            status: MessageStatus.queued,
+            timestamp: DateTime.now().toUtc(),
+          ),
+        ],
+      ),
+    );
+    return true;
   }
 
   void _startStatusRefreshTimer() {
