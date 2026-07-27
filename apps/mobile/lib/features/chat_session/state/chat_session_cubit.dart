@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show ValueNotifier;
+import 'package:flutter/foundation.dart' show ValueNotifier, compute;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -15,6 +15,37 @@ import '../../../services/desktop_continuity_backlog.dart';
 import '../../../utils/history_window_policy.dart';
 import 'chat_session_state.dart';
 import 'streaming_state_cubit.dart';
+
+typedef ChatImageAttachment = ({Uint8List bytes, String mimeType});
+typedef ChatImagePayloadEncoder =
+    Future<List<Map<String, String>>> Function(
+      List<ChatImageAttachment> images,
+    );
+
+Future<List<Map<String, String>>> _defaultChatImagePayloadEncoder(
+  List<ChatImageAttachment> images,
+) => compute(
+  _encodeChatImagePayloads,
+  [
+    for (final image in images)
+      <String, Object>{
+        'bytes': image.bytes,
+        'mimeType': image.mimeType,
+      },
+  ],
+  debugLabel: 'chat-image-base64',
+);
+
+List<Map<String, String>> _encodeChatImagePayloads(
+  List<Map<String, Object>> images,
+) => images
+    .map(
+      (image) => <String, String>{
+        'base64': base64Encode(image['bytes']! as Uint8List),
+        'mimeType': image['mimeType']! as String,
+      },
+    )
+    .toList(growable: false);
 
 class LocalHistoryPagingState {
   const LocalHistoryPagingState({
@@ -100,6 +131,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final Provider? provider;
   final BridgeService _bridge;
   final StreamingStateCubit _streamingCubit;
+  final ChatImagePayloadEncoder _imagePayloadEncoder;
   final ChatMessageHandler _handler = ChatMessageHandler();
   final bool detachedPreview;
   final List<ServerMessage> initialHistoryMessages;
@@ -152,6 +184,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _codexGoalThreadReady = false;
   final Map<String, Timer> _deliveryPendingTimers = {};
   final Map<String, QueuedInputItem> _deliveryPendingInputs = {};
+  Future<void> _inputDispatchTail = Future<void>.value();
+  int _pendingInputDispatchCount = 0;
+  final Set<String> _pendingInputDispatchIds = {};
+  final Set<String> _canceledInputDispatchIds = {};
   final Set<String> _desktopContinuityItemKeys = {};
   final Set<String> _restoredDesktopContinuityItemKeys = {};
   final Map<String, ChatMessageHandler> _desktopContinuityHandlers = {};
@@ -283,10 +319,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     String? initialCodexApprovalsReviewer,
     CodexPermissionsMode? initialCodexPermissionsMode,
     String? initialProjectPath,
+    ChatImagePayloadEncoder? imagePayloadEncoder,
     this.detachedPreview = false,
     this.initialHistoryMessages = const [],
   }) : _bridge = bridge,
        _streamingCubit = streamingCubit,
+       _imagePayloadEncoder =
+           imagePayloadEncoder ?? _defaultChatImagePayloadEncoder,
        super(
          ChatSessionState(
            status: detachedPreview
@@ -3678,14 +3717,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
     }
 
-    // Encode images as Base64 for WebSocket transmission
-    List<Map<String, String>>? imagePayloads;
-    if (images != null && images.isNotEmpty) {
-      imagePayloads = images
-          .map((i) => {'base64': base64Encode(i.bytes), 'mimeType': i.mimeType})
-          .toList();
-    }
-
     final deliveryPendingItem = isCodex && !isOffline
         ? QueuedInputItem(
             itemId:
@@ -3697,35 +3728,180 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             mentions: structuredMentions.mentions,
           )
         : null;
+
+    _dispatchInputInOrder(
+      text: text,
+      clientMessageId: effectiveClientMessageId,
+      baseSeq: baseSeq,
+      images: images?.toList(growable: false) ?? const [],
+      skills: structuredMentions.skills,
+      mentions: structuredMentions.mentions,
+      deliveryPendingItem: deliveryPendingItem,
+    );
+  }
+
+  void _dispatchInputInOrder({
+    required String text,
+    required String clientMessageId,
+    required int? baseSeq,
+    required List<ChatImageAttachment> images,
+    required List<Map<String, String>> skills,
+    required List<Map<String, String>> mentions,
+    required QueuedInputItem? deliveryPendingItem,
+  }) {
+    if (images.isEmpty && _pendingInputDispatchCount == 0) {
+      _dispatchPreparedInput(
+        text: text,
+        clientMessageId: clientMessageId,
+        baseSeq: baseSeq,
+        skills: skills,
+        mentions: mentions,
+        deliveryPendingItem: deliveryPendingItem,
+      );
+      return;
+    }
+
+    _pendingInputDispatchCount++;
+    _pendingInputDispatchIds.add(clientMessageId);
+    final predecessor = _inputDispatchTail;
+    final task = () async {
+      try {
+        await predecessor;
+        if (_canceledInputDispatchIds.remove(clientMessageId)) return;
+        final imagePayloads = images.isEmpty
+            ? null
+            : await _imagePayloadEncoder(images);
+        if (_canceledInputDispatchIds.remove(clientMessageId)) return;
+        _dispatchPreparedInput(
+          text: text,
+          clientMessageId: clientMessageId,
+          baseSeq: baseSeq,
+          imagePayloads: imagePayloads,
+          skills: skills,
+          mentions: mentions,
+          deliveryPendingItem: deliveryPendingItem,
+        );
+      } catch (error, stackTrace) {
+        _handleInputDispatchFailure(
+          text: text,
+          clientMessageId: clientMessageId,
+          images: images,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+    }();
+    _inputDispatchTail = task.whenComplete(() {
+      _pendingInputDispatchCount--;
+      _pendingInputDispatchIds.remove(clientMessageId);
+      _canceledInputDispatchIds.remove(clientMessageId);
+    });
+  }
+
+  void _dispatchPreparedInput({
+    required String text,
+    required String clientMessageId,
+    required int? baseSeq,
+    List<Map<String, String>>? imagePayloads,
+    required List<Map<String, String>> skills,
+    required List<Map<String, String>> mentions,
+    required QueuedInputItem? deliveryPendingItem,
+  }) {
     if (deliveryPendingItem != null) {
-      _deliveryPendingInputs[effectiveClientMessageId] = deliveryPendingItem;
+      if (!isClosed) {
+        _deliveryPendingInputs[clientMessageId] = deliveryPendingItem;
+      }
       _bridge.setDeliveryPendingInput(
         sessionId,
         deliveryPendingItem,
         visibleAfter: _deliveryPendingDelay,
       );
     }
-
     _bridge.send(
       ClientMessage.input(
         text,
         sessionId: sessionId,
-        clientMessageId: effectiveClientMessageId,
+        clientMessageId: clientMessageId,
         baseSeq: baseSeq,
         images: imagePayloads,
-        skill: structuredMentions.skills.isNotEmpty
-            ? structuredMentions.skills.first
-            : null,
-        skills: structuredMentions.skills,
-        mentions: structuredMentions.mentions,
+        skill: skills.isNotEmpty ? skills.first : null,
+        skills: skills,
+        mentions: mentions,
       ),
     );
-    if (isCodex && !isOffline) {
+    if (deliveryPendingItem != null && !isClosed) {
       _scheduleDeliveryPendingQueue(
-        clientMessageId: effectiveClientMessageId,
-        item: deliveryPendingItem!,
+        clientMessageId: clientMessageId,
+        item: deliveryPendingItem,
       );
     }
+  }
+
+  void _handleInputDispatchFailure({
+    required String text,
+    required String clientMessageId,
+    required List<ChatImageAttachment> images,
+    required Object error,
+    required StackTrace stackTrace,
+  }) {
+    logger.warning(
+      '[session:$sessionId] Failed to prepare or send input '
+      'clientMessageId=$clientMessageId',
+      error,
+      stackTrace,
+    );
+    _deliveryPendingTimers.remove(clientMessageId)?.cancel();
+    _deliveryPendingInputs.remove(clientMessageId);
+    _bridge.clearDeliveryPendingInput(
+      sessionId,
+      itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
+    );
+    if (isClosed) return;
+
+    var matchedEntry = false;
+    final nextEntries = state.entries.map((entry) {
+      if (entry is! UserChatEntry ||
+          entry.clientMessageId != clientMessageId) {
+        return entry;
+      }
+      matchedEntry = true;
+      return UserChatEntry(
+        entry.text,
+        sessionId: entry.sessionId,
+        clientMessageId: entry.clientMessageId,
+        imageBytesList: entry.imageBytesList,
+        imageUrls: entry.imageUrls,
+        imageCount: entry.imageCount,
+        status: MessageStatus.failed,
+        messageUuid: entry.messageUuid,
+        timestamp: entry.timestamp,
+        timestampIsAuthoritative: entry.timestampIsAuthoritative,
+      );
+    }).toList();
+    if (!matchedEntry) {
+      nextEntries.add(
+        UserChatEntry(
+          text,
+          sessionId: sessionId,
+          clientMessageId: clientMessageId,
+          imageBytesList: images.map((image) => image.bytes).toList(),
+          imageCount: images.length,
+          status: MessageStatus.failed,
+        ),
+      );
+    }
+    final queuedItem = state.queuedInput;
+    final queuedClientMessageId =
+        offlineQueuedClientMessageId(queuedItem) ??
+        deliveryPendingClientMessageId(queuedItem);
+    emit(
+      state.copyWith(
+        entries: nextEntries,
+        queuedInput: queuedClientMessageId == clientMessageId
+            ? null
+            : queuedItem,
+      ),
+    );
   }
 
   void requestGoal({bool userInitiated = false}) {
@@ -4175,6 +4351,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     final offlineClientMessageId = offlineQueuedClientMessageId(item);
     if (offlineClientMessageId != null) {
+      if (_pendingInputDispatchIds.contains(offlineClientMessageId)) {
+        _canceledInputDispatchIds.add(offlineClientMessageId);
+      }
       emit(state.copyWith(queuedInput: null));
       unawaited(
         _bridge.cancelOfflinePendingInput(

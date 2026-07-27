@@ -206,6 +206,7 @@ void main() {
     String sessionId, {
     Provider? provider,
     String? initialProjectPath,
+    ChatImagePayloadEncoder? imagePayloadEncoder,
   }) {
     return ChatSessionCubit(
       sessionId: sessionId,
@@ -213,6 +214,7 @@ void main() {
       bridge: mockBridge,
       streamingCubit: streamingCubit,
       initialProjectPath: initialProjectPath,
+      imagePayloadEncoder: imagePayloadEncoder,
     );
   }
 
@@ -3000,6 +3002,122 @@ void main() {
               as Map<String, dynamic>;
       expect(payload['clientMessageId'], entry.clientMessageId);
       expect(payload.containsKey('baseSeq'), isFalse);
+    });
+
+    test('plain text send remains synchronous without an image backlog', () {
+      var encoderCalled = false;
+      final cubit = createCubit(
+        's1',
+        imagePayloadEncoder: (images) async {
+          encoderCalled = true;
+          return const [];
+        },
+      );
+      addTearDown(cubit.close);
+
+      cubit.sendMessage('Immediate text');
+
+      expect(encoderCalled, isFalse);
+      expect(mockBridge.sentMessages, hasLength(1));
+      expect(
+        jsonDecode(mockBridge.sentMessages.single.toJson())['text'],
+        'Immediate text',
+      );
+    });
+
+    test('an image send cannot be overtaken by a following text send', () async {
+      final encoded = Completer<List<Map<String, String>>>();
+      final cubit = createCubit(
+        's1',
+        imagePayloadEncoder: (_) => encoded.future,
+      );
+      addTearDown(cubit.close);
+
+      cubit.sendMessage(
+        'Image first',
+        images: [
+          (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
+        ],
+      );
+      cubit.sendMessage('Text second');
+
+      expect(mockBridge.sentMessages, isEmpty);
+
+      encoded.complete(const [
+        {'base64': 'AQID', 'mimeType': 'image/png'},
+      ]);
+      await pumpEventQueue();
+
+      final payloads = mockBridge.sentMessages
+          .map((message) => jsonDecode(message.toJson()) as Map<String, dynamic>)
+          .toList();
+      expect(payloads.map((payload) => payload['text']), [
+        'Image first',
+        'Text second',
+      ]);
+      expect(payloads.first['images'], [
+        {'base64': 'AQID', 'mimeType': 'image/png'},
+      ]);
+    });
+
+    test(
+      'image encoding failure marks the input failed without poisoning the queue',
+      () async {
+        final cubit = createCubit(
+          's1',
+          imagePayloadEncoder: (_) async => throw StateError('encode failed'),
+        );
+        addTearDown(cubit.close);
+
+        cubit.sendMessage(
+          'Broken image',
+          images: [
+            (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
+          ],
+        );
+        cubit.sendMessage('Text after failed image');
+        await pumpEventQueue();
+
+        expect(mockBridge.sentMessages, hasLength(1));
+        expect(
+          jsonDecode(mockBridge.sentMessages.single.toJson())['text'],
+          'Text after failed image',
+        );
+        final entries = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(entries, hasLength(2));
+        expect(entries.first.clientMessageId, isNotNull);
+        expect(entries.first.status, MessageStatus.failed);
+        expect(entries.last.status, MessageStatus.sending);
+      },
+    );
+
+    test('canceling an offline image input prevents its delayed send', () async {
+      mockBridge.connected = false;
+      final encoded = Completer<List<Map<String, String>>>();
+      final cubit = createCubit(
+        's1',
+        provider: Provider.codex,
+        imagePayloadEncoder: (_) => encoded.future,
+      );
+      addTearDown(cubit.close);
+
+      cubit.sendMessage(
+        'Canceled image',
+        images: [
+          (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
+        ],
+      );
+      final queued = cubit.state.queuedInput;
+      expect(ChatSessionCubit.isOfflineQueuedInput(queued), isTrue);
+
+      cubit.cancelQueuedInput(queued!);
+      encoded.complete(const [
+        {'base64': 'AQID', 'mimeType': 'image/png'},
+      ]);
+      await pumpEventQueue();
+
+      expect(cubit.state.queuedInput, isNull);
+      expect(mockBridge.sentMessages, isEmpty);
     });
 
     test('sendMessage while disconnected queues entry with baseSeq', () async {
