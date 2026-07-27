@@ -530,6 +530,89 @@ void main() {
     expect(watches.length, greaterThan(1));
   });
 
+  test('silent list watch stops after its bounded retry budget', () async {
+    final bridge = _Bridge()..snapshot = const [_session];
+    final tracker = DesktopSessionListContinuityTracker(
+      bridge,
+      watchAckTimeout: const Duration(milliseconds: 1),
+      watchRetryBase: const Duration(milliseconds: 1),
+      watchRetryMax: const Duration(milliseconds: 1),
+      maxWatchRetryAttempts: 2,
+    );
+    addTearDown(() async {
+      tracker.close();
+      await bridge.closeFake();
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 15));
+    final watches = bridge.sent
+        .where((message) => message.type == 'codex_desktop_continuity_watch')
+        .length;
+    expect(watches, 3);
+    expect(bridge.historyRequests, 1);
+
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(
+      bridge.sent.where(
+        (message) => message.type == 'codex_desktop_continuity_watch',
+      ),
+      hasLength(watches),
+    );
+  });
+
+  test(
+    'missing rollout falls back once and stays quiet until reconnect',
+    () async {
+      final bridge = _Bridge()..snapshot = const [_session];
+      final tracker = DesktopSessionListContinuityTracker(
+        bridge,
+        watchRetryBase: const Duration(milliseconds: 1),
+        watchRetryMax: const Duration(milliseconds: 1),
+      );
+      addTearDown(() async {
+        tracker.close();
+        await bridge.closeFake();
+      });
+      final requestId = _json(bridge.sent.single)['requestId'] as String;
+
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.error,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          errorCode: 'rollout_unavailable',
+          error: 'No durable rollout found',
+        ),
+      );
+      bridge._sessions.add(bridge.snapshot);
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      expect(bridge.historyRequests, 1);
+      expect(
+        bridge.sent.where(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        ),
+        hasLength(1),
+      );
+
+      bridge.connected = false;
+      bridge._connections.add(BridgeConnectionState.disconnected);
+      await _flush();
+      bridge.connected = true;
+      bridge._connections.add(BridgeConnectionState.connected);
+      await _flush();
+      expect(
+        bridge.sent.where(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        ),
+        hasLength(2),
+      );
+    },
+  );
+
   test('binding rejection stays quiet until reconnect', () async {
     final bridge = _Bridge()..snapshot = const [_session];
     final tracker = DesktopSessionListContinuityTracker(
