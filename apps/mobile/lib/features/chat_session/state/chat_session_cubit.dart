@@ -93,6 +93,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const _desktopContinuityWatchAckTimeout = Duration(seconds: 4);
   static const _desktopContinuityRetryBase = Duration(milliseconds: 750);
   static const _desktopContinuityRetryMax = Duration(seconds: 8);
+  static const _statusHistoryRetryBase = Duration(seconds: 3);
+  static const _statusHistoryRetryMaxAttempts = 4;
 
   final String sessionId;
   final Provider? provider;
@@ -110,12 +112,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<LocalSessionHistoryAvailabilityChange>?
   _localHistoryAvailabilitySubscription;
   StreamSubscription<String>? _historySyncSubscription;
+  StreamSubscription<BridgeConnectionState>?
+  _statusRefreshConnectionSubscription;
   StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
   StreamSubscription<BridgeConnectionState>?
   _desktopContinuityConnectionSubscription;
   bool _pastHistoryLoaded = false;
   bool _historyBootstrapSucceeded = false;
   bool _historyFallbackRequested = false;
+  bool _historyBootstrapInFlight = false;
+  bool _statusHistoryBootstrapGraceUsed = false;
+  bool _statusHistoryWaitingForReconnect = false;
+  int _statusHistoryRetryAttempt = 0;
   // SessionInfo is the live session-list authority, while HistoryMessage is a
   // rebuildable transcript. Track authority per optional field so an older
   // Bridge can still fill omissions without letting stale init rows rebind a
@@ -350,6 +358,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (changedSessionId != sessionId || isClosed) return;
       historySyncing.value = _bridge.isSessionHistorySyncing(sessionId);
     });
+    _statusRefreshConnectionSubscription = _bridge.connectionStatus.listen(
+      _onStatusRefreshConnectionState,
+    );
 
     if (isCodex) {
       _goalConnectionSubscription = _bridge.connectionStatus.listen(
@@ -406,6 +417,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (_bridge.hasSessionHistoryBootstrap) {
       unawaited(_requestInitialHistory());
     } else {
+      _historyFallbackRequested = true;
       _bridge.requestSessionHistory(sessionId);
     }
 
@@ -469,20 +481,63 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _startStatusRefreshTimer() {
-    var mirrorStartingTicks = 0;
-    _statusRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (state.status != ProcessStatus.starting) {
-        _statusRefreshTimer?.cancel();
-        _statusRefreshTimer = null;
+    _statusRefreshTimer?.cancel();
+    _statusRefreshTimer = null;
+    _statusHistoryRetryAttempt = 0;
+    _statusHistoryBootstrapGraceUsed = false;
+    if (state.status != ProcessStatus.starting || isClosed) return;
+    if (!_bridge.isConnected) {
+      _statusHistoryWaitingForReconnect = true;
+      return;
+    }
+    _statusHistoryWaitingForReconnect = false;
+    _scheduleStatusHistoryRetry();
+  }
+
+  void _scheduleStatusHistoryRetry() {
+    if (isClosed ||
+        state.status != ProcessStatus.starting ||
+        _statusHistoryRetryAttempt >= _statusHistoryRetryMaxAttempts) {
+      return;
+    }
+    final delay =
+        _statusHistoryRetryBase * (1 << _statusHistoryRetryAttempt);
+    _statusRefreshTimer = Timer(delay, () {
+      _statusRefreshTimer = null;
+      if (isClosed || state.status != ProcessStatus.starting) return;
+      if (!_bridge.isConnected) {
+        _statusHistoryWaitingForReconnect = true;
         return;
       }
-      if (_historyBootstrapSucceeded && !_historyFallbackRequested) {
-        mirrorStartingTicks += 1;
-        if (mirrorStartingTicks < 2) return;
-        _historyFallbackRequested = true;
+      if (!_statusHistoryBootstrapGraceUsed &&
+          (_historyBootstrapInFlight ||
+              (_historyBootstrapSucceeded && !_historyFallbackRequested))) {
+        _statusHistoryBootstrapGraceUsed = true;
+        _scheduleStatusHistoryRetry();
+        return;
       }
+      _historyFallbackRequested = true;
       _bridge.requestSessionHistory(sessionId);
+      _statusHistoryRetryAttempt += 1;
+      _scheduleStatusHistoryRetry();
     });
+  }
+
+  void _onStatusRefreshConnectionState(
+    BridgeConnectionState connectionState,
+  ) {
+    if (isClosed || state.status != ProcessStatus.starting) return;
+    if (connectionState != BridgeConnectionState.connected) {
+      _statusHistoryWaitingForReconnect = true;
+      _statusRefreshTimer?.cancel();
+      _statusRefreshTimer = null;
+      return;
+    }
+    if (!_statusHistoryWaitingForReconnect) return;
+    _statusHistoryWaitingForReconnect = false;
+    _historyFallbackRequested = true;
+    _bridge.requestSessionHistory(sessionId);
+    _startStatusRefreshTimer();
   }
 
   void _onGoalConnectionState(BridgeConnectionState connectionState) {
@@ -1325,6 +1380,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   Future<void> _requestInitialHistory() async {
     final pagingGeneration = ++_localHistoryPagingGeneration;
     var handled = false;
+    _historyBootstrapInFlight = true;
     try {
       handled = await _bridge.tryBootstrapSessionHistory(
         runtimeSessionId: sessionId,
@@ -1337,17 +1393,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         error,
         stackTrace,
       );
+    } finally {
+      _historyBootstrapInFlight = false;
     }
     if (isClosed) return;
     if (pagingGeneration != _localHistoryPagingGeneration) return;
     _historyBootstrapSucceeded = handled;
     if (!handled) {
       localHistoryPaging.value = const LocalHistoryPagingState();
-      _historyFallbackRequested = true;
-      _bridge.requestSessionHistory(sessionId);
+      if (!_historyFallbackRequested) {
+        _historyFallbackRequested = true;
+        _bridge.requestSessionHistory(sessionId);
+      }
       return;
     }
-    _historyFallbackRequested = false;
     localHistoryPaging.value = _currentLocalHistoryPagingState();
     _settleStatusFromRuntimeAfterLocalBootstrap();
   }
@@ -2420,6 +2479,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _statusRefreshTimer?.cancel();
       _statusRefreshTimer = null;
     }
+    final shouldRestartStatusHistory =
+        !current.externalDesktopTurnActive &&
+        effectiveStatus == ProcessStatus.starting &&
+        current.status != ProcessStatus.starting;
 
     // --- Update hidden tool use IDs (for subagent summary compression) ---
     var hiddenToolUseIds = current.hiddenToolUseIds;
@@ -2599,6 +2662,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         hiddenToolUseIds: hiddenToolUseIds,
       ),
     );
+    if (shouldRestartStatusHistory) {
+      _startStatusRefreshTimer();
+    }
     if (originalMsg is HistoryMessage &&
         effectiveStatus != null &&
         effectiveStatus != current.status) {
@@ -5370,6 +5436,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _codexModelCatalogSubscription?.cancel();
     _localHistoryAvailabilitySubscription?.cancel();
     _historySyncSubscription?.cancel();
+    _statusRefreshConnectionSubscription?.cancel();
     codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
     _desktopContinuitySubscription?.cancel();

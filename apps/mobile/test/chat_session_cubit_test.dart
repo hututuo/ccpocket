@@ -5455,6 +5455,40 @@ void main() {
       },
     );
 
+    testWidgets(
+      'starting history refresh has a bounded retry budget',
+      (tester) async {
+        final cubit = createCubit('s1');
+        addTearDown(cubit.close);
+
+        expect(mockBridge.requestSessionHistoryCallCount, 1);
+        await tester.pump(const Duration(minutes: 5));
+
+        expect(cubit.state.status, ProcessStatus.starting);
+        expect(mockBridge.requestSessionHistoryCallCount, 5);
+      },
+    );
+
+    testWidgets(
+      'starting history refresh pauses offline and restarts after reconnect',
+      (tester) async {
+        final cubit = createCubit('s1');
+        addTearDown(cubit.close);
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        await tester.pump();
+        await tester.pump(const Duration(minutes: 5));
+        expect(mockBridge.requestSessionHistoryCallCount, 1);
+
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        await tester.pump();
+        expect(mockBridge.requestSessionHistoryCallCount, 2);
+
+        await tester.pump(const Duration(minutes: 5));
+        expect(mockBridge.requestSessionHistoryCallCount, 6);
+      },
+    );
+
     test(
       'session-not-found stops history refresh and marks session unavailable',
       () async {
