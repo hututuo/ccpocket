@@ -1,5 +1,11 @@
-import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import {
+  generateKeyPairSync,
+  randomBytes,
+  scrypt as nodeScrypt,
+  sign,
+  type KeyObject,
+} from "node:crypto";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,7 +36,7 @@ afterEach(async () => {
 });
 
 describe("FileMutationAuthorizer", () => {
-  it("stores only a private scrypt verifier and revokes devices on password change", async () => {
+  it("stores only a private Argon2id verifier and revokes devices on password change", async () => {
     const fixture = await createFixture();
     await fixture.store.setPassword(testCredential);
     await fixture.authorizer.enrollDevice(fixture.client, {
@@ -45,6 +51,14 @@ describe("FileMutationAuthorizer", () => {
 
     const persisted = await readFile(fixture.filePath, "utf8");
     expect(persisted).not.toContain(testCredential);
+    expect(JSON.parse(persisted).password).toMatchObject({
+      algorithm: "argon2id",
+      memoryCostKiB: 19 * 1024,
+      timeCost: 2,
+      parallelism: 1,
+      outputLength: 32,
+      version: 19,
+    });
     expect((await stat(fixture.filePath)).mode & 0o077).toBe(0);
 
     await fixture.store.setPassword(replacementCredential);
@@ -88,6 +102,24 @@ describe("FileMutationAuthorizer", () => {
     await expect(fixture.store.verifyPassword(testCredential)).resolves.toBe(
       false,
     );
+    await expect(
+      fixture.store.verifyPassword(replacementCredential),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps early scrypt password stores readable without writing new scrypt verifiers", async () => {
+    const fixture = await createFixture();
+    await writeLegacyScryptStore(fixture.filePath, testCredential);
+    await expect(fixture.store.verifyPassword(testCredential)).resolves.toBe(
+      true,
+    );
+    await expect(
+      fixture.store.verifyPassword(incorrectCredential),
+    ).resolves.toBe(false);
+
+    await fixture.store.setPassword(replacementCredential);
+    const persisted = JSON.parse(await readFile(fixture.filePath, "utf8"));
+    expect(persisted.password.algorithm).toBe("argon2id");
     await expect(
       fixture.store.verifyPassword(replacementCredential),
     ).resolves.toBe(true);
@@ -188,5 +220,45 @@ async function createFixture() {
 function signPayload(privateKey: KeyObject, payload: string): string {
   return sign("sha256", Buffer.from(payload, "utf8"), privateKey).toString(
     "base64url",
+  );
+}
+
+async function writeLegacyScryptStore(
+  filePath: string,
+  password: string,
+): Promise<void> {
+  const salt = randomBytes(16);
+  const hash = await new Promise<Buffer>((resolve, reject) => {
+    nodeScrypt(
+      password,
+      salt,
+      64,
+      {
+        N: 1 << 15,
+        r: 8,
+        p: 1,
+        maxmem: 64 * 1024 * 1024,
+      },
+      (error, derivedKey) => {
+        if (error) reject(error);
+        else resolve(Buffer.from(derivedKey));
+      },
+    );
+  });
+  await writeFile(
+    filePath,
+    `${JSON.stringify({
+      version: 1,
+      password: {
+        algorithm: "scrypt",
+        salt: salt.toString("base64url"),
+        hash: hash.toString("base64url"),
+        n: 1 << 15,
+        r: 8,
+        p: 1,
+      },
+      devices: [],
+    })}\n`,
+    { encoding: "utf8", mode: 0o600 },
   );
 }

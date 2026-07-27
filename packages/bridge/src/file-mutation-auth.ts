@@ -11,6 +11,11 @@ import { constants as fsConstants } from "node:fs";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  Algorithm as Argon2Algorithm,
+  hashRaw as argon2HashRaw,
+  Version as Argon2Version,
+} from "@node-rs/argon2";
 
 const STORE_VERSION = 1;
 const PASSWORD_MIN_LENGTH = 8;
@@ -23,6 +28,11 @@ const MAX_ACTIVE_CHALLENGES = 64;
 const DEFAULT_CHALLENGE_TTL_MS = 60_000;
 const PASSWORD_BLOCK_MS = 30_000;
 const PASSWORD_FAILURE_LIMIT = 5;
+const ARGON2_MEMORY_COST_KIB = 19 * 1024;
+const ARGON2_TIME_COST = 2;
+const ARGON2_PARALLELISM = 1;
+const ARGON2_KEY_LENGTH = 32;
+const ARGON2_VERSION = 19;
 const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_N = 1 << 15;
 const SCRYPT_R = 8;
@@ -67,7 +77,18 @@ export interface FileMutationAuthChallenge {
   expiresAt: string;
 }
 
-interface PersistedPasswordVerifier {
+interface PersistedArgon2idPasswordVerifier {
+  algorithm: "argon2id";
+  salt: string;
+  hash: string;
+  memoryCostKiB: number;
+  timeCost: number;
+  parallelism: number;
+  outputLength: number;
+  version: typeof ARGON2_VERSION;
+}
+
+interface PersistedScryptPasswordVerifier {
   algorithm: "scrypt";
   salt: string;
   hash: string;
@@ -75,6 +96,10 @@ interface PersistedPasswordVerifier {
   r: number;
   p: number;
 }
+
+type PersistedPasswordVerifier =
+  | PersistedArgon2idPasswordVerifier
+  | PersistedScryptPasswordVerifier;
 
 interface PersistedDevice {
   deviceId: string;
@@ -181,24 +206,35 @@ export class FileMutationAuthStore {
       password.length > PASSWORD_MAX_LENGTH
     ) {
       // Keep malformed attempts on the same asynchronous path as valid ones.
-      await derivePassword(
+      await deriveArgon2idPassword(
         "invalid-password-padding",
         randomBytes(16),
-        SCRYPT_N,
       );
       return false;
     }
     await this.refresh();
     const verifier = this.state.password;
     if (!verifier) return false;
-    const actual = await derivePassword(
-      password,
-      decodeBase64Url(verifier.salt, 64),
-      verifier.n,
-      verifier.r,
-      verifier.p,
+    const actual =
+      verifier.algorithm === "argon2id"
+        ? await deriveArgon2idPassword(
+            password,
+            decodeBase64Url(verifier.salt, 64),
+            verifier,
+          )
+        : await deriveScryptPassword(
+            password,
+            decodeBase64Url(verifier.salt, 64),
+            verifier.n,
+            verifier.r,
+            verifier.p,
+          );
+    const expected = decodeBase64Url(
+      verifier.hash,
+      verifier.algorithm === "argon2id"
+        ? ARGON2_KEY_LENGTH
+        : SCRYPT_KEY_LENGTH,
     );
-    const expected = decodeBase64Url(verifier.hash, SCRYPT_KEY_LENGTH);
     return (
       actual.length === expected.length && timingSafeEqual(actual, expected)
     );
@@ -583,18 +619,46 @@ async function createPasswordVerifier(
   password: string,
 ): Promise<PersistedPasswordVerifier> {
   const salt = randomBytes(16);
-  const hash = await derivePassword(password, salt, SCRYPT_N);
+  const hash = await deriveArgon2idPassword(password, salt);
   return {
-    algorithm: "scrypt",
+    algorithm: "argon2id",
     salt: salt.toString("base64url"),
     hash: hash.toString("base64url"),
-    n: SCRYPT_N,
-    r: SCRYPT_R,
-    p: SCRYPT_P,
+    memoryCostKiB: ARGON2_MEMORY_COST_KIB,
+    timeCost: ARGON2_TIME_COST,
+    parallelism: ARGON2_PARALLELISM,
+    outputLength: ARGON2_KEY_LENGTH,
+    version: ARGON2_VERSION,
   };
 }
 
-async function derivePassword(
+async function deriveArgon2idPassword(
+  password: string,
+  salt: Buffer,
+  parameters: {
+    memoryCostKiB: number;
+    timeCost: number;
+    parallelism: number;
+    outputLength: number;
+  } = {
+    memoryCostKiB: ARGON2_MEMORY_COST_KIB,
+    timeCost: ARGON2_TIME_COST,
+    parallelism: ARGON2_PARALLELISM,
+    outputLength: ARGON2_KEY_LENGTH,
+  },
+): Promise<Buffer> {
+  return argon2HashRaw(password, {
+    algorithm: Argon2Algorithm.Argon2id,
+    version: Argon2Version.V0x13,
+    salt,
+    memoryCost: parameters.memoryCostKiB,
+    timeCost: parameters.timeCost,
+    parallelism: parameters.parallelism,
+    outputLen: parameters.outputLength,
+  });
+}
+
+async function deriveScryptPassword(
   password: string,
   salt: Buffer,
   n: number,
@@ -730,12 +794,8 @@ function validateStore(value: unknown): PersistedFileMutationAuth {
     }
     const verifier = raw.password as Record<string, unknown>;
     if (
-      verifier.algorithm !== "scrypt" ||
       typeof verifier.salt !== "string" ||
-      typeof verifier.hash !== "string" ||
-      verifier.n !== SCRYPT_N ||
-      verifier.r !== SCRYPT_R ||
-      verifier.p !== SCRYPT_P
+      typeof verifier.hash !== "string"
     ) {
       throw new FileMutationAuthError(
         "invalid_auth_store",
@@ -743,21 +803,55 @@ function validateStore(value: unknown): PersistedFileMutationAuth {
       );
     }
     decodeBase64Url(verifier.salt, 64);
-    const hash = decodeBase64Url(verifier.hash, SCRYPT_KEY_LENGTH);
-    if (hash.length !== SCRYPT_KEY_LENGTH) {
+    if (verifier.algorithm === "argon2id") {
+      if (
+        verifier.memoryCostKiB !== ARGON2_MEMORY_COST_KIB ||
+        verifier.timeCost !== ARGON2_TIME_COST ||
+        verifier.parallelism !== ARGON2_PARALLELISM ||
+        verifier.outputLength !== ARGON2_KEY_LENGTH ||
+        verifier.version !== ARGON2_VERSION ||
+        decodeBase64Url(verifier.hash, ARGON2_KEY_LENGTH).length !==
+          ARGON2_KEY_LENGTH
+      ) {
+        throw new FileMutationAuthError(
+          "invalid_auth_store",
+          "File-access authorization state is invalid",
+        );
+      }
+      password = {
+        algorithm: "argon2id",
+        salt: verifier.salt,
+        hash: verifier.hash,
+        memoryCostKiB: verifier.memoryCostKiB,
+        timeCost: verifier.timeCost,
+        parallelism: verifier.parallelism,
+        outputLength: verifier.outputLength,
+        version: verifier.version,
+      };
+    } else if (
+      verifier.algorithm === "scrypt" &&
+      verifier.n === SCRYPT_N &&
+      verifier.r === SCRYPT_R &&
+      verifier.p === SCRYPT_P &&
+      decodeBase64Url(verifier.hash, SCRYPT_KEY_LENGTH).length ===
+        SCRYPT_KEY_LENGTH
+    ) {
+      // Read-only compatibility for passwords configured by early owner
+      // builds. Every new or changed password is persisted as Argon2id.
+      password = {
+        algorithm: "scrypt",
+        salt: verifier.salt,
+        hash: verifier.hash,
+        n: verifier.n,
+        r: verifier.r,
+        p: verifier.p,
+      };
+    } else {
       throw new FileMutationAuthError(
         "invalid_auth_store",
         "File-access authorization state is invalid",
       );
     }
-    password = {
-      algorithm: "scrypt",
-      salt: verifier.salt,
-      hash: verifier.hash,
-      n: verifier.n,
-      r: verifier.r,
-      p: verifier.p,
-    };
   }
   if (raw.devices.length > 0 && password === undefined) {
     throw new FileMutationAuthError(
