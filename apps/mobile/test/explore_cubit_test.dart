@@ -439,5 +439,25 @@ void main() {
         expect(second.state.allFiles, ['correct-for-b.txt']);
       },
     );
+
+    test(
+      'old Bridge drops a closed pane quarantine when its streams close',
+      () async {
+        final bridge = _TestBridgeService(capabilities: const {});
+        final cubit = ExploreCubit(
+          bridge: bridge,
+          projectPath: '/tmp/project',
+          requestTimeout: const Duration(seconds: 12),
+        );
+
+        await cubit.close();
+        expect(ExploreCubit.debugHasLegacyLaneForBridge(bridge), isTrue);
+
+        bridge.dispose();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(ExploreCubit.debugHasLegacyLaneForBridge(bridge), isFalse);
+      },
+    );
   });
 }

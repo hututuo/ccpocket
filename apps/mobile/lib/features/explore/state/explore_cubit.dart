@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../services/bridge_service.dart';
@@ -291,6 +292,10 @@ class ExploreCubit extends Cubit<ExploreState> {
         ),
       );
 
+  @visibleForTesting
+  static bool debugHasLegacyLaneForBridge(BridgeService bridge) =>
+      _legacyLanes.containsKey(bridge);
+
   void _applyFiles(
     List<String> files, {
     required bool truncated,
@@ -387,8 +392,14 @@ class _LegacyExploreRequest {
 
 class _LegacyExploreLane {
   _LegacyExploreLane(this.bridge, {required this.onIdle}) {
-    _fileListSub = bridge.fileListMessages.listen(_onFileList);
-    _messageSub = bridge.messages.listen(_onBridgeMessage);
+    _fileListSub = bridge.fileListMessages.listen(
+      _onFileList,
+      onDone: _disposeFromClosedBridge,
+    );
+    _messageSub = bridge.messages.listen(
+      _onBridgeMessage,
+      onDone: _disposeFromClosedBridge,
+    );
   }
 
   final BridgeService bridge;
@@ -541,18 +552,46 @@ class _LegacyExploreLane {
         _queue.isNotEmpty) {
       return;
     }
-    scheduleMicrotask(() async {
+    scheduleMicrotask(() {
       if (_disposed ||
           _active != null ||
           _quarantined != null ||
           _queue.isNotEmpty) {
         return;
       }
-      _disposed = true;
-      await _fileListSub?.cancel();
-      await _messageSub?.cancel();
-      onIdle(this);
+      _dispose();
     });
+  }
+
+  void _dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _active = null;
+    _queue.clear();
+    _clearQuarantine();
+
+    final fileListSub = _fileListSub;
+    _fileListSub = null;
+    if (fileListSub != null) {
+      unawaited(fileListSub.cancel());
+    }
+    final messageSub = _messageSub;
+    _messageSub = null;
+    if (messageSub != null) {
+      unawaited(messageSub.cancel());
+    }
+    onIdle(this);
+  }
+
+  void _disposeFromClosedBridge() {
+    if (_disposed) return;
+    _disposed = true;
+    _active = null;
+    _queue.clear();
+    _clearQuarantine();
+    _fileListSub = null;
+    _messageSub = null;
+    onIdle(this);
   }
 }
 

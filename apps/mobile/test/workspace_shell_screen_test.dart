@@ -112,6 +112,11 @@ class _MockBridgeService extends BridgeService {
   String? get httpBaseUrl => 'http://localhost:8765';
 
   @override
+  Set<String> get bridgeCapabilities => const {
+    fileListRequestCorrelationCapability,
+  };
+
+  @override
   bool get recentSessionsHasMore => false;
 
   @override
