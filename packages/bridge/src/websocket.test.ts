@@ -15441,7 +15441,7 @@ describe("BridgeWebSocketServer handshake Origin gate", () => {
     getCodexSessionIndexMetadataMock.mockResolvedValue(new Map());
   });
 
-  it("rejects Origin-bearing handshakes with 403 and accepts native clients", async () => {
+  it("binds private browser Origins to the actual WebSocket host", async () => {
     const httpServer = createServer();
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     await new Promise<void>((res) => {
@@ -15478,9 +15478,7 @@ describe("BridgeWebSocketServer handshake Origin gate", () => {
       });
       expect(nativeAttempt).toBe(true);
 
-      // The first-party Flutter Web build is served from the Mac itself
-      // (private/Tailscale address), so its Origin must stay connectable.
-      const webClientAttempt = await new Promise<boolean>((res) => {
+      const crossHostPrivateAttempt = await new Promise<boolean>((res) => {
         const ws = new WsClient(url, { origin: "http://100.105.41.82:8888" });
         ws.on("open", () => {
           res(true);
@@ -15489,7 +15487,80 @@ describe("BridgeWebSocketServer handshake Origin gate", () => {
         ws.on("unexpected-response", () => res(false));
         ws.on("error", () => {});
       });
-      expect(webClientAttempt).toBe(true);
+      expect(crossHostPrivateAttempt).toBe(false);
+
+      const sameHostPrivateAttempt = await new Promise<boolean>((res) => {
+        const ws = new WsClient(url, { origin: "http://127.0.0.1:8888" });
+        ws.on("open", () => {
+          res(true);
+          ws.close();
+        });
+        ws.on("unexpected-response", () => res(false));
+        ws.on("error", () => {});
+      });
+      expect(sameHostPrivateAttempt).toBe(true);
+    } finally {
+      await bridge.close();
+      await new Promise<void>((res) => {
+        httpServer.close(() => res());
+      });
+    }
+  });
+
+  it("allows an explicitly configured browser Origin", async () => {
+    const httpServer = createServer();
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedWebSocketOrigins: ["http://100.105.41.82:8888"],
+    });
+    await new Promise<void>((res) => {
+      httpServer.listen(0, "127.0.0.1", res);
+    });
+    const port = (httpServer.address() as { port: number }).port;
+    const url = `ws://127.0.0.1:${port}`;
+
+    try {
+      const opened = await new Promise<boolean>((res) => {
+        const ws = new WsClient(url, { origin: "http://100.105.41.82:8888" });
+        ws.on("open", () => {
+          res(true);
+          ws.close();
+        });
+        ws.on("unexpected-response", () => res(false));
+        ws.on("error", () => {});
+      });
+      expect(opened).toBe(true);
+    } finally {
+      await bridge.close();
+      await new Promise<void>((res) => {
+        httpServer.close(() => res());
+      });
+    }
+  });
+
+  it("allows a valid API key to authenticate an otherwise untrusted Origin", async () => {
+    const httpServer = createServer();
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      apiKey: "origin-gate-secret",
+    });
+    await new Promise<void>((res) => {
+      httpServer.listen(0, "127.0.0.1", res);
+    });
+    const port = (httpServer.address() as { port: number }).port;
+    const url = `ws://127.0.0.1:${port}?token=origin-gate-secret`;
+
+    try {
+      const opened = await new Promise<boolean>((res) => {
+        const ws = new WsClient(url, { origin: "http://evil.example" });
+        ws.on("open", () => {
+          res(true);
+          ws.close();
+        });
+        ws.on("unexpected-response", () => res(false));
+        ws.on("error", () => {});
+      });
+      expect(opened).toBe(true);
     } finally {
       await bridge.close();
       await new Promise<void>((res) => {

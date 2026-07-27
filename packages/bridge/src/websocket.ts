@@ -328,6 +328,52 @@ export function isPrivateOrigin(origin: string): boolean {
   return false;
 }
 
+function normalizeBrowserOrigin(origin: string): string | null {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function websocketHostName(host: string | undefined): string | null {
+  if (!host) return null;
+  try {
+    return new URL(`ws://${host}`).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+export function isAllowedBrowserOrigin(
+  origin: string,
+  websocketHost: string | undefined,
+  explicitlyAllowedOrigins: ReadonlySet<string> = new Set(),
+): boolean {
+  const normalized = normalizeBrowserOrigin(origin);
+  if (!normalized) return false;
+  if (explicitlyAllowedOrigins.has(normalized)) return true;
+  if (!isPrivateOrigin(normalized)) return false;
+
+  const originHost = new URL(normalized).hostname.toLowerCase();
+  return originHost === websocketHostName(websocketHost);
+}
+
+function configuredWebSocketOrigins(values: string[] | undefined): Set<string> {
+  const configured =
+    values ??
+    process.env.BRIDGE_ALLOWED_ORIGINS?.split(",").map((value) => value.trim()) ??
+    [];
+  return new Set(
+    configured
+      .map(normalizeBrowserOrigin)
+      .filter((value): value is string => value !== null),
+  );
+}
+
 function httpBaseUrlForWebSocketRequest(
   request?: IncomingMessage,
 ): string | undefined {
@@ -1186,6 +1232,7 @@ export interface BridgeServerOptions {
   server: HttpServer;
   apiKey?: string;
   apiKeyAuthenticator?: BridgeApiKeyAuthenticator;
+  allowedWebSocketOrigins?: string[];
   allowedDirs?: string[];
   imageStore?: ImageStore;
   galleryStore?: GalleryStore;
@@ -1337,6 +1384,7 @@ export class BridgeWebSocketServer {
       server,
       apiKey,
       apiKeyAuthenticator,
+      allowedWebSocketOrigins,
       allowedDirs,
       imageStore,
       galleryStore,
@@ -1359,6 +1407,9 @@ export class BridgeWebSocketServer {
     } = options;
     this.apiKeyAuthenticator =
       apiKeyAuthenticator ?? new BridgeApiKeyAuthenticator(apiKey);
+    const browserOrigins = configuredWebSocketOrigins(
+      allowedWebSocketOrigins,
+    );
     this.allowedDirs = allowedDirs ?? [];
     this.imageStore = imageStore ?? null;
     this.galleryStore = galleryStore ?? null;
@@ -1436,13 +1487,11 @@ export class BridgeWebSocketServer {
       console.log("[ws] Push relay enabled (Firebase Anonymous Auth)");
     }
 
-    // Browsers always attach an Origin header to WebSocket handshakes; the
-    // native app clients never do. Rejecting public Origins closes the
-    // drive-by path (internet pages connecting to ws://127.0.0.1) while
-    // private Origins stay allowed for the first-party Flutter Web build
-    // served from the Mac itself (CLAUDE.md "Web確認" workflow). The check
-    // is purely string-based — no DNS resolution — so DNS rebinding cannot
-    // spoof a private hostname.
+    // Browsers always attach an Origin header to WebSocket handshakes; native
+    // app clients do not. A private address is a network location, not an
+    // identity, so bind browser Origins to the actual WebSocket Host. Operators
+    // can explicitly allow a different first-party web origin, and a valid API
+    // key remains an independent authentication path.
     this.wss = new WebSocketServer({
       server,
       verifyClient: (
@@ -1450,8 +1499,19 @@ export class BridgeWebSocketServer {
         done: (res: boolean, code?: number, message?: string) => void,
       ) => {
         const origin = info.req.headers.origin;
-        if (origin !== undefined && !isPrivateOrigin(origin)) {
-          console.log("[ws] Client rejected: non-private browser Origin");
+        const authenticatedByToken =
+          this.apiKeyAuthenticator.isConfigured &&
+          this.apiKeyAuthenticator.acceptsWebSocketRequest(info.req);
+        if (
+          origin !== undefined &&
+          !authenticatedByToken &&
+          !isAllowedBrowserOrigin(
+            origin,
+            info.req.headers.host,
+            browserOrigins,
+          )
+        ) {
+          console.log("[ws] Client rejected: untrusted browser Origin");
           done(false, 403, "Forbidden");
           return;
         }
