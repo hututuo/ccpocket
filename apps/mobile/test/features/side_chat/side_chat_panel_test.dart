@@ -57,6 +57,14 @@ void main() {
       ).errorFor('bridge_update_required', 'open_side_chat'),
       '请更新 Bridge 后再使用侧边聊天。',
     );
+    expect(
+      SideChatStrings.forLocale(const Locale('ja')).temporarySession,
+      '一時サイドチャット',
+    );
+    expect(
+      SideChatStrings.forLocale(const Locale('ko')).newTemporarySideChat,
+      '새 임시 사이드 채팅',
+    );
   });
 
   TestWidgetsFlutterBinding.ensureInitialized();

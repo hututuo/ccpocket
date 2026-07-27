@@ -77,6 +77,11 @@ void main() {
       ja.receivedNotificationBody('report.pdf'),
       contains('report.pdf を「ファイル」App'),
     );
+    expect(ja.releaseToAttach, 'ドロップしてこの会話に添付');
+    expect(
+      ja.sentWithoutDirectAttachment('report.pdf'),
+      contains('Bridge を更新'),
+    );
 
     final ko = FileTransferStrings('ko_KR');
     expect(ko.pausedNotificationTitle, '파일 전송이 일시 정지되었습니다');
@@ -84,6 +89,8 @@ void main() {
       ko.pausedNotificationBody('report.pdf', 'insufficient_storage'),
       'report.pdf: 사용 가능한 저장 공간이 부족합니다',
     );
+    expect(ko.releaseToSend, '놓아서 Mac으로 보내기');
+    expect(ko.droppedFileUnreadable, '드롭한 파일을 읽을 수 없습니다.');
   });
 
   testWidgets('Japanese and Korean file transfer sheets use localized copy', (

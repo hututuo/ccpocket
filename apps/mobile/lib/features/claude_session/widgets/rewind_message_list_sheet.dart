@@ -125,18 +125,18 @@ class _UserMessageHistoryLoaderSheetState
       );
     }
     if (_loadError != null && !_loading) {
-      final zh = Localizations.localeOf(context).languageCode == 'zh';
+      final l = AppLocalizations.of(context);
       return SizedBox(
         height: 280,
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(zh ? '会话轮次加载失败' : 'Could not load turn history'),
+              Text(l.turnHistoryLoadFailed),
               const SizedBox(height: 12),
               FilledButton.tonal(
                 onPressed: _reload,
-                child: Text(zh ? '重试' : 'Retry'),
+                child: Text(l.retry),
               ),
             ],
           ),
@@ -200,9 +200,9 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
       return;
     }
     setState(() => _loadingTarget = null);
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final l = AppLocalizations.of(context);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(zh ? '未能加载这轮会话，请重试' : 'Could not load this turn')),
+      SnackBar(content: Text(l.turnLoadFailed)),
     );
   }
 
@@ -211,7 +211,7 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final colorScheme = Theme.of(context).colorScheme;
     final loading = _loadingTarget != null;
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final l = AppLocalizations.of(context);
 
     return Stack(
       children: [
@@ -246,15 +246,13 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
                       Icon(Icons.history, size: 20, color: colorScheme.primary),
                       const SizedBox(width: 8),
                       Text(
-                        zh ? '会话轮次' : 'Turn history',
+                        l.turnHistoryTitle,
                         style: Theme.of(context).textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                       const Spacer(),
                       Text(
-                        zh
-                            ? '${widget.messages.length} 轮'
-                            : '${widget.messages.length} turn${widget.messages.length == 1 ? '' : 's'}',
+                        l.turnCount(widget.messages.length),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: appColors.subtleText,
                         ),
@@ -288,15 +286,13 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            zh ? '暂无会话轮次' : 'No turns yet',
+                            l.noTurnsYet,
                             style: Theme.of(context).textTheme.bodyMedium
                                 ?.copyWith(color: appColors.subtleText),
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            zh
-                                ? '发送消息后，每一轮的开头都会显示在这里'
-                                : 'Each turn start appears here after you send a message',
+                            l.turnHistoryHint,
                             style: Theme.of(context).textTheme.bodySmall
                                 ?.copyWith(color: appColors.subtleText),
                             textAlign: TextAlign.center,
@@ -365,9 +361,7 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
                       ),
                     ),
                     const SizedBox(width: 14),
-                    Text(
-                      zh ? '正在加载并定位这轮会话…' : 'Loading and locating this turn…',
-                    ),
+                    Text(l.locatingTurn),
                   ],
                 ),
               ),
@@ -395,20 +389,14 @@ class _PartialHistoryBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
     final busy = refreshing || requestingFullHistory;
     final status = loadError != null
-        ? (zh
-              ? '完整历史索引暂时不可用，目前只显示已加载的 $visibleTurns 轮。'
-              : 'The full index is unavailable; showing $visibleTurns loaded turns.')
+        ? l.fullHistoryUnavailable(visibleTurns)
         : refreshing
-        ? (zh
-              ? '正在读取完整历史索引，目前先显示 $visibleTurns 轮。'
-              : 'Loading the full index; showing $visibleTurns turns for now.')
-        : (zh
-              ? '目前显示已加载的 $visibleTurns 轮；完整历史索引尚未就绪。'
-              : 'Showing $visibleTurns loaded turns; the full index is not ready.');
+        ? l.fullHistoryLoading(visibleTurns)
+        : l.fullHistoryNotReady(visibleTurns);
 
     return Container(
       key: const ValueKey('partial_history_banner'),
@@ -444,10 +432,8 @@ class _PartialHistoryBanner extends StatelessWidget {
               onPressed: busy ? null : onRequestFullHistory,
               child: Text(
                 requestingFullHistory
-                    ? (zh ? '下载中…' : 'Downloading…')
-                    : (zh
-                          ? '完整下载并常驻'
-                          : 'Download & keep resident'),
+                    ? l.downloading
+                    : l.downloadAndKeepResident,
               ),
             ),
           ],

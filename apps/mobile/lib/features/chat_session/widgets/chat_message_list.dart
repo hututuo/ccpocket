@@ -1579,7 +1579,7 @@ class _HistoryToolDetailLoadControl extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (state.complete) return const SizedBox.shrink();
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final l = AppLocalizations.of(context);
     final remaining = gap.toolUseIds.length - state.nextOffset;
     final nextCount = remaining > 8 ? 8 : remaining;
     final colors = Theme.of(context).colorScheme;
@@ -1595,7 +1595,7 @@ class _HistoryToolDetailLoadControl extends StatelessWidget {
             ),
             const SizedBox(width: 9),
             Text(
-              zh ? '正在读取较早工具详情…' : 'Loading older tool details…',
+              l.loadingOlderToolDetails,
               style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
             ),
           ],
@@ -1609,7 +1609,7 @@ class _HistoryToolDetailLoadControl extends StatelessWidget {
         child: TextButton.icon(
           onPressed: onLoad,
           icon: const Icon(Icons.refresh, size: 17),
-          label: Text(zh ? '读取失败，点此重试' : 'Could not load details. Retry'),
+          label: Text(l.loadToolDetailsFailed),
         ),
       );
     }
@@ -1619,11 +1619,7 @@ class _HistoryToolDetailLoadControl extends StatelessWidget {
       child: TextButton.icon(
         onPressed: nextCount > 0 ? onLoad : null,
         icon: const Icon(Icons.expand_more, size: 18),
-        label: Text(
-          zh
-              ? '加载接下来的 $nextCount 个工具详情'
-              : 'Load the next $nextCount tool details',
-        ),
+        label: Text(l.loadNextToolDetails(nextCount)),
       ),
     );
   }

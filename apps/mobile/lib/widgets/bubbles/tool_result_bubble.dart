@@ -593,11 +593,7 @@ class _ExpandedToolResult extends StatelessWidget {
                   key: const ValueKey('tool_result_open_full_diff'),
                   onPressed: onOpenGitScreen,
                   icon: const Icon(Icons.difference_outlined, size: 16),
-                  label: Text(
-                    Localizations.localeOf(context).languageCode == 'zh'
-                        ? '查看完整差异'
-                        : 'View full diff',
-                  ),
+                  label: Text(l.viewFullDiff),
                 ),
               ),
           ],

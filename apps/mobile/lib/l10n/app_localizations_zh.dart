@@ -3573,4 +3573,70 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get terminalAppNameHint => '我的终端';
+
+  @override
+  String historyToolDetailsPending(int count) {
+    return '$count 个较早工具详情尚未加载';
+  }
+
+  @override
+  String get loadOnDemand => '按需加载';
+
+  @override
+  String get viewFullDiff => '查看完整差异';
+
+  @override
+  String get turnHistoryLoadFailed => '会话轮次加载失败';
+
+  @override
+  String get turnLoadFailed => '未能加载这轮会话，请重试';
+
+  @override
+  String get turnHistoryTitle => '会话轮次';
+
+  @override
+  String turnCount(int count) {
+    return '$count 轮';
+  }
+
+  @override
+  String get noTurnsYet => '暂无会话轮次';
+
+  @override
+  String get turnHistoryHint => '发送消息后，每一轮的开头都会显示在这里';
+
+  @override
+  String get locatingTurn => '正在加载并定位这轮会话…';
+
+  @override
+  String fullHistoryUnavailable(int count) {
+    return '完整历史索引暂时不可用，目前只显示已加载的 $count 轮。';
+  }
+
+  @override
+  String fullHistoryLoading(int count) {
+    return '正在读取完整历史索引，目前先显示 $count 轮。';
+  }
+
+  @override
+  String fullHistoryNotReady(int count) {
+    return '目前显示已加载的 $count 轮；完整历史索引尚未就绪。';
+  }
+
+  @override
+  String get downloading => '下载中…';
+
+  @override
+  String get downloadAndKeepResident => '完整下载并常驻';
+
+  @override
+  String get loadingOlderToolDetails => '正在读取较早工具详情…';
+
+  @override
+  String get loadToolDetailsFailed => '读取失败，点此重试';
+
+  @override
+  String loadNextToolDetails(int count) {
+    return '加载接下来的 $count 个工具详情';
+  }
 }

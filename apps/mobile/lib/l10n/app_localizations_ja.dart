@@ -3615,4 +3615,70 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get terminalAppNameHint => 'マイターミナル';
+
+  @override
+  String historyToolDetailsPending(int count) {
+    return '以前のツール詳細 $count 件はまだ読み込まれていません';
+  }
+
+  @override
+  String get loadOnDemand => '読み込む';
+
+  @override
+  String get viewFullDiff => '差分全体を表示';
+
+  @override
+  String get turnHistoryLoadFailed => 'ターン履歴を読み込めませんでした';
+
+  @override
+  String get turnLoadFailed => 'このターンを読み込めませんでした。もう一度お試しください。';
+
+  @override
+  String get turnHistoryTitle => 'ターン履歴';
+
+  @override
+  String turnCount(int count) {
+    return '$count ターン';
+  }
+
+  @override
+  String get noTurnsYet => 'ターンはまだありません';
+
+  @override
+  String get turnHistoryHint => 'メッセージを送信すると、各ターンの先頭がここに表示されます';
+
+  @override
+  String get locatingTurn => 'このターンを読み込んで移動しています…';
+
+  @override
+  String fullHistoryUnavailable(int count) {
+    return '完全な履歴インデックスを利用できません。読み込み済みの $count ターンを表示しています。';
+  }
+
+  @override
+  String fullHistoryLoading(int count) {
+    return '完全な履歴インデックスを読み込み中です。先に $count ターンを表示しています。';
+  }
+
+  @override
+  String fullHistoryNotReady(int count) {
+    return '読み込み済みの $count ターンを表示しています。完全な履歴インデックスはまだ準備中です。';
+  }
+
+  @override
+  String get downloading => 'ダウンロード中…';
+
+  @override
+  String get downloadAndKeepResident => 'すべてダウンロードして保持';
+
+  @override
+  String get loadingOlderToolDetails => '以前のツール詳細を読み込んでいます…';
+
+  @override
+  String get loadToolDetailsFailed => '詳細を読み込めませんでした。再試行';
+
+  @override
+  String loadNextToolDetails(int count) {
+    return '次の $count 件のツール詳細を読み込む';
+  }
 }

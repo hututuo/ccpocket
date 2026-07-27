@@ -3645,4 +3645,70 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get terminalAppNameHint => '내 터미널';
+
+  @override
+  String historyToolDetailsPending(int count) {
+    return '이전 도구 세부 정보 $count개가 아직 로드되지 않았습니다';
+  }
+
+  @override
+  String get loadOnDemand => '불러오기';
+
+  @override
+  String get viewFullDiff => '전체 차이 보기';
+
+  @override
+  String get turnHistoryLoadFailed => '턴 기록을 불러올 수 없습니다';
+
+  @override
+  String get turnLoadFailed => '이 턴을 불러올 수 없습니다. 다시 시도해 주세요.';
+
+  @override
+  String get turnHistoryTitle => '턴 기록';
+
+  @override
+  String turnCount(int count) {
+    return '$count개 턴';
+  }
+
+  @override
+  String get noTurnsYet => '아직 턴이 없습니다';
+
+  @override
+  String get turnHistoryHint => '메시지를 보내면 각 턴의 시작이 여기에 표시됩니다';
+
+  @override
+  String get locatingTurn => '이 턴을 불러와 위치를 찾는 중…';
+
+  @override
+  String fullHistoryUnavailable(int count) {
+    return '전체 기록 인덱스를 사용할 수 없어 불러온 $count개 턴만 표시합니다.';
+  }
+
+  @override
+  String fullHistoryLoading(int count) {
+    return '전체 기록 인덱스를 불러오는 중이며 우선 $count개 턴을 표시합니다.';
+  }
+
+  @override
+  String fullHistoryNotReady(int count) {
+    return '불러온 $count개 턴을 표시 중이며 전체 기록 인덱스는 아직 준비되지 않았습니다.';
+  }
+
+  @override
+  String get downloading => '다운로드 중…';
+
+  @override
+  String get downloadAndKeepResident => '전체 다운로드 후 유지';
+
+  @override
+  String get loadingOlderToolDetails => '이전 도구 세부 정보를 불러오는 중…';
+
+  @override
+  String get loadToolDetailsFailed => '세부 정보를 불러오지 못했습니다. 다시 시도';
+
+  @override
+  String loadNextToolDetails(int count) {
+    return '다음 도구 세부 정보 $count개 불러오기';
+  }
 }

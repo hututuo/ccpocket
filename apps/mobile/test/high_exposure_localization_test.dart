@@ -3,15 +3,19 @@ import 'package:ccpocket/features/settings/widgets/theme_bottom_sheet.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/theme/app_theme.dart';
+import 'package:ccpocket/widgets/bubbles/assistant_bubble.dart';
 import 'package:ccpocket/widgets/codex_effort_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Widget _localizedApp(Widget home) {
+Widget _localizedApp(
+  Widget home, {
+  Locale locale = const Locale('zh'),
+}) {
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
-    locale: const Locale('zh'),
+    locale: locale,
     theme: AppTheme.lightTheme,
     home: home,
   );
@@ -73,5 +77,28 @@ void main() {
     expect(find.text('标准'), findsOneWidget);
     expect(find.text('快速'), findsOneWidget);
     expect(find.text('自定义'), findsOneWidget);
+  });
+
+  testWidgets('older tool detail prompt uses the selected Japanese locale', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _localizedApp(
+        const Scaffold(
+          body: HistoryToolDetailGapTile(
+            gap: HistoryToolDetailGap(
+              gapId: 'older-tools',
+              toolUseIds: ['tool-1'],
+              toolNames: ['Read'],
+              toolCallCount: 3,
+            ),
+          ),
+        ),
+        locale: const Locale('ja'),
+      ),
+    );
+
+    expect(find.text('以前のツール詳細 3 件はまだ読み込まれていません'), findsOneWidget);
+    expect(find.text('読み込む'), findsOneWidget);
   });
 }

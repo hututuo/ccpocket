@@ -6497,6 +6497,114 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'マイターミナル'**
   String get terminalAppNameHint;
+
+  /// No description provided for @historyToolDetailsPending.
+  ///
+  /// In ja, this message translates to:
+  /// **'以前のツール詳細 {count} 件はまだ読み込まれていません'**
+  String historyToolDetailsPending(int count);
+
+  /// No description provided for @loadOnDemand.
+  ///
+  /// In ja, this message translates to:
+  /// **'読み込む'**
+  String get loadOnDemand;
+
+  /// No description provided for @viewFullDiff.
+  ///
+  /// In ja, this message translates to:
+  /// **'差分全体を表示'**
+  String get viewFullDiff;
+
+  /// No description provided for @turnHistoryLoadFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'ターン履歴を読み込めませんでした'**
+  String get turnHistoryLoadFailed;
+
+  /// No description provided for @turnLoadFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'このターンを読み込めませんでした。もう一度お試しください。'**
+  String get turnLoadFailed;
+
+  /// No description provided for @turnHistoryTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'ターン履歴'**
+  String get turnHistoryTitle;
+
+  /// No description provided for @turnCount.
+  ///
+  /// In ja, this message translates to:
+  /// **'{count} ターン'**
+  String turnCount(int count);
+
+  /// No description provided for @noTurnsYet.
+  ///
+  /// In ja, this message translates to:
+  /// **'ターンはまだありません'**
+  String get noTurnsYet;
+
+  /// No description provided for @turnHistoryHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'メッセージを送信すると、各ターンの先頭がここに表示されます'**
+  String get turnHistoryHint;
+
+  /// No description provided for @locatingTurn.
+  ///
+  /// In ja, this message translates to:
+  /// **'このターンを読み込んで移動しています…'**
+  String get locatingTurn;
+
+  /// No description provided for @fullHistoryUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'完全な履歴インデックスを利用できません。読み込み済みの {count} ターンを表示しています。'**
+  String fullHistoryUnavailable(int count);
+
+  /// No description provided for @fullHistoryLoading.
+  ///
+  /// In ja, this message translates to:
+  /// **'完全な履歴インデックスを読み込み中です。先に {count} ターンを表示しています。'**
+  String fullHistoryLoading(int count);
+
+  /// No description provided for @fullHistoryNotReady.
+  ///
+  /// In ja, this message translates to:
+  /// **'読み込み済みの {count} ターンを表示しています。完全な履歴インデックスはまだ準備中です。'**
+  String fullHistoryNotReady(int count);
+
+  /// No description provided for @downloading.
+  ///
+  /// In ja, this message translates to:
+  /// **'ダウンロード中…'**
+  String get downloading;
+
+  /// No description provided for @downloadAndKeepResident.
+  ///
+  /// In ja, this message translates to:
+  /// **'すべてダウンロードして保持'**
+  String get downloadAndKeepResident;
+
+  /// No description provided for @loadingOlderToolDetails.
+  ///
+  /// In ja, this message translates to:
+  /// **'以前のツール詳細を読み込んでいます…'**
+  String get loadingOlderToolDetails;
+
+  /// No description provided for @loadToolDetailsFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'詳細を読み込めませんでした。再試行'**
+  String get loadToolDetailsFailed;
+
+  /// No description provided for @loadNextToolDetails.
+  ///
+  /// In ja, this message translates to:
+  /// **'次の {count} 件のツール詳細を読み込む'**
+  String loadNextToolDetails(int count);
 }
 
 class _AppLocalizationsDelegate

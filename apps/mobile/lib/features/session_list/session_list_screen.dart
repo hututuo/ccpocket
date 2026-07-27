@@ -37,6 +37,7 @@ import '../file_browser/file_browser_screen.dart';
 import '../file_browser/file_mutation_authorization.dart';
 import '../file_transfer/file_drop_ingress.dart';
 import '../file_transfer/file_transfer_service.dart';
+import '../file_transfer/file_transfer_strings.dart';
 import '../session_archive/session_archive_cubit.dart';
 import '../session_archive/session_archive_pending_requests.dart';
 import '../session_archive/session_archive_screen.dart';
@@ -1129,7 +1130,7 @@ class _SessionListScreenState extends State<SessionListScreen>
           break;
         case FileTransferStatus.failed:
         case FileTransferStatus.cancelled:
-          _showHomeDropMessage(copy.failed(filename));
+          _showHomeDropMessage(copy.failedToSend(filename));
           break;
         case FileTransferStatus.preparing:
         case FileTransferStatus.queued:
@@ -2641,7 +2642,7 @@ class _SessionListScreenState extends State<SessionListScreen>
                     key: const ValueKey('new_session_fab'),
                     onPressed: _showNewSessionDialog,
                     icon: const Icon(Icons.add),
-                    label: const Text('New'),
+                    label: Text(l.newSession),
                   ),
                 ),
             ],
@@ -2684,7 +2685,7 @@ class _SessionListScreenState extends State<SessionListScreen>
                 key: const ValueKey('new_session_fab'),
                 onPressed: _showNewSessionDialog,
                 icon: const Icon(Icons.add),
-                label: const Text('New'),
+                label: Text(l.newSession),
               ),
             )
           : null,
@@ -3321,34 +3322,20 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 }
 
-class _HomeFileDropCopy {
-  const _HomeFileDropCopy(this.zh);
-
-  final bool zh;
-
+class _HomeFileDropCopy extends FileTransferStrings {
+  _HomeFileDropCopy(super.languageTag);
   factory _HomeFileDropCopy.of(BuildContext context) => _HomeFileDropCopy(
-    Localizations.localeOf(context).languageCode == 'zh',
+    Localizations.localeOf(context).toLanguageTag(),
   );
 
-  String get releaseToSend => zh ? '松开发送到电脑' : 'Release to send to Mac';
-  String get staging =>
-      zh ? '正在加入传输队列…' : 'Adding to the transfer queue…';
-  String get transportHint => zh
-      ? '文件将通过当前连接安全传输'
-      : 'The file will use the current secure connection';
-  String get unableToRead =>
-      zh ? '无法读取拖入的文件。' : 'The dropped file could not be read.';
-  String sent(String filename) =>
-      zh ? '$filename 已发送到电脑。' : '$filename was sent to the Mac.';
-  String paused(String filename) =>
-      zh ? '$filename 的传输已暂停。' : 'Transfer of $filename is paused.';
-  String failed(String filename) =>
-      zh ? '$filename 发送失败。' : '$filename could not be sent.';
+  String get staging => addingToTransferQueue;
+  String get transportHint => secureConnectionTransferHint;
+  String get unableToRead => droppedFileUnreadable;
+  String sent(String filename) => sentToMac(filename);
+  String paused(String filename) => transferPaused(filename);
+  String failedToSend(String filename) => sendFailed(filename);
   String failedWithError(String filename, Object error) =>
-      '${failed(filename)} $error';
-  String unableToQueue(String filename, Object error) => zh
-      ? '$filename 无法加入传输：$error'
-      : '$filename could not be added to transfer: $error';
+      '${failedToSend(filename)} $error';
 }
 
 class _SetupStep extends StatelessWidget {

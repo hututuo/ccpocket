@@ -8,6 +8,30 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('turn history uses the selected Japanese locale', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('ja'),
+        theme: AppTheme.lightTheme,
+        home: Scaffold(
+          body: UserMessageHistorySheet(
+            messages: const [],
+            onScrollToMessage: (_) async => true,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('ターン履歴'), findsOneWidget);
+    expect(find.text('ターンはまだありません'), findsOneWidget);
+    expect(
+      find.text('メッセージを送信すると、各ターンの先頭がここに表示されます'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets(
     'refreshes an already-open turn picker when the full index is ready',
     (tester) async {

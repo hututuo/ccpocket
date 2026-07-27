@@ -1478,5 +1478,53 @@
   "effortUltraDescription": "使用量を増やし、タスクを自動委任します",
   "scrollToBottom": "一番下へスクロール",
   "switchSession": "セッションを切り替え",
-  "terminalAppNameHint": "マイターミナル"
+  "terminalAppNameHint": "マイターミナル",
+  "historyToolDetailsPending": "以前のツール詳細 {count} 件はまだ読み込まれていません",
+  "@historyToolDetailsPending": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "loadOnDemand": "読み込む",
+  "viewFullDiff": "差分全体を表示",
+  "turnHistoryLoadFailed": "ターン履歴を読み込めませんでした",
+  "turnLoadFailed": "このターンを読み込めませんでした。もう一度お試しください。",
+  "turnHistoryTitle": "ターン履歴",
+  "turnCount": "{count} ターン",
+  "@turnCount": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "noTurnsYet": "ターンはまだありません",
+  "turnHistoryHint": "メッセージを送信すると、各ターンの先頭がここに表示されます",
+  "locatingTurn": "このターンを読み込んで移動しています…",
+  "fullHistoryUnavailable": "完全な履歴インデックスを利用できません。読み込み済みの {count} ターンを表示しています。",
+  "@fullHistoryUnavailable": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "fullHistoryLoading": "完全な履歴インデックスを読み込み中です。先に {count} ターンを表示しています。",
+  "@fullHistoryLoading": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "fullHistoryNotReady": "読み込み済みの {count} ターンを表示しています。完全な履歴インデックスはまだ準備中です。",
+  "@fullHistoryNotReady": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "downloading": "ダウンロード中…",
+  "downloadAndKeepResident": "すべてダウンロードして保持",
+  "loadingOlderToolDetails": "以前のツール詳細を読み込んでいます…",
+  "loadToolDetailsFailed": "詳細を読み込めませんでした。再試行",
+  "loadNextToolDetails": "次の {count} 件のツール詳細を読み込む",
+  "@loadNextToolDetails": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  }
 }

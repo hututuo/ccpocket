@@ -140,7 +140,7 @@ class HistoryToolDetailGapTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
     final color = Theme.of(context).colorScheme.tertiary;
     return Padding(
@@ -163,9 +163,7 @@ class HistoryToolDetailGapTile extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    zh
-                        ? '${gap.toolCallCount} 个较早工具详情尚未加载'
-                        : '${gap.toolCallCount} older tool details not loaded',
+                    l.historyToolDetailsPending(gap.toolCallCount),
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -174,7 +172,7 @@ class HistoryToolDetailGapTile extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  zh ? '按需加载' : 'Load',
+                  l.loadOnDemand,
                   style: TextStyle(fontSize: 11, color: appColors.subtleText),
                 ),
                 const SizedBox(width: 3),

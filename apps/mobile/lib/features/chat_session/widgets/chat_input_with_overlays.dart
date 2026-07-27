@@ -31,6 +31,7 @@ import '../../settings/state/settings_cubit.dart';
 import '../../file_browser/file_mutation_authorization.dart';
 import '../../file_transfer/file_drop_ingress.dart';
 import '../../file_transfer/file_transfer_service.dart';
+import '../../file_transfer/file_transfer_strings.dart';
 import '../../../services/draft_service.dart';
 import '../../prompt_history/widgets/prompt_history_sheet.dart';
 import '../../../widgets/slash_command_sheet.dart'
@@ -1346,35 +1347,19 @@ Widget _wrapWithDropRegion({
   );
 }
 
-class _ComposerFileDropCopy {
-  const _ComposerFileDropCopy(this.zh);
-
-  final bool zh;
-
+class _ComposerFileDropCopy extends FileTransferStrings {
+  _ComposerFileDropCopy(super.languageTag);
   factory _ComposerFileDropCopy.of(BuildContext context) =>
       _ComposerFileDropCopy(
-        Localizations.localeOf(context).languageCode == 'zh',
+        Localizations.localeOf(context).toLanguageTag(),
       );
 
-  String get releaseToAttach =>
-      zh ? '松手添加到对话' : 'Release to attach to this conversation';
-  String get unableToRead =>
-      zh ? '无法读取拖入的文件。' : 'The dropped file could not be read.';
-  String get waitForUploads => zh
-      ? '请等待文件上传完成后再发送。'
-      : 'Wait for file uploads to finish before sending.';
-  String sentWithoutPath(String filename) => zh
-      ? '$filename 已发送到电脑；更新 Bridge 后可直接附加到会话。'
-      : '$filename was sent to the Mac. Update Bridge to attach it here.';
-  String paused(String filename) =>
-      zh ? '$filename 的传输已暂停。' : 'Transfer of $filename is paused.';
-  String uploadFailed(String filename) =>
-      zh ? '$filename 上传失败。' : '$filename could not be uploaded.';
+  String get unableToRead => droppedFileUnreadable;
+  String sentWithoutPath(String filename) =>
+      sentWithoutDirectAttachment(filename);
+  String paused(String filename) => transferPaused(filename);
   String uploadFailedWithError(String filename, Object error) =>
       '${uploadFailed(filename)} $error';
-  String unableToQueue(String filename, Object error) => zh
-      ? '$filename 无法加入传输：$error'
-      : '$filename could not be added to transfer: $error';
 }
 
 Future<Uint8List> _readInlineDroppedImage(DroppedFilePayload payload) async {

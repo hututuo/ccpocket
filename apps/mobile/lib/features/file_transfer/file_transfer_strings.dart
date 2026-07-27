@@ -33,6 +33,90 @@ class FileTransferStrings {
     en: 'Upload to Mac',
   );
 
+  String get releaseToAttach => _pick(
+    zh: '松手添加到对话',
+    ja: 'ドロップしてこの会話に添付',
+    ko: '놓아서 이 대화에 첨부',
+    en: 'Release to attach to this conversation',
+  );
+
+  String get releaseToSend => _pick(
+    zh: '松开发送到电脑',
+    ja: 'ドロップして Mac に送信',
+    ko: '놓아서 Mac으로 보내기',
+    en: 'Release to send to Mac',
+  );
+
+  String get droppedFileUnreadable => _pick(
+    zh: '无法读取拖入的文件。',
+    ja: 'ドロップしたファイルを読み込めませんでした。',
+    ko: '드롭한 파일을 읽을 수 없습니다.',
+    en: 'The dropped file could not be read.',
+  );
+
+  String get waitForUploads => _pick(
+    zh: '请等待文件上传完成后再发送。',
+    ja: 'ファイルのアップロード完了後に送信してください。',
+    ko: '파일 업로드가 끝난 후 보내 주세요.',
+    en: 'Wait for file uploads to finish before sending.',
+  );
+
+  String get addingToTransferQueue => _pick(
+    zh: '正在加入传输队列…',
+    ja: '転送キューに追加しています…',
+    ko: '전송 대기열에 추가하는 중…',
+    en: 'Adding to the transfer queue…',
+  );
+
+  String get secureConnectionTransferHint => _pick(
+    zh: '文件将通过当前连接安全传输',
+    ja: 'ファイルは現在の接続で安全に転送されます',
+    ko: '파일은 현재 연결을 통해 안전하게 전송됩니다',
+    en: 'The file will use the current secure connection',
+  );
+
+  String sentWithoutDirectAttachment(String filename) => _pick(
+    zh: '$filename 已发送到电脑；更新 Bridge 后可直接附加到会话。',
+    ja: '$filename を Mac に送信しました。会話へ直接添付するには Bridge を更新してください。',
+    ko: '$filename 파일을 Mac으로 보냈습니다. 대화에 바로 첨부하려면 Bridge를 업데이트하세요.',
+    en: '$filename was sent to the Mac. Update Bridge to attach it here.',
+  );
+
+  String sentToMac(String filename) => _pick(
+    zh: '$filename 已发送到电脑。',
+    ja: '$filename を Mac に送信しました。',
+    ko: '$filename 파일을 Mac으로 보냈습니다.',
+    en: '$filename was sent to the Mac.',
+  );
+
+  String transferPaused(String filename) => _pick(
+    zh: '$filename 的传输已暂停。',
+    ja: '$filename の転送を一時停止しました。',
+    ko: '$filename 파일 전송이 일시 중지되었습니다.',
+    en: 'Transfer of $filename is paused.',
+  );
+
+  String uploadFailed(String filename) => _pick(
+    zh: '$filename 上传失败。',
+    ja: '$filename をアップロードできませんでした。',
+    ko: '$filename 파일을 업로드하지 못했습니다.',
+    en: '$filename could not be uploaded.',
+  );
+
+  String sendFailed(String filename) => _pick(
+    zh: '$filename 发送失败。',
+    ja: '$filename を送信できませんでした。',
+    ko: '$filename 파일을 보내지 못했습니다.',
+    en: '$filename could not be sent.',
+  );
+
+  String unableToQueue(String filename, Object error) => _pick(
+    zh: '$filename 无法加入传输：$error',
+    ja: '$filename を転送に追加できませんでした：$error',
+    ko: '$filename 파일을 전송에 추가하지 못했습니다: $error',
+    en: '$filename could not be added to transfer: $error',
+  );
+
   String get ready => _pick(
     zh: '已连接，可双向传输',
     ja: '接続済み、双方向に転送できます',

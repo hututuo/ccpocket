@@ -5,6 +5,15 @@ import 'package:flutter/widgets.dart';
 class SideChatStrings {
   const SideChatStrings({
     required this.title,
+    required this.temporarySession,
+    required this.end,
+    required this.auxiliaryTasks,
+    required this.collapse,
+    required this.sideChats,
+    required this.subagents,
+    required this.closeFailed,
+    required this.newTemporarySideChat,
+    required this.noLiveSideChats,
     required this.selectionAction,
     required this.isolationNotice,
     required this.placeholder,
@@ -29,6 +38,15 @@ class SideChatStrings {
   });
 
   final String title;
+  final String temporarySession;
+  final String end;
+  final String auxiliaryTasks;
+  final String collapse;
+  final String sideChats;
+  final String subagents;
+  final String closeFailed;
+  final String newTemporarySideChat;
+  final String noLiveSideChats;
   final String selectionAction;
   final String isolationNotice;
   final String placeholder;
@@ -76,6 +94,15 @@ class SideChatStrings {
 
   static const _en = SideChatStrings(
     title: 'Side chat',
+    temporarySession: 'Temporary side chat',
+    end: 'End',
+    auxiliaryTasks: 'Auxiliary tasks',
+    collapse: 'Collapse',
+    sideChats: 'Side chats',
+    subagents: 'Subagents',
+    closeFailed: 'Unable to close side chat',
+    newTemporarySideChat: 'New temporary side chat',
+    noLiveSideChats: 'No live side chats',
     selectionAction: 'Open in side chat',
     isolationNotice:
         'Side chats are not saved; closing or reconnecting starts with an empty transcript. File changes remain shared in the same worktree.',
@@ -103,6 +130,15 @@ class SideChatStrings {
 
   static const _zh = SideChatStrings(
     title: '侧边聊天',
+    temporarySession: '临时会话',
+    end: '结束',
+    auxiliaryTasks: '辅助任务',
+    collapse: '收起',
+    sideChats: '临时会话',
+    subagents: '子 Agent',
+    closeFailed: '临时会话关闭失败',
+    newTemporarySideChat: '新建官方临时会话',
+    noLiveSideChats: '暂无正在保留的临时会话',
     selectionAction: '在侧边聊天中打开',
     isolationNotice: '侧边聊天不会保存；关闭或重连后会从空记录开始。同一 worktree 中的文件改动仍会共享。',
     placeholder: '在侧边聊天中提问…',
@@ -128,6 +164,15 @@ class SideChatStrings {
 
   static const _ja = SideChatStrings(
     title: 'サイドチャット',
+    temporarySession: '一時サイドチャット',
+    end: '終了',
+    auxiliaryTasks: '補助タスク',
+    collapse: '折りたたむ',
+    sideChats: 'サイドチャット',
+    subagents: 'サブエージェント',
+    closeFailed: 'サイドチャットを終了できませんでした',
+    newTemporarySideChat: '新しい一時サイドチャット',
+    noLiveSideChats: '維持中のサイドチャットはありません',
     selectionAction: 'サイドチャットで開く',
     isolationNotice:
         'サイドチャットは保存されず、終了または再接続後は空の履歴から始まります。同じ worktree のファイル変更は共有されます。',
@@ -154,6 +199,15 @@ class SideChatStrings {
 
   static const _ko = SideChatStrings(
     title: '사이드 채팅',
+    temporarySession: '임시 사이드 채팅',
+    end: '종료',
+    auxiliaryTasks: '보조 작업',
+    collapse: '접기',
+    sideChats: '사이드 채팅',
+    subagents: '하위 에이전트',
+    closeFailed: '사이드 채팅을 종료하지 못했습니다',
+    newTemporarySideChat: '새 임시 사이드 채팅',
+    noLiveSideChats: '유지 중인 사이드 채팅이 없습니다',
     selectionAction: '사이드 채팅에서 열기',
     isolationNotice:
         '사이드 채팅은 저장되지 않으며 닫거나 다시 연결하면 빈 기록으로 시작합니다. 같은 worktree의 파일 변경은 계속 공유됩니다.',

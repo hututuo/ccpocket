@@ -3732,4 +3732,77 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get terminalAppNameHint => 'My Terminal';
+
+  @override
+  String historyToolDetailsPending(int count) {
+    return '$count older tool details not loaded';
+  }
+
+  @override
+  String get loadOnDemand => 'Load';
+
+  @override
+  String get viewFullDiff => 'View full diff';
+
+  @override
+  String get turnHistoryLoadFailed => 'Could not load turn history';
+
+  @override
+  String get turnLoadFailed => 'Could not load this turn. Please retry.';
+
+  @override
+  String get turnHistoryTitle => 'Turn history';
+
+  @override
+  String turnCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count turns',
+      one: '1 turn',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get noTurnsYet => 'No turns yet';
+
+  @override
+  String get turnHistoryHint =>
+      'Each turn start appears here after you send a message';
+
+  @override
+  String get locatingTurn => 'Loading and locating this turn…';
+
+  @override
+  String fullHistoryUnavailable(int count) {
+    return 'The full index is unavailable; showing $count loaded turns.';
+  }
+
+  @override
+  String fullHistoryLoading(int count) {
+    return 'Loading the full index; showing $count turns for now.';
+  }
+
+  @override
+  String fullHistoryNotReady(int count) {
+    return 'Showing $count loaded turns; the full index is not ready.';
+  }
+
+  @override
+  String get downloading => 'Downloading…';
+
+  @override
+  String get downloadAndKeepResident => 'Download & keep resident';
+
+  @override
+  String get loadingOlderToolDetails => 'Loading older tool details…';
+
+  @override
+  String get loadToolDetailsFailed => 'Could not load details. Retry';
+
+  @override
+  String loadNextToolDetails(int count) {
+    return 'Load the next $count tool details';
+  }
 }

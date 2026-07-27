@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../models/messages.dart';
 import '../../../../services/bridge_service.dart';
 import '../../subagents/widgets/subagents_panel.dart';
+import '../l10n/side_chat_strings.dart';
 import '../state/ephemeral_side_chat_registry_service.dart';
 
 typedef OpenAuxiliarySideChat =
@@ -474,7 +475,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
                 height: _handleSize,
                 child: Semantics(
                   button: true,
-                  label: _label(context, '辅助任务', 'Auxiliary tasks'),
+                  label: SideChatStrings.of(context).auxiliaryTasks,
                   child: Listener(
                     key: const ValueKey('auxiliary_floating_dock'),
                     behavior: HitTestBehavior.opaque,
@@ -591,14 +592,14 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
                       child: Text(
-                        _label(context, '辅助任务', 'Auxiliary tasks'),
+                        SideChatStrings.of(context).auxiliaryTasks,
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ),
                   ),
                   IconButton(
                     key: const ValueKey('auxiliary_floating_panel_collapse'),
-                    tooltip: _label(context, '收起', 'Collapse'),
+                    tooltip: SideChatStrings.of(context).collapse,
                     onPressed: onCollapse,
                     icon: const Icon(Icons.unfold_less),
                   ),
@@ -607,8 +608,8 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
             ),
             TabBar(
               tabs: [
-                Tab(text: _label(context, '临时会话', 'Side chats')),
-                Tab(text: _label(context, '子 Agent', 'Subagents')),
+                Tab(text: SideChatStrings.of(context).sideChats),
+                Tab(text: SideChatStrings.of(context).subagents),
               ],
             ),
             Expanded(
@@ -686,7 +687,7 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              _label(context, '临时会话关闭失败', 'Unable to close side chat'),
+              SideChatStrings.of(context).closeFailed,
             ),
           ),
         );
@@ -712,7 +713,7 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
                   : null,
               icon: const Icon(Icons.add_comment_outlined),
               label: Text(
-                _label(context, '新建官方临时会话', 'New temporary side chat'),
+                SideChatStrings.of(context).newTemporarySideChat,
               ),
             ),
           ),
@@ -721,7 +722,7 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
           child: entries.isEmpty
               ? Center(
                   child: Text(
-                    _label(context, '暂无正在保留的临时会话', 'No live side chats'),
+                    SideChatStrings.of(context).noLiveSideChats,
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
@@ -762,7 +763,7 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
                                   ).colorScheme.onSurfaceVariant,
                           ),
                           title: Text(
-                            _label(context, '临时会话', 'Temporary side chat'),
+                            SideChatStrings.of(context).temporarySession,
                           ),
                           subtitle: Text(
                             '${entry.status} · ${_shortProject(entry.projectPath)}',
@@ -774,7 +775,7 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
                               : () =>
                                     widget.onOpen(entry.parentSessionId, entry),
                           trailing: IconButton(
-                            tooltip: _label(context, '结束', 'End'),
+                            tooltip: SideChatStrings.of(context).end,
                             onPressed: closing ? null : () => _close(entry),
                             icon: closing
                                 ? const SizedBox.square(
@@ -801,6 +802,3 @@ String _shortProject(String path) {
   final pieces = normalized.split('/').where((piece) => piece.isNotEmpty);
   return pieces.isEmpty ? path : pieces.last;
 }
-
-String _label(BuildContext context, String zh, String en) =>
-    Localizations.localeOf(context).languageCode == 'zh' ? zh : en;
