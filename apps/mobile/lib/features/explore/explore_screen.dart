@@ -123,11 +123,20 @@ class _ExploreScreenBodyState extends State<_ExploreScreenBody> {
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted) return;
     }
+    final previewService = projectFilePreviewServiceOrNull(context);
     await showFilePeekSheet(
       context,
       bridge: context.read<BridgeService>(),
       projectPath: widget.projectPath,
       filePath: filePath,
+      onOpenPreviewRequested: previewService == null
+          ? null
+          : () => openProjectFilePreview(
+              context,
+              service: previewService,
+              projectPath: widget.projectPath,
+              filePath: filePath,
+            ),
       onOpened: () {
         cubit.recordPeekedFile(filePath);
         _notifyResultChanged(cubit);

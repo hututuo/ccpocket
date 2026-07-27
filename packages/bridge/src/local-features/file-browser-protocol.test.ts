@@ -5,6 +5,7 @@ import {
   FILE_BROWSER_MAX_PAGE_SIZE,
   FILE_BROWSER_MAX_RELATIVE_PATH_LENGTH,
   FILE_BROWSER_MAX_STAT_ITEMS,
+  FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY,
   isLocalFeatureServerMessageType,
   parseLocalFeatureClientMessage,
   validFileBrowserRelativePath,
@@ -211,6 +212,37 @@ describe("file browser protocol slot", () => {
     }
   });
 
+  it("strictly parses project-relative preview requests", () => {
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "file_browser_project_preview_v1",
+        requestId: "project-preview-1",
+        projectPath: "/Users/alice/project",
+        filePath: "build/report.html",
+      }),
+    ).toEqual({
+      type: "file_browser_project_preview_v1",
+      requestId: "project-preview-1",
+      projectPath: "/Users/alice/project",
+      filePath: "build/report.html",
+    });
+
+    const request = (overrides: Record<string, unknown>) =>
+      parseLocalFeatureClientMessage({
+        type: "file_browser_project_preview_v1",
+        requestId: "project-preview-2",
+        projectPath: "/Users/alice/project",
+        filePath: "build/report.html",
+        ...overrides,
+      });
+    expect(request({ projectPath: "" })).toBeNull();
+    expect(request({ projectPath: "x".repeat(4097) })).toBeNull();
+    expect(request({ filePath: "" })).toBeNull();
+    expect(request({ filePath: "../secret.txt" })).toBeNull();
+    expect(request({ filePath: "/etc/passwd" })).toBeNull();
+    expect(request({ absolutePath: "/tmp/forged" })).toBeNull();
+  });
+
   it("strictly parses bounded mutation authorization requests", () => {
     const operation = {
       kind: "upload",
@@ -264,6 +296,9 @@ describe("file browser protocol slot", () => {
 
   it("registers the read-only and mutation-authorization result capabilities", () => {
     expect(FILE_BROWSER_CAPABILITY).toBe("file_browser_v1");
+    expect(FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY).toBe(
+      "file_browser_project_preview_v1",
+    );
     for (const type of [
       "file_browser_roots_result_v1",
       "file_browser_list_result_v1",

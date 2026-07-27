@@ -47,6 +47,7 @@ const ROOTS_REQUEST = "file_browser_roots_v1";
 const LIST_REQUEST = "file_browser_list_v1";
 const STAT_REQUEST = "file_browser_stat_v1";
 const PREVIEW_REQUEST = "file_browser_preview_v1";
+const PROJECT_PREVIEW_REQUEST = "file_browser_project_preview_v1";
 const DOWNLOAD_REQUEST = "file_browser_download_v1";
 const AUTH_STATE_REQUEST = "file_mutation_auth_state_v1";
 const AUTH_CHALLENGE_REQUEST = "file_mutation_auth_challenge_v1";
@@ -341,6 +342,8 @@ export class FileBrowserManager {
         return this.statResult(message, signal);
       case PREVIEW_REQUEST:
         return this.previewResult(message, signal);
+      case PROJECT_PREVIEW_REQUEST:
+        return this.projectPreviewResult(message, signal);
       case DOWNLOAD_REQUEST:
         return this.downloadResult(client, message, signal);
       case AUTH_STATE_REQUEST:
@@ -639,6 +642,118 @@ export class FileBrowserManager {
       success: true,
       rootId: root.rootId,
       relativePath: normalizedPath,
+      relativeUrl: issued.relativeUrl,
+      filename: issued.filename,
+      mimeType: issued.mimeType,
+      sizeBytes: issued.sizeBytes,
+      previewKind: previewKindForFile(issued.filename, issued.mimeType),
+      expiresAt: issued.expiresAt,
+    };
+  }
+
+  private async projectPreviewResult(
+    message: Extract<
+      FileBrowserClientMessage,
+      { type: typeof PROJECT_PREVIEW_REQUEST }
+    >,
+    signal: AbortSignal,
+  ): Promise<FileBrowserServerMessage> {
+    if (!this.artifactStore) {
+      throw new FileBrowserError(
+        "preview_unavailable",
+        "File preview is not available on this Bridge",
+      );
+    }
+    const normalizedFilePath = normalizeRelativePath(message.filePath);
+    if (
+      normalizedFilePath.length === 0 ||
+      !isAbsolute(message.projectPath)
+    ) {
+      throw new FileBrowserError(
+        "invalid_path",
+        "An absolute project path and relative file path are required",
+      );
+    }
+
+    let canonicalProjectPath: string;
+    try {
+      canonicalProjectPath = await realpath(resolve(message.projectPath));
+      throwIfAborted(signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new FileBrowserError(
+        "path_not_allowed",
+        "The project path is unavailable",
+      );
+    }
+
+    const snapshot = await this.rootsPromise;
+    throwIfAborted(signal);
+    const root = snapshot.roots
+      .filter((candidate) =>
+        isWithinRoot(candidate.canonicalPath, canonicalProjectPath),
+      )
+      .sort(
+        (left, right) =>
+          right.canonicalPath.length - left.canonicalPath.length,
+      )[0];
+    if (!root) {
+      throw new FileBrowserError(
+        "path_not_allowed",
+        "The project is outside the configured file roots",
+      );
+    }
+
+    const projectRelativePath = canonicalRelativeWithinRoot(
+      root.canonicalPath,
+      canonicalProjectPath,
+    );
+    const rootRelativePath =
+      projectRelativePath.length === 0
+        ? normalizedFilePath
+        : joinRelativePath(projectRelativePath, normalizedFilePath);
+    const resolved = await this.requireRegularFile(
+      root,
+      rootRelativePath,
+      signal,
+    );
+    if (
+      resolved.canonicalPath === undefined ||
+      !isWithinRoot(canonicalProjectPath, resolved.canonicalPath)
+    ) {
+      throw new FileBrowserError(
+        "path_not_allowed",
+        "The file is outside the requested project",
+      );
+    }
+
+    const stats = resolved.targetStats ?? resolved.sourceStats;
+    if (stats.size > FILE_BROWSER_PREVIEW_MAX_BYTES) {
+      throw new FileBrowserError(
+        "preview_too_large",
+        "The file exceeds the 2 GiB preview limit",
+      );
+    }
+    const filename = displayNameFor(root, rootRelativePath);
+    let issued: IssuedArtifact;
+    try {
+      issued = await this.artifactStore.issue(resolved.canonicalPath, {
+        projectPath: root.canonicalPath,
+        expectedIdentity: artifactIdentity(stats),
+        filename,
+        ttlSeconds: PREVIEW_TTL_SECONDS,
+      });
+      throwIfAborted(signal);
+    } catch (error) {
+      throw translateCapabilityError(error, "preview_failed");
+    }
+
+    return {
+      type: "file_browser_preview_result_v1",
+      requestId: message.requestId,
+      success: true,
+      rootId: root.rootId,
+      relativePath: rootRelativePath,
       relativeUrl: issued.relativeUrl,
       filename: issued.filename,
       mimeType: issued.mimeType,
@@ -1521,6 +1636,8 @@ function resultTypeFor(
     case STAT_REQUEST:
       return "file_browser_stat_result_v1";
     case PREVIEW_REQUEST:
+      return "file_browser_preview_result_v1";
+    case PROJECT_PREVIEW_REQUEST:
       return "file_browser_preview_result_v1";
     case DOWNLOAD_REQUEST:
       return "file_browser_download_result_v1";

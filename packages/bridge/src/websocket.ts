@@ -171,6 +171,7 @@ import {
   CONVERSATION_CONTENT_EVENT_CAPABILITY,
   EPHEMERAL_SIDE_CHAT_CAPABILITY,
   FILE_BROWSER_CAPABILITY,
+  FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY,
   isLocalFeatureServerMessageType,
 } from "./local-features/protocol.js";
 import type { FileTransferManager } from "./file-transfer-manager.js";
@@ -10148,6 +10149,9 @@ export class BridgeWebSocketServer {
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
+        ...(this.fileBrowser
+          ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY]
+          : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
@@ -10216,6 +10220,9 @@ export class BridgeWebSocketServer {
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
+        ...(this.fileBrowser
+          ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY]
+          : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]

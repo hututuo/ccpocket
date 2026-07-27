@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:provider/provider.dart' as provider;
 
 import '../../l10n/app_localizations.dart';
 import '../../models/messages.dart';
@@ -19,7 +20,74 @@ import '../../theme/markdown_style.dart'
         markdownBuilders;
 import '../../widgets/bubbles/image_preview.dart';
 import '../../widgets/workspace_pane_chrome.dart';
+import '../artifact_preview/artifact_preview_entry.dart';
+import '../file_browser/file_browser_service.dart';
 import '../file_browser/file_browser_strings.dart';
+
+FileBrowserService? projectFilePreviewServiceOrNull(BuildContext context) {
+  if (!supportsEmbeddedArtifactPreview()) return null;
+  try {
+    final service = provider.Provider.of<FileBrowserService>(
+      context,
+      listen: false,
+    );
+    return service.projectPreviewSupportedByBridge ? service : null;
+  } on provider.ProviderNotFoundException {
+    return null;
+  }
+}
+
+Future<void> openProjectFilePreview(
+  BuildContext context, {
+  required FileBrowserService service,
+  required String projectPath,
+  required String filePath,
+}) async {
+  final connectionGeneration = service.connectionGeneration;
+  try {
+    final preview = await service.previewProjectFile(
+      projectPath: projectPath,
+      filePath: filePath,
+    );
+    if (!context.mounted ||
+        service.connectionGeneration != connectionGeneration ||
+        !service.projectPreviewSupportedByBridge) {
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ArtifactPreviewScreen(
+          previewUrl: preview.previewUri,
+          filename: preview.filename,
+          mimeType: preview.mimeType,
+          sizeBytes: preview.sizeBytes,
+          expiresAt: preview.expiresAt,
+          accessRefresher: () async {
+            if (service.connectionGeneration != connectionGeneration ||
+                !service.projectPreviewSupportedByBridge) {
+              throw const FileBrowserException('bridge_scope_changed');
+            }
+            final refreshed = await service.previewProjectFile(
+              projectPath: projectPath,
+              filePath: filePath,
+            );
+            return ArtifactPreviewAccess(
+              previewUrl: refreshed.previewUri,
+              expiresAt: refreshed.expiresAt,
+            );
+          },
+        ),
+      ),
+    );
+  } on FileBrowserException {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(FileBrowserStrings.of(context).previewUnavailable),
+      ),
+    );
+  }
+}
 
 /// Resolves a potentially partial file path against the project's file list,
 /// then shows the file peek sheet.
@@ -35,37 +103,38 @@ Future<void> openFilePeek(
   ValueChanged<String>? onResolvedFilePath,
 }) async {
   final resolved = _resolveFilePath(filePath, projectFiles);
+  final previewService = projectFilePreviewServiceOrNull(context);
+
+  Future<void> showResolvedFile(String resolvedPath) => showFilePeekSheet(
+    context,
+    bridge: bridge,
+    projectPath: projectPath,
+    filePath: resolvedPath,
+    onOpenPreviewRequested: previewService == null
+        ? null
+        : () => openProjectFilePreview(
+            context,
+            service: previewService,
+            projectPath: projectPath,
+            filePath: resolvedPath,
+          ),
+  );
 
   switch (resolved.length) {
     case 1:
       // Single match — open directly.
       onResolvedFilePath?.call(resolved.first);
-      return showFilePeekSheet(
-        context,
-        bridge: bridge,
-        projectPath: projectPath,
-        filePath: resolved.first,
-      );
+      return showResolvedFile(resolved.first);
     case 0:
       // No match — try the original path as-is (Bridge may still find it).
       onResolvedFilePath?.call(filePath);
-      return showFilePeekSheet(
-        context,
-        bridge: bridge,
-        projectPath: projectPath,
-        filePath: filePath,
-      );
+      return showResolvedFile(filePath);
     default:
       // Multiple matches — let the user pick.
       final picked = await _showFilePickerSheet(context, filePath, resolved);
       if (picked != null && context.mounted) {
         onResolvedFilePath?.call(picked);
-        return showFilePeekSheet(
-          context,
-          bridge: bridge,
-          projectPath: projectPath,
-          filePath: picked,
-        );
+        return showResolvedFile(picked);
       }
   }
 }
@@ -641,7 +710,9 @@ class _FilePeekContentState extends State<_FilePeekContent> {
                   TextSpan(
                     text: '${' ${i + 1}'.padLeft(gutterWidth + 1)}  ',
                     style: i + 1 == targetLine
-                        ? gutterStyle.copyWith(backgroundColor: targetBackground)
+                        ? gutterStyle.copyWith(
+                            backgroundColor: targetBackground,
+                          )
                         : gutterStyle,
                   ),
                   if (i + 1 == targetLine)
@@ -712,11 +783,7 @@ Future<FileContentMessage> readFilePeekContent({
   String? artifactId,
   int? maxLines,
 }) {
-  final artifactIdentity = [
-    artifactSessionId,
-    artifactMessageId,
-    artifactId,
-  ];
+  final artifactIdentity = [artifactSessionId, artifactMessageId, artifactId];
   final hasAnyArtifactIdentity = artifactIdentity.any((value) => value != null);
   final hasCompleteArtifactIdentity = artifactIdentity.every(
     (value) => value?.trim().isNotEmpty == true,

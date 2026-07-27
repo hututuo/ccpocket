@@ -80,6 +80,10 @@ void main() {
   group('file_browser_v1 capability and requests', () {
     test('freezes additive capability and server message surface', () {
       expect(fileBrowserCapability, 'file_browser_v1');
+      expect(
+        fileBrowserProjectPreviewCapability,
+        'file_browser_project_preview_v1',
+      );
       expect(fileMutationAuthCapability, 'file_mutation_auth_v1');
       expect(fileTransferUploadAuthCapability, 'file_transfer_upload_auth_v1');
       expect(fileBrowserOwnerSessionId, '__file_browser__');
@@ -252,6 +256,21 @@ void main() {
       );
       expect(
         _json(
+          requestFileBrowserProjectPreview(
+            requestId: 'project-preview-1',
+            projectPath: '/Users/alice/project',
+            filePath: 'build/report.html',
+          ),
+        ),
+        {
+          'type': 'file_browser_project_preview_v1',
+          'requestId': 'project-preview-1',
+          'projectPath': '/Users/alice/project',
+          'filePath': 'build/report.html',
+        },
+      );
+      expect(
+        _json(
           requestFileBrowserDownload(
             requestId: 'download-1',
             rootId: 'home',
@@ -295,6 +314,22 @@ void main() {
           requestId: 'preview-1',
           rootId: 'home',
           relativePath: '',
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => requestFileBrowserProjectPreview(
+          requestId: 'project-preview-1',
+          projectPath: '',
+          filePath: 'report.html',
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => requestFileBrowserProjectPreview(
+          requestId: 'project-preview-1',
+          projectPath: '/Users/alice/project',
+          filePath: '../report.html',
         ),
         throwsArgumentError,
       );
@@ -750,6 +785,13 @@ void main() {
         relativePath: 'Documents/report.pdf',
       ),
     )!;
+    final projectRequest = LocalFeatureProtocolHost.describeRequest(
+      requestFileBrowserProjectPreview(
+        requestId: 'preview-1',
+        projectPath: '/Users/alice/project',
+        filePath: 'Documents/report.pdf',
+      ),
+    )!;
     final response = ServerMessage.fromJson(const {
       'type': 'file_browser_preview_result_v1',
       'requestId': 'preview-1',
@@ -769,6 +811,13 @@ void main() {
 
     expect(
       LocalFeatureProtocolHost.matchesTerminalResponse(request, response),
+      isTrue,
+    );
+    expect(
+      LocalFeatureProtocolHost.matchesTerminalResponse(
+        projectRequest,
+        response,
+      ),
       isTrue,
     );
     expect(

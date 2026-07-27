@@ -81,6 +81,9 @@ class BridgeServiceFileBrowserGateway implements FileBrowserBridgeGateway {
           uploadAuth: _bridge.bridgeCapabilities.contains(
             fileTransferUploadAuthCapability,
           ),
+          projectPreview: _bridge.bridgeCapabilities.contains(
+            fileBrowserProjectPreviewCapability,
+          ),
         ),
       )
       .distinct()
@@ -205,8 +208,9 @@ class FileBrowserService extends ChangeNotifier {
   factory FileBrowserService({
     required FileBrowserBridgeGateway bridge,
     required SharedPreferences preferences,
-    FileMutationBiometricHost biometricHost =
-        const FileMutationBiometricHost(supportedByInstalledHost: false),
+    FileMutationBiometricHost biometricHost = const FileMutationBiometricHost(
+      supportedByInstalledHost: false,
+    ),
     bool fileTransferClientSupported = true,
     DateTime Function()? clock,
     String Function()? requestIdGenerator,
@@ -293,6 +297,8 @@ class FileBrowserService extends ChangeNotifier {
       _bridge.capabilities.contains(fileMutationAuthCapability);
   bool get uploadMutationAuthRequired =>
       _bridge.capabilities.contains(fileTransferUploadAuthCapability);
+  bool get projectPreviewSupportedByBridge =>
+      _bridge.capabilities.contains(fileBrowserProjectPreviewCapability);
   FileMutationBiometricHost get biometricHost => _biometricHost;
   List<FileBrowserRoot> get roots => List.unmodifiable(_roots);
   String? get bridgeInstanceId => _bridgeInstanceId;
@@ -309,6 +315,7 @@ class FileBrowserService extends ChangeNotifier {
   String? get lastErrorCode => _lastErrorCode;
   String? get lastError => _lastError;
   int get scopeRevision => _scopeRevision;
+  int get connectionGeneration => _connectionGeneration;
   @visibleForTesting
   int get cachedDirectoryNodeCount => _directoryCacheNodeCount;
 
@@ -593,6 +600,41 @@ class FileBrowserService extends ChangeNotifier {
         rootId: rootId,
         relativePath: node.relativePath,
         nodeRevision: node.nodeRevision,
+      ),
+      matches: (message) => message is FileBrowserPreviewResultMessage,
+    );
+    final previewUri = resolveFileBrowserPreviewUri(
+      _bridge.httpBaseUrl,
+      result.relativeUrl!,
+    );
+    return FileBrowserPreview(
+      rootId: result.rootId!,
+      relativePath: result.relativePath!,
+      previewUri: previewUri,
+      filename: result.filename!,
+      mimeType: result.mimeType!,
+      sizeBytes: result.sizeBytes!,
+      previewKind: result.previewKind!,
+      expiresAt: result.expiresAt!,
+    );
+  }
+
+  Future<FileBrowserPreview> previewProjectFile({
+    required String projectPath,
+    required String filePath,
+  }) async {
+    _requireAvailableForRequest();
+    if (!projectPreviewSupportedByBridge) {
+      throw const FileBrowserException('project_preview_unsupported');
+    }
+    final requestId = _requestIdGenerator();
+    final result = await _request<FileBrowserPreviewResultMessage>(
+      requestId: requestId,
+      requestType: 'file_browser_project_preview_v1',
+      message: requestFileBrowserProjectPreview(
+        requestId: requestId,
+        projectPath: projectPath,
+        filePath: filePath,
       ),
       matches: (message) => message is FileBrowserPreviewResultMessage,
     );

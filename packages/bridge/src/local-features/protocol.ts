@@ -134,6 +134,7 @@ export {
   FILE_BROWSER_MAX_RELATIVE_PATH_LENGTH,
   FILE_BROWSER_MAX_ROOTS,
   FILE_BROWSER_MAX_STAT_ITEMS,
+  FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY,
   validFileBrowserRelativePath,
 } from "./slots/file-browser-protocol.js";
 export type {
@@ -149,6 +150,7 @@ export type {
   FileBrowserNode,
   FileBrowserNodeKind,
   FileBrowserPreviewRequest,
+  FileBrowserProjectPreviewRequest,
   FileBrowserPreviewResult,
   FileBrowserPreviewSuccessResult,
   FileBrowserRoot,

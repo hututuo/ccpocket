@@ -9,6 +9,8 @@ import {
 } from "../../file-mutation-auth.js";
 
 export const FILE_BROWSER_CAPABILITY = "file_browser_v1";
+export const FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY =
+  "file_browser_project_preview_v1";
 
 export const FILE_BROWSER_DEFAULT_PAGE_SIZE = 100;
 export const FILE_BROWSER_MAX_PAGE_SIZE = 200;
@@ -18,6 +20,7 @@ export const FILE_BROWSER_MAX_RELATIVE_PATH_LENGTH = 4096;
 
 const MAX_REQUEST_ID_LENGTH = 128;
 const MAX_ROOT_ID_LENGTH = 128;
+const MAX_PROJECT_PATH_LENGTH = 4096;
 const MAX_CURSOR_LENGTH = 2048;
 const MAX_NODE_REVISION_LENGTH = 256;
 const MAX_DEVICE_ID_LENGTH = 128;
@@ -101,6 +104,15 @@ export interface FileBrowserPreviewRequest {
   nodeRevision?: string;
 }
 
+export interface FileBrowserProjectPreviewRequest {
+  type: "file_browser_project_preview_v1";
+  requestId: string;
+  /** Existing project/worktree root on the Bridge host. */
+  projectPath: string;
+  /** Canonical slash-separated path relative to projectPath. */
+  filePath: string;
+}
+
 export interface FileBrowserDownloadRequest {
   type: "file_browser_download_v1";
   requestId: string;
@@ -135,6 +147,7 @@ export type FileBrowserClientMessage =
   | FileBrowserListRequest
   | FileBrowserStatRequest
   | FileBrowserPreviewRequest
+  | FileBrowserProjectPreviewRequest
   | FileBrowserDownloadRequest
   | FileMutationAuthStateRequest
   | FileMutationAuthChallengeRequest
@@ -264,6 +277,7 @@ const CLIENT_TYPES = [
   "file_browser_list_v1",
   "file_browser_stat_v1",
   "file_browser_preview_v1",
+  "file_browser_project_preview_v1",
   "file_browser_download_v1",
   "file_mutation_auth_state_v1",
   "file_mutation_auth_challenge_v1",
@@ -421,6 +435,29 @@ export const fileBrowserProtocolContribution: LocalFeatureProtocolContribution<
           ...(typeof message.nodeRevision === "string"
             ? { nodeRevision: message.nodeRevision }
             : {}),
+        };
+      case "file_browser_project_preview_v1":
+        if (
+          !hasOnlyLocalFeatureKeys(message, [
+            "type",
+            "requestId",
+            "projectPath",
+            "filePath",
+          ]) ||
+          typeof message.projectPath !== "string" ||
+          message.projectPath.length === 0 ||
+          message.projectPath.length > MAX_PROJECT_PATH_LENGTH ||
+          message.projectPath.includes("\0") ||
+          !validFileBrowserRelativePath(message.filePath) ||
+          message.filePath.length === 0
+        ) {
+          return null;
+        }
+        return {
+          type: message.type,
+          requestId,
+          projectPath: message.projectPath,
+          filePath: message.filePath,
         };
       case "file_mutation_auth_state_v1":
         if (

@@ -56,9 +56,60 @@ void main() {
           ),
         ),
       );
-
       expect(bridge.sent, isEmpty);
       expect(service.availability, FileBrowserAvailability.unsupported);
+    },
+  );
+
+  test(
+    'project preview is separately capability-gated and does not require a roots bootstrap',
+    () async {
+      await expectLater(
+        service.previewProjectFile(
+          projectPath: '/Users/alice/project',
+          filePath: 'build/report.html',
+        ),
+        throwsA(
+          isA<FileBrowserException>().having(
+            (error) => error.code,
+            'code',
+            'project_preview_unsupported',
+          ),
+        ),
+      );
+      expect(bridge.sent, isEmpty);
+
+      bridge.capabilities = const <String>{
+        fileBrowserCapability,
+        fileBrowserProjectPreviewCapability,
+      };
+      final previewFuture = service.previewProjectFile(
+        projectPath: '/Users/alice/project',
+        filePath: 'build/report.html',
+      );
+      final request = bridge.takeRequest('file_browser_project_preview_v1');
+      expect(request, containsPair('projectPath', '/Users/alice/project'));
+      expect(request, containsPair('filePath', 'build/report.html'));
+      bridge.messageEvents.add(
+        FileBrowserPreviewResultMessage(
+          requestId: request['requestId'] as String,
+          success: true,
+          rootId: 'root-one',
+          relativePath: 'Users/alice/project/build/report.html',
+          relativeUrl: '/artifacts/project-preview',
+          filename: 'report.html',
+          mimeType: 'text/html; charset=utf-8',
+          sizeBytes: 2048,
+          previewKind: 'html',
+          expiresAt: '2030-01-01T00:00:00.000Z',
+        ),
+      );
+      final preview = await previewFuture;
+      expect(
+        preview.previewUri,
+        Uri.parse('http://100.64.0.1:8765/artifacts/project-preview'),
+      );
+      expect(preview.previewKind, 'html');
     },
   );
 
@@ -206,70 +257,73 @@ void main() {
     },
   );
 
-  test('correlates mutation state, challenge, and enrollment requests', () async {
-    bridge.capabilities = const <String>{
-      fileBrowserCapability,
-      fileMutationAuthCapability,
-      fileTransferUploadAuthCapability,
-    };
-    expect(service.mutationAuthSupportedByBridge, isTrue);
-    expect(service.uploadMutationAuthRequired, isTrue);
+  test(
+    'correlates mutation state, challenge, and enrollment requests',
+    () async {
+      bridge.capabilities = const <String>{
+        fileBrowserCapability,
+        fileMutationAuthCapability,
+        fileTransferUploadAuthCapability,
+      };
+      expect(service.mutationAuthSupportedByBridge, isTrue);
+      expect(service.uploadMutationAuthRequired, isTrue);
 
-    final stateFuture = service.mutationAuthState(deviceId: 'ios:device-1');
-    final stateRequest = bridge.takeRequest('file_mutation_auth_state_v1');
-    bridge.messageEvents.add(
-      FileMutationAuthResultMessage(
-        requestId: stateRequest['requestId'] as String,
-        success: true,
-        event: FileMutationAuthEvent.state,
-        passwordConfigured: true,
-        biometricEnrolled: true,
-      ),
-    );
-    expect((await stateFuture).biometricEnrolled, isTrue);
+      final stateFuture = service.mutationAuthState(deviceId: 'ios:device-1');
+      final stateRequest = bridge.takeRequest('file_mutation_auth_state_v1');
+      bridge.messageEvents.add(
+        FileMutationAuthResultMessage(
+          requestId: stateRequest['requestId'] as String,
+          success: true,
+          event: FileMutationAuthEvent.state,
+          passwordConfigured: true,
+          biometricEnrolled: true,
+        ),
+      );
+      expect((await stateFuture).biometricEnrolled, isTrue);
 
-    const operation = FileMutationOperation.upload(
-      transferId: '123e4567-e89b-12d3-a456-426614174000',
-      filename: 'report.pdf',
-      sizeBytes: 1024,
-    );
-    final challengeFuture = service.mutationAuthChallenge(
-      deviceId: 'ios:device-1',
-      operation: operation,
-    );
-    final challengeRequest = bridge.takeRequest(
-      'file_mutation_auth_challenge_v1',
-    );
-    expect(challengeRequest['operation'], operation.toJson());
-    bridge.messageEvents.add(
-      FileMutationAuthResultMessage(
-        requestId: challengeRequest['requestId'] as String,
-        success: true,
-        event: FileMutationAuthEvent.challenge,
-        challengeId: '1234567890abcdef',
-        payload: '{"version":1}',
-        expiresAt: '2030-01-01T00:00:30.000Z',
-      ),
-    );
-    expect((await challengeFuture).challengeId, '1234567890abcdef');
+      const operation = FileMutationOperation.upload(
+        transferId: '123e4567-e89b-12d3-a456-426614174000',
+        filename: 'report.pdf',
+        sizeBytes: 1024,
+      );
+      final challengeFuture = service.mutationAuthChallenge(
+        deviceId: 'ios:device-1',
+        operation: operation,
+      );
+      final challengeRequest = bridge.takeRequest(
+        'file_mutation_auth_challenge_v1',
+      );
+      expect(challengeRequest['operation'], operation.toJson());
+      bridge.messageEvents.add(
+        FileMutationAuthResultMessage(
+          requestId: challengeRequest['requestId'] as String,
+          success: true,
+          event: FileMutationAuthEvent.challenge,
+          challengeId: '1234567890abcdef',
+          payload: '{"version":1}',
+          expiresAt: '2030-01-01T00:00:30.000Z',
+        ),
+      );
+      expect((await challengeFuture).challengeId, '1234567890abcdef');
 
-    final enrollFuture = service.enrollMutationBiometrics(
-      deviceId: 'ios:device-1',
-      publicKey: List.filled(87, 'A').join(),
-      password: _testPassword,
-    );
-    final enrollRequest = bridge.takeRequest('file_mutation_auth_enroll_v1');
-    bridge.messageEvents.add(
-      FileMutationAuthResultMessage(
-        requestId: enrollRequest['requestId'] as String,
-        success: true,
-        event: FileMutationAuthEvent.enrolled,
-        passwordConfigured: true,
-        biometricEnrolled: true,
-      ),
-    );
-    expect((await enrollFuture).event, FileMutationAuthEvent.enrolled);
-  });
+      final enrollFuture = service.enrollMutationBiometrics(
+        deviceId: 'ios:device-1',
+        publicKey: List.filled(87, 'A').join(),
+        password: _testPassword,
+      );
+      final enrollRequest = bridge.takeRequest('file_mutation_auth_enroll_v1');
+      bridge.messageEvents.add(
+        FileMutationAuthResultMessage(
+          requestId: enrollRequest['requestId'] as String,
+          success: true,
+          event: FileMutationAuthEvent.enrolled,
+          passwordConfigured: true,
+          biometricEnrolled: true,
+        ),
+      );
+      expect((await enrollFuture).event, FileMutationAuthEvent.enrolled);
+    },
+  );
 
   test(
     'unsupported iPhone build blocks file-browser download before request',

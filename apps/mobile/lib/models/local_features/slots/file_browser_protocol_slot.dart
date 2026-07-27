@@ -1,9 +1,10 @@
 part of '../../messages.dart';
 
 const String fileBrowserCapability = 'file_browser_v1';
+const String fileBrowserProjectPreviewCapability =
+    'file_browser_project_preview_v1';
 const String fileMutationAuthCapability = 'file_mutation_auth_v1';
-const String fileTransferUploadAuthCapability =
-    'file_transfer_upload_auth_v1';
+const String fileTransferUploadAuthCapability = 'file_transfer_upload_auth_v1';
 const String fileBrowserFeatureId = 'file_browser';
 const String fileBrowserOwnerSessionId = '__file_browser__';
 
@@ -46,6 +47,7 @@ class _FileBrowserProtocolSlot
     'file_browser_list_v1',
     'file_browser_stat_v1',
     'file_browser_preview_v1',
+    'file_browser_project_preview_v1',
     'file_browser_download_v1',
     'file_mutation_auth_state_v1',
     'file_mutation_auth_challenge_v1',
@@ -80,8 +82,9 @@ class _FileBrowserProtocolSlot
       FileBrowserPreviewResultMessage.fromJson(json),
     'file_browser_download_result_v1' =>
       FileBrowserDownloadResultMessage.fromJson(json),
-    'file_mutation_auth_result_v1' =>
-      FileMutationAuthResultMessage.fromJson(json),
+    'file_mutation_auth_result_v1' => FileMutationAuthResultMessage.fromJson(
+      json,
+    ),
     _ => null,
   };
 
@@ -119,6 +122,8 @@ class _FileBrowserProtocolSlot
       'file_browser_list_v1' => response is FileBrowserListResultMessage,
       'file_browser_stat_v1' => response is FileBrowserStatResultMessage,
       'file_browser_preview_v1' => response is FileBrowserPreviewResultMessage,
+      'file_browser_project_preview_v1' =>
+        response is FileBrowserPreviewResultMessage,
       'file_browser_download_v1' =>
         response is FileBrowserDownloadResultMessage,
       'file_mutation_auth_state_v1' =>
@@ -1069,6 +1074,19 @@ ClientMessage requestFileBrowserPreview({
   nodeRevision: nodeRevision,
 );
 
+ClientMessage requestFileBrowserProjectPreview({
+  required String requestId,
+  required String projectPath,
+  required String filePath,
+}) => _fileBrowserRequest(
+  type: 'file_browser_project_preview_v1',
+  requestId: requestId,
+  fields: <String, dynamic>{
+    'projectPath': _fileBrowserOutboundProjectPath(projectPath),
+    'filePath': _fileBrowserOutboundRelativePath(filePath, allowRoot: false),
+  },
+);
+
 ClientMessage requestFileBrowserDownload({
   required String requestId,
   required String rootId,
@@ -1376,6 +1394,18 @@ String _fileBrowserOutboundRelativePath(
     return _fileBrowserRequiredRelativePath(value, allowRoot: allowRoot);
   } on FormatException {
     throw ArgumentError.value(value, 'relativePath', 'is invalid');
+  }
+}
+
+String _fileBrowserOutboundProjectPath(String value) {
+  try {
+    return _fileBrowserRequiredText(
+      value,
+      'projectPath',
+      _fileBrowserMaxPathLength,
+    );
+  } on FormatException {
+    throw ArgumentError.value(value, 'projectPath', 'is invalid');
   }
 }
 

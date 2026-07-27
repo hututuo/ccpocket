@@ -944,6 +944,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(sessionList.bridgeCapabilities).toEqual(
       expect.arrayContaining([
         "file_browser_v1",
+        "file_browser_project_preview_v1",
         "file_transfer_v2",
         "file_mutation_auth_v1",
         "file_transfer_upload_auth_v1",

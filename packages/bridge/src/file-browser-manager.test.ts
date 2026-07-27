@@ -947,6 +947,71 @@ describeNative("FileBrowserManager preview and download boundaries", () => {
     );
   });
 
+  it.skipIf(process.platform === "win32")(
+    "resolves project previews through a configured root and blocks symlink escape from the project",
+    async () => {
+      const artifactStore = {
+        issue: vi.fn(async () => ({
+          relativeUrl: "/artifacts/project-preview",
+          relativeDownloadUrl: "/artifacts/project-preview/download",
+          filename: "report.html",
+          mimeType: "text/html; charset=utf-8",
+          sizeBytes: 15,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        })),
+      };
+      const f = await fixture({ artifactStore });
+      const project = join(f.root, "project");
+      const outsideProject = join(f.root, "outside-project");
+      await mkdir(project);
+      await mkdir(outsideProject);
+      await writeFile(join(project, "report.html"), "<h1>report</h1>");
+      await writeFile(join(outsideProject, "secret.txt"), "secret");
+      await symlink(
+        join(outsideProject, "secret.txt"),
+        join(project, "escape.txt"),
+      );
+
+      const preview = await f.request({
+        type: "file_browser_project_preview_v1",
+        requestId: "project-preview",
+        projectPath: project,
+        filePath: "report.html",
+      });
+      expect(preview).toMatchObject({
+        type: "file_browser_preview_result_v1",
+        success: true,
+        rootId: f.rootId,
+        relativePath: "project/report.html",
+        relativeUrl: "/artifacts/project-preview",
+        filename: "report.html",
+        previewKind: "html",
+      });
+      expect(artifactStore.issue).toHaveBeenCalledWith(
+        expect.stringContaining("report.html"),
+        expect.objectContaining({
+          projectPath: expect.stringContaining("ccpocket-browser-"),
+          expectedIdentity: expect.objectContaining({ size: 15 }),
+          filename: "report.html",
+          ttlSeconds: 600,
+        }),
+      );
+
+      const escaped = await f.request({
+        type: "file_browser_project_preview_v1",
+        requestId: "project-preview-escape",
+        projectPath: project,
+        filePath: "escape.txt",
+      });
+      expect(escaped).toMatchObject({
+        type: "file_browser_preview_result_v1",
+        success: false,
+        errorCode: "path_not_allowed",
+      });
+      expect(artifactStore.issue).toHaveBeenCalledOnce();
+    },
+  );
+
   it("allows exactly 2 GiB for preview and rejects one byte more", async () => {
     const artifactStore = {
       issue: vi.fn(async () => ({

@@ -651,11 +651,20 @@ class _GitScreenBodyState extends State<_GitScreenBody> {
     if (projectPath == null || projectPath.isEmpty) {
       return Future<void>.value();
     }
+    final previewService = projectFilePreviewServiceOrNull(context);
     return showFilePeekSheet(
       context,
       bridge: context.read<BridgeService>(),
       projectPath: projectPath,
       filePath: filePath,
+      onOpenPreviewRequested: previewService == null
+          ? null
+          : () => openProjectFilePreview(
+              context,
+              service: previewService,
+              projectPath: projectPath,
+              filePath: filePath,
+            ),
       onOpened: () => widget.onFilePeekOpened?.call(filePath),
     );
   }
