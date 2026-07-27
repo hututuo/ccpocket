@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`84f2db77`
+核对源码基线：`b0255c68`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -33,7 +33,7 @@
 | 最近使用会话排在上面；已下载只显示勾号，不占独立顶部区域 | v02-003、004、011 | unified session projection、download marker、排序 reducer | **已验证** | 排序与投影回归已保留；需真机长目录视觉复核 |
 | 目录和摘要跨启动缓存；至少近期会话无需每次重读 | v02-004、010～012 | `SessionCatalogCacheRepository`、conversation hot windows；`b5963c63`、`2b08c02b`、`a1ecfb1f` | **已验证** | SQLite round-trip、代次、损坏快照退避及重开回归通过 |
 | 最近至少 10 个热会话保留尾部窗口，重连只追增量 | v02-004、012、015 | hot-window 上限 2000、cursor/revision、`ConversationContentSyncService` | **已验证** | hot-window replace/patch、known revisions、重连 cursor 回归通过 |
-| App 在前台但未点开会话时也自动更新；热会话秒级、冷会话低频；计算主要放 Bridge | v02-010、011、015 | `packages/bridge/src/local-features/conversation-content-sync.ts`；Mobile subscribe/ack | **部分完成** | Bridge 已有去重、优先级、ack、notifications-only 停止正文的基础与测试；公平性、超大目录扫描成本、provider rewrite 和真实多会话延迟仍需性能审计 |
+| App 在前台但未点开会话时也自动更新；热会话秒级、冷会话低频；计算主要放 Bridge | v02-010、011、015 | `packages/bridge/src/local-features/conversation-content-sync.ts`；Mobile subscribe/ack；`b0255c68` 公平保留 Claude/Codex 目录监视容量 | **部分完成** | 目录 monitor 先保证每个 provider 根、缺失来源保留名额，再轮流向下安装 watcher，7 项测试覆盖单一大树挤占及晚出现来源；content scheduler 公平性、超大目录扫描成本、provider rewrite 和真实多会话延迟仍需性能审计 |
 | 当前打开会话优先追平，但不能阻塞其他会话；Mobile 不能创建 N 个轮询 timer | v02-015 | Bridge scheduler + Mobile 单服务订阅；无 per-card timer | **已验证** | conversation-content-sync 定向套件覆盖 priority/ack/delivery mode；最终压力测试待做 |
 | 设置中一键清可重建缓存；已下载完整历史逐项删除 | v02-004、013、014 | `15e946b5`、`704b5e09`；`cache_management_screen.dart` | **已验证** | 12 项缓存/设置回归通过；标题读取从 N 次 SQL 降为每 300 项一批 |
 | 已有会话显示“加载/同步”，只有新线程显示“创建” | v02-005、012 | durable-open 与 pending binding 路径分离 | **已验证** | 会话直开和 pending attach 回归通过；真机文案扫描仍待本地化批次 |
