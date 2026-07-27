@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对 HEAD：`351d0444`
+核对源码基线：`576c90a8`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -25,7 +25,7 @@
 | 原始要求 | 方案位置 | 当前提交/源码证据 | 当前状态 | 验证证据与剩余门槛 |
 |---|---|---|---|---|
 | 连接 Bridge 前不能自动跳离 IP/机器页；不能用无上下文中央加载替换连接页 | v02-001、v02-008 | `session_list_screen.dart` 的 `_SessionListConnectionUiGate`；`271e2d9b` 隔离连接代次并确认外部深链 | **已验证** | presentation gate 回归覆盖未就绪、升级中、重连、旧连接迟到与外部深链确认；仍需真机弱网视觉复核 |
-| 初始 `session_list` 即使早于“已连接”事件到达，也必须继续请求 `list_recent_sessions`，不能卡在“已连接、正在进入会话” | v02-001、008、011 | `dfc83aa7` 的 `SessionCatalogBootstrapGate`；`351d0444` 以连接 epoch 校验 recent catalog 权威性 | **代码完成，待设备/部署** | 两种事件顺序、重复代次、selection pending 共 54 项 Home 回归通过；同目标重连目录 41 项 BridgeService 回归通过。build 203 尚不含修复，需 build 204 真机确认 |
+| 初始 `session_list` 即使早于“已连接”事件到达，也必须继续请求 `list_recent_sessions`，不能卡在“已连接、正在进入会话” | v02-001、008、011 | `dfc83aa7` 的 `SessionCatalogBootstrapGate`；`351d0444` 以连接 epoch 校验 recent catalog 权威性；`576c90a8` 分配 build 204 | **代码完成，待设备/部署** | 两种事件顺序、重复代次、selection pending 共 54 项 Home 回归通过；同目标重连目录 41 项 BridgeService 回归通过。build 204 IPA 已构建审计，待 AltStore 安装和真机确认 |
 | 首页不能先显示整页 `(no description)` | v02-008、v02-011 | 目录 readiness 与缓存 projection 已分离；会话目录先使用持久摘要再接 live | **已验证** | 目录/连接定向回归已通过；仍需大目录真机首屏计时 |
 | 所有持久会话都能直接打开和继续使用，不再要求先“激活” | v02-003、010、012、015 | `15f08b93`、`4f7ff483`、`92d6a46b`；`PendingSessionBinding`；Codex/Claude screen | **已验证** | 直开、缓存预览、后台 attach、页面租约和幂等投递回归通过 |
 | 普通 idle 不显示 Ready；working/needs-you/unknown 是正交事实，unknown 不能伪装 Ready | v02-003、014、015 | `15f08b93`、`4c215776`；`session_visual_status.dart` | **已验证** | 状态模型 267 项相关回归通过；unknown 原值保留 |
@@ -98,7 +98,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | 历史 build 203/Bridge 部署提交仅是旧 HEAD 证据 | **未完成** | 当前 `351d0444` 尚未构建 build 204、部署新 Bridge、安装真机或发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | 当前 `576c90a8` 已构建并审计未签名 build 204；未部署新 Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
