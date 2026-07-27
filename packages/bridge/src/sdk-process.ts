@@ -617,6 +617,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
 
   private initTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private sessionEndEmitted = false;
+  private lifecycleGeneration = 0;
 
   // User message channel
   private userMessageResolve: ((msg: SDKUserMsg) => void) | null = null;
@@ -648,6 +649,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     if (this.queryInstance) {
       this.stop();
     }
+    const lifecycleGeneration = ++this.lifecycleGeneration;
 
     this._projectPath = projectPath;
 
@@ -680,13 +682,17 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     this.setStatus("starting");
 
     // Pre-check Claude auth (async: refreshes expired tokens) then start SDK.
-    this.startAfterAuthCheck(projectPath, options);
+    this.startAfterAuthCheck(projectPath, options, lifecycleGeneration);
   }
 
-  private startAfterAuthCheck(projectPath: string, options?: StartOptions): void {
+  private startAfterAuthCheck(
+    projectPath: string,
+    options: StartOptions | undefined,
+    lifecycleGeneration: number,
+  ): void {
     checkClaudeAuth()
       .then((authCheck) => {
-        if (this.stopped) return; // Cancelled while awaiting auth
+        if (!this.isCurrentLifecycle(lifecycleGeneration)) return;
 
         if (!authCheck.authenticated) {
           console.log(`[sdk-process] Auth pre-check failed: ${authCheck.message}`);
@@ -700,10 +706,10 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
           return;
         }
 
-        this.startSdkQuery(projectPath, options);
+        this.startSdkQuery(projectPath, options, lifecycleGeneration);
       })
       .catch((err) => {
-        if (this.stopped) return;
+        if (!this.isCurrentLifecycle(lifecycleGeneration)) return;
         console.error("[sdk-process] Auth check error:", err);
         this.emitMessage({
           type: "error",
@@ -714,7 +720,12 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       });
   }
 
-  private startSdkQuery(projectPath: string, options?: StartOptions): void {
+  private startSdkQuery(
+    projectPath: string,
+    options: StartOptions | undefined,
+    lifecycleGeneration: number,
+  ): void {
+    if (!this.isCurrentLifecycle(lifecycleGeneration)) return;
     console.log(`[sdk-process] Starting SDK query (cwd: ${projectPath}, mode: ${this._permissionMode ?? "default"}${options?.sessionId ? `, resume: ${options.sessionId}` : ""}${options?.continueMode ? ", continue: true" : ""})`);
 
     // In -p mode with --input-format stream-json, Claude CLI won't emit
@@ -723,6 +734,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     // ready to accept input at that point.
     if (this.initTimeoutId) clearTimeout(this.initTimeoutId);
     this.initTimeoutId = setTimeout(() => {
+      if (!this.isCurrentLifecycle(lifecycleGeneration)) return;
       if (this._status === "starting") {
         console.log("[sdk-process] Init timeout: setting status to idle (process ready for input)");
         this.setStatus("idle");
@@ -730,8 +742,8 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       this.initTimeoutId = null;
     }, 3000);
 
-    this.queryInstance = query({
-      prompt: this.createUserMessageStream(),
+    const queryInstance = query({
+      prompt: this.createUserMessageStream(lifecycleGeneration),
       options: {
         cwd: projectPath,
         resume: options?.sessionId,
@@ -772,10 +784,18 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         },
       },
     });
+    if (!this.isCurrentLifecycle(lifecycleGeneration)) {
+      queryInstance.close();
+      return;
+    }
+    this.queryInstance = queryInstance;
 
     // Background message processing
-    this.processMessages().catch((err) => {
-      if (this.stopped) {
+    this.processMessages(queryInstance, lifecycleGeneration).catch((err) => {
+      if (
+        !this.isCurrentLifecycle(lifecycleGeneration) ||
+        this.queryInstance !== queryInstance
+      ) {
         // Suppress errors from intentional stop (SDK bug: Bun API referenced on Node.js)
         return;
       }
@@ -786,23 +806,34 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     });
 
     // Proactively fetch supported commands via SDK API (non-blocking)
-    this.fetchSupportedCommands();
+    this.fetchSupportedCommands(queryInstance, lifecycleGeneration);
   }
 
   stop(): void {
+    this.lifecycleGeneration += 1;
     if (this.initTimeoutId) {
       clearTimeout(this.initTimeoutId);
       this.initTimeoutId = null;
     }
     this.stopped = true;
     this.pendingInputQueue = [];
+    const waitingForInput = this.userMessageResolve;
+    this.userMessageResolve = null;
+    waitingForInput?.({
+      type: "user",
+      session_id: this._sessionId ?? "",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "" }],
+      },
+      parent_tool_use_id: null,
+    });
     if (this.queryInstance) {
       console.log("[sdk-process] Stopping query");
       this.queryInstance.close();
       this.queryInstance = null;
     }
     this.denyAllPendingPermissions("Session stopped");
-    this.userMessageResolve = null;
     this.toolCallsSinceLastResult = 0;
     this.fileEditsSinceLastResult = 0;
 
@@ -1120,20 +1151,27 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
    * This may resolve before the first user input, providing slash commands
    * without waiting for system/init.
    */
-  private fetchSupportedCommands(): void {
-    if (!this.queryInstance) return;
-
+  private fetchSupportedCommands(
+    queryInstance: Query,
+    lifecycleGeneration: number,
+  ): void {
     const TIMEOUT_MS = 10_000;
     const timeoutPromise = new Promise<null>((resolve) => {
       setTimeout(() => resolve(null), TIMEOUT_MS);
     });
 
     Promise.race([
-      this.queryInstance.supportedCommands(),
+      queryInstance.supportedCommands(),
       timeoutPromise,
     ])
       .then((result) => {
-        if (this.stopped || !result) return;
+        if (
+          !this.isCurrentLifecycle(lifecycleGeneration) ||
+          this.queryInstance !== queryInstance ||
+          !result
+        ) {
+          return;
+        }
         const slashCommands = result.map((cmd) => cmd.name);
         // Build skill metadata from description field returned by the SDK.
         // This provides human-readable descriptions for custom skills
@@ -1187,8 +1225,10 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     };
   }
 
-  private async *createUserMessageStream(): AsyncGenerator<SDKUserMsg> {
-    while (!this.stopped) {
+  private async *createUserMessageStream(
+    lifecycleGeneration: number,
+  ): AsyncGenerator<SDKUserMsg> {
+    while (this.isCurrentLifecycle(lifecycleGeneration)) {
       // Drain queued messages first (FIFO order)
       if (this.pendingInputQueue.length > 0) {
         const { text, images } = this.pendingInputQueue.shift()!;
@@ -1221,16 +1261,22 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       const msg = await new Promise<SDKUserMsg>((resolve) => {
         this.userMessageResolve = resolve;
       });
-      if (this.stopped) break;
+      if (!this.isCurrentLifecycle(lifecycleGeneration)) break;
       yield msg;
     }
   }
 
-  private async processMessages(): Promise<void> {
-    if (!this.queryInstance) return;
-
-    for await (const message of this.queryInstance) {
-      if (this.stopped) break;
+  private async processMessages(
+    queryInstance: Query,
+    lifecycleGeneration: number,
+  ): Promise<void> {
+    for await (const message of queryInstance) {
+      if (
+        !this.isCurrentLifecycle(lifecycleGeneration) ||
+        this.queryInstance !== queryInstance
+      ) {
+        break;
+      }
 
       // Convert SDK message to ServerMessage
       let serverMsg = sdkMessageToServerMessage(message);
@@ -1308,6 +1354,12 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       this.updateStatusFromMessage(message);
     }
 
+    if (
+      !this.isCurrentLifecycle(lifecycleGeneration) ||
+      this.queryInstance !== queryInstance
+    ) {
+      return;
+    }
     // Query finished — CLI has completed shutdown including file writes.
     this.queryInstance = null;
 
@@ -1317,6 +1369,10 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
 
     this.setStatus("idle");
     this.emit("exit", 0);
+  }
+
+  private isCurrentLifecycle(generation: number): boolean {
+    return !this.stopped && this.lifecycleGeneration === generation;
   }
 
   /**

@@ -858,6 +858,92 @@ describe("SdkProcess input dispatch", () => {
   });
 });
 
+describe("SdkProcess lifecycle fencing", () => {
+  it("wakes a stopped input stream without yielding an empty message", async () => {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+    internal.stopped = false;
+    internal.lifecycleGeneration = 1;
+    const stream = internal.createUserMessageStream(1);
+    const next = stream.next();
+    await Promise.resolve();
+
+    proc.stop();
+
+    await expect(next).resolves.toEqual({
+      value: undefined,
+      done: true,
+    });
+  });
+
+  it("does not let an old query iterator clear its replacement", async () => {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const oldQuery = {
+      async *[Symbol.asyncIterator]() {
+        await gate;
+        yield { type: "assistant" };
+      },
+    };
+    const replacementQuery = {};
+    const exit = vi.fn();
+    proc.on("exit", exit);
+
+    internal.stopped = false;
+    internal.lifecycleGeneration = 1;
+    internal.queryInstance = oldQuery;
+    const processing = internal.processMessages(oldQuery, 1);
+    await Promise.resolve();
+
+    internal.lifecycleGeneration = 2;
+    internal.queryInstance = replacementQuery;
+    release();
+    await processing;
+
+    expect(internal.queryInstance).toBe(replacementQuery);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("drops supported commands returned by an old query", async () => {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+    let finish!: (commands: Array<{ name: string; description: string }>) => void;
+    const oldQuery = {
+      supportedCommands: vi.fn(
+        () =>
+          new Promise<Array<{ name: string; description: string }>>(
+            (resolve) => {
+              finish = resolve;
+            },
+          ),
+      ),
+    };
+    const messages: ServerMessage[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    internal.stopped = false;
+    internal.lifecycleGeneration = 1;
+    internal.queryInstance = oldQuery;
+    internal.fetchSupportedCommands(oldQuery, 1);
+    internal.lifecycleGeneration = 2;
+    internal.queryInstance = {};
+    finish([{ name: "stale-command", description: "old query" }]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "supported_commands",
+      }),
+    );
+  });
+});
+
 describe("buildAskUserAnswers", () => {
   const multiInput = {
     questions: [
