@@ -35,6 +35,7 @@ const DEFAULT_MAX_PAGE_ENTRIES = 32;
 const DEFAULT_MAX_PAGE_BYTES = 256 * 1024;
 const DEFAULT_MAX_PATCH_BYTES = 256 * 1024;
 const DEFAULT_EVENT_BATCH_MS = 75;
+const QUEUE_PRIORITY_AGING_INTERVAL = 3;
 const MAX_TOOL_RESULT_TEXT = 64 * 1024;
 const MAX_ASSISTANT_TEXT = 128 * 1024;
 const MAX_TOOL_INPUT_JSON = 32 * 1024;
@@ -58,6 +59,7 @@ interface QueueTask extends ConversationContentTarget {
   key: ConversationKey;
   priority: number;
   sequence: number;
+  enqueuedAfterTask: number;
   reason: string;
 }
 
@@ -125,6 +127,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     ConversationSnapshot[]
   >();
   private queueSequence = 0;
+  private completedTaskCount = 0;
   private draining = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
   private catalogFlight?: Promise<void>;
@@ -521,6 +524,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
       key,
       priority,
       sequence: ++this.queueSequence,
+      enqueuedAfterTask: this.completedTaskCount,
       reason,
     });
     this.scheduleDrain();
@@ -573,6 +577,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
           );
         } finally {
           this.inFlightKeys.delete(task.key);
+          this.completedTaskCount += 1;
         }
       }
     } finally {
@@ -585,14 +590,25 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
 
   private nextTask(): QueueTask | undefined {
     let selected: QueueTask | undefined;
+    let selectedPriority = Number.POSITIVE_INFINITY;
     for (const task of this.queue.values()) {
+      const tasksWaited = Math.max(
+        0,
+        this.completedTaskCount - task.enqueuedAfterTask,
+      );
+      const agedPriority = Math.max(
+        0,
+        task.priority -
+          Math.floor(tasksWaited / QUEUE_PRIORITY_AGING_INTERVAL),
+      );
       if (
         !selected ||
-        task.priority < selected.priority ||
-        (task.priority === selected.priority &&
+        agedPriority < selectedPriority ||
+        (agedPriority === selectedPriority &&
           task.sequence < selected.sequence)
       ) {
         selected = task;
+        selectedPriority = agedPriority;
       }
     }
     return selected;

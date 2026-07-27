@@ -263,11 +263,79 @@ describe("ConversationContentSyncFeatureHandler", () => {
     );
     fixture.handler.close();
   });
+
+  it("does not let sustained focused updates starve another conversation", async () => {
+    const fixture = createFixture(0);
+    const client = {};
+    let focusedReads = 0;
+    let releaseFirstFocusedRead!: () => void;
+    let reportFirstFocusedRead!: () => void;
+    const firstFocusedRead = new Promise<void>((resolve) => {
+      reportFirstFocusedRead = resolve;
+    });
+    const firstFocusedReadRelease = new Promise<void>((resolve) => {
+      releaseFirstFocusedRead = resolve;
+    });
+    fixture.historyReader.mockImplementation(async (target) => {
+      if (target.providerSessionId === "thread-focused") {
+        focusedReads += 1;
+        if (focusedReads <= 20) {
+          fixture.handler.sessionCatalogChanged({
+            revision: focusedReads,
+            provider: "codex",
+            providerSessionId: "thread-focused",
+          });
+        }
+        if (focusedReads === 1) {
+          reportFirstFocusedRead();
+          await firstFocusedReadRelease;
+        }
+      }
+      return history(target.providerSessionId, 1);
+    });
+
+    await fixture.handler.handle(
+      {
+        ...subscribe("subscription-1"),
+        focused: {
+          provider: "codex",
+          providerSessionId: "thread-focused",
+        },
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await firstFocusedRead;
+    fixture.handler.sessionCatalogChanged({
+      revision: 1,
+      provider: "codex",
+      providerSessionId: "thread-other",
+    });
+    releaseFirstFocusedRead();
+
+    await vi.waitFor(
+      () =>
+        expect(
+          fixture.historyReader.mock.calls.some(
+            ([target]) => target.providerSessionId === "thread-other",
+          ),
+        ).toBe(true),
+      { timeout: 3_000 },
+    );
+    const readOrder = fixture.historyReader.mock.calls.map(
+      ([target]) => target.providerSessionId,
+    );
+    expect(readOrder.indexOf("thread-other")).toBeLessThanOrEqual(4);
+    fixture.handler.close();
+  });
 });
 
-function createFixture() {
+function createFixture(catalogSize = 12) {
   const sent = new Map<object, ConversationContentServerMessage[]>();
-  const catalog = Array.from({ length: 12 }, (_, index) =>
+  const catalog = Array.from({ length: catalogSize }, (_, index) =>
     catalogSession(index),
   );
   const historyReader = vi.fn(async (target: ConversationContentTarget) =>
