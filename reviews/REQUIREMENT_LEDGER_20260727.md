@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`6de89935`
+核对源码基线：`29233693`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -39,7 +39,7 @@
 | 已有会话显示“加载/同步”，只有新线程显示“创建” | v02-005、012 | durable-open 与 pending binding 路径分离 | **已验证** | 会话直开和 pending attach 回归通过；真机文案扫描仍待本地化批次 |
 | runtime 长期停在 `starting` 时不能每 3 秒无限重读历史；弱网恢复仍要可重试 | v02-010、012 | `502b4252`；一次性退避 timer、断线暂停与重连预算 | **已验证** | 红测把旧实现虚拟 5 分钟内的 101 次请求固化；现为初始 1 次加最多 4 次指数退避，离线期间 0 次新增、重连后恢复有限预算；ChatSessionCubit 147 项全通过 |
 | 同一会话并发增量对账必须 single-flight；后台请求不能降级前台完整回退权限；重连不能让旧 socket 的请求吞掉新请求 | v02-010～012 | `7d62f978`；`BridgeService` 的连接代次、升级式 fallback 与 dirty follow-up | **已验证** | 旧实现三个并发调用会发送 3 次 delta，且最后一个后台调用可覆盖前台回退权限；现同一连接只发 1 次，响应后至多补 1 次 dirty follow-up，使用已更新 cursor。后台单独请求仍不做全量回退，前台权限只能升级；同目标重连重新发送并隔离旧代。Bridge usage + legacy fence 53 项、定向 analyze 与 diff check 全通过 |
-| 双 Cockpit/Codex 实例不能串目录、续接、未读或缓存 | v02-007、011 | `bc0601b7`、`a35cc591`、`b5963c63`；`2e1be40e` 统一所选 `CODEX_HOME` 的 app-server、目录索引、watcher、usage、context、doctor 与 LaunchAgent 环境；`54167649` 保留 Claude/Codex 原始 ID 碰撞的两条记录；`95cae34b` 暴露不含本地路径的来源身份并按来源隔离 Mobile 目录缓存；`6de89935` 给 Codex 目录行、归档记录及恢复/重命名/分叉/归档/恢复归档/永久删除请求绑定来源 | **部分完成** | 单一 Bridge 选择一个 Home 时，读写、目录缓存和会话生命周期操作均受同一来源约束；切换 Home 后旧目录不会冒充当前就绪数据，错误来源的修改请求会以 `codex_source_mismatch` 拒绝，旧客户端省略来源字段仍兼容。Bridge 本批 438 项、Mobile 本批 227 项通过，定向 analyze 仅 5 条既有 info。仍缺持久 Conversation Mirror 数据库键、未读/路由/深链的来源分区、同时注册多个 Home 的 source registry，以及跨外部 Codex/Cockpit 进程都能遵守的真正单写者/租约协议；因此不能把“选定 Home 已隔离”夸大为“多实例并发安全已完成” |
+| 双 Cockpit/Codex 实例不能串目录、续接、未读或缓存 | v02-007、011 | `bc0601b7`、`a35cc591`、`b5963c63`；`2e1be40e` 统一所选 `CODEX_HOME` 的 app-server、目录索引、watcher、usage、context、doctor 与 LaunchAgent 环境；`54167649` 保留 Claude/Codex 原始 ID 碰撞的两条记录；`95cae34b` 暴露不含本地路径的来源身份并按来源隔离 Mobile 目录缓存；`6de89935` 给 Codex 目录行、归档记录及恢复/重命名/分叉/归档/恢复归档/永久删除请求绑定来源；`29233693` 把持久 Conversation Mirror、watch、分页游标和运行时发布 guard 按来源隔离 | **部分完成** | 单一 Bridge 选择一个 Home 时，读写、目录缓存、会话生命周期操作和持久 Mirror 均受同一来源约束；同一 Bridge 切换 Home 会取消旧请求，只恢复当前来源的 resident watch。新字段仅在 capability 协商后发送，错误来源在 provider read 前以 `codex_source_mismatch` 拒绝；旧客户端省略来源字段仍兼容。Mirror 继续使用 schema v1，来源写入旧 Dart 不会当作 Codex 命中的版本化 provider 键槽，回滚时失败关闭且不删除旧副本。此前 Bridge 438 项、Mobile 227 项通过；Mirror 批次 Bridge 299 项、Mobile 83 项与 8 文件 analyze 全通过。仍缺未读/路由/深链的来源分区、同时注册多个 Home 的 source registry，以及跨外部 Codex/Cockpit 进程都能遵守的真正单写者/租约协议；因此不能把“选定 Home 已隔离”夸大为“多实例并发安全已完成” |
 | 运行蓝条与“正在同步历史”的光晕分别表达，且动画低开销 | v02-010、012、014 | 小 selector、独立 sync state、`RepaintBoundary` | **代码完成，待设备/部署** | 代码与 Widget 回归已有；需真机动画、CPU/能耗和可读性验收 |
 
 ## 2. 历史、折叠、渐进披露与时间
@@ -137,7 +137,7 @@ command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（�
 
 ## 8. 下一实施顺序
 
-1. 在已完成“单一所选 `CODEX_HOME` 读写一致、跨 provider 同 ID 保留、Mobile 来源缓存隔离”的基础上，继续实现多 Home source registry、逐会话来源路由，并确定外部 Codex/Cockpit 进程也能遵守的单写者冲突策略；
+1. 在已完成“单一所选 `CODEX_HOME` 读写一致、跨 provider 同 ID 保留、Mobile 目录与持久 Mirror 来源隔离”的基础上，先补未读、会话链接与深链的来源分区，再实现多 Home source registry、逐会话来源路由，并确定外部 Codex/Cockpit 进程也能遵守的单写者冲突策略；
 2. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
 3. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
 4. 经用户确认后，才按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；

@@ -96,12 +96,13 @@ upstream/main:   aa215a3b
 ## 当前继续实施基线
 
 上述代码块保留的是 2026-07-26 初始审查快照，不代表当前源码。继续实施已推进到
-`fix/mobile-comprehensive-v02-20260726@6de89935`；2026-07-28 重新 fetch 后的
+`fix/mobile-comprehensive-v02-20260726@29233693`；2026-07-28 重新 fetch 后的
 `upstream/main` 为 `82962136`，其中导航修复已由 `c2cc8379` 结合本地嵌入式
 工作区语义整合，版本记录由 `97fb5aab` 同步为 `1.109.3+205`。后续又完成
 所选 `CODEX_HOME` 的 Bridge 读写统一、跨 provider 同 ID 保留、Mobile 来源
-缓存隔离，以及 Codex 目录行和恢复/重命名/分叉/归档/删除生命周期操作的来源绑定；
-持久 Mirror、路由/深链身份、完整多 Home 注册表与跨进程单写者协议仍未完成。
+缓存隔离，以及 Codex 目录行、恢复/重命名/分叉/归档/删除生命周期操作和持久
+Conversation Mirror 的来源绑定；未读、路由/深链身份、完整多 Home 注册表与跨进程
+单写者协议仍未完成。
 逐项状态和验证证据以 `REQUIREMENT_LEDGER_20260727.md` 为准。
 
 ## 前序文档
