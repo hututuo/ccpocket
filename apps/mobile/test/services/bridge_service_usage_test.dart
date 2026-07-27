@@ -259,6 +259,85 @@ void main() {
     });
 
     test(
+      'same-target reconnect does not reuse an old catalog as authoritative',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final acceptedSockets = StreamController<WebSocket>();
+        final sockets = <WebSocket>[];
+        server.transform(WebSocketTransformer()).listen((socket) {
+          sockets.add(socket);
+          acceptedSockets.add(socket);
+        });
+        final socketIterator = StreamIterator(acceptedSockets.stream);
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        final url = 'ws://127.0.0.1:${server.port}';
+        bridge.connect(url);
+        expect(await socketIterator.moveNext(), isTrue);
+        final firstSocket = socketIterator.current;
+        firstSocket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'bridgeInstanceId': 'bridge-a',
+            'sessions': [],
+            'bridgeCapabilities': [sessionCatalogRequestCorrelationCapability],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        bridge.requestRecentSessions();
+        final request = outgoing
+            .map(
+              (message) =>
+                  jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .lastWhere(
+              (message) => message['type'] == 'list_recent_sessions',
+            );
+        firstSocket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': const [],
+            'hasMore': false,
+            'limit': request['limit'],
+            'offset': request['offset'],
+            'projectPath': request['projectPath'],
+            'requestScope': request['requestScope'],
+            'requestId': request['requestId'],
+            'queryGeneration': request['queryGeneration'],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          bridge.hasAuthoritativeRecentSessionsForCurrentConnection,
+          isTrue,
+        );
+
+        final reconnected = bridge.connectionStatus.firstWhere(
+          (state) => state == BridgeConnectionState.connected,
+        );
+        bridge.connect(url);
+        expect(await socketIterator.moveNext(), isTrue);
+        await reconnected.timeout(const Duration(seconds: 2));
+
+        expect(
+          bridge.hasAuthoritativeRecentSessionsForCurrentConnection,
+          isFalse,
+        );
+
+        bridge.disconnect();
+        await socketIterator.cancel();
+        await acceptedSockets.close();
+        for (final socket in sockets) {
+          await socket.close();
+        }
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'legacy catalog requests serialize and discard stale results',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

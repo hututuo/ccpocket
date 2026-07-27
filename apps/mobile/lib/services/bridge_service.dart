@@ -268,6 +268,7 @@ class BridgeService implements BridgeServiceBase {
   bool _hasAuthoritativeSessionListForCurrentConnection = false;
   List<RecentSession> _recentSessions = [];
   RecentSessionsMessage? _lastRecentSessionsMessage;
+  int _lastRecentSessionsConnectionEpoch = -1;
   String? _bridgeInstanceId;
   List<GalleryImage> _galleryImages = [];
   List<String> _projectHistory = [];
@@ -418,7 +419,9 @@ class BridgeService implements BridgeServiceBase {
   bool get hasAuthoritativeSessionListForCurrentConnection =>
       isConnected && _hasAuthoritativeSessionListForCurrentConnection;
   bool get hasAuthoritativeRecentSessionsForCurrentConnection =>
-      isConnected && _lastRecentSessionsMessage != null;
+      isConnected &&
+      _lastRecentSessionsMessage != null &&
+      _lastRecentSessionsConnectionEpoch == _connectionEpoch;
   @override
   Stream<String> get stoppedSessions => _sessionStoppedController.stream;
   Stream<List<RecentSession>> get recentSessionsStream =>
@@ -1745,6 +1748,7 @@ class BridgeService implements BridgeServiceBase {
                   searchQuery: recentResponse.searchQuery,
                 );
                 _lastRecentSessionsMessage = response;
+                _lastRecentSessionsConnectionEpoch = _connectionEpoch;
                 final revision = recentResponse.catalogRevision;
                 if (revision != null &&
                     revision > _lastSessionCatalogRevision) {
@@ -2100,6 +2104,7 @@ class BridgeService implements BridgeServiceBase {
     _sessions = const [];
     _recentSessions = const [];
     _lastRecentSessionsMessage = null;
+    _lastRecentSessionsConnectionEpoch = -1;
     _bridgeInstanceId = null;
     _recentSessionsHasMore = false;
     _appendMode = false;
