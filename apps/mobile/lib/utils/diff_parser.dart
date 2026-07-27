@@ -598,44 +598,49 @@ DiffSelection reconstructDiff(
 /// Returns `null` for tools that are not edit-related or when input is
 /// malformed.
 DiffFile? synthesizeEditToolDiff(String toolName, Map<String, dynamic> input) {
-  final filePath = (input['file_path'] ?? input['path'] ?? '') as String;
+  if (toolName != 'Edit' && toolName != 'MultiEdit' && toolName != 'Write') {
+    return null;
+  }
+
+  final rawFilePath = input['file_path'] ?? input['path'];
+  if (rawFilePath is! String || rawFilePath.trim().isEmpty) return null;
 
   return switch (toolName) {
-    'Edit' => _synthesizeSingleEdit(filePath, input),
-    'MultiEdit' => _synthesizeMultiEdit(filePath, input),
-    'Write' => _synthesizeWrite(filePath, input),
+    'Edit' => _synthesizeSingleEdit(rawFilePath, input),
+    'MultiEdit' => _synthesizeMultiEdit(rawFilePath, input),
+    'Write' => _synthesizeWrite(rawFilePath, input),
     _ => null,
   };
 }
 
-DiffFile _synthesizeSingleEdit(String filePath, Map<String, dynamic> input) {
-  final oldString = (input['old_string'] ?? '') as String;
-  final newString = (input['new_string'] ?? '') as String;
+DiffFile? _synthesizeSingleEdit(String filePath, Map<String, dynamic> input) {
+  final oldString = input['old_string'];
+  final newString = input['new_string'];
+  if (oldString is! String || newString is! String) return null;
   return DiffFile(
     filePath: filePath,
     hunks: [_buildHunkFromStrings(oldString, newString)],
   );
 }
 
-DiffFile _synthesizeMultiEdit(String filePath, Map<String, dynamic> input) {
+DiffFile? _synthesizeMultiEdit(String filePath, Map<String, dynamic> input) {
   final edits = input['edits'];
-  if (edits is! List) {
-    return DiffFile(filePath: filePath, hunks: const []);
-  }
+  if (edits is! List) return null;
 
   final hunks = <DiffHunk>[];
   for (final edit in edits) {
-    if (edit is Map<String, dynamic>) {
-      final oldString = (edit['old_string'] ?? '') as String;
-      final newString = (edit['new_string'] ?? '') as String;
-      hunks.add(_buildHunkFromStrings(oldString, newString));
-    }
+    if (edit is! Map<String, dynamic>) return null;
+    final oldString = edit['old_string'];
+    final newString = edit['new_string'];
+    if (oldString is! String || newString is! String) return null;
+    hunks.add(_buildHunkFromStrings(oldString, newString));
   }
   return DiffFile(filePath: filePath, hunks: hunks);
 }
 
-DiffFile _synthesizeWrite(String filePath, Map<String, dynamic> input) {
-  final content = (input['content'] ?? '') as String;
+DiffFile? _synthesizeWrite(String filePath, Map<String, dynamic> input) {
+  final content = input['content'];
+  if (content is! String) return null;
   final lines = content.split('\n');
   final diffLines = <DiffLine>[];
   for (var i = 0; i < lines.length; i++) {

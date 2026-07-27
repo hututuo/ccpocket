@@ -541,5 +541,41 @@ diff --git a/single.txt b/single.txt
       })!;
       expect(buildHunkFingerprint(synthesized.hunks.single), isNull);
     });
+
+    test('rejects malformed edit tool input without throwing', () {
+      expect(
+        synthesizeEditToolDiff('Edit', {
+          'file_path': 42,
+          'old_string': 'before',
+          'new_string': 'after',
+        }),
+        isNull,
+      );
+      expect(
+        synthesizeEditToolDiff('Edit', {
+          'file_path': 'lib/main.dart',
+          'old_string': ['before'],
+          'new_string': 'after',
+        }),
+        isNull,
+      );
+      expect(
+        synthesizeEditToolDiff('MultiEdit', {
+          'file_path': 'lib/main.dart',
+          'edits': [
+            {'old_string': 'before', 'new_string': 1},
+          ],
+        }),
+        isNull,
+      );
+      expect(
+        synthesizeEditToolDiff('Write', {
+          'file_path': 'lib/main.dart',
+          'content': {'future': 'shape'},
+        }),
+        isNull,
+      );
+      expect(synthesizeEditToolDiff('FutureTool', {'file_path': 42}), isNull);
+    });
   });
 }
