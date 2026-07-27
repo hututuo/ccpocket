@@ -1,8 +1,8 @@
 # CC Pocket 原始需求实现台账
 
-最后核对：2026-07-27  
-当前分支：`fix/mobile-comprehensive-v02-20260726`  
-核对 HEAD：`f23c9187`
+最后核对：2026-07-28
+当前分支：`fix/mobile-comprehensive-v02-20260726`
+核对 HEAD：`351d0444`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -24,7 +24,8 @@
 
 | 原始要求 | 方案位置 | 当前提交/源码证据 | 当前状态 | 验证证据与剩余门槛 |
 |---|---|---|---|---|
-| 连接 Bridge 前不能自动跳离 IP/机器页；不能用无上下文中央加载替换连接页 | v02-001、v02-008 | `session_list_screen.dart` 的 `_SessionListConnectionUiGate`；`home_screen_test.dart` | **已验证** | presentation gate 回归覆盖未就绪、升级中和重连；仍需真机弱网视觉复核 |
+| 连接 Bridge 前不能自动跳离 IP/机器页；不能用无上下文中央加载替换连接页 | v02-001、v02-008 | `session_list_screen.dart` 的 `_SessionListConnectionUiGate`；`271e2d9b` 隔离连接代次并确认外部深链 | **已验证** | presentation gate 回归覆盖未就绪、升级中、重连、旧连接迟到与外部深链确认；仍需真机弱网视觉复核 |
+| 初始 `session_list` 即使早于“已连接”事件到达，也必须继续请求 `list_recent_sessions`，不能卡在“已连接、正在进入会话” | v02-001、008、011 | `dfc83aa7` 的 `SessionCatalogBootstrapGate`；`351d0444` 以连接 epoch 校验 recent catalog 权威性 | **代码完成，待设备/部署** | 两种事件顺序、重复代次、selection pending 共 54 项 Home 回归通过；同目标重连目录 41 项 BridgeService 回归通过。build 203 尚不含修复，需 build 204 真机确认 |
 | 首页不能先显示整页 `(no description)` | v02-008、v02-011 | 目录 readiness 与缓存 projection 已分离；会话目录先使用持久摘要再接 live | **已验证** | 目录/连接定向回归已通过；仍需大目录真机首屏计时 |
 | 所有持久会话都能直接打开和继续使用，不再要求先“激活” | v02-003、010、012、015 | `15f08b93`、`4f7ff483`、`92d6a46b`；`PendingSessionBinding`；Codex/Claude screen | **已验证** | 直开、缓存预览、后台 attach、页面租约和幂等投递回归通过 |
 | 普通 idle 不显示 Ready；working/needs-you/unknown 是正交事实，unknown 不能伪装 Ready | v02-003、014、015 | `15f08b93`、`4c215776`；`session_visual_status.dart` | **已验证** | 状态模型 267 项相关回归通过；unknown 原值保留 |
@@ -59,7 +60,7 @@
 | Side Chat 必须调用官方 ephemeral thread/fork，复用已有会话 UI，不自造持久会话类型或硬编码口述过期时间 | v01 7.1；v02-014 | `c5d29d39`；Bridge ephemeral capability；原生会话 pane | **代码完成，待设备/部署** | Side Chat 定向回归通过；需新 Bridge 与真实 Codex app-server 验证官方生命周期 |
 | 关闭临时会话后，在官方仍存活期间能从辅助入口找回 | v01 7.2；v02-002 | auxiliary registry；`1d99e1cd` 按 Bridge 隔离 | **已验证** | 12 项 registry/Bridge 切换回归通过 |
 | 真正非模态、可拖动、贴边收纳、点开原地展开的小窗；展开时仍能操作底层会话 | v02-002 | `6041395b`、`a3d87745`；`auxiliary_floating_dock.dart` | **已验证** | in-tree overlay、拖动、贴边 pull-tab、位置持久化 4 项 Widget 回归通过；需用户视觉验收 |
-| 进入/附着会话不能把权限莫名改回 `on-request` | v01 2A.4、8.1；v02-003 | unknown factual state 保留、Side Chat 不伪造、`4c215776` | **部分完成** | 已知默认污染路径已修；若真机再现，仍需 capture override/indexed settings/connection epoch |
+| 进入/附着会话不能把权限莫名改回 `on-request` | v01 2A.4、8.1；v02-003 | unknown factual state 保留、Side Chat 不伪造、`4c215776`；`4528efa8` 禁止把未知审批策略伪造成 `on-request` | **已验证** | collaboration-only 原地更新和重启两条专门回归通过；若真机仍再现，说明是另一条 override/indexed settings/connection epoch 路径，必须先采集事件线再改 |
 | 新建会话不再报 `No thread ID available for goal lookup` | v01 8.4；v02-014 | Goal 延迟到 durable thread authoritative init | **已验证** | Goal/codex controller 回归通过 |
 | 选择 5.3 Spark 时额度圆环自动用 Spark 卡片 | v01 9.2；v02-014 | exact model ID usage selector | **已验证** | usage service/widget 回归保留；旧 Bridge 有兼容 fallback |
 
@@ -72,7 +73,7 @@
 | 会话完成后列表显示未读蓝点，打开可见后再清除 | v01 10.3；v02-014 | durable unread ledger；`bc0601b7` 按 Bridge 隔离 | **代码完成，待设备/部署** | 多 Bridge ledger 回归通过；需真实通知→列表→打开闭环 |
 | 长按通知可 Allow/Reject，Bridge 最终权威复核 | v01 10.4～10.5 | iOS notification category/action + opaque identity；`3226eafb` | **代码完成，待设备/部署** | 小数秒 action 解析已回归；物理 iPhone 长按动作、Face ID/签名待验 |
 | FCM 与定位保活 WebSocket 不能让同一事件重复弹两次 | v01 10；v02-014～015 | FCM relay 与 `background_notification_v1` 是两条独立投递通道 | **部分完成** | 当前协议没有可让 Cloud 排除同一在线 WS 客户端的 token/client identity，也不能靠后台注销 FCM（会破坏 iOS 挂起后的兜底）；需设计 additive delivery-id/token identity 去重后再改 |
-| 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | `5562e535`、`5cd90b8f`、`50e60902`、`f23c9187`；ARB + feature strings | **部分完成** | 会话状态/审批、Explore、Git、文件传输界面/收件横幅/本地通知已补四语言；QR、截图、主题/许可、slash command、部分机器管理和错误提示仍需逐项收口 |
+| 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | `5562e535`、`5cd90b8f`、`50e60902`、`f23c9187`、`b431221c`、`932f8bec`、`bfe4bd5a`、`72a96edc`；ARB + feature strings | **部分完成** | 会话状态/审批、Explore、Git、文件传输、slash command、二维码、截图及工具活动/运行过程已补四语言；主题/许可、部分机器管理和错误提示仍需逐项收口 |
 
 ## 5. 文件、预览与安全
 
@@ -82,6 +83,7 @@
 | owner 模式允许全盘只读，项目外引用不再 `path_not_allowed` | v01 11.2～11.3 | authenticated unrestricted read；`ba839504` 未认证安全回退 | **代码完成，待设备/部署** | 新旧 Bridge fallback 已测；实际运行 Bridge 的 API key/`*` 配置仍需核对 |
 | 修改/上传/删除必须密码或手机 Face ID，由 Bridge 授权；密码失败不可重连绕过 | v01 11.4 | Argon2id verifier `60bc259d`；native biometric challenge；`e95f1772` | **代码完成，待设备/部署** | 7 项 auth 测试覆盖并行失败、断线重连和限流；物理 Face ID/Secure Enclave 待验 |
 | JSON、单文件 HTML、网页 URL 正确分流；Quick Look 失败走本地/WebView；提供下载/分享 | v01 11.5；v02-006、014 | `3c1985e5`、`435c3613`、`a4ecdf58`、`c4b3174d`；artifact preview | **部分完成** | `.json/.html` 路由、本地大文件 Quick Look、过期 token 自动续签和条件入口回归通过；macOS gate、通用 HTTP 错误页、大/压缩 JSON 性能和真实失败样本仍待修/取证 |
+| Agent 输出的内联图片、绝对 URL、data URL 与相对 Bridge 路径都能正确预览 | v01 11.1、11.5；v02-006、014 | `3ac720fe` 的 `resolveImagePreviewUrl` | **已验证** | 已有 scheme 不再被错误拼接 Bridge 地址，协议相对和无斜杠相对路径统一解析；7 项图片边界回归通过 |
 | Explorer/Git 的旧 Bridge 无 requestId 时也不能串项目或无限加载 | v02-006；全局兼容门禁 | `f1f0dd04`、`3fc46236`、`935b5604`、`f8438e15`、`8374d105` | **已验证** | Explorer 16 项、Git 44 项、Bridge parser/websocket 411 项相关回归通过 |
 | Bridge/手机握手做全面安全审查，但不把密码哈希放热路径，不破坏旧客户端 | v01 11、19；decisions | Origin gate、API key、路径/TOCTOU、Argon2、capability fallback | **部分完成** | 多项安全修复已有；symlink/TOCTOU、审批参数绑定、auto-approval state 等审查积压仍需逐项判定，且不能违背用户明确的 owner 全盘只读需求 |
 
@@ -91,11 +93,12 @@
 |---|---|---|---|---|
 | 发现确定性 bug 可顺手修，但必须先找 owning layer 和红测，不能见现象就改 | v02-006；PROJECT_HANDOFF §9 | 本轮窄提交、request/generation/Bridge partition 回归 | **持续门禁** | 所有新增修复继续要求先证实、再改、再定向回归 |
 | 会话同步、排序、折叠和进程重启整体稳定 | v02-010～013 | generation fence、half-open continuity、outbox、dedup、pagination alias 等本轮提交 | **部分完成** | 独立复审 P1/P2 已闭环；Bridge/session/content-sync 仍有高风险审查积压 |
+| 畸形或未来版本工具输入不能在展开 Diff 时崩溃整张会话卡片 | v02-006、009、014 | `0b83e6aa` 对 Edit/MultiEdit/Write 输入做完整形状校验 | **已验证** | 26 项 parser 回归通过；不完整 MultiEdit 会安全回退而不是渲染误导性局部 diff |
 | 多开 Bridge/SDK/Codex 进程不能由旧代迟到事件覆盖新代 | v02-007、010～012 | `a4dbf3c1`、`320f1189`、`a35cc591` | **已验证** | SDK 100/100、Codex 144/144 相关回归曾通过 |
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | 历史 build 203/Bridge 部署提交仅是旧 HEAD 证据 | **未完成** | 当前 `f23c9187` 尚未构建新 IPA、部署新 Bridge、安装真机或发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | 历史 build 203/Bridge 部署提交仅是旧 HEAD 证据 | **未完成** | 当前 `351d0444` 尚未构建 build 204、部署新 Bridge、安装真机或发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -115,7 +118,9 @@
 
 P3 的缓存标题 N+1 已由 `704b5e09` 改成每 300 个身份一批。硬编码英文已经
 继续按功能域拆分：`5562e535`（会话状态/审批）、`5cd90b8f`（Explore）、
-`50e60902`（Git）、`f23c9187`（文件传输界面与通知）。第 4 节列出的长尾
+`50e60902`（Git）、`f23c9187`（文件传输界面与通知）、`b431221c`（slash
+command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（工具活动与
+运行过程）。第 4 节列出的长尾
 仍然是系统性本地化工作，不能因这些高曝光面已完成就提前关闭。
 
 ## 8. 下一实施顺序
