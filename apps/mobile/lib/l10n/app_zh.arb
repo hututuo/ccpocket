@@ -239,7 +239,6 @@
   "supportBannerSubtitle": "你的支持可以帮助持续开发。",
   "supportBannerAction": "查看支持",
   "offline": "离线",
-  "disconnected": "已断开连接",
   "reconnecting": "Bridge 连接暂时中断。正在自动重新连接...",
   "unreachable": "不可达",
   "checking": "检查中...",
@@ -252,19 +251,14 @@
   "approval": "审批",
   "restart": "重启",
   "worktree": "工作树",
-  "worktreeTooltip": "为此会话创建独立的 git 工作树。",
   "advanced": "高级",
-  "environmentSection": "环境",
   "permissionDefaultMode": "默认",
-  "permissionAcceptEditsMode": "自动批准编辑",
   "permissionPlanMode": "规划",
-  "permissionBypassMode": "全部绕过",
   "permissionDefaultDescription": "标准权限提示",
   "permissionAutoDescription": "让 Claude 通过内置安全检查自动处理审批",
   "permissionAcceptEditsDescription": "自动批准文件编辑",
   "permissionPlanDescription": "仅分析和规划，不执行",
   "permissionBypassDescription": "跳过所有权限提示",
-  "permissionModeTitle": "权限模式",
   "changePermissionModeTitle": "更改权限模式",
   "changePermissionModeBody": "切换到 {mode} 会重启当前会话。你的对话会被保留。",
   "@changePermissionModeBody": {
@@ -362,7 +356,6 @@
   "persistSessionHistory": "保留会话历史",
   "model": "模型",
   "sandbox": "沙箱",
-  "sandboxModeTitle": "沙箱模式",
   "sandboxSafeMode": "沙箱（安全模式）",
   "sandboxStandard": "标准",
   "sandboxOnLabel": "沙箱开启",
@@ -402,7 +395,6 @@
       }
     }
   },
-  "sandboxChipOff": "无沙箱",
   "reasoning": "Reasoning",
   "webSearch": "Web Search",
   "networkAccess": "网络访问",
@@ -476,14 +468,6 @@
   "processingOnBridge": "Bridge 正在处理",
   "offlinePendingNewSessionTitle": "新会话等待中",
   "offlinePendingResumeTitle": "恢复等待中",
-  "messageProviderPlaceholder": "给 {provider} 发消息...",
-  "@messageProviderPlaceholder": {
-    "placeholders": {
-      "provider": {
-        "type": "String"
-      }
-    }
-  },
   "diffLines": "{count} 行 diff",
   "changedLines": "{count} 行变更",
   "@changedLines": {
@@ -576,13 +560,8 @@
       "agent": {}
     }
   },
-  "codexIsAsking": "Codex 正在提问",
-  "questionNeedsYourAnswer": "问题需要你回答",
-  "toolApprovalNeeded": "需要你批准工具操作",
-  "codexToolApprovalNeeded": "需要你批准 Codex 的工具操作",
   "sessionCompleteTitle": "会话已完成",
   "sessionDone": "会话已结束",
-  "codexSessionDone": "Codex 会话已结束",
   "submitAllAnswers": "提交全部答案",
   "submitWithCount": "提交（已选择 {count} 项）",
   "selectOptionsToSubmit": "请选择要提交的选项",
@@ -677,14 +656,6 @@
   "sessionUnavailableTitle": "会话不可用",
   "sessionUnavailableDescription": "当前 Bridge 上没有此会话。请从最近的会话中选择其他会话。",
   "openRecentSessions": "打开最近的会话",
-  "startWithProvider": "用 {provider} 开始",
-  "@startWithProvider": {
-    "placeholders": {
-      "provider": {
-        "type": "String"
-      }
-    }
-  },
   "copyForAgent": "复制给 Agent",
   "messageHistory": "消息历史",
   "viewChanges": "查看变更",
@@ -709,9 +680,7 @@
   "promptHistory": "提示词历史",
   "frequent": "常用",
   "recent": "最近",
-  "newShort": "新建",
   "searchHint": "搜索...",
-  "searchSessionsHint": "搜索会话...",
   "noMatchingPrompts": "没有匹配的提示词",
   "noPromptHistoryYet": "还没有提示词历史",
   "promptHistoryFilters": "筛选",
@@ -776,14 +745,7 @@
   "agentReadyForPrompt": "Agent 已准备好接收你的下一个提示。",
   "backToSessions": "返回会话列表",
   "working": "进行中...",
-  "runningSessions": "进行中",
   "recentSessions": "最近会话",
-  "displayFirst": "首条",
-  "displayLast": "末条",
-  "displaySummary": "摘要",
-  "filterAllAiTools": "全部 AI 工具",
-  "filterAllProjects": "全部项目",
-  "filterNamed": "已命名",
   "statusStarting": "启动中",
   "statusIdle": "空闲",
   "statusRunning": "运行中",
@@ -791,19 +753,6 @@
   "statusCompacting": "压缩中",
   "statusWorking": "处理中",
   "statusNeedsYou": "需要你处理",
-  "statusReady": "就绪",
-  "statusCleaningContext": "正在整理上下文",
-  "statusReviewPlan": "查看计划",
-  "statusApproveToolCall": "批准工具调用",
-  "statusAnswerQuestion": "回答问题",
-  "statusApproveTool": "批准 {toolName}",
-  "@statusApproveTool": {
-    "placeholders": {
-      "toolName": {
-        "type": "String"
-      }
-    }
-  },
   "waitingForApprovalRequests": "正在等待 Agent 发来的审批请求。",
   "noActiveSessions": "没有活动中的会话",
   "startSessionToBegin": "启动一个会话后，即可开始接收审批请求。",
@@ -867,28 +816,6 @@
   "version": "版本",
   "loading": "加载中...",
   "setupGuideSubtitle": "第一次使用？从这里开始",
-  "machineSectionTitle": "设备",
-  "machineRefreshStatus": "刷新状态",
-  "machineNoSavedDescription": "还没有保存的设备。\n添加后即可快速连接，或在离线时远程启动 Bridge 服务。",
-  "addMachine": "添加设备",
-  "editMachine": "编辑设备",
-  "machineBasicInfo": "基本信息",
-  "machineNameLabel": "名称",
-  "machineNameHint": "家里的 Mac",
-  "machineHostLabel": "主机（IP 或主机名）",
-  "portLabel": "端口",
-  "sshConfiguration": "SSH 配置",
-  "sshEnableRemoteStartup": "启用 SSH 远程启动",
-  "sshRemoteStartupSubtitle": "设备离线时远程启动 Bridge 服务",
-  "sshUsernameLabel": "SSH 用户名",
-  "sshPortLabel": "SSH 端口",
-  "sshPrivateKeyLabel": "SSH 私钥（PEM）",
-  "sshPrivateKeyHint": "-----BEGIN OPENSSH PRIVATE KEY-----",
-  "testConnection": "测试连接",
-  "testingConnection": "测试中...",
-  "sshCredentialsRequired": "请填写 SSH 凭据",
-  "connectionSuccessful": "连接成功！",
-  "addAndConnect": "添加并连接",
   "openSourceLicenses": "开源许可",
   "githubRepository": "GitHub 仓库",
   "changelog": "更新日志",
@@ -1076,35 +1003,9 @@
   "tooltipSendMessage": "发送消息",
   "tooltipRemoveImage": "移除图片",
   "tooltipClearDiff": "清除 diff 选择",
-  "messageHistoryCount": "{count} 条消息",
-  "@messageHistoryCount": {
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
-  "noMessagesYet": "还没有消息",
-  "messagesAppearAfterProcessing": "消息会在代理处理后显示在这里",
 
   "showMore": "显示更多",
   "showLess": "显示更少",
-  "sessionStarted": "会话已开始（{model}）",
-  "@sessionStarted": {
-    "placeholders": {
-      "model": {
-        "type": "String"
-      }
-    }
-  },
-  "systemSubtypeLabel": "系统：{subtype}",
-  "@systemSubtypeLabel": {
-    "placeholders": {
-      "subtype": {
-        "type": "String"
-      }
-    }
-  },
 
   "authErrorTitle": "需要重新登录 Claude",
   "authErrorBody": "Bridge 机器上的 Claude 需要重新登录。",
