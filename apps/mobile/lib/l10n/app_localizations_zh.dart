@@ -2892,4 +2892,142 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get exploreNoVisibleFiles => '未找到可见文件；生成目录和缓存目录可能已隐藏';
+
+  @override
+  String get close => '关闭';
+
+  @override
+  String get gitUnstaged => '未暂存';
+
+  @override
+  String get gitStaged => '已暂存';
+
+  @override
+  String get gitStage => '暂存';
+
+  @override
+  String get gitUnstage => '取消暂存';
+
+  @override
+  String get gitRevert => '还原';
+
+  @override
+  String get gitViewFile => '查看文件';
+
+  @override
+  String get gitOpenFullCurrentFile => '打开当前完整文件';
+
+  @override
+  String get gitDiscardAllChangesInFile => '放弃此文件中的所有更改';
+
+  @override
+  String get gitDiscardChangesInHunk => '放弃此代码块中的更改';
+
+  @override
+  String get gitRequestChange => '要求修改';
+
+  @override
+  String get gitSendFileBackToAi => '将此文件连同反馈交给 AI 修改';
+
+  @override
+  String get gitSendHunkBackToAi => '将此代码块连同反馈交给 AI 修改';
+
+  @override
+  String get gitFiles => '文件';
+
+  @override
+  String get gitRevertAll => '全部还原';
+
+  @override
+  String get gitStageAll => '全部暂存';
+
+  @override
+  String get gitUnstageAll => '全部取消暂存';
+
+  @override
+  String get gitCommit => '提交';
+
+  @override
+  String get gitCommitAndPush => '提交并推送';
+
+  @override
+  String gitCommittedHash(String hash) {
+    return '已提交：$hash';
+  }
+
+  @override
+  String get gitSuccess => '操作成功';
+
+  @override
+  String get gitUnknownError => '未知错误';
+
+  @override
+  String get gitAutoGenerateWithAi => '由 AI 自动生成';
+
+  @override
+  String get gitCommitMessage => '提交说明';
+
+  @override
+  String get gitAutoGenerateMessage => '自动生成提交说明';
+
+  @override
+  String get gitCommitting => '正在提交…';
+
+  @override
+  String get gitPushing => '正在推送…';
+
+  @override
+  String get gitBranches => '分支';
+
+  @override
+  String get gitNewBranch => '新建分支';
+
+  @override
+  String get gitSearchBranches => '搜索分支…';
+
+  @override
+  String get gitBranchInUseByWorktree => '正在被另一个工作树使用';
+
+  @override
+  String get gitBranchNameHint => '分支名（例如 feat/login）';
+
+  @override
+  String get gitCreateAndCheckout => '创建并切换';
+
+  @override
+  String get gitNoUpstream => '没有上游分支';
+
+  @override
+  String get gitImageTooLarge => '图片过大，无法预览';
+
+  @override
+  String get gitImagePreviewUnavailable => '无法预览图片';
+
+  @override
+  String get gitTapToLoadPreview => '点按加载预览';
+
+  @override
+  String get gitFocusDiff => '专注查看差异';
+
+  @override
+  String get gitExitFocusMode => '退出专注模式';
+
+  @override
+  String get gitNoStagedFiles => '没有已暂存文件';
+
+  @override
+  String gitPullCommits(int count) {
+    return '拉取 $count 个提交';
+  }
+
+  @override
+  String get gitPullUnavailable => '当前无法拉取';
+
+  @override
+  String gitPushCommits(int count) {
+    return '推送 $count 个提交';
+  }
+
+  @override
+  String get gitPushUnavailable => '当前无法推送';
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../utils/diff_parser.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
 import '../state/git_view_state.dart';
@@ -62,9 +63,10 @@ class _GitFileListSheetState extends State<GitFileListSheet> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
     final modeLabel = switch (widget.viewMode) {
-      GitViewMode.unstaged => 'Changes',
-      GitViewMode.staged => 'Staged',
+      GitViewMode.unstaged => l.changes,
+      GitViewMode.staged => l.gitStaged,
     };
 
     return Column(
@@ -90,16 +92,16 @@ class _GitFileListSheetState extends State<GitFileListSheet> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Files',
-                      style: TextStyle(
+                    Text(
+                      l.gitFiles,
+                      style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${widget.files.length} files • $modeLabel',
+                      '${l.fileCount(widget.files.length)} • $modeLabel',
                       style: TextStyle(
                         fontSize: 13,
                         color: cs.onSurfaceVariant,
@@ -112,7 +114,7 @@ class _GitFileListSheetState extends State<GitFileListSheet> {
                 key: const ValueKey('git_file_list_close_button'),
                 onPressed: () => Navigator.of(context).pop(),
                 icon: const Icon(Icons.close),
-                tooltip: 'Close',
+                tooltip: l.close,
               ),
             ],
           ),

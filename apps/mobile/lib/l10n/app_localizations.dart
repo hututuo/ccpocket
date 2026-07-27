@@ -5513,6 +5513,270 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'表示可能なファイルが見つかりませんでした。生成フォルダやキャッシュフォルダは非表示の場合があります'**
   String get exploreNoVisibleFiles;
+
+  /// No description provided for @close.
+  ///
+  /// In ja, this message translates to:
+  /// **'閉じる'**
+  String get close;
+
+  /// No description provided for @gitUnstaged.
+  ///
+  /// In ja, this message translates to:
+  /// **'未ステージ'**
+  String get gitUnstaged;
+
+  /// No description provided for @gitStaged.
+  ///
+  /// In ja, this message translates to:
+  /// **'ステージ済み'**
+  String get gitStaged;
+
+  /// No description provided for @gitStage.
+  ///
+  /// In ja, this message translates to:
+  /// **'ステージ'**
+  String get gitStage;
+
+  /// No description provided for @gitUnstage.
+  ///
+  /// In ja, this message translates to:
+  /// **'ステージ解除'**
+  String get gitUnstage;
+
+  /// No description provided for @gitRevert.
+  ///
+  /// In ja, this message translates to:
+  /// **'元に戻す'**
+  String get gitRevert;
+
+  /// No description provided for @gitViewFile.
+  ///
+  /// In ja, this message translates to:
+  /// **'ファイルを表示'**
+  String get gitViewFile;
+
+  /// No description provided for @gitOpenFullCurrentFile.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在のファイル全体を開く'**
+  String get gitOpenFullCurrentFile;
+
+  /// No description provided for @gitDiscardAllChangesInFile.
+  ///
+  /// In ja, this message translates to:
+  /// **'このファイルの変更をすべて破棄'**
+  String get gitDiscardAllChangesInFile;
+
+  /// No description provided for @gitDiscardChangesInHunk.
+  ///
+  /// In ja, this message translates to:
+  /// **'このハンクの変更を破棄'**
+  String get gitDiscardChangesInHunk;
+
+  /// No description provided for @gitRequestChange.
+  ///
+  /// In ja, this message translates to:
+  /// **'変更を依頼'**
+  String get gitRequestChange;
+
+  /// No description provided for @gitSendFileBackToAi.
+  ///
+  /// In ja, this message translates to:
+  /// **'フィードバック付きでこのファイルをAIに送る'**
+  String get gitSendFileBackToAi;
+
+  /// No description provided for @gitSendHunkBackToAi.
+  ///
+  /// In ja, this message translates to:
+  /// **'フィードバック付きでこのハンクをAIに送る'**
+  String get gitSendHunkBackToAi;
+
+  /// No description provided for @gitFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'ファイル'**
+  String get gitFiles;
+
+  /// No description provided for @gitRevertAll.
+  ///
+  /// In ja, this message translates to:
+  /// **'すべて元に戻す'**
+  String get gitRevertAll;
+
+  /// No description provided for @gitStageAll.
+  ///
+  /// In ja, this message translates to:
+  /// **'すべてステージ'**
+  String get gitStageAll;
+
+  /// No description provided for @gitUnstageAll.
+  ///
+  /// In ja, this message translates to:
+  /// **'すべてステージ解除'**
+  String get gitUnstageAll;
+
+  /// No description provided for @gitCommit.
+  ///
+  /// In ja, this message translates to:
+  /// **'コミット'**
+  String get gitCommit;
+
+  /// No description provided for @gitCommitAndPush.
+  ///
+  /// In ja, this message translates to:
+  /// **'コミットしてプッシュ'**
+  String get gitCommitAndPush;
+
+  /// No description provided for @gitCommittedHash.
+  ///
+  /// In ja, this message translates to:
+  /// **'コミット済み: {hash}'**
+  String gitCommittedHash(String hash);
+
+  /// No description provided for @gitSuccess.
+  ///
+  /// In ja, this message translates to:
+  /// **'完了'**
+  String get gitSuccess;
+
+  /// No description provided for @gitUnknownError.
+  ///
+  /// In ja, this message translates to:
+  /// **'不明なエラー'**
+  String get gitUnknownError;
+
+  /// No description provided for @gitAutoGenerateWithAi.
+  ///
+  /// In ja, this message translates to:
+  /// **'AIで自動生成'**
+  String get gitAutoGenerateWithAi;
+
+  /// No description provided for @gitCommitMessage.
+  ///
+  /// In ja, this message translates to:
+  /// **'コミットメッセージ'**
+  String get gitCommitMessage;
+
+  /// No description provided for @gitAutoGenerateMessage.
+  ///
+  /// In ja, this message translates to:
+  /// **'コミットメッセージを自動生成'**
+  String get gitAutoGenerateMessage;
+
+  /// No description provided for @gitCommitting.
+  ///
+  /// In ja, this message translates to:
+  /// **'コミット中...'**
+  String get gitCommitting;
+
+  /// No description provided for @gitPushing.
+  ///
+  /// In ja, this message translates to:
+  /// **'プッシュ中...'**
+  String get gitPushing;
+
+  /// No description provided for @gitBranches.
+  ///
+  /// In ja, this message translates to:
+  /// **'ブランチ'**
+  String get gitBranches;
+
+  /// No description provided for @gitNewBranch.
+  ///
+  /// In ja, this message translates to:
+  /// **'新しいブランチ'**
+  String get gitNewBranch;
+
+  /// No description provided for @gitSearchBranches.
+  ///
+  /// In ja, this message translates to:
+  /// **'ブランチを検索...'**
+  String get gitSearchBranches;
+
+  /// No description provided for @gitBranchInUseByWorktree.
+  ///
+  /// In ja, this message translates to:
+  /// **'別のワークツリーで使用中'**
+  String get gitBranchInUseByWorktree;
+
+  /// No description provided for @gitBranchNameHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'ブランチ名（例: feat/login）'**
+  String get gitBranchNameHint;
+
+  /// No description provided for @gitCreateAndCheckout.
+  ///
+  /// In ja, this message translates to:
+  /// **'作成してチェックアウト'**
+  String get gitCreateAndCheckout;
+
+  /// No description provided for @gitNoUpstream.
+  ///
+  /// In ja, this message translates to:
+  /// **'アップストリームなし'**
+  String get gitNoUpstream;
+
+  /// No description provided for @gitImageTooLarge.
+  ///
+  /// In ja, this message translates to:
+  /// **'画像が大きすぎてプレビューできません'**
+  String get gitImageTooLarge;
+
+  /// No description provided for @gitImagePreviewUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'画像プレビューを利用できません'**
+  String get gitImagePreviewUnavailable;
+
+  /// No description provided for @gitTapToLoadPreview.
+  ///
+  /// In ja, this message translates to:
+  /// **'タップしてプレビューを読み込む'**
+  String get gitTapToLoadPreview;
+
+  /// No description provided for @gitFocusDiff.
+  ///
+  /// In ja, this message translates to:
+  /// **'diff集中表示'**
+  String get gitFocusDiff;
+
+  /// No description provided for @gitExitFocusMode.
+  ///
+  /// In ja, this message translates to:
+  /// **'集中モードを終了'**
+  String get gitExitFocusMode;
+
+  /// No description provided for @gitNoStagedFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'ステージ済みファイルはありません'**
+  String get gitNoStagedFiles;
+
+  /// No description provided for @gitPullCommits.
+  ///
+  /// In ja, this message translates to:
+  /// **'{count}件のコミットをプル'**
+  String gitPullCommits(int count);
+
+  /// No description provided for @gitPullUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'プルできません'**
+  String get gitPullUnavailable;
+
+  /// No description provided for @gitPushCommits.
+  ///
+  /// In ja, this message translates to:
+  /// **'{count}件のコミットをプッシュ'**
+  String gitPushCommits(int count);
+
+  /// No description provided for @gitPushUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'プッシュできません'**
+  String get gitPushUnavailable;
 }
 
 class _AppLocalizationsDelegate

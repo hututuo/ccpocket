@@ -15,13 +15,17 @@ import 'package:ccpocket/services/mock_bridge_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/utils/diff_parser.dart';
 
-Widget _wrap(Widget child, {BridgeService? bridge}) {
+Widget _wrap(
+  Widget child, {
+  BridgeService? bridge,
+  Locale locale = const Locale('en'),
+}) {
   return RepositoryProvider<BridgeService>.value(
     value: bridge ?? BridgeService(),
     child: MaterialApp(
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
-      locale: const Locale('en'),
+      locale: locale,
       theme: AppTheme.darkTheme,
       home: child,
     ),
@@ -174,6 +178,25 @@ void main() {
   });
 
   group('GitScreen - project mode hunk actions', () {
+    testWidgets('uses localized project actions', (tester) async {
+      final bridge = MockBridgeService()..mockDiff = _multiFileDiff;
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(
+        _wrap(
+          const GitScreen(projectPath: '/tmp/project'),
+          bridge: bridge,
+          locale: const Locale('zh'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('未暂存'), findsOneWidget);
+      expect(find.text('已暂存'), findsOneWidget);
+      expect(find.text('全部还原'), findsOneWidget);
+      expect(find.text('全部暂存'), findsOneWidget);
+    });
+
     testWidgets('lays out project header below the AppBar', (tester) async {
       final bridge = MockBridgeService()..mockDiff = _multiFileDiff;
       addTearDown(bridge.dispose);
@@ -450,7 +473,7 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('git_file_list_button')));
       await tester.pumpAndSettle();
 
-      expect(find.text('1 files • Staged'), findsOneWidget);
+      expect(find.text('1 file • Staged'), findsOneWidget);
       expect(
         find.descendant(
           of: find.byKey(const ValueKey('git_file_list_tree')),

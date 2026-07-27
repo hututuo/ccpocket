@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../state/git_view_state.dart';
 
 class GitViewModeSegment extends StatelessWidget {
@@ -15,6 +16,7 @@ class GitViewModeSegment extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
     final selectedAlignment = viewMode == GitViewMode.unstaged
         ? Alignment.centerLeft
         : Alignment.centerRight;
@@ -61,7 +63,7 @@ class GitViewModeSegment extends StatelessWidget {
               Expanded(
                 child: _ViewModeTabButton(
                   key: const ValueKey('unstaged_tab_button'),
-                  label: 'Unstaged',
+                  label: l.gitUnstaged,
                   selected: viewMode == GitViewMode.unstaged,
                   onTap: () => onChanged(GitViewMode.unstaged),
                 ),
@@ -69,7 +71,7 @@ class GitViewModeSegment extends StatelessWidget {
               Expanded(
                 child: _ViewModeTabButton(
                   key: const ValueKey('staged_tab_button'),
-                  label: 'Staged',
+                  label: l.gitStaged,
                   selected: viewMode == GitViewMode.staged,
                   onTap: () => onChanged(GitViewMode.staged),
                 ),

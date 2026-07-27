@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../state/git_view_cubit.dart';
 import '../state/git_view_state.dart';
 import 'branch_selector_sheet.dart';
@@ -161,6 +162,7 @@ class _SyncActionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final isBusy = state.staging || state.pulling || state.pushing;
 
     return Row(
@@ -171,8 +173,8 @@ class _SyncActionRow extends StatelessWidget {
           icon: Icons.download,
           countLabel: state.hasUpstream ? '${state.commitsBehind}' : '-',
           accessibilityLabel: state.hasUpstream
-              ? 'Pull ${state.commitsBehind} commits'
-              : 'Pull unavailable',
+              ? l.gitPullCommits(state.commitsBehind)
+              : l.gitPullUnavailable,
           loading: state.pulling,
           onPressed: isBusy || !state.hasUpstream || state.commitsBehind == 0
               ? null
@@ -184,8 +186,8 @@ class _SyncActionRow extends StatelessWidget {
           icon: Icons.upload,
           countLabel: state.hasUpstream ? '${state.commitsAhead}' : '-',
           accessibilityLabel: state.hasUpstream
-              ? 'Push ${state.commitsAhead} commits'
-              : 'Push unavailable',
+              ? l.gitPushCommits(state.commitsAhead)
+              : l.gitPushUnavailable,
           loading: state.pushing,
           onPressed: isBusy || state.commitsAhead == 0 ? null : cubit.push,
         ),

@@ -3045,4 +3045,142 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get exploreNoVisibleFiles =>
       'No visible files were found. Generated and cache directories may be hidden.';
+
+  @override
+  String get close => 'Close';
+
+  @override
+  String get gitUnstaged => 'Unstaged';
+
+  @override
+  String get gitStaged => 'Staged';
+
+  @override
+  String get gitStage => 'Stage';
+
+  @override
+  String get gitUnstage => 'Unstage';
+
+  @override
+  String get gitRevert => 'Revert';
+
+  @override
+  String get gitViewFile => 'View File';
+
+  @override
+  String get gitOpenFullCurrentFile => 'Open the full current file';
+
+  @override
+  String get gitDiscardAllChangesInFile => 'Discard all changes in this file';
+
+  @override
+  String get gitDiscardChangesInHunk => 'Discard changes in this hunk';
+
+  @override
+  String get gitRequestChange => 'Request Change';
+
+  @override
+  String get gitSendFileBackToAi => 'Send this file back to AI with feedback';
+
+  @override
+  String get gitSendHunkBackToAi => 'Send this hunk back to AI with feedback';
+
+  @override
+  String get gitFiles => 'Files';
+
+  @override
+  String get gitRevertAll => 'Revert All';
+
+  @override
+  String get gitStageAll => 'Stage All';
+
+  @override
+  String get gitUnstageAll => 'Unstage All';
+
+  @override
+  String get gitCommit => 'Commit';
+
+  @override
+  String get gitCommitAndPush => 'Commit & Push';
+
+  @override
+  String gitCommittedHash(String hash) {
+    return 'Committed: $hash';
+  }
+
+  @override
+  String get gitSuccess => 'Success';
+
+  @override
+  String get gitUnknownError => 'Unknown error';
+
+  @override
+  String get gitAutoGenerateWithAi => 'Auto-generate with AI';
+
+  @override
+  String get gitCommitMessage => 'Commit message';
+
+  @override
+  String get gitAutoGenerateMessage => 'Auto-generate message';
+
+  @override
+  String get gitCommitting => 'Committing...';
+
+  @override
+  String get gitPushing => 'Pushing...';
+
+  @override
+  String get gitBranches => 'Branches';
+
+  @override
+  String get gitNewBranch => 'New Branch';
+
+  @override
+  String get gitSearchBranches => 'Search branches...';
+
+  @override
+  String get gitBranchInUseByWorktree => 'In use by another worktree';
+
+  @override
+  String get gitBranchNameHint => 'Branch name (e.g. feat/login)';
+
+  @override
+  String get gitCreateAndCheckout => 'Create & Checkout';
+
+  @override
+  String get gitNoUpstream => 'No upstream';
+
+  @override
+  String get gitImageTooLarge => 'Image too large for preview';
+
+  @override
+  String get gitImagePreviewUnavailable => 'Image preview not available';
+
+  @override
+  String get gitTapToLoadPreview => 'Tap to load preview';
+
+  @override
+  String get gitFocusDiff => 'Focus diff';
+
+  @override
+  String get gitExitFocusMode => 'Exit focus mode';
+
+  @override
+  String get gitNoStagedFiles => 'No staged files';
+
+  @override
+  String gitPullCommits(int count) {
+    return 'Pull $count commits';
+  }
+
+  @override
+  String get gitPullUnavailable => 'Pull unavailable';
+
+  @override
+  String gitPushCommits(int count) {
+    return 'Push $count commits';
+  }
+
+  @override
+  String get gitPushUnavailable => 'Push unavailable';
 }

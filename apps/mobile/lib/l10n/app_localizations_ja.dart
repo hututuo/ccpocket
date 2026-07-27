@@ -2932,4 +2932,142 @@ class AppLocalizationsJa extends AppLocalizations {
   @override
   String get exploreNoVisibleFiles =>
       '表示可能なファイルが見つかりませんでした。生成フォルダやキャッシュフォルダは非表示の場合があります';
+
+  @override
+  String get close => '閉じる';
+
+  @override
+  String get gitUnstaged => '未ステージ';
+
+  @override
+  String get gitStaged => 'ステージ済み';
+
+  @override
+  String get gitStage => 'ステージ';
+
+  @override
+  String get gitUnstage => 'ステージ解除';
+
+  @override
+  String get gitRevert => '元に戻す';
+
+  @override
+  String get gitViewFile => 'ファイルを表示';
+
+  @override
+  String get gitOpenFullCurrentFile => '現在のファイル全体を開く';
+
+  @override
+  String get gitDiscardAllChangesInFile => 'このファイルの変更をすべて破棄';
+
+  @override
+  String get gitDiscardChangesInHunk => 'このハンクの変更を破棄';
+
+  @override
+  String get gitRequestChange => '変更を依頼';
+
+  @override
+  String get gitSendFileBackToAi => 'フィードバック付きでこのファイルをAIに送る';
+
+  @override
+  String get gitSendHunkBackToAi => 'フィードバック付きでこのハンクをAIに送る';
+
+  @override
+  String get gitFiles => 'ファイル';
+
+  @override
+  String get gitRevertAll => 'すべて元に戻す';
+
+  @override
+  String get gitStageAll => 'すべてステージ';
+
+  @override
+  String get gitUnstageAll => 'すべてステージ解除';
+
+  @override
+  String get gitCommit => 'コミット';
+
+  @override
+  String get gitCommitAndPush => 'コミットしてプッシュ';
+
+  @override
+  String gitCommittedHash(String hash) {
+    return 'コミット済み: $hash';
+  }
+
+  @override
+  String get gitSuccess => '完了';
+
+  @override
+  String get gitUnknownError => '不明なエラー';
+
+  @override
+  String get gitAutoGenerateWithAi => 'AIで自動生成';
+
+  @override
+  String get gitCommitMessage => 'コミットメッセージ';
+
+  @override
+  String get gitAutoGenerateMessage => 'コミットメッセージを自動生成';
+
+  @override
+  String get gitCommitting => 'コミット中...';
+
+  @override
+  String get gitPushing => 'プッシュ中...';
+
+  @override
+  String get gitBranches => 'ブランチ';
+
+  @override
+  String get gitNewBranch => '新しいブランチ';
+
+  @override
+  String get gitSearchBranches => 'ブランチを検索...';
+
+  @override
+  String get gitBranchInUseByWorktree => '別のワークツリーで使用中';
+
+  @override
+  String get gitBranchNameHint => 'ブランチ名（例: feat/login）';
+
+  @override
+  String get gitCreateAndCheckout => '作成してチェックアウト';
+
+  @override
+  String get gitNoUpstream => 'アップストリームなし';
+
+  @override
+  String get gitImageTooLarge => '画像が大きすぎてプレビューできません';
+
+  @override
+  String get gitImagePreviewUnavailable => '画像プレビューを利用できません';
+
+  @override
+  String get gitTapToLoadPreview => 'タップしてプレビューを読み込む';
+
+  @override
+  String get gitFocusDiff => 'diff集中表示';
+
+  @override
+  String get gitExitFocusMode => '集中モードを終了';
+
+  @override
+  String get gitNoStagedFiles => 'ステージ済みファイルはありません';
+
+  @override
+  String gitPullCommits(int count) {
+    return '$count件のコミットをプル';
+  }
+
+  @override
+  String get gitPullUnavailable => 'プルできません';
+
+  @override
+  String gitPushCommits(int count) {
+    return '$count件のコミットをプッシュ';
+  }
+
+  @override
+  String get gitPushUnavailable => 'プッシュできません';
 }

@@ -5,6 +5,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ccpocket/features/git/widgets/branch_selector_sheet.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 
@@ -43,8 +44,14 @@ class MockBranchBridgeService extends BridgeService {
   }
 }
 
-Widget _buildTestApp(MockBranchBridgeService mockBridge) {
+Widget _buildTestApp(
+  MockBranchBridgeService mockBridge, {
+  Locale locale = const Locale('en'),
+}) {
   return MaterialApp(
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    locale: locale,
     home: RepositoryProvider<BridgeService>.value(
       value: mockBridge,
       child: Builder(
@@ -254,6 +261,41 @@ void main() {
       expect(
         find.byKey(const ValueKey('new_branch_name_field')),
         findsOneWidget,
+      );
+    });
+
+    testWidgets('uses localized branch controls', (tester) async {
+      await tester.pumpWidget(
+        _buildTestApp(mockBridge, locale: const Locale('zh')),
+      );
+      await tester.tap(find.text('Open'));
+      await tester.pump();
+
+      mockBridge.emitBranches(
+        const GitBranchesResultMessage(
+          current: 'main',
+          branches: ['main', 'feature/test'],
+          remoteStatusByBranch: {
+            'feature/test': GitBranchRemoteStatus(
+              ahead: 0,
+              behind: 0,
+              hasUpstream: false,
+            ),
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('分支'), findsOneWidget);
+      expect(find.text('没有上游分支'), findsWidgets);
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const ValueKey('branch_search_field')),
+            )
+            .decoration
+            ?.hintText,
+        '搜索分支…',
       );
     });
   });

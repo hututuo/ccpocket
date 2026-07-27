@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../models/git_diff_interaction_mode.dart';
 import '../../../theme/code_text_style.dart';
 import '../../../utils/diff_parser.dart';
@@ -219,10 +220,11 @@ class _SwipeStageDismissible extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     // Determine left swipe action: Revert takes priority, then Unstage
     final hasLeftAction = onSwipeRevert != null || onSwipeUnstage != null;
     final isRevert = onSwipeRevert != null;
-    final leftLabel = isRevert ? 'Revert' : 'Unstage';
+    final leftLabel = isRevert ? l.gitRevert : l.gitUnstage;
     final leftIcon = isRevert ? Icons.undo : Icons.remove_circle_outline;
 
     // Determine swipe direction
@@ -250,11 +252,11 @@ class _SwipeStageDismissible extends StatelessWidget {
         return false;
       },
       background: onSwipeStage != null
-          ? const GitSwipeActionBackground(
+          ? GitSwipeActionBackground(
               alignment: Alignment.topLeft,
-              padding: EdgeInsets.only(left: 12, top: 10),
+              padding: const EdgeInsets.only(left: 12, top: 10),
               icon: Icons.add_circle_outline,
-              label: 'Stage',
+              label: l.gitStage,
               tone: GitSwipeActionTone.primary,
             )
           : hasLeftAction

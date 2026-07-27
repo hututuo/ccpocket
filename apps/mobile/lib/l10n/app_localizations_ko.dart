@@ -2962,4 +2962,142 @@ class AppLocalizationsKo extends AppLocalizations {
   @override
   String get exploreNoVisibleFiles =>
       '표시할 파일을 찾지 못했습니다. 생성 폴더와 캐시 폴더는 숨겨져 있을 수 있습니다.';
+
+  @override
+  String get close => '닫기';
+
+  @override
+  String get gitUnstaged => '스테이징되지 않음';
+
+  @override
+  String get gitStaged => '스테이징됨';
+
+  @override
+  String get gitStage => '스테이징';
+
+  @override
+  String get gitUnstage => '스테이징 해제';
+
+  @override
+  String get gitRevert => '되돌리기';
+
+  @override
+  String get gitViewFile => '파일 보기';
+
+  @override
+  String get gitOpenFullCurrentFile => '현재 파일 전체 열기';
+
+  @override
+  String get gitDiscardAllChangesInFile => '이 파일의 모든 변경 사항 버리기';
+
+  @override
+  String get gitDiscardChangesInHunk => '이 변경 블록의 변경 사항 버리기';
+
+  @override
+  String get gitRequestChange => '수정 요청';
+
+  @override
+  String get gitSendFileBackToAi => '피드백과 함께 이 파일을 AI에 보내기';
+
+  @override
+  String get gitSendHunkBackToAi => '피드백과 함께 이 변경 블록을 AI에 보내기';
+
+  @override
+  String get gitFiles => '파일';
+
+  @override
+  String get gitRevertAll => '모두 되돌리기';
+
+  @override
+  String get gitStageAll => '모두 스테이징';
+
+  @override
+  String get gitUnstageAll => '모두 스테이징 해제';
+
+  @override
+  String get gitCommit => '커밋';
+
+  @override
+  String get gitCommitAndPush => '커밋 및 푸시';
+
+  @override
+  String gitCommittedHash(String hash) {
+    return '커밋됨: $hash';
+  }
+
+  @override
+  String get gitSuccess => '완료';
+
+  @override
+  String get gitUnknownError => '알 수 없는 오류';
+
+  @override
+  String get gitAutoGenerateWithAi => 'AI로 자동 생성';
+
+  @override
+  String get gitCommitMessage => '커밋 메시지';
+
+  @override
+  String get gitAutoGenerateMessage => '커밋 메시지 자동 생성';
+
+  @override
+  String get gitCommitting => '커밋 중...';
+
+  @override
+  String get gitPushing => '푸시 중...';
+
+  @override
+  String get gitBranches => '브랜치';
+
+  @override
+  String get gitNewBranch => '새 브랜치';
+
+  @override
+  String get gitSearchBranches => '브랜치 검색...';
+
+  @override
+  String get gitBranchInUseByWorktree => '다른 워크트리에서 사용 중';
+
+  @override
+  String get gitBranchNameHint => '브랜치 이름 (예: feat/login)';
+
+  @override
+  String get gitCreateAndCheckout => '생성 및 체크아웃';
+
+  @override
+  String get gitNoUpstream => '업스트림 없음';
+
+  @override
+  String get gitImageTooLarge => '이미지가 너무 커서 미리 볼 수 없습니다';
+
+  @override
+  String get gitImagePreviewUnavailable => '이미지 미리보기를 사용할 수 없습니다';
+
+  @override
+  String get gitTapToLoadPreview => '탭하여 미리보기 불러오기';
+
+  @override
+  String get gitFocusDiff => 'diff 집중 보기';
+
+  @override
+  String get gitExitFocusMode => '집중 모드 종료';
+
+  @override
+  String get gitNoStagedFiles => '스테이징된 파일 없음';
+
+  @override
+  String gitPullCommits(int count) {
+    return '커밋 $count개 풀';
+  }
+
+  @override
+  String get gitPullUnavailable => '풀할 수 없음';
+
+  @override
+  String gitPushCommits(int count) {
+    return '커밋 $count개 푸시';
+  }
+
+  @override
+  String get gitPushUnavailable => '푸시할 수 없음';
 }

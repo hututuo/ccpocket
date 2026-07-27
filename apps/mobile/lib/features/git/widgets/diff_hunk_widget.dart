@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../models/git_diff_interaction_mode.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/code_text_style.dart';
@@ -438,9 +439,10 @@ class _HunkSwipeDismissible extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final hasLeftAction = onSwipeRevert != null || onSwipeUnstage != null;
     final isRevert = onSwipeRevert != null;
-    final leftLabel = isRevert ? 'Revert' : 'Unstage';
+    final leftLabel = isRevert ? l.gitRevert : l.gitUnstage;
     final leftIcon = isRevert ? Icons.undo : Icons.remove_circle_outline;
 
     final direction = onSwipeStage != null && hasLeftAction
@@ -465,11 +467,11 @@ class _HunkSwipeDismissible extends StatelessWidget {
         return false;
       },
       background: onSwipeStage != null
-          ? const GitSwipeActionBackground(
+          ? GitSwipeActionBackground(
               alignment: Alignment.topLeft,
-              padding: EdgeInsets.only(left: 12, top: 8),
+              padding: const EdgeInsets.only(left: 12, top: 8),
               icon: Icons.add_circle_outline,
-              label: 'Stage',
+              label: l.gitStage,
               tone: GitSwipeActionTone.primary,
             )
           : hasLeftAction

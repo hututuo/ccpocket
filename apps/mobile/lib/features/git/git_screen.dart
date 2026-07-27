@@ -272,7 +272,7 @@ class _GitScreenBodyState extends State<_GitScreenBody> {
                 ? chrome.compactButtonStyle()
                 : null,
             icon: const Icon(Icons.close),
-            tooltip: 'Close',
+            tooltip: l.close,
           )
         : null;
 
@@ -456,44 +456,45 @@ class _GitScreenBodyState extends State<_GitScreenBody> {
     if (fileIdx >= state.files.length) return;
     final file = state.files[fileIdx];
     final isStaged = state.viewMode == GitViewMode.staged;
+    final l = AppLocalizations.of(context);
 
     final action = await showAdaptiveActionMenu<String>(
       context: context,
       position: position,
       header: _DiffActionMenuHeader(filePath: file.filePath),
       items: [
-        const AdaptiveActionMenuItem(
+        AdaptiveActionMenuItem(
           key: ValueKey('git_view_file_action'),
           value: 'view_file',
           icon: Icons.description_outlined,
-          label: 'View File',
-          subtitle: 'Open the full current file',
+          label: l.gitViewFile,
+          subtitle: l.gitOpenFullCurrentFile,
         ),
         if (!isStaged)
-          const AdaptiveActionMenuItem(
+          AdaptiveActionMenuItem(
             value: 'stage',
             icon: Icons.add_circle_outline,
-            label: 'Stage',
+            label: l.gitStage,
           ),
         if (isStaged)
-          const AdaptiveActionMenuItem(
+          AdaptiveActionMenuItem(
             value: 'unstage',
             icon: Icons.remove_circle_outline,
-            label: 'Unstage',
+            label: l.gitUnstage,
           ),
         if (!isStaged)
-          const AdaptiveActionMenuItem(
+          AdaptiveActionMenuItem(
             value: 'revert',
             icon: Icons.undo,
-            label: 'Revert',
-            subtitle: 'Discard all changes in this file',
+            label: l.gitRevert,
+            subtitle: l.gitDiscardAllChangesInFile,
             destructive: true,
           ),
-        const AdaptiveActionMenuItem(
+        AdaptiveActionMenuItem(
           value: 'request_change',
           icon: Icons.rate_review_outlined,
-          label: 'Request Change',
-          subtitle: 'Send this file back to AI with feedback',
+          label: l.gitRequestChange,
+          subtitle: l.gitSendFileBackToAi,
         ),
       ],
     );
@@ -535,6 +536,7 @@ class _GitScreenBodyState extends State<_GitScreenBody> {
     if (hunkIdx >= file.hunks.length) return;
     final hunk = file.hunks[hunkIdx];
     final isStaged = state.viewMode == GitViewMode.staged;
+    final l = AppLocalizations.of(context);
 
     final action = await showAdaptiveActionMenu<String>(
       context: context,
@@ -544,38 +546,38 @@ class _GitScreenBodyState extends State<_GitScreenBody> {
         subtitle: hunk.header,
       ),
       items: [
-        const AdaptiveActionMenuItem(
+        AdaptiveActionMenuItem(
           key: ValueKey('git_view_file_action'),
           value: 'view_file',
           icon: Icons.description_outlined,
-          label: 'View File',
-          subtitle: 'Open the full current file',
+          label: l.gitViewFile,
+          subtitle: l.gitOpenFullCurrentFile,
         ),
         if (!isStaged)
-          const AdaptiveActionMenuItem(
+          AdaptiveActionMenuItem(
             value: 'stage',
             icon: Icons.add_circle_outline,
-            label: 'Stage',
+            label: l.gitStage,
           ),
         if (isStaged)
-          const AdaptiveActionMenuItem(
+          AdaptiveActionMenuItem(
             value: 'unstage',
             icon: Icons.remove_circle_outline,
-            label: 'Unstage',
+            label: l.gitUnstage,
           ),
         if (!isStaged)
-          const AdaptiveActionMenuItem(
+          AdaptiveActionMenuItem(
             value: 'revert',
             icon: Icons.undo,
-            label: 'Revert',
-            subtitle: 'Discard changes in this hunk',
+            label: l.gitRevert,
+            subtitle: l.gitDiscardChangesInHunk,
             destructive: true,
           ),
-        const AdaptiveActionMenuItem(
+        AdaptiveActionMenuItem(
           value: 'request_change',
           icon: Icons.rate_review_outlined,
-          label: 'Request Change',
-          subtitle: 'Send this hunk back to AI with feedback',
+          label: l.gitRequestChange,
+          subtitle: l.gitSendHunkBackToAi,
         ),
       ],
     );
@@ -612,20 +614,23 @@ class _GitScreenBodyState extends State<_GitScreenBody> {
   }) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Revert'),
-          ),
-        ],
-      ),
+      builder: (dialogContext) {
+        final l = AppLocalizations.of(dialogContext);
+        return AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text(l.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(l.gitRevert),
+            ),
+          ],
+        );
+      },
     );
 
     if (confirmed == true) {
@@ -667,7 +672,9 @@ class _FocusModeButton extends StatelessWidget {
     return IconButton(
       key: ValueKey(active ? 'git_focus_exit_button' : 'git_focus_button'),
       icon: Icon(active ? Icons.fullscreen_exit : Icons.fullscreen),
-      tooltip: active ? 'Exit focus mode' : 'Focus diff',
+      tooltip: active
+          ? AppLocalizations.of(context).gitExitFocusMode
+          : AppLocalizations.of(context).gitFocusDiff,
       style: active ? _gitFocusChromeButtonStyle(context) : null,
       onPressed: onPressed,
     );
@@ -735,7 +742,7 @@ class _FileListAppBarButton extends StatelessWidget {
 
     return IconButton(
       key: const ValueKey('git_file_list_button'),
-      tooltip: 'Files',
+      tooltip: AppLocalizations.of(context).gitFiles,
       onPressed: onPressed,
       icon: Stack(
         clipBehavior: Clip.none,
@@ -906,6 +913,7 @@ class _DiffBottomBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
 
     // Calculate stats from visible files
     final files = state.files;
@@ -936,7 +944,7 @@ class _DiffBottomBar extends StatelessWidget {
                   children: [
                     if (files.isNotEmpty) ...[
                       Text(
-                        '${files.length} files',
+                        l.fileCount(files.length),
                         style: TextStyle(
                           fontSize: 12,
                           color: cs.onSurfaceVariant,
@@ -989,7 +997,7 @@ class _DiffBottomBar extends StatelessWidget {
                           child: _ActionButton(
                             key: const ValueKey('revert_all_button'),
                             icon: Icons.undo,
-                            label: 'Revert All',
+                            label: l.gitRevertAll,
                             isError: true,
                             onPressed: _isBusy || files.isEmpty
                                 ? null
@@ -1001,7 +1009,7 @@ class _DiffBottomBar extends StatelessWidget {
                           child: _ActionButton(
                             key: const ValueKey('stage_all_button'),
                             icon: Icons.add_circle_outline,
-                            label: 'Stage All',
+                            label: l.gitStageAll,
                             primary: true,
                             onPressed: _isBusy || files.isEmpty
                                 ? null
@@ -1014,7 +1022,7 @@ class _DiffBottomBar extends StatelessWidget {
                           child: _ActionButton(
                             key: const ValueKey('unstage_all_button'),
                             icon: Icons.remove_circle_outline,
-                            label: 'Unstage All',
+                            label: l.gitUnstageAll,
                             onPressed: _isBusy || files.isEmpty
                                 ? null
                                 : cubit.unstageAll,
@@ -1025,7 +1033,7 @@ class _DiffBottomBar extends StatelessWidget {
                           child: _ActionButton(
                             key: const ValueKey('commit_button'),
                             icon: Icons.check,
-                            label: 'Commit',
+                            label: l.gitCommit,
                             primary: true,
                             onPressed: _isBusy ? null : onCommit,
                           ),

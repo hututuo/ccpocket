@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../theme/app_theme.dart';
 import '../../../utils/diff_parser.dart';
 import '../../../utils/image_decode_size.dart';
@@ -162,6 +163,7 @@ class _TextOnlyNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -171,8 +173,8 @@ class _TextOnlyNotice extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             imageData.oldSize != null || imageData.newSize != null
-                ? 'Image too large for preview'
-                : 'Image preview not available',
+                ? l.gitImageTooLarge
+                : l.gitImagePreviewUnavailable,
             style: TextStyle(color: appColors.subtleText),
           ),
           const SizedBox(height: 4),
@@ -202,6 +204,7 @@ class _TapToLoadNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -221,7 +224,7 @@ class _TapToLoadNotice extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onLoadRequested,
               icon: const Icon(Icons.download_outlined, size: 18),
-              label: const Text('Tap to load preview'),
+              label: Text(l.gitTapToLoadPreview),
             ),
         ],
       ),
@@ -246,6 +249,7 @@ class _SideBySideView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
       child: Column(
@@ -259,10 +263,10 @@ class _SideBySideView extends StatelessWidget {
                 // Before
                 Expanded(
                   child: _ImagePanel(
-                    label: 'Before',
+                    label: l.diffBefore,
                     bytes: imageData.oldBytes,
                     isSvg: imageData.isSvg,
-                    placeholder: file.isNewFile ? 'New file' : null,
+                    placeholder: file.isNewFile ? l.diffNewFile : null,
                     appColors: appColors,
                   ),
                 ),
@@ -270,10 +274,10 @@ class _SideBySideView extends StatelessWidget {
                 // After
                 Expanded(
                   child: _ImagePanel(
-                    label: 'After',
+                    label: l.diffAfter,
                     bytes: imageData.newBytes,
                     isSvg: imageData.isSvg,
-                    placeholder: file.isDeleted ? 'Deleted' : null,
+                    placeholder: file.isDeleted ? l.diffDeleted : null,
                     appColors: appColors,
                   ),
                 ),

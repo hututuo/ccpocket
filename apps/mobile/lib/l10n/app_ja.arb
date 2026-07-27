@@ -1262,5 +1262,70 @@
   "exploreRecentOpenFiles": "最近開いたファイル",
   "exploreNoRecentOpenFiles": "最近開いたファイルはありません",
   "exploreNoFiles": "参照できるファイルがありません",
-  "exploreNoVisibleFiles": "表示可能なファイルが見つかりませんでした。生成フォルダやキャッシュフォルダは非表示の場合があります"
+  "exploreNoVisibleFiles": "表示可能なファイルが見つかりませんでした。生成フォルダやキャッシュフォルダは非表示の場合があります",
+  "close": "閉じる",
+  "gitUnstaged": "未ステージ",
+  "gitStaged": "ステージ済み",
+  "gitStage": "ステージ",
+  "gitUnstage": "ステージ解除",
+  "gitRevert": "元に戻す",
+  "gitViewFile": "ファイルを表示",
+  "gitOpenFullCurrentFile": "現在のファイル全体を開く",
+  "gitDiscardAllChangesInFile": "このファイルの変更をすべて破棄",
+  "gitDiscardChangesInHunk": "このハンクの変更を破棄",
+  "gitRequestChange": "変更を依頼",
+  "gitSendFileBackToAi": "フィードバック付きでこのファイルをAIに送る",
+  "gitSendHunkBackToAi": "フィードバック付きでこのハンクをAIに送る",
+  "gitFiles": "ファイル",
+  "gitRevertAll": "すべて元に戻す",
+  "gitStageAll": "すべてステージ",
+  "gitUnstageAll": "すべてステージ解除",
+  "gitCommit": "コミット",
+  "gitCommitAndPush": "コミットしてプッシュ",
+  "gitCommittedHash": "コミット済み: {hash}",
+  "@gitCommittedHash": {
+    "placeholders": {
+      "hash": {
+        "type": "String"
+      }
+    }
+  },
+  "gitSuccess": "完了",
+  "gitUnknownError": "不明なエラー",
+  "gitAutoGenerateWithAi": "AIで自動生成",
+  "gitCommitMessage": "コミットメッセージ",
+  "gitAutoGenerateMessage": "コミットメッセージを自動生成",
+  "gitCommitting": "コミット中...",
+  "gitPushing": "プッシュ中...",
+  "gitBranches": "ブランチ",
+  "gitNewBranch": "新しいブランチ",
+  "gitSearchBranches": "ブランチを検索...",
+  "gitBranchInUseByWorktree": "別のワークツリーで使用中",
+  "gitBranchNameHint": "ブランチ名（例: feat/login）",
+  "gitCreateAndCheckout": "作成してチェックアウト",
+  "gitNoUpstream": "アップストリームなし",
+  "gitImageTooLarge": "画像が大きすぎてプレビューできません",
+  "gitImagePreviewUnavailable": "画像プレビューを利用できません",
+  "gitTapToLoadPreview": "タップしてプレビューを読み込む",
+  "gitFocusDiff": "diff集中表示",
+  "gitExitFocusMode": "集中モードを終了",
+  "gitNoStagedFiles": "ステージ済みファイルはありません",
+  "gitPullCommits": "{count}件のコミットをプル",
+  "@gitPullCommits": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "gitPullUnavailable": "プルできません",
+  "gitPushCommits": "{count}件のコミットをプッシュ",
+  "@gitPushCommits": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "gitPushUnavailable": "プッシュできません"
 }

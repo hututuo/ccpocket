@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ccpocket/features/git/state/commit_cubit.dart';
 import 'package:ccpocket/features/git/widgets/commit_bottom_sheet.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 
@@ -33,8 +34,11 @@ class MockCommitBridgeService extends BridgeService {
   }
 }
 
-Widget _buildTestApp(CommitCubit cubit) {
+Widget _buildTestApp(CommitCubit cubit, {Locale locale = const Locale('en')}) {
   return MaterialApp(
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    locale: locale,
     home: BlocProvider.value(
       value: cubit,
       child: Builder(
@@ -178,6 +182,16 @@ void main() {
 
       expect(find.text('Committed: abc1234'), findsOneWidget);
       expect(find.text('Done'), findsOneWidget);
+    });
+
+    testWidgets('uses localized commit controls', (tester) async {
+      await tester.pumpWidget(_buildTestApp(cubit, locale: const Locale('zh')));
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('提交'), findsWidgets);
+      expect(find.text('提交并推送'), findsOneWidget);
+      expect(find.text('自动生成提交说明'), findsOneWidget);
     });
   });
 }

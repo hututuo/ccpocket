@@ -12,17 +12,12 @@ class DiffEmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
+    final l = AppLocalizations.of(context);
 
     final (icon, message) = switch (viewMode) {
-      GitViewMode.staged => (Icons.inbox_outlined, 'No staged files'),
-      GitViewMode.unstaged => (
-        Icons.check_circle_outline,
-        AppLocalizations.of(context).noChanges,
-      ),
-      null => (
-        Icons.check_circle_outline,
-        AppLocalizations.of(context).noChanges,
-      ),
+      GitViewMode.staged => (Icons.inbox_outlined, l.gitNoStagedFiles),
+      GitViewMode.unstaged => (Icons.check_circle_outline, l.noChanges),
+      null => (Icons.check_circle_outline, l.noChanges),
     };
 
     return Center(
