@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`77305280`
+核对源码基线：`6e2b46fb`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -78,7 +78,7 @@
 | 会话完成后列表显示未读蓝点，打开可见后再清除 | v01 10.3；v02-014 | durable unread ledger；`bc0601b7` 按 Bridge 隔离 | **代码完成，待设备/部署** | 多 Bridge ledger 回归通过；需真实通知→列表→打开闭环 |
 | 长按通知可 Allow/Reject，Bridge 最终权威复核 | v01 10.4～10.5 | iOS notification category/action + opaque identity；`3226eafb` | **代码完成，待设备/部署** | 小数秒 action 解析已回归；物理 iPhone 长按动作、Face ID/签名待验 |
 | FCM 与定位保活 WebSocket 不能让同一事件重复弹两次 | v01 10；v02-014～015 | `e53dfb82` 增加 additive `deliveryId`/本地展示 ACK、750 ms FCM 安全兜底和 WS-token 关联；`84f2db77` 让 Cloud 只排除已确认本地展示的 token | **代码完成，待设备/部署** | Bridge 相关 431 项、Cloud 24 项、Mobile 16 项与 5 文件 analyze 全通过；本地展示失败或旧 Mobile 无 ACK 时仍发送 FCM。旧 Bridge/旧 Cloud 忽略加法字段且不丢通知；真正去重需 Cloud、Bridge 与新 Mobile 全链部署，并在物理 iPhone 验证前后台各只出现一次 |
-| 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | `5562e535`、`5cd90b8f`、`50e60902`、`f23c9187`、`b431221c`、`932f8bec`、`bfe4bd5a`、`72a96edc`、`b197f0d6`、`77305280`；ARB + feature strings | **部分完成** | 会话状态/审批、Explore、Git、文件传输、slash command、二维码、截图、工具活动/运行过程，以及主题、许可、Bridge 设备、终端名、Codex 权限/沙箱/速度和辅助语义已补四语言；75 项高曝光界面回归、31 项新建会话/工作树回归及 13 文件 analyze 通过。ARB 四语言键集现由回归强制一致，57 个生成器会静默忽略的中文死键已移除且仍可从 Git 历史恢复；键集红测与 4 项本地化回归通过。剩余错误提示和长尾固定文案仍需量化扫描后收口 |
+| 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | `5562e535`、`5cd90b8f`、`50e60902`、`f23c9187`、`b431221c`、`932f8bec`、`bfe4bd5a`、`72a96edc`、`b197f0d6`、`77305280`、`6e2b46fb`；ARB + feature strings | **部分完成** | 会话状态/审批、Explore、Git、文件传输、slash command、二维码、截图、工具活动/运行过程，以及主题、许可、Bridge 设备、终端名、Codex 权限/沙箱/速度和辅助语义已补四语言。会话轮次、渐进工具详情、完整 Diff、首页/输入框拖放和悬浮临时会话原先的中英二选一也已补日/韩并移除所有实际二元分支；扫描剩余 6 个 `_zh` 均属于同时含 `_ja/_ko` 的四语言类。ARB 四语言键集由回归强制一致，57 个生成器会静默忽略的中文死键已移除且仍可从 Git 历史恢复；新增/相关 56 项回归、Home 54 项及 14 文件 analyze 通过，只有既有 Markdown `imageBuilder` deprecation info。剩余领域错误映射和其他长尾固定文案仍需量化扫描后收口 |
 
 ## 5. 文件、预览与安全
 
@@ -107,7 +107,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `77305280`，后续深链、安全、通知 ACK、公平调度、历史/会话管理，以及图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent 统一预览、草稿性能和本地化完整性提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `6e2b46fb`，后续深链、安全、通知 ACK、公平调度、历史/会话管理，以及图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent 统一预览、草稿性能和本地化完整性/四语言收束提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -130,7 +130,8 @@ P3 的缓存标题 N+1 已由 `704b5e09` 改成每 300 个身份一批。硬编�
 `50e60902`（Git）、`f23c9187`（文件传输界面与通知）、`b431221c`（slash
 command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（工具活动与
 运行过程）、`b197f0d6`（主题、许可、机器管理、权限、沙箱与速度）、`77305280`
-（ARB 键集一致性门禁）。第 4 节列出的长尾
+（ARB 键集一致性门禁）、`6e2b46fb`（会话历史、工具详情、拖放与悬浮临时会话
+四语言）。第 4 节列出的长尾
 仍然是系统性本地化工作，不能因这些高曝光面已完成就提前关闭。
 
 ## 8. 下一实施顺序
