@@ -37,6 +37,7 @@ const originalBridgeEnv = {
   codexAssistModel: process.env.BRIDGE_CODEX_ASSIST_MODEL,
   codexAssistReasoningEffort:
     process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT,
+  codexHome: process.env.CODEX_HOME,
   codexAppServerMode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
   codexSharedAppServerUrl: process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL,
   codexAppServerPort: process.env.BRIDGE_CODEX_APP_SERVER_PORT,
@@ -80,6 +81,7 @@ describe("setup-launchd", () => {
       expect(content).not.toContain("BRIDGE_DISABLE_MDNS");
       expect(content).not.toContain("BRIDGE_CODEX_ASSIST_MODEL");
       expect(content).not.toContain("BRIDGE_CODEX_ASSIST_REASONING_EFFORT");
+      expect(content).not.toContain("<key>CODEX_HOME</key>");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
     });
@@ -119,6 +121,18 @@ describe("setup-launchd", () => {
         "<key>BRIDGE_CODEX_ASSIST_REASONING_EFFORT</key>",
       );
       expect(content).toContain("<string>low</string>");
+    });
+
+    it("persists the explicit Codex home used by app-server and readers", () => {
+      process.env.CODEX_HOME = "/Users/testuser/Codex & Cockpit";
+
+      setupLaunchd({});
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("<key>CODEX_HOME</key>");
+      expect(content).toContain(
+        "<string>/Users/testuser/Codex &amp; Cockpit</string>",
+      );
     });
 
     it("includes BRIDGE_DISABLE_MDNS when requested", () => {
@@ -268,6 +282,7 @@ function clearBridgeEnv(): void {
   delete process.env.BRIDGE_DISABLE_MDNS;
   delete process.env.BRIDGE_CODEX_ASSIST_MODEL;
   delete process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT;
+  delete process.env.CODEX_HOME;
   delete process.env.BRIDGE_CODEX_APP_SERVER_MODE;
   delete process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL;
   delete process.env.BRIDGE_CODEX_APP_SERVER_PORT;
@@ -299,6 +314,7 @@ function restoreBridgeEnv(): void {
     "BRIDGE_CODEX_ASSIST_REASONING_EFFORT",
     originalBridgeEnv.codexAssistReasoningEffort,
   );
+  restoreEnvVar("CODEX_HOME", originalBridgeEnv.codexHome);
   restoreEnvVar(
     "BRIDGE_CODEX_APP_SERVER_MODE",
     originalBridgeEnv.codexAppServerMode,

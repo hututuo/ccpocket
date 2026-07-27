@@ -1,6 +1,6 @@
 import { open, opendir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveCodexSessionsDir } from "../codex-home.js";
 import type { SessionUsageInfoPayload } from "./protocol.js";
 import { parseCodexAccountRateLimits } from "./account-usage.js";
 
@@ -43,7 +43,7 @@ export async function fetchBoundedCodexUsageFallback(
   options: BoundedUsageFallbackOptions = {},
 ): Promise<SessionUsageInfoPayload[]> {
   const sessionsDir =
-    options.sessionsDir ?? join(homedir(), ".codex", "sessions");
+    options.sessionsDir ?? resolveCodexSessionsDir();
   const maxDays = boundedPositiveInteger(
     options.maxDays,
     DEFAULT_MAX_DAYS,

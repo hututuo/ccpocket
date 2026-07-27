@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveCodexSessionsDir } from "./codex-home.js";
 
 // ── Types ──
 
@@ -75,7 +75,7 @@ export function mapCodexRateLimits(
  */
 export async function fetchCodexUsage(): Promise<UsageInfo> {
   try {
-    const sessionsDir = join(homedir(), ".codex", "sessions");
+    const sessionsDir = resolveCodexSessionsDir();
 
     // Check if sessions directory exists
     try {

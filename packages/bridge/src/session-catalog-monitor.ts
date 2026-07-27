@@ -2,6 +2,7 @@ import { watch, type Dirent, type FSWatcher } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { resolveCodexHome } from "./codex-home.js";
 
 type CatalogRootKind = "claudeProjects" | "codexRoot" | "codexSessions";
 
@@ -52,6 +53,7 @@ const DEFAULT_MAX_WATCHED_DIRECTORIES = 1_024;
 
 function defaultRoots(): CatalogRoot[] {
   const home = homedir();
+  const codexHome = resolveCodexHome({ homeDir: home });
   return [
     {
       path: join(home, ".claude", "projects"),
@@ -59,12 +61,12 @@ function defaultRoots(): CatalogRoot[] {
       maxDepth: 1,
     },
     {
-      path: join(home, ".codex"),
+      path: codexHome,
       kind: "codexRoot",
       maxDepth: 0,
     },
     {
-      path: join(home, ".codex", "sessions"),
+      path: join(codexHome, "sessions"),
       kind: "codexSessions",
       maxDepth: 4,
     },

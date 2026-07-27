@@ -966,17 +966,69 @@ describe("scanJsonlDir", () => {
 describe("codex sessions integration", () => {
   const oldHome = process.env.HOME;
   const oldUserProfile = process.env.USERPROFILE;
+  const oldCodexHome = process.env.CODEX_HOME;
   const tempHome = mkdtempSync(join(tmpdir(), "ccpocket-test-codex-home-"));
 
   beforeEach(() => {
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
+    delete process.env.CODEX_HOME;
   });
 
   afterEach(() => {
     process.env.HOME = oldHome;
     process.env.USERPROFILE = oldUserProfile;
+    if (oldCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = oldCodexHome;
+    }
     rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it("uses CODEX_HOME instead of mixing an isolated app-server with ~/.codex", async () => {
+    const selectedThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68020";
+    const defaultThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68021";
+    const isolatedHome = join(tempHome, "cockpit-codex-home");
+    process.env.CODEX_HOME = isolatedHome;
+
+    const writeRollout = (root: string, threadId: string, prompt: string) => {
+      const sessionsDir = join(root, "sessions", "2026", "02", "13");
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(
+        join(
+          sessionsDir,
+          `rollout-2026-02-13T11-26-43-${threadId}.jsonl`,
+        ),
+        [
+          JSON.stringify({
+            timestamp: "2026-02-13T11:26:43.995Z",
+            type: "session_meta",
+            payload: { id: threadId, cwd: "/tmp/project-a" },
+          }),
+          JSON.stringify({
+            timestamp: "2026-02-13T11:26:44.100Z",
+            type: "event_msg",
+            payload: { type: "user_message", message: prompt },
+          }),
+        ].join("\n"),
+      );
+    };
+
+    writeRollout(isolatedHome, selectedThreadId, "selected home");
+    writeRollout(join(tempHome, ".codex"), defaultThreadId, "wrong home");
+
+    const { sessions } = await getAllRecentSessions({
+      provider: "codex",
+      limit: 20,
+    });
+
+    expect(sessions.map((session) => session.sessionId)).toContain(
+      selectedThreadId,
+    );
+    expect(sessions.map((session) => session.sessionId)).not.toContain(
+      defaultThreadId,
+    );
   });
 
   it("includes codex sessions in getAllRecentSessions", async () => {

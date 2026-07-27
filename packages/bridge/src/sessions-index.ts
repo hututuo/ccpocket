@@ -13,6 +13,10 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
 import { isAutoRenamePromptText } from "./auto-rename.js";
+import {
+  resolveCodexHome,
+  resolveCodexSessionsDir,
+} from "./codex-home.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import {
   CodexDesktopToolTimelineBuilder,
@@ -1268,7 +1272,7 @@ interface CodexSessionParseResult {
 }
 
 async function listCodexSessionFiles(): Promise<string[]> {
-  const root = join(homedir(), ".codex", "sessions");
+  const root = resolveCodexSessionsDir();
   const files: string[] = [];
   const stack = [root];
 
@@ -1794,7 +1798,7 @@ export async function renameClaudeSession(
  * Read the Codex session_index.jsonl and build a threadId → name map.
  */
 export async function loadCodexSessionNames(): Promise<Map<string, string>> {
-  const indexPath = join(homedir(), ".codex", "session_index.jsonl");
+  const indexPath = join(resolveCodexHome(), "session_index.jsonl");
   const names = new Map<string, string>();
 
   let raw: string;
@@ -1821,7 +1825,7 @@ export async function loadCodexSessionNames(): Promise<Map<string, string>> {
 }
 
 export async function loadCodexSessionProfiles(): Promise<Map<string, string>> {
-  const path = join(homedir(), ".codex", "ccpocket-session-profiles.json");
+  const path = join(resolveCodexHome(), "ccpocket-session-profiles.json");
   let raw: string;
   try {
     raw = await readFile(path, "utf-8");
@@ -1854,7 +1858,7 @@ export async function saveCodexSessionProfile(
   threadId: string,
   profile: string | null,
 ): Promise<void> {
-  const path = join(homedir(), ".codex", "ccpocket-session-profiles.json");
+  const path = join(resolveCodexHome(), "ccpocket-session-profiles.json");
   const existing = await loadCodexSessionProfiles();
   if (profile && profile.trim().length > 0) {
     existing.set(threadId, profile.trim());
@@ -1945,7 +1949,7 @@ export async function renameCodexSession(
   name: string | null,
 ): Promise<boolean> {
   try {
-    const indexPath = join(homedir(), ".codex", "session_index.jsonl");
+    const indexPath = join(resolveCodexHome(), "session_index.jsonl");
     const entry = JSON.stringify({
       id: threadId,
       thread_name: name ?? "",

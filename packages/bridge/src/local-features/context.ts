@@ -3,8 +3,8 @@ import type {
   CodexTokenUsageBreakdown,
 } from "./protocol.js";
 import { open, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveCodexSessionsDir } from "../codex-home.js";
 import type {
   LocalFeatureHandler,
   LocalFeatureHandleContext,
@@ -214,7 +214,7 @@ export async function loadCodexContextUsageFromRollout(
   } = {},
 ): Promise<ContextUsageMessage | null> {
   const sessionsDir =
-    options.sessionsDir ?? join(homedir(), ".codex", "sessions");
+    options.sessionsDir ?? resolveCodexSessionsDir();
   const scanBudget = {
     deadlineAt:
       Date.now() + Math.max(50, Math.min(options.scanDeadlineMs ?? 1_500, 5_000)),

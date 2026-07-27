@@ -15,6 +15,7 @@ import net from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveCodexHome } from "./codex-home.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -158,7 +159,7 @@ export async function checkCliProviders(): Promise<
       if (process.env.OPENAI_API_KEY) {
         authenticated = true;
       } else {
-        const authFile = join(homedir(), ".codex", "auth.json");
+        const authFile = join(resolveCodexHome(), "auth.json");
         if (existsSync(authFile)) {
           authenticated = true;
         } else {
