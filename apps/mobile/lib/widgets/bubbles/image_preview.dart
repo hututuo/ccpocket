@@ -56,7 +56,7 @@ class _SingleImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final url = '$httpBaseUrl${image.url}';
+    final url = resolveImagePreviewUrl(image.url, httpBaseUrl);
     final dataBytes = _decodeDataImageUrl(url);
     // In-bubble preview; the full-screen viewer re-decodes at full size.
     final decodeWidth = decodeWidthForLogical(
@@ -128,7 +128,7 @@ class _ImageThumbnail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final url = '$httpBaseUrl${image.url}';
+    final url = resolveImagePreviewUrl(image.url, httpBaseUrl);
     final dataBytes = _decodeDataImageUrl(url);
     // Horizontal strip thumbnail; width is intrinsic (aspect x height) but
     // never usefully exceeds the screen width.
@@ -186,6 +186,23 @@ class _ImageThumbnail extends StatelessWidget {
       ),
     );
   }
+}
+
+String resolveImagePreviewUrl(String imageUrl, String httpBaseUrl) {
+  final uri = Uri.tryParse(imageUrl);
+  if (uri?.hasScheme == true) return imageUrl;
+
+  if (imageUrl.startsWith('//')) {
+    final baseScheme = Uri.tryParse(httpBaseUrl)?.scheme;
+    if (baseScheme != null && baseScheme.isNotEmpty) {
+      return '$baseScheme:$imageUrl';
+    }
+  }
+
+  if (imageUrl.startsWith('/') || httpBaseUrl.endsWith('/')) {
+    return '$httpBaseUrl$imageUrl';
+  }
+  return '$httpBaseUrl/$imageUrl';
 }
 
 void _openFullScreen(BuildContext context, String url) {

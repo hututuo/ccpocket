@@ -95,6 +95,49 @@ void main() {
     }
   });
 
+  testWidgets('chat bubble keeps inline image URLs intact with a Bridge URL', (
+    tester,
+  ) async {
+    final dataUrl = 'data:image/png;base64,${base64Encode(onePixelPng)}';
+    await tester.pumpWidget(
+      wrap(
+        ImagePreviewWidget(
+          images: [ImageRef(id: 'i1', url: dataUrl, mimeType: 'image/png')],
+          httpBaseUrl: 'http://127.0.0.1:8765',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(Image), findsOneWidget);
+    expect(find.byType(ExtendedImage), findsNothing);
+  });
+
+  test('chat bubble resolves inline, absolute, and relative image URLs', () {
+    expect(
+      resolveImagePreviewUrl(
+        'data:image/png;base64,AAAA',
+        'http://127.0.0.1:8765',
+      ),
+      'data:image/png;base64,AAAA',
+    );
+    expect(
+      resolveImagePreviewUrl(
+        'https://cdn.example.com/image.png',
+        'http://127.0.0.1:8765',
+      ),
+      'https://cdn.example.com/image.png',
+    );
+    expect(
+      resolveImagePreviewUrl('/images/image.png', 'http://127.0.0.1:8765'),
+      'http://127.0.0.1:8765/images/image.png',
+    );
+    expect(
+      resolveImagePreviewUrl('images/image.png', 'http://127.0.0.1:8765'),
+      'http://127.0.0.1:8765/images/image.png',
+    );
+  });
+
   testWidgets('user bubble attachments bound their decode size', (
     tester,
   ) async {
