@@ -2,6 +2,14 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.69.4-compat.2] - 2026-07-27
+
+### Fixed
+- Complete the mobile comprehensive-remediation stack and its independent review follow-up, including stricter browser-origin trust, restart-safe process guards, correlated Git image responses, official approval-policy inheritance, and atomic prompt-history mutations.
+
+### Compatibility
+- Keep native clients without a browser `Origin` compatible, preserve unambiguous legacy Git image responses, and add no required protocol or persisted-schema migration.
+
 ## [1.69.4-compat.1] - 2026-07-25
 
 ### Changed
