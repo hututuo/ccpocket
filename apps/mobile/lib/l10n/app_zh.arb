@@ -1288,5 +1288,16 @@
   "sessionStatusApproveTool": "批准 {toolName}",
   "sessionStatusCleaningContext": "正在整理上下文",
   "unread": "未读",
-  "runningOnDesktop": "正在桌面端运行"
+  "runningOnDesktop": "正在桌面端运行",
+  "exploreRecentFiles": "最近文件",
+  "exploreLoadFailed": "无法加载文件",
+  "exploreBridgeDisconnected": "Bridge 已断开，暂时无法加载文件",
+  "exploreRequestTimedOut": "文件列表请求超时，请检查 Bridge 连接",
+  "explorePathNotAllowed": "这个位置不在当前读取权限范围内",
+  "exploreShowingFirstEntries": "目前显示前 {visibleCount} 项",
+  "exploreShowingEntries": "显示 {visibleCount}/{totalFiles} 项",
+  "exploreRecentOpenFiles": "最近打开的文件",
+  "exploreNoRecentOpenFiles": "暂无最近打开的文件",
+  "exploreNoFiles": "没有可浏览的文件",
+  "exploreNoVisibleFiles": "未找到可见文件；生成目录和缓存目录可能已隐藏"
 }

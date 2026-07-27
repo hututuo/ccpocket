@@ -2855,4 +2855,41 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get runningOnDesktop => '正在桌面端运行';
+
+  @override
+  String get exploreRecentFiles => '最近文件';
+
+  @override
+  String get exploreLoadFailed => '无法加载文件';
+
+  @override
+  String get exploreBridgeDisconnected => 'Bridge 已断开，暂时无法加载文件';
+
+  @override
+  String get exploreRequestTimedOut => '文件列表请求超时，请检查 Bridge 连接';
+
+  @override
+  String get explorePathNotAllowed => '这个位置不在当前读取权限范围内';
+
+  @override
+  String exploreShowingFirstEntries(int visibleCount) {
+    return '目前显示前 $visibleCount 项';
+  }
+
+  @override
+  String exploreShowingEntries(int visibleCount, int totalFiles) {
+    return '显示 $visibleCount/$totalFiles 项';
+  }
+
+  @override
+  String get exploreRecentOpenFiles => '最近打开的文件';
+
+  @override
+  String get exploreNoRecentOpenFiles => '暂无最近打开的文件';
+
+  @override
+  String get exploreNoFiles => '没有可浏览的文件';
+
+  @override
+  String get exploreNoVisibleFiles => '未找到可见文件；生成目录和缓存目录可能已隐藏';
 }

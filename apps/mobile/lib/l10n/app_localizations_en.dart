@@ -3004,4 +3004,45 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get runningOnDesktop => 'Running on Desktop';
+
+  @override
+  String get exploreRecentFiles => 'Recent files';
+
+  @override
+  String get exploreLoadFailed => 'Could not load files';
+
+  @override
+  String get exploreBridgeDisconnected =>
+      'The Bridge disconnected while loading files';
+
+  @override
+  String get exploreRequestTimedOut =>
+      'The file list request timed out. Check the Bridge connection.';
+
+  @override
+  String get explorePathNotAllowed =>
+      'This location is outside the current read permission';
+
+  @override
+  String exploreShowingFirstEntries(int visibleCount) {
+    return 'Showing the first $visibleCount entries';
+  }
+
+  @override
+  String exploreShowingEntries(int visibleCount, int totalFiles) {
+    return 'Showing $visibleCount of $totalFiles entries';
+  }
+
+  @override
+  String get exploreRecentOpenFiles => 'Recent open files';
+
+  @override
+  String get exploreNoRecentOpenFiles => 'No recent open files yet';
+
+  @override
+  String get exploreNoFiles => 'No files to explore';
+
+  @override
+  String get exploreNoVisibleFiles =>
+      'No visible files were found. Generated and cache directories may be hidden.';
 }

@@ -2,6 +2,7 @@ import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../l10n/app_localizations.dart';
 import '../../services/bridge_service.dart';
 import '../../widgets/workspace_pane_chrome.dart';
 import '../file_peek/file_peek_sheet.dart';
@@ -154,6 +155,7 @@ class _ExploreScreenBodyState extends State<_ExploreScreenBody> {
   Widget build(BuildContext context) {
     return BlocBuilder<ExploreCubit, ExploreState>(
       builder: (context, state) {
+        final localizations = AppLocalizations.of(context);
         _ensureHighlightedVisible();
         final cubit = context.read<ExploreCubit>();
         final shell = WorkspaceShellScreen.maybeOf(context);
@@ -179,7 +181,7 @@ class _ExploreScreenBodyState extends State<_ExploreScreenBody> {
           appBar: chrome.wrapAppBar(
             AppBar(
               toolbarHeight: chrome.toolbarHeight,
-              title: chrome.wrapTitle(const Text('Explorer')),
+              title: chrome.wrapTitle(Text(localizations.explorer)),
               automaticallyImplyLeading: !widget.embedded,
               leading: chrome.wrapLeading(leading),
               leadingWidth: chrome.resolveLeadingWidth(
@@ -197,7 +199,7 @@ class _ExploreScreenBodyState extends State<_ExploreScreenBody> {
                       ? chrome.compactButtonStyle()
                       : null,
                   icon: const Icon(Icons.history),
-                  tooltip: 'Recent files',
+                  tooltip: localizations.exploreRecentFiles,
                 ),
               ]),
             ),
@@ -248,6 +250,7 @@ class _ExploreScreenBodyState extends State<_ExploreScreenBody> {
       case ExploreStatus.empty:
         return const ExploreEmptyState();
       case ExploreStatus.error:
+        final localizations = AppLocalizations.of(context);
         return Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -255,7 +258,7 @@ class _ExploreScreenBodyState extends State<_ExploreScreenBody> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  state.error ?? 'Failed to load files',
+                  _exploreFailureMessage(localizations, state.error),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 12),
@@ -263,7 +266,7 @@ class _ExploreScreenBodyState extends State<_ExploreScreenBody> {
                   key: const ValueKey('explore_retry_button'),
                   onPressed: context.read<ExploreCubit>().retry,
                   icon: const Icon(Icons.refresh),
-                  label: const Text('Try again'),
+                  label: Text(localizations.tryAgain),
                 ),
               ],
             ),
@@ -300,9 +303,10 @@ class _FileListTruncatedNotice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final localizations = AppLocalizations.of(context);
     final text = totalFiles == null
-        ? 'Showing the first $visibleCount entries'
-        : 'Showing $visibleCount of $totalFiles entries';
+        ? localizations.exploreShowingFirstEntries(visibleCount)
+        : localizations.exploreShowingEntries(visibleCount, totalFiles!);
     return Container(
       key: const ValueKey('explore_file_list_truncated_notice'),
       width: double.infinity,
@@ -342,6 +346,7 @@ class _RecentFilesSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final subtle = Theme.of(context).colorScheme.onSurfaceVariant;
+    final localizations = AppLocalizations.of(context);
     return SafeArea(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -355,16 +360,19 @@ class _RecentFilesSheet extends StatelessWidget {
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             child: Row(
               children: [
-                Icon(Icons.history, size: 18),
-                SizedBox(width: 8),
+                const Icon(Icons.history, size: 18),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Recent open files',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    localizations.exploreRecentOpenFiles,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -372,9 +380,9 @@ class _RecentFilesSheet extends StatelessWidget {
           ),
           const Divider(height: 1),
           if (recentFiles.isEmpty)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 20, 16, 24),
-              child: Text('No recent open files yet'),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+              child: Text(localizations.exploreNoRecentOpenFiles),
             )
           else
             Flexible(
@@ -414,3 +422,14 @@ class _RecentFilesSheet extends StatelessWidget {
     );
   }
 }
+
+String _exploreFailureMessage(
+  AppLocalizations localizations,
+  String? failureCode,
+) => switch (failureCode) {
+  ExploreFailureCode.bridgeDisconnected =>
+    localizations.exploreBridgeDisconnected,
+  ExploreFailureCode.requestTimedOut => localizations.exploreRequestTimedOut,
+  ExploreFailureCode.pathNotAllowed => localizations.explorePathNotAllowed,
+  _ => localizations.exploreLoadFailed,
+};

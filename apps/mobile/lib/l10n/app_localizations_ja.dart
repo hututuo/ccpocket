@@ -2894,4 +2894,42 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get runningOnDesktop => 'デスクトップで実行中';
+
+  @override
+  String get exploreRecentFiles => '最近のファイル';
+
+  @override
+  String get exploreLoadFailed => 'ファイルを読み込めませんでした';
+
+  @override
+  String get exploreBridgeDisconnected => 'Bridgeとの接続が切れたため、ファイルを読み込めません';
+
+  @override
+  String get exploreRequestTimedOut => 'ファイル一覧の取得がタイムアウトしました。Bridge接続を確認してください';
+
+  @override
+  String get explorePathNotAllowed => 'この場所は現在の読み取り権限の範囲外です';
+
+  @override
+  String exploreShowingFirstEntries(int visibleCount) {
+    return '先頭の$visibleCount件を表示中';
+  }
+
+  @override
+  String exploreShowingEntries(int visibleCount, int totalFiles) {
+    return '$totalFiles件中$visibleCount件を表示中';
+  }
+
+  @override
+  String get exploreRecentOpenFiles => '最近開いたファイル';
+
+  @override
+  String get exploreNoRecentOpenFiles => '最近開いたファイルはありません';
+
+  @override
+  String get exploreNoFiles => '参照できるファイルがありません';
+
+  @override
+  String get exploreNoVisibleFiles =>
+      '表示可能なファイルが見つかりませんでした。生成フォルダやキャッシュフォルダは非表示の場合があります';
 }

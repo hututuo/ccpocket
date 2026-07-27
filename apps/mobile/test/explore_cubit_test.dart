@@ -9,6 +9,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:ccpocket/features/explore/state/explore_cubit.dart';
 import 'package:ccpocket/features/explore/state/explore_state.dart';
 import 'package:ccpocket/features/explore/widgets/explore_empty_state.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
@@ -184,14 +185,16 @@ void main() {
   group('ExploreEmptyState', () {
     testWidgets('renders empty state copy', (tester) async {
       await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: ExploreEmptyState())),
+        const MaterialApp(
+          locale: Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(body: ExploreEmptyState()),
+        ),
       );
 
-      expect(find.text('No files to explore'), findsOneWidget);
-      expect(
-        find.textContaining('No visible files were found'),
-        findsOneWidget,
-      );
+      expect(find.text('没有可浏览的文件'), findsOneWidget);
+      expect(find.textContaining('未找到可见文件'), findsOneWidget);
     });
   });
 
@@ -206,6 +209,9 @@ void main() {
         RepositoryProvider<BridgeService>.value(
           value: bridge,
           child: MaterialApp(
+            locale: const Locale('zh'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
             theme: AppTheme.darkTheme,
             home: const ExploreScreen(
               sessionId: 'session-1',
@@ -231,7 +237,7 @@ void main() {
         find.byKey(const ValueKey('explore_file_list_truncated_notice')),
         findsOneWidget,
       );
-      expect(find.text('Showing the first 2 entries'), findsOneWidget);
+      expect(find.text('目前显示前 2 项'), findsOneWidget);
     });
 
     testWidgets('shows recent open files only and opens file peek', (
@@ -244,6 +250,9 @@ void main() {
         RepositoryProvider<BridgeService>.value(
           value: bridge,
           child: MaterialApp(
+            locale: const Locale('zh'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
             theme: AppTheme.darkTheme,
             home: const ExploreScreen(
               sessionId: 'session-1',
@@ -260,7 +269,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Recent open files'), findsOneWidget);
+      expect(find.text('最近打开的文件'), findsOneWidget);
       expect(find.text('Current location'), findsNothing);
       expect(find.text('Project root'), findsNothing);
 
@@ -343,7 +352,7 @@ void main() {
 
       await Future<void>.delayed(const Duration(milliseconds: 30));
       expect(cubit.state.status, ExploreStatus.error);
-      expect(cubit.state.error, contains('timed out'));
+      expect(cubit.state.error, ExploreFailureCode.requestTimedOut);
 
       cubit.retry();
       expect(cubit.state.status, ExploreStatus.loading);
@@ -380,7 +389,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(cubit.state.status, ExploreStatus.error);
-      expect(cubit.state.error, 'Path not allowed');
+      expect(cubit.state.error, ExploreFailureCode.pathNotAllowed);
     });
 
     test(

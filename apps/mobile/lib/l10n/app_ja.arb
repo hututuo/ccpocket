@@ -1234,5 +1234,33 @@
   },
   "sessionStatusCleaningContext": "コンテキストを整理中",
   "unread": "未読",
-  "runningOnDesktop": "デスクトップで実行中"
+  "runningOnDesktop": "デスクトップで実行中",
+  "exploreRecentFiles": "最近のファイル",
+  "exploreLoadFailed": "ファイルを読み込めませんでした",
+  "exploreBridgeDisconnected": "Bridgeとの接続が切れたため、ファイルを読み込めません",
+  "exploreRequestTimedOut": "ファイル一覧の取得がタイムアウトしました。Bridge接続を確認してください",
+  "explorePathNotAllowed": "この場所は現在の読み取り権限の範囲外です",
+  "exploreShowingFirstEntries": "先頭の{visibleCount}件を表示中",
+  "@exploreShowingFirstEntries": {
+    "placeholders": {
+      "visibleCount": {
+        "type": "int"
+      }
+    }
+  },
+  "exploreShowingEntries": "{totalFiles}件中{visibleCount}件を表示中",
+  "@exploreShowingEntries": {
+    "placeholders": {
+      "visibleCount": {
+        "type": "int"
+      },
+      "totalFiles": {
+        "type": "int"
+      }
+    }
+  },
+  "exploreRecentOpenFiles": "最近開いたファイル",
+  "exploreNoRecentOpenFiles": "最近開いたファイルはありません",
+  "exploreNoFiles": "参照できるファイルがありません",
+  "exploreNoVisibleFiles": "表示可能なファイルが見つかりませんでした。生成フォルダやキャッシュフォルダは非表示の場合があります"
 }

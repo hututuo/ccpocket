@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 
+import '../../../l10n/app_localizations.dart';
+
 class ExploreEmptyState extends StatelessWidget {
   const ExploreEmptyState({super.key});
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    final localizations = AppLocalizations.of(context);
 
     return Center(
       child: Padding(
@@ -20,7 +23,7 @@ class ExploreEmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              'No files to explore',
+              localizations.exploreNoFiles,
               style: textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.w700,
               ),
@@ -28,7 +31,7 @@ class ExploreEmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'No visible files were found. Generated and cache directories may be hidden.',
+              localizations.exploreNoVisibleFiles,
               style: textTheme.bodyMedium,
               textAlign: TextAlign.center,
             ),

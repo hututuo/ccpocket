@@ -2923,4 +2923,43 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get runningOnDesktop => '데스크톱에서 실행 중';
+
+  @override
+  String get exploreRecentFiles => '최근 파일';
+
+  @override
+  String get exploreLoadFailed => '파일을 불러오지 못했습니다';
+
+  @override
+  String get exploreBridgeDisconnected => 'Bridge 연결이 끊겨 파일을 불러올 수 없습니다';
+
+  @override
+  String get exploreRequestTimedOut =>
+      '파일 목록 요청 시간이 초과되었습니다. Bridge 연결을 확인하세요.';
+
+  @override
+  String get explorePathNotAllowed => '이 위치는 현재 읽기 권한 범위 밖에 있습니다';
+
+  @override
+  String exploreShowingFirstEntries(int visibleCount) {
+    return '처음 $visibleCount개 항목 표시 중';
+  }
+
+  @override
+  String exploreShowingEntries(int visibleCount, int totalFiles) {
+    return '$totalFiles개 중 $visibleCount개 표시 중';
+  }
+
+  @override
+  String get exploreRecentOpenFiles => '최근에 연 파일';
+
+  @override
+  String get exploreNoRecentOpenFiles => '최근에 연 파일이 없습니다';
+
+  @override
+  String get exploreNoFiles => '탐색할 파일이 없습니다';
+
+  @override
+  String get exploreNoVisibleFiles =>
+      '표시할 파일을 찾지 못했습니다. 생성 폴더와 캐시 폴더는 숨겨져 있을 수 있습니다.';
 }

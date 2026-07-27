@@ -6,6 +6,13 @@ import '../../../services/bridge_service.dart';
 import '../../../models/messages.dart';
 import 'explore_state.dart';
 
+abstract final class ExploreFailureCode {
+  static const loadFailed = 'load_failed';
+  static const bridgeDisconnected = 'bridge_disconnected';
+  static const requestTimedOut = 'request_timed_out';
+  static const pathNotAllowed = 'path_not_allowed';
+}
+
 class ExploreCubit extends Cubit<ExploreState> {
   final BridgeService bridge;
   final Duration requestTimeout;
@@ -47,7 +54,7 @@ class ExploreCubit extends Cubit<ExploreState> {
       emit(
         state.copyWith(
           status: ExploreStatus.error,
-          error: message.error,
+          error: _failureCodeFor(message),
           fileListTruncated: false,
           totalFiles: null,
         ),
@@ -83,7 +90,12 @@ class ExploreCubit extends Cubit<ExploreState> {
       return;
     }
     _clearPendingLocal();
-    emit(state.copyWith(status: ExploreStatus.error, error: message.message));
+    emit(
+      state.copyWith(
+        status: ExploreStatus.error,
+        error: ExploreFailureCode.pathNotAllowed,
+      ),
+    );
   }
 
   void _onConnectionState(BridgeConnectionState status) {
@@ -95,7 +107,7 @@ class ExploreCubit extends Cubit<ExploreState> {
         emit(
           state.copyWith(
             status: ExploreStatus.error,
-            error: 'Bridge disconnected while loading the file list.',
+            error: ExploreFailureCode.bridgeDisconnected,
           ),
         );
       }
@@ -145,7 +157,7 @@ class ExploreCubit extends Cubit<ExploreState> {
         emit(
           state.copyWith(
             status: ExploreStatus.error,
-            error: 'Failed to request files: $error',
+            error: ExploreFailureCode.loadFailed,
           ),
         );
       }
@@ -164,8 +176,7 @@ class ExploreCubit extends Cubit<ExploreState> {
       emit(
         state.copyWith(
           status: ExploreStatus.error,
-          error:
-              'The file list request timed out. Check the Bridge connection.',
+          error: ExploreFailureCode.requestTimedOut,
         ),
       );
     });
@@ -188,7 +199,7 @@ class ExploreCubit extends Cubit<ExploreState> {
         emit(
           state.copyWith(
             status: ExploreStatus.error,
-            error: 'Failed to request files: $error',
+            error: ExploreFailureCode.loadFailed,
           ),
         );
       }
@@ -204,7 +215,7 @@ class ExploreCubit extends Cubit<ExploreState> {
       emit(
         state.copyWith(
           status: ExploreStatus.error,
-          error: message.error,
+          error: _failureCodeFor(message),
           fileListTruncated: false,
           totalFiles: null,
         ),
@@ -223,7 +234,12 @@ class ExploreCubit extends Cubit<ExploreState> {
       return;
     }
     _clearPendingLocal();
-    emit(state.copyWith(status: ExploreStatus.error, error: message.message));
+    emit(
+      state.copyWith(
+        status: ExploreStatus.error,
+        error: ExploreFailureCode.pathNotAllowed,
+      ),
+    );
   }
 
   void _legacyConnectionReset(String requestId) {
@@ -235,10 +251,15 @@ class ExploreCubit extends Cubit<ExploreState> {
     emit(
       state.copyWith(
         status: ExploreStatus.error,
-        error: 'Bridge disconnected while loading the file list.',
+        error: ExploreFailureCode.bridgeDisconnected,
       ),
     );
   }
+
+  static String _failureCodeFor(FileListMessage message) =>
+      message.errorCode == ExploreFailureCode.pathNotAllowed
+      ? ExploreFailureCode.pathNotAllowed
+      : ExploreFailureCode.loadFailed;
 
   void _finishRequest() {
     final requestId = _pendingRequestId;

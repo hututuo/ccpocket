@@ -5447,6 +5447,72 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'デスクトップで実行中'**
   String get runningOnDesktop;
+
+  /// No description provided for @exploreRecentFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'最近のファイル'**
+  String get exploreRecentFiles;
+
+  /// No description provided for @exploreLoadFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'ファイルを読み込めませんでした'**
+  String get exploreLoadFailed;
+
+  /// No description provided for @exploreBridgeDisconnected.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridgeとの接続が切れたため、ファイルを読み込めません'**
+  String get exploreBridgeDisconnected;
+
+  /// No description provided for @exploreRequestTimedOut.
+  ///
+  /// In ja, this message translates to:
+  /// **'ファイル一覧の取得がタイムアウトしました。Bridge接続を確認してください'**
+  String get exploreRequestTimedOut;
+
+  /// No description provided for @explorePathNotAllowed.
+  ///
+  /// In ja, this message translates to:
+  /// **'この場所は現在の読み取り権限の範囲外です'**
+  String get explorePathNotAllowed;
+
+  /// No description provided for @exploreShowingFirstEntries.
+  ///
+  /// In ja, this message translates to:
+  /// **'先頭の{visibleCount}件を表示中'**
+  String exploreShowingFirstEntries(int visibleCount);
+
+  /// No description provided for @exploreShowingEntries.
+  ///
+  /// In ja, this message translates to:
+  /// **'{totalFiles}件中{visibleCount}件を表示中'**
+  String exploreShowingEntries(int visibleCount, int totalFiles);
+
+  /// No description provided for @exploreRecentOpenFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'最近開いたファイル'**
+  String get exploreRecentOpenFiles;
+
+  /// No description provided for @exploreNoRecentOpenFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'最近開いたファイルはありません'**
+  String get exploreNoRecentOpenFiles;
+
+  /// No description provided for @exploreNoFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'参照できるファイルがありません'**
+  String get exploreNoFiles;
+
+  /// No description provided for @exploreNoVisibleFiles.
+  ///
+  /// In ja, this message translates to:
+  /// **'表示可能なファイルが見つかりませんでした。生成フォルダやキャッシュフォルダは非表示の場合があります'**
+  String get exploreNoVisibleFiles;
 }
 
 class _AppLocalizationsDelegate
