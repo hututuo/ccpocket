@@ -57,7 +57,11 @@ class DesktopContinuityBacklog {
   /// Records an event and returns true only for a previously unseen message
   /// payload. State events are always applied but return false.
   bool record(CodexDesktopContinuityEventMessage message) {
-    final ledger = _ledgerFor(message.sessionId, message.threadId);
+    final ledger = _ledgerFor(
+      message.sessionId,
+      message.threadId,
+      message.bridgeInstanceId,
+    );
     final pending = _pendingFor(message);
     pending
       ..bridgeInstanceId = message.bridgeInstanceId
@@ -105,13 +109,23 @@ class DesktopContinuityBacklog {
     }
   }
 
-  DesktopContinuityBacklogSnapshot? take(String sessionId, {String? threadId}) {
+  DesktopContinuityBacklogSnapshot? take(
+    String sessionId, {
+    String? threadId,
+    String? bridgeInstanceId,
+  }) {
     final pending = _pending[sessionId];
     if (pending == null) return null;
     final expectedThreadId = threadId?.trim();
     if (expectedThreadId != null &&
         expectedThreadId.isNotEmpty &&
         pending.threadId != expectedThreadId) {
+      return null;
+    }
+    final expectedBridgeInstanceId = bridgeInstanceId?.trim();
+    if (expectedBridgeInstanceId != null &&
+        expectedBridgeInstanceId.isNotEmpty &&
+        pending.bridgeInstanceId != expectedBridgeInstanceId) {
       return null;
     }
     _pending.remove(sessionId);
@@ -131,12 +145,20 @@ class DesktopContinuityBacklog {
     _ledgers.clear();
   }
 
-  _ItemKeyLedger _ledgerFor(String sessionId, String threadId) {
+  _ItemKeyLedger _ledgerFor(
+    String sessionId,
+    String threadId,
+    String bridgeInstanceId,
+  ) {
     final existing = _ledgers.remove(sessionId);
-    final ledger = existing == null || existing.threadId != threadId
-        ? _ItemKeyLedger(threadId, maxItemKeysPerSession)
+    final sourceChanged =
+        existing == null ||
+        existing.threadId != threadId ||
+        existing.bridgeInstanceId != bridgeInstanceId;
+    final ledger = sourceChanged
+        ? _ItemKeyLedger(threadId, bridgeInstanceId, maxItemKeysPerSession)
         : existing;
-    if (existing != null && existing.threadId != threadId) {
+    if (existing != null && sourceChanged) {
       _pending.remove(sessionId);
     }
     _ledgers[sessionId] = ledger;
@@ -146,7 +168,10 @@ class DesktopContinuityBacklog {
 
   _PendingSession _pendingFor(CodexDesktopContinuityEventMessage message) {
     final existing = _pending.remove(message.sessionId);
-    final pending = existing == null || existing.threadId != message.threadId
+    final pending =
+        existing == null ||
+            existing.threadId != message.threadId ||
+            existing.bridgeInstanceId != message.bridgeInstanceId
         ? _PendingSession(
             sessionId: message.sessionId,
             threadId: message.threadId,
@@ -173,9 +198,10 @@ class DesktopContinuityBacklog {
 }
 
 class _ItemKeyLedger {
-  _ItemKeyLedger(this.threadId, this.maxKeys);
+  _ItemKeyLedger(this.threadId, this.bridgeInstanceId, this.maxKeys);
 
   final String threadId;
+  final String bridgeInstanceId;
   final int maxKeys;
   final LinkedHashSet<String> itemKeys = LinkedHashSet();
 

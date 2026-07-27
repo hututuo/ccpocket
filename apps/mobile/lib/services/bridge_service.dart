@@ -3874,7 +3874,11 @@ class BridgeService implements BridgeServiceBase {
     String sessionId, {
     String? threadId,
   }) {
-    return _desktopContinuityBacklog.take(sessionId, threadId: threadId);
+    return _desktopContinuityBacklog.take(
+      sessionId,
+      threadId: threadId,
+      bridgeInstanceId: _bridgeInstanceId,
+    );
   }
 
   void clearBackgroundDesktopContinuity(String sessionId) {

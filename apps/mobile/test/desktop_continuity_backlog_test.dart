@@ -8,11 +8,12 @@ CodexDesktopContinuityEventMessage _event({
   String? itemKey,
   ServerMessage? payload,
   String? turnId = 'turn-1',
+  String bridgeInstanceId = 'bridge-1',
 }) {
   return CodexDesktopContinuityEventMessage(
     event: event,
     requestId: 'list-watch',
-    bridgeInstanceId: 'bridge-1',
+    bridgeInstanceId: bridgeInstanceId,
     sessionId: 'session-1',
     threadId: 'thread-1',
     origin: 'desktop_rollout',
@@ -142,6 +143,66 @@ void main() {
     expect(
       (snapshot.transientPayloads.single.payload as StreamDeltaMessage).text,
       'ok',
+    );
+  });
+
+  test('take rejects a backlog owned by another Bridge instance', () {
+    final backlog = DesktopContinuityBacklog();
+    backlog.record(
+      _event(
+        event: CodexDesktopContinuityEventKind.message,
+        itemKey: 'thinking-1',
+        payload: const ThinkingDeltaMessage(text: 'from bridge one'),
+      ),
+    );
+
+    expect(
+      backlog.take(
+        'session-1',
+        threadId: 'thread-1',
+        bridgeInstanceId: 'bridge-2',
+      ),
+      isNull,
+    );
+    expect(
+      backlog.take(
+        'session-1',
+        threadId: 'thread-1',
+        bridgeInstanceId: 'bridge-1',
+      ),
+      isNotNull,
+    );
+  });
+
+  test('new Bridge instance replaces same-id pending source atomically', () {
+    final backlog = DesktopContinuityBacklog();
+    backlog.record(
+      _event(
+        event: CodexDesktopContinuityEventKind.message,
+        itemKey: 'same-key',
+        payload: const ThinkingDeltaMessage(text: 'old source'),
+      ),
+    );
+    backlog.record(
+      _event(
+        event: CodexDesktopContinuityEventKind.message,
+        bridgeInstanceId: 'bridge-2',
+        itemKey: 'same-key',
+        payload: const ThinkingDeltaMessage(text: 'new source'),
+      ),
+    );
+
+    final snapshot = backlog.take(
+      'session-1',
+      threadId: 'thread-1',
+      bridgeInstanceId: 'bridge-2',
+    );
+    expect(snapshot, isNotNull);
+    expect(snapshot!.bridgeInstanceId, 'bridge-2');
+    expect(snapshot.itemKeys, {'same-key'});
+    expect(
+      (snapshot.transientPayloads.single.payload as ThinkingDeltaMessage).text,
+      'new source',
     );
   });
 }
