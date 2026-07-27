@@ -6,6 +6,7 @@ import {
 } from "./background-notification-projector.js";
 
 const context = {
+  deliveryId: "delivery-1",
   sessionId: "session-1",
   provider: "codex" as const,
   label: "同步修复 (ccpocket)",
@@ -163,6 +164,7 @@ describe("background notification projector", () => {
     );
 
     expect(message?.data).toEqual({
+      deliveryId: "delivery-1",
       sessionId: "session-1",
       provider: "codex",
     });
@@ -190,6 +192,7 @@ describe("background notification projector", () => {
     );
 
     expect(message?.data).toEqual({
+      deliveryId: "delivery-1",
       sessionId: "session-1",
       provider: "codex",
       permissionId: "approval-opaque-id",

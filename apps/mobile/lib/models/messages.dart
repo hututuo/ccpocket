@@ -1118,6 +1118,7 @@ sealed class ServerMessage {
         activeWorkCount: json['activeWorkCount'] as int? ?? 0,
       ),
       'background_notification_v1' => BackgroundNotificationMessage(
+        deliveryId: json['deliveryId'] as String? ?? '',
         eventType: json['eventType'] as String? ?? '',
         sessionId: json['sessionId'] as String? ?? '',
         provider: json['provider'] as String? ?? 'claude',
@@ -1973,6 +1974,7 @@ class ClientDeliveryModeStateMessage implements ServerMessage {
 
 class BackgroundNotificationMessage implements ServerMessage {
   const BackgroundNotificationMessage({
+    this.deliveryId = '',
     required this.eventType,
     required this.sessionId,
     required this.provider,
@@ -1982,6 +1984,7 @@ class BackgroundNotificationMessage implements ServerMessage {
     required this.data,
   });
 
+  final String deliveryId;
   final String eventType;
   final String sessionId;
   final String provider;
@@ -5156,6 +5159,12 @@ class ClientMessage {
     'privacyMode': ?privacyMode,
     'enabledEventTypes': ?enabledEventTypes,
   }, delivery: ClientMessageDelivery.ephemeral);
+
+  factory ClientMessage.backgroundNotificationAck(String deliveryId) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'background_notification_ack_v1',
+        'deliveryId': deliveryId,
+      }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.resolveArtifact({
     required String requestId,

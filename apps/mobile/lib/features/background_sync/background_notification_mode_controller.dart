@@ -32,6 +32,8 @@ abstract interface class BackgroundNotificationDeliveryGateway {
     required bool privacyMode,
     required List<String> enabledEventTypes,
   });
+
+  bool acknowledge(String deliveryId);
 }
 
 class BridgeServiceBackgroundNotificationDeliveryGateway
@@ -76,6 +78,10 @@ class BridgeServiceBackgroundNotificationDeliveryGateway
       enabledEventTypes: enabledEventTypes,
     );
   }
+
+  @override
+  bool acknowledge(String deliveryId) =>
+      _bridge.acknowledgeBackgroundNotification(deliveryId);
 }
 
 abstract interface class BackgroundNotificationPresenter {
@@ -598,7 +604,24 @@ class BackgroundNotificationModeController extends ChangeNotifier
         !_notificationPreferences.allowsRemoteEvent(notification.eventType)) {
       return;
     }
-    unawaited(_notifications.show(notification));
+    unawaited(_showAndAcknowledge(notification));
+  }
+
+  Future<void> _showAndAcknowledge(
+    BackgroundNotificationMessage notification,
+  ) async {
+    try {
+      await _notifications.show(notification);
+      if (notification.deliveryId.isNotEmpty) {
+        _delivery.acknowledge(notification.deliveryId);
+      }
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[background-notifications] local display failed',
+        error,
+        stackTrace,
+      );
+    }
   }
 
   void _handleActivityState(BackgroundActivityStateMessage state) {

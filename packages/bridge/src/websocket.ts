@@ -120,11 +120,16 @@ import { generateCommitMessage } from "./git-assist.js";
 import { listWindows, takeScreenshot } from "./screenshot.js";
 import { DebugTraceStore } from "./debug-trace-store.js";
 import { RecordingStore } from "./recording-store.js";
-import { PushRelayClient } from "./push-relay.js";
+import {
+  PushRelayClient,
+  type PushNotifyPayload,
+} from "./push-relay.js";
 import type { FirebaseAuthClient } from "./firebase-auth.js";
 import { type PushLocale, normalizePushLocale, t } from "./push-i18n.js";
 import {
   BACKGROUND_ACTIVITY_STATE_MESSAGE,
+  BACKGROUND_NOTIFICATION_ACK_CAPABILITY,
+  BACKGROUND_NOTIFICATION_ACK_MESSAGE,
   BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
   BACKGROUND_NOTIFICATION_MESSAGE,
   CLIENT_DELIVERY_MODE_STATE_MESSAGE,
@@ -225,6 +230,13 @@ type BackgroundDeliveryClientState = {
   projectionState: BackgroundNotificationProjectionState;
 };
 
+type PendingBackgroundPushDelivery = {
+  payloads: PushNotifyPayload[];
+  candidateTokens: Set<string>;
+  acknowledgedTokens: Set<string>;
+  timer: NodeJS.Timeout;
+};
+
 const FILE_PEEK_TEXT_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_PEEK_READ_CHUNK_BYTES = 64 * 1024;
 const HISTORY_TOOL_DETAIL_FIELD_MAX_BYTES = 64 * 1024;
@@ -274,6 +286,8 @@ const PUSH_NOTIFICATION_PREFERENCES_CAPABILITY =
   "push_notification_preferences_v1";
 const PUSH_PROGRESS_EVENT = "session_progress";
 const PUSH_PROGRESS_MIN_INTERVAL_MS = 45_000;
+const BACKGROUND_PUSH_ACK_WAIT_MS = 750;
+const MAX_PENDING_BACKGROUND_PUSH_DELIVERIES = 128;
 const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
 const SESSION_ACTIVITY_AT_CAPABILITY = "session_activity_at_v1";
 const SESSION_REQUEST_CORRELATION_CAPABILITY = "session_request_correlation_v1";
@@ -1365,6 +1379,11 @@ export class BridgeWebSocketServer {
   private backgroundDeliveryClients = new WeakMap<
     WebSocket,
     BackgroundDeliveryClientState
+  >();
+  private clientPushTokens = new WeakMap<WebSocket, Set<string>>();
+  private pendingBackgroundPushDeliveries = new Map<
+    string,
+    PendingBackgroundPushDelivery
   >();
   // Diagnostic-only: feature behavior remains gated by advertised capabilities.
   private clientMobileRuntime = new WeakMap<
@@ -3993,6 +4012,7 @@ export class BridgeWebSocketServer {
       if (operation.timeout) clearTimeout(operation.timeout);
     }
     this.resumeOperations.clear();
+    this.flushAllPendingBackgroundPushDeliveries();
     this.flushAllDeltaBatches();
     this.sessionManager.destroyAll();
     this.flushAllDeltaBatches();
@@ -4120,6 +4140,11 @@ export class BridgeWebSocketServer {
       this.localFeatures.capabilitiesChanged(ws);
       this.sendPromptHistoryStatus(ws);
       this.refreshSessionCatalogMonitorState();
+      return;
+    }
+
+    if (msg.type === BACKGROUND_NOTIFICATION_ACK_MESSAGE) {
+      this.acknowledgeBackgroundNotification(ws, msg.deliveryId);
       return;
     }
 
@@ -5203,6 +5228,9 @@ export class BridgeWebSocketServer {
               throw error;
             }
           });
+          const clientTokens = this.clientPushTokens.get(ws) ?? new Set();
+          clientTokens.add(msg.token);
+          this.clientPushTokens.set(ws, clientTokens);
           console.log("[ws] push_register: token registered successfully");
           this.sendPushRegistrationResult(ws, msg, {
             operation: "register",
@@ -5268,6 +5296,7 @@ export class BridgeWebSocketServer {
               throw error;
             }
           });
+          this.clientPushTokens.get(ws)?.delete(msg.token);
           console.log("[ws] push_unregister: token unregistered successfully");
           this.sendPushRegistrationResult(ws, msg, {
             operation: "unregister",
@@ -10075,6 +10104,7 @@ export class BridgeWebSocketServer {
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
+        BACKGROUND_NOTIFICATION_ACK_CAPABILITY,
         EPHEMERAL_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
@@ -10142,6 +10172,7 @@ export class BridgeWebSocketServer {
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
+        BACKGROUND_NOTIFICATION_ACK_CAPABILITY,
         EPHEMERAL_SIDE_CHAT_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
@@ -10223,8 +10254,11 @@ export class BridgeWebSocketServer {
     }
 
     this.flushSessionDeltaBatches(sessionId);
-    this.trackSessionMessage(sessionId, msg);
-    this.broadcastSessionMessageNow(sessionId, msg, exclude);
+    const deliveryId = this.isBackgroundNotificationCandidate(msg)
+      ? randomUUID()
+      : undefined;
+    this.trackSessionMessage(sessionId, msg, deliveryId);
+    this.broadcastSessionMessageNow(sessionId, msg, exclude, deliveryId);
     const session = this.sessionManager.get(sessionId);
     if (session) this.localFeatures.sessionMessage(session, msg);
   }
@@ -10475,8 +10509,12 @@ export class BridgeWebSocketServer {
     return true;
   }
 
-  private trackSessionMessage(sessionId: string, msg: ServerMessage): void {
-    this.maybeSendPushNotification(sessionId, msg);
+  private trackSessionMessage(
+    sessionId: string,
+    msg: ServerMessage,
+    deliveryId?: string,
+  ): void {
+    this.maybeSendPushNotification(sessionId, msg, deliveryId);
     this.recordDebugEvent(sessionId, {
       direction: "outgoing",
       channel: "session",
@@ -10507,6 +10545,7 @@ export class BridgeWebSocketServer {
     sessionId: string,
     msg: ServerMessage,
     exclude?: WebSocket,
+    deliveryId?: string,
   ): void {
     for (const client of this.wss.clients) {
       if (client === exclude) continue;
@@ -10514,17 +10553,20 @@ export class BridgeWebSocketServer {
         const backgroundDelivery = this.backgroundDeliveryClients.get(client);
         if (backgroundDelivery?.mode === "notifications_only") {
           const projectionSession = this.sessionManager.get(sessionId);
-          const notification = projectBackgroundNotification(
-            msg,
-            {
-              sessionId,
-              provider: projectionSession?.provider ?? "claude",
-              providerSessionId: projectionSession?.claudeSessionId,
-              label: this.sessionLabel(sessionId),
-            },
-            backgroundDelivery.policy,
-            backgroundDelivery.projectionState,
-          );
+          const notification = deliveryId
+            ? projectBackgroundNotification(
+                msg,
+                {
+                  deliveryId,
+                  sessionId,
+                  provider: projectionSession?.provider ?? "claude",
+                  providerSessionId: projectionSession?.claudeSessionId,
+                  label: this.sessionLabel(sessionId),
+                },
+                backgroundDelivery.policy,
+                backgroundDelivery.projectionState,
+              )
+            : null;
           if (notification) {
             const compatibleNotification = this.prepareServerMessageForClient(
               client,
@@ -11449,9 +11491,126 @@ export class BridgeWebSocketServer {
     return project;
   }
 
+  private isBackgroundNotificationCandidate(msg: ServerMessage): boolean {
+    if (msg.type === "permission_request") return true;
+    // The projector also clears per-turn deduplication on stopped results, so
+    // keep routing every terminal result through it even when no notification
+    // will be emitted.
+    if (msg.type === "result") return true;
+    return (
+      msg.type === "assistant" &&
+      Array.isArray(msg.message.content) &&
+      msg.message.content.some(
+        (content) =>
+          content.type === "tool_use" &&
+          typeof content.id === "string" &&
+          content.id.length > 0 &&
+          typeof content.name === "string" &&
+          content.name.length > 0,
+      )
+    );
+  }
+
+  private queuePushNotifications(
+    deliveryId: string | undefined,
+    payloads: PushNotifyPayload[],
+  ): void {
+    if (
+      !deliveryId ||
+      payloads.length === 0 ||
+      this.pendingBackgroundPushDeliveries.size >=
+        MAX_PENDING_BACKGROUND_PUSH_DELIVERIES
+    ) {
+      this.dispatchPushNotifications(payloads);
+      return;
+    }
+
+    const candidateTokens = new Set<string>();
+    for (const client of this.wss.clients) {
+      if (
+        client.readyState !== WebSocket.OPEN ||
+        this.backgroundDeliveryClients.get(client)?.mode !==
+          "notifications_only"
+      ) {
+        continue;
+      }
+      for (const token of this.clientPushTokens.get(client) ?? []) {
+        candidateTokens.add(token);
+      }
+    }
+    if (candidateTokens.size === 0) {
+      this.dispatchPushNotifications(payloads);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.flushPendingBackgroundPushDelivery(deliveryId);
+    }, BACKGROUND_PUSH_ACK_WAIT_MS);
+    timer.unref?.();
+    this.pendingBackgroundPushDeliveries.set(deliveryId, {
+      payloads,
+      candidateTokens,
+      acknowledgedTokens: new Set(),
+      timer,
+    });
+  }
+
+  private acknowledgeBackgroundNotification(
+    client: WebSocket,
+    deliveryId: string,
+  ): void {
+    const pending = this.pendingBackgroundPushDeliveries.get(deliveryId);
+    const clientTokens = this.clientPushTokens.get(client);
+    if (!pending || !clientTokens) return;
+    for (const token of clientTokens) {
+      if (pending.candidateTokens.has(token)) {
+        pending.acknowledgedTokens.add(token);
+      }
+    }
+  }
+
+  private flushPendingBackgroundPushDelivery(deliveryId: string): void {
+    const pending = this.pendingBackgroundPushDeliveries.get(deliveryId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingBackgroundPushDeliveries.delete(deliveryId);
+    this.dispatchPushNotifications(
+      pending.payloads,
+      Array.from(pending.acknowledgedTokens),
+    );
+  }
+
+  private flushAllPendingBackgroundPushDeliveries(): void {
+    for (const deliveryId of Array.from(
+      this.pendingBackgroundPushDeliveries.keys(),
+    )) {
+      this.flushPendingBackgroundPushDelivery(deliveryId);
+    }
+  }
+
+  private dispatchPushNotifications(
+    payloads: PushNotifyPayload[],
+    excludedTokens: string[] = [],
+  ): void {
+    for (const payload of payloads) {
+      void this.pushRelay
+        .notify({
+          ...payload,
+          ...(excludedTokens.length > 0 ? { excludedTokens } : {}),
+        })
+        .catch((err) => {
+          const detail = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[ws] Failed to send push notification (${payload.eventType}, ${payload.locale ?? "default"}): ${detail}`,
+          );
+        });
+    }
+  }
+
   private maybeSendPushNotification(
     sessionId: string,
     msg: ServerMessage,
+    deliveryId?: string,
   ): void {
     if (!this.pushRelay.isConfigured) return;
 
@@ -11485,6 +11644,7 @@ export class BridgeWebSocketServer {
         provider: session?.provider ?? "claude",
         occurredAt: new Date(now).toISOString(),
       };
+      if (deliveryId) data.deliveryId = deliveryId;
       if (session?.claudeSessionId) {
         data.providerSessionId = session.claudeSessionId;
       }
@@ -11492,27 +11652,21 @@ export class BridgeWebSocketServer {
         data.toolUseId = toolUse.id;
         data.toolName = toolUse.name;
       }
-      for (const locale of this.getRegisteredLocales()) {
+      const payloads = this.getRegisteredLocales().map((locale) => {
         const baseTitle = t(locale, "progress_title");
         const title = label ? `${baseTitle} - ${label}` : baseTitle;
         const body = privacy
           ? t(locale, "progress_body_private")
           : t(locale, "progress_body", { toolName: toolUse.name });
-        void this.pushRelay
-          .notify({
-            eventType: PUSH_PROGRESS_EVENT,
-            title,
-            body,
-            locale,
-            data,
-          })
-          .catch((err) => {
-            const detail = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `[ws] Failed to send push notification (${PUSH_PROGRESS_EVENT}, ${locale}): ${detail}`,
-            );
-          });
-      }
+        return {
+          eventType: PUSH_PROGRESS_EVENT,
+          title,
+          body,
+          locale,
+          data,
+        };
+      });
+      this.queuePushNotifications(deliveryId, payloads);
       return;
     }
 
@@ -11549,6 +11703,7 @@ export class BridgeWebSocketServer {
         permissionId: msg.toolUseId,
         occurredAt: new Date().toISOString(),
       };
+      if (deliveryId) data.deliveryId = deliveryId;
       if (session?.claudeSessionId) {
         data.providerSessionId = session.claudeSessionId;
       }
@@ -11557,7 +11712,7 @@ export class BridgeWebSocketServer {
         data.toolName = msg.toolName;
       }
 
-      for (const locale of this.getRegisteredLocales()) {
+      const payloads = this.getRegisteredLocales().map((locale) => {
         let title: string;
         let body: string;
 
@@ -11585,21 +11740,9 @@ export class BridgeWebSocketServer {
             : t(locale, "approval_body", { toolName: msg.toolName });
         }
 
-        void this.pushRelay
-          .notify({
-            eventType,
-            title,
-            body,
-            locale,
-            data,
-          })
-          .catch((err) => {
-            const detail = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `[ws] Failed to send push notification (${eventType}, ${locale}): ${detail}`,
-            );
-          });
-      }
+        return { eventType, title, body, locale, data };
+      });
+      this.queuePushNotifications(deliveryId, payloads);
       return;
     }
 
@@ -11625,13 +11768,14 @@ export class BridgeWebSocketServer {
       subtype: msg.subtype,
       occurredAt: new Date().toISOString(),
     };
+    if (deliveryId) data.deliveryId = deliveryId;
     if (session?.claudeSessionId) {
       data.providerSessionId = session.claudeSessionId;
     }
     if (msg.stopReason) data.stopReason = msg.stopReason;
     if (msg.sessionId) data.providerSessionId = msg.sessionId;
 
-    for (const locale of this.getRegisteredLocales()) {
+    const payloads = this.getRegisteredLocales().map((locale) => {
       let title: string;
       if (privacy) {
         title = isSuccess
@@ -11663,21 +11807,9 @@ export class BridgeWebSocketServer {
           : t(locale, "session_failed");
       }
 
-      void this.pushRelay
-        .notify({
-          eventType,
-          title,
-          body,
-          locale,
-          data,
-        })
-        .catch((err) => {
-          const detail = err instanceof Error ? err.message : String(err);
-          console.warn(
-            `[ws] Failed to send push notification (${eventType}, ${locale}): ${detail}`,
-          );
-        });
-    }
+      return { eventType, title, body, locale, data };
+    });
+    this.queuePushNotifications(deliveryId, payloads);
   }
 
   private broadcast(msg: Record<string, unknown>): void {

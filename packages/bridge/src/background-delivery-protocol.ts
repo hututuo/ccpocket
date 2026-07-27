@@ -1,9 +1,13 @@
 export const BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY =
   "background_notification_delivery_v1";
+export const BACKGROUND_NOTIFICATION_ACK_CAPABILITY =
+  "background_notification_delivery_ack_v1";
 
 export const CLIENT_DELIVERY_MODE_STATE_MESSAGE =
   "client_delivery_mode_state_v1";
 export const BACKGROUND_NOTIFICATION_MESSAGE = "background_notification_v1";
+export const BACKGROUND_NOTIFICATION_ACK_MESSAGE =
+  "background_notification_ack_v1";
 export const BACKGROUND_ACTIVITY_STATE_MESSAGE =
   "background_activity_state_v1";
 
@@ -18,6 +22,11 @@ export interface SetClientDeliveryModeMessage {
   enabledEventTypes?: string[];
 }
 
+export interface BackgroundNotificationAckMessage {
+  type: typeof BACKGROUND_NOTIFICATION_ACK_MESSAGE;
+  deliveryId: string;
+}
+
 export interface ClientDeliveryModeStateMessage {
   type: typeof CLIENT_DELIVERY_MODE_STATE_MESSAGE;
   mode: ClientDeliveryMode;
@@ -27,6 +36,7 @@ export interface ClientDeliveryModeStateMessage {
 
 export interface BackgroundNotificationMessage {
   type: typeof BACKGROUND_NOTIFICATION_MESSAGE;
+  deliveryId: string;
   eventType:
     | "approval_required"
     | "ask_user_question"
@@ -47,13 +57,16 @@ export interface BackgroundActivityStateMessage {
   occurredAt: string;
 }
 
-export type BackgroundDeliveryClientMessage = SetClientDeliveryModeMessage;
+export type BackgroundDeliveryClientMessage =
+  | SetClientDeliveryModeMessage
+  | BackgroundNotificationAckMessage;
 export type BackgroundDeliveryServerMessage =
   | ClientDeliveryModeStateMessage
   | BackgroundNotificationMessage
   | BackgroundActivityStateMessage;
 
 const MAX_REQUEST_ID_LENGTH = 96;
+const MAX_DELIVERY_ID_LENGTH = 96;
 const MAX_EVENT_TYPES = 16;
 const MAX_EVENT_TYPE_LENGTH = 64;
 
@@ -66,6 +79,19 @@ const MAX_EVENT_TYPE_LENGTH = 64;
 export function parseBackgroundDeliveryClientMessage(
   value: Record<string, unknown>,
 ): BackgroundDeliveryClientMessage | null | undefined {
+  if (value.type === BACKGROUND_NOTIFICATION_ACK_MESSAGE) {
+    if (
+      Object.keys(value).some(
+        (key) => key !== "type" && key !== "deliveryId",
+      ) ||
+      typeof value.deliveryId !== "string" ||
+      value.deliveryId.length < 1 ||
+      value.deliveryId.length > MAX_DELIVERY_ID_LENGTH
+    ) {
+      return null;
+    }
+    return value as unknown as BackgroundNotificationAckMessage;
+  }
   if (value.type !== "set_client_delivery_mode") return undefined;
   const allowedKeys = new Set([
     "type",

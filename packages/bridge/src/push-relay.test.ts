@@ -75,6 +75,30 @@ describe("PushRelayClient", () => {
     });
   });
 
+  it("forwards tokens excluded by acknowledged local delivery", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    const client = new PushRelayClient({
+      relayUrl: "https://relay.example.com/push",
+      firebaseAuth: createMockAuth("bridge-uid-123"),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await client.notify({
+      eventType: "session_completed",
+      title: "done",
+      body: "ok",
+      data: { deliveryId: "delivery-1" },
+      excludedTokens: ["token-local"],
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      op: "notify",
+      data: { deliveryId: "delivery-1" },
+      excludedTokens: ["token-local"],
+    });
+  });
+
   it("throws on non-2xx relay response", async () => {
     const fetchMock = vi.fn(async () => new Response("boom", { status: 500 }));
     const mockAuth = createMockAuth("bridge-uid-123", "firebase-id-token-abc");

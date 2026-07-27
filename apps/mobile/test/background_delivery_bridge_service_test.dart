@@ -7,32 +7,39 @@ import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('offline foreground restoration resets the desired delivery mode', () async {
-    final bridge = BridgeService();
-    addTearDown(bridge.dispose);
+  test(
+    'offline foreground restoration resets the desired delivery mode',
+    () async {
+      final bridge = BridgeService();
+      addTearDown(bridge.dispose);
 
-    expect(
-      await bridge.setClientDeliveryMode(
-        mode: BridgeClientDeliveryMode.notificationsOnly,
-      ),
-      isNull,
-    );
-    expect(
-      bridge.desiredClientDeliveryMode,
-      BridgeClientDeliveryMode.notificationsOnly,
-    );
+      expect(
+        await bridge.setClientDeliveryMode(
+          mode: BridgeClientDeliveryMode.notificationsOnly,
+        ),
+        isNull,
+      );
+      expect(
+        bridge.desiredClientDeliveryMode,
+        BridgeClientDeliveryMode.notificationsOnly,
+      );
+      expect(
+        bridge.acknowledgeBackgroundNotification('delivery-offline'),
+        isFalse,
+      );
 
-    expect(
-      await bridge.setClientDeliveryMode(
-        mode: BridgeClientDeliveryMode.interactive,
-      ),
-      isNull,
-    );
-    expect(
-      bridge.desiredClientDeliveryMode,
-      BridgeClientDeliveryMode.interactive,
-    );
-  });
+      expect(
+        await bridge.setClientDeliveryMode(
+          mode: BridgeClientDeliveryMode.interactive,
+        ),
+        isNull,
+      );
+      expect(
+        bridge.desiredClientDeliveryMode,
+        BridgeClientDeliveryMode.interactive,
+      );
+    },
+  );
 
   test(
     'notification-only mode rejects full stream messages before normal routing',
@@ -54,6 +61,9 @@ void main() {
       final modeRequests = incoming.where(
         (message) => message['type'] == 'set_client_delivery_mode',
       );
+      final ackRequests = incoming.where(
+        (message) => message['type'] == 'background_notification_ack_v1',
+      );
 
       socket.add(
         jsonEncode({
@@ -61,6 +71,7 @@ void main() {
           'sessions': <Object>[],
           'bridgeCapabilities': const [
             backgroundNotificationDeliveryBridgeCapability,
+            backgroundNotificationDeliveryAckBridgeCapability,
           ],
         }),
       );
@@ -114,6 +125,7 @@ void main() {
         ..add(
           jsonEncode({
             'type': 'background_notification_v1',
+            'deliveryId': 'delivery-1',
             'eventType': 'session_completed',
             'sessionId': 'session-1',
             'provider': 'codex',
@@ -126,6 +138,14 @@ void main() {
 
       expect(routedMessages, isEmpty);
       expect(notifications.single.sessionId, 'session-1');
+      expect(notifications.single.deliveryId, 'delivery-1');
+
+      final ackRequest = ackRequests.first;
+      expect(bridge.acknowledgeBackgroundNotification('delivery-1'), isTrue);
+      expect(await ackRequest, {
+        'type': 'background_notification_ack_v1',
+        'deliveryId': 'delivery-1',
+      });
 
       final interactive = bridge.setClientDeliveryMode(
         mode: BridgeClientDeliveryMode.interactive,

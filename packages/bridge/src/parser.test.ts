@@ -69,6 +69,26 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("parses strict background notification acknowledgements", () => {
+    const acknowledgement = {
+      type: "background_notification_ack_v1",
+      deliveryId: "delivery-1",
+    };
+    expect(parseClientMessage(JSON.stringify(acknowledgement))).toEqual(
+      acknowledgement,
+    );
+    expect(
+      parseClientMessage(
+        JSON.stringify({ ...acknowledgement, deliveryId: "" }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({ ...acknowledgement, unexpected: true }),
+      ),
+    ).toBeNull();
+  });
+
   it("routes only strict v2 file-transfer messages into the independent module", () => {
     const valid = {
       type: "file_transfer_upload_prepare_v2",

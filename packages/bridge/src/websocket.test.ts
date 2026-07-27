@@ -12719,6 +12719,154 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("suppresses FCM only after the background client acknowledges local display", async () => {
+    vi.useFakeTimers();
+    const registeredPushToken = "b".repeat(32);
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: {
+        uid: "bridge-test",
+        getIdToken: vi.fn(async () => "mock-token"),
+        initialize: vi.fn(async () => {}),
+      } as any,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "client_delivery_mode_state_v1",
+          "background_notification_v1",
+          "background_activity_state_v1",
+        ],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "push_register",
+        token: registeredPushToken,
+        platform: "ios",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "notifications_only",
+        requestId: "background-with-ack",
+        enabledEventTypes: ["approval_required"],
+      },
+      ws,
+    );
+    fetchMock.mockClear();
+    ws.send.mockClear();
+
+    (bridge as any).broadcastSessionMessage("session-1", {
+      type: "permission_request",
+      toolUseId: "permission-1",
+      toolName: "Bash",
+      input: { command: "true" },
+    });
+
+    const localNotification = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "background_notification_v1");
+    expect(localNotification.deliveryId).toEqual(expect.any(String));
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "background_notification_ack_v1",
+        deliveryId: localNotification.deliveryId,
+      },
+      ws,
+    );
+    await vi.advanceTimersByTimeAsync(750);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      op: "notify",
+      eventType: "approval_required",
+      excludedTokens: [registeredPushToken],
+      data: {
+        deliveryId: localNotification.deliveryId,
+      },
+    });
+    await bridge.close();
+  });
+
+  it("falls back to FCM when local background display is not acknowledged", async () => {
+    vi.useFakeTimers();
+    const registeredPushToken = "b".repeat(32);
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: {
+        uid: "bridge-test",
+        getIdToken: vi.fn(async () => "mock-token"),
+        initialize: vi.fn(async () => {}),
+      } as any,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "client_delivery_mode_state_v1",
+          "background_notification_v1",
+          "background_activity_state_v1",
+        ],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "push_register",
+        token: registeredPushToken,
+        platform: "ios",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "notifications_only",
+        requestId: "background-without-ack",
+        enabledEventTypes: ["approval_required"],
+      },
+      ws,
+    );
+    fetchMock.mockClear();
+
+    (bridge as any).broadcastSessionMessage("session-1", {
+      type: "permission_request",
+      toolUseId: "permission-1",
+      toolName: "Bash",
+      input: { command: "true" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(750);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body.op).toBe("notify");
+    expect(body.excludedTokens).toBeUndefined();
+    expect((body.data as Record<string, unknown>).deliveryId).toEqual(
+      expect.any(String),
+    );
+    await bridge.close();
+  });
+
   it("runs the catalog monitor only for an interactive opt-in client", async () => {
     let notifyCatalogChanged:
       | ((

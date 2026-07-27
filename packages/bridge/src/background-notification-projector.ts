@@ -26,6 +26,7 @@ export interface BackgroundNotificationProjectionState {
 }
 
 export interface BackgroundNotificationContext {
+  deliveryId: string;
   sessionId: string;
   provider: "claude" | "codex";
   providerSessionId?: string;
@@ -87,7 +88,11 @@ export function projectBackgroundNotification(
       lastToolKey: toolKey,
     });
     const titleBase = t(policy.locale, "progress_title");
-    const data: Record<string, string> = { sessionId, provider };
+    const data: Record<string, string> = {
+      deliveryId: context.deliveryId,
+      sessionId,
+      provider,
+    };
     if (context.providerSessionId) {
       data.providerSessionId = context.providerSessionId;
     }
@@ -97,6 +102,7 @@ export function projectBackgroundNotification(
     }
     return {
       type: "background_notification_v1",
+      deliveryId: context.deliveryId,
       eventType: "session_progress",
       sessionId,
       provider,
@@ -155,6 +161,7 @@ export function projectBackgroundNotification(
         : t(policy.locale, "approval_body", { toolName: msg.toolName });
     }
     const data: Record<string, string> = {
+      deliveryId: context.deliveryId,
       sessionId,
       provider,
       permissionId: msg.toolUseId,
@@ -168,6 +175,7 @@ export function projectBackgroundNotification(
     }
     return {
       type: "background_notification_v1",
+      deliveryId: context.deliveryId,
       eventType,
       sessionId,
       provider,
@@ -230,7 +238,11 @@ export function projectBackgroundNotification(
       : t(policy.locale, "session_failed");
   }
 
-  const data: Record<string, string> = { sessionId, provider };
+  const data: Record<string, string> = {
+    deliveryId: context.deliveryId,
+    sessionId,
+    provider,
+  };
   if (context.providerSessionId) {
     data.providerSessionId = context.providerSessionId;
   }
@@ -242,6 +254,7 @@ export function projectBackgroundNotification(
 
   return {
     type: "background_notification_v1",
+    deliveryId: context.deliveryId,
     eventType,
     sessionId,
     provider,

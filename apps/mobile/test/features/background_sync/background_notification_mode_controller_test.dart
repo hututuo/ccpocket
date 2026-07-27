@@ -53,6 +53,7 @@ void main() {
 
       delivery.emitNotification(
         BackgroundNotificationMessage(
+          deliveryId: 'delivery-1',
           eventType: NotificationPreferences.sessionProgressEvent,
           sessionId: 'session-1',
           provider: 'codex',
@@ -64,6 +65,7 @@ void main() {
       );
       await Future<void>.delayed(Duration.zero);
       expect(presenter.shown.single.sessionId, 'session-1');
+      expect(delivery.acknowledgedDeliveryIds, ['delivery-1']);
 
       await controller.enterForeground();
 
@@ -76,6 +78,40 @@ void main() {
       await controller.dispose();
     },
   );
+
+  test('failed local display leaves FCM fallback eligible', () async {
+    final preferences = await SharedPreferences.getInstance();
+    final host = _FakeLocationHost(_authorizedSnapshot());
+    final delivery = _FakeDelivery(activeWorkCount: 1);
+    final controller = BackgroundNotificationModeController(
+      preferences: preferences,
+      locationHost: host,
+      delivery: delivery,
+      permissionHost: PermissionHostService.test(
+        gateway: _FakePermissionGateway(),
+      ),
+      notifications: _FakePresenter(throwOnShow: true),
+    );
+    await controller.initialize();
+    expect(await controller.enterBackground(hasBackgroundWork: true), isTrue);
+
+    delivery.emitNotification(
+      BackgroundNotificationMessage(
+        deliveryId: 'delivery-fallback',
+        eventType: NotificationPreferences.sessionCompletedEvent,
+        sessionId: 'session-1',
+        provider: 'codex',
+        title: '完成',
+        body: '点开后追平',
+        occurredAt: DateTime(2026, 7, 24),
+        data: const {},
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(delivery.acknowledgedDeliveryIds, isEmpty);
+    await controller.dispose();
+  });
 
   test(
     'low power mode prevents transport engagement and location work',
@@ -546,6 +582,7 @@ class _FakeDelivery implements BackgroundNotificationDeliveryGateway {
   final modes = <BridgeClientDeliveryMode>[];
   final locales = <String>[];
   final privacyModes = <bool>[];
+  final acknowledgedDeliveryIds = <String>[];
   final _connections = StreamController<BridgeConnectionState>.broadcast();
   final _capabilities = StreamController<void>.broadcast();
   final _notifications =
@@ -589,6 +626,12 @@ class _FakeDelivery implements BackgroundNotificationDeliveryGateway {
     );
   }
 
+  @override
+  bool acknowledge(String deliveryId) {
+    acknowledgedDeliveryIds.add(deliveryId);
+    return true;
+  }
+
   void emitNotification(BackgroundNotificationMessage notification) {
     _notifications.add(notification);
   }
@@ -623,10 +666,12 @@ class _FakePresenter implements BackgroundNotificationPresenter {
   _FakePresenter({
     this.status = NotificationPermissionStatus.enabled,
     this.permissionRequestResult = true,
+    this.throwOnShow = false,
   });
 
   final NotificationPermissionStatus status;
   final bool permissionRequestResult;
+  final bool throwOnShow;
   int permissionRequestCount = 0;
   final shown = <BackgroundNotificationMessage>[];
 
@@ -641,6 +686,7 @@ class _FakePresenter implements BackgroundNotificationPresenter {
 
   @override
   Future<void> show(BackgroundNotificationMessage notification) async {
+    if (throwOnShow) throw StateError('local notification unavailable');
     shown.add(notification);
   }
 }

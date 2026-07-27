@@ -30,6 +30,8 @@ typedef SessionPermissionRequestObserver =
 
 const backgroundNotificationDeliveryBridgeCapability =
     'background_notification_delivery_v1';
+const backgroundNotificationDeliveryAckBridgeCapability =
+    'background_notification_delivery_ack_v1';
 const pushRegistrationStatusBridgeCapability = 'push_registration_status_v1';
 
 @visibleForTesting
@@ -574,6 +576,8 @@ class BridgeService implements BridgeServiceBase {
   Set<String> get bridgeCapabilities => _bridgeCapabilities;
   bool get supportsBackgroundNotificationDelivery => _bridgeCapabilities
       .contains(backgroundNotificationDeliveryBridgeCapability);
+  bool get supportsBackgroundNotificationDeliveryAck => _bridgeCapabilities
+      .contains(backgroundNotificationDeliveryAckBridgeCapability);
   bool get supportsPushRegistrationStatus =>
       _bridgeCapabilities.contains(pushRegistrationStatusBridgeCapability);
   bool get supportsSessionCatalogWatch =>
@@ -2530,6 +2534,16 @@ class BridgeService implements BridgeServiceBase {
     } finally {
       _pendingDeliveryModeRequests.remove(requestId);
     }
+  }
+
+  bool acknowledgeBackgroundNotification(String deliveryId) {
+    if (deliveryId.isEmpty ||
+        !supportsBackgroundNotificationDeliveryAck ||
+        !isTransportHealthy) {
+      return false;
+    }
+    send(ClientMessage.backgroundNotificationAck(deliveryId));
+    return true;
   }
 
   Future<void> _reassertDesiredClientDeliveryMode() async {

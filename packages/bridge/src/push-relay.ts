@@ -9,6 +9,8 @@ export interface PushNotifyPayload {
   /** When set, only tokens registered with this locale receive the notification. */
   locale?: string;
   data?: Record<string, string>;
+  /** Tokens that already displayed the same event through live local delivery. */
+  excludedTokens?: string[];
 }
 
 export interface PushRelayClientOptions {
@@ -28,7 +30,15 @@ type PushRelayOpPayload =
       approvalActionsSupported?: boolean;
     }
   | { op: "unregister"; token: string }
-  | { op: "notify"; eventType: string; title: string; body: string; locale?: string; data?: Record<string, string> };
+  | {
+      op: "notify";
+      eventType: string;
+      title: string;
+      body: string;
+      locale?: string;
+      data?: Record<string, string>;
+      excludedTokens?: string[];
+    };
 
 type PushRelayRequestPayload = PushRelayOpPayload & { bridgeId: string };
 
@@ -87,6 +97,7 @@ export class PushRelayClient {
       body: payload.body,
       locale: payload.locale,
       data: payload.data,
+      excludedTokens: payload.excludedTokens,
     });
   }
 
