@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`f3e1e1e2`
+核对源码基线：`95cae34b`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -39,7 +39,7 @@
 | 已有会话显示“加载/同步”，只有新线程显示“创建” | v02-005、012 | durable-open 与 pending binding 路径分离 | **已验证** | 会话直开和 pending attach 回归通过；真机文案扫描仍待本地化批次 |
 | runtime 长期停在 `starting` 时不能每 3 秒无限重读历史；弱网恢复仍要可重试 | v02-010、012 | `502b4252`；一次性退避 timer、断线暂停与重连预算 | **已验证** | 红测把旧实现虚拟 5 分钟内的 101 次请求固化；现为初始 1 次加最多 4 次指数退避，离线期间 0 次新增、重连后恢复有限预算；ChatSessionCubit 147 项全通过 |
 | 同一会话并发增量对账必须 single-flight；后台请求不能降级前台完整回退权限；重连不能让旧 socket 的请求吞掉新请求 | v02-010～012 | `7d62f978`；`BridgeService` 的连接代次、升级式 fallback 与 dirty follow-up | **已验证** | 旧实现三个并发调用会发送 3 次 delta，且最后一个后台调用可覆盖前台回退权限；现同一连接只发 1 次，响应后至多补 1 次 dirty follow-up，使用已更新 cursor。后台单独请求仍不做全量回退，前台权限只能升级；同目标重连重新发送并隔离旧代。Bridge usage + legacy fence 53 项、定向 analyze 与 diff check 全通过 |
-| 双 Cockpit/Codex 实例不能串目录、续接、未读或缓存 | v02-007、011 | `bc0601b7`、`a35cc591`、`b5963c63`；Bridge identity 分区 | **部分完成** | Mobile/Bridge 分区和迟到帧隔离已有；`CODEX_HOME`/来源注册表与真正双写冲突策略仍未完整实现 |
+| 双 Cockpit/Codex 实例不能串目录、续接、未读或缓存 | v02-007、011 | `bc0601b7`、`a35cc591`、`b5963c63`；`2e1be40e` 统一所选 `CODEX_HOME` 的 app-server、目录索引、watcher、usage、context、doctor 与 LaunchAgent 环境；`54167649` 保留 Claude/Codex 原始 ID 碰撞的两条记录；`95cae34b` 暴露不含本地路径的来源身份并按来源隔离 Mobile 目录缓存 | **部分完成** | 单一 Bridge 选择一个 Home 时，读写来源一致；同一 Bridge 改换 Home 后不会把旧来源缓存当成当前就绪缓存。Bridge Home/目录回归 147+79 项、来源协议 260 项、Mobile 目录/消息 185 项通过。仍缺同时注册多个 Home 的 source registry、每条会话携带来源身份、按来源路由生命周期操作，以及跨外部 Codex/Cockpit 进程都能遵守的真正单写者/租约协议；因此不能把“选定 Home 已隔离”夸大为“多实例并发安全已完成” |
 | 运行蓝条与“正在同步历史”的光晕分别表达，且动画低开销 | v02-010、012、014 | 小 selector、独立 sync state、`RepaintBoundary` | **代码完成，待设备/部署** | 代码与 Widget 回归已有；需真机动画、CPU/能耗和可读性验收 |
 
 ## 2. 历史、折叠、渐进披露与时间
@@ -107,7 +107,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | `c2cc8379` 语义整合官方 `3289ce93`；`97fb5aab` 同步 `1.109.3` 并保持本地 build 单调递增；本轮 fetch 的 upstream/main=`82962136` | **已验证** | 同一 Claude/Codex 会话的通知或深链会优先揭示现有路由，会话 ID 重启后以实时身份而非旧参数匹配；Codex 深链保留 provider。52 项导航/解析/重启/活动会话回归通过，6 文件 analyze 无问题。官方 build `202` 低于已经交付的本地 build 204，因此本分支采用 `1.109.3+205`，未伪装成官方原始构建号 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账；`f9d949f7` 收束旧 Bridge Explore lane | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理。导航联合回归暴露的 WorkspaceShell pending timer 经追踪并非产品应删的迟到帧隔离：旧 Bridge 仍必须保留 quarantine；本提交让 Bridge 流关闭时立即释放 lane/timer，并让 WorkspaceShell 测试明确声明现代 request-correlation capability。Explore + WorkspaceShell 39 项通过，生产改动另有旧 Bridge 流关闭回归 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `f3e1e1e2`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent/Explore/Git 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复、旧 Bridge Explore 生命周期闭环、Plan 清上下文批准绑定、交互帧断线防重放及空身份跨会话回退防护均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `95cae34b`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent/Explore/Git 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复、旧 Bridge Explore 生命周期闭环、Plan 清上下文批准绑定、交互帧断线防重放、空身份跨会话回退防护、统一 `CODEX_HOME` 读取、跨 provider 同 ID 保留及来源缓存隔离均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -137,7 +137,7 @@ command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（�
 
 ## 8. 下一实施顺序
 
-1. 处理多实例 `CODEX_HOME`、source registry、单写者冲突与会话来源稳定性；
+1. 在已完成“单一所选 `CODEX_HOME` 读写一致、跨 provider 同 ID 保留、Mobile 来源缓存隔离”的基础上，继续实现多 Home source registry、逐会话来源路由，并确定外部 Codex/Cockpit 进程也能遵守的单写者冲突策略；
 2. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
 3. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
 4. 经用户确认后，才按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
