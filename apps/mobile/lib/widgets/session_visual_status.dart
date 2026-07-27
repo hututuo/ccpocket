@@ -2,10 +2,23 @@ import '../models/messages.dart';
 
 enum SessionPrimaryStatus { working, needsYou, idle, unknown }
 
+enum SessionVisualLabel { working, needsYou, unavailable }
+
+enum SessionVisualDetail {
+  reviewPlan,
+  approveToolCall,
+  answerQuestion,
+  answerMcpRequest,
+  grantPermissions,
+  approveTool,
+  cleaningContext,
+}
+
 class SessionVisualStatus {
   final SessionPrimaryStatus primary;
-  final String? label;
-  final String? detail;
+  final SessionVisualLabel? label;
+  final SessionVisualDetail? detail;
+  final String? detailArgument;
   final bool showPlanBadge;
   final bool animate;
 
@@ -13,6 +26,7 @@ class SessionVisualStatus {
     required this.primary,
     required this.label,
     this.detail,
+    this.detailArgument,
     required this.showPlanBadge,
     required this.animate,
   });
@@ -28,24 +42,27 @@ SessionVisualStatus sessionVisualStatusFor({
 
   if (pendingPermission != null) {
     final detail = switch (pendingPermission.toolName) {
-      'ExitPlanMode' => 'Review plan',
+      'ExitPlanMode' => SessionVisualDetail.reviewPlan,
       'AskUserQuestion' =>
         pendingPermission.isQuestionApproval
-            ? 'Approve tool call'
-            : 'Answer question',
+            ? SessionVisualDetail.approveToolCall
+            : SessionVisualDetail.answerQuestion,
       'McpElicitation' =>
         pendingPermission.isQuestionApproval
-            ? 'Approve tool call'
+            ? SessionVisualDetail.approveToolCall
             : pendingPermission.isQuestionPrompt
-            ? 'Answer question'
-            : 'Answer MCP request',
-      'Permissions' => 'Grant permissions',
-      _ => 'Approve ${pendingPermission.toolName}',
+            ? SessionVisualDetail.answerQuestion
+            : SessionVisualDetail.answerMcpRequest,
+      'Permissions' => SessionVisualDetail.grantPermissions,
+      _ => SessionVisualDetail.approveTool,
     };
     return SessionVisualStatus(
       primary: SessionPrimaryStatus.needsYou,
-      label: 'Needs You',
+      label: SessionVisualLabel.needsYou,
       detail: detail,
+      detailArgument: detail == SessionVisualDetail.approveTool
+          ? pendingPermission.toolName
+          : null,
       showPlanBadge: showPlanBadge,
       animate: true,
     );
@@ -54,20 +71,20 @@ SessionVisualStatus sessionVisualStatusFor({
   return switch (rawStatus) {
     'starting' || 'running' => SessionVisualStatus(
       primary: SessionPrimaryStatus.working,
-      label: 'Working',
+      label: SessionVisualLabel.working,
       showPlanBadge: showPlanBadge,
       animate: true,
     ),
     'compacting' => SessionVisualStatus(
       primary: SessionPrimaryStatus.working,
-      label: 'Working',
-      detail: 'Cleaning up context',
+      label: SessionVisualLabel.working,
+      detail: SessionVisualDetail.cleaningContext,
       showPlanBadge: showPlanBadge,
       animate: true,
     ),
     'waiting_approval' => SessionVisualStatus(
       primary: SessionPrimaryStatus.needsYou,
-      label: 'Needs You',
+      label: SessionVisualLabel.needsYou,
       showPlanBadge: showPlanBadge,
       animate: true,
     ),
@@ -79,7 +96,7 @@ SessionVisualStatus sessionVisualStatusFor({
     ),
     _ => SessionVisualStatus(
       primary: SessionPrimaryStatus.unknown,
-      label: 'Status unavailable',
+      label: SessionVisualLabel.unavailable,
       showPlanBadge: showPlanBadge,
       animate: false,
     ),

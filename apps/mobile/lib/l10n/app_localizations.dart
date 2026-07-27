@@ -5339,6 +5339,114 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'セッションが終了しました'**
   String get sessionDone;
+
+  /// No description provided for @statusStarting.
+  ///
+  /// In ja, this message translates to:
+  /// **'起動中'**
+  String get statusStarting;
+
+  /// No description provided for @statusIdle.
+  ///
+  /// In ja, this message translates to:
+  /// **'待機中'**
+  String get statusIdle;
+
+  /// No description provided for @statusRunning.
+  ///
+  /// In ja, this message translates to:
+  /// **'実行中'**
+  String get statusRunning;
+
+  /// No description provided for @statusApproval.
+  ///
+  /// In ja, this message translates to:
+  /// **'承認待ち'**
+  String get statusApproval;
+
+  /// No description provided for @statusCompacting.
+  ///
+  /// In ja, this message translates to:
+  /// **'コンテキストを整理中'**
+  String get statusCompacting;
+
+  /// No description provided for @statusPlan.
+  ///
+  /// In ja, this message translates to:
+  /// **'プラン'**
+  String get statusPlan;
+
+  /// No description provided for @statusWorking.
+  ///
+  /// In ja, this message translates to:
+  /// **'作業中'**
+  String get statusWorking;
+
+  /// No description provided for @statusNeedsYou.
+  ///
+  /// In ja, this message translates to:
+  /// **'対応が必要'**
+  String get statusNeedsYou;
+
+  /// No description provided for @statusUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'状態を確認できません'**
+  String get statusUnavailable;
+
+  /// No description provided for @sessionStatusReviewPlan.
+  ///
+  /// In ja, this message translates to:
+  /// **'プランを確認'**
+  String get sessionStatusReviewPlan;
+
+  /// No description provided for @sessionStatusApproveToolCall.
+  ///
+  /// In ja, this message translates to:
+  /// **'ツール実行を承認'**
+  String get sessionStatusApproveToolCall;
+
+  /// No description provided for @sessionStatusAnswerQuestion.
+  ///
+  /// In ja, this message translates to:
+  /// **'質問に回答'**
+  String get sessionStatusAnswerQuestion;
+
+  /// No description provided for @sessionStatusAnswerMcpRequest.
+  ///
+  /// In ja, this message translates to:
+  /// **'MCPリクエストに回答'**
+  String get sessionStatusAnswerMcpRequest;
+
+  /// No description provided for @sessionStatusGrantPermissions.
+  ///
+  /// In ja, this message translates to:
+  /// **'権限を許可'**
+  String get sessionStatusGrantPermissions;
+
+  /// No description provided for @sessionStatusApproveTool.
+  ///
+  /// In ja, this message translates to:
+  /// **'{toolName} を承認'**
+  String sessionStatusApproveTool(String toolName);
+
+  /// No description provided for @sessionStatusCleaningContext.
+  ///
+  /// In ja, this message translates to:
+  /// **'コンテキストを整理中'**
+  String get sessionStatusCleaningContext;
+
+  /// No description provided for @unread.
+  ///
+  /// In ja, this message translates to:
+  /// **'未読'**
+  String get unread;
+
+  /// No description provided for @runningOnDesktop.
+  ///
+  /// In ja, this message translates to:
+  /// **'デスクトップで実行中'**
+  String get runningOnDesktop;
 }
 
 class _AppLocalizationsDelegate

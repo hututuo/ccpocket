@@ -2799,4 +2799,60 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sessionDone => '会话已结束';
+
+  @override
+  String get statusStarting => '启动中';
+
+  @override
+  String get statusIdle => '空闲';
+
+  @override
+  String get statusRunning => '运行中';
+
+  @override
+  String get statusApproval => '待批准';
+
+  @override
+  String get statusCompacting => '压缩中';
+
+  @override
+  String get statusPlan => '计划';
+
+  @override
+  String get statusWorking => '处理中';
+
+  @override
+  String get statusNeedsYou => '需要你处理';
+
+  @override
+  String get statusUnavailable => '状态暂不可用';
+
+  @override
+  String get sessionStatusReviewPlan => '查看计划';
+
+  @override
+  String get sessionStatusApproveToolCall => '批准工具调用';
+
+  @override
+  String get sessionStatusAnswerQuestion => '回答问题';
+
+  @override
+  String get sessionStatusAnswerMcpRequest => '回答 MCP 请求';
+
+  @override
+  String get sessionStatusGrantPermissions => '授予权限';
+
+  @override
+  String sessionStatusApproveTool(String toolName) {
+    return '批准 $toolName';
+  }
+
+  @override
+  String get sessionStatusCleaningContext => '正在整理上下文';
+
+  @override
+  String get unread => '未读';
+
+  @override
+  String get runningOnDesktop => '正在桌面端运行';
 }

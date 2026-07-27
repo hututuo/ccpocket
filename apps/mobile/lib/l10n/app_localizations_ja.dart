@@ -2838,4 +2838,60 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get sessionDone => 'セッションが終了しました';
+
+  @override
+  String get statusStarting => '起動中';
+
+  @override
+  String get statusIdle => '待機中';
+
+  @override
+  String get statusRunning => '実行中';
+
+  @override
+  String get statusApproval => '承認待ち';
+
+  @override
+  String get statusCompacting => 'コンテキストを整理中';
+
+  @override
+  String get statusPlan => 'プラン';
+
+  @override
+  String get statusWorking => '作業中';
+
+  @override
+  String get statusNeedsYou => '対応が必要';
+
+  @override
+  String get statusUnavailable => '状態を確認できません';
+
+  @override
+  String get sessionStatusReviewPlan => 'プランを確認';
+
+  @override
+  String get sessionStatusApproveToolCall => 'ツール実行を承認';
+
+  @override
+  String get sessionStatusAnswerQuestion => '質問に回答';
+
+  @override
+  String get sessionStatusAnswerMcpRequest => 'MCPリクエストに回答';
+
+  @override
+  String get sessionStatusGrantPermissions => '権限を許可';
+
+  @override
+  String sessionStatusApproveTool(String toolName) {
+    return '$toolName を承認';
+  }
+
+  @override
+  String get sessionStatusCleaningContext => 'コンテキストを整理中';
+
+  @override
+  String get unread => '未読';
+
+  @override
+  String get runningOnDesktop => 'デスクトップで実行中';
 }

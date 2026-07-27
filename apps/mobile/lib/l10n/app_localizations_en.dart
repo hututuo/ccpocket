@@ -2948,4 +2948,60 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sessionDone => 'The session has finished';
+
+  @override
+  String get statusStarting => 'Starting';
+
+  @override
+  String get statusIdle => 'Idle';
+
+  @override
+  String get statusRunning => 'Running';
+
+  @override
+  String get statusApproval => 'Approval required';
+
+  @override
+  String get statusCompacting => 'Compacting context';
+
+  @override
+  String get statusPlan => 'Plan';
+
+  @override
+  String get statusWorking => 'Working';
+
+  @override
+  String get statusNeedsYou => 'Needs You';
+
+  @override
+  String get statusUnavailable => 'Status unavailable';
+
+  @override
+  String get sessionStatusReviewPlan => 'Review plan';
+
+  @override
+  String get sessionStatusApproveToolCall => 'Approve tool call';
+
+  @override
+  String get sessionStatusAnswerQuestion => 'Answer question';
+
+  @override
+  String get sessionStatusAnswerMcpRequest => 'Answer MCP request';
+
+  @override
+  String get sessionStatusGrantPermissions => 'Grant permissions';
+
+  @override
+  String sessionStatusApproveTool(String toolName) {
+    return 'Approve $toolName';
+  }
+
+  @override
+  String get sessionStatusCleaningContext => 'Cleaning up context';
+
+  @override
+  String get unread => 'Unread';
+
+  @override
+  String get runningOnDesktop => 'Running on Desktop';
 }

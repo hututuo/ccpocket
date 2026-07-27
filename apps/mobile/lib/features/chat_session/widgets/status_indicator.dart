@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 
+import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
 import '../../../theme/app_theme.dart';
 
@@ -22,6 +23,7 @@ class StatusIndicator extends HookWidget {
   @override
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
+    final localizations = AppLocalizations.of(context);
 
     // Track elapsed time when running/starting
     final isActive =
@@ -58,18 +60,30 @@ class StatusIndicator extends HookWidget {
     }, [isActive, startTime.value]);
 
     final (color, label) = switch (status) {
-      ProcessStatus.starting => (appColors.statusStarting, 'Starting'),
+      ProcessStatus.starting => (
+        appColors.statusStarting,
+        localizations.statusStarting,
+      ),
       ProcessStatus.idle =>
         inPlanMode
-            ? (appColors.statusPlan, 'Plan')
-            : (appColors.statusIdle, 'Idle'),
+            ? (appColors.statusPlan, localizations.statusPlan)
+            : (appColors.statusIdle, localizations.statusIdle),
       ProcessStatus.running =>
         inPlanMode
-            ? (appColors.statusPlan, 'Plan')
-            : (appColors.statusOnline, 'Running'),
-      ProcessStatus.waitingApproval => (appColors.statusApproval, 'Approval'),
-      ProcessStatus.compacting => (appColors.statusCompacting, 'Compacting'),
-      ProcessStatus.unknown => (appColors.subtleText, 'Status unavailable'),
+            ? (appColors.statusPlan, localizations.statusPlan)
+            : (appColors.statusOnline, localizations.statusRunning),
+      ProcessStatus.waitingApproval => (
+        appColors.statusApproval,
+        localizations.statusApproval,
+      ),
+      ProcessStatus.compacting => (
+        appColors.statusCompacting,
+        localizations.statusCompacting,
+      ),
+      ProcessStatus.unknown => (
+        appColors.subtleText,
+        localizations.statusUnavailable,
+      ),
     };
 
     // Format elapsed time

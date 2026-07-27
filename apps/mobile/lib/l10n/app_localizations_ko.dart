@@ -2867,4 +2867,60 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get sessionDone => '세션이 종료되었습니다';
+
+  @override
+  String get statusStarting => '시작 중';
+
+  @override
+  String get statusIdle => '대기 중';
+
+  @override
+  String get statusRunning => '실행 중';
+
+  @override
+  String get statusApproval => '승인 필요';
+
+  @override
+  String get statusCompacting => '컨텍스트 정리 중';
+
+  @override
+  String get statusPlan => '계획';
+
+  @override
+  String get statusWorking => '작업 중';
+
+  @override
+  String get statusNeedsYou => '확인 필요';
+
+  @override
+  String get statusUnavailable => '상태를 확인할 수 없음';
+
+  @override
+  String get sessionStatusReviewPlan => '계획 검토';
+
+  @override
+  String get sessionStatusApproveToolCall => '도구 실행 승인';
+
+  @override
+  String get sessionStatusAnswerQuestion => '질문에 답변';
+
+  @override
+  String get sessionStatusAnswerMcpRequest => 'MCP 요청에 답변';
+
+  @override
+  String get sessionStatusGrantPermissions => '권한 허용';
+
+  @override
+  String sessionStatusApproveTool(String toolName) {
+    return '$toolName 승인';
+  }
+
+  @override
+  String get sessionStatusCleaningContext => '컨텍스트 정리 중';
+
+  @override
+  String get unread => '읽지 않음';
+
+  @override
+  String get runningOnDesktop => '데스크톱에서 실행 중';
 }

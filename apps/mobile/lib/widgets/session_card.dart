@@ -131,6 +131,13 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
     final projectName = pathBasename(session.projectPath);
     final provider = providerFromRaw(session.provider);
     final providerStyle = providerStyleFor(context, provider);
+    final localizations = AppLocalizations.of(context);
+    final statusLabel = _sessionVisualLabel(localizations, visualStatus.label);
+    final statusDetail = _sessionVisualDetail(
+      localizations,
+      visualStatus.detail,
+      visualStatus.detailArgument,
+    );
     final elapsed = _formatElapsed(session.lastActivityAt);
     final agentLabel = _formatAgentLabel(
       session.agentNickname,
@@ -179,7 +186,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                   Expanded(
                     child: Row(
                       children: [
-                        if (visualStatus.label != null) ...[
+                        if (statusLabel != null) ...[
                           _StatusDot(
                             color: statusColor,
                             animate: visualStatus.animate,
@@ -189,7 +196,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            visualStatus.label!,
+                            statusLabel,
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
@@ -198,7 +205,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                           ),
                         ] else if (isIdleUnseen)
                           Semantics(
-                            label: 'Unread',
+                            label: localizations.unread,
                             child: _StatusDot(
                               color: statusColor,
                               animate: false,
@@ -214,14 +221,14 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                             ),
                             size: 13,
                             color: statusColor,
-                            semanticLabel: 'Running on Desktop',
+                            semanticLabel: localizations.runningOnDesktop,
                           ),
                         ],
-                        if (visualStatus.detail != null) ...[
+                        if (statusDetail != null) ...[
                           const SizedBox(width: 6),
                           Flexible(
                             child: Text(
-                              visualStatus.detail!,
+                              statusDetail,
                               style: TextStyle(
                                 fontSize: 11,
                                 color: statusColor.withValues(alpha: 0.82),
@@ -2543,6 +2550,37 @@ class _StatusDotPainter extends CustomPainter {
       oldDelegate.glow != glow ||
       oldDelegate.inPlanMode != inPlanMode;
 }
+
+String? _sessionVisualLabel(
+  AppLocalizations localizations,
+  SessionVisualLabel? label,
+) => switch (label) {
+  SessionVisualLabel.working => localizations.statusWorking,
+  SessionVisualLabel.needsYou => localizations.statusNeedsYou,
+  SessionVisualLabel.unavailable => localizations.statusUnavailable,
+  null => null,
+};
+
+String? _sessionVisualDetail(
+  AppLocalizations localizations,
+  SessionVisualDetail? detail,
+  String? argument,
+) => switch (detail) {
+  SessionVisualDetail.reviewPlan => localizations.sessionStatusReviewPlan,
+  SessionVisualDetail.approveToolCall =>
+    localizations.sessionStatusApproveToolCall,
+  SessionVisualDetail.answerQuestion =>
+    localizations.sessionStatusAnswerQuestion,
+  SessionVisualDetail.answerMcpRequest =>
+    localizations.sessionStatusAnswerMcpRequest,
+  SessionVisualDetail.grantPermissions =>
+    localizations.sessionStatusGrantPermissions,
+  SessionVisualDetail.approveTool =>
+    localizations.sessionStatusApproveTool(argument ?? ''),
+  SessionVisualDetail.cleaningContext =>
+    localizations.sessionStatusCleaningContext,
+  null => null,
+};
 
 String? _formatAgentLabel(String? nickname, String? role) {
   final trimmedNickname = nickname?.trim();

@@ -1277,5 +1277,16 @@
   "goalLoadFailedTitle": "目标加载失败",
   "goalLoadFailedBody": "后端没有返回可确认的目标状态，现有目标没有被更改。请重连或重试。",
   "goalUpdateFailed": "保存目标失败，草稿仍保留在这里。",
-  "goalClearFailed": "清除目标失败，请刷新后重试。"
+  "goalClearFailed": "清除目标失败，请刷新后重试。",
+  "statusUnavailable": "状态暂不可用",
+  "statusPlan": "计划",
+  "sessionStatusReviewPlan": "查看计划",
+  "sessionStatusApproveToolCall": "批准工具调用",
+  "sessionStatusAnswerQuestion": "回答问题",
+  "sessionStatusAnswerMcpRequest": "回答 MCP 请求",
+  "sessionStatusGrantPermissions": "授予权限",
+  "sessionStatusApproveTool": "批准 {toolName}",
+  "sessionStatusCleaningContext": "正在整理上下文",
+  "unread": "未读",
+  "runningOnDesktop": "正在桌面端运行"
 }

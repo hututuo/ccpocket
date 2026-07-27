@@ -1209,5 +1209,30 @@
   "goalUpdateFailed": "Goalの変更を保存できませんでした。下書きは保持されています。",
   "goalClearFailed": "Goalをクリアできませんでした。更新してから再試行してください。",
   "sessionCompleteTitle": "セッション完了",
-  "sessionDone": "セッションが終了しました"
+  "sessionDone": "セッションが終了しました",
+  "statusStarting": "起動中",
+  "statusIdle": "待機中",
+  "statusRunning": "実行中",
+  "statusApproval": "承認待ち",
+  "statusCompacting": "コンテキストを整理中",
+  "statusPlan": "プラン",
+  "statusWorking": "作業中",
+  "statusNeedsYou": "対応が必要",
+  "statusUnavailable": "状態を確認できません",
+  "sessionStatusReviewPlan": "プランを確認",
+  "sessionStatusApproveToolCall": "ツール実行を承認",
+  "sessionStatusAnswerQuestion": "質問に回答",
+  "sessionStatusAnswerMcpRequest": "MCPリクエストに回答",
+  "sessionStatusGrantPermissions": "権限を許可",
+  "sessionStatusApproveTool": "{toolName} を承認",
+  "@sessionStatusApproveTool": {
+    "placeholders": {
+      "toolName": {
+        "type": "String"
+      }
+    }
+  },
+  "sessionStatusCleaningContext": "コンテキストを整理中",
+  "unread": "未読",
+  "runningOnDesktop": "デスクトップで実行中"
 }

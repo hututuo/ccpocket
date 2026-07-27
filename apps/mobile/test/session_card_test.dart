@@ -10,11 +10,11 @@ import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/session_card.dart';
 import 'package:ccpocket/widgets/session_visual_status.dart';
 
-Widget _wrap(Widget child) {
+Widget _wrap(Widget child, {Locale locale = const Locale('en')}) {
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
-    locale: const Locale('en'),
+    locale: locale,
     theme: AppTheme.darkTheme,
     home: Scaffold(body: child),
   );
@@ -306,7 +306,7 @@ void main() {
         permissionMode: PermissionMode.plan.value,
       );
 
-      expect(visual.label, 'Working');
+      expect(visual.label, SessionVisualLabel.working);
       expect(visual.showPlanBadge, isTrue);
       expect(visual.detail, isNull);
     });
@@ -322,8 +322,8 @@ void main() {
         ),
       );
 
-      expect(visual.label, 'Needs You');
-      expect(visual.detail, 'Review plan');
+      expect(visual.label, SessionVisualLabel.needsYou);
+      expect(visual.detail, SessionVisualDetail.reviewPlan);
       expect(visual.showPlanBadge, isTrue);
     });
 
@@ -339,7 +339,7 @@ void main() {
       final visual = sessionVisualStatusFor(rawStatus: 'future_status');
 
       expect(visual.primary, SessionPrimaryStatus.unknown);
-      expect(visual.label, 'Status unavailable');
+      expect(visual.label, SessionVisualLabel.unavailable);
       expect(visual.animate, isFalse);
     });
 
@@ -358,6 +358,33 @@ void main() {
 
       expect(find.text('Ready'), findsNothing);
       expect(find.text('Status unavailable'), findsNothing);
+    });
+
+    testWidgets('localizes session status and approval detail', (tester) async {
+      final session = SessionInfo(
+        id: 'localized-approval',
+        projectPath: '/home/user/my-app',
+        status: 'waiting_approval',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+        pendingPermission: const PermissionRequestMessage(
+          toolUseId: 'localized-tool',
+          toolName: 'ExitPlanMode',
+          input: {'plan': 'Test plan'},
+        ),
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RunningSessionCard(session: session, onTap: () {}),
+          locale: const Locale('zh'),
+        ),
+      );
+
+      expect(find.text('需要你处理'), findsOneWidget);
+      expect(find.text('查看计划'), findsOneWidget);
+      expect(find.text('Needs You'), findsNothing);
+      expect(find.text('Review plan'), findsNothing);
     });
 
     testWidgets('renders an unknown runtime state without calling it Ready', (
