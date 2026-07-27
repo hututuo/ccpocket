@@ -372,6 +372,17 @@ class _ChatMessageListState extends State<ChatMessageList> {
               mimeType: artifact.mimeType,
               sizeBytes: artifact.sizeBytes,
               expiresAt: resolved.expiresAt,
+              accessRefresher: () async {
+                final refreshed = await bridge.resolveArtifact(
+                  sessionId: requestSessionId,
+                  messageId: messageId,
+                  artifactId: artifact.id,
+                );
+                return ArtifactPreviewAccess(
+                  previewUrl: refreshed.url,
+                  expiresAt: refreshed.expiresAt,
+                );
+              },
             ),
           ),
         );

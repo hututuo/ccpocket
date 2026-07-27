@@ -6,7 +6,7 @@ import 'package:provider/provider.dart';
 import '../../l10n/app_localizations.dart';
 import '../../models/messages.dart';
 import '../../widgets/workspace_pane_chrome.dart';
-import '../artifact_preview/artifact_preview_screen.dart';
+import '../artifact_preview/artifact_preview_entry.dart';
 import '../session_list/workspace_shell_screen.dart';
 import 'file_browser_service.dart';
 import 'file_browser_strings.dart';
@@ -362,6 +362,16 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
           mimeType: preview.mimeType,
           sizeBytes: preview.sizeBytes,
           expiresAt: preview.expiresAt,
+          accessRefresher: () async {
+            if (service.scopeRevision != scope) {
+              throw const FileBrowserException('bridge_scope_changed');
+            }
+            final refreshed = await service.preview(node, root.rootId);
+            return ArtifactPreviewAccess(
+              previewUrl: refreshed.previewUri,
+              expiresAt: refreshed.expiresAt,
+            );
+          },
           downloadUnavailableMessage: () {
             if (!node.canDownload || !service.downloadAvailable) {
               return strings.downloadUnavailable;

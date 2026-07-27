@@ -9,8 +9,11 @@ import 'package:share_plus/share_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../l10n/app_localizations.dart';
+import 'artifact_preview_access.dart';
 import 'artifact_quick_look_service.dart';
 import 'artifact_transfer_service.dart';
+
+export 'artifact_preview_access.dart';
 
 @visibleForTesting
 Uri embeddedArtifactPreviewUri(Uri previewUrl) {
@@ -76,6 +79,7 @@ class ArtifactPreviewScreen extends StatefulWidget {
   final int sizeBytes;
   final String? expiresAt;
   final ArtifactQuickLookPreviewer quickLookPreviewer;
+  final ArtifactPreviewAccessRefresher? accessRefresher;
   final Future<void> Function()? onDownloadRequested;
   final String? Function()? downloadUnavailableMessage;
 
@@ -87,6 +91,7 @@ class ArtifactPreviewScreen extends StatefulWidget {
     required this.sizeBytes,
     this.expiresAt,
     this.quickLookPreviewer = const ArtifactQuickLookService(),
+    this.accessRefresher,
     this.onDownloadRequested,
     this.downloadUnavailableMessage,
   });
@@ -107,8 +112,10 @@ class _ArtifactTransferSession {
 
 class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   WebViewController? _controller;
-  late final Uri _embeddedUrl;
-  late final Uri _downloadUrl;
+  late Uri _previewUrl;
+  late Uri _embeddedUrl;
+  late Uri _downloadUrl;
+  String? _expiresAt;
   late final bool _quickLookEligible;
   var _usesQuickLook = false;
   var _pageProgress = 0;
@@ -120,12 +127,18 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
   _ArtifactTransferSession? _activeTransfer;
   var _handlingBack = false;
   var _webViewCanGoBack = false;
+  var _webAccessRefreshAttempted = false;
+  Future<bool>? _accessRefreshAttempt;
 
   @override
   void initState() {
     super.initState();
-    _embeddedUrl = embeddedArtifactPreviewUri(widget.previewUrl);
-    _downloadUrl = artifactDownloadUri(widget.previewUrl);
+    _applyAccess(
+      ArtifactPreviewAccess(
+        previewUrl: widget.previewUrl,
+        expiresAt: widget.expiresAt,
+      ),
+    );
     _quickLookEligible = shouldTryQuickLookForArtifact(
       widget.filename,
       widget.mimeType,
@@ -138,7 +151,47 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
       });
       return;
     }
-    _initializeWebPreview();
+    unawaited(_startWebPreview());
+  }
+
+  void _applyAccess(ArtifactPreviewAccess access) {
+    _previewUrl = access.previewUrl;
+    _embeddedUrl = embeddedArtifactPreviewUri(access.previewUrl);
+    _downloadUrl = artifactDownloadUri(access.previewUrl);
+    _expiresAt = access.expiresAt;
+  }
+
+  Future<bool> _refreshAccessIfNeeded({bool force = false}) {
+    final refresher = widget.accessRefresher;
+    if (refresher == null ||
+        (!force && !artifactPreviewAccessNeedsRefresh(_expiresAt))) {
+      return Future<bool>.value(false);
+    }
+    final existing = _accessRefreshAttempt;
+    if (existing != null) return existing;
+
+    late final Future<bool> attempt;
+    attempt = () async {
+      final access = await refresher();
+      if (!mounted) return false;
+      _applyAccess(access);
+      return true;
+    }();
+    _accessRefreshAttempt = attempt;
+    return attempt.whenComplete(() {
+      if (identical(_accessRefreshAttempt, attempt)) {
+        _accessRefreshAttempt = null;
+      }
+    });
+  }
+
+  Future<void> _startWebPreview() async {
+    try {
+      await _refreshAccessIfNeeded();
+    } catch (_) {
+      // Load the existing URL so the normal error surface remains available.
+    }
+    if (mounted) _initializeWebPreview();
   }
 
   void _initializeWebPreview() {
@@ -182,11 +235,20 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
             }
           },
           onHttpError: (error) {
-            if (error.request?.uri.path == widget.previewUrl.path && mounted) {
-              setState(
-                () =>
-                    _mainFrameError = 'HTTP ${error.response?.statusCode ?? 0}',
-              );
+            final statusCode = error.response?.statusCode ?? 0;
+            final isMainFrame =
+                error.request?.uri.path == _previewUrl.path ||
+                error.request?.uri.path == _embeddedUrl.path;
+            if (isMainFrame &&
+                !_webAccessRefreshAttempted &&
+                widget.accessRefresher != null &&
+                (statusCode == 401 || statusCode == 403 || statusCode == 404)) {
+              _webAccessRefreshAttempted = true;
+              unawaited(_reloadWebPreview(forceRefresh: true));
+              return;
+            }
+            if (isMainFrame && mounted) {
+              setState(() => _mainFrameError = 'HTTP $statusCode');
             }
           },
           onNavigationRequest: (request) {
@@ -196,16 +258,31 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
               unawaited(_downloadArtifact());
               return NavigationDecision.prevent;
             }
-            return isAllowedArtifactPreviewNavigation(
-                  widget.previewUrl,
-                  candidate,
-                )
+            return isAllowedArtifactPreviewNavigation(_previewUrl, candidate)
                 ? NavigationDecision.navigate
                 : NavigationDecision.prevent;
           },
         ),
       )
       ..loadRequest(_embeddedUrl);
+  }
+
+  Future<void> _reloadWebPreview({bool forceRefresh = false}) async {
+    final controller = _controller;
+    if (controller == null) return;
+    try {
+      await _refreshAccessIfNeeded(force: forceRefresh);
+      if (!mounted) return;
+      setState(() {
+        _mainFrameError = null;
+        _pageProgress = 0;
+      });
+      await controller.loadRequest(_embeddedUrl);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _mainFrameError = 'preview_access_refresh_failed');
+      }
+    }
   }
 
   @override
@@ -255,6 +332,10 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
     File? reservedFile;
     var handedToStreamService = false;
     try {
+      if (transfer.cancellation.isCancelled) {
+        throw const ArtifactTransferException('cancelled');
+      }
+      await _refreshAccessIfNeeded();
       if (transfer.cancellation.isCancelled) {
         throw const ArtifactTransferException('cancelled');
       }
@@ -427,6 +508,7 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
       _transferProgress = null;
     });
     try {
+      await _refreshAccessIfNeeded();
       await widget.quickLookPreviewer.previewTemporaryArtifact(
         prepareFile: () async {
           final temporaryDirectory = Directory(
@@ -610,7 +692,8 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
                           label: Text(localizations.back),
                         ),
                         FilledButton.icon(
-                          onPressed: () => controller.loadRequest(_embeddedUrl),
+                          onPressed: () =>
+                              _reloadWebPreview(forceRefresh: true),
                           icon: const Icon(Icons.refresh),
                           label: Text(localizations.retry),
                         ),
@@ -702,6 +785,8 @@ class _ArtifactPreviewScreenState extends State<ArtifactPreviewScreen> {
         appBar: _chromeVisible ? _buildAppBar(context) : null,
         body: _usesQuickLook
             ? _buildQuickLookBody(context)
+            : _controller == null
+            ? const Center(child: CircularProgressIndicator())
             : _buildWebPreviewBody(context),
       ),
     );

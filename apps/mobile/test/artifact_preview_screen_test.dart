@@ -148,6 +148,25 @@ void main() {
     );
   });
 
+  test('refreshes access only when the token is near expiry', () {
+    final now = DateTime.utc(2026, 7, 27, 10);
+    expect(
+      artifactPreviewAccessNeedsRefresh(
+        now.add(const Duration(seconds: 14)).toIso8601String(),
+        now: now,
+      ),
+      isTrue,
+    );
+    expect(
+      artifactPreviewAccessNeedsRefresh(
+        now.add(const Duration(minutes: 2)).toIso8601String(),
+        now: now,
+      ),
+      isFalse,
+    );
+    expect(artifactPreviewAccessNeedsRefresh(null, now: now), isFalse);
+  });
+
   test('allows only the resolved artifact and same-origin viewer assets', () {
     expect(isAllowedArtifactPreviewNavigation(preview, preview), isTrue);
     expect(
@@ -284,6 +303,50 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Preview'), findsOneWidget);
+  });
+
+  testWidgets('expired Office access is renewed before native preview', (
+    tester,
+  ) async {
+    final quickLook = _BlockingQuickLookPreviewer();
+    var refreshCalls = 0;
+    addTearDown(() {
+      if (!quickLook.dismissed.isCompleted) quickLook.dismissed.complete();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: ArtifactPreviewScreen(
+          previewUrl: preview,
+          filename: 'report.xlsx',
+          mimeType:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          sizeBytes: 120557,
+          expiresAt: DateTime.now()
+              .subtract(const Duration(seconds: 1))
+              .toIso8601String(),
+          accessRefresher: () async {
+            refreshCalls += 1;
+            return ArtifactPreviewAccess(
+              previewUrl: Uri.parse(
+                'http://100.105.41.82:8765/artifacts/$tokenB',
+              ),
+              expiresAt: DateTime.now()
+                  .add(const Duration(minutes: 5))
+                  .toIso8601String(),
+            );
+          },
+          quickLookPreviewer: quickLook,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(refreshCalls, 1);
+    expect(quickLook.calls, 1);
   });
 
   testWidgets('disposing an Office preview cancels the native handoff', (

@@ -1,5 +1,9 @@
 import 'package:flutter/widgets.dart';
 
+import 'artifact_preview_access.dart';
+
+export 'artifact_preview_access.dart';
+
 bool supportsEmbeddedArtifactPreview([TargetPlatform? platform]) => false;
 
 /// Compile-safe placeholder for platforms without a native WebView backend.
@@ -12,6 +16,7 @@ class ArtifactPreviewScreen extends StatelessWidget {
   final String mimeType;
   final int sizeBytes;
   final String? expiresAt;
+  final ArtifactPreviewAccessRefresher? accessRefresher;
   final Future<void> Function()? onDownloadRequested;
   final String? Function()? downloadUnavailableMessage;
 
@@ -22,6 +27,7 @@ class ArtifactPreviewScreen extends StatelessWidget {
     required this.mimeType,
     required this.sizeBytes,
     this.expiresAt,
+    this.accessRefresher,
     this.onDownloadRequested,
     this.downloadUnavailableMessage,
   });
