@@ -3498,6 +3498,65 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     }
   });
 
+  it("returns terminal git results when a project path is denied", async () => {
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: ["/tmp/allowed"],
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_diff",
+        projectPath: "/tmp/denied",
+        requestId: "diff-denied",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "git_stage",
+        projectPath: "/tmp/denied",
+        files: ["a.ts"],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "git_fetch",
+        projectPath: "/tmp/denied",
+      },
+      ws,
+    );
+
+    const messages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "diff_result",
+        requestId: "diff-denied",
+        errorCode: "path_not_allowed",
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "git_stage_result",
+        success: false,
+        projectPath: "/tmp/denied",
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "git_fetch_result",
+        success: false,
+        projectPath: "/tmp/denied",
+      }),
+    );
+    expect(messages.some((message) => message.type === "error")).toBe(false);
+    bridge.close();
+  });
+
   it("refreshes connection metadata initially and after the cooldown", () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const refreshCodexMetadata = vi

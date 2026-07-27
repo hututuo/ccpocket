@@ -35,6 +35,12 @@ class GitViewCubit extends Cubit<GitViewState> {
   final String? _projectPath;
   final String? _sessionId;
   final void Function({bool forceRemote})? _onStatusRefreshRequested;
+  final Duration operationTimeout;
+  Timer? _diffTimeout;
+  Timer? _stagingTimeout;
+  Timer? _fetchTimeout;
+  Timer? _pullTimeout;
+  Timer? _pushTimeout;
 
   GitViewCubit({
     required BridgeService bridge,
@@ -43,6 +49,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     String? worktreePath,
     String? sessionId,
     void Function({bool forceRemote})? onStatusRefreshRequested,
+    this.operationTimeout = const Duration(seconds: 15),
   }) : _bridge = bridge,
        _projectPath = projectPath,
        _sessionId = sessionId,
@@ -119,6 +126,18 @@ class GitViewCubit extends Cubit<GitViewState> {
     }
     final requestId = 'gitdiff-${++GitViewCubit._diffRequestCounter}';
     _pendingDiffRequestId = requestId;
+    _diffTimeout?.cancel();
+    _diffTimeout = Timer(operationTimeout, () {
+      if (isClosed || _pendingDiffRequestId != requestId) return;
+      _pendingDiffRequestId = null;
+      emit(
+        state.copyWith(
+          loading: false,
+          error: 'Git diff request timed out. Check the Bridge connection.',
+          errorCode: 'git_request_timeout',
+        ),
+      );
+    });
     _bridge.send(
       ClientMessage.getDiff(projectPath, staged: staged, requestId: requestId),
     );
@@ -131,6 +150,9 @@ class GitViewCubit extends Cubit<GitViewState> {
       // it. No requestId means an old Bridge; accept for compatibility.
       final requestId = result.requestId;
       if (requestId != null && requestId != _pendingDiffRequestId) return;
+      _diffTimeout?.cancel();
+      _diffTimeout = null;
+      _pendingDiffRequestId = null;
       if (result.error != null) {
         emit(
           state.copyWith(
@@ -451,6 +473,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitStage(
         projectPath,
@@ -464,6 +487,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitUnstage(
         projectPath,
@@ -489,6 +513,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitStage(projectPath, hunks: [_hunkRef(fileIdx, hunkIdx)]),
     );
@@ -498,6 +523,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitUnstageHunks(projectPath, [_hunkRef(fileIdx, hunkIdx)]),
     );
@@ -508,6 +534,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitRevertFile(projectPath, [state.files[fileIdx].filePath]),
     );
@@ -517,6 +544,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null || fileIdx >= state.files.length) return;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitRevertHunks(projectPath, [_hunkRef(fileIdx, hunkIdx)]),
     );
@@ -531,6 +559,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     if (projectPath == null || state.files.isEmpty) return;
     _pendingSwitchToStaged = true;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitStage(
         projectPath,
@@ -545,6 +574,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     if (projectPath == null || state.files.isEmpty) return;
     _pendingSwitchToUnstaged = true;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitUnstage(
         projectPath,
@@ -558,6 +588,7 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null || state.files.isEmpty) return;
     emit(state.copyWith(staging: true));
+    _scheduleStagingTimeout();
     _bridge.send(
       ClientMessage.gitRevertFile(
         projectPath,
@@ -572,8 +603,30 @@ class GitViewCubit extends Cubit<GitViewState> {
   bool _isForeignProject(String? resultProjectPath) =>
       resultProjectPath != null && resultProjectPath != _projectPath;
 
+  void _scheduleStagingTimeout() {
+    _stagingTimeout?.cancel();
+    _stagingTimeout = Timer(operationTimeout, () {
+      if (isClosed || !state.staging) return;
+      _pendingSwitchToStaged = false;
+      _pendingSwitchToUnstaged = false;
+      emit(
+        state.copyWith(
+          staging: false,
+          error: 'Git operation timed out. Check the Bridge connection.',
+          errorCode: 'git_request_timeout',
+        ),
+      );
+    });
+  }
+
+  void _completeStagingRequest() {
+    _stagingTimeout?.cancel();
+    _stagingTimeout = null;
+  }
+
   void _onStageResult(GitStageResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
       if (_pendingSwitchToStaged) {
@@ -591,6 +644,7 @@ class GitViewCubit extends Cubit<GitViewState> {
 
   void _onRevertResult(GitRevertFileResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
       refreshDiffOnly(requestStatus: true);
@@ -601,6 +655,7 @@ class GitViewCubit extends Cubit<GitViewState> {
 
   void _onRevertHunksResult(GitRevertHunksResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
       refreshDiffOnly(requestStatus: true);
@@ -611,6 +666,7 @@ class GitViewCubit extends Cubit<GitViewState> {
 
   void _onUnstageResult(GitUnstageResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
       if (_pendingSwitchToUnstaged) {
@@ -628,6 +684,7 @@ class GitViewCubit extends Cubit<GitViewState> {
 
   void _onUnstageHunksResult(GitUnstageHunksResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    _completeStagingRequest();
     if (result.success) {
       emit(state.copyWith(staging: false));
       refreshDiffOnly(requestStatus: true);
@@ -644,12 +701,29 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null) return;
     emit(state.copyWith(fetching: true));
+    _fetchTimeout?.cancel();
+    _fetchTimeout = Timer(operationTimeout, () {
+      if (isClosed || !state.fetching) return;
+      emit(
+        state.copyWith(
+          fetching: false,
+          error: 'Git fetch timed out. Check the Bridge connection.',
+          errorCode: 'git_request_timeout',
+        ),
+      );
+    });
     _bridge.send(ClientMessage.gitFetch(projectPath));
   }
 
   void _onFetchResult(GitFetchResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    _fetchTimeout?.cancel();
+    _fetchTimeout = null;
     emit(state.copyWith(fetching: false));
+    if (!result.success) {
+      emit(state.copyWith(error: result.error ?? 'Git fetch failed.'));
+      return;
+    }
     // After fetch, request remote status to get ahead/behind counts
     final projectPath = _projectPath;
     if (projectPath != null) {
@@ -673,11 +747,24 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null) return;
     emit(state.copyWith(pulling: true));
+    _pullTimeout?.cancel();
+    _pullTimeout = Timer(operationTimeout, () {
+      if (isClosed || !state.pulling) return;
+      emit(
+        state.copyWith(
+          pulling: false,
+          error: 'Git pull timed out. Check the Bridge connection.',
+          errorCode: 'git_request_timeout',
+        ),
+      );
+    });
     _bridge.send(ClientMessage.gitPull(projectPath));
   }
 
   void _onPullResult(GitPullResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    _pullTimeout?.cancel();
+    _pullTimeout = null;
     emit(state.copyWith(pulling: false));
     if (result.success) {
       refresh(); // refresh diff + remote status
@@ -691,11 +778,24 @@ class GitViewCubit extends Cubit<GitViewState> {
     final projectPath = _projectPath;
     if (projectPath == null) return;
     emit(state.copyWith(pushing: true));
+    _pushTimeout?.cancel();
+    _pushTimeout = Timer(operationTimeout, () {
+      if (isClosed || !state.pushing) return;
+      emit(
+        state.copyWith(
+          pushing: false,
+          error: 'Git push timed out. Check the Bridge connection.',
+          errorCode: 'git_request_timeout',
+        ),
+      );
+    });
     _bridge.send(ClientMessage.gitPush(projectPath));
   }
 
   void _onPushResult(GitPushResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    _pushTimeout?.cancel();
+    _pushTimeout = null;
     emit(state.copyWith(pushing: false));
     if (result.success) {
       refresh();
@@ -740,6 +840,11 @@ class GitViewCubit extends Cubit<GitViewState> {
 
   @override
   Future<void> close() {
+    _diffTimeout?.cancel();
+    _stagingTimeout?.cancel();
+    _fetchTimeout?.cancel();
+    _pullTimeout?.cancel();
+    _pushTimeout?.cancel();
     _clearPendingDiffImageRequests();
     _diffSub?.cancel();
     _diffImageSub?.cancel();

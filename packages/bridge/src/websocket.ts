@@ -1739,6 +1739,141 @@ export class BridgeWebSocketServer {
     };
   }
 
+  /**
+   * Git operations have dedicated terminal result frames. Returning a generic
+   * error for a denied path leaves old Mobile clients waiting forever because
+   * their busy state is cleared only by the matching result stream.
+   */
+  private sendGitPathNotAllowed(
+    ws: WebSocket,
+    requestType:
+      | "get_diff"
+      | "git_stage"
+      | "git_unstage"
+      | "git_unstage_hunks"
+      | "git_commit"
+      | "git_push"
+      | "git_branches"
+      | "git_create_branch"
+      | "git_checkout_branch"
+      | "git_revert_file"
+      | "git_revert_hunks"
+      | "git_fetch"
+      | "git_pull"
+      | "git_remote_status",
+    projectPath: string,
+    requestId?: string,
+  ): void {
+    const error = this.buildPathNotAllowedError(projectPath).message;
+    const result = (() => {
+      switch (requestType) {
+        case "get_diff":
+          return {
+            type: "diff_result",
+            diff: "",
+            error,
+            errorCode: "path_not_allowed",
+            ...(requestId ? { requestId } : {}),
+          };
+        case "git_stage":
+          return {
+            type: "git_stage_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_unstage":
+          return {
+            type: "git_unstage_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_unstage_hunks":
+          return {
+            type: "git_unstage_hunks_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_commit":
+          return {
+            type: "git_commit_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_push":
+          return {
+            type: "git_push_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_branches":
+          return {
+            type: "git_branches_result",
+            current: "",
+            branches: [],
+            projectPath,
+            error,
+          };
+        case "git_create_branch":
+          return {
+            type: "git_create_branch_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_checkout_branch":
+          return {
+            type: "git_checkout_branch_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_revert_file":
+          return {
+            type: "git_revert_file_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_revert_hunks":
+          return {
+            type: "git_revert_hunks_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_fetch":
+          return {
+            type: "git_fetch_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_pull":
+          return {
+            type: "git_pull_result",
+            success: false,
+            projectPath,
+            error,
+          };
+        case "git_remote_status":
+          return {
+            type: "git_remote_status_result",
+            ahead: 0,
+            behind: 0,
+            branch: "",
+            hasUpstream: false,
+            projectPath,
+          };
+      }
+    })();
+    this.send(ws, result);
+  }
+
   private normalizeAdditionalWritableRoots(
     roots: string[] | undefined,
     projectPath: string,
@@ -8327,7 +8462,12 @@ export class BridgeWebSocketServer {
 
       case "get_diff": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(
+            ws,
+            msg.type,
+            msg.projectPath,
+            msg.requestId,
+          );
           break;
         }
         // Echo the client's requestId (when given) so it can match this
@@ -8483,7 +8623,7 @@ export class BridgeWebSocketServer {
 
       case "git_stage": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8507,7 +8647,7 @@ export class BridgeWebSocketServer {
 
       case "git_unstage": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8530,7 +8670,7 @@ export class BridgeWebSocketServer {
 
       case "git_unstage_hunks": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8553,7 +8693,7 @@ export class BridgeWebSocketServer {
 
       case "git_commit": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         const session = msg.sessionId
@@ -8613,7 +8753,7 @@ export class BridgeWebSocketServer {
 
       case "git_push": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8636,7 +8776,7 @@ export class BridgeWebSocketServer {
 
       case "git_branches": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8664,7 +8804,7 @@ export class BridgeWebSocketServer {
 
       case "git_create_branch": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8687,7 +8827,7 @@ export class BridgeWebSocketServer {
 
       case "git_checkout_branch": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8710,7 +8850,7 @@ export class BridgeWebSocketServer {
 
       case "git_revert_file": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8733,7 +8873,7 @@ export class BridgeWebSocketServer {
 
       case "git_revert_hunks": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8756,7 +8896,7 @@ export class BridgeWebSocketServer {
 
       case "git_fetch": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8779,7 +8919,7 @@ export class BridgeWebSocketServer {
 
       case "git_pull": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {
@@ -8871,7 +9011,7 @@ export class BridgeWebSocketServer {
 
       case "git_remote_status": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
         try {

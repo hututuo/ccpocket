@@ -648,6 +648,74 @@ void main() {
   });
 
   group('GitViewCubit - staging mode', () {
+    test(
+      'terminal timeouts clear diff, fetch, and staging busy states',
+      () async {
+        final mockBridge = MockDiffBridgeService();
+        final cubit = GitViewCubit(
+          bridge: mockBridge,
+          projectPath: '/home/user/project',
+          operationTimeout: const Duration(milliseconds: 15),
+        );
+        addTearDown(() async {
+          await cubit.close();
+          mockBridge.dispose();
+        });
+
+        await Future<void>.delayed(const Duration(milliseconds: 35));
+        expect(cubit.state.loading, isFalse);
+        expect(cubit.state.fetching, isFalse);
+        expect(cubit.state.error, contains('timed out'));
+
+        cubit.refreshDiffOnly();
+        final requestId = _latestRequestId(
+          mockBridge,
+          'get_diff',
+          projectPath: '/home/user/project',
+        );
+        mockBridge.emitDiff(
+          DiffResultMessage(diff: _multiFileDiff, requestId: requestId),
+        );
+        await Future<void>.delayed(Duration.zero);
+        cubit.stageFile(0);
+        expect(cubit.state.staging, isTrue);
+
+        await Future<void>.delayed(const Duration(milliseconds: 35));
+        expect(cubit.state.staging, isFalse);
+        expect(cubit.state.error, contains('timed out'));
+      },
+    );
+
+    test(
+      'failed fetch stops without issuing a remote-status request',
+      () async {
+        final mockBridge = MockDiffBridgeService();
+        final cubit = GitViewCubit(bridge: mockBridge, projectPath: '/outside');
+        addTearDown(() async {
+          await cubit.close();
+          mockBridge.dispose();
+        });
+
+        mockBridge.emitFetchResult(
+          const GitFetchResultMessage(
+            success: false,
+            projectPath: '/outside',
+            error: 'Path not allowed',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(cubit.state.fetching, isFalse);
+        expect(cubit.state.error, 'Path not allowed');
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'git_remote_status',
+          ),
+          isEmpty,
+        );
+      },
+    );
+
     test('switchMode emits viewMode change and requests staged diff', () async {
       final mockBridge = MockDiffBridgeService();
       final cubit = GitViewCubit(
