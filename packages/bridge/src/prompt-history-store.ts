@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -139,9 +139,32 @@ export function detectPromptCommandKind(text: string): PromptCommandKind {
 function cloneEntry(entry: PromptHistoryEntry): PromptHistoryEntry {
   return {
     ...entry,
-    clientStats: { ...entry.clientStats },
-    sessionStats: { ...entry.sessionStats },
+    clientStats: Object.fromEntries(
+      Object.entries(entry.clientStats).map(([id, stat]) => [id, { ...stat }]),
+    ),
+    sessionStats: Object.fromEntries(
+      Object.entries(entry.sessionStats).map(([id, stat]) => [
+        id,
+        { ...stat },
+      ]),
+    ),
   };
+}
+
+function cloneStoreData(data: PromptHistoryStoreData): PromptHistoryStoreData {
+  return {
+    ...data,
+    entries: data.entries.map(cloneEntry),
+  };
+}
+
+function listEntries(
+  data: PromptHistoryStoreData,
+  includeDeleted = false,
+): PromptHistoryEntry[] {
+  return data.entries
+    .filter((entry) => includeDeleted || !entry.deletedAt)
+    .map(cloneEntry);
 }
 
 export class PromptHistoryStore {
@@ -152,6 +175,7 @@ export class PromptHistoryStore {
     entries: [],
   };
   private readonly filePath: string;
+  private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(filePath?: string) {
     this.filePath = filePath ?? DEFAULT_STORE_FILE;
@@ -200,9 +224,7 @@ export class PromptHistoryStore {
   }
 
   list(includeDeleted = false): PromptHistoryEntry[] {
-    return this.data.entries
-      .filter((entry) => includeDeleted || !entry.deletedAt)
-      .map(cloneEntry);
+    return listEntries(this.data, includeDeleted);
   }
 
   async record(input: PromptHistoryRecordInput): Promise<PromptHistoryEntry> {
@@ -211,64 +233,81 @@ export class PromptHistoryStore {
     const projectPath = normalizeProjectPath(input.projectPath);
     const id = promptHistoryId(text, projectPath);
     const usedAt = input.usedAt ?? isoNow();
-    const existing = this.findMutable(id);
+    return this.runMutation((data) => {
+      const existing = this.findMutable(data, id);
 
-    if (existing) {
-      existing.totalUseCount += 1;
-      existing.lastUsedAt = maxIso(existing.lastUsedAt, usedAt);
-      existing.updatedAt = maxIso(existing.updatedAt, usedAt);
-      existing.deletedAt = undefined;
-      this.incrementClientStat(existing, input.clientId, input.clientName, usedAt, 1);
-      if (input.sessionId) this.incrementSessionStat(existing, input.sessionId, usedAt, 1);
-      await this.saveBumped();
-      return cloneEntry(existing);
-    }
+      if (existing) {
+        existing.totalUseCount += 1;
+        existing.lastUsedAt = maxIso(existing.lastUsedAt, usedAt);
+        existing.updatedAt = maxIso(existing.updatedAt, usedAt);
+        existing.deletedAt = undefined;
+        this.incrementClientStat(
+          existing,
+          input.clientId,
+          input.clientName,
+          usedAt,
+          1,
+        );
+        if (input.sessionId) {
+          this.incrementSessionStat(existing, input.sessionId, usedAt, 1);
+        }
+        return { changed: true, value: cloneEntry(existing) };
+      }
 
-    const entry: PromptHistoryEntry = {
-      id,
-      text,
-      projectPath,
-      totalUseCount: 1,
-      isFavorite: false,
-      createdAt: usedAt,
-      lastUsedAt: usedAt,
-      updatedAt: usedAt,
-      commandKind: detectPromptCommandKind(text),
-      clientStats: {},
-      sessionStats: {},
-    };
-    this.incrementClientStat(entry, input.clientId, input.clientName, usedAt, 1);
-    if (input.sessionId) this.incrementSessionStat(entry, input.sessionId, usedAt, 1);
-    this.data.entries.push(entry);
-    await this.saveBumped();
-    return cloneEntry(entry);
+      const entry: PromptHistoryEntry = {
+        id,
+        text,
+        projectPath,
+        totalUseCount: 1,
+        isFavorite: false,
+        createdAt: usedAt,
+        lastUsedAt: usedAt,
+        updatedAt: usedAt,
+        commandKind: detectPromptCommandKind(text),
+        clientStats: {},
+        sessionStats: {},
+      };
+      this.incrementClientStat(
+        entry,
+        input.clientId,
+        input.clientName,
+        usedAt,
+        1,
+      );
+      if (input.sessionId) {
+        this.incrementSessionStat(entry, input.sessionId, usedAt, 1);
+      }
+      data.entries.push(entry);
+      return { changed: true, value: cloneEntry(entry) };
+    });
   }
 
   async mutate(input: PromptHistoryMutationInput): Promise<PromptHistoryEntry | null> {
     const id = input.id ?? (input.text ? promptHistoryId(input.text, input.projectPath ?? "") : undefined);
     if (!id) return null;
-    const entry = this.findMutable(id);
-    if (!entry) return null;
     const updatedAt = input.updatedAt ?? isoNow();
+    return this.runMutation((data) => {
+      const entry = this.findMutable(data, id);
+      if (!entry) return { changed: false, value: null };
 
-    switch (input.action) {
-      case "favorite":
-        entry.isFavorite = input.isFavorite ?? !entry.isFavorite;
-        entry.favoriteUpdatedAt = updatedAt;
-        entry.updatedAt = maxIso(entry.updatedAt, updatedAt);
-        break;
-      case "delete":
-        entry.deletedAt = updatedAt;
-        entry.updatedAt = maxIso(entry.updatedAt, updatedAt);
-        break;
-      case "restore":
-        entry.deletedAt = undefined;
-        entry.updatedAt = maxIso(entry.updatedAt, updatedAt);
-        break;
-    }
+      switch (input.action) {
+        case "favorite":
+          entry.isFavorite = input.isFavorite ?? !entry.isFavorite;
+          entry.favoriteUpdatedAt = updatedAt;
+          entry.updatedAt = maxIso(entry.updatedAt, updatedAt);
+          break;
+        case "delete":
+          entry.deletedAt = updatedAt;
+          entry.updatedAt = maxIso(entry.updatedAt, updatedAt);
+          break;
+        case "restore":
+          entry.deletedAt = undefined;
+          entry.updatedAt = maxIso(entry.updatedAt, updatedAt);
+          break;
+      }
 
-    await this.saveBumped();
-    return cloneEntry(entry);
+      return { changed: true, value: cloneEntry(entry) };
+    });
   }
 
   async importEntries(
@@ -276,10 +315,8 @@ export class PromptHistoryStore {
     clientId: string,
     clientName?: string,
   ): Promise<{ imported: number; entries: PromptHistoryEntry[] }> {
-    const previous = this.data.entries;
-    try {
-      this.data.entries = [];
-
+    return this.runMutation((data) => {
+      data.entries = [];
       let imported = 0;
       for (const raw of entries) {
         const text = normalizeText(raw.text);
@@ -307,45 +344,49 @@ export class PromptHistoryStore {
           sessionStats: raw.sessionStats ?? {},
         };
         this.incrementClientStat(incoming, clientId, clientName, lastUsedAt, useCount);
-        this.mergeEntry(incoming);
+        this.mergeEntry(data, incoming);
         imported += 1;
       }
 
-      await this.saveBumped();
-      return { imported, entries: this.list() };
-    } catch (error) {
-      this.data.entries = previous;
-      throw error;
-    }
+      return {
+        changed: true,
+        value: { imported, entries: listEntries(data) },
+      };
+    });
   }
 
   async mergeClientEntries(entries: PromptHistoryImportEntry[]): Promise<void> {
     if (entries.length === 0) return;
-    for (const raw of entries) {
-      const text = normalizeText(raw.text);
-      if (!text) continue;
-      const projectPath = normalizeProjectPath(raw.projectPath);
-      this.mergeEntry({
-        id: raw.id ?? promptHistoryId(text, projectPath),
-        text,
-        projectPath,
-        totalUseCount: Math.max(1, raw.totalUseCount ?? raw.useCount ?? 1),
-        isFavorite: raw.isFavorite ?? false,
-        createdAt: raw.createdAt ?? isoNow(),
-        lastUsedAt: raw.lastUsedAt ?? raw.updatedAt ?? isoNow(),
-        updatedAt: raw.updatedAt ?? raw.lastUsedAt ?? isoNow(),
-        favoriteUpdatedAt: raw.favoriteUpdatedAt,
-        deletedAt: raw.deletedAt,
-        commandKind: raw.commandKind ?? detectPromptCommandKind(text),
-        clientStats: raw.clientStats ?? {},
-        sessionStats: raw.sessionStats ?? {},
-      });
-    }
-    await this.saveBumped();
+    await this.runMutation((data) => {
+      for (const raw of entries) {
+        const text = normalizeText(raw.text);
+        if (!text) continue;
+        const projectPath = normalizeProjectPath(raw.projectPath);
+        this.mergeEntry(data, {
+          id: raw.id ?? promptHistoryId(text, projectPath),
+          text,
+          projectPath,
+          totalUseCount: Math.max(1, raw.totalUseCount ?? raw.useCount ?? 1),
+          isFavorite: raw.isFavorite ?? false,
+          createdAt: raw.createdAt ?? isoNow(),
+          lastUsedAt: raw.lastUsedAt ?? raw.updatedAt ?? isoNow(),
+          updatedAt: raw.updatedAt ?? raw.lastUsedAt ?? isoNow(),
+          favoriteUpdatedAt: raw.favoriteUpdatedAt,
+          deletedAt: raw.deletedAt,
+          commandKind: raw.commandKind ?? detectPromptCommandKind(text),
+          clientStats: raw.clientStats ?? {},
+          sessionStats: raw.sessionStats ?? {},
+        });
+      }
+      return { changed: true, value: undefined };
+    });
   }
 
-  private findMutable(id: string): PromptHistoryEntry | undefined {
-    return this.data.entries.find((entry) => entry.id === id);
+  private findMutable(
+    data: PromptHistoryStoreData,
+    id: string,
+  ): PromptHistoryEntry | undefined {
+    return data.entries.find((entry) => entry.id === id);
   }
 
   private incrementClientStat(
@@ -376,10 +417,13 @@ export class PromptHistoryStore {
     };
   }
 
-  private mergeEntry(incoming: PromptHistoryEntry): void {
-    const existing = this.findMutable(incoming.id);
+  private mergeEntry(
+    data: PromptHistoryStoreData,
+    incoming: PromptHistoryEntry,
+  ): void {
+    const existing = this.findMutable(data, incoming.id);
     if (!existing) {
-      this.data.entries.push(cloneEntry(incoming));
+      data.entries.push(cloneEntry(incoming));
       return;
     }
 
@@ -428,15 +472,40 @@ export class PromptHistoryStore {
     }
   }
 
-  private async saveBumped(): Promise<void> {
-    this.data.revision += 1;
-    await this.save();
+  private async runMutation<T>(
+    operation: (data: PromptHistoryStoreData) => {
+      changed: boolean;
+      value: T;
+    },
+  ): Promise<T> {
+    const previous = this.mutationTail;
+    let release!: () => void;
+    this.mutationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      const next = cloneStoreData(this.data);
+      const result = operation(next);
+      if (!result.changed) return result.value;
+      next.revision += 1;
+      await this.save(next);
+      this.data = next;
+      return result.value;
+    } finally {
+      release();
+    }
   }
 
-  private async save(): Promise<void> {
+  private async save(data: PromptHistoryStoreData = this.data): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const tmp = `${this.filePath}.${randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify(this.data, null, 2), "utf-8");
-    await rename(tmp, this.filePath);
+    try {
+      await writeFile(tmp, JSON.stringify(data, null, 2), "utf-8");
+      await rename(tmp, this.filePath);
+    } catch (error) {
+      await rm(tmp, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 }

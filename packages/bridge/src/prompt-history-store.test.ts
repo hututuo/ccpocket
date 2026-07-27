@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, afterEach } from "vitest";
@@ -142,6 +142,88 @@ describe("PromptHistoryStore", () => {
     const entries = store.list();
     expect(entries).toHaveLength(1);
     expect(entries[0].id).toBe(promptHistoryId("seed", "/repo"));
+  });
+
+  it("rolls back entries and revision when an import cannot be persisted", async () => {
+    const store = await makeStore();
+    await store.record({
+      text: "seed",
+      projectPath: "/repo",
+      clientId: "phone",
+    });
+    const revisionBefore = store.revision;
+    const historyPath = join(tempDir!, "history.json");
+    await rm(historyPath);
+    await mkdir(historyPath);
+
+    await expect(
+      store.importEntries(
+        [{ text: "replacement", projectPath: "/repo" }],
+        "phone",
+      ),
+    ).rejects.toThrow();
+
+    expect(store.revision).toBe(revisionBefore);
+    expect(store.list()).toMatchObject([
+      { id: promptHistoryId("seed", "/repo"), text: "seed" },
+    ]);
+
+    await rm(historyPath, { recursive: true });
+    await store.record({
+      text: "after failure",
+      projectPath: "/repo",
+      clientId: "phone",
+    });
+    expect(store.revision).toBe(revisionBefore + 1);
+
+    const reopened = new PromptHistoryStore(historyPath);
+    await reopened.init();
+    expect(reopened.list().map((entry) => entry.text)).toEqual([
+      "seed",
+      "after failure",
+    ]);
+  });
+
+  it("serializes overlapping records into one durable revision sequence", async () => {
+    const store = await makeStore();
+    await Promise.all(
+      Array.from({ length: 24 }, (_, index) =>
+        store.record({
+          text: `prompt-${index % 4}`,
+          projectPath: "/repo",
+          clientId: `client-${index % 3}`,
+          usedAt: `2026-01-01T00:${String(index).padStart(2, "0")}:00.000Z`,
+        }),
+      ),
+    );
+
+    expect(store.revision).toBe(24);
+    expect(store.list()).toHaveLength(4);
+    expect(store.list().map((entry) => entry.totalUseCount)).toEqual([
+      6, 6, 6, 6,
+    ]);
+
+    const reopened = new PromptHistoryStore(join(tempDir!, "history.json"));
+    await reopened.init();
+    expect(reopened.revision).toBe(24);
+    expect(reopened.list()).toEqual(store.list());
+  });
+
+  it("returns detached nested usage statistics", async () => {
+    const store = await makeStore();
+    await store.record({
+      text: "detached",
+      projectPath: "/repo",
+      clientId: "phone",
+      sessionId: "session-a",
+    });
+
+    const copy = store.list()[0];
+    copy.clientStats.phone.useCount = 999;
+    copy.sessionStats["session-a"].useCount = 999;
+
+    expect(store.list()[0].clientStats.phone.useCount).toBe(1);
+    expect(store.list()[0].sessionStats["session-a"].useCount).toBe(1);
   });
 
   it("detects slash and skill command kinds", () => {
