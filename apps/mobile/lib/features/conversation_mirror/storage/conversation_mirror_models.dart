@@ -76,6 +76,9 @@ class ConversationMirrorMetadata {
     required this.projectPath,
     required this.lastSyncedAt,
     required this.error,
+    this.name,
+    this.summary,
+    this.firstPrompt,
   });
 
   final ConversationMirrorKey key;
@@ -90,8 +93,19 @@ class ConversationMirrorMetadata {
   final String projectPath;
   final DateTime? lastSyncedAt;
   final String? error;
+  final String? name;
+  final String? summary;
+  final String? firstPrompt;
 
   bool get hasLocalCopy => activeGeneration != null;
+
+  String? get storedDisplayName {
+    for (final value in [name, summary, firstPrompt]) {
+      final normalized = value?.trim();
+      if (normalized != null && normalized.isNotEmpty) return normalized;
+    }
+    return null;
+  }
 }
 
 enum ConversationMirrorPatchOutcome {

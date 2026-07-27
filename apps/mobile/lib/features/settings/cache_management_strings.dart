@@ -36,17 +36,30 @@ class CacheManagementStrings {
   }
 
   String get catalogCacheTitle {
-    if (_zh) return '会话目录缓存';
-    if (_ja) return '会話一覧キャッシュ';
-    if (_ko) return '대화 목록 캐시';
-    return 'Conversation catalog cache';
+    if (_zh) return '会话目录与最近消息缓存';
+    if (_ja) return '会話一覧と最近のメッセージのキャッシュ';
+    if (_ko) return '대화 목록 및 최근 메시지 캐시';
+    return 'Conversation catalog & recent-message cache';
   }
 
-  String catalogCacheSubtitle(int entries) {
-    if (_zh) return '已缓存 $entries 个会话摘要；清理后会从 Bridge 重新增量获取';
-    if (_ja) return '$entries 件の概要を保存中。消去後は Bridge から再取得します';
-    if (_ko) return '요약 $entries개 저장됨. 삭제 후 Bridge에서 다시 가져옵니다';
-    return '$entries summaries cached; the Bridge can rebuild them';
+  String catalogCacheSubtitle({required int summaries, required int windows}) {
+    if (_zh) {
+      return '$summaries 个会话摘要 · $windows 个最近消息窗口。'
+          '一键清理会删除所有已连接 Mac 的这两类可重建缓存；已下载的完整历史不受影响。';
+    }
+    if (_ja) {
+      return '概要 $summaries 件 · 最近のメッセージ $windows 件。'
+          'すべての接続済み Mac の再構築可能なキャッシュだけを消去し、'
+          'ダウンロード済みの完全な履歴は保持します。';
+    }
+    if (_ko) {
+      return '대화 요약 $summaries개 · 최근 메시지 창 $windows개. '
+          '연결했던 모든 Mac의 재구성 가능한 캐시만 지우며 '
+          '다운로드한 전체 기록은 유지됩니다.';
+    }
+    return '$summaries summaries · $windows recent-message windows. '
+        'Clears these rebuildable caches for every connected Mac; downloaded '
+        'full histories are kept.';
   }
 
   String get clear {
@@ -64,10 +77,11 @@ class CacheManagementStrings {
   }
 
   String get cacheCleared {
-    if (_zh) return '会话目录缓存已清理；电脑上的会话没有变化';
-    if (_ja) return '一覧キャッシュを消去しました。Mac 上の会話は変更されません';
-    if (_ko) return '목록 캐시를 지웠습니다. Mac의 대화는 변경되지 않았습니다';
-    return 'Catalog cache cleared; conversations on the Mac were unchanged';
+    if (_zh) return '会话目录与最近消息缓存已清理；完整下载历史和电脑会话均未改变';
+    if (_ja) return '一覧と最近のメッセージのキャッシュを消去しました。完全な履歴と Mac の会話は変更されません';
+    if (_ko) return '목록과 최근 메시지 캐시를 지웠습니다. 전체 기록과 Mac 대화는 변경되지 않았습니다';
+    return 'Catalog and recent-message caches cleared; downloaded histories '
+        'and Mac conversations were unchanged';
   }
 
   String get downloadedSection {

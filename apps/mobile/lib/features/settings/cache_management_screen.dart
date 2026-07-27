@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart' hide Provider;
 
+import '../../models/messages.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/storage/conversation_mirror_models.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
@@ -12,7 +13,9 @@ import 'cache_management_strings.dart';
 abstract interface class CacheManagementBackend {
   List<ConversationMirrorMetadata> get localCopies;
 
-  Future<int> catalogEntryCount();
+  Future<SessionCatalogCacheStats> temporaryCacheStats();
+
+  Future<Map<ConversationMirrorKey, String>> localCopyDisplayNames();
 
   Future<void> clearCatalogCache();
 
@@ -39,8 +42,30 @@ class _AppCacheManagementBackend implements CacheManagementBackend {
       conversationMirror?.localCopyMetadata ?? const [];
 
   @override
-  Future<int> catalogEntryCount() =>
-      catalogCache?.countAllSessions() ?? Future<int>.value(0);
+  Future<SessionCatalogCacheStats> temporaryCacheStats() =>
+      catalogCache?.cacheStats() ??
+      Future<SessionCatalogCacheStats>.value(
+        const SessionCatalogCacheStats.empty(),
+      );
+
+  @override
+  Future<Map<ConversationMirrorKey, String>> localCopyDisplayNames() async {
+    final cache = catalogCache;
+    final result = <ConversationMirrorKey, String>{};
+    for (final metadata in localCopies) {
+      final session = cache == null
+          ? null
+          : await cache.findSessionByIdentity(
+              bridgeInstanceId: metadata.key.bridgeInstanceId,
+              provider: metadata.key.provider,
+              providerSessionId: metadata.key.providerSessionId,
+            );
+      final displayName = _catalogDisplayName(session);
+      final resolved = displayName ?? metadata.storedDisplayName;
+      if (resolved != null) result[metadata.key] = resolved;
+    }
+    return Map.unmodifiable(result);
+  }
 
   @override
   Future<void> clearCatalogCache() {
@@ -100,9 +125,10 @@ class CacheManagementScreen extends StatefulWidget {
 
 class _CacheManagementScreenState extends State<CacheManagementScreen> {
   CacheManagementBackend? _backend;
-  int _catalogEntryCount = 0;
+  SessionCatalogCacheStats _cacheStats = const SessionCatalogCacheStats.empty();
+  Map<ConversationMirrorKey, String> _localCopyDisplayNames = const {};
   int _loadGeneration = 0;
-  bool _isLoadingCatalogCount = true;
+  bool _isLoadingCacheStats = true;
   bool _isClearingCatalog = false;
   final Set<ConversationMirrorKey> _removingCopies = {};
 
@@ -118,25 +144,28 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
           conversationMirror: context.read<ConversationMirrorService?>(),
         );
     _backend!.addListener(_handleBackendChange);
-    unawaited(_reloadCatalogCount());
+    unawaited(_reloadCacheState());
   }
 
   void _handleBackendChange() {
     if (mounted) setState(() {});
+    unawaited(_reloadCacheState());
   }
 
-  Future<void> _reloadCatalogCount() async {
+  Future<void> _reloadCacheState() async {
     final generation = ++_loadGeneration;
     try {
-      final count = await _backend!.catalogEntryCount();
+      final stats = await _backend!.temporaryCacheStats();
+      final displayNames = await _backend!.localCopyDisplayNames();
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
-        _catalogEntryCount = count;
-        _isLoadingCatalogCount = false;
+        _cacheStats = stats;
+        _localCopyDisplayNames = displayNames;
+        _isLoadingCacheStats = false;
       });
     } catch (error) {
       if (!mounted || generation != _loadGeneration) return;
-      setState(() => _isLoadingCatalogCount = false);
+      setState(() => _isLoadingCacheStats = false);
       _showError(error);
     }
   }
@@ -146,7 +175,7 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
     setState(() => _isClearingCatalog = true);
     try {
       await _backend!.clearCatalogCache();
-      await _reloadCatalogCount();
+      await _reloadCacheState();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -225,14 +254,19 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
             margin: const EdgeInsets.symmetric(horizontal: 16),
             child: ListTile(
               key: const ValueKey('clear_session_catalog_cache_tile'),
-              leading: _isLoadingCatalogCount
+              leading: _isLoadingCacheStats
                   ? const SizedBox.square(
                       dimension: 22,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : Icon(Icons.list_alt_outlined, color: cs.primary),
               title: Text(strings.catalogCacheTitle),
-              subtitle: Text(strings.catalogCacheSubtitle(_catalogEntryCount)),
+              subtitle: Text(
+                strings.catalogCacheSubtitle(
+                  summaries: _cacheStats.sessionSummaries,
+                  windows: _cacheStats.conversationWindows,
+                ),
+              ),
               trailing: _isClearingCatalog
                   ? const SizedBox.square(
                       dimension: 20,
@@ -265,6 +299,7 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
                   for (var index = 0; index < copies.length; index++) ...[
                     _DownloadedHistoryTile(
                       metadata: copies[index],
+                      displayName: _localCopyDisplayNames[copies[index].key],
                       isRemoving: _removingCopies.contains(copies[index].key),
                       onRemove: () => _confirmRemoveCopy(copies[index]),
                     ),
@@ -283,18 +318,20 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
 class _DownloadedHistoryTile extends StatelessWidget {
   const _DownloadedHistoryTile({
     required this.metadata,
+    required this.displayName,
     required this.isRemoving,
     required this.onRemove,
   });
 
   final ConversationMirrorMetadata metadata;
+  final String? displayName;
   final bool isRemoving;
   final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
     final strings = CacheManagementStrings.of(context);
-    final title = _displayName(metadata);
+    final title = displayName ?? _fallbackDisplayName(metadata);
     return ListTile(
       key: ValueKey(
         'downloaded_history_${metadata.key.bridgeInstanceId}_'
@@ -329,7 +366,7 @@ class _DownloadedHistoryTile extends StatelessWidget {
     );
   }
 
-  static String _displayName(ConversationMirrorMetadata metadata) {
+  static String _fallbackDisplayName(ConversationMirrorMetadata metadata) {
     final normalized = metadata.projectPath.trim().replaceAll('\\', '/');
     final parts = normalized
         .split('/')
@@ -348,6 +385,15 @@ class _DownloadedHistoryTile extends StatelessWidget {
     final mib = kib / 1024;
     return '${mib.toStringAsFixed(mib < 10 ? 1 : 0)} MB';
   }
+}
+
+String? _catalogDisplayName(RecentSession? session) {
+  if (session == null) return null;
+  for (final value in [session.name, session.summary, session.firstPrompt]) {
+    final normalized = value?.trim();
+    if (normalized != null && normalized.isNotEmpty) return normalized;
+  }
+  return null;
 }
 
 class _CacheSectionHeader extends StatelessWidget {

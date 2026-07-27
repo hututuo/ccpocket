@@ -954,6 +954,55 @@ void main() {
       );
     });
 
+    test(
+      'keeps downloaded display metadata across cache-independent reopen',
+      () async {
+        const key = ConversationMirrorKey(
+          bridgeInstanceId: 'bridge-display',
+          provider: 'codex',
+          providerSessionId: 'session-display',
+        );
+        await _writeSnapshot(
+          store,
+          key,
+          generation: 'generation-display',
+          revision: _revision('display'),
+          entries: _entries(1, prefix: 'display'),
+          autoSync: true,
+          displayName: 'Renamed conversation',
+          summary: 'Conversation summary',
+          firstPrompt: 'Original prompt',
+        );
+
+        var metadata = (await store.listLocalCopies()).single;
+        expect(metadata.name, 'Renamed conversation');
+        expect(metadata.storedDisplayName, 'Renamed conversation');
+
+        await mirrorDatabase.close();
+        mirrorDatabase = ConversationMirrorDatabase(
+          databasePath: databasePath,
+          openDatabase: openFfi,
+        );
+        store = ConversationMirrorStore(mirrorDatabase);
+        metadata = (await store.listLocalCopies()).single;
+        expect(metadata.name, 'Renamed conversation');
+        expect(metadata.summary, 'Conversation summary');
+        expect(metadata.firstPrompt, 'Original prompt');
+
+        await store.deleteLocalCopy(key);
+        final db = await mirrorDatabase.database;
+        expect(
+          Sqflite.firstIntValue(
+            await db.rawQuery(
+              'SELECT COUNT(*) FROM '
+              '${ConversationMirrorDatabase.displayMetadataTable}',
+            ),
+          ),
+          0,
+        );
+      },
+    );
+
     test('rejects invalid raw envelopes and mismatched hashes', () async {
       const key = ConversationMirrorKey(
         bridgeInstanceId: 'bridge-a',
@@ -1327,6 +1376,9 @@ Future<ConversationMirrorMetadata> _writeSnapshot(
   required List<ConversationMirrorEntryInput> entries,
   bool? autoSync,
   String? projectPath,
+  String? displayName,
+  String? summary,
+  String? firstPrompt,
 }) async {
   const pageSize = 100;
   final pageCount = entries.isEmpty
@@ -1341,6 +1393,9 @@ Future<ConversationMirrorMetadata> _writeSnapshot(
     totalBytes: _totalBytes(entries),
     autoSync: autoSync,
     projectPath: projectPath,
+    displayName: displayName,
+    summary: summary,
+    firstPrompt: firstPrompt,
   );
   for (var pageIndex = 0; pageIndex < pageCount; pageIndex++) {
     final start = pageIndex * pageSize;

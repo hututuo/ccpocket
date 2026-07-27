@@ -19,6 +19,7 @@ class ConversationMirrorDatabase {
   static const schemaVersion = 1;
 
   static const metadataTable = 'conversation_mirror_metadata';
+  static const displayMetadataTable = 'conversation_mirror_display_metadata';
   static const entriesTable = 'conversation_mirror_entries';
   static const stagingTable = 'conversation_mirror_staging';
   static const stagingPagesTable = 'conversation_mirror_staging_pages';
@@ -72,6 +73,7 @@ class ConversationMirrorDatabase {
     // The existing Linux/Windows opener does not expose onConfigure. Setting
     // the pragma after open keeps foreign-key enforcement identical there.
     await db.execute('PRAGMA foreign_keys = ON');
+    await _createDisplayMetadataSchema(db);
     await _enableIncrementalAutoVacuum(db);
     await _cleanupInterruptedGenerations(db);
     return db;
@@ -136,6 +138,8 @@ class ConversationMirrorDatabase {
         )
       )
     ''');
+
+    await _createDisplayMetadataSchema(db);
 
     await db.execute('''
       CREATE TABLE $entriesTable (
@@ -245,6 +249,36 @@ class ConversationMirrorDatabase {
     await db.execute('''
       CREATE INDEX conversation_mirror_auto_sync
       ON $metadataTable (auto_sync, last_synced_at)
+    ''');
+  }
+
+  /// Additive display metadata stays in a separate table so older v1 clients
+  /// can keep reading the same mirror database without a schema downgrade.
+  static Future<void> _createDisplayMetadataSchema(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $displayMetadataTable (
+        bridge_instance_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        name TEXT,
+        summary TEXT,
+        first_prompt TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (
+          bridge_instance_id,
+          provider,
+          provider_session_id
+        ),
+        FOREIGN KEY (
+          bridge_instance_id,
+          provider,
+          provider_session_id
+        ) REFERENCES $metadataTable (
+          bridge_instance_id,
+          provider,
+          provider_session_id
+        ) ON DELETE CASCADE
+      )
     ''');
   }
 

@@ -263,6 +263,55 @@ void main() {
     expect(await repository.countAllSessions(), 0);
   });
 
+  test(
+    'reports the full rebuildable cache scope and resolves display data',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-display',
+      );
+      await repository.upsertResponse(
+        target: target,
+        response: RecentSessionsMessage(
+          sessions: [_session(id: 'thread-display', name: 'Saved title')],
+        ),
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-display',
+        revision: 'revision-display',
+        entries: [_entry('entry-display', 0, 'idle')],
+        hasEarlier: false,
+        sourceEntryCount: 1,
+      );
+
+      final stats = await repository.cacheStats();
+      expect(stats.sessionSummaries, 1);
+      expect(stats.conversationWindows, 1);
+      expect(
+        (await repository.findSessionByIdentity(
+          bridgeInstanceId: 'bridge-display',
+          provider: 'codex',
+          providerSessionId: 'thread-display',
+        ))?.name,
+        'Saved title',
+      );
+      expect(
+        await repository.findSessionByIdentity(
+          bridgeInstanceId: 'another-bridge',
+          provider: 'codex',
+          providerSessionId: 'thread-display',
+        ),
+        isNull,
+      );
+
+      await repository.clearAll();
+      final cleared = await repository.cacheStats();
+      expect(cleared.sessionSummaries, 0);
+      expect(cleared.conversationWindows, 0);
+    },
+  );
+
   test('atomically replaces and patches a hot conversation window', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-hot',

@@ -1,4 +1,5 @@
 import 'package:ccpocket/features/conversation_mirror/storage/conversation_mirror_models.dart';
+import 'package:ccpocket/features/session_list/cache/session_catalog_cache_repository.dart';
 import 'package:ccpocket/features/settings/cache_management_screen.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:flutter/material.dart';
@@ -15,13 +16,22 @@ class _FakeCacheManagementBackend extends ChangeNotifier
   final List<ConversationMirrorMetadata> _localCopies;
   int clearCalls = 0;
   final List<ConversationMirrorKey> removedKeys = [];
+  final Map<ConversationMirrorKey, String> displayNames = {};
 
   @override
   List<ConversationMirrorMetadata> get localCopies =>
       List.unmodifiable(_localCopies);
 
   @override
-  Future<int> catalogEntryCount() async => catalogEntries;
+  Future<SessionCatalogCacheStats> temporaryCacheStats() async =>
+      SessionCatalogCacheStats(
+        sessionSummaries: catalogEntries,
+        conversationWindows: catalogEntries == 0 ? 0 : 7,
+      );
+
+  @override
+  Future<Map<ConversationMirrorKey, String>> localCopyDisplayNames() async =>
+      Map.unmodifiable(displayNames);
 
   @override
   Future<void> clearCatalogCache() async {
@@ -47,6 +57,7 @@ void main() {
         catalogEntries: 42,
         localCopies: [first, second],
       );
+      backend.displayNames[second.key] = '真正的会话标题';
 
       await tester.pumpWidget(
         MaterialApp(
@@ -58,13 +69,14 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('已缓存 42 个会话摘要'), findsOneWidget);
+      expect(find.textContaining('42 个会话摘要 · 7 个最近消息窗口'), findsOneWidget);
+      expect(find.text('真正的会话标题'), findsOneWidget);
       await tester.tap(
         find.byKey(const ValueKey('clear_session_catalog_cache_button')),
       );
       await tester.pumpAndSettle();
       expect(backend.clearCalls, 1);
-      expect(find.textContaining('已缓存 0 个会话摘要'), findsOneWidget);
+      expect(find.textContaining('0 个会话摘要 · 0 个最近消息窗口'), findsOneWidget);
 
       final removeButton = find.byKey(
         const ValueKey('remove_downloaded_history_bridge-b_provider-session-1'),

@@ -473,6 +473,9 @@ class ConversationMirrorService extends ChangeNotifier {
           existing!.key,
           true,
           projectPath: target.effectiveProjectPath,
+          displayName: target.name,
+          summary: target.summary,
+          firstPrompt: target.firstPrompt,
         );
         await _refreshMetadata(existing.key);
       });
@@ -521,6 +524,9 @@ class ConversationMirrorService extends ChangeNotifier {
         metadata.key,
         false,
         projectPath: target.effectiveProjectPath,
+        displayName: target.name,
+        summary: target.summary,
+        firstPrompt: target.firstPrompt,
       );
       await _refreshMetadata(metadata.key);
     });
@@ -676,6 +682,9 @@ class ConversationMirrorService extends ChangeNotifier {
       createsWatch: watch,
       previousEntryCount: existing?.entryCount ?? 0,
       previousRevision: existing?.revision,
+      displayName: target.name,
+      summary: target.summary,
+      firstPrompt: target.firstPrompt,
     );
     if (watch) {
       _watchRequestIdsByConversation[logicalWatchKey] = requestId;
@@ -1100,6 +1109,9 @@ class ConversationMirrorService extends ChangeNotifier {
             totalBytes: event.totalBytes!,
             autoSync: pending?.autoSync,
             projectPath: pending?.projectPath,
+            displayName: pending?.displayName,
+            summary: pending?.summary,
+            firstPrompt: pending?.firstPrompt,
           );
           if (pending != null) pending.shadowGeneration = generation;
           break;
@@ -1133,6 +1145,9 @@ class ConversationMirrorService extends ChangeNotifier {
               key,
               true,
               projectPath: pending?.projectPath,
+              displayName: pending?.displayName,
+              summary: pending?.summary,
+              firstPrompt: pending?.firstPrompt,
             );
           }
           await _refreshMetadata(key);
@@ -1185,6 +1200,9 @@ class ConversationMirrorService extends ChangeNotifier {
               key,
               true,
               projectPath: pending?.projectPath,
+              displayName: pending?.displayName,
+              summary: pending?.summary,
+              firstPrompt: pending?.firstPrompt,
             );
           }
           await _refreshMetadata(key);
@@ -2735,6 +2753,9 @@ class _PendingMirrorRequest {
     required this.createsWatch,
     required this.previousEntryCount,
     required this.previousRevision,
+    this.displayName,
+    this.summary,
+    this.firstPrompt,
   });
 
   final String requestId;
@@ -2746,6 +2767,9 @@ class _PendingMirrorRequest {
   final bool createsWatch;
   final int previousEntryCount;
   final String? previousRevision;
+  final String? displayName;
+  final String? summary;
+  final String? firstPrompt;
   String? shadowGeneration;
   bool acceptedByBridge = false;
   final Completer<ConversationMirrorSyncResult> completer = Completer();

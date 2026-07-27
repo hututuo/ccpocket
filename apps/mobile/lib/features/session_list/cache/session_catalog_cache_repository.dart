@@ -94,6 +94,20 @@ class ConversationHotWindowSnapshot {
   final DateTime cachedAt;
 }
 
+class SessionCatalogCacheStats {
+  const SessionCatalogCacheStats({
+    required this.sessionSummaries,
+    required this.conversationWindows,
+  });
+
+  const SessionCatalogCacheStats.empty()
+    : sessionSummaries = 0,
+      conversationWindows = 0;
+
+  final int sessionSummaries;
+  final int conversationWindows;
+}
+
 class SessionCatalogCacheRepository {
   SessionCatalogCacheRepository(this.database);
 
@@ -280,6 +294,64 @@ class SessionCatalogCacheRepository {
       FROM ${SessionCatalogCacheDatabase.entriesTable}
       ''');
     return Sqflite.firstIntValue(rows) ?? 0;
+  }
+
+  Future<SessionCatalogCacheStats> cacheStats() async {
+    await _mutationTail;
+    final db = await database.database;
+    final rows = await db.rawQuery('''
+      SELECT
+        (SELECT COUNT(*)
+         FROM ${SessionCatalogCacheDatabase.entriesTable}) AS session_count,
+        (SELECT COUNT(*)
+         FROM ${SessionCatalogCacheDatabase.hotWindowsTable}) AS window_count
+      ''');
+    final row = rows.single;
+    return SessionCatalogCacheStats(
+      sessionSummaries: row['session_count'] as int? ?? 0,
+      conversationWindows: row['window_count'] as int? ?? 0,
+    );
+  }
+
+  Future<RecentSession?> findSessionByIdentity({
+    required String bridgeInstanceId,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: bridgeInstanceId,
+    );
+    if (!target.isValid ||
+        provider.trim().isEmpty ||
+        providerSessionId.trim().isEmpty) {
+      return null;
+    }
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.entriesTable,
+      columns: ['session_json'],
+      where: 'partition_id = ? AND provider = ? AND session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      orderBy: 'modified_sort DESC, cached_at DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(rows.single['session_json']! as String);
+      if (decoded is Map<String, dynamic>) {
+        return RecentSession.fromJson(decoded);
+      }
+      if (decoded is Map) {
+        return RecentSession.fromJson(Map<String, dynamic>.from(decoded));
+      }
+    } catch (_) {
+      // Display metadata is optional and the catalog is rebuildable. A damaged
+      // row must not make downloaded conversation copies unmanageable.
+    }
+    return null;
   }
 
   Future<List<ConversationContentCursor>> knownConversationRevisions(

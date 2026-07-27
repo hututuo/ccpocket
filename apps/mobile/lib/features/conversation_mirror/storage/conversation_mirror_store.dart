@@ -48,6 +48,9 @@ class ConversationMirrorStore {
     required int totalBytes,
     bool? autoSync,
     String? projectPath,
+    String? displayName,
+    String? summary,
+    String? firstPrompt,
   }) async {
     _validateKey(key);
     _validateGeneration(generation);
@@ -94,6 +97,14 @@ class ConversationMirrorStore {
           );
         }
       }
+
+      await _upsertDisplayMetadata(
+        txn,
+        key,
+        name: displayName,
+        summary: summary,
+        firstPrompt: firstPrompt,
+      );
 
       // One shadow transfer per conversation. Starting a new one abandons any
       // older incomplete transfer while preserving the active generation.
@@ -879,10 +890,11 @@ class ConversationMirrorStore {
   }
 
   Future<List<ConversationMirrorMetadata>> listAutoSync() async {
-    final rows = await (await _database.database).query(
-      ConversationMirrorDatabase.metadataTable,
-      where: 'auto_sync = 1',
-      orderBy: 'last_synced_at DESC, provider_session_id ASC',
+    final rows = await (await _database.database).rawQuery(
+      '${_metadataSelectWithDisplay()} '
+      'WHERE metadata.auto_sync = 1 '
+      'ORDER BY metadata.last_synced_at DESC, '
+      'metadata.provider_session_id ASC',
     );
     return rows.map(_metadataFromRow).toList(growable: false);
   }
@@ -891,10 +903,11 @@ class ConversationMirrorStore {
   /// has been paused. The Home resident section filters [autoSync] itself,
   /// while keeping paused-copy badges available after an app restart.
   Future<List<ConversationMirrorMetadata>> listLocalCopies() async {
-    final rows = await (await _database.database).query(
-      ConversationMirrorDatabase.metadataTable,
-      where: 'active_generation IS NOT NULL',
-      orderBy: 'last_synced_at DESC, provider_session_id ASC',
+    final rows = await (await _database.database).rawQuery(
+      '${_metadataSelectWithDisplay()} '
+      'WHERE metadata.active_generation IS NOT NULL '
+      'ORDER BY metadata.last_synced_at DESC, '
+      'metadata.provider_session_id ASC',
     );
     return rows.map(_metadataFromRow).toList(growable: false);
   }
@@ -936,6 +949,9 @@ class ConversationMirrorStore {
     ConversationMirrorKey key,
     bool autoSync, {
     String? projectPath,
+    String? displayName,
+    String? summary,
+    String? firstPrompt,
   }) async {
     _validateKey(key);
     if (projectPath != null) _validateProjectPath(projectPath);
@@ -947,6 +963,13 @@ class ConversationMirrorStore {
         {'auto_sync': autoSync ? 1 : 0, 'project_path': ?projectPath},
         where: _keyWhere,
         whereArgs: _keyArgs(key),
+      );
+      await _upsertDisplayMetadata(
+        txn,
+        key,
+        name: displayName,
+        summary: summary,
+        firstPrompt: firstPrompt,
       );
     });
   }
@@ -1078,13 +1101,76 @@ class ConversationMirrorStore {
     DatabaseExecutor db,
     ConversationMirrorKey key,
   ) async {
-    final rows = await db.query(
-      ConversationMirrorDatabase.metadataTable,
-      where: _keyWhere,
-      whereArgs: _keyArgs(key),
-      limit: 1,
+    final rows = await db.rawQuery(
+      '${_metadataSelectWithDisplay()} '
+      'WHERE metadata.bridge_instance_id = ? '
+      'AND metadata.provider = ? '
+      'AND metadata.provider_session_id = ? '
+      'LIMIT 1',
+      _keyArgs(key),
     );
     return rows.isEmpty ? null : rows.first;
+  }
+
+  static String _metadataSelectWithDisplay() =>
+      '''
+    SELECT
+      metadata.*,
+      display.name AS display_name,
+      display.summary AS display_summary,
+      display.first_prompt AS display_first_prompt
+    FROM ${ConversationMirrorDatabase.metadataTable} AS metadata
+    LEFT JOIN ${ConversationMirrorDatabase.displayMetadataTable} AS display
+      ON display.bridge_instance_id = metadata.bridge_instance_id
+     AND display.provider = metadata.provider
+     AND display.provider_session_id = metadata.provider_session_id
+  ''';
+
+  Future<void> _upsertDisplayMetadata(
+    DatabaseExecutor db,
+    ConversationMirrorKey key, {
+    String? name,
+    String? summary,
+    String? firstPrompt,
+  }) async {
+    final normalizedName = _boundedDisplayText(name, 512);
+    final normalizedSummary = _boundedDisplayText(summary, 4096);
+    final normalizedFirstPrompt = _boundedDisplayText(firstPrompt, 4096);
+    if (normalizedName == null &&
+        normalizedSummary == null &&
+        normalizedFirstPrompt == null) {
+      return;
+    }
+    final values = <String, Object?>{
+      ..._keyColumns(key),
+      'name': normalizedName,
+      'summary': normalizedSummary,
+      'first_prompt': normalizedFirstPrompt,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    };
+    await db.insert(
+      ConversationMirrorDatabase.displayMetadataTable,
+      values,
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    await db.update(
+      ConversationMirrorDatabase.displayMetadataTable,
+      {
+        'name': ?normalizedName,
+        'summary': ?normalizedSummary,
+        'first_prompt': ?normalizedFirstPrompt,
+        'updated_at': values['updated_at'],
+      },
+      where: _keyWhere,
+      whereArgs: _keyArgs(key),
+    );
+  }
+
+  static String? _boundedDisplayText(String? value, int maxLength) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) return null;
+    if (normalized.length <= maxLength) return normalized;
+    return normalized.substring(0, maxLength);
   }
 
   Future<Map<String, Object?>?> _queryStaging(
@@ -1131,6 +1217,9 @@ class ConversationMirrorStore {
           ? null
           : DateTime.tryParse(rawLastSyncedAt)?.toUtc(),
       error: row['error'] as String?,
+      name: row['display_name'] as String?,
+      summary: row['display_summary'] as String?,
+      firstPrompt: row['display_first_prompt'] as String?,
     );
   }
 
