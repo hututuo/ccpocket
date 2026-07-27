@@ -577,6 +577,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(sessionCatalogWatchCapability);
   bool get supportsSessionCatalogRequestCorrelation =>
       _bridgeCapabilities.contains(sessionCatalogRequestCorrelationCapability);
+  bool get supportsFileListRequestCorrelation =>
+      bridgeCapabilities.contains(fileListRequestCorrelationCapability);
   bool get supportsConversationContentEvents =>
       _bridgeCapabilities.contains(conversationContentEventCapability);
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>

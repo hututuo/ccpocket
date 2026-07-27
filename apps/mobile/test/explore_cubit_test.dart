@@ -14,6 +14,11 @@ import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 
 class _TestBridgeService extends BridgeService {
+  _TestBridgeService({
+    this.capabilities = const {fileListRequestCorrelationCapability},
+  });
+
+  final Set<String> capabilities;
   final _fileContentController =
       StreamController<FileContentMessage>.broadcast();
   final _fileListMessageController =
@@ -30,6 +35,9 @@ class _TestBridgeService extends BridgeService {
 
   @override
   Stream<ServerMessage> get messages => _messageController.stream;
+
+  @override
+  Set<String> get bridgeCapabilities => capabilities;
 
   void emitFileList(FileListMessage message) {
     _fileListMessageController.add(message);
@@ -206,9 +214,14 @@ void main() {
           ),
         ),
       );
+      final request =
+          jsonDecode(bridge.sentMessages.single.toJson())
+              as Map<String, dynamic>;
       bridge.emitFileList(
-        const FileListMessage(
-          files: ['lib/main.dart', 'README.md'],
+        FileListMessage(
+          files: const ['lib/main.dart', 'README.md'],
+          requestId: request['requestId'] as String,
+          projectPath: '/tmp/project',
           truncated: true,
         ),
       );
@@ -369,5 +382,53 @@ void main() {
       expect(cubit.state.status, ExploreStatus.error);
       expect(cubit.state.error, 'Path not allowed');
     });
+
+    test(
+      'old Bridge drains a closed pane reply before serving the next pane',
+      () async {
+        final bridge = _TestBridgeService(capabilities: const {});
+        addTearDown(bridge.dispose);
+        final first = ExploreCubit(
+          bridge: bridge,
+          projectPath: '/tmp/project-a',
+          requestTimeout: const Duration(seconds: 1),
+        );
+        final second = ExploreCubit(
+          bridge: bridge,
+          projectPath: '/tmp/project-b',
+          requestTimeout: const Duration(seconds: 1),
+        );
+        addTearDown(() async {
+          if (!first.isClosed) await first.close();
+          if (!second.isClosed) await second.close();
+        });
+
+        expect(bridge.sentMessages, hasLength(1));
+        final firstRequest =
+            jsonDecode(bridge.sentMessages.single.toJson())
+                as Map<String, dynamic>;
+        expect(firstRequest['projectPath'], '/tmp/project-a');
+
+        await first.close();
+        bridge.emitFileList(const FileListMessage(files: ['late-from-a.txt']));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(bridge.sentMessages, hasLength(2));
+        final secondRequest =
+            jsonDecode(bridge.sentMessages.last.toJson())
+                as Map<String, dynamic>;
+        expect(secondRequest['projectPath'], '/tmp/project-b');
+        expect(second.state.status, ExploreStatus.loading);
+        expect(second.state.allFiles, isEmpty);
+
+        bridge.emitFileList(
+          const FileListMessage(files: ['correct-for-b.txt']),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(second.state.status, ExploreStatus.ready);
+        expect(second.state.allFiles, ['correct-for-b.txt']);
+      },
+    );
   });
 }

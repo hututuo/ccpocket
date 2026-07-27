@@ -802,6 +802,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           "turn_aware_history_window_v1",
           "history_page_v1",
           "session_request_correlation_v1",
+          "file_list_request_correlation_v1",
           "git_diff_request_correlation_v1",
           "git_project_result_correlation_v1",
         ]),

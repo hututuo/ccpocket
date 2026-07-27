@@ -5066,6 +5066,8 @@ const sessionCatalogWatchCapability = 'session_catalog_watch_v1';
 const sessionCatalogRequestCorrelationCapability =
     'session_catalog_request_correlation_v1';
 const sessionCatalogChangedMessageType = 'session_catalog_changed_v1';
+const fileListRequestCorrelationCapability =
+    'file_list_request_correlation_v1';
 const gitDiffRequestCorrelationCapability = 'git_diff_request_correlation_v1';
 const gitProjectResultCorrelationCapability =
     'git_project_result_correlation_v1';
