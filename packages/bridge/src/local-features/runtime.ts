@@ -59,6 +59,8 @@ export interface EphemeralCodexChildSession {
 export interface LocalFeatureRuntime {
   /** Stable installation identity; persisted by the Bridge host when available. */
   readonly bridgeInstanceId?: string;
+  /** Opaque identity of the selected Codex Home, when the host exposes one. */
+  readonly codexSourceId?: string;
   /** Optional host-owned, root-scoped file-browser authority. */
   readonly fileBrowser?: FileBrowserManager;
   getSession(sessionId: string): LocalFeatureSession | undefined;

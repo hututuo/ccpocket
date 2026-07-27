@@ -88,9 +88,11 @@ class ConversationMirrorService extends ChangeNotifier {
 
   StreamSubscription<LocalFeatureServerMessage>? _localFeatureSub;
   StreamSubscription<PromptHistoryStatusMessage>? _bridgeIdentitySub;
+  StreamSubscription<List<SessionInfo>>? _sessionListSub;
   StreamSubscription<BridgeConnectionState>? _connectionSub;
   Future<void> _storageSerial = Future<void>.value();
   String? _currentBridgeInstanceId;
+  String? _currentCodexSourceId;
   bool _initialized = false;
   bool _closed = false;
   bool _storageAvailable = false;
@@ -100,9 +102,52 @@ class ConversationMirrorService extends ChangeNotifier {
 
   String? get currentBridgeInstanceId =>
       _currentBridgeInstanceId ?? _bridge.promptHistoryBridgeId;
+  String? get currentCodexSourceId => _currentCodexSourceId;
 
   bool get featureUnsupported => _featureUnsupported;
   bool get isAvailable => !_closed && !kIsWeb && _storageAvailable;
+
+  ConversationMirrorKey _targetKey(
+    String bridgeInstanceId,
+    ConversationMirrorTarget target,
+  ) => ConversationMirrorKey(
+    bridgeInstanceId: bridgeInstanceId,
+    provider: target.provider,
+    providerSessionId: target.providerSessionId,
+    codexSourceId: target.provider == Provider.codex.value
+        ? target.codexSourceId
+        : null,
+  );
+
+  ConversationMirrorKey _currentRuntimeKey({
+    required String bridgeInstanceId,
+    required String provider,
+    required String providerSessionId,
+  }) => ConversationMirrorKey(
+    bridgeInstanceId: bridgeInstanceId,
+    provider: provider,
+    providerSessionId: providerSessionId,
+    codexSourceId: provider == Provider.codex.value
+        ? currentCodexSourceId
+        : null,
+  );
+
+  bool _keyBelongsToCurrentSource(ConversationMirrorKey key) =>
+      key.provider != Provider.codex.value ||
+      key.codexSourceId == currentCodexSourceId;
+
+  bool _targetBelongsToCurrentSource(ConversationMirrorTarget target) =>
+      target.provider != Provider.codex.value ||
+      target.codexSourceId == currentCodexSourceId;
+
+  String? _wireCodexSourceId(ConversationMirrorKey? key) {
+    if (!_bridge.bridgeCapabilities.contains(
+      conversationMirrorSourceIdentityCapability,
+    )) {
+      return null;
+    }
+    return key?.provider == Provider.codex.value ? key?.codexSourceId : null;
+  }
 
   /// Controls whether connection/identity adoption may recreate missing
   /// resident watches.
@@ -155,7 +200,22 @@ class ConversationMirrorService extends ChangeNotifier {
     _localFeatureSub = _bridge.localFeatureMessages.listen(_onLocalFeature);
     _bridgeIdentitySub = _bridge.promptHistoryStatus.listen((status) {
       unawaited(
-        _enqueueStorage(() => _adoptBridgeIdentity(status.bridgeInstanceId)),
+        _enqueueStorage(
+          () => _adoptBridgeIdentity(
+            status.bridgeInstanceId,
+            codexSourceId: _bridge.codexSourceId,
+          ),
+        ),
+      );
+    });
+    _sessionListSub = _bridge.sessionList.listen((_) {
+      final bridgeId = _bridge.bridgeInstanceId;
+      if (bridgeId == null || bridgeId.isEmpty) return;
+      final sourceId = _bridge.codexSourceId;
+      unawaited(
+        _enqueueStorage(
+          () => _adoptBridgeIdentity(bridgeId, codexSourceId: sourceId),
+        ),
       );
     });
     _connectionSub = _bridge.connectionStatus.listen((state) {
@@ -163,7 +223,12 @@ class ConversationMirrorService extends ChangeNotifier {
         _featureUnsupported = false;
         final bridgeId = _bridge.promptHistoryBridgeId;
         if (bridgeId != null && bridgeId.isNotEmpty) {
-          unawaited(_enqueueStorage(() => _adoptBridgeIdentity(bridgeId)));
+          final sourceId = _bridge.codexSourceId;
+          unawaited(
+            _enqueueStorage(
+              () => _adoptBridgeIdentity(bridgeId, codexSourceId: sourceId),
+            ),
+          );
         }
         _notifyListeners();
       } else {
@@ -220,7 +285,12 @@ class ConversationMirrorService extends ChangeNotifier {
       _notifyListeners();
       final bridgeId = _bridge.promptHistoryBridgeId;
       if (bridgeId != null && bridgeId.isNotEmpty) {
-        await _enqueueStorage(() => _adoptBridgeIdentity(bridgeId));
+        await _enqueueStorage(
+          () => _adoptBridgeIdentity(
+            bridgeId,
+            codexSourceId: _bridge.codexSourceId,
+          ),
+        );
       }
     } catch (error) {
       _storageAvailable = false;
@@ -244,11 +314,7 @@ class ConversationMirrorService extends ChangeNotifier {
     final bridgeId = bridgeInstanceId ?? currentBridgeInstanceId;
     if (!isAvailable) return null;
     if (bridgeId == null) return _uniqueCachedMetadata(target);
-    return _metadata[ConversationMirrorKey(
-      bridgeInstanceId: bridgeId,
-      provider: target.provider,
-      providerSessionId: target.providerSessionId,
-    )];
+    return _metadata[_targetKey(bridgeId, target)];
   }
 
   bool hasLocalCopy(RecentSession session) =>
@@ -275,13 +341,7 @@ class ConversationMirrorService extends ChangeNotifier {
       final metadata = _uniqueCachedMetadata(target);
       return metadata != null && _syncing.contains(metadata.key);
     }
-    return _syncing.contains(
-      ConversationMirrorKey(
-        bridgeInstanceId: bridgeId,
-        provider: target.provider,
-        providerSessionId: target.providerSessionId,
-      ),
-    );
+    return _syncing.contains(_targetKey(bridgeId, target));
   }
 
   Future<ConversationMirrorMetadata?> metadataFor(RecentSession session) =>
@@ -299,15 +359,12 @@ class ConversationMirrorService extends ChangeNotifier {
         target.provider,
         target.providerSessionId,
         projectPath: target.effectiveProjectPath,
+        codexSourceId: target.codexSourceId,
       );
       if (unique != null) _metadata[unique.key] = unique;
       return unique;
     }
-    final key = ConversationMirrorKey(
-      bridgeInstanceId: bridgeId,
-      provider: target.provider,
-      providerSessionId: target.providerSessionId,
-    );
+    final key = _targetKey(bridgeId, target);
     final cached = _metadata[key];
     if (cached != null) return cached;
     final loaded = await _store.readMetadata(key);
@@ -343,7 +400,11 @@ class ConversationMirrorService extends ChangeNotifier {
       budget: budget,
     );
     final records = residentMetadata
-        .where((record) => record.key.bridgeInstanceId == bridgeId)
+        .where(
+          (record) =>
+              record.key.bridgeInstanceId == bridgeId &&
+              _keyBelongsToCurrentSource(record.key),
+        )
         .take(math.min(maximumConversations, maxResidentConversations))
         .toList(growable: false);
     var completed = 0;
@@ -361,6 +422,7 @@ class ConversationMirrorService extends ChangeNotifier {
         final logicalKey = _logicalWatchKey(
           record.key.provider,
           record.key.providerSessionId,
+          record.key.codexSourceId,
         );
         final existingRequestId =
             _watchRequestIdsByConversation[logicalKey] ??
@@ -418,7 +480,8 @@ class ConversationMirrorService extends ChangeNotifier {
           (metadata) =>
               metadata.hasLocalCopy &&
               metadata.key.provider == target.provider &&
-              metadata.key.providerSessionId == target.providerSessionId,
+              metadata.key.providerSessionId == target.providerSessionId &&
+              metadata.key.codexSourceId == target.codexSourceId,
         )
         .take(2)
         .toList(growable: false);
@@ -456,7 +519,8 @@ class ConversationMirrorService extends ChangeNotifier {
       final bridgeId = currentBridgeInstanceId;
       final activeResidents = residentMetadata.where(
         (metadata) =>
-            bridgeId == null || metadata.key.bridgeInstanceId == bridgeId,
+            (bridgeId == null || metadata.key.bridgeInstanceId == bridgeId) &&
+            _keyBelongsToCurrentSource(metadata.key),
       );
       if (activeResidents.length >= maxResidentConversations) {
         return const ConversationMirrorSyncResult(
@@ -545,13 +609,7 @@ class ConversationMirrorService extends ChangeNotifier {
     final bridgeId = currentBridgeInstanceId;
     final key =
         metadata?.key ??
-        (bridgeId == null
-            ? null
-            : ConversationMirrorKey(
-                bridgeInstanceId: bridgeId,
-                provider: target.provider,
-                providerSessionId: target.providerSessionId,
-              ));
+        (bridgeId == null ? null : _targetKey(bridgeId, target));
     if (key == null) return;
     await removeLocalCopyByKey(key);
   }
@@ -585,13 +643,15 @@ class ConversationMirrorService extends ChangeNotifier {
         _watchRequestIdsByConversation[_logicalWatchKey(
           key.provider,
           key.providerSessionId,
+          key.codexSourceId,
         )] ??
         _watchRequestIds[key];
     final pendingToCancel = _pending.values
         .where(
           (request) =>
               request.provider == key.provider &&
-              request.providerSessionId == key.providerSessionId,
+              request.providerSessionId == key.providerSessionId &&
+              request.codexSourceId == key.codexSourceId,
         )
         .toList(growable: false);
     final ownerIsPending = pendingToCancel.any(
@@ -647,27 +707,31 @@ class ConversationMirrorService extends ChangeNotifier {
         error: 'Bridge is disconnected.',
       );
     }
+    if (!_targetBelongsToCurrentSource(target)) {
+      return const ConversationMirrorSyncResult(
+        success: false,
+        changed: false,
+        errorCode: 'codex_source_mismatch',
+        error: 'This conversation belongs to a different Codex source.',
+      );
+    }
     final existing = await metadataForTarget(target);
     final currentBridgeId = currentBridgeInstanceId;
     final pendingKey =
         existing?.key ??
-        (currentBridgeId == null
-            ? null
-            : ConversationMirrorKey(
-                bridgeInstanceId: currentBridgeId,
-                provider: target.provider,
-                providerSessionId: target.providerSessionId,
-              ));
+        (currentBridgeId == null ? null : _targetKey(currentBridgeId, target));
     final requestId = _uuid.v4();
     final logicalWatchKey = _logicalWatchKey(
       target.provider,
       target.providerSessionId,
+      target.codexSourceId,
     );
     if (watch) {
       final existingWatch = _existingWatch(
         provider: target.provider,
         providerSessionId: target.providerSessionId,
         key: pendingKey,
+        codexSourceId: target.codexSourceId,
         entryCount: existing?.entryCount ?? 0,
       );
       if (existingWatch != null) return existingWatch;
@@ -676,6 +740,7 @@ class ConversationMirrorService extends ChangeNotifier {
       requestId: requestId,
       provider: target.provider,
       providerSessionId: target.providerSessionId,
+      codexSourceId: target.codexSourceId,
       projectPath: target.effectiveProjectPath,
       key: pendingKey,
       autoSync: watch || (existing?.autoSync ?? false),
@@ -702,6 +767,7 @@ class ConversationMirrorService extends ChangeNotifier {
                 providerSessionId: pending.providerSessionId,
                 projectPath: pending.projectPath,
                 knownRevision: force ? null : existing?.revision,
+                codexSourceId: _wireCodexSourceId(pending.key),
               )
             : requestConversationMirrorSync(
                 requestId: requestId,
@@ -709,6 +775,7 @@ class ConversationMirrorService extends ChangeNotifier {
                 providerSessionId: pending.providerSessionId,
                 projectPath: pending.projectPath,
                 knownRevision: force ? null : existing?.revision,
+                codexSourceId: _wireCodexSourceId(pending.key),
               ),
       );
     } catch (error) {
@@ -741,7 +808,7 @@ class ConversationMirrorService extends ChangeNotifier {
     if (providerSessionId == null) return false;
     final strictKey = bridgeId == null
         ? null
-        : ConversationMirrorKey(
+        : _currentRuntimeKey(
             bridgeInstanceId: bridgeId,
             provider: provider!,
             providerSessionId: providerSessionId,
@@ -751,6 +818,7 @@ class ConversationMirrorService extends ChangeNotifier {
             provider!,
             providerSessionId,
             projectPath: projectPath,
+            codexSourceId: currentCodexSourceId,
           )
         : await _store.readMetadata(strictKey);
     if (metadata == null || !metadata.hasLocalCopy) return false;
@@ -820,6 +888,7 @@ class ConversationMirrorService extends ChangeNotifier {
       requestId: requestId,
       provider: key.provider,
       providerSessionId: key.providerSessionId,
+      codexSourceId: key.codexSourceId,
       projectPath: projectPath,
       key: key,
       autoSync: true,
@@ -831,6 +900,7 @@ class ConversationMirrorService extends ChangeNotifier {
     _watchRequestIdsByConversation[_logicalWatchKey(
           key.provider,
           key.providerSessionId,
+          key.codexSourceId,
         )] =
         requestId;
     _registerPending(pending);
@@ -842,6 +912,7 @@ class ConversationMirrorService extends ChangeNotifier {
           providerSessionId: key.providerSessionId,
           projectPath: projectPath,
           knownRevision: knownRevision,
+          codexSourceId: _wireCodexSourceId(key),
         ),
       );
     } catch (error) {
@@ -879,6 +950,7 @@ class ConversationMirrorService extends ChangeNotifier {
       requestId: requestId,
       provider: key.provider,
       providerSessionId: key.providerSessionId,
+      codexSourceId: key.codexSourceId,
       projectPath: projectPath,
       key: key,
       autoSync: _metadata[key]?.autoSync ?? true,
@@ -911,6 +983,7 @@ class ConversationMirrorService extends ChangeNotifier {
             providerSessionId: key.providerSessionId,
             projectPath: projectPath,
             knownRevision: knownRevision,
+            codexSourceId: _wireCodexSourceId(key),
           ),
         );
       }
@@ -1048,9 +1121,38 @@ class ConversationMirrorService extends ChangeNotifier {
     return result;
   }
 
+  ConversationMirrorKey _incomingMirrorKey({
+    required String requestId,
+    required String bridgeInstanceId,
+    required String provider,
+    required String providerSessionId,
+  }) {
+    final pending = _pending[requestId];
+    ConversationMirrorKey? watchKey;
+    if (pending == null) {
+      for (final entry in _watchRequestIds.entries) {
+        if (entry.value == requestId) {
+          watchKey = entry.key;
+          break;
+        }
+      }
+    }
+    return ConversationMirrorKey(
+      bridgeInstanceId: bridgeInstanceId,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      codexSourceId: provider == Provider.codex.value
+          ? (pending?.codexSourceId ??
+                watchKey?.codexSourceId ??
+                currentCodexSourceId)
+          : null,
+    );
+  }
+
   Future<void> _handleMirrorEvent(ConversationMirrorEventMessage event) async {
     if (!_acceptedRequestIds.contains(event.requestId)) return;
-    final key = ConversationMirrorKey(
+    final key = _incomingMirrorKey(
+      requestId: event.requestId,
       bridgeInstanceId: event.bridgeInstanceId,
       provider: event.provider,
       providerSessionId: event.providerSessionId,
@@ -1319,7 +1421,8 @@ class ConversationMirrorService extends ChangeNotifier {
     ConversationMirrorEntryChunkMessage chunk,
   ) async {
     if (!_acceptedRequestIds.contains(chunk.requestId)) return;
-    final key = ConversationMirrorKey(
+    final key = _incomingMirrorKey(
+      requestId: chunk.requestId,
       bridgeInstanceId: chunk.bridgeInstanceId,
       provider: chunk.provider,
       providerSessionId: chunk.providerSessionId,
@@ -1478,12 +1581,14 @@ class ConversationMirrorService extends ChangeNotifier {
     required String requestId,
     required String provider,
     required String providerSessionId,
+    String? codexSourceId,
   }) {
     final ownsWatch = _releaseWatchOwnership(
       key: key,
       requestId: requestId,
       provider: provider,
       providerSessionId: providerSessionId,
+      codexSourceId: codexSourceId,
     );
     if (!ownsWatch) return;
     _acceptedRequestIds.remove(requestId);
@@ -1495,6 +1600,7 @@ class ConversationMirrorService extends ChangeNotifier {
           requestId: _uuid.v4(),
           provider: provider,
           providerSessionId: providerSessionId,
+          codexSourceId: _wireCodexSourceId(key),
         ),
       );
     } catch (_) {
@@ -1506,9 +1612,15 @@ class ConversationMirrorService extends ChangeNotifier {
     required String provider,
     required String providerSessionId,
     required ConversationMirrorKey? key,
+    String? codexSourceId,
     required int entryCount,
   }) {
-    final logicalKey = _logicalWatchKey(provider, providerSessionId);
+    final sourceId = key == null ? codexSourceId : key.codexSourceId;
+    final logicalKey = _logicalWatchKey(
+      provider,
+      providerSessionId,
+      sourceId,
+    );
     final requestId =
         _watchRequestIdsByConversation[logicalKey] ??
         (key == null ? null : _watchRequestIds[key]);
@@ -1531,6 +1643,7 @@ class ConversationMirrorService extends ChangeNotifier {
       requestId: requestId,
       provider: provider,
       providerSessionId: providerSessionId,
+      codexSourceId: sourceId,
     );
     return null;
   }
@@ -1540,9 +1653,15 @@ class ConversationMirrorService extends ChangeNotifier {
     required String requestId,
     required String provider,
     required String providerSessionId,
+    String? codexSourceId,
   }) {
     var owned = false;
-    final logicalKey = _logicalWatchKey(provider, providerSessionId);
+    final sourceId = key == null ? codexSourceId : key.codexSourceId;
+    final logicalKey = _logicalWatchKey(
+      provider,
+      providerSessionId,
+      sourceId,
+    );
     if (_watchRequestIdsByConversation[logicalKey] == requestId) {
       _watchRequestIdsByConversation.remove(logicalKey);
       owned = true;
@@ -1555,15 +1674,19 @@ class ConversationMirrorService extends ChangeNotifier {
       final matches =
           owner == requestId &&
           candidate.provider == provider &&
-          candidate.providerSessionId == providerSessionId;
+          candidate.providerSessionId == providerSessionId &&
+          candidate.codexSourceId == sourceId;
       if (matches) owned = true;
       return matches;
     });
     return owned;
   }
 
-  String _logicalWatchKey(String provider, String providerSessionId) =>
-      '$provider\u0000$providerSessionId';
+  String _logicalWatchKey(
+    String provider,
+    String providerSessionId,
+    String? codexSourceId,
+  ) => '$provider\u0000${codexSourceId ?? ''}\u0000$providerSessionId';
 
   String _generation(ConversationMirrorEventMessage event) =>
       '${event.requestId}:${event.revision}';
@@ -2271,6 +2394,7 @@ class ConversationMirrorService extends ChangeNotifier {
   ) =>
       !_closed &&
       currentBridgeInstanceId == cursor.key.bridgeInstanceId &&
+      _keyBelongsToCurrentSource(cursor.key) &&
       _bootstrapGenerationByRuntime[runtimeSessionId] ==
           cursor.bootstrapGeneration &&
       _bridge.providerSessionIdForRuntime(
@@ -2283,7 +2407,8 @@ class ConversationMirrorService extends ChangeNotifier {
     ConversationMirrorEventMessage event, {
     required bool providerReadGuarded,
   }) {
-    final key = ConversationMirrorKey(
+    final key = _incomingMirrorKey(
+      requestId: event.requestId,
       bridgeInstanceId: event.bridgeInstanceId,
       provider: event.provider,
       providerSessionId: event.providerSessionId,
@@ -2324,6 +2449,7 @@ class ConversationMirrorService extends ChangeNotifier {
       bridgeInstanceId: expectedBridgeInstanceId,
       provider: key.provider,
       providerSessionId: key.providerSessionId,
+      codexSourceId: key.codexSourceId,
       contentEpoch: _bridge.cachedSessionContentEpoch(runtimeSessionId),
       bootstrapGeneration: _bootstrapGenerationByRuntime[runtimeSessionId],
     );
@@ -2336,6 +2462,7 @@ class ConversationMirrorService extends ChangeNotifier {
       !_closed &&
       guard.matches(key) &&
       currentBridgeInstanceId == guard.bridgeInstanceId &&
+      _keyBelongsToCurrentSource(key) &&
       _bootstrapGenerationByRuntime[guard.runtimeSessionId] ==
           guard.bootstrapGeneration &&
       _bridge.providerSessionIdForRuntime(
@@ -2365,6 +2492,7 @@ class ConversationMirrorService extends ChangeNotifier {
       requestId: requestId,
       provider: key.provider,
       providerSessionId: key.providerSessionId,
+      codexSourceId: key.codexSourceId,
       projectPath: projectPath ?? _metadata[key]?.projectPath ?? '',
       key: key,
       autoSync: _metadata[key]?.autoSync ?? true,
@@ -2381,6 +2509,7 @@ class ConversationMirrorService extends ChangeNotifier {
           provider: key.provider,
           providerSessionId: key.providerSessionId,
           projectPath: pending.projectPath,
+          codexSourceId: _wireCodexSourceId(key),
         ),
       );
     } catch (error) {
@@ -2396,10 +2525,16 @@ class ConversationMirrorService extends ChangeNotifier {
     }
   }
 
-  Future<void> _adoptBridgeIdentity(String bridgeInstanceId) async {
+  Future<void> _adoptBridgeIdentity(
+    String bridgeInstanceId, {
+    required String? codexSourceId,
+  }) async {
     if (_closed || !_storageAvailable || bridgeInstanceId.isEmpty) return;
-    final changed = _currentBridgeInstanceId != bridgeInstanceId;
+    final changed =
+        _currentBridgeInstanceId != bridgeInstanceId ||
+        _currentCodexSourceId != codexSourceId;
     _currentBridgeInstanceId = bridgeInstanceId;
+    _currentCodexSourceId = codexSourceId;
     final records = await _store.listLocalCopies();
     if (_closed) return;
     _metadata
@@ -2465,6 +2600,7 @@ class ConversationMirrorService extends ChangeNotifier {
         .where(
           (record) =>
               record.key.bridgeInstanceId == bridgeInstanceId &&
+              _keyBelongsToCurrentSource(record.key) &&
               record.autoSync &&
               record.hasLocalCopy,
         )
@@ -2501,6 +2637,9 @@ class ConversationMirrorService extends ChangeNotifier {
                 bridgeInstanceId: bridgeId,
                 provider: pending.provider,
                 providerSessionId: pending.providerSessionId,
+                codexSourceId: pending.provider == Provider.codex.value
+                    ? pending.codexSourceId
+                    : null,
               ));
     if (key != null) {
       _syncing.remove(key);
@@ -2546,6 +2685,7 @@ class ConversationMirrorService extends ChangeNotifier {
               _watchRequestIdsByConversation[_logicalWatchKey(
                     pending.provider,
                     pending.providerSessionId,
+                    pending.codexSourceId,
                   )] ==
                   requestId);
     } else if (!result.success && pending.createsWatch) {
@@ -2559,6 +2699,7 @@ class ConversationMirrorService extends ChangeNotifier {
           requestId: requestId,
           provider: pending.provider,
           providerSessionId: pending.providerSessionId,
+          codexSourceId: pending.codexSourceId,
         );
       } else {
         _stopWatchForRequest(
@@ -2566,6 +2707,7 @@ class ConversationMirrorService extends ChangeNotifier {
           requestId: requestId,
           provider: pending.provider,
           providerSessionId: pending.providerSessionId,
+          codexSourceId: pending.codexSourceId,
         );
       }
     }
@@ -2587,6 +2729,7 @@ class ConversationMirrorService extends ChangeNotifier {
     _bridge.configureSessionHistoryToolDetails(null);
     await _localFeatureSub?.cancel();
     await _bridgeIdentitySub?.cancel();
+    await _sessionListSub?.cancel();
     await _connectionSub?.cancel();
     for (final pending in _pending.values) {
       pending.timer?.cancel();
@@ -2727,6 +2870,7 @@ class _RuntimePublishGuard {
     required this.bridgeInstanceId,
     required this.provider,
     required this.providerSessionId,
+    required this.codexSourceId,
     required this.contentEpoch,
     required this.bootstrapGeneration,
   });
@@ -2735,11 +2879,14 @@ class _RuntimePublishGuard {
   final String? bridgeInstanceId;
   final String provider;
   final String providerSessionId;
+  final String? codexSourceId;
   final int contentEpoch;
   final int? bootstrapGeneration;
 
   bool matches(ConversationMirrorKey key) =>
-      provider == key.provider && providerSessionId == key.providerSessionId;
+      provider == key.provider &&
+      providerSessionId == key.providerSessionId &&
+      codexSourceId == key.codexSourceId;
 }
 
 class _PendingMirrorRequest {
@@ -2747,6 +2894,7 @@ class _PendingMirrorRequest {
     required this.requestId,
     required this.provider,
     required this.providerSessionId,
+    required this.codexSourceId,
     required this.projectPath,
     required this.key,
     required this.autoSync,
@@ -2761,6 +2909,7 @@ class _PendingMirrorRequest {
   final String requestId;
   final String provider;
   final String providerSessionId;
+  final String? codexSourceId;
   final String projectPath;
   ConversationMirrorKey? key;
   final bool autoSync;

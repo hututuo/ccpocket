@@ -71,6 +71,87 @@ void main() {
     });
 
     test(
+      'partitions identical Codex threads by source without changing schema',
+      () async {
+        const legacyKey = ConversationMirrorKey(
+          bridgeInstanceId: 'bridge-a',
+          provider: 'codex',
+          providerSessionId: 'same-thread',
+        );
+        const sourceAKey = ConversationMirrorKey(
+          bridgeInstanceId: 'bridge-a',
+          provider: 'codex',
+          providerSessionId: 'same-thread',
+          codexSourceId: 'codex-home-source-a',
+        );
+        const sourceBKey = ConversationMirrorKey(
+          bridgeInstanceId: 'bridge-a',
+          provider: 'codex',
+          providerSessionId: 'same-thread',
+          codexSourceId: 'codex-home-source-b',
+        );
+
+        for (final (key, prefix) in [
+          (legacyKey, 'legacy'),
+          (sourceAKey, 'source-a'),
+          (sourceBKey, 'source-b'),
+        ]) {
+          await _writeSnapshot(
+            store,
+            key,
+            generation: 'generation-$prefix',
+            revision: _revision(prefix),
+            entries: _entries(1, prefix: prefix),
+          );
+        }
+
+        expect(
+          (await store.readEntries(sourceAKey)).single.entryId,
+          'source-a-0',
+        );
+        expect(
+          (await store.readEntries(sourceBKey)).single.entryId,
+          'source-b-0',
+        );
+        expect(
+          (await store.findUniqueLocalCopy(
+            'codex',
+            'same-thread',
+            codexSourceId: 'codex-home-source-a',
+          ))?.key,
+          sourceAKey,
+        );
+        expect(
+          (await store.findUniqueLocalCopy('codex', 'same-thread'))?.key,
+          legacyKey,
+        );
+        expect(await store.listLocalCopies(), hasLength(3));
+
+        final db = await mirrorDatabase.database;
+        expect(
+          Sqflite.firstIntValue(await db.rawQuery('PRAGMA user_version')),
+          1,
+        );
+        final rawProviders = await db.query(
+          ConversationMirrorDatabase.metadataTable,
+          columns: ['provider'],
+          orderBy: 'provider ASC',
+        );
+        final rawProviderValues = rawProviders
+            .map((row) => row['provider'])
+            .whereType<String>()
+            .toList(growable: false);
+        expect(rawProviderValues, contains('codex'));
+        expect(
+          rawProviderValues.where(
+            (value) => value.startsWith('ccpocket-codex-source-provider-v1:'),
+          ),
+          hasLength(2),
+        );
+      },
+    );
+
+    test(
       'close waits for an in-flight open and prevents reopen races',
       () async {
         final openGate = Completer<void>();

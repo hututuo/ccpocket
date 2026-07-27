@@ -79,6 +79,7 @@ function runtimeFor(
     pathAllowed?: boolean;
     activeProcess?: boolean;
     entryChunks?: boolean;
+    codexSourceId?: string;
   } = {},
 ): {
   runtime: LocalFeatureRuntime;
@@ -89,6 +90,7 @@ function runtimeFor(
   const createStandalone = vi.fn(async () => process);
   const runtime: LocalFeatureRuntime = {
     bridgeInstanceId: "bridge-test",
+    codexSourceId: options.codexSourceId,
     getSession: () => undefined,
     getCodexThreadId: () => undefined,
     getActiveCodexProcess: () =>
@@ -965,6 +967,39 @@ describe("conversation mirror snapshots", () => {
 });
 
 describe("ConversationMirrorFeatureHandler", () => {
+  it("rejects a mismatched Codex source before any provider read", async () => {
+    const process = fakeProcess(() => {
+      throw new Error("mismatched source must not read");
+    });
+    const client = {};
+    const { runtime, sent, createStandalone } = runtimeFor(process, {
+      codexSourceId: "codex-home-source-b",
+    });
+    const handler = new ConversationMirrorFeatureHandler(runtime);
+
+    await handler.handle(
+      {
+        type: "conversation_mirror_sync",
+        protocolVersion: 1,
+        requestId: "wrong-source",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        codexSourceId: "codex-home-source-a",
+        projectPath: "/tmp/project",
+      },
+      { client, signal: signal(), runtime },
+    );
+
+    expect(sent.get(client)?.at(-1)).toMatchObject({
+      event: "error",
+      requestId: "wrong-source",
+      errorCode: "codex_source_mismatch",
+    });
+    expect(process.requestReadOnlyRpc).not.toHaveBeenCalled();
+    expect(createStandalone).not.toHaveBeenCalled();
+    handler.close();
+  });
+
   it("stays dormant for an old client without the mirror capability", async () => {
     const process = fakeProcess(() => {
       throw new Error("mirror reader must stay dormant");

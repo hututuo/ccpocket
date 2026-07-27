@@ -2,6 +2,8 @@ part of '../../messages.dart';
 
 const LocalFeatureProtocolSlot conversationMirrorProtocolSlot =
     _ConversationMirrorProtocolSlot();
+const conversationMirrorSourceIdentityCapability =
+    'conversation_mirror_source_identity_v1';
 
 class _ConversationMirrorProtocolSlot
     implements LocalFeatureProtocolSlot, LocalFeatureRequestProtocolSlot {
@@ -369,6 +371,7 @@ ClientMessage requestConversationMirrorProbe({
   required String providerSessionId,
   required String projectPath,
   String? knownRevision,
+  String? codexSourceId,
 }) => _conversationMirrorClientMessage(
   type: 'conversation_mirror_probe',
   requestId: requestId,
@@ -376,6 +379,7 @@ ClientMessage requestConversationMirrorProbe({
   providerSessionId: providerSessionId,
   projectPath: projectPath,
   knownRevision: knownRevision,
+  codexSourceId: codexSourceId,
 );
 
 ClientMessage requestConversationMirrorSync({
@@ -384,6 +388,7 @@ ClientMessage requestConversationMirrorSync({
   required String providerSessionId,
   required String projectPath,
   String? knownRevision,
+  String? codexSourceId,
 }) => _conversationMirrorClientMessage(
   type: 'conversation_mirror_sync',
   requestId: requestId,
@@ -391,6 +396,7 @@ ClientMessage requestConversationMirrorSync({
   providerSessionId: providerSessionId,
   projectPath: projectPath,
   knownRevision: knownRevision,
+  codexSourceId: codexSourceId,
 );
 
 ClientMessage requestConversationMirrorWatch({
@@ -399,6 +405,7 @@ ClientMessage requestConversationMirrorWatch({
   required String providerSessionId,
   required String projectPath,
   String? knownRevision,
+  String? codexSourceId,
 }) => _conversationMirrorClientMessage(
   type: 'conversation_mirror_watch',
   requestId: requestId,
@@ -406,17 +413,20 @@ ClientMessage requestConversationMirrorWatch({
   providerSessionId: providerSessionId,
   projectPath: projectPath,
   knownRevision: knownRevision,
+  codexSourceId: codexSourceId,
 );
 
 ClientMessage requestConversationMirrorUnwatch({
   required String requestId,
   required String provider,
   required String providerSessionId,
+  String? codexSourceId,
 }) => _conversationMirrorClientMessage(
   type: 'conversation_mirror_unwatch',
   requestId: requestId,
   provider: provider,
   providerSessionId: providerSessionId,
+  codexSourceId: codexSourceId,
 );
 
 ClientMessage _conversationMirrorClientMessage({
@@ -426,9 +436,17 @@ ClientMessage _conversationMirrorClientMessage({
   required String providerSessionId,
   String? projectPath,
   String? knownRevision,
+  String? codexSourceId,
 }) {
   if (!const {'codex', 'claude'}.contains(provider)) {
     throw ArgumentError.value(provider, 'provider', 'must be codex or claude');
+  }
+  if (codexSourceId != null && provider != 'codex') {
+    throw ArgumentError.value(
+      codexSourceId,
+      'codexSourceId',
+      'is only valid for Codex conversations',
+    );
   }
   final fields = <String, dynamic>{
     'type': type,
@@ -440,6 +458,12 @@ ClientMessage _conversationMirrorClientMessage({
       'providerSessionId',
       256,
     ),
+    if (codexSourceId != null)
+      'codexSourceId': _conversationMirrorClientId(
+        codexSourceId,
+        'codexSourceId',
+        128,
+      ),
     'projectPath': ?projectPath,
     if (knownRevision != null)
       'knownRevision': _conversationMirrorClientId(

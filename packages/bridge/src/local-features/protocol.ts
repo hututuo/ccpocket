@@ -126,7 +126,10 @@ export type {
   ConversationContentTarget,
 } from "./slots/conversation-content-protocol.js";
 export { CONVERSATION_CONTENT_EVENT_CAPABILITY } from "./slots/conversation-content-protocol.js";
-export { CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY } from "./slots/conversation-mirror-protocol.js";
+export {
+  CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY,
+  CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
+} from "./slots/conversation-mirror-protocol.js";
 export {
   FILE_BROWSER_CAPABILITY,
   FILE_BROWSER_DEFAULT_PAGE_SIZE,

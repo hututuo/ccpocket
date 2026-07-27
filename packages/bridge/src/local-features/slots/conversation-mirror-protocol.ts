@@ -14,6 +14,7 @@ interface ConversationMirrorRequestBase {
   requestId: string;
   provider: ConversationMirrorProvider;
   providerSessionId: string;
+  codexSourceId?: string;
 }
 
 type ConversationMirrorSnapshotRequest<
@@ -47,6 +48,8 @@ export type ConversationMirrorThreadStatus = string | null;
 
 export const CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY =
   "conversation_mirror_entry_chunk_v1" as const;
+export const CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY =
+  "conversation_mirror_source_identity_v1" as const;
 
 interface ConversationMirrorEventBase {
   type: "conversation_mirror_event_v1";
@@ -181,6 +184,15 @@ export const conversationMirrorProtocolContribution:
       const requestId = message.requestId;
       const provider = message.provider;
       const providerSessionId = message.providerSessionId;
+      const codexSourceId = message.codexSourceId;
+      if (
+        codexSourceId !== undefined &&
+        (provider !== "codex" ||
+          !validLocalFeatureId(codexSourceId, 128) ||
+          codexSourceId.trim().length === 0)
+      ) {
+        return null;
+      }
 
       if (message.type === "conversation_mirror_unwatch") {
         return hasOnlyLocalFeatureKeys(message, [
@@ -189,6 +201,7 @@ export const conversationMirrorProtocolContribution:
           "requestId",
           "provider",
           "providerSessionId",
+          "codexSourceId",
         ])
           ? {
               type: message.type,
@@ -196,6 +209,7 @@ export const conversationMirrorProtocolContribution:
               requestId,
               provider,
               providerSessionId,
+              ...(codexSourceId !== undefined ? { codexSourceId } : {}),
             }
           : null;
       }
@@ -210,6 +224,7 @@ export const conversationMirrorProtocolContribution:
           "requestId",
           "provider",
           "providerSessionId",
+          "codexSourceId",
           "projectPath",
           "knownRevision",
         ]) ||
@@ -226,6 +241,7 @@ export const conversationMirrorProtocolContribution:
         requestId,
         provider,
         providerSessionId,
+        ...(codexSourceId !== undefined ? { codexSourceId } : {}),
         projectPath: message.projectPath,
         ...(message.knownRevision !== undefined
           ? { knownRevision: message.knownRevision }

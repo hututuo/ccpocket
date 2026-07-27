@@ -919,6 +919,7 @@ class ConversationMirrorStore {
     String provider,
     String providerSessionId, {
     String? projectPath,
+    String? codexSourceId,
   }) async {
     _validateProvider(provider);
     _validateIdentifier(
@@ -927,12 +928,18 @@ class ConversationMirrorStore {
       maxLength: 512,
     );
     if (projectPath != null) _validateProjectPath(projectPath);
+    final storageProvider = ConversationMirrorKey(
+      bridgeInstanceId: 'lookup-only',
+      provider: provider,
+      providerSessionId: providerSessionId,
+      codexSourceId: provider == 'codex' ? codexSourceId : null,
+    ).storageProvider;
     final rows = await (await _database.database).query(
       ConversationMirrorDatabase.metadataTable,
       where:
           'provider = ? AND provider_session_id = ? '
           'AND active_generation IS NOT NULL',
-      whereArgs: [provider, providerSessionId],
+      whereArgs: [storageProvider, providerSessionId],
       limit: 2,
     );
     if (rows.length != 1) return null;
@@ -1189,20 +1196,20 @@ class ConversationMirrorStore {
 
   static Map<String, Object?> _keyColumns(ConversationMirrorKey key) => {
     'bridge_instance_id': key.bridgeInstanceId,
-    'provider': key.provider,
+    'provider': key.storageProvider,
     'provider_session_id': key.providerSessionId,
   };
 
   static List<Object?> _keyArgs(ConversationMirrorKey key) => [
     key.bridgeInstanceId,
-    key.provider,
+    key.storageProvider,
     key.providerSessionId,
   ];
 
   ConversationMirrorMetadata _metadataFromRow(Map<String, Object?> row) {
     final rawLastSyncedAt = row['last_synced_at'] as String?;
     return ConversationMirrorMetadata(
-      key: ConversationMirrorKey(
+      key: ConversationMirrorKey.fromStorage(
         bridgeInstanceId: row['bridge_instance_id'] as String,
         provider: row['provider'] as String,
         providerSessionId: row['provider_session_id'] as String,
@@ -1417,6 +1424,15 @@ class ConversationMirrorStore {
       maxLength: 512,
     );
     _validateProvider(key.provider);
+    final sourceId = key.codexSourceId;
+    if (sourceId != null) {
+      if (key.provider != 'codex') {
+        throw const ConversationMirrorValidationException(
+          'Only Codex mirror keys may include a source identity.',
+        );
+      }
+      _validateIdentifier(sourceId, 'Codex source ID', maxLength: 128);
+    }
   }
 
   static void _validateProvider(String provider) {

@@ -39,11 +39,14 @@ class _MirrorTestBridge extends BridgeService {
   final _connections = StreamController<BridgeConnectionState>.broadcast();
   final _promptHistory =
       StreamController<PromptHistoryStatusMessage>.broadcast();
+  final _sessionLists = StreamController<List<SessionInfo>>.broadcast();
 
   final sent = <Map<String, dynamic>>[];
   void Function(Map<String, dynamic> message)? onSend;
   bool connected = true;
   String? bridgeId = 'bridge-test';
+  String? sourceId;
+  Set<String> capabilities = const {};
   int contentEpoch = 0;
   int Function()? onReadContentEpoch;
   String? runtimeProviderSessionId = 'provider-session-1';
@@ -63,10 +66,22 @@ class _MirrorTestBridge extends BridgeService {
       _promptHistory.stream;
 
   @override
+  Stream<List<SessionInfo>> get sessionList => _sessionLists.stream;
+
+  @override
   bool get isConnected => connected;
 
   @override
+  String? get bridgeInstanceId => bridgeId;
+
+  @override
   String? get promptHistoryBridgeId => bridgeId;
+
+  @override
+  String? get codexSourceId => sourceId;
+
+  @override
+  Set<String> get bridgeCapabilities => capabilities;
 
   @override
   String? providerSessionIdForRuntime(
@@ -112,6 +127,15 @@ class _MirrorTestBridge extends BridgeService {
     );
   }
 
+  void emitSessionCatalogIdentity({
+    required String nextBridgeId,
+    required String? nextSourceId,
+  }) {
+    bridgeId = nextBridgeId;
+    sourceId = nextSourceId;
+    _sessionLists.add(const []);
+  }
+
   @override
   void publishExternalSessionHistory(
     String runtimeSessionId,
@@ -132,6 +156,7 @@ class _MirrorTestBridge extends BridgeService {
     _localFeatures.close();
     _connections.close();
     _promptHistory.close();
+    _sessionLists.close();
     super.dispose();
   }
 }
@@ -204,6 +229,140 @@ void main() {
       expect(bridge.sent.single['type'], 'conversation_mirror_watch');
     },
   );
+
+  test(
+    'sends source identity only after Bridge capability negotiation',
+    () async {
+      bridge.emitSessionCatalogIdentity(
+        nextBridgeId: 'bridge-test',
+        nextSourceId: 'codex-home-source-a',
+      );
+      await _waitUntil(
+        () async => service.currentCodexSourceId == 'codex-home-source-a',
+      );
+      bridge.onSend = (request) {
+        scheduleMicrotask(() {
+          bridge.emit(
+            LocalFeatureRequestErrorMessage(
+              featureId: 'conversation_mirror',
+              ownerSessionId: request['providerSessionId'] as String,
+              requestType: request['type'] as String,
+              requestId: request['requestId'] as String,
+              message: 'unsupported',
+              errorCode: 'unsupported_message',
+            ),
+          );
+        });
+      };
+      final session = _recentSessionForSource('codex-home-source-a');
+
+      await service.syncNow(session);
+      expect(bridge.sent.single, isNot(contains('codexSourceId')));
+
+      bridge.sent.clear();
+      bridge.capabilities = const {'conversation_mirror_source_identity_v1'};
+      await service.syncNow(session);
+      expect(bridge.sent.single['codexSourceId'], 'codex-home-source-a');
+    },
+  );
+
+  test(
+    'rejects a different Codex source before sending a mirror request',
+    () async {
+      bridge.emitSessionCatalogIdentity(
+        nextBridgeId: 'bridge-test',
+        nextSourceId: 'codex-home-source-a',
+      );
+      await _waitUntil(
+        () async => service.currentCodexSourceId == 'codex-home-source-a',
+      );
+
+      final result = await service.syncNow(
+        _recentSessionForSource('codex-home-source-b'),
+      );
+
+      expect(result.success, isFalse);
+      expect(result.errorCode, 'codex_source_mismatch');
+      expect(bridge.sent, isEmpty);
+    },
+  );
+
+  test('same Bridge switch restores only the selected Codex source', () async {
+    const sourceAKey = ConversationMirrorKey(
+      bridgeInstanceId: 'bridge-test',
+      provider: 'codex',
+      providerSessionId: 'shared-thread',
+      codexSourceId: 'codex-home-source-a',
+    );
+    const sourceBKey = ConversationMirrorKey(
+      bridgeInstanceId: 'bridge-test',
+      provider: 'codex',
+      providerSessionId: 'shared-thread',
+      codexSourceId: 'codex-home-source-b',
+    );
+    await _seedLocalCopy(
+      store,
+      key: sourceAKey,
+      message: const {
+        'type': 'user_input',
+        'text': 'source A',
+        'userMessageUuid': 'source-a',
+      },
+      revision: _hashText('source-a'),
+    );
+    await _seedLocalCopy(
+      store,
+      key: sourceBKey,
+      message: const {
+        'type': 'user_input',
+        'text': 'source B',
+        'userMessageUuid': 'source-b',
+      },
+      revision: _hashText('source-b'),
+    );
+    bridge.capabilities = const {'conversation_mirror_source_identity_v1'};
+
+    bridge.emitSessionCatalogIdentity(
+      nextBridgeId: 'bridge-test',
+      nextSourceId: 'codex-home-source-a',
+    );
+    await _waitUntil(
+      () async => bridge.sent.any(
+        (request) =>
+            request['type'] == 'conversation_mirror_watch' &&
+            request['codexSourceId'] == 'codex-home-source-a',
+      ),
+    );
+    expect(
+      bridge.sent.where(
+        (request) =>
+            request['type'] == 'conversation_mirror_watch' &&
+            request['codexSourceId'] == 'codex-home-source-b',
+      ),
+      isEmpty,
+    );
+
+    bridge.emitSessionCatalogIdentity(
+      nextBridgeId: 'bridge-test',
+      nextSourceId: 'codex-home-source-b',
+    );
+    await _waitUntil(
+      () async =>
+          service.currentCodexSourceId == 'codex-home-source-b' &&
+          bridge.sent.any(
+            (request) =>
+                request['type'] == 'conversation_mirror_watch' &&
+                request['codexSourceId'] == 'codex-home-source-b',
+          ),
+    );
+
+    expect(
+      bridge.sent.where(
+        (request) => request['type'] == 'conversation_mirror_watch',
+      ),
+      hasLength(2),
+    );
+  });
 
   test(
     'a correlated generic old-Bridge error does not send an unknown unwatch',
@@ -2821,6 +2980,18 @@ RecentSession _recentSessionWithId(String id, {String? name}) => RecentSession(
   gitBranch: 'main',
   projectPath: '/tmp/project',
   isSidechain: false,
+);
+
+RecentSession _recentSessionForSource(String sourceId) => RecentSession(
+  sessionId: 'provider-session-1',
+  provider: 'codex',
+  firstPrompt: 'hello',
+  created: '2026-07-18T00:00:00Z',
+  modified: '2026-07-18T00:00:00Z',
+  gitBranch: 'main',
+  projectPath: '/tmp/project',
+  isSidechain: false,
+  codexSourceId: sourceId,
 );
 
 ConversationMirrorEventMessage _event({

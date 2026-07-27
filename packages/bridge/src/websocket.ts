@@ -170,6 +170,7 @@ import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import {
   CONVERSATION_CONTENT_EVENT_CAPABILITY,
+  CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
   EPHEMERAL_SIDE_CHAT_CAPABILITY,
   FILE_BROWSER_CAPABILITY,
   FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY,
@@ -1606,6 +1607,7 @@ export class BridgeWebSocketServer {
     });
     this.localFeatures = createLocalFeaturesController({
       bridgeInstanceId: this.bridgeInstanceId,
+      codexSourceId: this.codexSourceId,
       fileBrowser: this.fileBrowser ?? undefined,
       getSession: (sessionId) => this.sessionManager.get(sessionId),
       getCodexThreadId: (session) =>
@@ -10221,6 +10223,7 @@ export class BridgeWebSocketServer {
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         FILE_LIST_REQUEST_CORRELATION_CAPABILITY,
         CONVERSATION_CONTENT_EVENT_CAPABILITY,
+        CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
@@ -10294,6 +10297,7 @@ export class BridgeWebSocketServer {
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         FILE_LIST_REQUEST_CORRELATION_CAPABILITY,
         CONVERSATION_CONTENT_EVENT_CAPABILITY,
+        CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),

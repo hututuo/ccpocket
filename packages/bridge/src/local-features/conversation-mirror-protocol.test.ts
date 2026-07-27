@@ -49,6 +49,44 @@ describe("conversation mirror protocol slot", () => {
     });
   });
 
+  it("preserves an optional Codex source while old request shapes stay valid", () => {
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "conversation_mirror_sync",
+        protocolVersion: 1,
+        requestId: "source-aware",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        codexSourceId: "codex-home-source-a",
+        projectPath: "/tmp/project",
+      }),
+    ).toEqual({
+      type: "conversation_mirror_sync",
+      protocolVersion: 1,
+      requestId: "source-aware",
+      provider: "codex",
+      providerSessionId: "thread-1",
+      codexSourceId: "codex-home-source-a",
+      projectPath: "/tmp/project",
+    });
+
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "conversation_mirror_unwatch",
+        protocolVersion: 1,
+        requestId: "legacy-unwatch",
+        provider: "codex",
+        providerSessionId: "thread-1",
+      }),
+    ).toEqual({
+      type: "conversation_mirror_unwatch",
+      protocolVersion: 1,
+      requestId: "legacy-unwatch",
+      provider: "codex",
+      providerSessionId: "thread-1",
+    });
+  });
+
   it("rejects missing, oversized, and forged fields", () => {
     expect(
       parseLocalFeatureClientMessage({
@@ -92,6 +130,39 @@ describe("conversation mirror protocol slot", () => {
         requestId: "r".repeat(129),
         provider: "codex",
         providerSessionId: "thread",
+        projectPath: "/tmp",
+      }),
+    ).toBeNull();
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "conversation_mirror_sync",
+        protocolVersion: 1,
+        requestId: "source-blank",
+        provider: "codex",
+        providerSessionId: "thread",
+        codexSourceId: " ",
+        projectPath: "/tmp",
+      }),
+    ).toBeNull();
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "conversation_mirror_sync",
+        protocolVersion: 1,
+        requestId: "source-oversized",
+        provider: "codex",
+        providerSessionId: "thread",
+        codexSourceId: "s".repeat(129),
+        projectPath: "/tmp",
+      }),
+    ).toBeNull();
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "conversation_mirror_sync",
+        protocolVersion: 1,
+        requestId: "source-forged",
+        provider: "claude",
+        providerSessionId: "session",
+        codexSourceId: "codex-home-source-a",
         projectPath: "/tmp",
       }),
     ).toBeNull();

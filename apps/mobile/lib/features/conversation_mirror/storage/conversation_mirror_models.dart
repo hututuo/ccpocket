@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:convert';
 
 /// Stable identity of one provider conversation on one Bridge installation.
 ///
@@ -9,11 +10,56 @@ class ConversationMirrorKey {
     required this.bridgeInstanceId,
     required this.provider,
     required this.providerSessionId,
+    this.codexSourceId,
   });
+
+  static const _sourceStorageProviderPrefix =
+      'ccpocket-codex-source-provider-v1:';
 
   final String bridgeInstanceId;
   final String provider;
   final String providerSessionId;
+  final String? codexSourceId;
+
+  /// Persists source identity without changing the v1 SQLite schema.
+  ///
+  /// Older apps see a source-scoped row as an unknown provider, so their
+  /// `provider = codex` lookups fail closed instead of reusing the wrong Home.
+  String get storageProvider {
+    final sourceId = codexSourceId;
+    if (provider != 'codex' || sourceId == null) return provider;
+    final payload = base64Url.encode(utf8.encode(jsonEncode(sourceId)));
+    return '$_sourceStorageProviderPrefix$payload';
+  }
+
+  factory ConversationMirrorKey.fromStorage({
+    required String bridgeInstanceId,
+    required String provider,
+    required String providerSessionId,
+  }) {
+    if (provider.startsWith(_sourceStorageProviderPrefix)) {
+      try {
+        final payload = provider.substring(_sourceStorageProviderPrefix.length);
+        final sourceId = jsonDecode(utf8.decode(base64Url.decode(payload)));
+        if (sourceId is String && sourceId.isNotEmpty) {
+          return ConversationMirrorKey(
+            bridgeInstanceId: bridgeInstanceId,
+            provider: 'codex',
+            providerSessionId: providerSessionId,
+            codexSourceId: sourceId,
+          );
+        }
+      } catch (_) {
+        // Malformed or future encodings remain isolated as an unknown
+        // provider instead of being guessed or discarded.
+      }
+    }
+    return ConversationMirrorKey(
+      bridgeInstanceId: bridgeInstanceId,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+  }
 
   @override
   bool operator ==(Object other) =>
@@ -21,16 +67,17 @@ class ConversationMirrorKey {
       other is ConversationMirrorKey &&
           bridgeInstanceId == other.bridgeInstanceId &&
           provider == other.provider &&
-          providerSessionId == other.providerSessionId;
+          providerSessionId == other.providerSessionId &&
+          codexSourceId == other.codexSourceId;
 
   @override
   int get hashCode =>
-      Object.hash(bridgeInstanceId, provider, providerSessionId);
+      Object.hash(bridgeInstanceId, provider, providerSessionId, codexSourceId);
 
   @override
   String toString() =>
       'ConversationMirrorKey($bridgeInstanceId, $provider, '
-      '$providerSessionId)';
+      '$providerSessionId, $codexSourceId)';
 }
 
 /// An entry supplied by a snapshot page or incremental patch.

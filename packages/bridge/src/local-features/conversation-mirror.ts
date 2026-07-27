@@ -52,6 +52,7 @@ type MirrorErrorCode =
   | "invalid_state"
   | "path_not_allowed"
   | "read_failed"
+  | "codex_source_mismatch"
   | "unsupported_provider";
 
 export class ConversationMirrorError extends Error {
@@ -821,6 +822,19 @@ export class ConversationMirrorFeatureHandler implements LocalFeatureHandler {
     }
     if (this.closed) {
       this.sendError(context.client, message, "invalid_state", "Mirror closed");
+      return;
+    }
+    if (
+      message.provider === "codex" &&
+      message.codexSourceId !== undefined &&
+      message.codexSourceId !== this.runtime.codexSourceId
+    ) {
+      this.sendError(
+        context.client,
+        message,
+        "codex_source_mismatch",
+        "This conversation belongs to a different configured Codex source",
+      );
       return;
     }
 

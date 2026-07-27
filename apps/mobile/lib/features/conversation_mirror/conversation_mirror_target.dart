@@ -154,6 +154,7 @@ class ConversationMirrorTarget {
   ) => ConversationMirrorTarget(
     provider: metadata.key.provider,
     providerSessionId: metadata.key.providerSessionId,
+    codexSourceId: metadata.key.codexSourceId,
     projectPath: metadata.projectPath,
     created: metadata.lastSyncedAt?.toIso8601String() ?? '',
     modified: metadata.lastSyncedAt?.toIso8601String() ?? '',

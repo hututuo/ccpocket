@@ -94,6 +94,49 @@ void main() {
     );
   });
 
+  test('encodes source identity additively and rejects forged providers', () {
+    expect(
+      _json(
+        requestConversationMirrorSync(
+          requestId: 'source-aware',
+          provider: 'codex',
+          providerSessionId: 'thread-1',
+          projectPath: '/tmp/project',
+          codexSourceId: 'codex-home-source-a',
+        ),
+      ),
+      {
+        'type': 'conversation_mirror_sync',
+        'protocolVersion': 1,
+        'requestId': 'source-aware',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'codexSourceId': 'codex-home-source-a',
+        'projectPath': '/tmp/project',
+      },
+    );
+    expect(
+      _json(
+        requestConversationMirrorUnwatch(
+          requestId: 'legacy-unwatch',
+          provider: 'codex',
+          providerSessionId: 'thread-1',
+        ),
+      ),
+      isNot(contains('codexSourceId')),
+    );
+    expect(
+      () => requestConversationMirrorWatch(
+        requestId: 'forged-source',
+        provider: 'claude',
+        providerSessionId: 'session-1',
+        projectPath: '/tmp/project',
+        codexSourceId: 'codex-home-source-a',
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test('parses snapshot framing and standard message envelopes', () {
     final accepted =
         ServerMessage.fromJson(_base('accepted'))
