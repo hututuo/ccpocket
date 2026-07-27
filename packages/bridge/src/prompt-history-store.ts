@@ -98,16 +98,25 @@ function isoNow(): string {
   return new Date().toISOString();
 }
 
+function compareIso(left: string, right: string): number {
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) {
+    return leftTime - rightTime;
+  }
+  return left.localeCompare(right);
+}
+
 function maxIso(left: string | undefined, right: string | undefined): string {
   if (!left) return right ?? isoNow();
   if (!right) return left;
-  return left >= right ? left : right;
+  return compareIso(left, right) >= 0 ? left : right;
 }
 
 function minIso(left: string | undefined, right: string | undefined): string {
   if (!left) return right ?? isoNow();
   if (!right) return left;
-  return left <= right ? left : right;
+  return compareIso(left, right) <= 0 ? left : right;
 }
 
 function normalizeText(text: string): string {
@@ -437,7 +446,7 @@ export class PromptHistoryStore {
     if (
       incoming.favoriteUpdatedAt &&
       (!existing.favoriteUpdatedAt ||
-        incoming.favoriteUpdatedAt >= existing.favoriteUpdatedAt)
+        compareIso(incoming.favoriteUpdatedAt, existing.favoriteUpdatedAt) >= 0)
     ) {
       existing.isFavorite = incoming.isFavorite;
       existing.favoriteUpdatedAt = incoming.favoriteUpdatedAt;
@@ -446,7 +455,11 @@ export class PromptHistoryStore {
       existing.favoriteUpdatedAt = incoming.updatedAt;
     }
 
-    if (incoming.deletedAt && (!existing.deletedAt || incoming.deletedAt >= existing.deletedAt)) {
+    if (
+      incoming.deletedAt &&
+      (!existing.deletedAt ||
+        compareIso(incoming.deletedAt, existing.deletedAt) >= 0)
+    ) {
       existing.deletedAt = incoming.deletedAt;
     }
 

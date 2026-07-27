@@ -16,8 +16,17 @@ import 'bridge_service.dart';
 import 'database_service.dart';
 import 'machine_manager_service.dart';
 
+int _compareIso(String left, String right) {
+  final leftTime = DateTime.tryParse(left);
+  final rightTime = DateTime.tryParse(right);
+  if (leftTime != null && rightTime != null) {
+    return leftTime.toUtc().compareTo(rightTime.toUtc());
+  }
+  return left.compareTo(right);
+}
+
 String _maxIso(String left, String right) =>
-    left.compareTo(right) >= 0 ? left : right;
+    _compareIso(left, right) >= 0 ? left : right;
 
 /// Sort order for prompt history queries.
 enum PromptSortOrder {

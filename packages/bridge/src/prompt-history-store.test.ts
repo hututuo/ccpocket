@@ -78,6 +78,31 @@ describe("PromptHistoryStore", () => {
     expect(store.list()[0].sessionStats["session-a"].useCount).toBe(2);
   });
 
+  it("orders mixed ISO timestamp formats by their instant", async () => {
+    const older = "2026-01-01T00:00:00Z";
+    const newer = "2026-01-01T00:00:00.500+00:00";
+    const clientId = "phone";
+    const sessionId = "session-a";
+    const input = {
+      text: "mixed timestamps",
+      projectPath: "/repo",
+      clientId,
+      sessionId,
+    };
+    const store = await makeStore();
+
+    await store.record({ ...input, usedAt: older });
+    await store.record({ ...input, usedAt: newer });
+
+    expect(store.list()[0]).toMatchObject({
+      createdAt: older,
+      lastUsedAt: newer,
+      updatedAt: newer,
+      clientStats: { [clientId]: { lastUsedAt: newer } },
+      sessionStats: { [sessionId]: { lastUsedAt: newer } },
+    });
+  });
+
   it("keeps favorite and deletion timestamps as field-level conflicts", async () => {
     const store = await makeStore();
     const entry = await store.record({

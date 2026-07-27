@@ -429,6 +429,32 @@ void main() {
           await nextBridge.close();
         },
       );
+
+      test('pruning compares mixed ISO formats by their instant', () async {
+        final stored = <String, String>{
+          'v2|bridge-a|codex|older': '2026-01-01T00:00:00Z',
+          'v2|bridge-a|codex|newer': '2026-01-01T00:00:00.500+00:00',
+          for (var index = 0; index < 999; index++)
+            'v2|bridge-a|codex|future-$index':
+                '2030-01-01T00:00:${(index % 60).toString().padLeft(2, '0')}Z',
+        };
+        SharedPreferences.setMockInitialValues({
+          'unseen_sessions_seen_at': jsonEncode(stored),
+        });
+        final cubit = UnseenSessionsCubit();
+        await cubit.ready;
+
+        cubit.updateSessions(const [], scopeKey: 'bridge-a');
+        await cubit.close();
+
+        final prefs = await SharedPreferences.getInstance();
+        final persisted =
+            jsonDecode(prefs.getString('unseen_sessions_seen_at')!)
+                as Map<String, dynamic>;
+        expect(persisted, isNot(contains('v2|bridge-a|codex|older')));
+        expect(persisted, contains('v2|bridge-a|codex|newer'));
+        expect(persisted, hasLength(1000));
+      });
     });
   });
 }

@@ -289,18 +289,22 @@ class UnseenSessionsCubit extends Cubit<Set<String>> {
   }
 
   bool _isAfter(String candidate, String baseline) {
-    final candidateTime = DateTime.tryParse(candidate);
-    final baselineTime = DateTime.tryParse(baseline);
-    if (candidateTime != null && baselineTime != null) {
-      return candidateTime.toUtc().isAfter(baselineTime.toUtc());
+    return _compareTimestamps(candidate, baseline) > 0;
+  }
+
+  int _compareTimestamps(String left, String right) {
+    final leftTime = DateTime.tryParse(left);
+    final rightTime = DateTime.tryParse(right);
+    if (leftTime != null && rightTime != null) {
+      return leftTime.toUtc().compareTo(rightTime.toUtc());
     }
-    return candidate.compareTo(baseline) > 0;
+    return left.compareTo(right);
   }
 
   bool _pruneSeenAt() {
     if (_seenAt.length <= _maximumPersistedSessions) return false;
     final entries = _seenAt.entries.toList()
-      ..sort((a, b) => a.value.compareTo(b.value));
+      ..sort((a, b) => _compareTimestamps(a.value, b.value));
     final removeCount = entries.length - _maximumPersistedSessions;
     for (final entry in entries.take(removeCount)) {
       _seenAt.remove(entry.key);

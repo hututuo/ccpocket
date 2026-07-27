@@ -96,6 +96,40 @@ void main() {
       expect(merged.sessionStats['session']?.useCount, 3);
     });
 
+    test('compares mixed ISO precision by instant instead of text order', () {
+      final first = _entry(
+        id: 'ph_1',
+        projectPath: '/repo',
+        bridgeId: 'bridge-a',
+        text: '/test',
+        clientStats: const {
+          'phone': PromptHistoryClientStat(
+            useCount: 1,
+            lastUsedAt: '2026-01-01T00:00:00Z',
+          ),
+        },
+      );
+      final second = _entry(
+        id: 'ph_1',
+        projectPath: '/repo',
+        bridgeId: 'bridge-b',
+        text: '/test',
+        clientStats: const {
+          'phone': PromptHistoryClientStat(
+            useCount: 1,
+            lastUsedAt: '2026-01-01T00:00:00.500+00:00',
+          ),
+        },
+      );
+
+      final merged = first.merge(second);
+
+      expect(
+        merged.clientStats['phone']?.lastUsedAt,
+        '2026-01-01T00:00:00.500+00:00',
+      );
+    });
+
     test('merges different raw entries by displayed prompt text', () {
       final commandXml = PromptHistoryEntry(
         id: 'ph_xml',
@@ -279,6 +313,8 @@ PromptHistoryEntry _entry({
   required String projectPath,
   String text = '',
   String bridgeId = 'bridge-a',
+  Map<String, PromptHistoryClientStat> clientStats = const {},
+  Map<String, PromptHistorySessionStat> sessionStats = const {},
 }) {
   return PromptHistoryEntry(
     id: id,
@@ -292,8 +328,8 @@ PromptHistoryEntry _entry({
     commandKind: 'none',
     bridgeIds: [bridgeId],
     bridgeNames: const ['Bridge A'],
-    clientStats: const {},
-    sessionStats: const {},
+    clientStats: clientStats,
+    sessionStats: sessionStats,
     sources: [PromptHistorySource(id: id, bridgeId: bridgeId)],
   );
 }
