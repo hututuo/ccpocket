@@ -64,6 +64,7 @@ import 'providers/machine_manager_cubit.dart';
 import 'providers/server_discovery_cubit.dart';
 import 'router/app_router.dart';
 import 'router/session_route_observer.dart';
+import 'router/session_stack_navigation.dart';
 import 'services/app_icon_service.dart';
 import 'services/bridge_service.dart';
 import 'services/connection_url_parser.dart';
@@ -858,9 +859,29 @@ class _CcpocketAppState extends State<CcpocketApp> {
     final sessionId = data['sessionId']?.toString();
     if (sessionId == null || sessionId.isEmpty) return;
     final provider = _normalizeProvider(data['provider']?.toString());
-    _appRouter.navigate(
-      SessionLinkRoute(sessionId: sessionId, provider: provider),
+    if (SessionStackNavigation.revealStackedSession(
+      _appRouter,
+      sessionId: sessionId,
+      provider: provider,
+    )) {
+      return;
+    }
+    if (NotificationService.instance.isActiveSession(
+      sessionId: sessionId,
+      provider: provider,
+    )) {
+      return;
+    }
+    final route = SessionLinkRoute(
+      key: UniqueKey(),
+      sessionId: sessionId,
+      provider: provider,
     );
+    if (_appRouter.current.name == SessionLinkRoute.name) {
+      _appRouter.replace(route);
+      return;
+    }
+    _appRouter.push(route);
   }
 
   String _normalizeProvider(String? provider) {
@@ -908,10 +929,8 @@ class _CcpocketAppState extends State<CcpocketApp> {
     switch (params) {
       case ConnectionParams():
         _deepLinkNotifier.value = params;
-      case SessionLinkParams(:final sessionId):
-        _appRouter.navigate(
-          SessionLinkRoute(sessionId: sessionId, provider: 'claude'),
-        );
+      case SessionLinkParams(:final sessionId, :final provider):
+        _openSessionFromData({'sessionId': sessionId, 'provider': provider});
     }
   }
 

@@ -182,6 +182,29 @@ void main() {
         expect(result!.sessionId, '550e8400-e29b-41d4-a716-446655440000');
       });
 
+      test('parses Codex provider from session link query', () {
+        final result =
+            ConnectionUrlParser.parse(
+                  'ccpocket://session/codex-session?provider=codex',
+                )
+                as SessionLinkParams?;
+
+        expect(result, isNotNull);
+        expect(result!.sessionId, 'codex-session');
+        expect(result.provider, 'codex');
+      });
+
+      test('defaults unsupported session link provider to Claude', () {
+        final result =
+            ConnectionUrlParser.parse(
+                  'ccpocket://session/claude-session?provider=unknown',
+                )
+                as SessionLinkParams?;
+
+        expect(result, isNotNull);
+        expect(result!.provider, 'claude');
+      });
+
       test('returns null for session link without sessionId', () {
         final result = ConnectionUrlParser.parse('ccpocket://session/');
 

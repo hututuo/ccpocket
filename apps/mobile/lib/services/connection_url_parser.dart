@@ -9,8 +9,9 @@ class ConnectionParams extends DeepLinkParams {
 
 class SessionLinkParams extends DeepLinkParams {
   final String sessionId;
+  final String provider;
 
-  SessionLinkParams({required this.sessionId});
+  SessionLinkParams({required this.sessionId, this.provider = 'claude'});
 }
 
 class ConnectionUrlParser {
@@ -18,7 +19,8 @@ class ConnectionUrlParser {
   ///
   /// Supported formats:
   /// - `ccpocket://connect?url=ws://IP:PORT&token=...` → [ConnectionParams]
-  /// - `ccpocket://session/<sessionId>` → [SessionLinkParams]
+  /// - `ccpocket://session/<sessionId>?provider=codex` →
+  ///   [SessionLinkParams]
   /// - `ws://IP:PORT` or `wss://IP:PORT` → [ConnectionParams]
   /// - `IP:PORT` (treated as ws://) → [ConnectionParams]
   static DeepLinkParams? parse(String rawUrl) {
@@ -36,7 +38,10 @@ class ConnectionUrlParser {
         if (segments.isEmpty) return null;
         final sessionId = segments.first;
         if (sessionId.isEmpty) return null;
-        return SessionLinkParams(sessionId: sessionId);
+        final provider = uri.queryParameters['provider'] == 'codex'
+            ? 'codex'
+            : 'claude';
+        return SessionLinkParams(sessionId: sessionId, provider: provider);
       }
 
       // ccpocket://connect?url=...&token=...

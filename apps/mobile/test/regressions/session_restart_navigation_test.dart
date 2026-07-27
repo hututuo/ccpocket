@@ -1,4 +1,5 @@
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/services/notification_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:patrol_finders/patrol_finders.dart';
 
@@ -99,9 +100,11 @@ void main() {
 
     setUp(() {
       bridge = MockBridgeService();
+      NotificationService.instance.clearActiveSession();
     });
 
     tearDown(() {
+      NotificationService.instance.clearActiveSession();
       bridge.dispose();
     });
 
@@ -144,6 +147,14 @@ void main() {
           reason:
               'Should have requested history for the new session after rewind',
         );
+        expect(
+          NotificationService.instance.isActiveSession(
+            sessionId: newSessionId,
+            provider: 'claude',
+          ),
+          isTrue,
+          reason: 'The visible route should expose its current session ID',
+        );
       },
     );
 
@@ -181,6 +192,58 @@ void main() {
           bridge.requestSessionHistoryCallCount,
           equals(0),
           reason: 'Should not switch to a session from a different source',
+        );
+      },
+    );
+  });
+
+  group('CodexSessionScreen session switch', () {
+    late MockBridgeService bridge;
+
+    setUp(() {
+      bridge = MockBridgeService();
+      NotificationService.instance.clearActiveSession();
+    });
+
+    tearDown(() {
+      NotificationService.instance.clearActiveSession();
+      bridge.dispose();
+    });
+
+    patrolWidgetTest(
+      'updates the visible route identity after a sandbox restart',
+      ($) async {
+        const originalSessionId = 'original-codex-session';
+        const newSessionId = 'restarted-codex-session';
+
+        await $.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: originalSessionId,
+            projectPath: '/tmp/project',
+          ),
+        );
+        await pumpN($.tester);
+
+        bridge.emitMessage(
+          const SystemMessage(
+            subtype: 'session_created',
+            sessionId: newSessionId,
+            provider: 'codex',
+            projectPath: '/tmp/project',
+            sourceSessionId: originalSessionId,
+          ),
+        );
+        await pumpN($.tester, count: 10);
+
+        expect(bridge.lastRequestedSessionId, equals(newSessionId));
+        expect(
+          NotificationService.instance.isActiveSession(
+            sessionId: newSessionId,
+            provider: 'codex',
+          ),
+          isTrue,
+          reason: 'The visible route should expose its current session ID',
         );
       },
     );

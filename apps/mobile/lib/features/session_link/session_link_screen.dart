@@ -5,6 +5,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../l10n/app_localizations.dart';
 import '../../models/messages.dart';
 import '../../router/app_router.dart';
+import '../../router/session_stack_navigation.dart';
 import '../../services/bridge_service.dart';
 import 'state/session_link_cubit.dart';
 import 'state/session_link_state.dart';
@@ -58,26 +59,29 @@ class _SessionLinkScreenBody extends StatelessWidget {
       listener: (context, state) {
         switch (state) {
           case SessionLinkOpenLive(:final bridgeSessionId, :final provider):
-            context.router.replace(
-              _sessionRoute(sessionId: bridgeSessionId, provider: provider),
+            _openSession(
+              context,
+              sessionId: bridgeSessionId,
+              provider: provider,
             );
           case SessionLinkOpenResumed(:final session, :final gitBranch):
-            context.router.replace(
-              _sessionRoute(
-                sessionId: session.sessionId!,
-                provider: session.provider ?? provider,
-                projectPath: session.projectPath,
-                worktreePath: session.worktreePath,
-                gitBranch: session.worktreeBranch ?? gitBranch,
-                permissionMode: session.permissionMode,
-                sandboxMode: session.sandboxMode,
-                approvalPolicy: session.approvalPolicy,
-                approvalsReviewer: session.approvalsReviewer,
-              ),
+            _openSession(
+              context,
+              sessionId: session.sessionId!,
+              provider: session.provider ?? provider,
+              projectPath: session.projectPath,
+              worktreePath: session.worktreePath,
+              gitBranch: session.worktreeBranch ?? gitBranch,
+              permissionMode: session.permissionMode,
+              sandboxMode: session.sandboxMode,
+              approvalPolicy: session.approvalPolicy,
+              approvalsReviewer: session.approvalsReviewer,
             );
           case SessionLinkOpenLegacy():
-            context.router.replace(
-              _sessionRoute(sessionId: sourceSessionId, provider: provider),
+            _openSession(
+              context,
+              sessionId: sourceSessionId,
+              provider: provider,
             );
           default:
             return;
@@ -93,6 +97,43 @@ class _SessionLinkScreenBody extends StatelessWidget {
           },
         );
       },
+    );
+  }
+
+  void _openSession(
+    BuildContext context, {
+    required String sessionId,
+    required String provider,
+    String? projectPath,
+    String? gitBranch,
+    String? worktreePath,
+    String? permissionMode,
+    String? sandboxMode,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+  }) {
+    final normalizedProvider = provider == Provider.codex.value
+        ? Provider.codex.value
+        : Provider.claude.value;
+    if (SessionStackNavigation.revealStackedSession(
+      context.router,
+      sessionId: sessionId,
+      provider: normalizedProvider,
+    )) {
+      return;
+    }
+    context.router.replace(
+      _sessionRoute(
+        sessionId: sessionId,
+        provider: normalizedProvider,
+        projectPath: projectPath,
+        gitBranch: gitBranch,
+        worktreePath: worktreePath,
+        permissionMode: permissionMode,
+        sandboxMode: sandboxMode,
+        approvalPolicy: approvalPolicy,
+        approvalsReviewer: approvalsReviewer,
+      ),
     );
   }
 

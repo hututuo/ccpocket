@@ -16,6 +16,7 @@ import '../../models/notification_preferences.dart';
 import '../../providers/bridge_cubits.dart';
 import '../../providers/machine_manager_cubit.dart';
 import '../../router/app_router.dart';
+import '../../router/session_stack_navigation.dart';
 import '../../services/bridge_service.dart';
 import '../../services/chat_message_handler.dart';
 import '../../services/draft_service.dart';
@@ -184,6 +185,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   bool _cachedPreviewDirty = false;
   ChatComposerSubmission? _deferredSubmission;
   PendingSessionBinding? _retainedPendingBinding;
+  final Object _sessionRouteOwner = Object();
+  Object? _sessionRouteIdentity;
 
   @override
   void initState() {
@@ -332,6 +335,40 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             debugPrint('Failed to preserve deferred Claude input: $error');
           }),
     );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final routeIdentity = ModalRoute.of(context)?.settings;
+    if (!identical(_sessionRouteIdentity, routeIdentity)) {
+      final previousIdentity = _sessionRouteIdentity;
+      if (previousIdentity != null) {
+        SessionRouteRegistry.instance.remove(
+          routeIdentity: previousIdentity,
+          owner: _sessionRouteOwner,
+        );
+      }
+      _sessionRouteIdentity = routeIdentity;
+    }
+    _syncSessionRouteIdentity();
+  }
+
+  void _syncSessionRouteIdentity() {
+    final routeIdentity = _sessionRouteIdentity;
+    if (routeIdentity == null) return;
+    SessionRouteRegistry.instance.update(
+      routeIdentity: routeIdentity,
+      owner: _sessionRouteOwner,
+      sessionId: _sessionId,
+      provider: 'claude',
+    );
+    if (ModalRoute.of(context)?.isCurrent ?? false) {
+      NotificationService.instance.setActiveSession(
+        sessionId: _sessionId,
+        provider: 'claude',
+      );
+    }
   }
 
   void _listenForSessionCreated() {
@@ -485,6 +522,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _sandboxMode = sandboxModeFromRaw(msg.sandboxMode) ?? _sandboxMode;
       _isPending = false;
     });
+    _syncSessionRouteIdentity();
     _pendingSub?.cancel();
     _pendingSub = null;
   }
@@ -536,6 +574,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _explorerCurrentPath = explorerHistory.currentPath;
       _recentPeekedFiles = explorerHistory.recentPeekedFiles;
     });
+    _syncSessionRouteIdentity();
   }
 
   @override
@@ -576,6 +615,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _explorerCurrentPath = explorerHistory.currentPath;
       _recentPeekedFiles = explorerHistory.recentPeekedFiles;
     });
+    _syncSessionRouteIdentity();
     if (_isPending && pendingLifecycleChanged) {
       _listenForSessionCreated();
     }
@@ -583,6 +623,13 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
   @override
   void dispose() {
+    final routeIdentity = _sessionRouteIdentity;
+    if (routeIdentity != null) {
+      SessionRouteRegistry.instance.remove(
+        routeIdentity: routeIdentity,
+        owner: _sessionRouteOwner,
+      );
+    }
     if (_isPending) {
       _preserveDeferredSubmissionAsDraft();
     }
