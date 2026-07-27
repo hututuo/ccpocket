@@ -8190,7 +8190,14 @@ export class BridgeWebSocketServer {
 
       case "list_files": {
         if (!this.isPathAllowed(msg.projectPath)) {
-          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          this.send(ws, {
+            type: "file_list",
+            files: [],
+            projectPath: msg.projectPath,
+            ...(msg.requestId ? { requestId: msg.requestId } : {}),
+            error: this.buildPathNotAllowedError(msg.projectPath).message,
+            errorCode: "path_not_allowed",
+          });
           break;
         }
         void (async () => {
@@ -8205,14 +8212,20 @@ export class BridgeWebSocketServer {
             this.send(ws, {
               type: "file_list",
               files: result.files,
+              projectPath: msg.projectPath,
+              ...(msg.requestId ? { requestId: msg.requestId } : {}),
               totalFiles: result.totalFiles,
               truncated: result.truncated,
             } as Record<string, unknown>);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.send(ws, {
-              type: "error",
-              message: `Failed to list files: ${message}`,
+              type: "file_list",
+              files: [],
+              projectPath: msg.projectPath,
+              ...(msg.requestId ? { requestId: msg.requestId } : {}),
+              error: `Failed to list files: ${message}`,
+              errorCode: "file_list_failed",
             });
           }
         })();

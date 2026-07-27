@@ -409,7 +409,7 @@ export type ClientMessage =
       filePath: string;
       maxLines?: number;
     }
-  | { type: "list_files"; projectPath: string }
+  | { type: "list_files"; projectPath: string; requestId?: string }
   | {
       type: "get_diff";
       projectPath: string;
@@ -857,8 +857,14 @@ export type ServerMessage = (
   | {
       type: "file_list";
       files: string[];
+      /** Echoed when list_files supplied one, so concurrent explorers do not cross-talk. */
+      requestId?: string;
+      /** Echoed project identity for clients that need to reject foreign broadcasts. */
+      projectPath?: string;
       totalFiles?: number;
       truncated?: boolean;
+      error?: string;
+      errorCode?: string;
     }
   | { type: "project_history"; projects: string[] }
   | {
@@ -2170,6 +2176,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
       }
       case "list_files":
         if (typeof msg.projectPath !== "string") return null;
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.length === 0 ||
+            msg.requestId.length > 128)
+        )
+          return null;
         break;
       case "get_diff":
         if (typeof msg.projectPath !== "string") return null;

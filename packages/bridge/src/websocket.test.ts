@@ -3474,7 +3474,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
 
       await (bridge as any).handleClientMessage(
-        { type: "list_files", projectPath: repo },
+        { type: "list_files", projectPath: repo, requestId: "files-1" },
         ws,
       );
       for (let i = 0; i < 50 && ws.send.mock.calls.length === 0; i++) {
@@ -3486,6 +3486,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         .find((sent: { type: string }) => sent.type === "file_list");
       expect(message).toMatchObject({
         type: "file_list",
+        requestId: "files-1",
+        projectPath: repo,
         truncated: true,
       });
       expect(message.files).toHaveLength(2);

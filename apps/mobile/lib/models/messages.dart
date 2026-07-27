@@ -1434,8 +1434,12 @@ sealed class ServerMessage {
       ),
       'file_list' => FileListMessage(
         files: (json['files'] as List).whereType<String>().toList(),
+        requestId: json['requestId'] as String?,
+        projectPath: json['projectPath'] as String?,
         totalFiles: json['totalFiles'] as int?,
         truncated: json['truncated'] as bool? ?? false,
+        error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
       ),
       'project_history' => ProjectHistoryMessage(
         projects: (json['projects'] as List).whereType<String>().toList(),
@@ -3479,13 +3483,26 @@ class DebugBundleMessage implements ServerMessage {
 
 class FileListMessage implements ServerMessage {
   final List<String> files;
+  final String? requestId;
+  final String? projectPath;
   final int? totalFiles;
   final bool truncated;
+  final String? error;
+  final String? errorCode;
+
+  /// Local-only marker emitted when BridgeService clears bridge-scoped state.
+  /// It is never parsed from the wire and must not satisfy an Explorer request.
+  final bool reset;
 
   const FileListMessage({
     required this.files,
+    this.requestId,
+    this.projectPath,
     this.totalFiles,
     this.truncated = false,
+    this.error,
+    this.errorCode,
+    this.reset = false,
   });
 }
 
@@ -5670,8 +5687,12 @@ class ClientMessage {
     });
   }
 
-  factory ClientMessage.listFiles(String projectPath) =>
-      ClientMessage._({'type': 'list_files', 'projectPath': projectPath});
+  factory ClientMessage.listFiles(String projectPath, {String? requestId}) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'list_files',
+        'projectPath': projectPath,
+        'requestId': ?requestId,
+      });
 
   factory ClientMessage.getDiff(
     String projectPath, {

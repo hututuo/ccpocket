@@ -1189,6 +1189,15 @@ describe("parseClientMessage", () => {
   it("parses list_files message", () => {
     const msg = parseClientMessage('{"type":"list_files","projectPath":"/p"}');
     expect(msg).toEqual({ type: "list_files", projectPath: "/p" });
+    expect(
+      parseClientMessage(
+        '{"type":"list_files","projectPath":"/p","requestId":"files-1"}',
+      ),
+    ).toEqual({
+      type: "list_files",
+      projectPath: "/p",
+      requestId: "files-1",
+    });
   });
 
   it("rejects list_files without projectPath", () => {

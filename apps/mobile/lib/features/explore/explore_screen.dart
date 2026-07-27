@@ -248,7 +248,27 @@ class _ExploreScreenBodyState extends State<_ExploreScreenBody> {
       case ExploreStatus.empty:
         return const ExploreEmptyState();
       case ExploreStatus.error:
-        return Center(child: Text(state.error ?? 'Failed to load files'));
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  state.error ?? 'Failed to load files',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 12),
+                FilledButton.tonalIcon(
+                  key: const ValueKey('explore_retry_button'),
+                  onPressed: context.read<ExploreCubit>().retry,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Try again'),
+                ),
+              ],
+            ),
+          ),
+        );
       case ExploreStatus.ready:
         return ExploreFileList(
           entries: state.visibleEntries,

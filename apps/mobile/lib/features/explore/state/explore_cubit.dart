@@ -7,32 +7,138 @@ import '../../../models/messages.dart';
 import 'explore_state.dart';
 
 class ExploreCubit extends Cubit<ExploreState> {
-  final BridgeService _bridge;
+  final BridgeService bridge;
+  final Duration requestTimeout;
   StreamSubscription<FileListMessage>? _fileListSub;
+  StreamSubscription<ServerMessage>? _messageSub;
+  Timer? _timeoutTimer;
   List<String> _recentPeekedFiles;
+  String? _pendingRequestId;
+
+  static int _requestCounter = 0;
+  static final Map<BridgeService, Set<String>> _legacyPendingRequests = {};
 
   ExploreCubit({
-    required BridgeService bridge,
+    required this.bridge,
     required String projectPath,
     List<String> initialFiles = const [],
     String initialPath = '',
     List<String> recentPeekedFiles = const [],
-  }) : _bridge = bridge,
-       _recentPeekedFiles = recentPeekedFiles.take(10).toList(),
+    this.requestTimeout = const Duration(seconds: 12),
+  }) : _recentPeekedFiles = recentPeekedFiles.take(10).toList(),
        super(ExploreState(projectPath: projectPath, currentPath: initialPath)) {
-    _fileListSub = _bridge.fileListMessages.listen(_onFileListUpdated);
+    _fileListSub = bridge.fileListMessages.listen(_onFileListUpdated);
+    _messageSub = bridge.messages.listen(_onBridgeMessage);
     if (initialFiles.isNotEmpty) {
       _applyFiles(initialFiles, truncated: false, totalFiles: null);
     }
-    _bridge.requestFileList(projectPath);
+    _requestFiles(showLoading: initialFiles.isEmpty);
   }
 
   void _onFileListUpdated(FileListMessage message) {
+    if (message.reset || !_matchesPendingResponse(message)) return;
+    if (message.error != null) {
+      _finishRequest();
+      emit(
+        state.copyWith(
+          status: ExploreStatus.error,
+          error: message.error,
+          fileListTruncated: false,
+          totalFiles: null,
+        ),
+      );
+      return;
+    }
+    _finishRequest();
     _applyFiles(
       message.files,
       truncated: message.truncated,
       totalFiles: message.totalFiles,
     );
+  }
+
+  bool _matchesPendingResponse(FileListMessage message) {
+    final pendingRequestId = _pendingRequestId;
+    if (pendingRequestId == null) return false;
+    if (message.projectPath != null &&
+        message.projectPath != state.projectPath) {
+      return false;
+    }
+    if (message.requestId != null) {
+      return message.requestId == pendingRequestId;
+    }
+    final legacyPending = _legacyPendingRequests[bridge];
+    return legacyPending?.length == 1 &&
+        legacyPending!.contains(pendingRequestId);
+  }
+
+  void _onBridgeMessage(ServerMessage message) {
+    if (message is! ErrorMessage ||
+        message.errorCode != 'path_not_allowed' ||
+        _pendingRequestId == null) {
+      return;
+    }
+    // New Bridges return a correlated file_list failure. This fallback is
+    // only for old Bridges and is safe when this is the sole pending Explorer
+    // on the connection; otherwise the timeout avoids blaming the wrong pane.
+    final legacyPending = _legacyPendingRequests[bridge];
+    if (legacyPending?.length != 1 ||
+        !legacyPending!.contains(_pendingRequestId)) {
+      return;
+    }
+    _finishRequest();
+    emit(state.copyWith(status: ExploreStatus.error, error: message.message));
+  }
+
+  void retry() => _requestFiles(showLoading: state.allFiles.isEmpty);
+
+  void _requestFiles({required bool showLoading}) {
+    _finishRequest();
+    final requestId = 'explore-${++ExploreCubit._requestCounter}';
+    _pendingRequestId = requestId;
+    (_legacyPendingRequests[bridge] ??= {}).add(requestId);
+    if (showLoading) {
+      emit(state.copyWith(status: ExploreStatus.loading, error: null));
+    } else if (state.error != null) {
+      emit(state.copyWith(error: null));
+    }
+    _timeoutTimer = Timer(requestTimeout, () {
+      if (_pendingRequestId != requestId || isClosed) return;
+      _finishRequest();
+      emit(
+        state.copyWith(
+          status: ExploreStatus.error,
+          error:
+              'The file list request timed out. Check the Bridge connection.',
+        ),
+      );
+    });
+    try {
+      bridge.send(
+        ClientMessage.listFiles(state.projectPath, requestId: requestId),
+      );
+    } catch (error) {
+      _finishRequest();
+      emit(
+        state.copyWith(
+          status: ExploreStatus.error,
+          error: 'Failed to request files: $error',
+        ),
+      );
+    }
+  }
+
+  void _finishRequest() {
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+    final requestId = _pendingRequestId;
+    _pendingRequestId = null;
+    if (requestId == null) return;
+    final pending = _legacyPendingRequests[bridge];
+    pending?.remove(requestId);
+    if (pending?.isEmpty == true) {
+      _legacyPendingRequests.remove(bridge);
+    }
   }
 
   void _applyFiles(
@@ -107,7 +213,9 @@ class ExploreCubit extends Cubit<ExploreState> {
 
   @override
   Future<void> close() {
+    _finishRequest();
     _fileListSub?.cancel();
+    _messageSub?.cancel();
     return super.close();
   }
 }

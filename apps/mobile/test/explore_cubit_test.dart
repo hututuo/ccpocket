@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:ccpocket/features/explore/state/explore_cubit.dart';
+import 'package:ccpocket/features/explore/state/explore_state.dart';
 import 'package:ccpocket/features/explore/widgets/explore_empty_state.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
@@ -17,6 +18,7 @@ class _TestBridgeService extends BridgeService {
       StreamController<FileContentMessage>.broadcast();
   final _fileListMessageController =
       StreamController<FileListMessage>.broadcast();
+  final _messageController = StreamController<ServerMessage>.broadcast();
   final sentMessages = <ClientMessage>[];
 
   @override
@@ -26,12 +28,19 @@ class _TestBridgeService extends BridgeService {
   Stream<FileListMessage> get fileListMessages =>
       _fileListMessageController.stream;
 
+  @override
+  Stream<ServerMessage> get messages => _messageController.stream;
+
   void emitFileList(FileListMessage message) {
     _fileListMessageController.add(message);
   }
 
   void emitFileContent(FileContentMessage message) {
     _fileContentController.add(message);
+  }
+
+  void emitMessage(ServerMessage message) {
+    _messageController.add(message);
   }
 
   @override
@@ -46,6 +55,7 @@ class _TestBridgeService extends BridgeService {
   void dispose() {
     _fileContentController.close();
     _fileListMessageController.close();
+    _messageController.close();
     super.dispose();
   }
 }
@@ -265,6 +275,99 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
 
       expect(find.byIcon(Icons.content_copy), findsOneWidget);
+    });
+  });
+
+  group('Explore request lifecycle', () {
+    test(
+      'ignores foreign and reset broadcasts, then accepts its own reply',
+      () async {
+        final bridge = _TestBridgeService();
+        addTearDown(bridge.dispose);
+        final cubit = ExploreCubit(
+          bridge: bridge,
+          projectPath: '/tmp/project-a',
+          requestTimeout: const Duration(seconds: 1),
+        );
+        addTearDown(cubit.close);
+
+        final request =
+            jsonDecode(bridge.sentMessages.single.toJson())
+                as Map<String, dynamic>;
+        bridge.emitFileList(const FileListMessage(files: [], reset: true));
+        bridge.emitFileList(
+          const FileListMessage(
+            files: ['wrong.txt'],
+            projectPath: '/tmp/project-b',
+            requestId: 'foreign',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(cubit.state.status, ExploreStatus.loading);
+
+        bridge.emitFileList(
+          FileListMessage(
+            files: const ['lib/main.dart'],
+            projectPath: '/tmp/project-a',
+            requestId: request['requestId'] as String,
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(cubit.state.status, ExploreStatus.ready);
+        expect(cubit.state.allFiles, ['lib/main.dart']);
+      },
+    );
+
+    test('times out and retry creates a fresh correlated request', () async {
+      final bridge = _TestBridgeService();
+      addTearDown(bridge.dispose);
+      final cubit = ExploreCubit(
+        bridge: bridge,
+        projectPath: '/tmp/project',
+        requestTimeout: const Duration(milliseconds: 10),
+      );
+      addTearDown(cubit.close);
+
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(cubit.state.status, ExploreStatus.error);
+      expect(cubit.state.error, contains('timed out'));
+
+      cubit.retry();
+      expect(cubit.state.status, ExploreStatus.loading);
+      expect(bridge.sentMessages, hasLength(2));
+      final first =
+          jsonDecode(bridge.sentMessages[0].toJson()) as Map<String, dynamic>;
+      final second =
+          jsonDecode(bridge.sentMessages[1].toJson()) as Map<String, dynamic>;
+      expect(second['requestId'], isNot(first['requestId']));
+    });
+
+    test('surfaces a correlated Bridge file-list error immediately', () async {
+      final bridge = _TestBridgeService();
+      addTearDown(bridge.dispose);
+      final cubit = ExploreCubit(
+        bridge: bridge,
+        projectPath: '/outside',
+        requestTimeout: const Duration(seconds: 1),
+      );
+      addTearDown(cubit.close);
+      final request =
+          jsonDecode(bridge.sentMessages.single.toJson())
+              as Map<String, dynamic>;
+
+      bridge.emitFileList(
+        FileListMessage(
+          files: const [],
+          projectPath: '/outside',
+          requestId: request['requestId'] as String,
+          error: 'Path not allowed',
+          errorCode: 'path_not_allowed',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(cubit.state.status, ExploreStatus.error);
+      expect(cubit.state.error, 'Path not allowed');
     });
   });
 }

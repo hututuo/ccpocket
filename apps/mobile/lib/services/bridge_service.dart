@@ -2096,7 +2096,9 @@ class BridgeService implements BridgeServiceBase {
     _galleryController.add(_galleryImages);
     _projectHistoryController.add(_projectHistory);
     _fileListController.add(const []);
-    _fileListMessageController.add(const FileListMessage(files: []));
+    _fileListMessageController.add(
+      const FileListMessage(files: [], reset: true),
+    );
 
     if (clearOfflineQueue) {
       _clearOfflinePendingState();
