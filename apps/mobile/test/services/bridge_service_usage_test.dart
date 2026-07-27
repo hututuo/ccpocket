@@ -338,6 +338,74 @@ void main() {
     );
 
     test(
+      'same-target reconnect resends a stale in-flight history delta',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final acceptedSockets = StreamController<WebSocket>();
+        final sockets = <WebSocket>[];
+        server.transform(WebSocketTransformer()).listen((socket) {
+          sockets.add(socket);
+          acceptedSockets.add(socket);
+        });
+        final socketIterator = StreamIterator(acceptedSockets.stream);
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        final url = 'ws://127.0.0.1:${server.port}';
+        bridge.connect(url);
+        expect(await socketIterator.moveNext(), isTrue);
+        final firstSocket = socketIterator.current;
+        firstSocket.add(
+          jsonEncode({
+            'type': 'status',
+            'status': 'running',
+            'sessionId': 's1',
+            'historySeq': 1,
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        bridge.requestSessionHistoryDeltaOnly('s1');
+        expect(
+          outgoing
+              .map(
+                (message) =>
+                    jsonDecode(message.toJson()) as Map<String, dynamic>,
+              )
+              .where((message) => message['type'] == 'get_history_delta'),
+          hasLength(1),
+        );
+
+        final reconnected = bridge.connectionStatus.firstWhere(
+          (state) => state == BridgeConnectionState.connected,
+        );
+        bridge.connect(url);
+        expect(await socketIterator.moveNext(), isTrue);
+        await reconnected.timeout(const Duration(seconds: 2));
+
+        bridge.requestSessionHistoryDeltaOnly('s1');
+        expect(
+          outgoing
+              .map(
+                (message) =>
+                    jsonDecode(message.toJson()) as Map<String, dynamic>,
+              )
+              .where((message) => message['type'] == 'get_history_delta'),
+          hasLength(2),
+        );
+
+        bridge.disconnect();
+        await socketIterator.cancel();
+        await acceptedSockets.close();
+        for (final socket in sockets) {
+          await socket.close();
+        }
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'legacy catalog requests serialize and discard stale results',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -1386,10 +1454,6 @@ void main() {
 
         bridge.requestSessionHistoryDeltaOnly('s1');
         expect(bridge.isSessionHistorySyncing('s1'), isFalse);
-        // A stale foreground request must not leave full-history fallback
-        // enabled after the latest bounded background request takes ownership.
-        bridge.requestSessionHistory('s1');
-        expect(bridge.isSessionHistorySyncing('s1'), isTrue);
         bridge.requestSessionHistoryDeltaOnly('s1');
         socket.add(
           jsonEncode({
@@ -1425,6 +1489,139 @@ void main() {
         bridge.dispose();
       },
     );
+
+    test(
+      'background history cannot downgrade a concurrent foreground fallback',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'status',
+            'status': 'running',
+            'sessionId': 's1',
+            'historySeq': 3,
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        bridge.requestSessionHistoryDeltaOnly('s1');
+        bridge.requestSessionHistory('s1');
+        bridge.requestSessionHistoryDeltaOnly('s1');
+        expect(bridge.isSessionHistorySyncing('s1'), isTrue);
+        expect(
+          outgoing
+              .map(
+                (message) =>
+                    jsonDecode(message.toJson()) as Map<String, dynamic>,
+              )
+              .where((request) => request['type'] == 'get_history_delta'),
+          hasLength(1),
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'error',
+            'errorCode': 'unsupported_message',
+            'message': 'get_history_delta',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        final requests = outgoing
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .toList();
+        expect(requests.last, {'type': 'get_history', 'sessionId': 's1'});
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test('coalesced history requests run one dirty follow-up', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+
+      server.transform(WebSocketTransformer()).listen((socket) {
+        socketReady.complete(socket);
+      });
+
+      final outgoing = <ClientMessage>[];
+      final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+      bridge.connect('ws://127.0.0.1:${server.port}');
+
+      final socket = await socketReady.future;
+      socket.add(
+        jsonEncode({
+          'type': 'status',
+          'status': 'running',
+          'sessionId': 's1',
+          'historySeq': 1,
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      bridge.requestSessionHistory('s1');
+      bridge.requestSessionHistory('s1');
+      expect(
+        outgoing
+            .map(
+              (message) =>
+                  jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .where((request) => request['type'] == 'get_history_delta'),
+        hasLength(1),
+      );
+
+      socket.add(
+        jsonEncode({
+          'type': 'history_delta',
+          'sessionId': 's1',
+          'fromSeq': 1,
+          'toSeq': 1,
+          'messages': [
+            {
+              'seq': 1,
+              'message': {'type': 'status', 'status': 'running'},
+            },
+          ],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final deltaRequests = outgoing
+          .map(
+            (message) =>
+                jsonDecode(message.toJson()) as Map<String, dynamic>,
+          )
+          .where((request) => request['type'] == 'get_history_delta')
+          .toList();
+      expect(deltaRequests, hasLength(2));
+      expect(deltaRequests.last, {
+        'type': 'get_history_delta',
+        'sessionId': 's1',
+        'sinceSeq': 1,
+      });
+
+      bridge.disconnect();
+      await socket.close();
+      await server.close(force: true);
+      bridge.dispose();
+    });
 
     test('resolveSessionLink completes with the matching response', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

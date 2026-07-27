@@ -321,6 +321,8 @@ class BridgeService implements BridgeServiceBase {
       Expando<_ExternalSessionHistoryMetadata>('externalSessionHistory');
   final Map<String, int> _pendingHistoryDeltaSinceSeq = {};
   final Map<String, bool> _pendingHistoryDeltaAllowsFullFallback = {};
+  final Map<String, int> _pendingHistoryDeltaConnectionEpoch = {};
+  final Set<String> _pendingHistoryDeltaDirty = {};
 
   /// Outstanding legacy `get_history` requests per session. Each incoming
   /// `history` frame decrements the count, as does an error reply that
@@ -2135,6 +2137,8 @@ class BridgeService implements BridgeServiceBase {
     _lastUsageResult = null;
     _pendingHistoryDeltaSinceSeq.clear();
     _pendingHistoryDeltaAllowsFullFallback.clear();
+    _pendingHistoryDeltaConnectionEpoch.clear();
+    _pendingHistoryDeltaDirty.clear();
     // Frames from a torn-down socket can never arrive on the new one.
     _outstandingLegacyHistoryRequests.clear();
     _sessionHistoryReconciliationGenerations.clear();
@@ -2209,8 +2213,12 @@ class BridgeService implements BridgeServiceBase {
         ((previousCachedSeq == 0 && msg.fromSeq <= 1) ||
             (msg.fromSeq <= previousCachedSeq + 1 &&
                 msg.fromSeq <= previousLatestSeq));
+    final followUpRequested = _pendingHistoryDeltaDirty.remove(sessionId);
+    final followUpAllowsFullFallback =
+        _pendingHistoryDeltaAllowsFullFallback[sessionId] == true;
     _pendingHistoryDeltaSinceSeq.remove(sessionId);
     _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
+    _pendingHistoryDeltaConnectionEpoch.remove(sessionId);
     final historyProjectionChanged = _runtimeStore.applyServerMessage(
       sessionId,
       msg,
@@ -2242,11 +2250,24 @@ class BridgeService implements BridgeServiceBase {
       _messageController.add(statusMessage);
     }
     _emitSessionHistoryReconciliation(sessionId);
+    if (followUpRequested) {
+      if (followUpAllowsFullFallback) {
+        _pendingForegroundHistorySyncs.add(sessionId);
+      }
+      _requestSessionHistory(
+        sessionId,
+        allowFullFallback: followUpAllowsFullFallback,
+      );
+    }
   }
 
   void _handleHistorySnapshot(String sessionId, HistorySnapshotMessage msg) {
+    final followUpRequested = _pendingHistoryDeltaDirty.remove(sessionId);
+    final followUpAllowsFullFallback =
+        _pendingHistoryDeltaAllowsFullFallback[sessionId] == true;
     _pendingHistoryDeltaSinceSeq.remove(sessionId);
     _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
+    _pendingHistoryDeltaConnectionEpoch.remove(sessionId);
     _rememberRemoteHistoryWindow(sessionId, msg.historyWindow);
     _runtimeStore.applyServerMessage(sessionId, msg);
 
@@ -2269,6 +2290,15 @@ class BridgeService implements BridgeServiceBase {
       _messageController.add(statusMessage);
     }
     _emitSessionHistoryReconciliation(sessionId);
+    if (followUpRequested) {
+      if (followUpAllowsFullFallback) {
+        _pendingForegroundHistorySyncs.add(sessionId);
+      }
+      _requestSessionHistory(
+        sessionId,
+        allowFullFallback: followUpAllowsFullFallback,
+      );
+    }
   }
 
   void _rememberRemoteHistoryWindow(
@@ -2341,6 +2371,8 @@ class BridgeService implements BridgeServiceBase {
       _pendingHistoryDeltaAllowsFullFallback,
     );
     _pendingHistoryDeltaAllowsFullFallback.clear();
+    _pendingHistoryDeltaConnectionEpoch.clear();
+    _pendingHistoryDeltaDirty.removeAll(sessionIds);
     for (final sessionId in sessionIds) {
       if (allowsFullFallback[sessionId] == true) {
         _pendingForegroundHistorySyncs.add(sessionId);
@@ -2363,8 +2395,20 @@ class BridgeService implements BridgeServiceBase {
         !_pendingForegroundHistorySyncs.remove(sessionId)) {
       return null;
     }
+    _activateSessionHistorySync(sessionId, renewTimeout: true);
+    return sessionId;
+  }
+
+  void _activateSessionHistorySync(
+    String sessionId, {
+    bool renewTimeout = false,
+  }) {
+    _pendingForegroundHistorySyncs.remove(sessionId);
     final wasActive = _activeSessionHistorySyncs.contains(sessionId);
-    _activeSessionHistorySyncs.add(sessionId);
+    if (wasActive && !renewTimeout) return;
+    if (!wasActive) {
+      _activeSessionHistorySyncs.add(sessionId);
+    }
     _sessionHistorySyncTimeouts.remove(sessionId)?.cancel();
     _sessionHistorySyncTimeouts[sessionId] = Timer(
       _sessionHistorySyncTimeout,
@@ -2373,11 +2417,11 @@ class BridgeService implements BridgeServiceBase {
     if (!wasActive) {
       _sessionHistorySyncChangedController.add(sessionId);
     }
-    return sessionId;
   }
 
   void _finishSessionHistorySync(String sessionId) {
     _pendingForegroundHistorySyncs.remove(sessionId);
+    _clearPendingHistoryDelta(sessionId);
     _sessionHistorySyncTimeouts.remove(sessionId)?.cancel();
     if (_activeSessionHistorySyncs.remove(sessionId)) {
       _sessionHistorySyncChangedController.add(sessionId);
@@ -2393,8 +2437,16 @@ class BridgeService implements BridgeServiceBase {
     }
     _sessionHistorySyncTimeouts.clear();
     for (final sessionId in sessionIds) {
+      _clearPendingHistoryDelta(sessionId);
       _sessionHistorySyncChangedController.add(sessionId);
     }
+  }
+
+  void _clearPendingHistoryDelta(String sessionId) {
+    _pendingHistoryDeltaSinceSeq.remove(sessionId);
+    _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
+    _pendingHistoryDeltaConnectionEpoch.remove(sessionId);
+    _pendingHistoryDeltaDirty.remove(sessionId);
   }
 
   void _clearSessionHistorySyncTracking() {
@@ -3703,11 +3755,22 @@ class BridgeService implements BridgeServiceBase {
         snapshot.messages.isNotEmpty ||
         (!allowFullFallback && snapshot.cachedHistorySeq > 0);
     if (canRequestDelta) {
+      if (_pendingHistoryDeltaSinceSeq.containsKey(sessionId) &&
+          _pendingHistoryDeltaConnectionEpoch[sessionId] ==
+              _connectionEpoch) {
+        _pendingHistoryDeltaAllowsFullFallback[sessionId] =
+            (_pendingHistoryDeltaAllowsFullFallback[sessionId] ?? false) ||
+            allowFullFallback;
+        _pendingHistoryDeltaDirty.add(sessionId);
+        if (allowFullFallback && isConnected) {
+          _activateSessionHistorySync(sessionId);
+        }
+        return;
+      }
+      _clearPendingHistoryDelta(sessionId);
       _pendingHistoryDeltaSinceSeq[sessionId] = snapshot.cachedHistorySeq;
-      // The latest caller owns the fallback policy. In particular, a bounded
-      // background request must be able to replace a stale foreground
-      // permission left behind by a timed-out delta request.
       _pendingHistoryDeltaAllowsFullFallback[sessionId] = allowFullFallback;
+      _pendingHistoryDeltaConnectionEpoch[sessionId] = _connectionEpoch;
       send(
         ClientMessage.getHistoryDelta(
           sessionId,
@@ -4032,8 +4095,7 @@ class BridgeService implements BridgeServiceBase {
   void clearExplorerHistory(String sessionId) {
     _remoteHistoryPageFlights.remove(sessionId);
     _remoteHistoryCursors.remove(sessionId);
-    _pendingHistoryDeltaSinceSeq.remove(sessionId);
-    _pendingHistoryDeltaAllowsFullFallback.remove(sessionId);
+    _clearPendingHistoryDelta(sessionId);
     _finishSessionHistorySync(sessionId);
     _runtimeStore.clearSession(sessionId);
     _sessionHistoryReconciliationGenerations.remove(sessionId);
