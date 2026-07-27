@@ -1225,6 +1225,18 @@ function isValidClientHunkRef(value: unknown): boolean {
   );
 }
 
+function isValidWireIdentifier(
+  value: unknown,
+  maxLength = 256,
+): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maxLength &&
+    value.trim() === value
+  );
+}
+
 export function parseClientMessage(data: string): ClientMessage | null {
   try {
     const msg = JSON.parse(data) as Record<string, unknown>;
@@ -1238,6 +1250,12 @@ export function parseClientMessage(data: string): ClientMessage | null {
     if (fileTransferMessage !== undefined) return fileTransferMessage;
     const localFeatureMessage = parseLocalFeatureClientMessage(msg);
     if (localFeatureMessage !== undefined) return localFeatureMessage;
+    if (
+      Object.prototype.hasOwnProperty.call(msg, "sessionId") &&
+      !isValidWireIdentifier(msg.sessionId)
+    ) {
+      return null;
+    }
     const hasOnlyKeys = (allowedKeys: readonly string[]): boolean => {
       const allowed = new Set(allowedKeys);
       return Object.keys(msg).every((key) => allowed.has(key));
@@ -1562,7 +1580,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
       case "update_queued_input":
         if (
           typeof msg.sessionId !== "string" ||
-          typeof msg.itemId !== "string" ||
+          !isValidWireIdentifier(msg.itemId) ||
           typeof msg.text !== "string"
         )
           return null;
@@ -1588,7 +1606,10 @@ export function parseClientMessage(data: string): ClientMessage | null {
         }
         break;
       case "steer_queued_input":
-        if (typeof msg.sessionId !== "string" || typeof msg.itemId !== "string")
+        if (
+          typeof msg.sessionId !== "string" ||
+          !isValidWireIdentifier(msg.itemId)
+        )
           return null;
         if (
           msg.expectedTurnId !== undefined &&
@@ -1599,7 +1620,10 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "cancel_queued_input":
-        if (typeof msg.sessionId !== "string" || typeof msg.itemId !== "string")
+        if (
+          typeof msg.sessionId !== "string" ||
+          !isValidWireIdentifier(msg.itemId)
+        )
           return null;
         break;
       case "push_register":
@@ -1798,20 +1822,23 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (typeof msg.sandboxMode !== "string") return null;
         break;
       case "approve":
-        if (typeof msg.id !== "string") return null;
+        if (!isValidWireIdentifier(msg.id)) return null;
         break;
       case "approve_always":
-        if (typeof msg.id !== "string") return null;
+        if (!isValidWireIdentifier(msg.id)) return null;
         break;
       case "reject":
-        if (typeof msg.id !== "string") return null;
+        if (!isValidWireIdentifier(msg.id)) return null;
         break;
       case "answer":
-        if (typeof msg.toolUseId !== "string" || typeof msg.result !== "string")
+        if (
+          !isValidWireIdentifier(msg.toolUseId) ||
+          typeof msg.result !== "string"
+        )
           return null;
         break;
       case "install_tool_suggestion":
-        if (typeof msg.toolUseId !== "string") return null;
+        if (!isValidWireIdentifier(msg.toolUseId)) return null;
         break;
       case "list_sessions":
         break;

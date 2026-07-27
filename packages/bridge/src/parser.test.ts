@@ -505,6 +505,39 @@ describe("parseClientMessage", () => {
     expect(msg).toEqual({ type: "input", text: "hello" });
   });
 
+  it("preserves omitted optional session ids for legacy clients", () => {
+    expect(parseClientMessage('{"type":"input","text":"hello"}')).toEqual({
+      type: "input",
+      text: "hello",
+    });
+    expect(parseClientMessage('{"type":"approve","id":"tu1"}')).toEqual({
+      type: "approve",
+      id: "tu1",
+    });
+    expect(parseClientMessage('{"type":"interrupt"}')).toEqual({
+      type: "interrupt",
+    });
+  });
+
+  it("rejects present but invalid main-protocol session ids", () => {
+    for (const message of [
+      { type: "input", text: "hello", sessionId: "" },
+      { type: "set_permission_mode", mode: "default", sessionId: " " },
+      { type: "approve", id: "tu1", sessionId: "" },
+      { type: "interrupt", sessionId: "" },
+      {
+        type: "update_queued_input",
+        sessionId: "",
+        itemId: "item-1",
+        text: "hello",
+      },
+      { type: "get_goal", sessionId: "" },
+      { type: "input", text: "hello", sessionId: "s".repeat(257) },
+    ]) {
+      expect(parseClientMessage(JSON.stringify(message))).toBeNull();
+    }
+  });
+
   it("parses input strict ack metadata", () => {
     const msg = parseClientMessage(
       '{"type":"input","sessionId":"s1","text":"hello","clientMessageId":"cm-1","baseSeq":42}',
@@ -842,6 +875,26 @@ describe("parseClientMessage", () => {
 
   it("rejects approve without id", () => {
     expect(parseClientMessage('{"type":"approve"}')).toBeNull();
+  });
+
+  it("rejects blank interactive and queued request ids", () => {
+    for (const message of [
+      { type: "approve", id: "" },
+      { type: "approve_always", id: " " },
+      { type: "reject", id: "" },
+      { type: "answer", toolUseId: "", result: "yes" },
+      { type: "install_tool_suggestion", toolUseId: "" },
+      {
+        type: "update_queued_input",
+        sessionId: "s1",
+        itemId: "",
+        text: "hello",
+      },
+      { type: "steer_queued_input", sessionId: "s1", itemId: "" },
+      { type: "cancel_queued_input", sessionId: "s1", itemId: " " },
+    ]) {
+      expect(parseClientMessage(JSON.stringify(message))).toBeNull();
+    }
   });
 
   it("parses approve_always message", () => {
