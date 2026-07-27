@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`7d62f978`
+核对源码基线：`e984ca36`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -52,6 +52,7 @@
 | 增量更新、分页和 thinking 切换不能把用户展开状态收起 | v02-009、012～013 | `8d04d5ed`；partial→canonical turn key alias migration | **已验证** | 29 项布局/披露测试通过，含分页前后 13 个内层 disclosure 保持展开 |
 | 展开后 thinking、工具和结果在同一个框内；折叠时才在当前进度显示摘要 | v02-009、013 | unified process surface 与 current-progress selector | **已验证** | process tree/viewport 回归通过；流式真机会话视觉待复核 |
 | 中间过程/工具/最终回复不能整段重复两次 | v02-010、012；v02-014.9 | canonical identity、history generation、dedup state | **部分完成** | 多条已知重复路径已修；仍缺用户真实故障会话的 raw→Bridge→Mirror→reducer→render 五层快照 |
+| UUID 回填和原地历史修订必须让断线/后台客户端收到，且不能靠追加重复消息实现 | v02-010～012 | `e984ca36`；通用 history mutation reset revision | **已验证** | 红测证明旧实现只改旧 seq，`getHistorySince` 永远返回空 delta；现仅在 UUID/时间确有变化时推进 revision，并通过旧客户端已支持的 reset snapshot 返回原位置的单份消息；相同回声不重复推进版本 |
 | 消息显示电脑实际接收时间到秒；时间紧凑融入消息，不占整行 | v02-005、009、013 | `receivedAt` provenance、`ChatMessageTimestamp`、`e0fa43f0` | **已验证** | 混合 ISO 时间比较和多类消息布局回归通过；长文本视觉待验收 |
 | Guardian 风险归到对应工具下，只显示最新一条并 3 秒消失 | v01 8.3；v02-009 | approval tool identity + timed notice | **已验证** | `guardian_approval_notice_test.dart` 等回归保留 |
 | Plan 首次退出未选择后，审批仍能恢复 | v01 8.2；v02-014 | Bridge pending ledger、Mobile pending merge | **已验证** | plan permission restart 和重叠恢复回归通过 |
@@ -96,13 +97,13 @@
 | 原始要求 | 方案位置 | 当前提交/源码证据 | 当前状态 | 验证证据与剩余门槛 |
 |---|---|---|---|---|
 | 发现确定性 bug 可顺手修，但必须先找 owning layer 和红测，不能见现象就改 | v02-006；PROJECT_HANDOFF §9 | 本轮窄提交、request/generation/Bridge partition 回归 | **持续门禁** | 所有新增修复继续要求先证实、再改、再定向回归 |
-| 会话同步、排序、折叠和进程重启整体稳定 | v02-010～013 | generation fence、half-open continuity、outbox、dedup、pagination alias、`b0255c68`、`93d02cf1`、`502b4252`、`7d62f978` | **部分完成** | watcher/provider、公平队列、starting history 风暴与 delta single-flight/连接代次已由红测闭环；legacy full-history 仍无 requestId，session manager、真实重复事件线和 provider/source 多 Home 仍有高风险审查积压 |
+| 会话同步、排序、折叠和进程重启整体稳定 | v02-010～013 | generation fence、half-open continuity、outbox、dedup、pagination alias、`b0255c68`、`93d02cf1`、`502b4252`、`7d62f978`、`e984ca36` | **部分完成** | watcher/provider、公平队列、starting history、delta single-flight 已闭环；Desktop 接管现保留 live history/revision/identity 并消费已预取 canonical history，销毁同步 exit 也不能再回写死会话。legacy full-history 仍无 requestId，真实重复事件线和 provider/source 多 Home 仍有高风险审查积压 |
 | 畸形或未来版本工具输入不能在展开 Diff 时崩溃整张会话卡片 | v02-006、009、014 | `0b83e6aa` 对 Edit/MultiEdit/Write 输入做完整形状校验 | **已验证** | 26 项 parser 回归通过；不完整 MultiEdit 会安全回退而不是渲染误导性局部 diff |
 | 多开 Bridge/SDK/Codex 进程不能由旧代迟到事件覆盖新代 | v02-007、010～012 | `a4dbf3c1`、`320f1189`、`a35cc591` | **已验证** | SDK 100/100、Codex 144/144 相关回归曾通过 |
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `7d62f978`，后续深链、安全、通知 ACK、公平调度与历史仲裁提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `e984ca36`，后续深链、安全、通知 ACK、公平调度与历史/会话管理提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
