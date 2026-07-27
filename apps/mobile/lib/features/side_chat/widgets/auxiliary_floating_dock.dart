@@ -1,4 +1,4 @@
-import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -15,8 +15,9 @@ typedef OpenAuxiliarySideChat =
 
 /// A lightweight in-app handle for live auxiliary work.
 ///
-/// It has no ticker and owns no transcript state. Dragging snaps it half off
-/// the nearest edge; tapping a hidden handle reveals it before opening.
+/// It has no ticker and owns no transcript state. The collapsed handle snaps
+/// half off an edge; expanding creates an in-tree panel without a route,
+/// barrier, or modal surface, so the surrounding conversation stays usable.
 class AuxiliaryFloatingDock extends StatefulWidget {
   const AuxiliaryFloatingDock({
     super.key,
@@ -36,13 +37,18 @@ class AuxiliaryFloatingDock extends StatefulWidget {
 }
 
 class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
-  static const _size = 48.0;
+  static const _handleSize = 48.0;
   static const _visibleInset = 12.0;
   static const _hiddenInset = 24.0;
-  double? _left;
-  double? _top;
+  static const _panelInset = 10.0;
+  static const _panelMaxWidth = 360.0;
+  static const _panelMaxHeight = 520.0;
+  double? _handleLeft;
+  double? _handleTop;
+  double? _panelLeft;
+  double? _panelTop;
   Size _lastSize = Size.zero;
-  bool _hidden = false;
+  bool _expanded = false;
   bool _dragging = false;
 
   @override
@@ -71,83 +77,155 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   }
 
   void _normalizePosition(Size size) {
-    if (_lastSize == size && _left != null && _top != null) return;
-    final currentLeft = _left ?? size.width - _size - _visibleInset;
-    final currentTop = _top ?? (size.height * 0.42);
-    _left = currentLeft.clamp(-_hiddenInset, size.width - _size + _hiddenInset);
-    _top = currentTop.clamp(
+    if (_lastSize == size &&
+        _handleLeft != null &&
+        _handleTop != null &&
+        _panelLeft != null &&
+        _panelTop != null) {
+      return;
+    }
+    final panelSize = _panelSize(size);
+    final currentHandleLeft =
+        _handleLeft ?? size.width - _handleSize - _visibleInset;
+    final currentHandleTop = _handleTop ?? (size.height * 0.42);
+    _handleLeft = currentHandleLeft.clamp(
+      -_hiddenInset,
+      size.width - _handleSize + _hiddenInset,
+    );
+    _handleTop = currentHandleTop.clamp(
       8.0,
-      (size.height - _size - 8).clamp(8.0, size.height),
+      (size.height - _handleSize - 8).clamp(8.0, size.height),
+    );
+    _panelLeft = (_panelLeft ?? size.width - panelSize.width - _panelInset)
+        .clamp(
+          _panelInset,
+          math.max(_panelInset, size.width - panelSize.width - _panelInset),
+        );
+    _panelTop = (_panelTop ?? _handleTop!).clamp(
+      _panelInset,
+      math.max(_panelInset, size.height - panelSize.height - _panelInset),
     );
     _lastSize = size;
   }
 
-  void _drag(PointerMoveEvent event) {
+  Size _panelSize(Size available) {
+    final width = math.max(
+      0.0,
+      math.min(_panelMaxWidth, available.width - (_panelInset * 2)),
+    );
+    final height = math.max(
+      0.0,
+      math.min(_panelMaxHeight, available.height - (_panelInset * 2)),
+    );
+    return Size(width, height);
+  }
+
+  void _dragHandle(PointerMoveEvent event) {
     final size = _lastSize;
     if (size.isEmpty) return;
     setState(() {
       _dragging = true;
-      _hidden = false;
-      _left = ((_left ?? 0) + event.delta.dx).clamp(
+      _handleLeft = ((_handleLeft ?? 0) + event.delta.dx).clamp(
         -_hiddenInset,
-        size.width - _size + _hiddenInset,
+        size.width - _handleSize + _hiddenInset,
       );
-      _top = ((_top ?? 0) + event.delta.dy).clamp(
+      _handleTop = ((_handleTop ?? 0) + event.delta.dy).clamp(
         8.0,
-        (size.height - _size - 8).clamp(8.0, size.height),
+        (size.height - _handleSize - 8).clamp(8.0, size.height),
       );
     });
   }
 
-  void _snap() {
+  void _snapHandle() {
     final size = _lastSize;
     if (size.isEmpty) return;
     setState(() {
       _dragging = false;
-      _hidden = true;
-      final center = (_left ?? 0) + (_size / 2);
-      _left = center < size.width / 2
+      final center = (_handleLeft ?? 0) + (_handleSize / 2);
+      _handleLeft = center < size.width / 2
           ? -_hiddenInset
-          : size.width - _size + _hiddenInset;
+          : size.width - _handleSize + _hiddenInset;
     });
   }
 
-  void _tap() {
-    if (_hidden) {
-      final size = _lastSize;
-      setState(() {
-        _hidden = false;
-        final onLeft = ((_left ?? 0) + (_size / 2)) < size.width / 2;
-        _left = onLeft ? _visibleInset : size.width - _size - _visibleInset;
-      });
-      return;
-    }
-    unawaited(_showRegistry());
+  void _expand() {
+    final size = _lastSize;
+    if (size.isEmpty) return;
+    final panelSize = _panelSize(size);
+    final handleCenter = (_handleLeft ?? 0) + (_handleSize / 2);
+    setState(() {
+      _expanded = true;
+      _dragging = false;
+      _panelLeft = handleCenter < size.width / 2
+          ? _panelInset
+          : math.max(
+              _panelInset,
+              size.width - panelSize.width - _panelInset,
+            );
+      _panelTop = (_handleTop ?? 0).clamp(
+        _panelInset,
+        math.max(_panelInset, size.height - panelSize.height - _panelInset),
+      );
+    });
   }
 
-  Future<void> _showRegistry() async {
-    final registry = widget.registryService;
-    final parentForNew =
-        registry.entryForChild(widget.sessionId)?.parentSessionId ??
-        widget.sessionId;
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (sheetContext) => FractionallySizedBox(
-        heightFactor: 0.86,
-        child: _AuxiliaryRegistrySheet(
-          currentSessionId: widget.sessionId,
-          parentForNew: parentForNew,
-          bridgeService: widget.bridgeService,
-          registryService: registry,
-          onOpenSideChat: (parentSessionId, entry) async {
-            Navigator.of(sheetContext).pop();
-            await widget.onOpenSideChat(parentSessionId, entry);
-          },
-        ),
-      ),
-    );
+  void _collapse() {
+    final size = _lastSize;
+    if (size.isEmpty) return;
+    final panelSize = _panelSize(size);
+    final panelCenter = (_panelLeft ?? 0) + (panelSize.width / 2);
+    setState(() {
+      _expanded = false;
+      _dragging = false;
+      _handleLeft = panelCenter < size.width / 2
+          ? _visibleInset
+          : size.width - _handleSize - _visibleInset;
+      _handleTop = (_panelTop ?? 0).clamp(
+        8.0,
+        (size.height - _handleSize - 8).clamp(8.0, size.height),
+      );
+    });
+  }
+
+  void _dragPanel(PointerMoveEvent event) {
+    final size = _lastSize;
+    if (size.isEmpty) return;
+    final panelSize = _panelSize(size);
+    setState(() {
+      _dragging = true;
+      _panelLeft = ((_panelLeft ?? 0) + event.delta.dx).clamp(
+        _panelInset,
+        math.max(_panelInset, size.width - panelSize.width - _panelInset),
+      );
+      _panelTop = ((_panelTop ?? 0) + event.delta.dy).clamp(
+        _panelInset,
+        math.max(_panelInset, size.height - panelSize.height - _panelInset),
+      );
+    });
+  }
+
+  void _snapPanel() {
+    final size = _lastSize;
+    if (size.isEmpty) return;
+    final panelSize = _panelSize(size);
+    setState(() {
+      _dragging = false;
+      final center = (_panelLeft ?? 0) + (panelSize.width / 2);
+      _panelLeft = center < size.width / 2
+          ? _panelInset
+          : math.max(
+              _panelInset,
+              size.width - panelSize.width - _panelInset,
+            );
+    });
+  }
+
+  Future<void> _openSideChat(
+    String parentSessionId,
+    EphemeralSideChatEntry? entry,
+  ) async {
+    _collapse();
+    await widget.onOpenSideChat(parentSessionId, entry);
   }
 
   @override
@@ -169,82 +247,117 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
             .length;
         final badgeCount = activeCount > 0 ? activeCount : entries.length;
         final colorScheme = Theme.of(context).colorScheme;
+        final panelSize = _panelSize(size);
+        final parentForNew =
+            widget.registryService
+                .entryForChild(widget.sessionId)
+                ?.parentSessionId ??
+            widget.sessionId;
 
         return Stack(
           children: [
-            Positioned(
-              key: const ValueKey('auxiliary_floating_dock_position'),
-              left: _left,
-              top: _top,
-              width: _size,
-              height: _size,
-              child: Semantics(
-                button: true,
-                label: _label(context, '辅助任务', 'Auxiliary tasks'),
-                child: Listener(
-                  key: const ValueKey('auxiliary_floating_dock'),
-                  behavior: HitTestBehavior.opaque,
-                  onPointerMove: _drag,
-                  onPointerUp: (_) {
-                    if (_dragging) _snap();
-                  },
-                  onPointerCancel: (_) {
-                    if (_dragging) _snap();
-                  },
-                  child: Material(
-                    color: activeCount > 0
-                        ? colorScheme.primary
-                        : colorScheme.secondaryContainer,
-                    elevation: _dragging ? 4 : 1,
-                    shape: const CircleBorder(),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      key: const ValueKey('auxiliary_floating_dock_tap'),
-                      customBorder: const CircleBorder(),
-                      onTap: _tap,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          Icon(
-                            Icons.hub_outlined,
-                            color: activeCount > 0
-                                ? colorScheme.onPrimary
-                                : colorScheme.onSecondaryContainer,
-                          ),
-                          if (badgeCount > 0)
-                            Positioned(
-                              right: 5,
-                              top: 5,
-                              child: Container(
-                                constraints: const BoxConstraints(
-                                  minWidth: 16,
-                                  minHeight: 16,
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 3,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: colorScheme.error,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                alignment: Alignment.center,
-                                child: Text(
-                                  badgeCount > 9 ? '9+' : '$badgeCount',
-                                  style: TextStyle(
-                                    color: colorScheme.onError,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
+            if (_expanded)
+              Positioned(
+                key: const ValueKey('auxiliary_floating_panel_position'),
+                left: _panelLeft,
+                top: _panelTop,
+                width: panelSize.width,
+                height: panelSize.height,
+                child: Material(
+                  key: const ValueKey('auxiliary_floating_panel'),
+                  color: colorScheme.surface,
+                  elevation: _dragging ? 5 : 2,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(18),
+                    side: BorderSide(color: colorScheme.outlineVariant),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: _AuxiliaryRegistryPanel(
+                    currentSessionId: widget.sessionId,
+                    parentForNew: parentForNew,
+                    bridgeService: widget.bridgeService,
+                    registryService: widget.registryService,
+                    onOpenSideChat: _openSideChat,
+                    onCollapse: _collapse,
+                    onHeaderPointerMove: _dragPanel,
+                    onHeaderPointerEnd: _snapPanel,
+                  ),
+                ),
+              )
+            else
+              Positioned(
+                key: const ValueKey('auxiliary_floating_dock_position'),
+                left: _handleLeft,
+                top: _handleTop,
+                width: _handleSize,
+                height: _handleSize,
+                child: Semantics(
+                  button: true,
+                  label: _label(context, '辅助任务', 'Auxiliary tasks'),
+                  child: Listener(
+                    key: const ValueKey('auxiliary_floating_dock'),
+                    behavior: HitTestBehavior.opaque,
+                    onPointerMove: _dragHandle,
+                    onPointerUp: (_) {
+                      if (_dragging) _snapHandle();
+                    },
+                    onPointerCancel: (_) {
+                      if (_dragging) _snapHandle();
+                    },
+                    child: Material(
+                      color: activeCount > 0
+                          ? colorScheme.primary
+                          : colorScheme.secondaryContainer,
+                      elevation: _dragging ? 4 : 1,
+                      shape: const CircleBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        key: const ValueKey('auxiliary_floating_dock_tap'),
+                        customBorder: const CircleBorder(),
+                        onTap: _expand,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Icon(
+                              Icons.hub_outlined,
+                              color: activeCount > 0
+                                  ? colorScheme.onPrimary
+                                  : colorScheme.onSecondaryContainer,
+                            ),
+                            if (badgeCount > 0)
+                              Positioned(
+                                right: 5,
+                                top: 5,
+                                child: Container(
+                                  constraints: const BoxConstraints(
+                                    minWidth: 16,
+                                    minHeight: 16,
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.error,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    badgeCount > 9 ? '9+' : '$badgeCount',
+                                    style: TextStyle(
+                                      color: colorScheme.onError,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
           ],
         );
       },
@@ -252,13 +365,16 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   }
 }
 
-class _AuxiliaryRegistrySheet extends StatelessWidget {
-  const _AuxiliaryRegistrySheet({
+class _AuxiliaryRegistryPanel extends StatelessWidget {
+  const _AuxiliaryRegistryPanel({
     required this.currentSessionId,
     required this.parentForNew,
     required this.bridgeService,
     required this.registryService,
     required this.onOpenSideChat,
+    required this.onCollapse,
+    required this.onHeaderPointerMove,
+    required this.onHeaderPointerEnd,
   });
 
   final String currentSessionId;
@@ -266,6 +382,9 @@ class _AuxiliaryRegistrySheet extends StatelessWidget {
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
   final OpenAuxiliarySideChat onOpenSideChat;
+  final VoidCallback onCollapse;
+  final PointerMoveEventListener onHeaderPointerMove;
+  final VoidCallback onHeaderPointerEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -275,23 +394,35 @@ class _AuxiliaryRegistrySheet extends StatelessWidget {
         color: Theme.of(context).colorScheme.surface,
         child: Column(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
-                    child: Text(
-                      _label(context, '辅助任务', 'Auxiliary tasks'),
-                      style: Theme.of(context).textTheme.titleMedium,
+            Listener(
+              key: const ValueKey('auxiliary_floating_panel_header'),
+              behavior: HitTestBehavior.opaque,
+              onPointerMove: onHeaderPointerMove,
+              onPointerUp: (_) => onHeaderPointerEnd(),
+              onPointerCancel: (_) => onHeaderPointerEnd(),
+              child: Row(
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(left: 10),
+                    child: Icon(Icons.drag_indicator, size: 19),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+                      child: Text(
+                        _label(context, '辅助任务', 'Auxiliary tasks'),
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
                     ),
                   ),
-                ),
-                IconButton(
-                  tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
+                  IconButton(
+                    key: const ValueKey('auxiliary_floating_panel_collapse'),
+                    tooltip: _label(context, '收起', 'Collapse'),
+                    onPressed: onCollapse,
+                    icon: const Icon(Icons.unfold_less),
+                  ),
+                ],
+              ),
             ),
             TabBar(
               tabs: [

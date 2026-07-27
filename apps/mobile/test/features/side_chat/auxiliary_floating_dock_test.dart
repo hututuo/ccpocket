@@ -52,7 +52,7 @@ EphemeralSideChatEntry _entry() => EphemeralSideChatEntry(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('opens a retained side chat from the auxiliary sheet', (
+  testWidgets('expands inline and opens a retained side chat', (
     tester,
   ) async {
     final bridge = _Bridge();
@@ -87,6 +87,10 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('auxiliary_floating_dock_tap')));
     await tester.pumpAndSettle();
     expect(
+      find.byKey(const ValueKey('auxiliary_floating_panel')),
+      findsOneWidget,
+    );
+    expect(
       find.byKey(const ValueKey('auxiliary_side_chat_child-1')),
       findsOneWidget,
     );
@@ -97,7 +101,7 @@ void main() {
     expect(openedChild, 'child-1');
   });
 
-  testWidgets('snaps half off an edge and reveals before opening', (
+  testWidgets('snaps the handle off edge and keeps the expanded panel draggable', (
     tester,
   ) async {
     final bridge = _Bridge();
@@ -127,12 +131,85 @@ void main() {
     expect(tester.getTopLeft(dock).dx, lessThan(0));
 
     await tester.tap(find.byKey(const ValueKey('auxiliary_floating_dock_tap')));
+    await tester.pumpAndSettle();
+    expect(dock, findsNothing);
+    expect(find.byType(TabBar), findsOneWidget);
+    final panel = find.byKey(const ValueKey('auxiliary_floating_panel'));
+    final initialPanelLeft = tester.getTopLeft(panel).dx;
+
+    await tester.drag(
+      find.byKey(const ValueKey('auxiliary_floating_panel_header')),
+      const Offset(600, 60),
+    );
     await tester.pump();
-    expect(tester.getTopLeft(dock).dx, greaterThanOrEqualTo(0));
-    expect(find.byType(TabBar), findsNothing);
+    expect(tester.getTopLeft(panel).dx, greaterThan(initialPanelLeft));
+
+    await tester.tap(
+      find.byKey(const ValueKey('auxiliary_floating_panel_collapse')),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('auxiliary_floating_dock')),
+      findsOneWidget,
+    );
+    expect(panel, findsNothing);
+  });
+
+  testWidgets('expanded panel does not block the conversation outside its bounds', (
+    tester,
+  ) async {
+    final bridge = _Bridge();
+    final gateway = _Gateway();
+    final registry = EphemeralSideChatRegistryService(bridge: gateway);
+    gateway.isConnected = true;
+    addTearDown(registry.dispose);
+    addTearDown(gateway.dispose);
+    addTearDown(bridge.dispose);
+    var backgroundTaps = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            children: [
+              Positioned(
+                left: 8,
+                top: 8,
+                child: TextButton(
+                  key: const ValueKey('conversation_background_action'),
+                  onPressed: () => backgroundTaps += 1,
+                  child: const Text('Conversation action'),
+                ),
+              ),
+              Positioned.fill(
+                child: AuxiliaryFloatingDock(
+                  sessionId: 'parent-1',
+                  bridgeService: bridge,
+                  registryService: registry,
+                  onOpenSideChat: (_, _) async {},
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
 
     await tester.tap(find.byKey(const ValueKey('auxiliary_floating_dock_tap')));
-    await tester.pumpAndSettle();
-    expect(find.byType(TabBar), findsOneWidget);
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('auxiliary_floating_panel')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('conversation_background_action')),
+    );
+    await tester.pump();
+    expect(backgroundTaps, 1);
+    expect(
+      find.byKey(const ValueKey('auxiliary_floating_panel')),
+      findsOneWidget,
+    );
   });
 }
