@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import {
   lstat,
   open,
@@ -371,7 +371,9 @@ export function isAllowedBrowserOrigin(
 function configuredWebSocketOrigins(values: string[] | undefined): Set<string> {
   const configured =
     values ??
-    process.env.BRIDGE_ALLOWED_ORIGINS?.split(",").map((value) => value.trim()) ??
+    process.env.BRIDGE_ALLOWED_ORIGINS?.split(",").map((value) =>
+      value.trim(),
+    ) ??
     [];
   return new Set(
     configured
@@ -927,9 +929,7 @@ function normalizeCodexApprovalPolicy(
 function normalizeCodexApprovalPolicyIfKnown(
   value?: string,
 ): "never" | "on-request" | "on-failure" | "untrusted" | undefined {
-  return value === undefined
-    ? undefined
-    : normalizeCodexApprovalPolicy(value);
+  return value === undefined ? undefined : normalizeCodexApprovalPolicy(value);
 }
 
 type CodexPermissionsMode = NonNullable<
@@ -1413,9 +1413,7 @@ export class BridgeWebSocketServer {
     } = options;
     this.apiKeyAuthenticator =
       apiKeyAuthenticator ?? new BridgeApiKeyAuthenticator(apiKey);
-    const browserOrigins = configuredWebSocketOrigins(
-      allowedWebSocketOrigins,
-    );
+    const browserOrigins = configuredWebSocketOrigins(allowedWebSocketOrigins);
     this.allowedDirs = allowedDirs ?? [];
     this.imageStore = imageStore ?? null;
     this.galleryStore = galleryStore ?? null;
@@ -1511,11 +1509,7 @@ export class BridgeWebSocketServer {
         if (
           origin !== undefined &&
           !authenticatedByToken &&
-          !isAllowedBrowserOrigin(
-            origin,
-            info.req.headers.host,
-            browserOrigins,
-          )
+          !isAllowedBrowserOrigin(origin, info.req.headers.host, browserOrigins)
         ) {
           console.log("[ws] Client rejected: untrusted browser Origin");
           done(false, 403, "Forbidden");
@@ -1586,7 +1580,9 @@ export class BridgeWebSocketServer {
       closeEphemeralCodexChildSession: (childSessionId) =>
         this.closeEphemeralCodexChildSession(childSessionId),
       isProjectPathAllowed: (projectPath) =>
-        this.isPathAllowed(resolvePlatformPath(projectPath, this.platform)),
+        this.isExistingProjectPathAllowed(
+          resolvePlatformPath(projectPath, this.platform),
+        ),
       isSessionProjectPath: (rawSession, projectPath) => {
         const session = rawSession as SessionInfo;
         const claimed = canonicalRecentProjectPath(projectPath, this.platform);
@@ -1708,6 +1704,36 @@ export class BridgeWebSocketServer {
     return this.allowedDirs.some((dir) =>
       isPathWithinAllowedDirectory(path, dir, this.platform),
     );
+  }
+
+  /**
+   * Authorize an existing project by its real location, not merely the path
+   * spelling supplied by a client. File-create/upload paths intentionally keep
+   * using the lexical check because their final target may not exist yet.
+   */
+  private isExistingProjectPathAllowed(path: string): boolean {
+    if (!this.isPathAllowed(path)) return false;
+    if (this.allowedDirs.length === 0) return true;
+    // Tests can emulate another host's path rules. Only the native host can
+    // resolve that platform's filesystem identity; the real Bridge always
+    // uses its own process platform.
+    if (this.platform !== process.platform) return true;
+    try {
+      const canonicalPath = realpathSync(path);
+      return this.allowedDirs.some((directory) => {
+        try {
+          return isPathWithinAllowedDirectory(
+            canonicalPath,
+            realpathSync(directory),
+            this.platform,
+          );
+        } catch {
+          return false;
+        }
+      });
+    } catch {
+      return false;
+    }
   }
 
   /** Resolve configured roots before authorizing a file reached by symlink. */
@@ -2410,7 +2436,7 @@ export class BridgeWebSocketServer {
         worktreeMapping?.projectPath ?? requestedProjectPath,
         this.platform,
       );
-      if (!this.isPathAllowed(projectPath)) {
+      if (!this.isExistingProjectPathAllowed(projectPath)) {
         this.send(ws, this.buildPathNotAllowedError(rawProjectPath));
         return;
       }
@@ -4189,7 +4215,7 @@ export class BridgeWebSocketServer {
       case "start": {
         const projectPath = resolvePlatformPath(msg.projectPath, this.platform);
         const provider = msg.provider ?? "claude";
-        if (!this.isPathAllowed(projectPath)) {
+        if (!this.isExistingProjectPathAllowed(projectPath)) {
           const pathError = this.buildPathNotAllowedError(msg.projectPath);
           this.sendStartFailed(ws, {
             provider,
@@ -7418,7 +7444,7 @@ export class BridgeWebSocketServer {
           this.platform,
         );
         const provider = msg.provider ?? "claude";
-        if (!this.isPathAllowed(resumeProjectPath)) {
+        if (!this.isExistingProjectPathAllowed(resumeProjectPath)) {
           this.sendResumeFailed(ws, {
             provider,
             sourceSessionId: msg.sessionId,
@@ -8171,7 +8197,7 @@ export class BridgeWebSocketServer {
           });
         };
         if (
-          !this.isPathAllowed(projectPath) ||
+          !this.isExistingProjectPathAllowed(projectPath) ||
           !this.isPathAllowed(absPath) ||
           !isPathWithinAllowedDirectory(absPath, projectPath, this.platform)
         ) {
@@ -8349,7 +8375,7 @@ export class BridgeWebSocketServer {
       }
 
       case "list_files": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.send(ws, {
             type: "file_list",
             files: [],
@@ -8486,7 +8512,7 @@ export class BridgeWebSocketServer {
       }
 
       case "get_diff": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(
             ws,
             msg.type,
@@ -8551,7 +8577,7 @@ export class BridgeWebSocketServer {
 
       case "get_diff_image": {
         if (
-          !this.isPathAllowed(msg.projectPath) ||
+          !this.isExistingProjectPathAllowed(msg.projectPath) ||
           !this.isPathAllowed(resolve(msg.projectPath, msg.filePath))
         ) {
           this.send(ws, { type: "error", message: `Path not allowed` });
@@ -8606,7 +8632,7 @@ export class BridgeWebSocketServer {
       }
 
       case "list_worktrees": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
           break;
         }
@@ -8624,7 +8650,7 @@ export class BridgeWebSocketServer {
       }
 
       case "remove_worktree": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
           break;
         }
@@ -8647,7 +8673,7 @@ export class BridgeWebSocketServer {
       // ---- Git Operations (Phase 1-3) ----
 
       case "git_stage": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8671,7 +8697,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_unstage": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8694,7 +8720,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_unstage_hunks": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8717,7 +8743,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_commit": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8777,7 +8803,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_push": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8800,7 +8826,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_branches": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8828,7 +8854,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_create_branch": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8851,7 +8877,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_checkout_branch": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8874,7 +8900,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_revert_file": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8897,7 +8923,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_revert_hunks": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8920,7 +8946,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_fetch": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8943,7 +8969,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_pull": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }
@@ -8976,7 +9002,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_status": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.send(ws, {
             type: "git_status_result",
             sessionId: msg.sessionId,
@@ -9035,7 +9061,7 @@ export class BridgeWebSocketServer {
       }
 
       case "git_remote_status": {
-        if (!this.isPathAllowed(msg.projectPath)) {
+        if (!this.isExistingProjectPathAllowed(msg.projectPath)) {
           this.sendGitPathNotAllowed(ws, msg.type, msg.projectPath);
           break;
         }

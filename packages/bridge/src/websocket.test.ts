@@ -3575,6 +3575,69 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("rejects project symlinks that escape a restricted allowed root", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ccpocket-project-scope-"));
+    const allowedRoot = resolve(root, "allowed");
+    const outsideProject = resolve(root, "outside-project");
+    const linkedProject = resolve(allowedRoot, "linked-project");
+    mkdirSync(allowedRoot);
+    mkdirSync(outsideProject);
+    execFileSync("git", ["init", outsideProject]);
+    symlinkSync(outsideProject, linkedProject);
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: [allowedRoot],
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const create = vi.spyOn((bridge as any).sessionManager, "create");
+
+    try {
+      await (bridge as any).handleClientMessage(
+        {
+          type: "start",
+          projectPath: linkedProject,
+          provider: "codex",
+          startRequestId: "start-symlink-escape",
+        },
+        ws,
+      );
+      await (bridge as any).handleClientMessage(
+        {
+          type: "get_diff",
+          projectPath: linkedProject,
+          requestId: "diff-symlink-escape",
+        },
+        ws,
+      );
+
+      const messages = ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      );
+      expect(create).not.toHaveBeenCalled();
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "system",
+          subtype: "session_start_failed",
+          startRequestId: "start-symlink-escape",
+          errorMessage: expect.stringContaining(
+            "not in the allowed directories",
+          ),
+        }),
+      );
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "diff_result",
+          requestId: "diff-symlink-escape",
+          errorCode: "path_not_allowed",
+        }),
+      );
+    } finally {
+      bridge.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("refreshes connection metadata initially and after the cooldown", () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const refreshCodexMetadata = vi
