@@ -457,6 +457,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String get scanQrCode => 'Scan QR Code';
 
   @override
+  String get qrScanInvalid => 'Not a valid CC Pocket connection QR code';
+
+  @override
+  String get qrScanUnavailable =>
+      'QR camera scan is not available on this platform. Enter the Bridge URL manually.';
+
+  @override
+  String get qrScanHint =>
+      'Point the camera at the QR code\nshown by the Bridge server';
+
+  @override
   String get setupGuide => 'Setup Guide';
 
   @override

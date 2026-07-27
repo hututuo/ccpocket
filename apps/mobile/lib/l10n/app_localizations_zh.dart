@@ -447,6 +447,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get scanQrCode => '扫描二维码';
 
   @override
+  String get qrScanInvalid => '这不是有效的 CC Pocket 连接二维码';
+
+  @override
+  String get qrScanUnavailable => '当前平台无法使用相机扫描二维码，请手动输入 Bridge URL。';
+
+  @override
+  String get qrScanHint => '请将相机对准\nBridge 服务显示的二维码';
+
+  @override
   String get setupGuide => '设置指南';
 
   @override

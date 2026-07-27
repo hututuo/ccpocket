@@ -936,6 +936,24 @@ abstract class AppLocalizations {
   /// **'QR コードをスキャン'**
   String get scanQrCode;
 
+  /// No description provided for @qrScanInvalid.
+  ///
+  /// In ja, this message translates to:
+  /// **'有効な CC Pocket 接続用 QR コードではありません'**
+  String get qrScanInvalid;
+
+  /// No description provided for @qrScanUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'このプラットフォームではカメラで QR コードを読み取れません。Bridge の URL を手動で入力してください。'**
+  String get qrScanUnavailable;
+
+  /// No description provided for @qrScanHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge サーバーに表示された QR コードへ\nカメラを向けてください'**
+  String get qrScanHint;
+
   /// No description provided for @setupGuide.
   ///
   /// In ja, this message translates to:

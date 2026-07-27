@@ -451,6 +451,16 @@ class AppLocalizationsKo extends AppLocalizations {
   String get scanQrCode => 'QR 코드 스캔';
 
   @override
+  String get qrScanInvalid => '유효한 CC Pocket 연결 QR 코드가 아닙니다';
+
+  @override
+  String get qrScanUnavailable =>
+      '이 플랫폼에서는 카메라로 QR 코드를 스캔할 수 없습니다. Bridge URL을 직접 입력하세요.';
+
+  @override
+  String get qrScanHint => 'Bridge 서버에 표시된 QR 코드를\n카메라로 비추세요';
+
+  @override
   String get setupGuide => '설정 가이드';
 
   @override
