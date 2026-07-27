@@ -41,6 +41,34 @@ void main() {
     }
   });
 
+  test('partitions one Bridge cache by its selected Codex Home', () {
+    final first = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-a',
+      codexSourceId: 'codex-home-a',
+      logicalConnectionIdentity: 'machine:mac-a',
+    );
+    final repeated = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-a',
+      codexSourceId: 'codex-home-a',
+      logicalConnectionIdentity: 'machine:mac-a',
+    );
+    final second = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-a',
+      codexSourceId: 'codex-home-b',
+      logicalConnectionIdentity: 'machine:mac-a',
+    );
+    final legacy = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-a',
+    );
+
+    expect(first.fingerprint, repeated.fingerprint);
+    expect(first.fingerprint, isNot(second.fingerprint));
+    expect(first.fingerprint, isNot(legacy.fingerprint));
+    expect(first.aliasKeys, isNot(second.aliasKeys));
+    expect(first.fingerprint, isNot(contains('codex-home-a')));
+    expect(first.aliasKeys.join(), isNot(contains('codex-home-a')));
+  });
+
   test(
     'uses a separate rebuildable database and round-trips metadata',
     () async {

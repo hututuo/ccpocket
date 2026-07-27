@@ -48,6 +48,7 @@ import {
   type CodexThreadSourceKind,
   type CodexThreadSummary,
 } from "./codex-process.js";
+import { codexHomeIdentity } from "./codex-home.js";
 import { stopManagedCodexAppServers } from "./codex-transport.js";
 import {
   parseClientMessage,
@@ -285,6 +286,7 @@ const CODEX_SESSION_LIFECYCLE_CAPABILITY = "codex_session_lifecycle_v1";
 const CODEX_DESKTOP_CONTINUITY_CAPABILITY = "codex_desktop_continuity_v1";
 const CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY =
   "codex_resume_preserves_settings_v1";
+const CODEX_HOME_IDENTITY_CAPABILITY = "codex_home_identity_v1";
 const PUSH_NOTIFICATION_PREFERENCES_CAPABILITY =
   "push_notification_preferences_v1";
 const PUSH_PROGRESS_EVENT = "session_progress";
@@ -1353,6 +1355,7 @@ export class BridgeWebSocketServer {
   private promptHistoryBackup: PromptHistoryBackupStore | null;
   private promptHistoryStore: PromptHistoryStore | null;
   private readonly bridgeInstanceId?: string;
+  private readonly codexSourceId: string;
   private artifactManager: ArtifactManager | null;
 
   private recentSessionsRequestIds = new WeakMap<WebSocket, number>();
@@ -1479,6 +1482,7 @@ export class BridgeWebSocketServer {
     // the optional mirror feature unavailable rather than orphaning copies on
     // every restart.
     this.bridgeInstanceId = promptHistoryStore?.bridgeInstanceId;
+    this.codexSourceId = codexHomeIdentity();
     this.artifactManager = artifactManager ?? null;
     this.fileTransfer = fileTransfer ?? null;
     this.fileBrowser = fileBrowser ?? null;
@@ -10130,6 +10134,7 @@ export class BridgeWebSocketServer {
       type: "session_list",
       sessions,
       bridgeInstanceId: this.bridgeInstanceId,
+      codexSourceId: this.codexSourceId,
       allowedDirs: this.allowedDirs,
       claudeModels: this.claudeModels,
       claudeModelEfforts: this.claudeModelEfforts,
@@ -10145,6 +10150,7 @@ export class BridgeWebSocketServer {
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
+        CODEX_HOME_IDENTITY_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
@@ -10201,6 +10207,7 @@ export class BridgeWebSocketServer {
       type: "session_list",
       sessions,
       bridgeInstanceId: this.bridgeInstanceId,
+      codexSourceId: this.codexSourceId,
       allowedDirs: this.allowedDirs,
       claudeModels: this.claudeModels,
       claudeModelEfforts: this.claudeModelEfforts,
@@ -10216,6 +10223,7 @@ export class BridgeWebSocketServer {
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
         CODEX_DESKTOP_CONTINUITY_CAPABILITY,
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
+        CODEX_HOME_IDENTITY_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,

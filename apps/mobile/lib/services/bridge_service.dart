@@ -272,6 +272,7 @@ class BridgeService implements BridgeServiceBase {
   RecentSessionsMessage? _lastRecentSessionsMessage;
   int _lastRecentSessionsConnectionEpoch = -1;
   String? _bridgeInstanceId;
+  String? _codexSourceId;
   List<GalleryImage> _galleryImages = [];
   List<String> _projectHistory = [];
   List<String> _allowedDirs = [];
@@ -559,6 +560,7 @@ class BridgeService implements BridgeServiceBase {
   RecentSessionsMessage? get lastRecentSessionsMessage =>
       _lastRecentSessionsMessage;
   String? get bridgeInstanceId => _bridgeInstanceId;
+  String? get codexSourceId => _codexSourceId;
   String? get currentProjectFilter => _currentProjectFilter;
   List<GalleryImage> get galleryImages => _galleryImages;
   List<String> get projectHistory => _projectHistory;
@@ -1642,6 +1644,7 @@ class BridgeService implements BridgeServiceBase {
                 :final sessions,
                 :final droppedSessionCount,
                 :final bridgeInstanceId,
+                :final codexSourceId,
                 :final allowedDirs,
                 :final claudeModels,
                 :final claudeModelEfforts,
@@ -1664,6 +1667,7 @@ class BridgeService implements BridgeServiceBase {
                 _hasAuthoritativeSessionListForCurrentConnection = true;
                 _authoritativeSessionListGeneration++;
                 _bridgeInstanceId = bridgeInstanceId;
+                _codexSourceId = codexSourceId;
                 _rememberPromptHistoryBridgeId(bridgeInstanceId);
                 final externalBySession = <String, bool>{
                   for (final session in _sessions)
@@ -2112,6 +2116,7 @@ class BridgeService implements BridgeServiceBase {
     _lastRecentSessionsMessage = null;
     _lastRecentSessionsConnectionEpoch = -1;
     _bridgeInstanceId = null;
+    _codexSourceId = null;
     _recentSessionsHasMore = false;
     _appendMode = false;
     _currentProjectFilter = null;

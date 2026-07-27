@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  codexHomeIdentity,
   environmentForCodexHome,
   resolveCodexHome,
   resolveCodexSessionsDir,
@@ -47,5 +48,22 @@ describe("Codex home resolution", () => {
       CODEX_HOME: "/new/codex-home",
     });
     expect(base.CODEX_HOME).toBe("/old");
+  });
+
+  it("uses a stable opaque identity that changes with the selected Home", () => {
+    const first = codexHomeIdentity({
+      env: { CODEX_HOME: "/private/first" },
+    });
+    const repeated = codexHomeIdentity({
+      env: { CODEX_HOME: "/private/first" },
+    });
+    const second = codexHomeIdentity({
+      env: { CODEX_HOME: "/private/second" },
+    });
+
+    expect(first).toBe(repeated);
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^codex-home-[0-9a-f]{24}$/);
+    expect(first).not.toContain("/private/first");
   });
 });

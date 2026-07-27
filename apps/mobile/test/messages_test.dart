@@ -1254,6 +1254,7 @@ void main() {
       final msg = ServerMessage.fromJson({
         'type': 'session_list',
         'bridgeInstanceId': 'bridge-machine-a',
+        'codexSourceId': 'codex-home-source-a',
         'sessions': const [
           {
             'id': 's1',
@@ -1288,6 +1289,7 @@ void main() {
       expect(msg, isA<SessionListMessage>());
       final sessionList = msg as SessionListMessage;
       expect(sessionList.bridgeInstanceId, 'bridge-machine-a');
+      expect(sessionList.codexSourceId, 'codex-home-source-a');
       expect(sessionList.claudeModels, ['claude-opus-4-7', 'claude-haiku-4-6']);
       expect(sessionList.claudeModelEfforts['claude-opus-4-7'], [
         'low',

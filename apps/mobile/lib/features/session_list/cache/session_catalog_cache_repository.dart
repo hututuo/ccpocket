@@ -14,13 +14,36 @@ class SessionCatalogCacheTarget {
 
   factory SessionCatalogCacheTarget.fromBridge({
     String? bridgeInstanceId,
+    String? codexSourceId,
     String? logicalConnectionIdentity,
     String? websocketUrl,
   }) {
-    final canonical = _opaqueKey('bridge', bridgeInstanceId);
+    final normalizedBridge = bridgeInstanceId?.trim();
+    final normalizedCodexSource = codexSourceId?.trim();
+    final String? canonicalIdentity;
+    if (normalizedBridge == null || normalizedBridge.isEmpty) {
+      canonicalIdentity = null;
+    } else if (normalizedCodexSource == null ||
+        normalizedCodexSource.isEmpty) {
+      canonicalIdentity = normalizedBridge;
+    } else {
+      canonicalIdentity = '$normalizedBridge\u0000$normalizedCodexSource';
+    }
+    final canonical = _opaqueKey('bridge', canonicalIdentity);
+    String? sourceScopedAlias(String? value) {
+      final normalized = value?.trim();
+      if (normalized == null || normalized.isEmpty) return null;
+      return normalizedCodexSource == null || normalizedCodexSource.isEmpty
+          ? normalized
+          : '$normalized\u0000$normalizedCodexSource';
+    }
+
     final aliases = <String>{
-      ?_opaqueKey('logical', logicalConnectionIdentity),
-      ?_opaqueKey('endpoint', _normalizedEndpoint(websocketUrl)),
+      ?_opaqueKey('logical', sourceScopedAlias(logicalConnectionIdentity)),
+      ?_opaqueKey(
+        'endpoint',
+        sourceScopedAlias(_normalizedEndpoint(websocketUrl)),
+      ),
     }.toList(growable: false);
     return SessionCatalogCacheTarget._(
       canonicalPartitionId: canonical,

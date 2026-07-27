@@ -843,6 +843,7 @@ SessionListMessage _sessionListFromJson(Map<String, dynamic> json) {
     sessions: sessions,
     droppedSessionCount: dropped,
     bridgeInstanceId: json['bridgeInstanceId'] as String?,
+    codexSourceId: json['codexSourceId'] as String?,
     allowedDirs:
         (json['allowedDirs'] as List?)?.whereType<String>().toList() ??
         const [],
@@ -3261,6 +3262,7 @@ class SessionListMessage implements ServerMessage {
   /// receiver); one bad entry must not blank the whole session list.
   final int droppedSessionCount;
   final String? bridgeInstanceId;
+  final String? codexSourceId;
   final List<String> allowedDirs;
   final List<String> claudeModels;
   final Map<String, List<String>> claudeModelEfforts;
@@ -3276,6 +3278,7 @@ class SessionListMessage implements ServerMessage {
     required this.sessions,
     this.droppedSessionCount = 0,
     this.bridgeInstanceId,
+    this.codexSourceId,
     this.allowedDirs = const [],
     this.claudeModels = const [],
     this.claudeModelEfforts = const {},

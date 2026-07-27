@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -32,6 +33,20 @@ export function resolveCodexSessionsDir(
   options: ResolveCodexHomeOptions = {},
 ): string {
   return join(resolveCodexHome(options), "sessions");
+}
+
+/**
+ * Opaque cache/source partition for the selected Codex Home. The path itself
+ * stays local to the Bridge, while a Home switch on the same Bridge identity
+ * still invalidates Mobile catalog caches.
+ */
+export function codexHomeIdentity(
+  options: ResolveCodexHomeOptions = {},
+): string {
+  return `codex-home-${createHash("sha256")
+    .update(resolveCodexHome(options))
+    .digest("hex")
+    .slice(0, 24)}`;
 }
 
 export function environmentForCodexHome(

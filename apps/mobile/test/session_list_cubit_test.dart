@@ -28,6 +28,7 @@ class MockBridgeService extends BridgeService {
   String? _projectFilter;
   RecentSessionsMessage? _lastRecentSessionsMessage;
   String? testBridgeInstanceId;
+  String? testCodexSourceId;
   String? testLogicalConnectionIdentity;
   String? testLastUrl;
 
@@ -56,6 +57,9 @@ class MockBridgeService extends BridgeService {
 
   @override
   String? get bridgeInstanceId => testBridgeInstanceId;
+
+  @override
+  String? get codexSourceId => testCodexSourceId;
 
   @override
   String? get logicalConnectionIdentity => testLogicalConnectionIdentity;
@@ -549,6 +553,42 @@ void main() {
 
         expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
         expect(cubit.state.sessions.single.sessionId, 'old-session');
+      },
+    );
+
+    test(
+      'never reuses a cached catalog after selected Codex Home changes',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testBridgeInstanceId = 'bridge-a'
+          ..testCodexSourceId = 'codex-home-a'
+          ..testLastUrl = 'wss://shared.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        final oldTarget = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-a',
+          codexSourceId: 'codex-home-a',
+          websocketUrl: mockBridge.testLastUrl,
+        );
+        cache.snapshots[oldTarget.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'bridge-a-home-a',
+          sessions: [_session(id: 'old-home-session')],
+          catalogRevision: 1,
+          isComplete: true,
+          cachedAt: DateTime.utc(2026, 7, 25),
+        );
+        cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+        await pumpEventQueue();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+
+        mockBridge.testCodexSourceId = 'codex-home-b';
+        mockBridge.emitSessionIdentity();
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, 2);
+        expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+        expect(cubit.state.sessions.single.sessionId, 'old-home-session');
       },
     );
 

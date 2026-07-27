@@ -2361,9 +2361,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .find((msg: any) => msg.type === "session_list");
 
     expect(sessionList.bridgeInstanceId).toBe((bridge as any).bridgeInstanceId);
+    expect(sessionList.codexSourceId).toMatch(
+      /^codex-home-[0-9a-f]{24}$/,
+    );
     expect(sessionList.bridgeCapabilities).toContain(
       "session_catalog_request_correlation_v1",
     );
+    expect(sessionList.bridgeCapabilities).toContain("codex_home_identity_v1");
     expect(sessionList.codexModels).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",
