@@ -44,6 +44,7 @@ class NotificationService extends ChangeNotifier {
       FlutterLocalNotificationsPlugin();
 
   bool _initialized = false;
+  Future<void>? _initializing;
   NotificationPreferences _preferences = NotificationPreferences.defaults;
   String? _activeSessionId;
   String? _activeProvider;
@@ -73,7 +74,21 @@ class NotificationService extends ChangeNotifier {
   Future<void> init() async {
     if (kIsWeb) return;
     if (_initialized) return;
+    final inFlight = _initializing;
+    if (inFlight != null) return inFlight;
 
+    final initialization = _initialize();
+    _initializing = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (identical(_initializing, initialization)) {
+        _initializing = null;
+      }
+    }
+  }
+
+  Future<void> _initialize() async {
     const androidSettings = AndroidInitializationSettings(
       '@mipmap/launcher_icon',
     );
@@ -300,7 +315,7 @@ class NotificationService extends ChangeNotifier {
 
   /// Dismiss all previously shown notifications from the notification center.
   Future<void> cancelAll() async {
-    if (!_initialized) return;
+    await init();
     await _plugin.cancelAll();
   }
 
@@ -311,7 +326,7 @@ class NotificationService extends ChangeNotifier {
     String? payload,
     String? categoryIdentifier,
   }) async {
-    if (!_initialized) return;
+    await init();
 
     const androidDetails = AndroidNotificationDetails(
       'ccpocket_channel',

@@ -329,6 +329,9 @@ class _BackgroundKeepAliveCard extends StatelessWidget {
     final blocked =
         authorization == BackgroundLocationAuthorization.denied ||
         authorization == BackgroundLocationAuthorization.restricted;
+    final notificationPermissionMissing =
+        state.notificationPermissionStatus !=
+        NotificationPermissionStatus.enabled;
     final canToggle =
         state.initialized &&
         !state.busy &&
@@ -355,7 +358,9 @@ class _BackgroundKeepAliveCard extends StatelessWidget {
                 ? (value) => controller.setEnabledFromUserAction(value)
                 : null,
           ),
-          if (state.enabled && !state.hasAlwaysAuthorization) ...[
+          if (state.enabled &&
+              (!state.hasAlwaysAuthorization ||
+                  notificationPermissionMissing)) ...[
             const Divider(height: 1, indent: 16, endIndent: 16),
             Align(
               alignment: AlignmentDirectional.centerEnd,
@@ -368,7 +373,7 @@ class _BackgroundKeepAliveCard extends StatelessWidget {
                   onPressed: state.busy
                       ? null
                       : () {
-                          if (blocked) {
+                          if (blocked || notificationPermissionMissing) {
                             controller.openSystemSettings();
                           } else {
                             controller.setEnabledFromUserAction(true);
@@ -381,7 +386,7 @@ class _BackgroundKeepAliveCard extends StatelessWidget {
                     size: 18,
                   ),
                   label: Text(
-                    blocked
+                    blocked || notificationPermissionMissing
                         ? strings.openSystemSettings
                         : strings.grantAlwaysLocation,
                   ),

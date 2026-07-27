@@ -5,6 +5,7 @@ import 'package:ccpocket/features/background_sync/background_notification_mode_c
 import 'package:ccpocket/features/permission_management/permission_host_service.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/models/notification_preferences.dart';
+import 'package:ccpocket/services/notification_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -315,6 +316,66 @@ void main() {
     );
     await controller.dispose();
   });
+
+  test(
+    'disabled notification permission prevents location and Bridge engagement',
+    () async {
+      final preferences = await SharedPreferences.getInstance();
+      final host = _FakeLocationHost(_authorizedSnapshot());
+      final delivery = _FakeDelivery(activeWorkCount: 1);
+      final presenter = _FakePresenter(
+        status: NotificationPermissionStatus.disabled,
+      );
+      final controller = BackgroundNotificationModeController(
+        preferences: preferences,
+        locationHost: host,
+        delivery: delivery,
+        permissionHost: PermissionHostService.test(
+          gateway: _FakePermissionGateway(),
+        ),
+        notifications: presenter,
+      );
+
+      await controller.initialize();
+
+      expect(controller.state.phase, 'notification_permission_required');
+      expect(
+        await controller.enterBackground(hasBackgroundWork: true),
+        isFalse,
+      );
+      expect(delivery.modes, isEmpty);
+      expect(host.startCount, 0);
+      await controller.dispose();
+    },
+  );
+
+  test(
+    'denying notifications does not request Always Location unnecessarily',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final preferences = await SharedPreferences.getInstance();
+      final permissionGateway = _FakePermissionGateway();
+      final presenter = _FakePresenter(
+        status: NotificationPermissionStatus.disabled,
+        permissionRequestResult: false,
+      );
+      final controller = BackgroundNotificationModeController(
+        preferences: preferences,
+        locationHost: _FakeLocationHost(_authorizedSnapshot()),
+        delivery: _FakeDelivery(activeWorkCount: 1),
+        permissionHost: PermissionHostService.test(gateway: permissionGateway),
+        notifications: presenter,
+      );
+      await controller.initialize();
+
+      await controller.setEnabledFromUserAction(true);
+
+      expect(presenter.permissionRequestCount, 1);
+      expect(permissionGateway.requests, isEmpty);
+      expect(controller.state.phase, 'notification_permission_required');
+      await controller.dispose();
+    },
+  );
 }
 
 BackgroundLocationKeepAliveSnapshot _authorizedSnapshot({
@@ -482,13 +543,23 @@ class _FakeDelivery implements BackgroundNotificationDeliveryGateway {
 }
 
 class _FakePresenter implements BackgroundNotificationPresenter {
+  _FakePresenter({
+    this.status = NotificationPermissionStatus.enabled,
+    this.permissionRequestResult = true,
+  });
+
+  final NotificationPermissionStatus status;
+  final bool permissionRequestResult;
   int permissionRequestCount = 0;
   final shown = <BackgroundNotificationMessage>[];
 
   @override
+  Future<NotificationPermissionStatus> permissionStatus() async => status;
+
+  @override
   Future<bool> requestPermission() async {
     permissionRequestCount++;
-    return true;
+    return permissionRequestResult;
   }
 
   @override

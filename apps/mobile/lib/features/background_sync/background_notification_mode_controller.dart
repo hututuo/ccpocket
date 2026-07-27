@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/logger.dart';
 import '../../models/messages.dart';
 import '../../models/notification_preferences.dart';
 import '../../services/bridge_service.dart';
@@ -78,6 +79,7 @@ class BridgeServiceBackgroundNotificationDeliveryGateway
 }
 
 abstract interface class BackgroundNotificationPresenter {
+  Future<NotificationPermissionStatus> permissionStatus();
   Future<bool> requestPermission();
   Future<void> show(BackgroundNotificationMessage notification);
 }
@@ -89,7 +91,32 @@ class NotificationServiceBackgroundPresenter
   final NotificationService _service;
 
   @override
-  Future<bool> requestPermission() => _service.requestPermission();
+  Future<NotificationPermissionStatus> permissionStatus() async {
+    try {
+      return await _service.permissionStatus();
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[background-notifications] permission status unavailable',
+        error,
+        stackTrace,
+      );
+      return NotificationPermissionStatus.unavailable;
+    }
+  }
+
+  @override
+  Future<bool> requestPermission() async {
+    try {
+      return await _service.requestPermission();
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[background-notifications] permission request failed',
+        error,
+        stackTrace,
+      );
+      return false;
+    }
+  }
 
   @override
   Future<void> show(BackgroundNotificationMessage notification) async {
@@ -136,6 +163,7 @@ class BackgroundNotificationModeState {
     required this.busy,
     required this.bridgeSupported,
     required this.hostSnapshot,
+    required this.notificationPermissionStatus,
     required this.activeWorkCount,
     required this.phase,
   });
@@ -148,6 +176,7 @@ class BackgroundNotificationModeState {
       hostSnapshot = const BackgroundLocationKeepAliveSnapshot.unavailable(
         'not_loaded',
       ),
+      notificationPermissionStatus = NotificationPermissionStatus.unavailable,
       activeWorkCount = 0,
       phase = 'initializing';
 
@@ -156,6 +185,7 @@ class BackgroundNotificationModeState {
   final bool busy;
   final bool bridgeSupported;
   final BackgroundLocationKeepAliveSnapshot hostSnapshot;
+  final NotificationPermissionStatus notificationPermissionStatus;
   final int activeWorkCount;
   final String phase;
 
@@ -237,6 +267,8 @@ class BackgroundNotificationModeController extends ChangeNotifier
       );
     });
     final snapshot = await _locationHost.getSnapshot();
+    final notificationPermissionStatus = await _notifications
+        .permissionStatus();
     if (_disposed) return;
     _state = BackgroundNotificationModeState(
       initialized: true,
@@ -244,8 +276,13 @@ class BackgroundNotificationModeController extends ChangeNotifier
       busy: false,
       bridgeSupported: _delivery.supportsNotificationOnly,
       hostSnapshot: snapshot,
+      notificationPermissionStatus: notificationPermissionStatus,
       activeWorkCount: 0,
-      phase: _phaseForIdle(enabled: enabled, snapshot: snapshot),
+      phase: _phaseForIdle(
+        enabled: enabled,
+        snapshot: snapshot,
+        notificationPermissionStatus: notificationPermissionStatus,
+      ),
     );
     notifyListeners();
   }
@@ -301,6 +338,21 @@ class BackgroundNotificationModeController extends ChangeNotifier
       return;
     }
     await _notifications.requestPermission();
+    final notificationPermissionStatus = await _notifications
+        .permissionStatus();
+    if (notificationPermissionStatus != NotificationPermissionStatus.enabled) {
+      _replaceState(
+        enabled: true,
+        busy: false,
+        notificationPermissionStatus: notificationPermissionStatus,
+        phase:
+            notificationPermissionStatus ==
+                NotificationPermissionStatus.unavailable
+            ? 'notification_permission_unavailable'
+            : 'notification_permission_required',
+      );
+      return;
+    }
     await _permissionHost.requestFromUserAction(
       MobilePermission.locationAlways,
     );
@@ -309,7 +361,12 @@ class BackgroundNotificationModeController extends ChangeNotifier
       enabled: true,
       busy: false,
       hostSnapshot: snapshot,
-      phase: _phaseForIdle(enabled: true, snapshot: snapshot),
+      notificationPermissionStatus: notificationPermissionStatus,
+      phase: _phaseForIdle(
+        enabled: true,
+        snapshot: snapshot,
+        notificationPermissionStatus: notificationPermissionStatus,
+      ),
     );
   }
 
@@ -434,11 +491,18 @@ class BackgroundNotificationModeController extends ChangeNotifier
     }
     if (operation != _lifecycleOperationGeneration || _disposed) return;
     final snapshot = await _locationHost.stop();
+    final notificationPermissionStatus = await _notifications
+        .permissionStatus();
     if (operation != _lifecycleOperationGeneration || _disposed) return;
     _prearmed = false;
     _replaceState(
       hostSnapshot: snapshot,
-      phase: _phaseForIdle(enabled: _state.enabled, snapshot: snapshot),
+      notificationPermissionStatus: notificationPermissionStatus,
+      phase: _phaseForIdle(
+        enabled: _state.enabled,
+        snapshot: snapshot,
+        notificationPermissionStatus: notificationPermissionStatus,
+      ),
     );
   }
 
@@ -471,18 +535,23 @@ class BackgroundNotificationModeController extends ChangeNotifier
       _delivery.supportsNotificationOnly,
       _delivery.isConnected,
       hasBackgroundWork,
+      _state.notificationPermissionStatus,
       snapshot.hasAlwaysAuthorization,
       snapshot.lowPowerModeEnabled,
       snapshot.thermalState,
     )) {
-      (false, _, _, _, _, _, _, _) => 'disabled',
-      (_, false, _, _, _, _, _, _) => 'base_app_update_required',
-      (_, _, false, _, _, _, _, _) => 'bridge_update_required',
-      (_, _, _, false, _, _, _, _) => 'bridge_disconnected',
-      (_, _, _, _, false, _, _, _) => 'waiting_for_active_task',
-      (_, _, _, _, _, false, _, _) => 'location_always_required',
-      (_, _, _, _, _, _, true, _) => 'low_power_mode',
-      (_, _, _, _, _, _, _, 'serious' || 'critical') => 'thermal_pressure',
+      (false, _, _, _, _, _, _, _, _) => 'disabled',
+      (_, false, _, _, _, _, _, _, _) => 'base_app_update_required',
+      (_, _, false, _, _, _, _, _, _) => 'bridge_update_required',
+      (_, _, _, false, _, _, _, _, _) => 'bridge_disconnected',
+      (_, _, _, _, false, _, _, _, _) => 'waiting_for_active_task',
+      (_, _, _, _, _, NotificationPermissionStatus.disabled, _, _, _) =>
+        'notification_permission_required',
+      (_, _, _, _, _, NotificationPermissionStatus.unavailable, _, _, _) =>
+        'notification_permission_unavailable',
+      (_, _, _, _, _, _, false, _, _) => 'location_always_required',
+      (_, _, _, _, _, _, _, true, _) => 'low_power_mode',
+      (_, _, _, _, _, _, _, _, 'serious' || 'critical') => 'thermal_pressure',
       _ => null,
     };
     if (phase == null) return true;
@@ -605,9 +674,17 @@ class BackgroundNotificationModeController extends ChangeNotifier
   String _phaseForIdle({
     required bool enabled,
     required BackgroundLocationKeepAliveSnapshot snapshot,
+    required NotificationPermissionStatus notificationPermissionStatus,
   }) {
     if (!enabled) return 'disabled';
     if (!snapshot.supported) return 'base_app_update_required';
+    if (notificationPermissionStatus == NotificationPermissionStatus.disabled) {
+      return 'notification_permission_required';
+    }
+    if (notificationPermissionStatus ==
+        NotificationPermissionStatus.unavailable) {
+      return 'notification_permission_unavailable';
+    }
     if (!snapshot.hasAlwaysAuthorization) return 'location_always_required';
     if (snapshot.lowPowerModeEnabled) return 'low_power_mode';
     if (snapshot.thermalState == 'serious' ||
@@ -631,6 +708,7 @@ class BackgroundNotificationModeController extends ChangeNotifier
     bool? busy,
     bool? bridgeSupported,
     BackgroundLocationKeepAliveSnapshot? hostSnapshot,
+    NotificationPermissionStatus? notificationPermissionStatus,
     int? activeWorkCount,
     String? phase,
   }) {
@@ -641,6 +719,8 @@ class BackgroundNotificationModeController extends ChangeNotifier
       busy: busy ?? _state.busy,
       bridgeSupported: bridgeSupported ?? _delivery.supportsNotificationOnly,
       hostSnapshot: hostSnapshot ?? _state.hostSnapshot,
+      notificationPermissionStatus:
+          notificationPermissionStatus ?? _state.notificationPermissionStatus,
       activeWorkCount: activeWorkCount ?? _state.activeWorkCount,
       phase: phase ?? _state.phase,
     );

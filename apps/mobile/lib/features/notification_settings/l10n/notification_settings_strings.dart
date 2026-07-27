@@ -185,6 +185,18 @@ class NotificationSettingsStrings {
       ko: '위치 항상 허용 및 알림 권한 필요',
       en: 'Waiting for Always Location and notification permission',
     ),
+    'notification_permission_required' => _pick(
+      zh: '系统通知未开启，请在设置中允许通知',
+      ja: 'システム設定で通知を許可してください',
+      ko: '시스템 설정에서 알림을 허용하세요',
+      en: 'Allow notifications in System Settings',
+    ),
+    'notification_permission_unavailable' => _pick(
+      zh: '无法确认系统通知权限，后台连接不会启动',
+      ja: '通知権限を確認できないため開始しません',
+      ko: '알림 권한을 확인할 수 없어 시작하지 않음',
+      en: 'Notification permission could not be verified',
+    ),
     'ready' => _pick(
       zh: '已就绪；仅在有运行中任务并进入后台时启动',
       ja: '準備完了。実行中タスクでのみ開始します',
