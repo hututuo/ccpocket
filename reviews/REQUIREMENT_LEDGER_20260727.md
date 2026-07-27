@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`9cf5d66c`
+核对源码基线：`8da4e688`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -78,7 +78,7 @@
 | 会话完成后列表显示未读蓝点，打开可见后再清除 | v01 10.3；v02-014 | durable unread ledger；`bc0601b7` 按 Bridge 隔离 | **代码完成，待设备/部署** | 多 Bridge ledger 回归通过；需真实通知→列表→打开闭环 |
 | 长按通知可 Allow/Reject，Bridge 最终权威复核 | v01 10.4～10.5 | iOS notification category/action + opaque identity；`3226eafb` | **代码完成，待设备/部署** | 小数秒 action 解析已回归；物理 iPhone 长按动作、Face ID/签名待验 |
 | FCM 与定位保活 WebSocket 不能让同一事件重复弹两次 | v01 10；v02-014～015 | `e53dfb82` 增加 additive `deliveryId`/本地展示 ACK、750 ms FCM 安全兜底和 WS-token 关联；`84f2db77` 让 Cloud 只排除已确认本地展示的 token | **代码完成，待设备/部署** | Bridge 相关 431 项、Cloud 24 项、Mobile 16 项与 5 文件 analyze 全通过；本地展示失败或旧 Mobile 无 ACK 时仍发送 FCM。旧 Bridge/旧 Cloud 忽略加法字段且不丢通知；真正去重需 Cloud、Bridge 与新 Mobile 全链部署，并在物理 iPhone 验证前后台各只出现一次 |
-| 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | `5562e535`、`5cd90b8f`、`50e60902`、`f23c9187`、`b431221c`、`932f8bec`、`bfe4bd5a`、`72a96edc`、`b197f0d6`、`77305280`、`6e2b46fb`、`9cf5d66c`；ARB + feature strings | **部分完成** | 会话状态/审批、Explore、Git、文件传输、slash command、二维码、截图、工具活动/运行过程，以及主题、许可、Bridge 设备、终端名、Codex 权限/沙箱/速度和辅助语义已补四语言。会话轮次、渐进工具详情、完整 Diff、首页/输入框拖放和悬浮临时会话原先的中英二选一也已补日/韩并移除所有实际二元分支；结构化错误的类别、处理建议和复制反馈现也已四语言化，原始 provider 错误、路径、命令和环境变量保持不改写。ARB 四语言键集由回归强制一致，57 个生成器会静默忽略的中文死键已移除且仍可从 Git 历史恢复；结构化错误/键集 15 项、此前相关 56 项、Home 54 项及定向 analyze 通过。剩余零散固定英文仍需按功能域扫描后收口 |
+| 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | `5562e535`、`5cd90b8f`、`50e60902`、`f23c9187`、`b431221c`、`932f8bec`、`bfe4bd5a`、`72a96edc`、`b197f0d6`、`77305280`、`6e2b46fb`、`9cf5d66c`、`91ab771d`、`8da4e688`；ARB + feature strings | **已验证** | 会话状态/审批、Explore、Git、文件传输、slash command、二维码、截图、工具活动/运行过程、主题/许可/Bridge 设备/权限，以及会话目录、工作树、问答摘要、图库、费用提示和“添加到会话”均已补四语言。结构化错误只翻译类别、处理建议和复制反馈，原始 provider 错误、路径、命令和环境变量保持不改写。ARB 四语言键集由回归强制一致，57 个生成器会静默忽略的中文死键已移除。最后一轮 UI 构造参数扫描只剩开发预览/商店截图专用页面、品牌名、URL、路径、数字、符号和已本地化变量插值；结构化错误 15 项、会话/目录/工作树 90 项、摘要/图库/费用等 78 项及定向 analyze 全部通过 |
 
 ## 5. 文件、预览与安全
 
@@ -107,7 +107,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | `c2cc8379` 语义整合官方 `3289ce93`；`97fb5aab` 同步 `1.109.3` 并保持本地 build 单调递增；本轮 fetch 的 upstream/main=`82962136` | **已验证** | 同一 Claude/Codex 会话的通知或深链会优先揭示现有路由，会话 ID 重启后以实时身份而非旧参数匹配；Codex 深链保留 provider。52 项导航/解析/重启/活动会话回归通过，6 文件 analyze 无问题。官方 build `202` 低于已经交付的本地 build 204，因此本分支采用 `1.109.3+205`，未伪装成官方原始构建号 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账；`f9d949f7` 收束旧 Bridge Explore lane | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理。导航联合回归暴露的 WorkspaceShell pending timer 经追踪并非产品应删的迟到帧隔离：旧 Bridge 仍必须保留 quarantine；本提交让 Bridge 流关闭时立即释放 lane/timer，并让 WorkspaceShell 测试明确声明现代 request-correlation capability。Explore + WorkspaceShell 39 项通过，生产改动另有旧 Bridge 流关闭回归 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `9cf5d66c`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复及旧 Bridge Explore 生命周期闭环均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `8da4e688`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复及旧 Bridge Explore 生命周期闭环均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -131,14 +131,14 @@ P3 的缓存标题 N+1 已由 `704b5e09` 改成每 300 个身份一批。硬编�
 command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（工具活动与
 运行过程）、`b197f0d6`（主题、许可、机器管理、权限、沙箱与速度）、`77305280`
 （ARB 键集一致性门禁）、`6e2b46fb`（会话历史、工具详情、拖放与悬浮临时会话
-四语言）、`9cf5d66c`（结构化错误类别/建议、复制反馈及长尾设置文案）。第 4 节列出的长尾
-仍然是系统性本地化工作，不能因这些高曝光面已完成就提前关闭。
+四语言）、`9cf5d66c`（结构化错误类别/建议、复制反馈及长尾设置文案）、
+`91ab771d`（会话目录、工作树和问答固定文案）、`8da4e688`（会话摘要、图库状态和费用提示）。
+正常产品界面的固定文案扫描已收束；开发预览/商店截图专用页面和技术原文不纳入机械翻译。
 
 ## 8. 下一实施顺序
 
-1. 继续完成剩余零散固定 UI 的四语言量化扫描；
-2. 按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
-3. 收束文件预览 HTTP/JSON 错误、下载实现和本地 HTML 安全预览；
-4. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
-5. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
-6. 最后才列出需要用户在物理 iPhone 上完成的视觉、通知、Face ID 和后台验收。
+1. 按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
+2. 收束文件预览 HTTP/JSON 错误、下载实现和本地 HTML 安全预览；
+3. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
+4. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
+5. 最后才列出需要用户在物理 iPhone 上完成的视觉、通知、Face ID 和后台验收。
