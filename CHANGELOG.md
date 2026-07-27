@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.109.3] - 2026-07-28
+
+### Fixed
+- Reuse existing Claude and Codex session screens opened from notifications or deep links instead of stacking duplicates, including after session ID changes.
+- Retry unavailable session links without leaving stale resolver screens in the navigation history.
+
 ## [1.109.2] - 2026-07-24
 
 ### Changed
