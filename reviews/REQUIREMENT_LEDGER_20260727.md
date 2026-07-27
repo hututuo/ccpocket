@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`94372778`
+核对源码基线：`7c91196e`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -103,10 +103,11 @@
 | 多开 Bridge/SDK/Codex 进程不能由旧代迟到事件覆盖新代 | v02-007、010～012 | `a4dbf3c1`、`320f1189`、`a35cc591` | **已验证** | SDK 100/100、Codex 144/144 相关回归曾通过 |
 | 发送大图不能在 Mobile UI isolate 同步 Base64 编码；图片后立即发送的文字不能越序；编码失败或离线取消不能堵塞/迟到发送 | v02-006、014；全局性能门禁 | `99979115`；`ChatSessionCubit` 的可注入图片编码器和有序 input dispatch tail | **已验证** | 红测证明旧路径会同步发送两条消息、完全绕过异步编码器；现生产默认用 `compute` 编码，只有存在图片/既有 backlog 时进入顺序队列，纯文字无 backlog 仍同步发送。编码失败标记本地消息失败但继续后续消息，离线取消会 fence 尚未完成的编码；4 项窄测试与 ChatSessionCubit 152/152 全通过，定向 analyze 仅保留 2 条基线 info |
 | 内联 data URL 与生成图片不能在聊天列表/气泡 `build` 中重复 Base64 解码 | v02-006、014；全局性能门禁 | `94372778`；`data_image_decode.dart`、`AsyncDataImage` 和生成图片延迟映射 | **已验证** | 红测证明旧 mapper 立即物化 bytes，气泡也绕过异步 decoder；现 64 KiB 以上在 isolate 解码，小图保留低开销同步 fast path，最多缓存 8 份压缩字节，列表映射只保留 data URL。网络图片、磁盘 cache key、缩略图 decodeWidth 和全屏无界缩放语义不变；37 项图片/预览/macOS chrome 回归与 10 文件 analyze 通过 |
+| 图片草稿和待发送附件不能在 App 启动时全量 Base64 解码，也不能在每次编辑时阻塞 UI；慢的旧写入、删除和迁移不能复活过期草稿 | v02-006、014；全局性能门禁 | `7c91196e`；`DraftService` 的原始编码缓存、懒解码、异步编码和每会话 generation fence | **已验证** | 红测证明旧构造器会立即解码全部持久图片，注入的异步编码器也没有真正接管待发送消息；现只在首次读取对应会话时解码，64 KiB 以上编码移到 isolate，小附件保留同步 fast path。相同 client ID 的新编辑优先，过期编码失败不会拒绝新值，删除会隔离未完成写入，冷迁移直接复用旧 JSON 且存储 schema/key 不变；DraftService 23/23 与 2 文件 analyze 通过 |
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `94372778`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送和预览性能提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `7c91196e`，后续深链、安全、通知 ACK、公平调度、历史/会话管理，以及图片发送、预览和草稿性能提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
