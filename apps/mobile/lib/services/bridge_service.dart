@@ -568,6 +568,30 @@ class BridgeService implements BridgeServiceBase {
     });
   }
 
+  /// Returns the correlation id owned by an already queued/in-flight resume.
+  ///
+  /// The session list uses this to reopen a durable cached conversation
+  /// without enqueueing a duplicate resume or binding the page to a newly
+  /// invented request id. Older persisted actions may not contain an id; the
+  /// caller can then use the legacy durable-identity fallback.
+  String? pendingSessionResumeRequestId({
+    required String sessionId,
+    required String provider,
+  }) {
+    for (final message in _allPendingSessionMessages()) {
+      final action = _offlinePendingActionFor(message);
+      if (action?.kind != OfflinePendingActionKind.resume ||
+          action?.provider != provider ||
+          action?.sessionId != sessionId) {
+        continue;
+      }
+      final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+      final requestId = json['resumeRequestId'] as String?;
+      return requestId?.isNotEmpty == true ? requestId : null;
+    }
+    return null;
+  }
+
   Iterable<ClientMessage> _allPendingSessionMessages() sync* {
     yield* _messageQueue;
     yield* _inFlightPendingMessages.values;

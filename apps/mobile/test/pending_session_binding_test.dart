@@ -3,6 +3,23 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('local dispatch failures use the binding failure channel', () {
+    final binding = PendingSessionBinding(
+      kind: PendingSessionRequestKind.resume,
+      requestId: 'resume-local',
+      provider: 'codex',
+      projectPath: '/repo',
+      providerSessionId: 'thread-local',
+      allowLegacyFallback: false,
+    );
+    addTearDown(binding.dispose);
+
+    binding.rejectLocal('Could not prepare resume');
+
+    expect(binding.failure.value?.errorMessage, 'Could not prepare resume');
+    expect(binding.value, isNull);
+  });
+
   group('PendingSessionBinding', () {
     test('accepts only the exact start request id on a capable Bridge', () {
       final binding = PendingSessionBinding(

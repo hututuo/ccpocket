@@ -8,6 +8,7 @@ import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/features/session_list/session_list_screen.dart';
 import 'package:ccpocket/features/settings/state/settings_state.dart';
+import 'package:ccpocket/router/app_router.dart';
 import 'package:ccpocket/widgets/new_session_sheet.dart';
 
 RecentSession _session({
@@ -57,6 +58,20 @@ void main() {
     _session(projectPath: '/home/user/my-app', sessionId: 's5'),
     _session(projectPath: '/home/user/cli-tool', sessionId: 's6'),
   ];
+
+  test('standalone chat routes preserve the durable provider identity', () {
+    const claudeArgs = ClaudeSessionRouteArgs(
+      sessionId: 'pending-claude',
+      durableProviderSessionId: 'claude-thread',
+    );
+    const codexArgs = CodexSessionRouteArgs(
+      sessionId: 'pending-codex',
+      durableProviderSessionId: 'codex-thread',
+    );
+
+    expect(claudeArgs.durableProviderSessionId, 'claude-thread');
+    expect(codexArgs.durableProviderSessionId, 'codex-thread');
+  });
 
   group('SessionHomeConnectionGate', () {
     test('does not enter the session UI on transport readiness alone', () {

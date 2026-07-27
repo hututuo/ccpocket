@@ -4656,7 +4656,8 @@ class RecentSession {
   String get displayText {
     if (summary != null && summary!.isNotEmpty) return summary!;
     if (firstPrompt.isNotEmpty) return firstPrompt;
-    return '(no description)';
+    if (name != null && name!.isNotEmpty) return name!;
+    return projectName;
   }
 
   /// Create a copy with an updated name. Use [clearName] to set name to null.

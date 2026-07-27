@@ -1909,6 +1909,38 @@ void main() {
       },
     );
 
+    test('recovers the correlation id for an existing queued resume', () async {
+      final bridge = BridgeService();
+      await pumpEventQueue();
+
+      bridge.send(
+        ClientMessage.resumeSession(
+          'session-1',
+          '/home/user/app',
+          provider: 'codex',
+          resumeRequestId: 'resume-request-1',
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(
+        bridge.pendingSessionResumeRequestId(
+          sessionId: 'session-1',
+          provider: 'codex',
+        ),
+        'resume-request-1',
+      );
+      expect(
+        bridge.pendingSessionResumeRequestId(
+          sessionId: 'another-session',
+          provider: 'codex',
+        ),
+        isNull,
+      );
+
+      bridge.dispose();
+    });
+
     test('tracks connected start as pending until session_created', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();

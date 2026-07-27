@@ -124,6 +124,7 @@ class ClaudeSessionRoute extends PageRouteInfo<ClaudeSessionRouteArgs> {
     String? gitBranch,
     String? worktreePath,
     bool isPending = false,
+    String? durableProviderSessionId,
     String? initialPermissionMode,
     String? initialSandboxMode,
     ValueNotifier<SystemMessage?>? pendingSessionCreated,
@@ -139,6 +140,7 @@ class ClaudeSessionRoute extends PageRouteInfo<ClaudeSessionRouteArgs> {
            gitBranch: gitBranch,
            worktreePath: worktreePath,
            isPending: isPending,
+           durableProviderSessionId: durableProviderSessionId,
            initialPermissionMode: initialPermissionMode,
            initialSandboxMode: initialSandboxMode,
            pendingSessionCreated: pendingSessionCreated,
@@ -161,6 +163,7 @@ class ClaudeSessionRoute extends PageRouteInfo<ClaudeSessionRouteArgs> {
         gitBranch: args.gitBranch,
         worktreePath: args.worktreePath,
         isPending: args.isPending,
+        durableProviderSessionId: args.durableProviderSessionId,
         initialPermissionMode: args.initialPermissionMode,
         initialSandboxMode: args.initialSandboxMode,
         pendingSessionCreated: args.pendingSessionCreated,
@@ -179,6 +182,7 @@ class ClaudeSessionRouteArgs {
     this.gitBranch,
     this.worktreePath,
     this.isPending = false,
+    this.durableProviderSessionId,
     this.initialPermissionMode,
     this.initialSandboxMode,
     this.pendingSessionCreated,
@@ -198,6 +202,8 @@ class ClaudeSessionRouteArgs {
 
   final bool isPending;
 
+  final String? durableProviderSessionId;
+
   final String? initialPermissionMode;
 
   final String? initialSandboxMode;
@@ -210,7 +216,7 @@ class ClaudeSessionRouteArgs {
 
   @override
   String toString() {
-    return 'ClaudeSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, initialPermissionMode: $initialPermissionMode, initialSandboxMode: $initialSandboxMode, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton}';
+    return 'ClaudeSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, durableProviderSessionId: $durableProviderSessionId, initialPermissionMode: $initialPermissionMode, initialSandboxMode: $initialSandboxMode, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton}';
   }
 
   @override
@@ -223,6 +229,7 @@ class ClaudeSessionRouteArgs {
         gitBranch == other.gitBranch &&
         worktreePath == other.worktreePath &&
         isPending == other.isPending &&
+        durableProviderSessionId == other.durableProviderSessionId &&
         initialPermissionMode == other.initialPermissionMode &&
         initialSandboxMode == other.initialSandboxMode &&
         pendingSessionCreated == other.pendingSessionCreated &&
@@ -238,6 +245,7 @@ class ClaudeSessionRouteArgs {
       gitBranch.hashCode ^
       worktreePath.hashCode ^
       isPending.hashCode ^
+      durableProviderSessionId.hashCode ^
       initialPermissionMode.hashCode ^
       initialSandboxMode.hashCode ^
       pendingSessionCreated.hashCode ^
@@ -255,6 +263,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
     String? gitBranch,
     String? worktreePath,
     bool isPending = false,
+    String? durableProviderSessionId,
     String? initialSandboxMode,
     String? initialPermissionMode,
     String? initialApprovalPolicy,
@@ -273,6 +282,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
            gitBranch: gitBranch,
            worktreePath: worktreePath,
            isPending: isPending,
+           durableProviderSessionId: durableProviderSessionId,
            initialSandboxMode: initialSandboxMode,
            initialPermissionMode: initialPermissionMode,
            initialApprovalPolicy: initialApprovalPolicy,
@@ -298,6 +308,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
         gitBranch: args.gitBranch,
         worktreePath: args.worktreePath,
         isPending: args.isPending,
+        durableProviderSessionId: args.durableProviderSessionId,
         initialSandboxMode: args.initialSandboxMode,
         initialPermissionMode: args.initialPermissionMode,
         initialApprovalPolicy: args.initialApprovalPolicy,
@@ -319,6 +330,7 @@ class CodexSessionRouteArgs {
     this.gitBranch,
     this.worktreePath,
     this.isPending = false,
+    this.durableProviderSessionId,
     this.initialSandboxMode,
     this.initialPermissionMode,
     this.initialApprovalPolicy,
@@ -341,6 +353,8 @@ class CodexSessionRouteArgs {
 
   final bool isPending;
 
+  final String? durableProviderSessionId;
+
   final String? initialSandboxMode;
 
   final String? initialPermissionMode;
@@ -359,7 +373,7 @@ class CodexSessionRouteArgs {
 
   @override
   String toString() {
-    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, initialApprovalsReviewer: $initialApprovalsReviewer, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton, allowMessageFork: $allowMessageFork}';
+    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, durableProviderSessionId: $durableProviderSessionId, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, initialApprovalsReviewer: $initialApprovalsReviewer, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton, allowMessageFork: $allowMessageFork}';
   }
 
   @override
@@ -372,6 +386,7 @@ class CodexSessionRouteArgs {
         gitBranch == other.gitBranch &&
         worktreePath == other.worktreePath &&
         isPending == other.isPending &&
+        durableProviderSessionId == other.durableProviderSessionId &&
         initialSandboxMode == other.initialSandboxMode &&
         initialPermissionMode == other.initialPermissionMode &&
         initialApprovalPolicy == other.initialApprovalPolicy &&
@@ -390,6 +405,7 @@ class CodexSessionRouteArgs {
       gitBranch.hashCode ^
       worktreePath.hashCode ^
       isPending.hashCode ^
+      durableProviderSessionId.hashCode ^
       initialSandboxMode.hashCode ^
       initialPermissionMode.hashCode ^
       initialApprovalPolicy.hashCode ^

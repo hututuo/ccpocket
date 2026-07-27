@@ -8,11 +8,14 @@ enum PendingSessionMatchQuality { none, legacy, exact }
 
 @immutable
 class PendingSessionFailure {
-  const PendingSessionFailure(this.message);
+  const PendingSessionFailure.fromMessage(this.message) : localMessage = null;
 
-  final SystemMessage message;
+  const PendingSessionFailure.local(this.localMessage) : message = null;
 
-  String? get errorMessage => message.errorMessage;
+  final SystemMessage? message;
+  final String? localMessage;
+
+  String? get errorMessage => localMessage ?? message?.errorMessage;
 }
 
 /// Per-navigation ownership for an in-flight session start or resume.
@@ -88,8 +91,18 @@ class PendingSessionBinding extends ValueNotifier<SystemMessage?> {
     if (message.subtype == 'session_created') {
       value = message;
     } else {
-      failure.value = PendingSessionFailure(message);
+      failure.value = PendingSessionFailure.fromMessage(message);
     }
+  }
+
+  /// Completes a locally failed dispatch through the same observable channel
+  /// as a Bridge-owned `session_*_failed` reply.
+  ///
+  /// This is used when the cached conversation has already opened but Mobile
+  /// cannot finish preparing or queueing its runtime attachment.
+  void rejectLocal(String message) {
+    if (_disposed || value != null || failure.value != null) return;
+    failure.value = PendingSessionFailure.local(message);
   }
 
   bool _providerMatches(String? actual) =>

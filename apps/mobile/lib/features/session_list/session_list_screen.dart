@@ -1642,7 +1642,14 @@ class _SessionListScreenState extends State<SessionListScreen>
     required Provider provider,
     required String projectPath,
     String? providerSessionId,
+    bool? allowLegacyFallback,
   }) {
+    final shouldAllowLegacyFallback =
+        allowLegacyFallback ??
+        !context
+            .read<BridgeService>()
+            .bridgeCapabilities
+            .contains(sessionRequestCorrelationCapability);
     late final PendingSessionBinding binding;
     binding = PendingSessionBinding(
       kind: kind,
@@ -1650,10 +1657,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       provider: provider.value,
       projectPath: projectPath,
       providerSessionId: providerSessionId,
-      allowLegacyFallback: !context
-          .read<BridgeService>()
-          .bridgeCapabilities
-          .contains(sessionRequestCorrelationCapability),
+      allowLegacyFallback: shouldAllowLegacyFallback,
       onDisposed: () => _pendingSessionBindings.remove(binding),
     );
     _pendingSessionBindings.add(binding);
@@ -1713,8 +1717,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     String? approvalsReviewer,
     ValueNotifier<SystemMessage?>? pendingSessionCreated,
   }) {
-    if (!isPending) {
-      _unseenCubit.markSeen(sessionId);
+    final seenSessionId =
+        durableProviderSessionId ?? (!isPending ? sessionId : null);
+    if (seenSessionId != null) {
+      _unseenCubit.markSeen(seenSessionId);
     }
     final pendingNotifier = isPending ? pendingSessionCreated : null;
     if (widget.embedded) {
@@ -1742,6 +1748,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     final navigation = context.router.push(switch (provider) {
       Provider.codex => CodexSessionRoute(
         sessionId: sessionId,
+        durableProviderSessionId: durableProviderSessionId,
         projectPath: projectPath,
         gitBranch: gitBranch,
         worktreePath: worktreePath,
@@ -1754,6 +1761,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       ),
       _ => ClaudeSessionRoute(
         sessionId: sessionId,
+        durableProviderSessionId: durableProviderSessionId,
         projectPath: projectPath,
         gitBranch: gitBranch,
         worktreePath: worktreePath,
@@ -1774,7 +1782,72 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
   }
 
-  void _resumeSession(RecentSession session) async {
+  ({PendingSessionBinding binding, bool shouldDispatch})
+  _prepareDurableResume({
+    required BridgeService bridge,
+    required RecentSession session,
+    required Provider provider,
+    required String projectPath,
+  }) {
+    for (final binding in _pendingSessionBindings) {
+      if (binding.kind == PendingSessionRequestKind.resume &&
+          binding.provider == provider.value &&
+          binding.providerSessionId == session.sessionId) {
+        return (binding: binding, shouldDispatch: false);
+      }
+    }
+
+    final hasQueuedResume = bridge.hasPendingSessionResume(
+      sessionId: session.sessionId,
+      provider: provider.value,
+    );
+    final queuedRequestId = hasQueuedResume
+        ? bridge.pendingSessionResumeRequestId(
+            sessionId: session.sessionId,
+            provider: provider.value,
+          )
+        : null;
+    final binding = _registerPendingSessionBinding(
+      kind: PendingSessionRequestKind.resume,
+      requestId: queuedRequestId ?? _sessionRequestUuid.v4(),
+      provider: provider,
+      projectPath: projectPath,
+      providerSessionId: session.sessionId,
+      // Persisted requests created by an older client may not have a
+      // correlation id even when the newly connected Bridge supports it.
+      allowLegacyFallback: hasQueuedResume && queuedRequestId == null
+          ? true
+          : null,
+    );
+    return (binding: binding, shouldDispatch: !hasQueuedResume);
+  }
+
+  void _openDurableResume(
+    RecentSession session, {
+    required Provider provider,
+    required PendingSessionBinding binding,
+    required String projectPath,
+    String? permissionMode,
+    String? sandboxMode,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+  }) {
+    _navigateToChat(
+      'pending_resume_${binding.requestId}',
+      durableProviderSessionId: session.sessionId,
+      projectPath: projectPath,
+      gitBranch: session.gitBranch,
+      isPending: true,
+      provider: provider,
+      permissionMode: permissionMode ?? session.effectivePermissionMode,
+      sandboxMode: sandboxMode ?? session.codexSandboxMode,
+      approvalPolicy: approvalPolicy ?? session.codexApprovalPolicy,
+      approvalsReviewer: approvalsReviewer ?? session.codexApprovalsReviewer,
+      pendingSessionCreated: binding,
+    );
+  }
+
+  void _resumeSession(RecentSession session) {
     final bridge = context.read<BridgeService>();
     final provider = session.provider == Provider.codex.value
         ? Provider.codex
@@ -1782,56 +1855,38 @@ class _SessionListScreenState extends State<SessionListScreen>
     final resumeProjectPath = session.resumeCwd?.isNotEmpty == true
         ? session.resumeCwd!
         : session.projectPath;
-    final requestId = _sessionRequestUuid.v4();
-    final pendingBinding =
-        bridge.hasAuthoritativeSessionListForCurrentConnection
-        ? _registerPendingSessionBinding(
-            kind: PendingSessionRequestKind.resume,
-            requestId: requestId,
-            provider: provider,
-            projectPath: resumeProjectPath,
-            providerSessionId: session.sessionId,
-          )
-        : null;
-    final result = await SessionResumeCoordinator(
+    final prepared = _prepareDurableResume(
       bridge: bridge,
-    ).resume(session, resumeRequestId: requestId);
-    if (!mounted) {
-      pendingBinding?.dispose();
-      return;
-    }
-    if (result.disposition == SessionResumeDisposition.alreadyQueued) {
-      pendingBinding?.dispose();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(AppLocalizations.of(context).resumeAlreadyQueued),
-        ),
-      );
-      return;
-    }
-    if (!bridge.hasAuthoritativeSessionListForCurrentConnection ||
-        pendingBinding == null) {
-      pendingBinding?.dispose();
-      if (bridge.isConnected) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(AppLocalizations.of(context).resumeQueuedForReconnect),
-        ),
-      );
-      return;
-    }
-    _navigateToChat(
-      'pending_resume_$requestId',
-      durableProviderSessionId: session.sessionId,
-      projectPath: result.projectPath,
-      gitBranch: result.gitBranch,
-      isPending: true,
+      session: session,
       provider: provider,
-      permissionMode: session.effectivePermissionMode,
-      sandboxMode: session.codexSandboxMode,
-      approvalPolicy: session.codexApprovalPolicy,
-      approvalsReviewer: session.codexApprovalsReviewer,
-      pendingSessionCreated: pendingBinding,
+      projectPath: resumeProjectPath,
+    );
+    _openDurableResume(
+      session,
+      provider: provider,
+      binding: prepared.binding,
+      projectPath: resumeProjectPath,
+    );
+    if (!prepared.shouldDispatch) return;
+    final resumeAlreadyQueuedMessage =
+        AppLocalizations.of(context).resumeAlreadyQueued;
+
+    unawaited(
+      SessionResumeCoordinator(
+        bridge: bridge,
+      )
+          .resume(
+            session,
+            resumeRequestId: prepared.binding.requestId,
+          )
+          .then((result) {
+            if (result.disposition == SessionResumeDisposition.alreadyQueued) {
+              prepared.binding.rejectLocal(resumeAlreadyQueuedMessage);
+            }
+          })
+          .catchError((Object error) {
+            prepared.binding.rejectLocal(error.toString());
+          }),
     );
   }
 
@@ -1854,16 +1909,23 @@ class _SessionListScreenState extends State<SessionListScreen>
         : session.projectPath;
     final isCodex = edited.provider == Provider.codex;
     final requestId = _sessionRequestUuid.v4();
-    final pendingBinding =
-        bridge.hasAuthoritativeSessionListForCurrentConnection
-        ? _registerPendingSessionBinding(
-            kind: PendingSessionRequestKind.resume,
-            requestId: requestId,
-            provider: edited.provider,
-            projectPath: resumeProjectPath,
-            providerSessionId: session.sessionId,
-          )
-        : null;
+    final pendingBinding = _registerPendingSessionBinding(
+      kind: PendingSessionRequestKind.resume,
+      requestId: requestId,
+      provider: edited.provider,
+      projectPath: resumeProjectPath,
+      providerSessionId: session.sessionId,
+    );
+    _openDurableResume(
+      session,
+      provider: edited.provider,
+      binding: pendingBinding,
+      projectPath: resumeProjectPath,
+      permissionMode: edited.permissionMode.value,
+      sandboxMode: edited.sandboxMode?.value,
+      approvalPolicy: isCodex ? edited.codexApprovalPolicy.value : null,
+      approvalsReviewer: isCodex ? edited.codexApprovalsReviewer : null,
+    );
     _trackPendingClaudeDefaultsCorrection(requestId, edited);
     final useCodexProfile =
         isCodex && (edited.codexProfile?.isNotEmpty ?? false);
@@ -1929,35 +1991,6 @@ class _SessionListScreenState extends State<SessionListScreen>
           : null,
       resumeRequestId: requestId,
     );
-    if (!bridge.hasAuthoritativeSessionListForCurrentConnection ||
-        pendingBinding == null) {
-      pendingBinding?.dispose();
-      // The request is still valid when connected but not authoritative; stay
-      // on Home instead of opening a page owned by a stale connection.
-      if (!bridge.isConnected) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              AppLocalizations.of(context).resumeQueuedForReconnect,
-            ),
-          ),
-        );
-      }
-    } else {
-      _navigateToChat(
-        'pending_resume_$requestId',
-        durableProviderSessionId: session.sessionId,
-        projectPath: resumeProjectPath,
-        gitBranch: session.gitBranch,
-        isPending: true,
-        provider: edited.provider,
-        permissionMode: edited.permissionMode.value,
-        sandboxMode: edited.sandboxMode?.value,
-        approvalPolicy: isCodex ? edited.codexApprovalPolicy.value : null,
-        approvalsReviewer: isCodex ? edited.codexApprovalsReviewer : null,
-        pendingSessionCreated: pendingBinding,
-      );
-    }
 
     // Persist per-session Claude settings for future resumes.
     if (!isCodex) {

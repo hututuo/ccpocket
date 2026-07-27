@@ -1396,6 +1396,27 @@ void main() {
   });
 
   group('RecentSessionCard', () {
+    testWidgets('uses a factual project fallback instead of no description', (
+      tester,
+    ) async {
+      const session = RecentSession(
+        sessionId: 'empty-recent',
+        firstPrompt: '',
+        created: '2025-01-01T00:00:00Z',
+        modified: '2025-01-01T00:00:00Z',
+        gitBranch: 'main',
+        projectPath: '/home/user/my-app',
+        isSidechain: false,
+      );
+
+      await tester.pumpWidget(
+        _wrap(RecentSessionCard(session: session, onTap: () {})),
+      );
+
+      expect(find.text('(no description)'), findsNothing);
+      expect(find.text('my-app'), findsWidgets);
+    });
+
     testWidgets('shows persisted fork lineage', (tester) async {
       final session = RecentSession.fromJson({
         'sessionId': 'fork-recent',
