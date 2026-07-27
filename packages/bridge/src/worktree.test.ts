@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, writeFileSync, rmSync, existsSync, realpathSync, readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  realpathSync,
+  readFileSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -70,7 +77,10 @@ describe("parseGtrConfig", () => {
       ].join("\n"),
     );
     const config = parseGtrConfig(tempDir);
-    expect(config.hook.postCreate).toEqual(["npm install", "cp .env.example .env"]);
+    expect(config.hook.postCreate).toEqual([
+      "npm install",
+      "cp .env.example .env",
+    ]);
     expect(config.hook.preRemove).toEqual(["rm -rf node_modules"]);
   });
 
@@ -109,11 +119,9 @@ describe("parseGtrConfig", () => {
   it("parses [hooks] section (plural) for gtr CLI compatibility", () => {
     writeFileSync(
       join(tempDir, ".gtrconfig"),
-      [
-        "[hooks]",
-        "postCreate = npm install",
-        "preRemove = echo cleanup",
-      ].join("\n"),
+      ["[hooks]", "postCreate = npm install", "preRemove = echo cleanup"].join(
+        "\n",
+      ),
     );
     const config = parseGtrConfig(tempDir);
     expect(config.hook.postCreate).toEqual(["npm install"]);
@@ -241,7 +249,9 @@ describe("createWorktree / listWorktrees / removeWorktree", () => {
     projectDir = realpathSync(rawDir);
     // Initialize a git repo with an initial commit
     execFileSync("git", ["init"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], {
+      cwd: projectDir,
+    });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     writeFileSync(join(projectDir, "README.md"), "# Test");
     execFileSync("git", ["add", "."], { cwd: projectDir });
@@ -277,7 +287,10 @@ describe("createWorktree / listWorktrees / removeWorktree", () => {
     createWorktree(projectDir, "s2");
     const list = listWorktrees(projectDir);
     expect(list).toHaveLength(2);
-    expect(list.map((w) => w.branch).sort()).toEqual(["ccpocket/s1", "ccpocket/s2"]);
+    expect(list.map((w) => w.branch).sort()).toEqual([
+      "ccpocket/s1",
+      "ccpocket/s2",
+    ]);
   });
 
   it("removes a worktree", () => {
@@ -286,6 +299,44 @@ describe("createWorktree / listWorktrees / removeWorktree", () => {
     removeWorktree(projectDir, wt.worktreePath);
     expect(existsSync(wt.worktreePath)).toBe(false);
     expect(listWorktrees(projectDir)).toHaveLength(0);
+  });
+
+  it("rejects an unregistered removal target before running hooks", () => {
+    const outsideDir = join(
+      tmpdir(),
+      `wt-unregistered-${randomUUID().slice(0, 8)}`,
+    );
+    mkdirSync(outsideDir);
+    writeFileSync(
+      join(projectDir, ".gtrconfig"),
+      ["[hook]", "preRemove = touch escaped-hook.txt"].join("\n"),
+    );
+
+    try {
+      expect(() => removeWorktree(projectDir, outsideDir)).toThrow(
+        /managed worktree/,
+      );
+      expect(existsSync(join(outsideDir, "escaped-hook.txt"))).toBe(false);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not list a registered worktree beside the managed root", () => {
+    const outsideWorktree = `${worktreesRoot(projectDir)}-escape`;
+    execFileSync(
+      "git",
+      ["worktree", "add", "-b", "external/escape", outsideWorktree],
+      { cwd: projectDir },
+    );
+
+    try {
+      expect(listWorktrees(projectDir)).toEqual([]);
+    } finally {
+      execFileSync("git", ["worktree", "remove", outsideWorktree, "--force"], {
+        cwd: projectDir,
+      });
+    }
   });
 
   it("copies files when .gtrconfig has copy patterns", () => {
@@ -351,7 +402,9 @@ describe("copyConfiguredFiles", () => {
     copyConfiguredFiles(srcDir, destDir, config);
 
     expect(existsSync(join(destDir, "sub", "dir", ".env.example"))).toBe(true);
-    expect(readFileSync(join(destDir, "sub", "dir", ".env.example"), "utf-8")).toBe("SECRET=abc");
+    expect(
+      readFileSync(join(destDir, "sub", "dir", ".env.example"), "utf-8"),
+    ).toBe("SECRET=abc");
   });
 
   it("excludes files matching exclude patterns", () => {
@@ -409,7 +462,9 @@ describe("createWorktree - hooks", () => {
     mkdirSync(rawDir, { recursive: true });
     projectDir = realpathSync(rawDir);
     execFileSync("git", ["init"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], {
+      cwd: projectDir,
+    });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     writeFileSync(join(projectDir, "README.md"), "# Test");
     execFileSync("git", ["add", "."], { cwd: projectDir });
@@ -475,7 +530,9 @@ describe("createWorktree - edge cases", () => {
     mkdirSync(rawDir, { recursive: true });
     projectDir = realpathSync(rawDir);
     execFileSync("git", ["init"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "test@test.com"], {
+      cwd: projectDir,
+    });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: projectDir });
     writeFileSync(join(projectDir, "README.md"), "# Test");
     execFileSync("git", ["add", "."], { cwd: projectDir });

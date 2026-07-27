@@ -1,6 +1,15 @@
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, cpSync, readdirSync, statSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  cpSync,
+  readdirSync,
+  statSync,
+  realpathSync,
+} from "node:fs";
 import { join, dirname, basename, relative, resolve } from "node:path";
+import { isPathWithinAllowedDirectory } from "./path-utils.js";
 
 // ---- Types ----
 
@@ -59,15 +68,27 @@ export function parseGtrConfig(projectPath: string): GtrConfig {
 
     if (currentSection === "copy") {
       switch (key) {
-        case "include": config.copy.include.push(value); break;
-        case "exclude": config.copy.exclude.push(value); break;
-        case "includedirs": config.copy.includeDirs.push(value); break;
-        case "excludedirs": config.copy.excludeDirs.push(value); break;
+        case "include":
+          config.copy.include.push(value);
+          break;
+        case "exclude":
+          config.copy.exclude.push(value);
+          break;
+        case "includedirs":
+          config.copy.includeDirs.push(value);
+          break;
+        case "excludedirs":
+          config.copy.excludeDirs.push(value);
+          break;
       }
     } else if (currentSection === "hook" || currentSection === "hooks") {
       switch (key) {
-        case "postcreate": config.hook.postCreate.push(value); break;
-        case "preremove": config.hook.preRemove.push(value); break;
+        case "postcreate":
+          config.hook.postCreate.push(value);
+          break;
+        case "preremove":
+          config.hook.preRemove.push(value);
+          break;
       }
     }
   }
@@ -146,7 +167,9 @@ function walkFiles(dir: string, baseDir?: string): string[] {
         results.push(relative(base, fullPath));
       }
     }
-  } catch { /* skip unreadable directories */ }
+  } catch {
+    /* skip unreadable directories */
+  }
   return results;
 }
 
@@ -187,7 +210,9 @@ export function copyConfiguredFiles(
           cpSync(srcDir, destDir, { recursive: true, force: true });
         }
       }
-    } catch { /* skip if project directory can't be listed */ }
+    } catch {
+      /* skip if project directory can't be listed */
+    }
   }
 }
 
@@ -226,7 +251,9 @@ export function createWorktree(
       stdio: "ignore",
     });
     branchExists = true;
-  } catch { /* branch does not exist */ }
+  } catch {
+    /* branch does not exist */
+  }
 
   // Create worktree
   if (branchExists) {
@@ -261,35 +288,67 @@ export function createWorktree(
       cwd: wtPath,
       encoding: "utf-8",
     }).trim();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
-  return { worktreePath: wtPath, branch: branchName, projectPath: resolvedProject, head };
+  return {
+    worktreePath: wtPath,
+    branch: branchName,
+    projectPath: resolvedProject,
+    head,
+  };
 }
 
 /** Remove a git worktree. */
 export function removeWorktree(projectPath: string, wtPath: string): void {
   const resolvedProject = resolveProject(projectPath);
+  const resolvedWorktree = realpathSync(resolve(wtPath));
+  const managedWorktree = listWorktrees(resolvedProject).find((worktree) => {
+    try {
+      return realpathSync(worktree.worktreePath) === resolvedWorktree;
+    } catch {
+      return false;
+    }
+  });
+  if (!managedWorktree) {
+    throw new Error(`Refusing to remove an unmanaged worktree: ${wtPath}`);
+  }
 
   // Run preRemove hooks
   const config = getWorktreeConfig(resolvedProject);
   for (const cmd of config.hook.preRemove) {
     try {
-      execSync(cmd, { cwd: wtPath, encoding: "utf-8", stdio: "pipe" });
+      execSync(cmd, {
+        cwd: managedWorktree.worktreePath,
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
     } catch (err) {
       console.error("[worktree] preRemove hook failed: " + cmd, err);
     }
   }
 
-  execFileSync("git", ["worktree", "remove", wtPath, "--force"], {
-    cwd: resolvedProject,
-    encoding: "utf-8",
-  });
+  execFileSync(
+    "git",
+    ["worktree", "remove", managedWorktree.worktreePath, "--force"],
+    {
+      cwd: resolvedProject,
+      encoding: "utf-8",
+    },
+  );
 }
 
 /** List worktrees for a project (only those under <project>-worktrees/). */
 export function listWorktrees(projectPath: string): WorktreeInfo[] {
   const resolvedProject = resolveProject(projectPath);
   const wtRoot = worktreesRoot(resolvedProject);
+  let resolvedWorktreesRoot: string;
+  try {
+    resolvedWorktreesRoot = realpathSync(wtRoot);
+  } catch {
+    return [];
+  }
 
   let output: string;
   try {
@@ -313,10 +372,24 @@ export function listWorktrees(projectPath: string): WorktreeInfo[] {
       currentHead = line.slice("HEAD ".length);
     } else if (line.startsWith("branch ")) {
       // branch refs/heads/feature/x -> feature/x
-      currentBranch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
+      currentBranch = line
+        .slice("branch ".length)
+        .replace(/^refs\/heads\//, "");
     } else if (line === "") {
       // End of entry
-      if (currentPath && currentPath.startsWith(wtRoot)) {
+      let managedPath = false;
+      if (currentPath) {
+        try {
+          managedPath = isPathWithinAllowedDirectory(
+            realpathSync(currentPath),
+            resolvedWorktreesRoot,
+            process.platform,
+          );
+        } catch {
+          managedPath = false;
+        }
+      }
+      if (managedPath) {
         worktrees.push({
           worktreePath: currentPath,
           branch: currentBranch,

@@ -3940,6 +3940,100 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("rejects an additional writable root whose symlink escapes allowed directories", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ccpocket-writable-scope-"));
+    const allowedRoot = resolve(root, "allowed");
+    const projectPath = resolve(allowedRoot, "project");
+    const outsideRoot = resolve(root, "outside");
+    const linkedRoot = resolve(allowedRoot, "linked-writable");
+    mkdirSync(projectPath, { recursive: true });
+    mkdirSync(outsideRoot);
+    symlinkSync(outsideRoot, linkedRoot);
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: [allowedRoot],
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const create = vi.spyOn((bridge as any).sessionManager, "create");
+
+    try {
+      await (bridge as any).handleClientMessage(
+        {
+          type: "start",
+          projectPath,
+          provider: "codex",
+          additionalWritableRoots: [linkedRoot],
+          startRequestId: "start-linked-writable-root",
+        },
+        ws,
+      );
+
+      expect(create).not.toHaveBeenCalled();
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .find(
+            (message: any) =>
+              message.type === "system" &&
+              message.subtype === "session_start_failed",
+          ),
+      ).toMatchObject({
+        startRequestId: "start-linked-writable-root",
+        errorMessage: expect.stringContaining("not in the allowed directories"),
+      });
+    } finally {
+      bridge.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a client-supplied worktree outside allowed directories", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ccpocket-worktree-scope-"));
+    const allowedRoot = resolve(root, "allowed");
+    const projectPath = resolve(allowedRoot, "project");
+    const outsideWorktree = resolve(root, "outside-worktree");
+    mkdirSync(projectPath, { recursive: true });
+    mkdirSync(outsideWorktree);
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: [allowedRoot],
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const create = vi.spyOn((bridge as any).sessionManager, "create");
+
+    try {
+      await (bridge as any).handleClientMessage(
+        {
+          type: "start",
+          projectPath,
+          provider: "codex",
+          existingWorktreePath: outsideWorktree,
+          startRequestId: "start-outside-worktree",
+        },
+        ws,
+      );
+
+      expect(create).not.toHaveBeenCalled();
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .find(
+            (message: any) =>
+              message.type === "system" &&
+              message.subtype === "session_start_failed",
+          ),
+      ).toMatchObject({
+        startRequestId: "start-outside-worktree",
+        errorMessage: expect.stringContaining("not in the allowed directories"),
+      });
+    } finally {
+      bridge.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("forwards selected codex profile on resume", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

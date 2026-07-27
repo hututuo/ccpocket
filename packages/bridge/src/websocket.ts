@@ -1922,7 +1922,7 @@ export class BridgeWebSocketServer {
         trimmed,
         this.platform,
       );
-      if (!this.isPathAllowed(resolved)) {
+      if (!this.isExistingProjectPathAllowed(resolved)) {
         return { deniedRoot: root };
       }
       const key = this.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -4226,6 +4226,29 @@ export class BridgeWebSocketServer {
           this.send(ws, pathError);
           break;
         }
+        const existingWorktreePath = msg.existingWorktreePath
+          ? resolvePlatformPathFrom(
+              projectPath,
+              msg.existingWorktreePath,
+              this.platform,
+            )
+          : undefined;
+        if (
+          existingWorktreePath &&
+          !this.isExistingProjectPathAllowed(existingWorktreePath)
+        ) {
+          const pathError = this.buildPathNotAllowedError(
+            msg.existingWorktreePath!,
+          );
+          this.sendStartFailed(ws, {
+            provider,
+            projectPath,
+            startRequestId: msg.startRequestId,
+            errorMessage: pathError.message,
+          });
+          this.send(ws, pathError);
+          break;
+        }
         if (provider === "codex" && msg.sessionId) {
           // Older clients resume Codex threads through start(sessionId). Keep
           // that wire shape compatible, but admit it through the same
@@ -4384,7 +4407,7 @@ export class BridgeWebSocketServer {
                 worktreeOptions: {
                   useWorktree: msg.useWorktree,
                   worktreeBranch: msg.worktreeBranch,
-                  existingWorktreePath: msg.existingWorktreePath,
+                  existingWorktreePath,
                 },
               })
             : {
@@ -4395,7 +4418,7 @@ export class BridgeWebSocketServer {
                   {
                     useWorktree: msg.useWorktree,
                     worktreeBranch: msg.worktreeBranch,
-                    existingWorktreePath: msg.existingWorktreePath,
+                    existingWorktreePath,
                   },
                   provider,
                   this.withCodexAutoReviewPolicy({
