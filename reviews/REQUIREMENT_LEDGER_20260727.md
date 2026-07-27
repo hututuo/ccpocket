@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`47e2dc81`
+核对源码基线：`84f2db77`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -73,7 +73,7 @@
 | Always Location 后台保活时只收轻量投影，不解析/渲染正文；回前台增量追平 | v01 10.1～10.2；v02-015 | background-location host、delivery mode、notification-only whitelist；`b84a926a` | **代码完成，待设备/部署** | 后台协商现在以 Bridge 返回的真实 active work 为准，并处理 capability 晚到；Simulator/单测证明接线；物理 iPhone 权限、系统回收、低电量、温控、AltStore entitlement 未验收 |
 | 会话完成后列表显示未读蓝点，打开可见后再清除 | v01 10.3；v02-014 | durable unread ledger；`bc0601b7` 按 Bridge 隔离 | **代码完成，待设备/部署** | 多 Bridge ledger 回归通过；需真实通知→列表→打开闭环 |
 | 长按通知可 Allow/Reject，Bridge 最终权威复核 | v01 10.4～10.5 | iOS notification category/action + opaque identity；`3226eafb` | **代码完成，待设备/部署** | 小数秒 action 解析已回归；物理 iPhone 长按动作、Face ID/签名待验 |
-| FCM 与定位保活 WebSocket 不能让同一事件重复弹两次 | v01 10；v02-014～015 | FCM relay 与 `background_notification_v1` 是两条独立投递通道 | **部分完成** | 当前协议没有可让 Cloud 排除同一在线 WS 客户端的 token/client identity，也不能靠后台注销 FCM（会破坏 iOS 挂起后的兜底）；需设计 additive delivery-id/token identity 去重后再改 |
+| FCM 与定位保活 WebSocket 不能让同一事件重复弹两次 | v01 10；v02-014～015 | `e53dfb82` 增加 additive `deliveryId`/本地展示 ACK、750 ms FCM 安全兜底和 WS-token 关联；`84f2db77` 让 Cloud 只排除已确认本地展示的 token | **代码完成，待设备/部署** | Bridge 相关 431 项、Cloud 24 项、Mobile 16 项与 5 文件 analyze 全通过；本地展示失败或旧 Mobile 无 ACK 时仍发送 FCM。旧 Bridge/旧 Cloud 忽略加法字段且不丢通知；真正去重需 Cloud、Bridge 与新 Mobile 全链部署，并在物理 iPhone 验证前后台各只出现一次 |
 | 手机固定 UI 文案中文化；命令、代码、路径和 provider 原文不机械翻译 | v01 12；v02-014；decisions | `5562e535`、`5cd90b8f`、`50e60902`、`f23c9187`、`b431221c`、`932f8bec`、`bfe4bd5a`、`72a96edc`；ARB + feature strings | **部分完成** | 会话状态/审批、Explore、Git、文件传输、slash command、二维码、截图及工具活动/运行过程已补四语言；主题/许可、部分机器管理和错误提示仍需逐项收口 |
 
 ## 5. 文件、预览与安全
@@ -100,7 +100,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `47e2dc81`，后续深链与 Bridge 安全提交不在 build 204。未部署新 Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `84f2db77`，后续深链、安全与通知 ACK 提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -128,7 +128,7 @@ command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（�
 ## 8. 下一实施顺序
 
 1. 继续完成剩余高曝光固定 UI 的四语言本地化与 ARB key 一致性；
-2. 设计兼容旧端的通知 delivery-id/token identity，解决 FCM + WS 双投递；
+2. 按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
 3. 收束文件预览 HTTP/JSON 错误、下载实现和本地 HTML 安全预览；
 4. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
 5. fetch/语义合并最新 upstream；
