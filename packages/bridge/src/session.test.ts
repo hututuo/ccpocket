@@ -363,6 +363,37 @@ describe("SessionManager codex path", () => {
     expect(codexInstances[1].stop).toHaveBeenCalledOnce();
   });
 
+  it("does not mutate or broadcast a session after destroy starts", () => {
+    const forwarded: ServerMessage[] = [];
+    const manager = new SessionManager((_sessionId, message) => {
+      forwarded.push(message);
+    });
+    const sessionId = manager.create(
+      "/tmp/project-destroy",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const session = manager.get(sessionId)!;
+    manager.appendHistory(sessionId, {
+      type: "status",
+      status: "running",
+    } as ServerMessage);
+    const revisionBeforeDestroy = session.historyRevision;
+    const forwardedBeforeDestroy = forwarded.length;
+    codexInstances[0].stop.mockImplementationOnce(() => {
+      codexInstances[0].emit("exit", 0);
+    });
+
+    expect(manager.destroy(sessionId)).toBe(true);
+
+    expect(manager.get(sessionId)).toBeUndefined();
+    expect(session.historyRevision).toBe(revisionBeforeDestroy);
+    expect(forwarded).toHaveLength(forwardedBeforeDestroy);
+    expect(codexInstances[0].stop).toHaveBeenCalledOnce();
+  });
+
   it("removes an ephemeral side chat when its in-memory runtime exits", () => {
     const onSessionUpdated = vi.fn();
     const manager = new SessionManager(
@@ -507,6 +538,77 @@ describe("SessionManager codex path", () => {
     expect(replacement.codexUserTurnUuidByRawId?.get("raw-live-1")).toBe(
       "ccpocket-codex-user-turn-00000001",
     );
+  });
+
+  it("preserves live history continuity across a Codex replacement", async () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-history-continuity" },
+    );
+    const originalSession = manager.get(sessionId)!;
+    const first = manager.appendHistory(sessionId, {
+      type: "user_input",
+      text: "phone turn before Desktop",
+      userMessageUuid: "codex:user-turn:1",
+    } as ServerMessage)!;
+    const second = manager.appendHistory(sessionId, {
+      type: "status",
+      status: "running",
+    } as ServerMessage)!;
+    originalSession.codexCanonicalHistoryRevision = first.seq;
+    originalSession.codexHistoryResetRevision = second.seq;
+    originalSession.codexOrderedHistoryEntries = [first, second];
+    originalSession.codexOrderedHistoryRevision = second.seq;
+    originalSession.codexLiveHistoryUserKey = "uuid:codex:user-turn:1";
+    originalSession.codexLiveAssistantUserKeyByIdentity = new Map([
+      ["assistant:item-1", "uuid:codex:user-turn:1"],
+    ]);
+
+    const canonicalHistory = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "phone turn before Desktop" }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Desktop continued" }],
+      },
+    ];
+    const replacementPromise = manager.replaceCodexSession(
+      sessionId,
+      "/tmp/project-codex",
+      canonicalHistory,
+      undefined,
+      { threadId: "thread-history-continuity" },
+      1_000,
+    );
+    codexInstances[1].emit("input_ready");
+    await expect(replacementPromise).resolves.toBe(sessionId);
+
+    const replacement = manager.get(sessionId)!;
+    expect(replacement.pastMessages).toEqual(canonicalHistory);
+    expect(replacement.codexInitialHistoryPending).toBe(true);
+    expect(replacement.historyRevision).toBe(second.seq);
+    expect(replacement.historyLowWatermark).toBe(
+      originalSession.historyLowWatermark,
+    );
+    expect(replacement.historyEntries).toEqual([first, second]);
+    expect(replacement.history).toEqual([first.message, second.message]);
+    expect(replacement.codexCanonicalHistoryRevision).toBe(first.seq);
+    expect(replacement.codexHistoryResetRevision).toBe(second.seq);
+    expect(replacement.codexOrderedHistoryRevision).toBe(second.seq);
+    expect(replacement.codexOrderedHistoryEntries).toEqual([first, second]);
+    expect(replacement.codexLiveHistoryUserKey).toBe(
+      "uuid:codex:user-turn:1",
+    );
+    expect(
+      replacement.codexLiveAssistantUserKeyByIdentity?.get("assistant:item-1"),
+    ).toBe("uuid:codex:user-turn:1");
   });
 
   it("keeps the old Codex runtime when a staged replacement exits", async () => {
@@ -2466,6 +2568,47 @@ describe("SessionManager claude UUID backfill", () => {
     expect(merged?.userMessageUuid).toBe("uuid-img");
     expect(merged?.imageCount).toBe(2);
     expect(merged?.text).toBe("check this screenshot");
+  });
+
+  it("forces a history snapshot after merging a user UUID backfill", () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create("/tmp/project-merge-delta");
+    const original = manager.appendHistory(sessionId, {
+      type: "user_input",
+      text: "reconnect me",
+    } as ServerMessage)!;
+
+    sdkInstances[0].emit("message", {
+      type: "user_input",
+      text: "reconnect me",
+      userMessageUuid: "uuid-reconnect",
+    } as ServerMessage);
+
+    const session = manager.get(sessionId)!;
+    expect(session.historyRevision).toBe(original.seq + 1);
+    expect(session.history).toHaveLength(1);
+    expect(manager.getHistorySince(sessionId, original.seq)).toMatchObject({
+      kind: "snapshot",
+      reason: "reset",
+      toSeq: original.seq + 1,
+      entries: [
+        {
+          seq: original.seq,
+          message: {
+            type: "user_input",
+            text: "reconnect me",
+            userMessageUuid: "uuid-reconnect",
+          },
+        },
+      ],
+    });
+
+    sdkInstances[0].emit("message", {
+      type: "user_input",
+      text: "reconnect me",
+      userMessageUuid: "uuid-reconnect",
+    } as ServerMessage);
+    expect(session.historyRevision).toBe(original.seq + 1);
   });
 
   it("SDK echo merge works for text-only user_input even when echo text changes", () => {

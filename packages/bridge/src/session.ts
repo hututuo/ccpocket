@@ -59,6 +59,11 @@ export interface SessionInfo {
   historyEntries: HistoryEntry[];
   historyRevision: number;
   historyLowWatermark: number;
+  /**
+   * Latest non-append history mutation. Clients behind this revision need a
+   * snapshot because a delta cannot express an in-place message replacement.
+   */
+  historyMutationResetRevision?: number;
   /** Past conversation loaded from disk on resume (SessionHistoryMessage[]). */
   pastMessages?: unknown[];
   /**
@@ -369,6 +374,7 @@ function structuredImagePaths(candidates: ArtifactCandidate[]): string[] {
 
 export class SessionManager {
   private sessions = new Map<string, SessionInfo>();
+  private retiredSessions = new WeakSet<SessionInfo>();
   private onMessage: (sessionId: string, msg: ServerMessage) => void;
   private imageStore: ImageStore | null;
   private galleryStore: GalleryStore | null;
@@ -621,7 +627,8 @@ export class SessionManager {
       auxiliary: internal?.auxiliary,
     };
     const ownsRuntimeSlot = (): boolean =>
-      replacementSession === undefined || this.sessions.get(id) === session;
+      !this.retiredSessions.has(session) &&
+      (replacementSession === undefined || this.sessions.get(id) === session);
     let replacementSettled = false;
     let replacementReadyTimer: ReturnType<typeof setTimeout> | undefined;
     const failReplacement = (error: Error): void => {
@@ -660,6 +667,20 @@ export class SessionManager {
       // or cancel racing an in-flight RPC cannot be mistaken for the snapshot
       // that was actually sent.
       session.codexQueuedInput = replacementSession.codexQueuedInput;
+      // Keep the old public session's incremental history authoritative until
+      // the fresh canonical history is consumed. The replacement preflight
+      // already loaded the new durable history into `pastMessages`; marking it
+      // pending lets the next history request reconcile both sides without a
+      // second provider read or a revision rollback.
+      session.history = [...replacementSession.history];
+      session.historyEntries = replacementSession.historyEntries.map(
+        (entry) => ({ ...entry }),
+      );
+      session.historyRevision = replacementSession.historyRevision;
+      session.historyLowWatermark = replacementSession.historyLowWatermark;
+      session.historyMutationResetRevision =
+        replacementSession.historyMutationResetRevision;
+      session.codexInitialHistoryPending = true;
       // Carry the user-echo dedup state across the swap. Losing it made the
       // app-server echo of an already-published user turn look brand new on
       // the fresh runtime, re-inserting the same input into history.
@@ -684,6 +705,22 @@ export class SessionManager {
         replacementSession.codexGoalOperationSequence;
       session.codexGoalControlSupported =
         replacementSession.codexGoalControlSupported;
+      session.codexCanonicalHistoryRevision =
+        replacementSession.codexCanonicalHistoryRevision;
+      session.codexLiveHistoryUserKey =
+        replacementSession.codexLiveHistoryUserKey;
+      session.codexLiveAssistantUserKeyByIdentity =
+        replacementSession.codexLiveAssistantUserKeyByIdentity === undefined
+          ? undefined
+          : new Map(replacementSession.codexLiveAssistantUserKeyByIdentity);
+      session.codexHistoryResetRevision =
+        replacementSession.codexHistoryResetRevision;
+      session.codexOrderedHistoryEntries =
+        replacementSession.codexOrderedHistoryEntries?.map((entry) => ({
+          ...entry,
+        }));
+      session.codexOrderedHistoryRevision =
+        replacementSession.codexOrderedHistoryRevision;
       // The staged runtime's initial idle status event was intentionally
       // ignored while the old runtime owned the public session slot.
       // `input_ready` is the authoritative idle boundary; publish that state
@@ -691,6 +728,7 @@ export class SessionManager {
       session.status = "idle";
       session.lastActivityAt = replacementSession.lastActivityAt;
 
+      this.retiredSessions.add(replacementSession);
       this.sessions.set(id, session);
       replacementSession.process.removeAllListeners();
       replacementSession.process.stop();
@@ -1366,6 +1404,18 @@ export class SessionManager {
     }
 
     const firstSeq = entries[0].seq;
+    if (
+      session.historyMutationResetRevision !== undefined &&
+      sinceSeq < session.historyMutationResetRevision
+    ) {
+      return {
+        kind: "snapshot",
+        fromSeq: firstSeq,
+        toSeq,
+        entries: [...entries],
+        reason: "reset",
+      };
+    }
     if (sinceSeq < firstSeq - 1) {
       return {
         kind: "snapshot",
@@ -1536,14 +1586,24 @@ export class SessionManager {
       if (current.type !== "user_input") continue;
       if (!this.isSameUserInput(session, current, msg)) continue;
 
+      const mergedUuid = this.mergeUserMessageUuid(current, msg);
+      const mergedReceivedAt = current.receivedAt ?? msg.receivedAt;
+      const currentTimestamp =
+        "timestamp" in current ? current.timestamp : undefined;
+      const mergedTimestamp =
+        currentTimestamp || ("timestamp" in msg ? msg.timestamp : undefined);
+      const currentUuid =
+        "userMessageUuid" in current ? current.userMessageUuid : undefined;
       const mergedMsg = {
         ...current,
-        userMessageUuid: this.mergeUserMessageUuid(current, msg),
-        receivedAt: current.receivedAt ?? msg.receivedAt,
-        timestamp:
-          ("timestamp" in current && current.timestamp) ||
-          ("timestamp" in msg ? msg.timestamp : undefined),
+        userMessageUuid: mergedUuid,
+        receivedAt: mergedReceivedAt,
+        timestamp: mergedTimestamp,
       } as ServerMessage;
+      const historyChanged =
+        mergedUuid !== currentUuid ||
+        mergedReceivedAt !== current.receivedAt ||
+        mergedTimestamp !== currentTimestamp;
 
       const entry = session.historyEntries[i];
       if (entry) {
@@ -1551,6 +1611,14 @@ export class SessionManager {
         entry.message = mergedMsg;
       }
       session.history[i] = mergedMsg;
+      // This is an in-place replacement, not an append. Advance the session
+      // revision and force lagging clients through the existing snapshot lane
+      // so they receive the UUID backfill without duplicating or reordering the
+      // original user turn.
+      if (historyChanged) {
+        session.historyRevision += 1;
+        session.historyMutationResetRevision = session.historyRevision;
+      }
       this.clearPendingCodexUserEcho(session, current);
       this.clearPendingCodexUserEcho(session, msg);
       return mergedMsg;
@@ -2424,6 +2492,7 @@ export class SessionManager {
     for (const childId of childIds) this.destroy(childId);
     // Remove first so synchronous status/exit events from stop() cannot try to
     // evict the same session recursively.
+    this.retiredSessions.add(session);
     this.sessions.delete(id);
     session.process.stop();
     session.process.removeAllListeners();
