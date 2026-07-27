@@ -108,6 +108,7 @@ class CodexSessionScreen extends StatefulWidget {
   final String? initialApprovalsReviewer;
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
+  final bool hideAuxiliaryDock;
 
   /// Auxiliary child conversations reuse the full Codex screen, but can
   /// selectively hide operations that the child-session workflow does not
@@ -133,6 +134,7 @@ class CodexSessionScreen extends StatefulWidget {
     this.pendingSessionCreated,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.hideAuxiliaryDock = false,
     this.allowMessageFork = true,
   });
 
@@ -590,6 +592,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         codexApprovalsReviewer: _codexApprovalsReviewer,
         codexPermissionsMode: _codexPermissionsMode,
         detachedPreview: true,
+        hideAuxiliaryDock: widget.hideAuxiliaryDock,
         previewRevision: cachedPreview?.revision ?? '',
         initialHistoryMessages:
             cachedPreview?.entries
@@ -658,6 +661,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       codexApprovalPolicy: _codexApprovalPolicy,
       codexApprovalsReviewer: _codexApprovalsReviewer,
       codexPermissionsMode: _codexPermissionsMode,
+      hideAuxiliaryDock: widget.hideAuxiliaryDock,
       initialSubmission: _deferredSubmission,
       onInitialSubmissionConsumed: _consumeDeferredSubmission,
       onBackToSessions: widget.onBackToSessions,
@@ -685,6 +689,7 @@ class _CodexProviders extends StatelessWidget {
   final CodexPermissionsMode? codexPermissionsMode;
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
+  final bool hideAuxiliaryDock;
   final bool allowMessageFork;
   final bool detachedPreview;
   final String previewRevision;
@@ -709,6 +714,7 @@ class _CodexProviders extends StatelessWidget {
     this.codexPermissionsMode,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.hideAuxiliaryDock = false,
     this.allowMessageFork = true,
     this.detachedPreview = false,
     this.previewRevision = '',
@@ -770,6 +776,7 @@ class _CodexProviders extends StatelessWidget {
           worktreePath: worktreePath,
           onBackToSessions: onBackToSessions,
           hideSessionBackButton: hideSessionBackButton,
+          hideAuxiliaryDock: hideAuxiliaryDock,
           allowMessageFork: allowMessageFork,
           detachedPreview: detachedPreview,
           deferredSubmissionPending: deferredSubmissionPending,
@@ -791,6 +798,7 @@ class _CodexChatBody extends HookWidget {
   final String? worktreePath;
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
+  final bool hideAuxiliaryDock;
   final bool allowMessageFork;
   final bool detachedPreview;
   final bool deferredSubmissionPending;
@@ -803,6 +811,7 @@ class _CodexChatBody extends HookWidget {
     this.worktreePath,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.hideAuxiliaryDock = false,
     this.allowMessageFork = true,
     this.detachedPreview = false,
     this.deferredSubmissionPending = false,
@@ -2009,7 +2018,9 @@ class _CodexChatBody extends HookWidget {
                     ],
                   ),
                 ),
-                if (!detachedPreview && ephemeralSideChatRegistry != null)
+                if (!detachedPreview &&
+                    !hideAuxiliaryDock &&
+                    ephemeralSideChatRegistry != null)
                   Positioned.fill(
                     child: AuxiliaryFloatingDock(
                       key: ValueKey('auxiliary_dock_$sessionId'),
@@ -2022,7 +2033,7 @@ class _CodexChatBody extends HookWidget {
                             featureId: 'side_chat',
                             sessionId: parentSessionId,
                             arguments: entry == null
-                                ? const {}
+                                ? const {'forceNew': true}
                                 : {
                                     'childSessionId': entry.childSessionId,
                                   },

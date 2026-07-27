@@ -112,17 +112,19 @@ void main() {
     );
   });
 
-  test('tolerates additive fields but rejects malformed or ambiguous ones', () {
-    expect(
-      () => ServerMessage.fromJson({
-        'type': 'ephemeral_side_chat_opened',
-        'parentSessionId': 'parent-1',
-        'requestId': 'open-1',
-        'entry': _entryJson(),
-        'error': 'ambiguous',
-      }),
-      throwsFormatException,
-    );
+  test('tolerates additive fields and prefers a valid result over warnings', () {
+    final openedWithWarning =
+        ServerMessage.fromJson({
+              'type': 'ephemeral_side_chat_opened',
+              'parentSessionId': 'parent-1',
+              'requestId': 'open-1',
+              'entry': {..._entryJson(), 'futureField': 1},
+              'error': 'non-fatal warning from a newer Bridge',
+              'errorCode': 'future_warning',
+            })
+            as EphemeralSideChatOpenedMessage;
+    expect(openedWithWarning.isSuccess, isTrue);
+    expect(openedWithWarning.error, isNull);
     final extended =
         ServerMessage.fromJson({
               'type': 'ephemeral_side_chat_registry',
@@ -133,6 +135,14 @@ void main() {
             })
             as EphemeralSideChatRegistryMessage;
     expect(extended.entries?.single.childSessionId, 'child-1');
+    final malformedFailure =
+        ServerMessage.fromJson({
+              'type': 'ephemeral_side_chat_registry',
+              'requestId': 'list-3',
+            })
+            as EphemeralSideChatRegistryMessage;
+    expect(malformedFailure.isSuccess, isFalse);
+    expect(malformedFailure.errorCode, 'unknown');
     expect(
       () => ServerMessage.fromJson({
         'type': 'ephemeral_side_chat_registry',

@@ -271,6 +271,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
     ValueNotifier<SystemMessage?>? pendingSessionCreated,
     VoidCallback? onBackToSessions,
     bool hideSessionBackButton = false,
+    bool hideAuxiliaryDock = false,
     bool allowMessageFork = true,
     List<PageRouteInfo>? children,
   }) : super(
@@ -290,6 +291,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
            pendingSessionCreated: pendingSessionCreated,
            onBackToSessions: onBackToSessions,
            hideSessionBackButton: hideSessionBackButton,
+           hideAuxiliaryDock: hideAuxiliaryDock,
            allowMessageFork: allowMessageFork,
          ),
          initialChildren: children,
@@ -316,6 +318,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
         pendingSessionCreated: args.pendingSessionCreated,
         onBackToSessions: args.onBackToSessions,
         hideSessionBackButton: args.hideSessionBackButton,
+        hideAuxiliaryDock: args.hideAuxiliaryDock,
         allowMessageFork: args.allowMessageFork,
       );
     },
@@ -338,6 +341,7 @@ class CodexSessionRouteArgs {
     this.pendingSessionCreated,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.hideAuxiliaryDock = false,
     this.allowMessageFork = true,
   });
 
@@ -369,11 +373,13 @@ class CodexSessionRouteArgs {
 
   final bool hideSessionBackButton;
 
+  final bool hideAuxiliaryDock;
+
   final bool allowMessageFork;
 
   @override
   String toString() {
-    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, durableProviderSessionId: $durableProviderSessionId, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, initialApprovalsReviewer: $initialApprovalsReviewer, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton, allowMessageFork: $allowMessageFork}';
+    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, durableProviderSessionId: $durableProviderSessionId, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, initialApprovalsReviewer: $initialApprovalsReviewer, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton, hideAuxiliaryDock: $hideAuxiliaryDock, allowMessageFork: $allowMessageFork}';
   }
 
   @override
@@ -394,6 +400,7 @@ class CodexSessionRouteArgs {
         pendingSessionCreated == other.pendingSessionCreated &&
         onBackToSessions == other.onBackToSessions &&
         hideSessionBackButton == other.hideSessionBackButton &&
+        hideAuxiliaryDock == other.hideAuxiliaryDock &&
         allowMessageFork == other.allowMessageFork;
   }
 
@@ -413,6 +420,7 @@ class CodexSessionRouteArgs {
       pendingSessionCreated.hashCode ^
       onBackToSessions.hashCode ^
       hideSessionBackButton.hashCode ^
+      hideAuxiliaryDock.hashCode ^
       allowMessageFork.hashCode;
 }
 

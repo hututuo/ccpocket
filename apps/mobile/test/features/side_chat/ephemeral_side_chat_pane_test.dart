@@ -45,10 +45,11 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
   _Gateway(this.capabilities);
 
   @override
-  final Set<String> capabilities;
+  Set<String> capabilities;
   final sent = <ClientMessage>[];
   final messagesController =
       StreamController<LocalFeatureServerMessage>.broadcast(sync: true);
+  final capabilityController = StreamController<void>.broadcast(sync: true);
 
   @override
   bool isConnected = false;
@@ -57,7 +58,7 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
   Stream<BridgeConnectionState> get connectionStatus => const Stream.empty();
 
   @override
-  Stream<void> get capabilityChanges => const Stream.empty();
+  Stream<void> get capabilityChanges => capabilityController.stream;
 
   @override
   Stream<LocalFeatureServerMessage> get messages => messagesController.stream;
@@ -68,7 +69,10 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
   @override
   void send(ClientMessage message) => sent.add(message);
 
-  void dispose() => messagesController.close();
+  void dispose() {
+    messagesController.close();
+    capabilityController.close();
+  }
 }
 
 Map<String, dynamic> _json(ClientMessage message) =>
@@ -122,6 +126,16 @@ void main() {
     );
     await tester.pump();
 
+    final refresh = gateway.sent.singleWhere(
+      (message) => _json(message)['type'] == 'list_ephemeral_side_chats',
+    );
+    gateway.messagesController.add(
+      EphemeralSideChatRegistryMessage(
+        requestId: _json(refresh)['requestId'] as String,
+        entries: const [],
+      ),
+    );
+    await tester.pump();
     final open = gateway.sent.singleWhere(
       (message) => _json(message)['type'] == 'open_ephemeral_side_chat',
     );
@@ -160,7 +174,6 @@ void main() {
       _app(
         EphemeralSideChatPane(
           parentSessionId: 'parent-1',
-          childSessionId: 'child-1',
           bridgeService: bridge,
           registryService: registry,
           draftService: await _drafts(),
@@ -182,7 +195,7 @@ void main() {
     );
   });
 
-  testWidgets('old Bridge falls back to the existing native side-chat shell', (
+  testWidgets('old Bridge fails closed instead of opening a different chat', (
     tester,
   ) async {
     final gateway = _Gateway({});
@@ -200,28 +213,78 @@ void main() {
           bridgeService: bridge,
           registryService: registry,
           draftService: await _drafts(),
+          sessionBuilder: (entry) => Text(entry.childSessionId),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Update the Bridge to use side chat.'), findsOneWidget);
+    expect(
+      bridge.sent.map((message) => _json(message)['type']),
+      isNot(contains('open_side_chat')),
+    );
+  });
+
+  testWidgets('late capability negotiation opens the official side chat', (
+    tester,
+  ) async {
+    final gateway = _Gateway({});
+    final registry = EphemeralSideChatRegistryService(bridge: gateway);
+    gateway.isConnected = true;
+    final bridge = _Bridge({});
+    addTearDown(registry.dispose);
+    addTearDown(gateway.dispose);
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      _app(
+        EphemeralSideChatPane(
+          parentSessionId: 'parent-1',
+          bridgeService: bridge,
+          registryService: registry,
+          draftService: await _drafts(),
+          sessionBuilder: (entry) => Text(entry.childSessionId),
         ),
       ),
     );
     await tester.pump();
 
     expect(
-      find.byKey(const ValueKey('ephemeral_side_chat_legacy_fallback')),
-      findsOneWidget,
+      gateway.sent.map((message) => _json(message)['type']),
+      isNot(contains('open_ephemeral_side_chat')),
+    );
+
+    gateway.capabilities = {ephemeralSideChatCapability};
+    gateway.capabilityController.add(null);
+    await tester.pump();
+
+    final refresh = gateway.sent.singleWhere(
+      (message) => _json(message)['type'] == 'list_ephemeral_side_chats',
+    );
+    gateway.messagesController.add(
+      EphemeralSideChatRegistryMessage(
+        requestId: _json(refresh)['requestId'] as String,
+        entries: const [],
+      ),
+    );
+    await tester.pump();
+    expect(
+      gateway.sent.map((message) => _json(message)['type']),
+      contains('open_ephemeral_side_chat'),
     );
     expect(
-      bridge.sent.map((message) => _json(message)['type']),
-      contains('open_side_chat'),
+      gateway.sent.map((message) => _json(message)['type']),
+      isNot(contains('open_side_chat')),
     );
-    final open = bridge.sent.singleWhere(
-      (message) => _json(message)['type'] == 'open_side_chat',
+    final open = gateway.sent.singleWhere(
+      (message) => _json(message)['type'] == 'open_ephemeral_side_chat',
     );
-    bridge.localMessages.add(
-      SideChatEventMessage(
-        event: SideChatEventKind.opened,
+    gateway.messagesController.add(
+      EphemeralSideChatOpenedMessage(
         parentSessionId: 'parent-1',
-        sideChatId: 'legacy-1',
         requestId: _json(open)['requestId'] as String,
+        entry: _entry(),
       ),
     );
     await tester.pump();

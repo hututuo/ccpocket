@@ -198,9 +198,6 @@ void main() async {
     ),
   );
   bridge.onDisconnect = sshBridgeTunnelService?.closeAll;
-  final ephemeralSideChatRegistry = EphemeralSideChatRegistryService(
-    bridge: BridgeServiceEphemeralSideChatGateway(bridge),
-  );
   final fileTransferService = FileTransferService(
     bridge: BridgeServiceFileTransferGateway(bridge),
     storage: FileTransferStorage(
@@ -390,7 +387,9 @@ void main() async {
           lazy: false,
         ),
         ChangeNotifierProvider<EphemeralSideChatRegistryService>(
-          create: (_) => ephemeralSideChatRegistry,
+          create: (_) => EphemeralSideChatRegistryService(
+            bridge: BridgeServiceEphemeralSideChatGateway(bridge),
+          ),
           lazy: false,
         ),
         ChangeNotifierProvider<ConversationMirrorService>(

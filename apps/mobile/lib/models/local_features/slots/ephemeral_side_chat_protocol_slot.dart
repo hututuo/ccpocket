@@ -101,20 +101,6 @@ class EphemeralSideChatEntry {
   });
 
   factory EphemeralSideChatEntry.fromJson(Map<String, dynamic> json) {
-    _sideChatRequireOnlyKeys(json, const [
-      'childSessionId',
-      'parentSessionId',
-      'projectPath',
-      'worktreePath',
-      'worktreeBranch',
-      'permissionMode',
-      'sandboxMode',
-      'approvalPolicy',
-      'approvalsReviewer',
-      'status',
-      'createdAt',
-      'lastActivityAt',
-    ]);
     final createdAt = DateTime.tryParse(
       _sideChatRequiredString(json, 'createdAt'),
     );
@@ -137,8 +123,8 @@ class EphemeralSideChatEntry {
       approvalPolicy: _sideChatOptionalString(json, 'approvalPolicy'),
       approvalsReviewer: _sideChatOptionalString(json, 'approvalsReviewer'),
       status: _sideChatRequiredString(json, 'status'),
-      createdAt: createdAt,
-      lastActivityAt: lastActivityAt,
+      createdAt: createdAt.toUtc(),
+      lastActivityAt: lastActivityAt.toUtc(),
     );
   }
 }
@@ -167,14 +153,6 @@ class EphemeralSideChatOpenedMessage implements LocalFeatureTransientMessage {
   bool get isSuccess => entry != null && error == null;
 
   factory EphemeralSideChatOpenedMessage.fromJson(Map<String, dynamic> json) {
-    _sideChatRequireOnlyKeys(json, const [
-      'type',
-      'parentSessionId',
-      'requestId',
-      'entry',
-      'error',
-      'errorCode',
-    ]);
     final rawEntry = json['entry'];
     if (rawEntry != null && rawEntry is! Map) {
       throw const FormatException('Ephemeral side chat entry must be a map.');
@@ -184,12 +162,10 @@ class EphemeralSideChatOpenedMessage implements LocalFeatureTransientMessage {
         : EphemeralSideChatEntry.fromJson(
             Map<String, dynamic>.from(rawEntry as Map),
           );
-    final error = _sideChatOptionalString(json, 'error');
-    if ((entry == null) == (error == null)) {
-      throw const FormatException(
-        'Ephemeral side chat response must contain exactly one result.',
-      );
-    }
+    final rawError = _sideChatOptionalString(json, 'error');
+    final error = entry == null
+        ? (rawError ?? 'Unable to open the side chat.')
+        : null;
     final parentSessionId = _sideChatRequiredString(json, 'parentSessionId');
     if (entry != null && entry.parentSessionId != parentSessionId) {
       throw const FormatException(
@@ -201,7 +177,9 @@ class EphemeralSideChatOpenedMessage implements LocalFeatureTransientMessage {
       requestId: _sideChatRequiredString(json, 'requestId'),
       entry: entry,
       error: error,
-      errorCode: _sideChatOptionalString(json, 'errorCode'),
+      errorCode: entry == null
+          ? (_sideChatOptionalString(json, 'errorCode') ?? 'unknown')
+          : null,
     );
   }
 }
@@ -228,13 +206,6 @@ class EphemeralSideChatRegistryMessage implements LocalFeatureTransientMessage {
   bool get isSuccess => entries != null && error == null;
 
   factory EphemeralSideChatRegistryMessage.fromJson(Map<String, dynamic> json) {
-    _sideChatRequireOnlyKeys(json, const [
-      'type',
-      'requestId',
-      'entries',
-      'error',
-      'errorCode',
-    ]);
     final rawEntries = json['entries'];
     if (rawEntries != null && rawEntries is! List) {
       throw const FormatException(
@@ -255,17 +226,17 @@ class EphemeralSideChatRegistryMessage implements LocalFeatureTransientMessage {
               );
             }),
           );
-    final error = _sideChatOptionalString(json, 'error');
-    if ((entries == null) == (error == null)) {
-      throw const FormatException(
-        'Ephemeral side chat registry must contain exactly one result.',
-      );
-    }
+    final rawError = _sideChatOptionalString(json, 'error');
+    final error = entries == null
+        ? (rawError ?? 'Unable to update side chats.')
+        : null;
     return EphemeralSideChatRegistryMessage(
       requestId: _sideChatOptionalString(json, 'requestId'),
       entries: entries,
       error: error,
-      errorCode: _sideChatOptionalString(json, 'errorCode'),
+      errorCode: entries == null
+          ? (_sideChatOptionalString(json, 'errorCode') ?? 'unknown')
+          : null,
     );
   }
 }

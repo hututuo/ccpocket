@@ -61,6 +61,7 @@ class _SideChatUiSlot extends LocalSessionFeatureSlot {
               .read<EphemeralSideChatRegistryService>(),
           draftService: context.context.read<DraftService>(),
           childSessionId: context.arguments['childSessionId'] as String?,
+          forceNew: context.arguments['forceNew'] as bool? ?? false,
           initialSelection: context.arguments['initialSelection'] as String?,
           selectionRevision:
               context.arguments['selectionRevision'] as int? ?? 0,

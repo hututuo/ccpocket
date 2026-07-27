@@ -9,7 +9,6 @@ import '../../../../services/draft_service.dart';
 import '../../../../widgets/chat_selection_actions.dart';
 import '../l10n/side_chat_strings.dart';
 import '../state/ephemeral_side_chat_registry_service.dart';
-import 'side_chat_panel.dart';
 
 /// Renders an official in-memory Codex fork with the ordinary conversation UI.
 ///
@@ -24,6 +23,7 @@ class EphemeralSideChatPane extends StatefulWidget {
     required this.registryService,
     required this.draftService,
     this.childSessionId,
+    this.forceNew = false,
     this.initialSelection,
     this.selectionRevision = 0,
     this.onClose,
@@ -35,6 +35,7 @@ class EphemeralSideChatPane extends StatefulWidget {
   final EphemeralSideChatRegistryService registryService;
   final DraftService draftService;
   final String? childSessionId;
+  final bool forceNew;
   final String? initialSelection;
   final int selectionRevision;
   final VoidCallback? onClose;
@@ -48,12 +49,16 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
   EphemeralSideChatEntry? _entry;
   String? _error;
   bool _opening = false;
-  bool _useLegacyFallback = false;
+  bool _waitingForCapability = false;
+  late String? _requestedChildSessionId;
+  late bool _forceNew;
   int _openGeneration = 0;
 
   @override
   void initState() {
     super.initState();
+    _requestedChildSessionId = widget.childSessionId;
+    _forceNew = widget.forceNew;
     widget.registryService.addListener(_registryChanged);
     _resolveOrOpen();
   }
@@ -68,7 +73,10 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
     if (oldWidget.parentSessionId != widget.parentSessionId ||
         oldWidget.bridgeService != widget.bridgeService ||
         oldWidget.registryService != widget.registryService ||
-        oldWidget.childSessionId != widget.childSessionId) {
+        oldWidget.childSessionId != widget.childSessionId ||
+        oldWidget.forceNew != widget.forceNew) {
+      _requestedChildSessionId = widget.childSessionId;
+      _forceNew = widget.forceNew;
       _resolveOrOpen();
       return;
     }
@@ -83,28 +91,94 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
     _entry = null;
     _error = null;
     _opening = false;
-    _useLegacyFallback = false;
+    _waitingForCapability = false;
     if (!widget.registryService.isSupported) {
-      _useLegacyFallback = true;
+      _waitingForCapability = true;
+      _error = '';
       if (mounted) setState(() {});
       return;
     }
-    final existingId = widget.childSessionId;
+    final existingId = _requestedChildSessionId;
     if (existingId != null) {
       final existing = widget.registryService.entryForChild(existingId);
       if (existing != null &&
           existing.parentSessionId == widget.parentSessionId) {
         _entry = existing;
         _prepareInitialDraft(existing.childSessionId);
-      } else {
-        _error = '';
+        if (mounted) setState(() {});
+        return;
       }
+    }
+    if (existingId == null && !_forceNew) {
+      final existingEntries = widget.registryService.entriesForParent(
+        widget.parentSessionId,
+      );
+      if (existingEntries.isNotEmpty) {
+        final existing = existingEntries.first;
+        _entry = existing;
+        _prepareInitialDraft(existing.childSessionId);
+        if (mounted) setState(() {});
+        return;
+      }
+    }
+    if (_forceNew && existingId == null) {
+      _opening = true;
       if (mounted) setState(() {});
+      unawaited(_open(generation));
       return;
     }
     _opening = true;
     if (mounted) setState(() {});
-    unawaited(_open(generation));
+    unawaited(_refreshThenResolve(generation, existingId));
+  }
+
+  Future<void> _refreshThenResolve(
+    int generation,
+    String? requestedChildSessionId,
+  ) async {
+    try {
+      await widget.registryService.refresh();
+      if (!mounted || generation != _openGeneration) return;
+      if (requestedChildSessionId != null) {
+        final existing = widget.registryService.entryForChild(
+          requestedChildSessionId,
+        );
+        if (existing == null ||
+            existing.parentSessionId != widget.parentSessionId) {
+          setState(() {
+            _opening = false;
+            _error = SideChatStrings.of(context).failed;
+          });
+          return;
+        }
+        _prepareInitialDraft(existing.childSessionId);
+        setState(() {
+          _entry = existing;
+          _opening = false;
+        });
+        return;
+      }
+
+      final existingEntries = widget.registryService.entriesForParent(
+        widget.parentSessionId,
+      );
+      if (existingEntries.isNotEmpty) {
+        final existing = existingEntries.first;
+        _prepareInitialDraft(existing.childSessionId);
+        setState(() {
+          _entry = existing;
+          _opening = false;
+        });
+        return;
+      }
+      await _open(generation);
+    } catch (_) {
+      if (!mounted || generation != _openGeneration) return;
+      setState(() {
+        _opening = false;
+        _error = SideChatStrings.of(context).failed;
+      });
+    }
   }
 
   Future<void> _open(int generation) async {
@@ -120,18 +194,21 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
       if (!mounted || generation != _openGeneration) return;
       setState(() {
         _opening = false;
-        if (!widget.registryService.isSupported) {
-          _useLegacyFallback = true;
-        } else {
-          _error = SideChatStrings.of(context).failed;
-        }
+        _waitingForCapability = !widget.registryService.isSupported;
+        _error = _waitingForCapability
+            ? SideChatStrings.of(context).bridgeUpdateRequired
+            : SideChatStrings.of(context).failed;
       });
     }
   }
 
   void _registryChanged() {
-    if (!mounted || _useLegacyFallback) return;
-    final currentId = _entry?.childSessionId ?? widget.childSessionId;
+    if (!mounted) return;
+    if (_waitingForCapability && widget.registryService.isSupported) {
+      _resolveOrOpen();
+      return;
+    }
+    final currentId = _entry?.childSessionId ?? _requestedChildSessionId;
     if (currentId == null) return;
     final next = widget.registryService.entryForChild(currentId);
     if (next != null && next.parentSessionId == widget.parentSessionId) {
@@ -145,6 +222,12 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
         _error = SideChatStrings.of(context).failed;
       });
     }
+  }
+
+  void _retry() {
+    _requestedChildSessionId = null;
+    _forceNew = true;
+    _resolveOrOpen();
   }
 
   void _prepareInitialDraft(String childSessionId) {
@@ -170,20 +253,6 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
 
   @override
   Widget build(BuildContext context) {
-    if (_useLegacyFallback) {
-      return KeyedSubtree(
-        key: const ValueKey('ephemeral_side_chat_legacy_fallback'),
-        child: SideChatPanel(
-          parentSessionId: widget.parentSessionId,
-          bridgeService: widget.bridgeService,
-          draftService: widget.draftService,
-          initialSelection: widget.initialSelection,
-          selectionRevision: widget.selectionRevision,
-          onClose: widget.onClose,
-        ),
-      );
-    }
-
     final entry = _entry;
     if (entry != null) {
       final sessionBuilder = widget.sessionBuilder;
@@ -200,6 +269,7 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
         initialApprovalsReviewer: entry.approvalsReviewer,
         onBackToSessions: widget.onClose,
         allowMessageFork: false,
+        hideAuxiliaryDock: true,
       );
     }
 
@@ -239,13 +309,15 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text(
-                              _error!.isEmpty ? strings.failed : _error!,
+                              _waitingForCapability
+                                  ? strings.bridgeUpdateRequired
+                                  : (_error!.isEmpty ? strings.failed : _error!),
                               textAlign: TextAlign.center,
                             ),
                             const SizedBox(height: 12),
                             FilledButton.icon(
                               key: const ValueKey('ephemeral_side_chat_retry'),
-                              onPressed: _resolveOrOpen,
+                              onPressed: _retry,
                               icon: const Icon(Icons.refresh),
                               label: Text(strings.reopen),
                             ),

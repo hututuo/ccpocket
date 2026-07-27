@@ -89,6 +89,7 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
   StreamSubscription<String>? _stoppedSessionSubscription;
   Future<void>? _refreshFuture;
   bool _disposed = false;
+  bool? _lastSupported;
 
   bool get isSupported =>
       _bridge.capabilities.contains(ephemeralSideChatCapability);
@@ -226,13 +227,19 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
 
   void _reconcileCapability() {
     if (_disposed || !_bridge.isConnected) return;
-    if (!isSupported) {
+    final supported = isSupported;
+    final capabilityChanged = _lastSupported != supported;
+    _lastSupported = supported;
+    if (!supported) {
       if (_entriesById.isNotEmpty) {
         _entriesById.clear();
+        notifyListeners();
+      } else if (capabilityChanged) {
         notifyListeners();
       }
       return;
     }
+    if (capabilityChanged) notifyListeners();
     unawaited(refresh().catchError((_) {}));
   }
 

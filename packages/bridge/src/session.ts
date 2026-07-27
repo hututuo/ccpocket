@@ -1193,6 +1193,11 @@ export class SessionManager {
         return;
       }
       const finish = (): void => {
+        if (session.auxiliary?.kind === "ephemeral_side_chat") {
+          this.destroy(id);
+          this.onSessionUpdated?.(id);
+          return;
+        }
         session.status = "idle";
         session.codexQueuedInput = undefined;
         // Add status after every already-emitted provider message.
