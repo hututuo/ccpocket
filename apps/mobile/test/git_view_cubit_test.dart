@@ -576,6 +576,34 @@ void main() {
       expect(cubit.state.pulling, false);
       expect(cubit.state.error, 'conflict');
     });
+
+    test('surfaces a denied remote-status result instead of false success', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(
+        bridge: mockBridge,
+        projectPath: '/home/user/project',
+      );
+      addTearDown(() async {
+        await cubit.close();
+        mockBridge.dispose();
+      });
+
+      mockBridge.emitRemoteStatus(
+        const GitRemoteStatusResultMessage(
+          ahead: 0,
+          behind: 0,
+          branch: '',
+          hasUpstream: false,
+          projectPath: '/home/user/project',
+          error: 'Path not allowed',
+          errorCode: 'path_not_allowed',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(cubit.state.error, 'Path not allowed');
+      expect(cubit.state.errorCode, 'path_not_allowed');
+    });
   });
 
   group('GitViewCubit - diff image correlation', () {

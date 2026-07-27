@@ -882,6 +882,12 @@ class GitViewCubit extends Cubit<GitViewState> {
 
   void _onRemoteStatus(GitRemoteStatusResultMessage result) {
     if (_isForeignProject(result.projectPath)) return;
+    if (result.error != null) {
+      emit(
+        state.copyWith(error: result.error, errorCode: result.errorCode),
+      );
+      return;
+    }
     emit(
       state.copyWith(
         commitsAhead: result.ahead,

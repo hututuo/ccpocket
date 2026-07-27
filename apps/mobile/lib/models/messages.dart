@@ -1776,6 +1776,8 @@ sealed class ServerMessage {
         branch: json['branch'] as String? ?? '',
         hasUpstream: json['hasUpstream'] as bool? ?? false,
         projectPath: _nonEmptyString(json['projectPath']),
+        error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
       ),
       _ => ErrorMessage(message: 'Unknown message type: ${json['type']}'),
     };
@@ -4376,12 +4378,16 @@ class GitRemoteStatusResultMessage implements ServerMessage {
   final String branch;
   final bool hasUpstream;
   final String? projectPath;
+  final String? error;
+  final String? errorCode;
   const GitRemoteStatusResultMessage({
     required this.ahead,
     required this.behind,
     required this.branch,
     required this.hasUpstream,
     this.projectPath,
+    this.error,
+    this.errorCode,
   });
 }
 

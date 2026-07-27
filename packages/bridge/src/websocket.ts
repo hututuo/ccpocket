@@ -1874,6 +1874,8 @@ export class BridgeWebSocketServer {
             branch: "",
             hasUpstream: false,
             projectPath,
+            error,
+            errorCode: "path_not_allowed",
           };
       }
     })();
@@ -9055,6 +9057,8 @@ export class BridgeWebSocketServer {
             branch: "",
             hasUpstream: false,
             projectPath: msg.projectPath,
+            error: String(err),
+            errorCode: "git_remote_status_failed",
           });
         }
         break;

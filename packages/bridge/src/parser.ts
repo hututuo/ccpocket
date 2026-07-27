@@ -1152,6 +1152,8 @@ export type ServerMessage = (
       branch: string;
       hasUpstream: boolean;
       projectPath?: string;
+      error?: string;
+      errorCode?: string;
     }
   | LocalFeatureServerMessage
   | FileTransferServerMessage

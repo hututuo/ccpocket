@@ -3531,6 +3531,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       },
       ws,
     );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "git_remote_status",
+        projectPath: "/tmp/denied",
+      },
+      ws,
+    );
 
     const messages = ws.send.mock.calls.map((call: unknown[]) =>
       JSON.parse(call[0] as string),
@@ -3554,6 +3561,14 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         type: "git_fetch_result",
         success: false,
         projectPath: "/tmp/denied",
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "git_remote_status_result",
+        projectPath: "/tmp/denied",
+        errorCode: "path_not_allowed",
+        error: expect.stringContaining("not in the allowed directories"),
       }),
     );
     expect(messages.some((message) => message.type === "error")).toBe(false);
