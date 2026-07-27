@@ -1031,6 +1031,50 @@ describe("codex sessions integration", () => {
     );
   });
 
+  it("preserves Claude and Codex sessions that share the same raw id", async () => {
+    const sharedId = "019c56c0-d4d8-7b22-9e3c-200664d68030";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    const claudeDir = join(tempHome, ".claude", "projects", "-tmp-project-a");
+    mkdirSync(codexDir, { recursive: true });
+    mkdirSync(claudeDir, { recursive: true });
+
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${sharedId}.jsonl`),
+      [
+        JSON.stringify({
+          timestamp: "2026-02-13T11:26:43.995Z",
+          type: "session_meta",
+          payload: { id: sharedId, cwd: "/tmp/project-a" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T11:26:44.100Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "codex conversation" },
+        }),
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(claudeDir, `${sharedId}.jsonl`),
+      [
+        JSON.stringify({
+          type: "user",
+          uuid: "claude-user-1",
+          cwd: "/tmp/project-a",
+          timestamp: "2026-02-13T11:26:45.000Z",
+          message: { role: "user", content: "claude conversation" },
+        }),
+      ].join("\n"),
+    );
+
+    const { sessions } = await getAllRecentSessions({ limit: 20 });
+    const matching = sessions.filter((session) => session.sessionId === sharedId);
+
+    expect(matching.map((session) => session.provider).sort()).toEqual([
+      "claude",
+      "codex",
+    ]);
+  });
+
   it("includes codex sessions in getAllRecentSessions", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68010";
     const parentThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68000";

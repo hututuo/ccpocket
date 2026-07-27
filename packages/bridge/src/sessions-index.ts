@@ -1124,16 +1124,19 @@ export async function getAllRecentSessions(
   markDuration(durations, "loadClaudeSessions", loadClaudeStartedAt);
   markDuration(durations, "loadCodexSessions", loadCodexStartedAt);
 
-  // Combine results and deduplicate by sessionId.
+  // Combine results and deduplicate by provider-scoped session identity.
   // The same session can appear in both the main project dir and a worktree dir
-  // (Claude CLI writes to both sessions-index.json files).  Keep the entry with
-  // richer data (more non-empty fields) so the UI shows correct metadata.
+  // (Claude CLI writes to both sessions-index.json files). Claude and Codex can
+  // legitimately emit the same raw id, so collapsing across providers would
+  // silently hide one of the conversations. Keep the entry with richer data
+  // only within the same provider identity.
   const combined = [...claudeEntries, ...codexEntries];
   const seen = new Map<string, SessionIndexEntry>();
   for (const entry of combined) {
-    const existing = seen.get(entry.sessionId);
+    const identityKey = `${entry.provider}\u0000${entry.sessionId}`;
+    const existing = seen.get(identityKey);
     if (!existing) {
-      seen.set(entry.sessionId, entry);
+      seen.set(identityKey, entry);
     } else {
       // Pick the entry with more populated fields
       const score = (e: SessionIndexEntry): number =>
@@ -1145,7 +1148,7 @@ export async function getAllRecentSessions(
         (e.summary ? 1 : 0) +
         (e.lastPrompt ? 1 : 0);
       if (score(entry) > score(existing)) {
-        seen.set(entry.sessionId, entry);
+        seen.set(identityKey, entry);
       }
     }
   }
