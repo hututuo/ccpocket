@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`f70db62d`
+核对源码基线：`99979115`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -101,10 +101,11 @@
 | 会话同步、排序、折叠和进程重启整体稳定 | v02-010～013 | generation fence、half-open continuity、outbox、dedup、pagination alias、`b0255c68`、`93d02cf1`、`502b4252`、`7d62f978`、`e984ca36` | **部分完成** | watcher/provider、公平队列、starting history、delta single-flight 已闭环；Desktop 接管现保留 live history/revision/identity 并消费已预取 canonical history，销毁同步 exit 也不能再回写死会话。legacy full-history 仍无 requestId，真实重复事件线和 provider/source 多 Home 仍有高风险审查积压 |
 | 畸形或未来版本工具输入不能在展开 Diff 时崩溃整张会话卡片 | v02-006、009、014 | `0b83e6aa` 对 Edit/MultiEdit/Write 输入做完整形状校验 | **已验证** | 26 项 parser 回归通过；不完整 MultiEdit 会安全回退而不是渲染误导性局部 diff |
 | 多开 Bridge/SDK/Codex 进程不能由旧代迟到事件覆盖新代 | v02-007、010～012 | `a4dbf3c1`、`320f1189`、`a35cc591` | **已验证** | SDK 100/100、Codex 144/144 相关回归曾通过 |
+| 发送大图不能在 Mobile UI isolate 同步 Base64 编码；图片后立即发送的文字不能越序；编码失败或离线取消不能堵塞/迟到发送 | v02-006、014；全局性能门禁 | `99979115`；`ChatSessionCubit` 的可注入图片编码器和有序 input dispatch tail | **已验证** | 红测证明旧路径会同步发送两条消息、完全绕过异步编码器；现生产默认用 `compute` 编码，只有存在图片/既有 backlog 时进入顺序队列，纯文字无 backlog 仍同步发送。编码失败标记本地消息失败但继续后续消息，离线取消会 fence 尚未完成的编码；4 项窄测试与 ChatSessionCubit 152/152 全通过，定向 analyze 仅保留 2 条基线 info |
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | 当前记录的 upstream/main 为 `aa215a3b` | **待复核** | 必须重新 fetch；仅在语义审查后集成并重跑，不能凭旧文档声称已最新 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账 | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `f70db62d`，后续深链、安全、通知 ACK、公平调度与历史/会话管理提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `99979115`，后续深链、安全、通知 ACK、公平调度、历史/会话管理和图片后台编码提交不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
