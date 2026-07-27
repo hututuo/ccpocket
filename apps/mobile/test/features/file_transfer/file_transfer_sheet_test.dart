@@ -64,6 +64,7 @@ void main() {
     receivedFileExportSupported: receivedFileExportSupported,
     httpClient: client,
     preferences: preferences,
+    clock: () => DateTime.utc(2026, 7, 18, 12),
     requestIdGenerator: _Ids().next,
   );
 
