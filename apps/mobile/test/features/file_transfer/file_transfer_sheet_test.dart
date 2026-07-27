@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:ccpocket/features/artifact_preview/artifact_quick_look_service.dart';
 import 'package:ccpocket/features/file_transfer/file_transfer_service.dart';
 import 'package:ccpocket/features/file_transfer/file_transfer_sheet.dart';
 import 'package:ccpocket/features/file_transfer/file_transfer_storage.dart';
@@ -367,6 +368,60 @@ void main() {
     await tester.pump();
     expect(quickLookCalls, hasLength(1));
     expect(shareCalls, hasLength(1));
+
+    service.dispose();
+  });
+
+  testWidgets('large local received files still use native Quick Look', (
+    tester,
+  ) async {
+    final quickLookCalls = <MethodCall>[];
+    final shareCalls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('ccpocket/artifact_quick_look'),
+      (call) async {
+        quickLookCalls.add(call);
+        return null;
+      },
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('dev.fluttercommunity.plus/share'),
+      (call) async {
+        shareCalls.add(call);
+        return 'dev.fluttercommunity.plus/share/success';
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('ccpocket/artifact_quick_look'),
+        null,
+      );
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('dev.fluttercommunity.plus/share'),
+        null,
+      );
+    });
+
+    late FileTransferService service;
+    await tester.runAsync(() async {
+      final largePdf = await File(
+        '${downloads.path}/large.pdf',
+      ).open(mode: FileMode.write);
+      await largePdf.truncate(artifactQuickLookAutomaticMaxBytes + 1);
+      await largePdf.close();
+      service = makeService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+      await service.refreshReceivedFiles();
+    });
+    await _pumpSheet(tester, service);
+
+    await tester.tap(
+      find.byKey(ValueKey('preview_received_file_${downloads.path}/large.pdf')),
+    );
+    await tester.pump();
+    expect(quickLookCalls, hasLength(1));
+    expect(shareCalls, isEmpty);
     service.dispose();
   });
 

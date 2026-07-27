@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../artifact_preview/artifact_quick_look_service.dart';
+import '../artifact_preview/artifact_transfer_service.dart';
 import '../file_browser/file_mutation_authorization.dart';
 import 'file_transfer_storage.dart';
 import 'file_transfer_service.dart';
@@ -262,10 +263,15 @@ class _ReceivedFileTile extends StatelessWidget {
   }
 
   Future<void> _preview(BuildContext context) async {
-    // Quick Look is only offered what it can render safely: HTML stays out of
-    // its WebKit preview and oversized files out of memory; both fall back to
-    // the share sheet so the user hands the file to an app of their choice.
-    if (!shouldTryQuickLookForArtifact(file.filename, '', file.sizeBytes)) {
+    // This file already lives in the app's Downloads directory, so it does not
+    // need the smaller automatic artifact-fetch budget. Native Quick Look owns
+    // format support; HTML remains outside its WebKit preview sandbox.
+    if (!shouldTryQuickLookForLocalFile(
+      file.filename,
+      '',
+      file.sizeBytes,
+      maxSizeBytes: maxArtifactTransferBytes,
+    )) {
       await _share(context);
       return;
     }

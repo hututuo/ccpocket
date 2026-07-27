@@ -50,8 +50,25 @@ bool shouldTryQuickLookForArtifact(
   String filename,
   String mimeType,
   int sizeBytes,
-) {
-  if (sizeBytes < 0 || sizeBytes > artifactQuickLookAutomaticMaxBytes) {
+) => shouldTryQuickLookForLocalFile(
+  filename,
+  mimeType,
+  sizeBytes,
+  maxSizeBytes: artifactQuickLookAutomaticMaxBytes,
+);
+
+/// Eligibility for a file that is already resident on the phone.
+///
+/// Callers choose their own product-level size ceiling. This avoids applying
+/// the smaller automatic-download budget to a native file-backed preview that
+/// does not need to fetch the bytes again.
+bool shouldTryQuickLookForLocalFile(
+  String filename,
+  String mimeType,
+  int sizeBytes, {
+  required int maxSizeBytes,
+}) {
+  if (sizeBytes < 0 || sizeBytes > maxSizeBytes) {
     return false;
   }
   return !isHtmlArtifact(filename, mimeType);
