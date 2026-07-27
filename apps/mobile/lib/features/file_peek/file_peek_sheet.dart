@@ -19,6 +19,7 @@ import '../../theme/markdown_style.dart'
         markdownBuilders;
 import '../../widgets/bubbles/image_preview.dart';
 import '../../widgets/workspace_pane_chrome.dart';
+import '../file_browser/file_browser_strings.dart';
 
 /// Resolves a potentially partial file path against the project's file list,
 /// then shows the file peek sheet.
@@ -188,6 +189,7 @@ Future<void> showFilePeekSheet(
   String? artifactId,
   FileContentMessage? initialContent,
   VoidCallback? onOpened,
+  Future<void> Function()? onOpenPreviewRequested,
 }) {
   onOpened?.call();
   return showModalBottomSheet(
@@ -213,6 +215,7 @@ Future<void> showFilePeekSheet(
         artifactMessageId: artifactMessageId,
         artifactId: artifactId,
         initialContent: initialContent,
+        onOpenPreviewRequested: onOpenPreviewRequested,
         scrollController: scrollController,
       ),
     ),
@@ -228,6 +231,7 @@ class _FilePeekContent extends StatefulWidget {
   final String? artifactMessageId;
   final String? artifactId;
   final FileContentMessage? initialContent;
+  final Future<void> Function()? onOpenPreviewRequested;
   final ScrollController scrollController;
 
   const _FilePeekContent({
@@ -239,6 +243,7 @@ class _FilePeekContent extends StatefulWidget {
     this.artifactMessageId,
     this.artifactId,
     this.initialContent,
+    this.onOpenPreviewRequested,
     required this.scrollController,
   });
 
@@ -251,6 +256,7 @@ class _FilePeekContentState extends State<_FilePeekContent> {
   bool _loading = true;
   late bool _showRaw;
   bool _didJumpToInitialLine = false;
+  bool _openingPreview = false;
 
   @override
   void initState() {
@@ -328,6 +334,17 @@ class _FilePeekContentState extends State<_FilePeekContent> {
     );
   }
 
+  Future<void> _openUnifiedPreview() async {
+    final callback = widget.onOpenPreviewRequested;
+    if (callback == null || _openingPreview) return;
+    setState(() => _openingPreview = true);
+    try {
+      await callback();
+    } finally {
+      if (mounted) setState(() => _openingPreview = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
@@ -401,6 +418,19 @@ class _FilePeekContentState extends State<_FilePeekContent> {
                         : null,
                   ),
                   onPressed: () => setState(() => _showRaw = !_showRaw),
+                  visualDensity: VisualDensity.compact,
+                ),
+              if (widget.onOpenPreviewRequested != null)
+                IconButton(
+                  key: const ValueKey('file_peek_unified_preview_button'),
+                  tooltip: FileBrowserStrings.of(context).preview,
+                  icon: _openingPreview
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.visibility_outlined, size: 18),
+                  onPressed: _openingPreview ? null : _openUnifiedPreview,
                   visualDensity: VisualDensity.compact,
                 ),
               IconButton(

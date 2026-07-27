@@ -97,6 +97,41 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  test('unanchored source prefers the unified iOS preview', () {
+    const source = ArtifactRef(
+      id: 'artifact-source',
+      filename: 'main.dart',
+      mimeType: 'text/x-dart',
+      sizeBytes: 128,
+      kind: 'source',
+      source: 'assistant_markdown',
+      projectRelativePath: 'lib/main.dart',
+    );
+    const anchoredSource = ArtifactRef(
+      id: 'artifact-source-line',
+      filename: 'main.dart',
+      mimeType: 'text/x-dart',
+      sizeBytes: 128,
+      kind: 'source',
+      source: 'assistant_markdown',
+      projectRelativePath: 'lib/main.dart',
+      line: 42,
+    );
+
+    expect(
+      shouldPreferUnifiedArtifactPreview(source, TargetPlatform.iOS),
+      isTrue,
+    );
+    expect(
+      shouldPreferUnifiedArtifactPreview(source, TargetPlatform.android),
+      isFalse,
+    );
+    expect(
+      shouldPreferUnifiedArtifactPreview(anchoredSource, TargetPlatform.iOS),
+      isFalse,
+    );
+  });
+
   testWidgets('source validates before an exact File Peek read', (
     tester,
   ) async {

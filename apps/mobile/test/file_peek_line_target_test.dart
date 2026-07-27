@@ -1,6 +1,9 @@
 import 'package:ccpocket/features/file_peek/file_peek_sheet.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
+import 'package:ccpocket/theme/app_theme.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -108,5 +111,58 @@ void main() {
     );
     expect(bridge.readArtifactSourceCalls, 0);
     expect(bridge.readFileCalls, 0);
+  });
+
+  testWidgets('artifact File Peek exposes the unified preview action', (
+    tester,
+  ) async {
+    final bridge = _FilePeekReadBridge();
+    var previewCalls = 0;
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('zh'),
+        theme: AppTheme.darkTheme,
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => showFilePeekSheet(
+                context,
+                bridge: bridge,
+                projectPath: '/tmp/project',
+                filePath: 'lib/main.dart',
+                artifactSessionId: 'session-1',
+                artifactMessageId: 'message-1',
+                artifactId: 'artifact-1',
+                initialContent: const FileContentMessage(
+                  filePath: 'lib/main.dart',
+                  content: 'void main() {}',
+                  language: 'dart',
+                ),
+                onOpenPreviewRequested: () async => previewCalls += 1,
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('file_peek_unified_preview_button')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('file_peek_unified_preview_button')),
+    );
+    await tester.pump();
+    expect(previewCalls, 1);
+    expect(find.byTooltip('预览'), findsOneWidget);
   });
 }

@@ -42,6 +42,15 @@ String? resolveChatFileRoot({String? worktreePath, String? projectPath}) {
 }
 
 @visibleForTesting
+bool shouldPreferUnifiedArtifactPreview(
+  ArtifactRef artifact, [
+  TargetPlatform? platform,
+]) =>
+    artifact.isSource &&
+    artifact.line == null &&
+    supportsEmbeddedArtifactPreview(platform);
+
+@visibleForTesting
 bool shouldShowForkForAssistant(
   List<ChatEntry> entries,
   int entryIndex, {
@@ -310,6 +319,33 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final bridge = context.read<BridgeService>();
     if (artifact.isSource) {
       final safeSourcePath = sourcePath!;
+      if (shouldPreferUnifiedArtifactPreview(artifact)) {
+        try {
+          await _openResolvedArtifactPreview(
+            bridge: bridge,
+            requestSessionId: requestSessionId,
+            requestProjectPath: requestProjectPath,
+            messageId: messageId,
+            artifact: artifact,
+          );
+          return;
+        } on ArtifactResolveException catch (error) {
+          // Source refs predate the unified preview route on some Bridges.
+          // Preserve their exact File Peek path instead of turning an
+          // additive preview improvement into a compatibility break.
+          if (error.code != 'artifact_resolve_unsupported') {
+            if (mounted && widget.sessionId == requestSessionId) {
+              _showArtifactError(_artifactErrorMessage(error.code));
+            }
+            return;
+          }
+        } catch (_) {
+          if (mounted && widget.sessionId == requestSessionId) {
+            _showArtifactError(AppLocalizations.of(context).artifactOpenFailed);
+          }
+          return;
+        }
+      }
       try {
         // Source refs are opened atomically by identity. Resolving a download
         // URL first creates a TOCTOU window and is unnecessary for File Peek.
@@ -342,6 +378,29 @@ class _ChatMessageListState extends State<ChatMessageList> {
           artifactId: artifact.id,
           initialContent: sourceContent,
           onOpened: () => widget.onFilePeekOpened?.call(safeSourcePath),
+          onOpenPreviewRequested: supportsEmbeddedArtifactPreview()
+              ? () async {
+                  try {
+                    await _openResolvedArtifactPreview(
+                      bridge: bridge,
+                      requestSessionId: requestSessionId,
+                      requestProjectPath: requestProjectPath,
+                      messageId: messageId,
+                      artifact: artifact,
+                    );
+                  } on ArtifactResolveException catch (error) {
+                    if (mounted && widget.sessionId == requestSessionId) {
+                      _showArtifactError(_artifactErrorMessage(error.code));
+                    }
+                  } catch (_) {
+                    if (mounted && widget.sessionId == requestSessionId) {
+                      _showArtifactError(
+                        AppLocalizations.of(context).artifactOpenFailed,
+                      );
+                    }
+                  }
+                }
+              : null,
         );
       } on ArtifactSourceReadException catch (error) {
         if (!mounted || widget.sessionId != requestSessionId) return;
@@ -357,45 +416,13 @@ class _ChatMessageListState extends State<ChatMessageList> {
       return;
     }
     try {
-      final resolved = await bridge.resolveArtifact(
-        sessionId: requestSessionId,
+      await _openResolvedArtifactPreview(
+        bridge: bridge,
+        requestSessionId: requestSessionId,
+        requestProjectPath: requestProjectPath,
         messageId: messageId,
-        artifactId: artifact.id,
+        artifact: artifact,
       );
-      if (!mounted || widget.sessionId != requestSessionId) return;
-      if (supportsEmbeddedArtifactPreview()) {
-        await Navigator.of(context).push<void>(
-          MaterialPageRoute<void>(
-            builder: (_) => ArtifactPreviewScreen(
-              previewUrl: resolved.url,
-              filename: artifact.filename,
-              mimeType: artifact.mimeType,
-              sizeBytes: artifact.sizeBytes,
-              expiresAt: resolved.expiresAt,
-              accessRefresher: () async {
-                final refreshed = await bridge.resolveArtifact(
-                  sessionId: requestSessionId,
-                  messageId: messageId,
-                  artifactId: artifact.id,
-                );
-                return ArtifactPreviewAccess(
-                  previewUrl: refreshed.url,
-                  expiresAt: refreshed.expiresAt,
-                );
-              },
-            ),
-          ),
-        );
-        return;
-      }
-      final launched = await launchUrl(
-        resolved.url,
-        mode: LaunchMode.externalApplication,
-      );
-      if (!mounted || widget.sessionId != requestSessionId) return;
-      if (!launched) {
-        _showArtifactError(AppLocalizations.of(context).artifactOpenFailed);
-      }
     } on ArtifactResolveException catch (error) {
       if (!mounted || widget.sessionId != requestSessionId) return;
       _showArtifactError(_artifactErrorMessage(error.code));
@@ -403,6 +430,63 @@ class _ChatMessageListState extends State<ChatMessageList> {
       if (mounted && widget.sessionId == requestSessionId) {
         _showArtifactError(AppLocalizations.of(context).artifactOpenFailed);
       }
+    }
+  }
+
+  Future<void> _openResolvedArtifactPreview({
+    required BridgeService bridge,
+    required String requestSessionId,
+    required String? requestProjectPath,
+    required String messageId,
+    required ArtifactRef artifact,
+  }) async {
+    final resolved = await bridge.resolveArtifact(
+      sessionId: requestSessionId,
+      messageId: messageId,
+      artifactId: artifact.id,
+    );
+    if (!mounted || widget.sessionId != requestSessionId) return;
+    if (widget.projectPath != requestProjectPath) {
+      throw const ArtifactResolveException(
+        code: 'bridge_changed',
+        message: 'The active project changed while preparing the file.',
+      );
+    }
+    if (supportsEmbeddedArtifactPreview()) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ArtifactPreviewScreen(
+            previewUrl: resolved.url,
+            filename: artifact.filename,
+            mimeType: artifact.mimeType,
+            sizeBytes: artifact.sizeBytes,
+            expiresAt: resolved.expiresAt,
+            accessRefresher: () async {
+              final refreshed = await bridge.resolveArtifact(
+                sessionId: requestSessionId,
+                messageId: messageId,
+                artifactId: artifact.id,
+              );
+              return ArtifactPreviewAccess(
+                previewUrl: refreshed.url,
+                expiresAt: refreshed.expiresAt,
+              );
+            },
+          ),
+        ),
+      );
+      return;
+    }
+    final launched = await launchUrl(
+      resolved.url,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!mounted || widget.sessionId != requestSessionId) return;
+    if (!launched) {
+      throw const ArtifactResolveException(
+        code: 'artifact_open_failed',
+        message: 'The artifact preview could not be opened.',
+      );
     }
   }
 
