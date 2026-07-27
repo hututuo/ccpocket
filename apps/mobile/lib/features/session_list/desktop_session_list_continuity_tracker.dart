@@ -17,9 +17,11 @@ class DesktopSessionListContinuityTracker {
     this.watchRetryBase = const Duration(milliseconds: 750),
     this.watchRetryMax = const Duration(seconds: 8),
     this.maxWatchRetryAttempts = 6,
+    this.watchHalfOpenDelay = const Duration(minutes: 1),
     this.historyFallbackDelay = const Duration(seconds: 2),
   }) {
     assert(maxWatchRetryAttempts > 0);
+    assert(watchHalfOpenDelay > Duration.zero);
     _sessionSubscription = _bridge.sessionList.listen(_syncSessions);
     _connectionSubscription = _bridge.connectionStatus.listen(_onConnection);
     _featureSubscription = _bridge.localFeatureMessages.listen(
@@ -33,6 +35,7 @@ class DesktopSessionListContinuityTracker {
   final Duration watchRetryBase;
   final Duration watchRetryMax;
   final int maxWatchRetryAttempts;
+  final Duration watchHalfOpenDelay;
   final Duration historyFallbackDelay;
   final _uuid = const Uuid();
   StreamSubscription<List<SessionInfo>>? _sessionSubscription;
@@ -198,7 +201,7 @@ class DesktopSessionListContinuityTracker {
         _cancelHistoryFallback(message.sessionId);
         _ownedRequestIds.remove(message.sessionId);
         if (message.errorCode == 'rollout_unavailable') {
-          _suppressWatchWithHistoryFallback(message.sessionId);
+          _enterWatchCooldownWithHistoryFallback(message.sessionId);
         } else if (message.event == CodexDesktopContinuityEventKind.unwatched ||
             (message.errorCode != 'path_not_allowed' &&
                 message.errorCode != 'continuity_binding_mismatch')) {
@@ -277,7 +280,7 @@ class DesktopSessionListContinuityTracker {
     }
     final attempt = _watchRetryAttempts[sessionId] ?? 0;
     if (attempt >= maxWatchRetryAttempts) {
-      _suppressWatchWithHistoryFallback(sessionId);
+      _enterWatchCooldownWithHistoryFallback(sessionId);
       return;
     }
     final multiplier = 1 << attempt.clamp(0, 4);
@@ -294,12 +297,18 @@ class DesktopSessionListContinuityTracker {
     });
   }
 
-  void _suppressWatchWithHistoryFallback(String sessionId) {
+  void _enterWatchCooldownWithHistoryFallback(String sessionId) {
     _cancelWatchAck(sessionId);
     _cancelWatchRetry(sessionId);
-    _watchRetryAttempts.remove(sessionId);
     _ownedRequestIds.remove(sessionId);
-    _suppressedSessionIds.add(sessionId);
+    _suppressedSessionIds.remove(sessionId);
+    _watchRetryAttempts[sessionId] = maxWatchRetryAttempts;
+    _watchRetryTimers[sessionId] = Timer(watchHalfOpenDelay, () {
+      _watchRetryTimers.remove(sessionId);
+      if (_closed || !_bridge.isConnected) return;
+      final session = _trackedSessions[sessionId];
+      if (session != null) _ensureWatch(session);
+    });
     _bridge.clearBackgroundDesktopContinuity(sessionId);
     if (!_historyDirtySessionIds.contains(sessionId) &&
         _bridge.cachedSessionMessages(sessionId).isNotEmpty) {

@@ -530,44 +530,51 @@ void main() {
     expect(watches.length, greaterThan(1));
   });
 
-  test('silent list watch stops after its bounded retry budget', () async {
-    final bridge = _Bridge()..snapshot = const [_session];
-    final tracker = DesktopSessionListContinuityTracker(
-      bridge,
-      watchAckTimeout: const Duration(milliseconds: 1),
-      watchRetryBase: const Duration(milliseconds: 1),
-      watchRetryMax: const Duration(milliseconds: 1),
-      maxWatchRetryAttempts: 2,
-    );
-    addTearDown(() async {
-      tracker.close();
-      await bridge.closeFake();
-    });
+  test(
+    'silent list watch falls back then keeps a low-frequency half-open probe',
+    () async {
+      final bridge = _Bridge()..snapshot = const [_session];
+      final tracker = DesktopSessionListContinuityTracker(
+        bridge,
+        watchAckTimeout: const Duration(milliseconds: 2),
+        watchRetryBase: const Duration(milliseconds: 2),
+        watchRetryMax: const Duration(milliseconds: 2),
+        maxWatchRetryAttempts: 2,
+        watchHalfOpenDelay: const Duration(milliseconds: 100),
+      );
+      addTearDown(() async {
+        tracker.close();
+        await bridge.closeFake();
+      });
 
-    await Future<void>.delayed(const Duration(milliseconds: 15));
-    final watches = bridge.sent
-        .where((message) => message.type == 'codex_desktop_continuity_watch')
-        .length;
-    expect(watches, 3);
-    expect(bridge.historyRequests, 1);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final watches = bridge.sent
+          .where((message) => message.type == 'codex_desktop_continuity_watch')
+          .length;
+      expect(watches, 3);
+      expect(bridge.historyRequests, 1);
 
-    await Future<void>.delayed(const Duration(milliseconds: 5));
-    expect(
-      bridge.sent.where(
-        (message) => message.type == 'codex_desktop_continuity_watch',
-      ),
-      hasLength(watches),
-    );
-  });
+      await Future<void>.delayed(const Duration(milliseconds: 110));
+      expect(
+        bridge.sent
+            .where(
+              (message) => message.type == 'codex_desktop_continuity_watch',
+            )
+            .length,
+        greaterThan(watches),
+      );
+    },
+  );
 
   test(
-    'missing rollout falls back once and stays quiet until reconnect',
+    'missing rollout falls back immediately and probes again after cooldown',
     () async {
       final bridge = _Bridge()..snapshot = const [_session];
       final tracker = DesktopSessionListContinuityTracker(
         bridge,
         watchRetryBase: const Duration(milliseconds: 1),
         watchRetryMax: const Duration(milliseconds: 1),
+        watchHalfOpenDelay: const Duration(milliseconds: 20),
       );
       addTearDown(() async {
         tracker.close();
@@ -598,12 +605,7 @@ void main() {
         hasLength(1),
       );
 
-      bridge.connected = false;
-      bridge._connections.add(BridgeConnectionState.disconnected);
-      await _flush();
-      bridge.connected = true;
-      bridge._connections.add(BridgeConnectionState.connected);
-      await _flush();
+      await Future<void>.delayed(const Duration(milliseconds: 25));
       expect(
         bridge.sent.where(
           (message) => message.type == 'codex_desktop_continuity_watch',
