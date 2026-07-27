@@ -87,6 +87,49 @@ describe("FileMutationAuthorizer", () => {
     });
   });
 
+  it("keeps password throttling across reconnects and concurrent attempts", async () => {
+    let now = 1_000;
+    const fixture = await createFixture({ now: () => now });
+    await fixture.store.setPassword(testCredential);
+
+    const clients = Array.from({ length: 5 }, () => ({}));
+    const attempts = clients.map((client) =>
+      fixture.authorizer.authorize(client, operation, {
+        method: "password",
+        password: incorrectCredential,
+      }),
+    );
+    const results = await Promise.allSettled(attempts);
+    expect(
+      results.every(
+        (result) =>
+          result.status === "rejected" &&
+          result.reason instanceof FileMutationAuthError &&
+          result.reason.code === "invalid_password",
+      ),
+    ).toBe(true);
+    for (const client of clients) {
+      fixture.authorizer.disconnect(client);
+    }
+
+    await expect(
+      fixture.authorizer.authorize({}, operation, {
+        method: "password",
+        password: testCredential,
+      }),
+    ).rejects.toMatchObject<FileMutationAuthError>({
+      code: "password_rate_limited",
+    });
+
+    now += 30_001;
+    await expect(
+      fixture.authorizer.authorize({}, operation, {
+        method: "password",
+        password: testCredential,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it("reloads a password changed by the standalone Bridge command", async () => {
     const fixture = await createFixture();
     await fixture.store.setPassword(testCredential);
@@ -191,7 +234,7 @@ describe("FileMutationAuthorizer", () => {
   });
 });
 
-async function createFixture() {
+async function createFixture(options: { now?: () => number } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "ccpocket-file-auth-"));
   temporaryDirectories.push(directory);
   const filePath = join(directory, "auth.json");
@@ -199,6 +242,7 @@ async function createFixture() {
   const authorizer = new FileMutationAuthorizer({
     store,
     bridgeInstanceId: "bridge-test",
+    now: options.now,
   });
   const client = {};
   const { privateKey, publicKey } = generateKeyPairSync("ec", {

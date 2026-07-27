@@ -369,10 +369,8 @@ export class FileMutationAuthorizer {
   private readonly now: () => number;
   private readonly challengeTtlMs: number;
   private readonly challenges = new Map<string, ActiveChallenge>();
-  private readonly passwordFailures = new WeakMap<
-    object,
-    PasswordFailureState
-  >();
+  private passwordFailure: PasswordFailureState | undefined;
+  private passwordAttemptTail: Promise<void> = Promise.resolve();
 
   constructor(options: FileMutationAuthorizerOptions) {
     this.store = options.store ?? new FileMutationAuthStore();
@@ -514,15 +512,19 @@ export class FileMutationAuthorizer {
     for (const [challengeId, challenge] of this.challenges) {
       if (challenge.client === client) this.challenges.delete(challengeId);
     }
-    this.passwordFailures.delete(client);
   }
 
-  private async requirePassword(
-    client: object,
-    password: string,
-  ): Promise<void> {
+  private requirePassword(_client: object, password: string): Promise<void> {
+    const attempt = this.passwordAttemptTail.then(() =>
+      this.verifyPasswordAttempt(password),
+    );
+    this.passwordAttemptTail = attempt.catch(() => undefined);
+    return attempt;
+  }
+
+  private async verifyPasswordAttempt(password: string): Promise<void> {
     const now = this.now();
-    const failure = this.passwordFailures.get(client);
+    const failure = this.passwordFailure;
     if (failure && failure.blockedUntil > now) {
       throw new FileMutationAuthError(
         "password_rate_limited",
@@ -531,15 +533,15 @@ export class FileMutationAuthorizer {
     }
     const valid = await this.store.verifyPassword(password);
     if (valid) {
-      this.passwordFailures.delete(client);
+      this.passwordFailure = undefined;
       return;
     }
     const failures = (failure?.failures ?? 0) + 1;
-    this.passwordFailures.set(client, {
+    this.passwordFailure = {
       failures,
       blockedUntil:
         failures >= PASSWORD_FAILURE_LIMIT ? now + PASSWORD_BLOCK_MS : 0,
-    });
+    };
     throw new FileMutationAuthError(
       "invalid_password",
       "The Bridge file-access password is incorrect",
