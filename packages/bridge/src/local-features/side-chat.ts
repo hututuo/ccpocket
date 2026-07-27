@@ -1047,7 +1047,7 @@ function asSideChatParentProcess(
   const process = session.process as Partial<CodexProcess>;
   // approvalPolicy is deliberately not part of this duck-check: it is
   // undefined while the policy is unknown (e.g. a Desktop-resumed thread),
-  // and inheritedStartOptions already falls back to "on-request".
+  // and inheritedStartOptions leaves unknown policy resolution to Codex.
   return typeof process.model === "string" &&
     typeof process.approvalsReviewer === "string" &&
     typeof process.serviceTier === "string"
@@ -1074,8 +1074,7 @@ function inheritedStartOptions(
   const settings = session.codexSettings ?? {};
   const approvalPolicy =
     approvalPolicyValue(settings.approvalPolicy) ??
-    approvalPolicyValue(parent.approvalPolicy) ??
-    "on-request";
+    approvalPolicyValue(parent.approvalPolicy);
   const approvalsReviewer =
     approvalsReviewerValue(settings.approvalsReviewer) ??
     approvalsReviewerValue(parent.approvalsReviewer) ??
@@ -1104,7 +1103,7 @@ function inheritedStartOptions(
     ...(nonEmpty(settings.profile)
       ? { profile: settings.profile!.trim() }
       : {}),
-    approvalPolicy,
+    ...(approvalPolicy ? { approvalPolicy } : {}),
     approvalsReviewer,
     ...(codexPermissionsMode ? { codexPermissionsMode } : {}),
     sandboxMode,

@@ -357,8 +357,8 @@ describe("SideChatFeatureHandler", () => {
 
   it("opens a side chat when the parent approval policy is unknown", async () => {
     // A Desktop-resumed thread can have no known approval policy; the parent
-    // getter then reports undefined instead of a fabricated value, and the
-    // fork must still open with the restrictive fallback.
+    // getter then reports undefined instead of a fabricated value. The fork
+    // must leave it unset so Codex can resolve the official profile/config.
     const parent = parentProcess();
     (parent as { approvalPolicy?: string }).approvalPolicy = undefined;
     const child = new FakeCodexProcess();
@@ -374,9 +374,7 @@ describe("SideChatFeatureHandler", () => {
         .map((entry) => entry.message)
         .filter((message) => message.event === "error"),
     ).toEqual([]);
-    expect(child.start.mock.calls[0]?.[1]).toMatchObject({
-      approvalPolicy: "on-request",
-    });
+    expect(child.start.mock.calls[0]?.[1]).not.toHaveProperty("approvalPolicy");
     child.ready();
   });
 
