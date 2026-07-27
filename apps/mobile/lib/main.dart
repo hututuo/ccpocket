@@ -222,6 +222,12 @@ void main() async {
         receivedFileExportNativeApiVersion,
     notifications: NotificationServiceFileTransferGateway(
       NotificationService.instance,
+      localeTag: () {
+        final selected = prefs.getString(SettingsCubit.keyAppLocale)?.trim();
+        return selected == null || selected.isEmpty
+            ? WidgetsBinding.instance.platformDispatcher.locale.toLanguageTag()
+            : selected;
+      },
     ),
     preferences: prefs,
   );

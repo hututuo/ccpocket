@@ -19,6 +19,7 @@ import 'adaptive_transfer_chunk_sizer.dart';
 import 'file_transfer_cancellation.dart';
 import 'file_transfer_http.dart';
 import 'file_transfer_storage.dart';
+import 'file_transfer_strings.dart';
 
 const fileTransferRecentResultLimit = 12;
 const fileTransferReceiveQueueLimit = 8;
@@ -211,23 +212,36 @@ class FlutterSecureFileTransferSecretStore implements FileTransferSecretStore {
 
 class NotificationServiceFileTransferGateway
     implements FileTransferNotificationGateway {
-  const NotificationServiceFileTransferGateway(this._notifications);
+  NotificationServiceFileTransferGateway(
+    this._notifications, {
+    String Function()? localeTag,
+  }) : _localeTag =
+           localeTag ??
+           (() => PlatformDispatcher.instance.locale.toLanguageTag());
+
   final NotificationService _notifications;
+  final String Function() _localeTag;
 
   @override
-  Future<void> received(String filename) => _notifications.show(
-    title: 'File received',
-    body: '$filename was saved to Files > CC Pocket > Downloads.',
-    id: _notificationId('received:$filename'),
-    payload: fileTransferNotificationPayload,
-  );
+  Future<void> received(String filename) {
+    final copy = FileTransferStrings(_localeTag());
+    return _notifications.show(
+      title: copy.receivedNotificationTitle,
+      body: copy.receivedNotificationBody(filename),
+      id: _notificationId('received:$filename'),
+      payload: fileTransferNotificationPayload,
+    );
+  }
 
   @override
-  Future<void> failed(String filename, String message) => _notifications.show(
-    title: 'File transfer paused',
-    body: '$filename: $message',
-    id: _notificationId('failed:$filename'),
-  );
+  Future<void> failed(String filename, String message) {
+    final copy = FileTransferStrings(_localeTag());
+    return _notifications.show(
+      title: copy.pausedNotificationTitle,
+      body: copy.pausedNotificationBody(filename, message),
+      id: _notificationId('failed:$filename'),
+    );
+  }
 }
 
 const fileTransferNotificationPayload = 'ccpocket:file-transfer';

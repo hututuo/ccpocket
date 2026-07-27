@@ -41,7 +41,9 @@ class SettingsCubit extends Cubit<SettingsState> {
   VoidCallback? _supporterListener;
 
   static const _keyThemeMode = 'settings_theme_mode';
-  static const _keyAppLocale = 'settings_app_locale';
+
+  /// Also read by early-created services that must emit localized notifications.
+  static const keyAppLocale = 'settings_app_locale';
   static const _keySpeechLocale = 'settings_speech_locale';
   static const _keyFcmMachines = 'settings_fcm_machines';
   static const _keyFcmPrivacyMachines = 'settings_fcm_privacy_machines';
@@ -161,7 +163,7 @@ class SettingsCubit extends Cubit<SettingsState> {
 
   static SettingsState _load(SharedPreferences prefs) {
     final themeModeIndex = prefs.getInt(_keyThemeMode);
-    final appLocale = prefs.getString(_keyAppLocale) ?? '';
+    final appLocale = prefs.getString(keyAppLocale) ?? '';
     final speechLocale = prefs.getString(_keySpeechLocale);
     var notificationPreferences = NotificationPreferences.defaults;
     final notificationPreferencesJson = prefs.getString(
@@ -350,7 +352,7 @@ class SettingsCubit extends Cubit<SettingsState> {
   }
 
   void setAppLocaleId(String localeId) {
-    _prefs.setString(_keyAppLocale, localeId);
+    _prefs.setString(keyAppLocale, localeId);
     emit(state.copyWith(appLocaleId: localeId));
     // Auto-sync push notification locale when app language changes
     if (state.fcmEnabled) {

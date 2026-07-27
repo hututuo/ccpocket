@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'file_transfer_service.dart';
 import 'file_transfer_sheet.dart';
+import 'file_transfer_strings.dart';
 
 class ReceivedFileInboxBanner extends StatelessWidget {
   const ReceivedFileInboxBanner({
@@ -15,7 +16,9 @@ class ReceivedFileInboxBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final zh = Localizations.localeOf(context).languageCode == 'zh';
+    final copy = FileTransferStrings(
+      Localizations.localeOf(context).toLanguageTag(),
+    );
     final count = service.unreadReceivedCount;
     final latest = service.receivedFiles.isEmpty
         ? null
@@ -37,7 +40,7 @@ class ReceivedFileInboxBanner extends StatelessWidget {
             child: Icon(Icons.download_done_rounded, color: cs.secondary),
           ),
           title: Text(
-            zh ? '电脑发来了 $count 个文件' : '$count file(s) received from Mac',
+            copy.receivedBanner(count),
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
           subtitle: latest == null

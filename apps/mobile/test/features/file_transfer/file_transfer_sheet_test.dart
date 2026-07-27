@@ -6,7 +6,9 @@ import 'package:ccpocket/features/artifact_preview/artifact_quick_look_service.d
 import 'package:ccpocket/features/file_transfer/file_transfer_service.dart';
 import 'package:ccpocket/features/file_transfer/file_transfer_sheet.dart';
 import 'package:ccpocket/features/file_transfer/file_transfer_storage.dart';
+import 'package:ccpocket/features/file_transfer/file_transfer_strings.dart';
 import 'package:ccpocket/features/file_transfer/received_file_inbox_banner.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -67,6 +69,39 @@ void main() {
     clock: () => DateTime.utc(2026, 7, 18, 12),
     requestIdGenerator: _Ids().next,
   );
+
+  test('file transfer notifications follow the selected app language', () {
+    final ja = FileTransferStrings('ja-JP');
+    expect(ja.receivedNotificationTitle, 'ファイルを受信しました');
+    expect(
+      ja.receivedNotificationBody('report.pdf'),
+      contains('report.pdf を「ファイル」App'),
+    );
+
+    final ko = FileTransferStrings('ko_KR');
+    expect(ko.pausedNotificationTitle, '파일 전송이 일시 정지되었습니다');
+    expect(
+      ko.pausedNotificationBody('report.pdf', 'insufficient_storage'),
+      'report.pdf: 사용 가능한 저장 공간이 부족합니다',
+    );
+  });
+
+  testWidgets('Japanese and Korean file transfer sheets use localized copy', (
+    tester,
+  ) async {
+    final service = makeService(
+      client: MockClient((_) async => http.Response('', 500)),
+    );
+
+    await _pumpSheet(tester, service, locale: const Locale('ja'));
+    expect(find.text('ファイル転送'), findsOneWidget);
+    expect(find.text('最近の転送'), findsOneWidget);
+
+    await _pumpSheet(tester, service, locale: const Locale('ko'));
+    expect(find.text('파일 전송'), findsOneWidget);
+    expect(find.text('최근 전송'), findsOneWidget);
+    service.dispose();
+  });
 
   testWidgets('old Bridge stays disabled with a clear fallback', (
     tester,
@@ -440,14 +475,43 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider<FileTransferService>.value(
         value: service,
-        child: MaterialApp(
-          home: Scaffold(body: ReceivedFileInboxBanner(service: service)),
+        child: const MaterialApp(
+          locale: Locale('en'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(body: _ReceivedFileBannerFromProvider()),
         ),
       ),
     );
 
     expect(find.text('1 file(s) received from Mac'), findsOneWidget);
     expect(find.text('incoming.txt'), findsOneWidget);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<FileTransferService>.value(
+        value: service,
+        child: const MaterialApp(
+          locale: Locale('ja'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(body: _ReceivedFileBannerFromProvider()),
+        ),
+      ),
+    );
+    expect(find.text('Mac から 1 件のファイルを受信しました'), findsOneWidget);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<FileTransferService>.value(
+        value: service,
+        child: const MaterialApp(
+          locale: Locale('ko'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(body: _ReceivedFileBannerFromProvider()),
+        ),
+      ),
+    );
+    expect(find.text('Mac에서 파일 1개를 받았습니다'), findsOneWidget);
     await tester.tap(
       find.byKey(const ValueKey('dismiss_received_file_inbox_banner')),
     );
@@ -457,27 +521,48 @@ void main() {
   });
 }
 
-Future<void> _pumpTile(WidgetTester tester, FileTransferService service) =>
-    tester.pumpWidget(
-      ChangeNotifierProvider<FileTransferService>.value(
-        value: service,
-        child: const MaterialApp(
-          locale: Locale('en'),
-          home: Scaffold(body: FileTransferSettingsTile()),
-        ),
-      ),
-    );
+class _ReceivedFileBannerFromProvider extends StatelessWidget {
+  const _ReceivedFileBannerFromProvider();
 
-Future<void> _pumpSheet(WidgetTester tester, FileTransferService service) =>
-    tester.pumpWidget(
-      ChangeNotifierProvider<FileTransferService>.value(
-        value: service,
-        child: const MaterialApp(
-          locale: Locale('en'),
-          home: Scaffold(body: FileTransferSheet()),
-        ),
-      ),
+  @override
+  Widget build(BuildContext context) {
+    return ReceivedFileInboxBanner(
+      service: context.watch<FileTransferService>(),
     );
+  }
+}
+
+Future<void> _pumpTile(
+  WidgetTester tester,
+  FileTransferService service, {
+  Locale locale = const Locale('en'),
+}) => tester.pumpWidget(
+  ChangeNotifierProvider<FileTransferService>.value(
+    value: service,
+    child: MaterialApp(
+      locale: locale,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: const Scaffold(body: FileTransferSettingsTile()),
+    ),
+  ),
+);
+
+Future<void> _pumpSheet(
+  WidgetTester tester,
+  FileTransferService service, {
+  Locale locale = const Locale('en'),
+}) => tester.pumpWidget(
+  ChangeNotifierProvider<FileTransferService>.value(
+    value: service,
+    child: MaterialApp(
+      locale: locale,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: const Scaffold(body: FileTransferSheet()),
+    ),
+  ),
+);
 
 Future<void> _waitUntil(bool Function() condition) async {
   for (var attempt = 0; attempt < 300; attempt++) {

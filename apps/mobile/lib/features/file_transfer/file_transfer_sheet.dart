@@ -7,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 import '../artifact_preview/artifact_quick_look_service.dart';
 import '../artifact_preview/artifact_transfer_service.dart';
 import '../file_browser/file_mutation_authorization.dart';
+import 'file_transfer_strings.dart';
 import 'file_transfer_storage.dart';
 import 'file_transfer_service.dart';
 import 'received_file_actions.dart';
@@ -319,9 +320,9 @@ class _ReceivedFileTile extends StatelessWidget {
 }
 
 void _showActionError(BuildContext context, _TransferCopy copy, Object error) {
-  ScaffoldMessenger.of(
-    context,
-  ).showSnackBar(SnackBar(content: Text('${copy.failed}: $error')));
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text('${copy.failed}: ${copy.errorDetail('$error')}')),
+  );
 }
 
 class _StatusCard extends StatelessWidget {
@@ -468,9 +469,11 @@ class _ActiveTransferCard extends StatelessWidget {
       await service.cancelTransfer(record.id);
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('${copy.failed}: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${copy.failed}: ${copy.errorDetail('$error')}'),
+        ),
+      );
     }
   }
 
@@ -482,9 +485,11 @@ class _ActiveTransferCard extends StatelessWidget {
       );
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('${copy.failed}: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${copy.failed}: ${copy.errorDetail('$error')}'),
+        ),
+      );
     }
   }
 }
@@ -509,7 +514,7 @@ class _RecentTransferTile extends StatelessWidget {
       subtitle: Text(
         succeeded
             ? '${copy.completed} · ${_bytes(record.totalBytes)}'
-            : '${record.errorCode ?? copy.failed} · ${_bytes(record.transferredBytes)}',
+            : '${copy.errorDetail(record.errorCode ?? copy.failed)} · ${_bytes(record.transferredBytes)}',
       ),
     );
   }
@@ -526,54 +531,15 @@ String _bytes(int value) {
   return '${(value / (1024 * 1024 * 1024)).toStringAsFixed(2)} GiB';
 }
 
-class _TransferCopy {
-  final bool zh;
-  const _TransferCopy(this.zh);
+class _TransferCopy extends FileTransferStrings {
+  _TransferCopy(super.languageTag);
   factory _TransferCopy.of(BuildContext context) =>
-      _TransferCopy(Localizations.localeOf(context).languageCode == 'zh');
+      _TransferCopy(Localizations.localeOf(context).toLanguageTag());
 
-  String get title => zh ? '文件互传' : 'File Transfer';
-  String get subtitle =>
-      zh ? 'Mac 与 iPhone 双向续传' : 'Resumable Mac ↔ iPhone transfer';
-  String get uploadToMac => zh ? '上传到 Mac' : 'Upload to Mac';
-  String get ready => zh ? '已连接，可双向传输' : 'Connected and ready';
   String unavailable(FileTransferService service) {
-    if (!service.platformSupported) {
-      return zh
-          ? '当前 iPhone 系统或 APP 构建不支持文件互传'
-          : 'This iPhone system or app build does not support File Transfer';
-    }
-    if (!service.isConnected) {
-      return zh ? '连接 Mac 后才可文件互传' : 'Connect to the Mac for File Transfer';
-    }
-    return zh ? '当前 Bridge 不支持文件互传 V2' : 'File Transfer V2 unavailable';
+    return unavailableStatus(
+      platformSupported: service.platformSupported,
+      connected: service.isConnected,
+    );
   }
-
-  String get filesLocation => zh
-      ? '接收文件：文件 App > CC Pocket > Downloads'
-      : 'Received files: Files > CC Pocket > Downloads';
-  String get autoResume => zh ? '自动继续未完成传输' : 'Automatically resume';
-  String get autoResumeDescription => zh
-      ? '仅在同一台已连接的 Mac 上续传，不进入聊天离线队列'
-      : 'Only on the same live Mac; never enters the chat offline queue';
-  String get limit =>
-      zh ? '单文件上限 15 GiB · 分块流式传输' : '15 GiB per file · streamed in chunks';
-  String get recent => zh ? '最近传输' : 'Recent transfers';
-  String get received => zh ? '电脑发来的文件' : 'Files received from Mac';
-  String get preview => zh ? '预览' : 'Preview';
-  String get share => zh ? '分享' : 'Share';
-  String get saveElsewhere => zh ? '另存到文件' : 'Save to Files';
-  String get savedElsewhere => zh ? '文件已另存' : 'File saved';
-  String get noRecent => zh ? '还没有传输记录' : 'No recent transfers';
-  String get pause => zh ? '暂停' : 'Pause';
-  String get resume => zh ? '继续' : 'Resume';
-  String get cancel => zh ? '取消传输' : 'Cancel';
-  String get cancelTitle => zh ? '取消这个传输？' : 'Cancel this transfer?';
-  String get cancelBody => zh
-      ? '未完成的分块和恢复凭据会被清理；已经完成的目标文件不会删除。'
-      : 'Partial data and resume credentials will be removed. Completed files are never deleted.';
-  String get completed => zh ? '已完成' : 'Completed';
-  String get failed => zh ? '失败' : 'Failed';
-  String startQueued(int count) =>
-      zh ? '开始 $count 个待接收文件' : 'Start $count queued transfer(s)';
 }
