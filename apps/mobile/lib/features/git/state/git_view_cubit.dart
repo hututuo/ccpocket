@@ -9,6 +9,8 @@ import '../../../services/bridge_service.dart';
 import '../../../utils/diff_parser.dart';
 import 'git_view_state.dart';
 
+typedef _LegacyDiffImageKey = ({BridgeService bridge, String filePath});
+
 /// Manages diff viewer state: file parsing, collapse/expand, and git actions.
 ///
 /// Two modes controlled by constructor parameters:
@@ -94,6 +96,14 @@ class GitViewCubit extends Cubit<GitViewState> {
   /// Monotonic id source shared by all cubits so every get_diff in the app
   /// gets a distinct requestId (`diff_result` is a global broadcast stream).
   static int _diffRequestCounter = 0;
+  static int _diffImageRequestCounter = 0;
+
+  /// Old Bridges do not echo image request identity. Accept such a response
+  /// only when one cubit on that exact Bridge is waiting for the relative path;
+  /// otherwise two projects containing e.g. assets/logo.png are ambiguous.
+  static final Map<_LegacyDiffImageKey, Set<String>>
+      _legacyPendingDiffImageRequests = {};
+  final Map<String, String> _pendingDiffImageRequestIds = {};
 
   /// requestId of this cubit's latest get_diff; older or foreign responses
   /// are discarded.
@@ -103,6 +113,10 @@ class GitViewCubit extends Cubit<GitViewState> {
   /// diff_result so each cubit consumes only its own response; old Bridges
   /// ignore the extra key and echo nothing (legacy single-session mode).
   void _sendGetDiff(String projectPath, {required bool staged}) {
+    _clearPendingDiffImageRequests();
+    if (state.loadingImageIndices.isNotEmpty) {
+      emit(state.copyWith(loadingImageIndices: const {}));
+    }
     final requestId = 'gitdiff-${++GitViewCubit._diffRequestCounter}';
     _pendingDiffRequestId = requestId;
     _bridge.send(
@@ -248,6 +262,41 @@ class GitViewCubit extends Cubit<GitViewState> {
   /// Maximum number of concurrent image loads to prevent server overload.
   static const _maxConcurrentLoads = 3;
 
+  void _registerPendingDiffImageRequest(String filePath, String requestId) {
+    final previous = _pendingDiffImageRequestIds[filePath];
+    if (previous != null) {
+      _removeLegacyPendingDiffImageRequest(filePath, previous);
+    }
+    _pendingDiffImageRequestIds[filePath] = requestId;
+    final key = (bridge: _bridge, filePath: filePath);
+    (_legacyPendingDiffImageRequests[key] ??= {}).add(requestId);
+  }
+
+  void _removeLegacyPendingDiffImageRequest(
+    String filePath,
+    String requestId,
+  ) {
+    final key = (bridge: _bridge, filePath: filePath);
+    final pending = _legacyPendingDiffImageRequests[key];
+    pending?.remove(requestId);
+    if (pending?.isEmpty == true) {
+      _legacyPendingDiffImageRequests.remove(key);
+    }
+  }
+
+  void _completePendingDiffImageRequest(String filePath, String requestId) {
+    if (_pendingDiffImageRequestIds[filePath] != requestId) return;
+    _pendingDiffImageRequestIds.remove(filePath);
+    _removeLegacyPendingDiffImageRequest(filePath, requestId);
+  }
+
+  void _clearPendingDiffImageRequests() {
+    for (final entry in _pendingDiffImageRequestIds.entries) {
+      _removeLegacyPendingDiffImageRequest(entry.key, entry.value);
+    }
+    _pendingDiffImageRequestIds.clear();
+  }
+
   /// Load image data on demand (for loadable or auto-display images).
   void loadImage(int fileIdx) {
     final projectPath = _projectPath;
@@ -267,12 +316,38 @@ class GitViewCubit extends Cubit<GitViewState> {
       ),
     );
 
+    final requestId =
+        'gitimage-${++GitViewCubit._diffImageRequestCounter}';
+    _registerPendingDiffImageRequest(file.filePath, requestId);
     _bridge.send(
-      ClientMessage.getDiffImage(projectPath, file.filePath, 'both'),
+      ClientMessage.getDiffImage(
+        projectPath,
+        file.filePath,
+        'both',
+        requestId: requestId,
+      ),
     );
   }
 
   void _onDiffImageResult(DiffImageResultMessage result) {
+    if (result.projectPath != null && result.projectPath != _projectPath) {
+      return;
+    }
+    final expectedRequestId = _pendingDiffImageRequestIds[result.filePath];
+    if (expectedRequestId == null) return;
+    if (result.requestId != null) {
+      if (result.requestId != expectedRequestId) return;
+    } else {
+      final legacyRequests = _legacyPendingDiffImageRequests[(
+        bridge: _bridge,
+        filePath: result.filePath,
+      )];
+      if (legacyRequests == null ||
+          legacyRequests.length != 1 ||
+          !legacyRequests.contains(expectedRequestId)) {
+        return;
+      }
+    }
     final files = state.files;
     final idx = files.indexWhere((f) => f.filePath == result.filePath);
     if (idx == -1) return;
@@ -318,6 +393,7 @@ class GitViewCubit extends Cubit<GitViewState> {
 
     // Persist loaded image bytes to in-memory cache for instant reuse.
     if (removeFromLoading && _projectPath != null) {
+      _completePendingDiffImageRequest(result.filePath, expectedRequestId);
       _bridge.setDiffImageCache(
         _projectPath,
         file.filePath,
@@ -664,6 +740,7 @@ class GitViewCubit extends Cubit<GitViewState> {
 
   @override
   Future<void> close() {
+    _clearPendingDiffImageRequests();
     _diffSub?.cancel();
     _diffImageSub?.cancel();
     _stageSub?.cancel();

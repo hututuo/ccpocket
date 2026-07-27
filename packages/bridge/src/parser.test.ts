@@ -99,6 +99,23 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("parses get_diff_image with an optional requestId", () => {
+    const bare = {
+      type: "get_diff_image",
+      projectPath: "/home/user/project",
+      filePath: "assets/logo.png",
+      version: "both",
+    };
+    expect(parseClientMessage(JSON.stringify(bare))).toEqual(bare);
+
+    const withId = { ...bare, requestId: "gitimage-7" };
+    expect(parseClientMessage(JSON.stringify(withId))).toEqual(withId);
+
+    expect(
+      parseClientMessage(JSON.stringify({ ...bare, requestId: 7 })),
+    ).toBeNull();
+  });
+
   it("parses client capabilities", () => {
     const msg = parseClientMessage(
       '{"type":"client_capabilities","protocolVersion":1,"appVersion":"1.72.1","supportedServerMessages":["conversation_queue"]}',

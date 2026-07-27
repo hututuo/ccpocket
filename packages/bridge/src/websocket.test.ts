@@ -8320,6 +8320,60 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     }
   });
 
+  it("echoes project and request identity in diff image results", async () => {
+    const projectPath = mkdtempSync(resolve(tmpdir(), "ccpocket-diff-image-"));
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    writeFileSync(
+      resolve(projectPath, "logo.png"),
+      Buffer.from(pngBase64, "base64"),
+    );
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: [projectPath],
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    try {
+      await (bridge as any).handleClientMessage(
+        {
+          type: "get_diff_image",
+          projectPath,
+          filePath: "logo.png",
+          version: "new",
+          requestId: "gitimage-42",
+        },
+        ws,
+      );
+
+      await expect
+        .poll(() =>
+          ws.send.mock.calls
+            .map((call: unknown[]) => JSON.parse(call[0] as string))
+            .find((message: any) => message.type === "diff_image_result"),
+        )
+        .toBeDefined();
+      const result = ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) => message.type === "diff_image_result");
+      expect(result).toMatchObject({
+        type: "diff_image_result",
+        projectPath,
+        requestId: "gitimage-42",
+        filePath: "logo.png",
+        version: "new",
+        base64: pngBase64,
+      });
+    } finally {
+      bridge.close();
+      rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
   it("returns base64 image data for image file peek", async () => {
     const projectPath = mkdtempSync(resolve(tmpdir(), "ccpocket-bridge-"));
     const pngBase64 =

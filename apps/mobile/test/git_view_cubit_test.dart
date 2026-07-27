@@ -47,6 +47,20 @@ diff --git a/file_c.dart b/file_c.dart
  end
 ''';
 
+const _imageDiff = '''
+diff --git a/assets/logo.png b/assets/logo.png
+index 1111111..2222222 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ
+''';
+
+const _imageChange = DiffImageChange(
+  filePath: 'assets/logo.png',
+  oldSize: 1,
+  newSize: 1,
+  mimeType: 'image/png',
+  loadable: true,
+);
+
 /// Large diff with many files for stress testing.
 const _largeDiff = '''
 diff --git a/a.dart b/a.dart
@@ -84,6 +98,8 @@ diff --git a/e.dart b/e.dart
 /// Mock BridgeService that exposes controllable streams for diff + staging + remote.
 class MockDiffBridgeService extends BridgeService {
   final _diffController = StreamController<DiffResultMessage>.broadcast();
+  final _diffImageController =
+      StreamController<DiffImageResultMessage>.broadcast();
   final _stageController = StreamController<GitStageResultMessage>.broadcast();
   final _unstageController =
       StreamController<GitUnstageResultMessage>.broadcast();
@@ -108,6 +124,9 @@ class MockDiffBridgeService extends BridgeService {
 
   @override
   Stream<DiffResultMessage> get diffResults => _diffController.stream;
+  @override
+  Stream<DiffImageResultMessage> get diffImageResults =>
+      _diffImageController.stream;
   @override
   Stream<GitStageResultMessage> get gitStageResults => _stageController.stream;
   @override
@@ -147,6 +166,8 @@ class MockDiffBridgeService extends BridgeService {
   }
 
   void emitDiff(DiffResultMessage msg) => _diffController.add(msg);
+  void emitDiffImage(DiffImageResultMessage msg) =>
+      _diffImageController.add(msg);
   void emitStageResult(GitStageResultMessage msg) => _stageController.add(msg);
   void emitUnstageResult(GitUnstageResultMessage msg) =>
       _unstageController.add(msg);
@@ -165,6 +186,7 @@ class MockDiffBridgeService extends BridgeService {
   @override
   void dispose() {
     _diffController.close();
+    _diffImageController.close();
     _stageController.close();
     _unstageController.close();
     _unstageHunksController.close();
@@ -182,6 +204,40 @@ class MockDiffBridgeService extends BridgeService {
 
 GitViewCubit _createCubit({String? initialDiff}) {
   return GitViewCubit(bridge: BridgeService(), initialDiff: initialDiff);
+}
+
+Map<String, dynamic> _messageJson(ClientMessage message) =>
+    jsonDecode(message.toJson()) as Map<String, dynamic>;
+
+String _latestRequestId(
+  MockDiffBridgeService bridge,
+  String type, {
+  String? projectPath,
+}) {
+  final message = bridge.sentMessages.lastWhere((message) {
+    if (message.type != type) return false;
+    return projectPath == null ||
+        _messageJson(message)['projectPath'] == projectPath;
+  });
+  return _messageJson(message)['requestId'] as String;
+}
+
+Future<void> _emitImageDiff(
+  MockDiffBridgeService bridge,
+  String projectPath,
+) async {
+  bridge.emitDiff(
+    DiffResultMessage(
+      diff: _imageDiff,
+      imageChanges: const [_imageChange],
+      requestId: _latestRequestId(
+        bridge,
+        'get_diff',
+        projectPath: projectPath,
+      ),
+    ),
+  );
+  await Future.microtask(() {});
 }
 
 void main() {
@@ -459,6 +515,135 @@ void main() {
       expect(cubit.state.hasUpstream, true);
       expect(cubit.state.pulling, false);
       expect(cubit.state.error, 'conflict');
+    });
+  });
+
+  group('GitViewCubit - diff image correlation', () {
+    test('same relative image path stays isolated between projects', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubitA = GitViewCubit(bridge: mockBridge, projectPath: '/repo/a');
+      final cubitB = GitViewCubit(bridge: mockBridge, projectPath: '/repo/b');
+      addTearDown(() async {
+        await cubitA.close();
+        await cubitB.close();
+        mockBridge.dispose();
+      });
+
+      await _emitImageDiff(mockBridge, '/repo/a');
+      await _emitImageDiff(mockBridge, '/repo/b');
+
+      cubitA.loadImage(0);
+      cubitB.loadImage(0);
+      final requestAId = _latestRequestId(
+        mockBridge,
+        'get_diff_image',
+        projectPath: '/repo/a',
+      );
+
+      mockBridge.emitDiffImage(
+        DiffImageResultMessage(
+          projectPath: '/repo/a',
+          requestId: requestAId,
+          filePath: 'assets/logo.png',
+          version: 'both',
+          oldBase64: base64Encode(const [1]),
+          newBase64: base64Encode(const [2]),
+        ),
+      );
+      await Future.microtask(() {});
+
+      expect(cubitA.state.files.single.imageData?.loaded, isTrue);
+      expect(cubitB.state.files.single.imageData?.loaded, isFalse);
+    });
+
+    test('late image response cannot overwrite a refreshed diff', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubit = GitViewCubit(bridge: mockBridge, projectPath: '/repo/a');
+      addTearDown(() async {
+        await cubit.close();
+        mockBridge.dispose();
+      });
+
+      await _emitImageDiff(mockBridge, '/repo/a');
+      cubit.loadImage(0);
+      final staleImageRequestId = _latestRequestId(
+        mockBridge,
+        'get_diff_image',
+      );
+
+      cubit.refreshDiffOnly();
+      await _emitImageDiff(mockBridge, '/repo/a');
+      cubit.loadImage(0);
+      final currentImageRequestId = _latestRequestId(
+        mockBridge,
+        'get_diff_image',
+      );
+      expect(currentImageRequestId, isNot(staleImageRequestId));
+
+      mockBridge.emitDiffImage(
+        DiffImageResultMessage(
+          projectPath: '/repo/a',
+          requestId: staleImageRequestId,
+          filePath: 'assets/logo.png',
+          version: 'both',
+          oldBase64: base64Encode(const [3]),
+          newBase64: base64Encode(const [4]),
+        ),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.files.single.imageData?.loaded, isFalse);
+
+      mockBridge.emitDiffImage(
+        DiffImageResultMessage(
+          projectPath: '/repo/a',
+          requestId: currentImageRequestId,
+          filePath: 'assets/logo.png',
+          version: 'both',
+          oldBase64: base64Encode(const [5]),
+          newBase64: base64Encode(const [6]),
+        ),
+      );
+      await Future.microtask(() {});
+      expect(cubit.state.files.single.imageData?.loaded, isTrue);
+    });
+
+    test('legacy unstamped image result requires one waiting project', () async {
+      final mockBridge = MockDiffBridgeService();
+      final cubitA = GitViewCubit(bridge: mockBridge, projectPath: '/repo/a');
+      final cubitB = GitViewCubit(bridge: mockBridge, projectPath: '/repo/b');
+      addTearDown(() async {
+        if (!cubitA.isClosed) await cubitA.close();
+        if (!cubitB.isClosed) await cubitB.close();
+        mockBridge.dispose();
+      });
+
+      for (final projectPath in ['/repo/a', '/repo/b']) {
+        await _emitImageDiff(mockBridge, projectPath);
+      }
+      cubitA.loadImage(0);
+      cubitB.loadImage(0);
+      expect(cubitA.state.files.single.imageData?.loaded, isFalse);
+      expect(cubitB.state.files.single.imageData?.loaded, isFalse);
+      expect(
+        mockBridge.sentMessages.where((m) => m.type == 'get_diff_image'),
+        hasLength(2),
+      );
+
+      final legacyResult = DiffImageResultMessage(
+        filePath: 'assets/logo.png',
+        version: 'both',
+        oldBase64: base64Encode(const [7]),
+        newBase64: base64Encode(const [8]),
+      );
+      mockBridge.emitDiffImage(legacyResult);
+      await Future.microtask(() {});
+      expect(cubitA.state.files.single.imageData?.loaded, isFalse);
+      expect(cubitB.state.files.single.imageData?.loaded, isFalse);
+
+      await cubitB.close();
+      mockBridge.emitDiffImage(legacyResult);
+      await Future.microtask(() {});
+      expect(cubitA.state.files.single.imageData?.loaded, isTrue);
     });
   });
 

@@ -8389,12 +8389,14 @@ export class BridgeWebSocketServer {
               const errors = [oldResult.error, newResult.error].filter(Boolean);
               this.send(ws, {
                 type: "diff_image_result",
+                projectPath: msg.projectPath,
                 filePath: msg.filePath,
                 version: "both" as const,
                 oldBase64: oldResult.base64,
                 newBase64: newResult.base64,
                 mimeType: oldResult.mimeType ?? newResult.mimeType,
                 ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
+                ...(msg.requestId ? { requestId: msg.requestId } : {}),
               });
             } catch {
               // WebSocket may have closed; ignore send errors.
@@ -8411,9 +8413,11 @@ export class BridgeWebSocketServer {
               );
               this.send(ws, {
                 type: "diff_image_result",
+                projectPath: msg.projectPath,
                 filePath: msg.filePath,
                 version,
                 ...result,
+                ...(msg.requestId ? { requestId: msg.requestId } : {}),
               });
             } catch {
               // WebSocket may have closed; ignore send errors.

@@ -422,6 +422,8 @@ export type ClientMessage =
       projectPath: string;
       filePath: string;
       version: "old" | "new" | "both";
+      /** Echoed back in diff_image_result so clients can match responses. */
+      requestId?: string;
     }
   | { type: "interrupt"; sessionId?: string }
   | { type: "list_project_history" }
@@ -875,6 +877,7 @@ export type ServerMessage = (
     }
   | {
       type: "diff_image_result";
+      projectPath: string;
       filePath: string;
       version: "old" | "new" | "both";
       base64?: string;
@@ -882,6 +885,8 @@ export type ServerMessage = (
       error?: string;
       oldBase64?: string;
       newBase64?: string;
+      /** Echo of the get_diff_image requestId when the client sent one. */
+      requestId?: string;
     }
   | { type: "worktree_list"; worktrees: WorktreeInfo[]; mainBranch?: string }
   | { type: "worktree_removed"; worktreePath: string }
@@ -2174,6 +2179,8 @@ export function parseClientMessage(data: string): ClientMessage | null {
       case "get_diff_image":
         if (typeof msg.projectPath !== "string") return null;
         if (typeof msg.filePath !== "string") return null;
+        if (msg.requestId !== undefined && typeof msg.requestId !== "string")
+          return null;
         if (
           msg.version !== "old" &&
           msg.version !== "new" &&

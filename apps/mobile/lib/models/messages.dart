@@ -1453,6 +1453,7 @@ sealed class ServerMessage {
         requestId: json['requestId'] as String?,
       ),
       'diff_image_result' => DiffImageResultMessage(
+        projectPath: json['projectPath'] as String?,
         filePath: json['filePath'] as String,
         version: json['version'] as String,
         base64: json['base64'] as String?,
@@ -1460,6 +1461,7 @@ sealed class ServerMessage {
         error: json['error'] as String?,
         oldBase64: json['oldBase64'] as String?,
         newBase64: json['newBase64'] as String?,
+        requestId: json['requestId'] as String?,
       ),
       'worktree_list' => WorktreeListMessage(
         worktrees: (json['worktrees'] as List)
@@ -3583,6 +3585,8 @@ class DiffResultMessage implements ServerMessage {
 }
 
 class DiffImageResultMessage implements ServerMessage {
+  /// Echoed by current Bridges; absent when talking to an old Bridge.
+  final String? projectPath;
   final String filePath;
   final String version;
   final String? base64;
@@ -3592,8 +3596,10 @@ class DiffImageResultMessage implements ServerMessage {
   /// For version="both": old/new base64 in a single response.
   final String? oldBase64;
   final String? newBase64;
+  final String? requestId;
 
   const DiffImageResultMessage({
+    this.projectPath,
     required this.filePath,
     required this.version,
     this.base64,
@@ -3601,6 +3607,7 @@ class DiffImageResultMessage implements ServerMessage {
     this.error,
     this.oldBase64,
     this.newBase64,
+    this.requestId,
   });
 }
 
@@ -5678,12 +5685,14 @@ class ClientMessage {
   factory ClientMessage.getDiffImage(
     String projectPath,
     String filePath,
-    String version,
-  ) => ClientMessage._({
+    String version, {
+    String? requestId,
+  }) => ClientMessage._({
     'type': 'get_diff_image',
     'projectPath': projectPath,
     'filePath': filePath,
     'version': version,
+    'requestId': ?requestId,
   });
 
   factory ClientMessage.interrupt({String? sessionId}) => ClientMessage._(
