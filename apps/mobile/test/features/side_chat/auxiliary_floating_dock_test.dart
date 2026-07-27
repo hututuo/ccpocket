@@ -6,6 +6,7 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _Bridge extends BridgeService {
   @override
@@ -51,6 +52,10 @@ EphemeralSideChatEntry _entry() => EphemeralSideChatEntry(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
 
   testWidgets('expands inline and opens a retained side chat', (
     tester,
@@ -143,6 +148,18 @@ void main() {
     );
     await tester.pump();
     expect(tester.getTopLeft(panel).dx, greaterThan(initialPanelLeft));
+    expect(tester.getTopLeft(panel).dx, greaterThan(700));
+
+    final header = find.byKey(
+      const ValueKey('auxiliary_floating_panel_header'),
+    );
+    final pullGesture = await tester.startGesture(
+      Offset(778, tester.getTopLeft(header).dy + 20),
+    );
+    await pullGesture.moveBy(const Offset(-700, 0));
+    await pullGesture.up();
+    await tester.pump();
+    expect(tester.getTopLeft(panel).dx, inInclusiveRange(10, 430));
 
     await tester.tap(
       find.byKey(const ValueKey('auxiliary_floating_panel_collapse')),
@@ -153,6 +170,46 @@ void main() {
       findsOneWidget,
     );
     expect(panel, findsNothing);
+  });
+
+  testWidgets('restores the snapped handle placement after reconstruction', (
+    tester,
+  ) async {
+    final bridge = _Bridge();
+    final gateway = _Gateway();
+    final registry = EphemeralSideChatRegistryService(bridge: gateway);
+    gateway.isConnected = true;
+    addTearDown(registry.dispose);
+    addTearDown(gateway.dispose);
+    addTearDown(bridge.dispose);
+
+    Widget buildDock() => MaterialApp(
+      home: Scaffold(
+        body: AuxiliaryFloatingDock(
+          sessionId: 'parent-1',
+          bridgeService: bridge,
+          registryService: registry,
+          onOpenSideChat: (_, _) async {},
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(buildDock());
+    await tester.pumpAndSettle();
+    var dock = find.byKey(const ValueKey('auxiliary_floating_dock'));
+    await tester.drag(dock, const Offset(-600, 100));
+    await tester.pumpAndSettle();
+    final savedTop = tester.getTopLeft(dock).dy;
+    expect(tester.getTopLeft(dock).dx, lessThan(0));
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(buildDock());
+    await tester.pumpAndSettle();
+
+    dock = find.byKey(const ValueKey('auxiliary_floating_dock'));
+    expect(tester.getTopLeft(dock).dx, lessThan(0));
+    expect(tester.getTopLeft(dock).dy, closeTo(savedTop, 1));
   });
 
   testWidgets('expanded panel does not block the conversation outside its bounds', (
