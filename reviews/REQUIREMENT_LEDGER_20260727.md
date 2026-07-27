@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`813d1071`
+核对源码基线：`f3e1e1e2`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -91,7 +91,7 @@
 | JSON、单文件 HTML、网页 URL 正确分流；Quick Look 失败走本地/WebView；提供下载/分享 | v01 11.5；v02-006、014 | `3c1985e5`、`435c3613`、`a4ecdf58`、`c4b3174d`；`56393144`；`5e1a72d0`；`6f6797e9`；`813d1071`；artifact preview/File Peek | **代码完成，待设备/部署** | `.json/.html` 路由、本地大文件 Quick Look、过期 token 自动续签和条件入口回归通过；iOS WKWebView 不提供 request/response URI 的主页面 401/403/404/410 已能进入错误页并续签；Bridge 给 Mobile 的文本预览限制为 512 KiB、单行限制为 64 KiB，1 MiB 单行 JSON 不再整段进入手机布局；Agent source、Explore、Git 与顶层项目 File Peek 均已接入同一 Quick Look→WebView fallback 与下载/分享页。新增项目预览路径要求绝对项目路径、根内相对文件、最具体授权根和项目内 canonical target；项目内 HTML 成功，指向项目外的 symlink 被 `path_not_allowed` 拒绝。Bridge 289 项、Mobile 80 项通过，定向 analyze 无问题；压缩/极小化 JSON、真实 MIME/UTType 与 Quick Look 失败样本仍待真实设备/fixture 取证 |
 | Agent 输出的内联图片、绝对 URL、data URL 与相对 Bridge 路径都能正确预览 | v01 11.1、11.5；v02-006、014 | `3ac720fe` 的 `resolveImagePreviewUrl` | **已验证** | 已有 scheme 不再被错误拼接 Bridge 地址，协议相对和无斜杠相对路径统一解析；7 项图片边界回归通过 |
 | Explorer/Git 的旧 Bridge 无 requestId 时也不能串项目或无限加载 | v02-006；全局兼容门禁 | `f1f0dd04`、`3fc46236`、`935b5604`、`f8438e15`、`8374d105` | **已验证** | Explorer 16 项、Git 44 项、Bridge parser/websocket 411 项相关回归通过 |
-| Bridge/手机握手做全面安全审查，但不把密码哈希放热路径，不破坏旧客户端 | v01 11、19；decisions | Origin gate、API key、路径/TOCTOU、Argon2、capability fallback；`25b37014`、`47e2dc81` | **部分完成** | 受限项目/附加写根/工作树的 symlink 与成员校验已闭环；审批参数绑定、auto-approval state、下载 token 与协议级重放等仍需逐项判定，且不能违背用户明确的 owner 全盘只读需求 |
+| Bridge/手机握手做全面安全审查，但不把密码哈希放热路径，不破坏旧客户端 | v01 11、19；decisions | Origin gate、API key、路径/TOCTOU、Argon2、capability fallback；`25b37014`、`47e2dc81`、`8a796105`、`f3e1e1e2` | **已验证** | 受限项目/附加写根/工作树的 symlink 与成员校验已闭环；`Accept & Clear` 必须绑定仍待处理的同一条 Plan 批准，主会话批准/拒绝/回答改为断线不可重放的实时帧。显式空白/超长 `sessionId` 和空审批/队列 ID 会在 parser 层拒绝，避免回退到其他活跃会话；真正省略可选 `sessionId` 的旧客户端保持兼容。auto-approval 每次执行前重核 Bridge 状态、session/process/thread 身份、pending 请求和工具输入；其持久状态按官方 Codex thread ID 归 Bridge 所有，遵循用户“Agent 原机制不额外限权”的明确决策。通用 artifact token 使用 32 字节随机值、过期/容量/文件身份栅栏；有效期内为 Quick Look/HEAD/Range 重用是预览所需语义，不作为跨会话操作授权。续传 token 只持久化哈希并做恒时比较、过期和身份复核。Bridge 423 项与 Mobile 278 项相关回归通过 |
 
 ## 6. 稳定性、兼容、官方更新与最终门槛
 
@@ -107,7 +107,7 @@
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
 | 合并官方最新 commits | v02-014 | `c2cc8379` 语义整合官方 `3289ce93`；`97fb5aab` 同步 `1.109.3` 并保持本地 build 单调递增；本轮 fetch 的 upstream/main=`82962136` | **已验证** | 同一 Claude/Codex 会话的通知或深链会优先揭示现有路由，会话 ID 重启后以实时身份而非旧参数匹配；Codex 深链保留 provider。52 项导航/解析/重启/活动会话回归通过，6 文件 analyze 无问题。官方 build `202` 低于已经交付的本地 build 204，因此本分支采用 `1.109.3+205`，未伪装成官方原始构建号 |
 | 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账；`f9d949f7` 收束旧 Bridge Explore lane | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理。导航联合回归暴露的 WorkspaceShell pending timer 经追踪并非产品应删的迟到帧隔离：旧 Bridge 仍必须保留 quarantine；本提交让 Bridge 流关闭时立即释放 lane/timer，并让 WorkspaceShell 测试明确声明现代 request-correlation capability。Explore + WorkspaceShell 39 项通过，生产改动另有旧 Bridge 流关闭回归 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `813d1071`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent/Explore/Git 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复及旧 Bridge Explore 生命周期闭环均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `f3e1e1e2`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent/Explore/Git 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复、旧 Bridge Explore 生命周期闭环、Plan 清上下文批准绑定、交互帧断线防重放及空身份跨会话回退防护均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -137,9 +137,8 @@ command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（�
 
 ## 8. 下一实施顺序
 
-1. 按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
-2. 复核审批绑定、auto-approval 状态、下载 token 和协议重放边界；
-3. 处理多实例 `CODEX_HOME`、source registry、单写者冲突与会话来源稳定性；
-4. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
-5. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
-6. 最后才列出需要用户在物理 iPhone 上完成的文件预览、通知、Face ID 和后台验收。
+1. 处理多实例 `CODEX_HOME`、source registry、单写者冲突与会话来源稳定性；
+2. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
+3. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
+4. 经用户确认后，才按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
+5. 最后列出需要用户在物理 iPhone 上完成的文件预览、通知、Face ID 和后台验收。

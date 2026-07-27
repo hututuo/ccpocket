@@ -96,7 +96,7 @@ upstream/main:   aa215a3b
 ## 当前继续实施基线
 
 上述代码块保留的是 2026-07-26 初始审查快照，不代表当前源码。继续实施已推进到
-`fix/mobile-comprehensive-v02-20260726@813d1071`；2026-07-28 重新 fetch 后的
+`fix/mobile-comprehensive-v02-20260726@f3e1e1e2`；2026-07-28 重新 fetch 后的
 `upstream/main` 为 `82962136`，其中导航修复已由 `c2cc8379` 结合本地嵌入式
 工作区语义整合，版本记录由 `97fb5aab` 同步为 `1.109.3+205`。逐项状态和验证
 证据以 `REQUIREMENT_LEDGER_20260727.md` 为准。
