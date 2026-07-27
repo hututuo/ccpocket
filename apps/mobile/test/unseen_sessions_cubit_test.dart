@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/providers/unseen_sessions_cubit.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -281,6 +283,76 @@ void main() {
           await cubit.close();
         },
       );
+
+      test('durable resume can be marked seen before runtime attach', () async {
+        final cubit = UnseenSessionsCubit();
+        await cubit.ready;
+
+        cubit.markSeen(
+          'thread-1',
+          scopeKey: 'bridge-a',
+          provider: 'codex',
+          durableProviderSessionId: 'thread-1',
+        );
+        cubit.updateSessions([
+          _session(
+            id: 'runtime-after-attach',
+            provider: 'codex',
+            providerSessionId: 'thread-1',
+          ),
+        ], scopeKey: 'bridge-a');
+
+        expect(cubit.isUnseen('runtime-after-attach'), isFalse);
+        await cubit.close();
+      });
+
+      test('seen state is isolated between Bridge scopes', () async {
+        final cubit = UnseenSessionsCubit();
+        await cubit.ready;
+
+        cubit.updateSessions([
+          _session(
+            id: 'runtime-a',
+            provider: 'codex',
+            providerSessionId: 'thread-shared',
+          ),
+        ], scopeKey: 'bridge-a');
+        cubit.markSeen('runtime-a', scopeKey: 'bridge-a');
+
+        cubit.updateSessions([
+          _session(
+            id: 'runtime-b',
+            provider: 'codex',
+            providerSessionId: 'thread-shared',
+          ),
+        ], scopeKey: 'bridge-b');
+
+        expect(
+          cubit.isUnseen('runtime-b'),
+          isTrue,
+          reason: 'A different Bridge must not inherit another Bridge seen-at',
+        );
+        await cubit.close();
+      });
+
+      test(
+        'scope switch clears runtime mappings from the previous Bridge',
+        () async {
+          final cubit = UnseenSessionsCubit();
+          await cubit.ready;
+
+          cubit.updateSessions([
+            _session(id: 'same-runtime-id'),
+          ], scopeKey: 'bridge-a');
+          cubit.markSeen('same-runtime-id', scopeKey: 'bridge-a');
+          cubit.updateSessions([
+            _session(id: 'same-runtime-id'),
+          ], scopeKey: 'bridge-b');
+
+          expect(cubit.isUnseen('same-runtime-id'), isTrue);
+          await cubit.close();
+        },
+      );
     });
 
     // ---------------------------------------------------------------
@@ -315,6 +387,48 @@ void main() {
 
         await cubit2.close();
       });
+
+      test(
+        'legacy durable key migrates only into the current Bridge',
+        () async {
+          SharedPreferences.setMockInitialValues({
+            'unseen_sessions_seen_at': jsonEncode({
+              'codex:thread-1': '2026-03-11T10:00:00Z',
+            }),
+          });
+          final cubit = UnseenSessionsCubit();
+          await cubit.ready;
+
+          cubit.updateSessions([
+            _session(
+              id: 'runtime-a',
+              provider: 'codex',
+              providerSessionId: 'thread-1',
+            ),
+          ], scopeKey: 'bridge-a');
+          expect(cubit.isUnseen('runtime-a'), isFalse);
+          await cubit.close();
+
+          final prefs = await SharedPreferences.getInstance();
+          final stored =
+              jsonDecode(prefs.getString('unseen_sessions_seen_at')!)
+                  as Map<String, dynamic>;
+          expect(stored, isNot(contains('codex:thread-1')));
+          expect(stored, contains('v2|bridge-a|codex|thread-1'));
+
+          final nextBridge = UnseenSessionsCubit();
+          await nextBridge.ready;
+          nextBridge.updateSessions([
+            _session(
+              id: 'runtime-b',
+              provider: 'codex',
+              providerSessionId: 'thread-1',
+            ),
+          ], scopeKey: 'bridge-b');
+          expect(nextBridge.isUnseen('runtime-b'), isTrue);
+          await nextBridge.close();
+        },
+      );
     });
   });
 }

@@ -401,7 +401,11 @@ class _SessionListScreenState extends State<SessionListScreen>
           );
           final sessionId = msg.sessionId;
           if (owner != null && sessionId != null) {
-            _unseenCubit.markSeen(sessionId);
+            _unseenCubit.markSeen(
+              sessionId,
+              scopeKey: _connectionUiTargetKey(bridge),
+              provider: owner.provider,
+            );
           }
         } else {
           _clearPendingClaudeDefaultsCorrection(
@@ -441,8 +445,10 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _updateUnseenSessions(List<SessionInfo> sessions) {
     final notifications = NotificationService.instance;
+    final bridge = context.read<BridgeService>();
     _unseenCubit.updateSessions(
       sessions,
+      scopeKey: _connectionUiTargetKey(bridge),
       visibleSessionId: notifications.activeSessionId,
       visibleProvider: notifications.activeProvider,
     );
@@ -1720,7 +1726,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     final seenSessionId =
         durableProviderSessionId ?? (!isPending ? sessionId : null);
     if (seenSessionId != null) {
-      _unseenCubit.markSeen(seenSessionId);
+      _unseenCubit.markSeen(
+        seenSessionId,
+        scopeKey: _connectionUiTargetKey(context.read<BridgeService>()),
+        provider: provider?.value,
+        durableProviderSessionId: durableProviderSessionId,
+      );
     }
     final pendingNotifier = isPending ? pendingSessionCreated : null;
     if (widget.embedded) {
