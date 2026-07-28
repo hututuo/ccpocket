@@ -10,8 +10,19 @@ class ConnectionParams extends DeepLinkParams {
 class SessionLinkParams extends DeepLinkParams {
   final String sessionId;
   final String provider;
+  final String? providerSessionId;
+  final String? bridgeInstanceId;
+  final String? codexSourceId;
+  final String? bridgeRouteIdentity;
 
-  SessionLinkParams({required this.sessionId, this.provider = 'claude'});
+  SessionLinkParams({
+    required this.sessionId,
+    this.provider = 'claude',
+    this.providerSessionId,
+    this.bridgeInstanceId,
+    this.codexSourceId,
+    this.bridgeRouteIdentity,
+  });
 }
 
 class ConnectionUrlParser {
@@ -41,7 +52,35 @@ class ConnectionUrlParser {
         final provider = uri.queryParameters['provider'] == 'codex'
             ? 'codex'
             : 'claude';
-        return SessionLinkParams(sessionId: sessionId, provider: provider);
+        final providerSessionId = _boundedQueryParameter(
+          uri,
+          'providerSessionId',
+          256,
+        );
+        final bridgeInstanceId = _boundedQueryParameter(
+          uri,
+          'bridgeInstanceId',
+          256,
+        );
+        // A Codex source is authoritative only together with the stable Bridge
+        // identity that attested it. Source-only links remain unscoped instead
+        // of creating a false cross-Bridge identity.
+        final codexSourceId = provider == 'codex' && bridgeInstanceId != null
+            ? _boundedQueryParameter(uri, 'codexSourceId', 256)
+            : null;
+        // Modern durable identity wins when both modern and legacy fields are
+        // present. Old Bridges may still use their credential-free route key.
+        final bridgeRouteIdentity = bridgeInstanceId == null
+            ? _boundedQueryParameter(uri, 'bridgeRouteIdentity', 1024)
+            : null;
+        return SessionLinkParams(
+          sessionId: sessionId,
+          provider: provider,
+          providerSessionId: providerSessionId,
+          bridgeInstanceId: bridgeInstanceId,
+          codexSourceId: codexSourceId,
+          bridgeRouteIdentity: bridgeRouteIdentity,
+        );
       }
 
       // ccpocket://connect?url=...&token=...
@@ -98,5 +137,19 @@ class ConnectionUrlParser {
     } on FormatException {
       return false;
     }
+  }
+
+  static String? _boundedQueryParameter(
+    Uri uri,
+    String name,
+    int maximumLength,
+  ) {
+    final normalized = uri.queryParameters[name]?.trim();
+    if (normalized == null ||
+        normalized.isEmpty ||
+        normalized.length > maximumLength) {
+      return null;
+    }
+    return normalized;
   }
 }

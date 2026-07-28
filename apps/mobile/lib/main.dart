@@ -990,8 +990,22 @@ class _CcpocketAppState extends State<CcpocketApp> {
     switch (params) {
       case ConnectionParams():
         _deepLinkNotifier.value = params;
-      case SessionLinkParams(:final sessionId, :final provider):
-        _openSessionFromData({'sessionId': sessionId, 'provider': provider});
+      case SessionLinkParams(
+        :final sessionId,
+        :final provider,
+        :final providerSessionId,
+        :final bridgeInstanceId,
+        :final codexSourceId,
+        :final bridgeRouteIdentity,
+      ):
+        _openSessionFromData({
+          'sessionId': sessionId,
+          'provider': provider,
+          'providerSessionId': ?providerSessionId,
+          'bridgeInstanceId': ?bridgeInstanceId,
+          'codexSourceId': ?codexSourceId,
+          'bridgeRouteIdentity': ?bridgeRouteIdentity,
+        });
     }
   }
 

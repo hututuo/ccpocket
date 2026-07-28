@@ -194,6 +194,80 @@ void main() {
         expect(result.provider, 'codex');
       });
 
+      test('parses a source-scoped Codex session link', () {
+        final result =
+            ConnectionUrlParser.parse(
+                  'ccpocket://session/runtime-session'
+                  '?provider=codex'
+                  '&providerSessionId=provider-thread'
+                  '&bridgeInstanceId=bridge-1'
+                  '&codexSourceId=codex-home-a',
+                )
+                as SessionLinkParams?;
+
+        expect(result, isNotNull);
+        expect(result!.providerSessionId, 'provider-thread');
+        expect(result.bridgeInstanceId, 'bridge-1');
+        expect(result.codexSourceId, 'codex-home-a');
+        expect(result.bridgeRouteIdentity, isNull);
+      });
+
+      test('does not trust a Codex source without its Bridge identity', () {
+        final result =
+            ConnectionUrlParser.parse(
+                  'ccpocket://session/runtime-session'
+                  '?provider=codex&codexSourceId=unattested-source',
+                )
+                as SessionLinkParams?;
+
+        expect(result, isNotNull);
+        expect(result!.bridgeInstanceId, isNull);
+        expect(result.codexSourceId, isNull);
+      });
+
+      test('keeps legacy route identity only without a durable Bridge id', () {
+        final legacy =
+            ConnectionUrlParser.parse(
+                  'ccpocket://session/legacy'
+                  '?provider=codex&bridgeRouteIdentity=logical%3Amachine-1',
+                )
+                as SessionLinkParams?;
+        final modern =
+            ConnectionUrlParser.parse(
+                  'ccpocket://session/modern'
+                  '?provider=codex'
+                  '&bridgeInstanceId=bridge-1'
+                  '&bridgeRouteIdentity=logical%3Astale-machine',
+                )
+                as SessionLinkParams?;
+
+        expect(legacy!.bridgeRouteIdentity, 'logical:machine-1');
+        expect(modern!.bridgeInstanceId, 'bridge-1');
+        expect(modern.bridgeRouteIdentity, isNull);
+      });
+
+      test('drops overlong session identity query fields', () {
+        final overlong = 'x' * 257;
+        final url = Uri(
+          scheme: 'ccpocket',
+          host: 'session',
+          path: '/runtime-session',
+          queryParameters: {
+            'provider': 'codex',
+            'providerSessionId': overlong,
+            'bridgeInstanceId': overlong,
+            'codexSourceId': overlong,
+          },
+        );
+        final result =
+            ConnectionUrlParser.parse(url.toString()) as SessionLinkParams?;
+
+        expect(result, isNotNull);
+        expect(result!.providerSessionId, isNull);
+        expect(result.bridgeInstanceId, isNull);
+        expect(result.codexSourceId, isNull);
+      });
+
       test('defaults unsupported session link provider to Claude', () {
         final result =
             ConnectionUrlParser.parse(
