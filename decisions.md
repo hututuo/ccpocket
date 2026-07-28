@@ -814,3 +814,19 @@
   are deferred while the owner guarantees sequential use. The detailed
   contract, compatibility matrix and activation boundary are in
   `docs/codex-shared-session-source.md`.
+
+## Bridge behind Tailscale TCP Serve
+
+- When Tailscale TCP Serve owns the machine's Tailnet address and forwards
+  `Tailnet-IP:8765` to `127.0.0.1:8765`, the Bridge service must bind its local
+  listener to `127.0.0.1`, not `0.0.0.0`. A wildcard bind conflicts with the
+  userspace Tailscale listener after a Bridge restart even when a previously
+  started process appeared to coexist.
+- The public Mobile route remains the Tailnet address; loopback is the private
+  forwarding target. Local `/health` plus `tailscale serve status` proves the
+  server and forwarding configuration, while an actual phone reconnect remains
+  a separate end-to-end gate because the Mac may not hairpin through its own
+  Tailnet TCP listener.
+- Runtime rollback must preserve the loopback host while swapping only
+  `BRIDGE_CLI_ENTRY`. Loading an older plist that restores `0.0.0.0` is unsafe
+  until the Tailscale Serve listener has been deliberately removed.
