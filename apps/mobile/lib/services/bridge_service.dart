@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:math';
 
@@ -46,6 +47,57 @@ class _PermissionRequestObserverRegistration {
   const _PermissionRequestObserverRegistration(this.observer);
 
   final SessionPermissionRequestObserver observer;
+}
+
+class _OfflineMessageTarget {
+  const _OfflineMessageTarget({
+    required this.routeIdentity,
+    required this.bridgeInstanceId,
+    required this.codexSourceId,
+  });
+
+  final String? routeIdentity;
+  final String? bridgeInstanceId;
+  final String? codexSourceId;
+
+  Map<String, dynamic> toJson() => {
+    if (routeIdentity != null) 'routeIdentity': routeIdentity,
+    if (bridgeInstanceId != null) 'bridgeInstanceId': bridgeInstanceId,
+    if (codexSourceId != null) 'codexSourceId': codexSourceId,
+  };
+
+  static _OfflineMessageTarget? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final routeIdentity = _boundedString(raw['routeIdentity'], 2048);
+    final bridgeInstanceId = _boundedString(raw['bridgeInstanceId'], 256);
+    final codexSourceId = bridgeInstanceId == null
+        ? null
+        : _boundedString(raw['codexSourceId'], 256);
+    if (routeIdentity == null && bridgeInstanceId == null) return null;
+    return _OfflineMessageTarget(
+      routeIdentity: routeIdentity,
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: codexSourceId,
+    );
+  }
+
+  static String? _boundedString(Object? value, int maxLength) {
+    if (value is! String) return null;
+    final normalized = value.trim();
+    if (normalized.isEmpty || normalized.length > maxLength) return null;
+    return normalized;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is _OfflineMessageTarget &&
+      other.routeIdentity == routeIdentity &&
+      other.bridgeInstanceId == bridgeInstanceId &&
+      other.codexSourceId == codexSourceId;
+
+  @override
+  int get hashCode =>
+      Object.hash(routeIdentity, bridgeInstanceId, codexSourceId);
 }
 
 typedef SessionHistoryBootstrapHandler =
@@ -265,6 +317,10 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, Object> _gitOperationLaneOwners = {};
   BridgeConnectionState _connectionState = BridgeConnectionState.disconnected;
   final List<ClientMessage> _messageQueue = [];
+  final Map<ClientMessage, _OfflineMessageTarget?> _offlineMessageTargets =
+      HashMap.identity();
+  final Map<ClientMessage, int?> _offlineMessageQueuedEpochs =
+      HashMap.identity();
   List<SessionInfo> _sessions = [];
   int _authoritativeSessionListGeneration = 0;
   bool _hasAuthoritativeSessionListForCurrentConnection = false;
@@ -296,7 +352,7 @@ class BridgeService implements BridgeServiceBase {
   int _pushRegistrationRequestSequence = 0;
   String? _latestDeliveryModeRequestId;
   final Map<String, Completer<ClientDeliveryModeStateMessage>>
-      _pendingDeliveryModeRequests = {};
+  _pendingDeliveryModeRequests = {};
   final Map<String, _PendingPermissionChange> _pendingPermissionChanges = {};
   final CodexGoalRequestRouter _goalRequestRouter = CodexGoalRequestRouter();
   final Duration permissionChangeTimeout;
@@ -331,13 +387,13 @@ class BridgeService implements BridgeServiceBase {
   /// an error-only reply would leave the count drifted forever.
   final Map<String, int> _outstandingLegacyHistoryRequests = {};
   final Map<String, _RemoteHistoryCursor> _remoteHistoryCursors = {};
-  final Map<String, Completer<HistoryPageMessage>>
-      _pendingRemoteHistoryPages = {};
+  final Map<String, Completer<HistoryPageMessage>> _pendingRemoteHistoryPages =
+      {};
   final Map<String, Future<LocalSessionHistoryPage?>>
-      _remoteHistoryPageFlights = {};
+  _remoteHistoryPageFlights = {};
   int _nextRemoteHistoryPageRequestId = 0;
   final Map<String, Completer<HistoryToolDetailsMessage>>
-      _pendingHistoryToolDetails = {};
+  _pendingHistoryToolDetails = {};
   int _nextHistoryToolDetailRequestId = 0;
   final Map<String, ClientMessage> _inFlightPendingMessages = {};
   final Map<String, ClientMessage> _inFlightInputMessages = {};
@@ -350,7 +406,7 @@ class BridgeService implements BridgeServiceBase {
   int _nextSessionLinkRequestId = 0;
   final Map<String, Set<String>> _respondedToolUseIds = {};
   final Map<String, Completer<ArtifactResolvedMessage>>
-      _pendingArtifactResolutions = {};
+  _pendingArtifactResolutions = {};
   final Random _artifactRequestRandom = Random.secure();
   final List<_PendingLocalFeatureRequest> _pendingLocalFeatureRequests = [];
   final List<_PermissionRequestObserverRegistration>
@@ -393,6 +449,8 @@ class BridgeService implements BridgeServiceBase {
   // Auto-reconnect
   String? _lastUrl;
   String? _logicalConnectionIdentity;
+  String? _cacheBridgeInstanceIdHint;
+  String? _cacheCodexSourceIdHint;
   int _connectionEpoch = 0;
   Timer? _reconnectTimer;
   int _reconnectAttempt = 0;
@@ -561,6 +619,18 @@ class BridgeService implements BridgeServiceBase {
       _lastRecentSessionsMessage;
   String? get bridgeInstanceId => _bridgeInstanceId;
   String? get codexSourceId => _codexSourceId;
+
+  /// Last authenticated Bridge identity remembered for cache prewarming.
+  ///
+  /// This value may come from the saved connection route before the current
+  /// socket has proven it. It must never authorize writes or flush queued
+  /// messages; use [bridgeInstanceId] for authoritative operations.
+  String? get cacheBridgeInstanceIdHint =>
+      _bridgeInstanceId ?? _cacheBridgeInstanceIdHint;
+
+  /// Source identity paired with [cacheBridgeInstanceIdHint].
+  String? get cacheCodexSourceIdHint =>
+      _bridgeInstanceId != null ? _codexSourceId : _cacheCodexSourceIdHint;
   String? get currentProjectFilter => _currentProjectFilter;
   List<GalleryImage> get galleryImages => _galleryImages;
   List<String> get projectHistory => _projectHistory;
@@ -648,7 +718,11 @@ class BridgeService implements BridgeServiceBase {
   }
 
   Iterable<ClientMessage> _allPendingSessionMessages() sync* {
-    yield* _messageQueue;
+    for (final message in _messageQueue) {
+      if (_isQueuedMessageForCurrentTarget(message)) {
+        yield message;
+      }
+    }
     yield* _inFlightPendingMessages.values;
   }
 
@@ -693,8 +767,12 @@ class BridgeService implements BridgeServiceBase {
     int? maxLines,
     Duration timeout = const Duration(seconds: 15),
   }) async {
-    if ([sessionId, messageId, artifactId, filePath]
-        .any((value) => value.trim().isEmpty)) {
+    if ([
+      sessionId,
+      messageId,
+      artifactId,
+      filePath,
+    ].any((value) => value.trim().isEmpty)) {
       throw ArgumentError('Artifact source identity is incomplete.');
     }
     try {
@@ -714,7 +792,8 @@ class BridgeService implements BridgeServiceBase {
     } on TimeoutException catch (error) {
       throw ArtifactSourceReadException(
         code: 'artifact_source_read_timeout',
-        message: error.message ?? 'Timed out while reading the artifact source.',
+        message:
+            error.message ?? 'Timed out while reading the artifact source.',
       );
     } on StateError catch (error) {
       final message = error.message.toString();
@@ -766,6 +845,7 @@ class BridgeService implements BridgeServiceBase {
       }
       return requestType == 'read_file' && message.filePath == filePath;
     }
+
     final responseCompleter = Completer<FileContentMessage>();
     final pendingRead = _PendingFileRead(
       requestType: requestType,
@@ -889,9 +969,7 @@ class BridgeService implements BridgeServiceBase {
         _failArtifactResolution(
           requestId,
           ArtifactResolveException(
-            code: connectionChanged
-                ? 'bridge_changed'
-                : 'bridge_disconnected',
+            code: connectionChanged ? 'bridge_changed' : 'bridge_disconnected',
             message: connectionChanged
                 ? 'Bridge changed while preparing the file.'
                 : 'Bridge disconnected while preparing the file.',
@@ -977,7 +1055,8 @@ class BridgeService implements BridgeServiceBase {
         message.errorCode == 'unsupported_message' &&
         message.message == pendingRead.requestType;
     final isLegacyInvalidFormat =
-        message.errorCode == null && message.message == 'Invalid message format';
+        message.errorCode == null &&
+        message.message == 'Invalid message format';
     final isLegacyUnsupportedArtifactRead =
         pendingRead != null &&
         !pendingRead.completer.isCompleted &&
@@ -1192,10 +1271,9 @@ class BridgeService implements BridgeServiceBase {
     String sessionId,
     PermissionRequestMessage request,
   ) {
-    for (final registration
-        in List<_PermissionRequestObserverRegistration>.of(
-          _permissionRequestObservers,
-        )) {
+    for (final registration in List<_PermissionRequestObserverRegistration>.of(
+      _permissionRequestObservers,
+    )) {
       try {
         registration.observer(sessionId, request);
       } catch (error, stackTrace) {
@@ -1225,6 +1303,9 @@ class BridgeService implements BridgeServiceBase {
 
   @visibleForTesting
   Future<void> flushQueuedMessagesForTest() => _flushMessageQueueAsync();
+
+  @visibleForTesting
+  Future<void> Function()? offlineFlushBarrierForTest;
 
   void _failPendingArtifactResolutions(ArtifactResolveException error) {
     final completers = _pendingArtifactResolutions.values.toList();
@@ -1345,8 +1426,10 @@ class BridgeService implements BridgeServiceBase {
 
   static const _prefKeyUrl = 'bridge_url';
   static const _prefKeyApiKey = 'bridge_api_key';
-  static const _prefKeyOfflinePendingMessages =
+  static const _prefKeyOfflinePendingMessagesV1 =
       'bridge_offline_pending_messages_v1';
+  static const _prefKeyOfflinePendingMessagesV2 =
+      'bridge_offline_pending_messages_v2';
   static const _inFlightPendingVisibilityDelay = Duration(milliseconds: 600);
   static const _localFeatureRequestTtl = Duration(seconds: 20);
   static const _maxPendingLocalFeatureRequests = 256;
@@ -1461,7 +1544,12 @@ class BridgeService implements BridgeServiceBase {
     _messageController.add(error);
   }
 
-  void connect(String url, {String? logicalConnectionIdentity}) {
+  void connect(
+    String url, {
+    String? logicalConnectionIdentity,
+    String? expectedBridgeInstanceId,
+    String? expectedCodexSourceId,
+  }) {
     _failPendingPermissionChanges(
       'Bridge connection changed before the permission change was confirmed.',
     );
@@ -1482,10 +1570,22 @@ class BridgeService implements BridgeServiceBase {
     final nextLogicalIdentity = trimmedLogicalIdentity?.isEmpty == true
         ? null
         : trimmedLogicalIdentity;
+    final nextCacheBridgeHint = _normalizedCacheIdentityHint(
+      expectedBridgeInstanceId,
+    );
+    final nextCacheSourceHint = nextCacheBridgeHint == null
+        ? null
+        : _normalizedCacheIdentityHint(expectedCodexSourceId);
     final isBridgeSwitch =
         previousUrl != null &&
         (!_sameBridgeTarget(previousUrl, url) ||
-            _logicalConnectionIdentity != nextLogicalIdentity);
+            _logicalConnectionIdentity != nextLogicalIdentity ||
+            (_cacheBridgeInstanceIdHint != null &&
+                nextCacheBridgeHint != null &&
+                (_cacheBridgeInstanceIdHint != nextCacheBridgeHint ||
+                    (_cacheCodexSourceIdHint != null &&
+                        nextCacheSourceHint != null &&
+                        _cacheCodexSourceIdHint != nextCacheSourceHint))));
     _connectionEpoch++;
     _resetLegacyRecentSessionsTransport();
     _failPendingHistoryRequests(clearCursors: false);
@@ -1506,10 +1606,19 @@ class BridgeService implements BridgeServiceBase {
     _lastUsageResult = null;
     _promptHistoryBridgeId = null;
     if (isBridgeSwitch) {
-      _clearBridgeScopedState(clearOfflineQueue: true);
+      // Preserve durable mutations across route changes. Each queued message
+      // carries the Bridge/source identity of the socket it belonged to and
+      // will only replay after the next authenticated session_list matches.
+      _requeueInFlightInputMessages();
+      _requeueInFlightPendingMessages();
+      _dropQueuedNonPersistableMessages();
+      _clearBridgeScopedState(clearOfflineQueue: false);
     }
     _lastUrl = url;
     _logicalConnectionIdentity = nextLogicalIdentity;
+    _cacheBridgeInstanceIdHint = nextCacheBridgeHint;
+    _cacheCodexSourceIdHint = nextCacheSourceHint;
+    _publishOfflinePendingActions();
 
     _setBridgeConnectionState(BridgeConnectionState.connecting);
     try {
@@ -1559,10 +1668,7 @@ class BridgeService implements BridgeServiceBase {
               msg = _withEffectiveGoalSessionId(msg, routedGoalSessionId);
             }
             if (sessionId != null && msg is! StatusMessage) {
-              _patchSessionActivity(
-                sessionId,
-                json['activityAt'] as String?,
-              );
+              _patchSessionActivity(sessionId, json['activityAt'] as String?);
             }
             _completePendingPermissionChange(msg);
             if (msg is SessionListMessage) {
@@ -1606,10 +1712,7 @@ class BridgeService implements BridgeServiceBase {
                 return;
               }
               if (msg is HistoryMessage) {
-                _rememberRemoteHistoryWindow(
-                  sessionId,
-                  msg.historyWindow,
-                );
+                _rememberRemoteHistoryWindow(sessionId, msg.historyWindow);
                 msg = HistoryMessage(
                   messages: selectTurnAwareServerMessageWindow(msg.messages),
                   historyWindow: msg.historyWindow,
@@ -1664,11 +1767,53 @@ class BridgeService implements BridgeServiceBase {
                     '${sessions.length}',
                   );
                 }
+                final authoritativeBridgeId = _normalizedCacheIdentityHint(
+                  bridgeInstanceId,
+                );
+                final authoritativeSourceId = _normalizedCacheIdentityHint(
+                  codexSourceId,
+                );
+                final previousBridgeId =
+                    _bridgeInstanceId ?? _cacheBridgeInstanceIdHint;
+                final previousSourceId = previousBridgeId == null
+                    ? null
+                    : (_codexSourceId ?? _cacheCodexSourceIdHint);
+                final dataSourceChanged =
+                    previousBridgeId != authoritativeBridgeId ||
+                    (authoritativeBridgeId != null &&
+                        previousSourceId != authoritativeSourceId);
+                if (dataSourceChanged) {
+                  _hasAuthoritativeSessionListForCurrentConnection = false;
+                  _requeueInFlightInputMessages();
+                  _requeueInFlightPendingMessages();
+                  _clearBridgeScopedState(clearOfflineQueue: false);
+                }
                 _hasAuthoritativeSessionListForCurrentConnection = true;
                 _authoritativeSessionListGeneration++;
-                _bridgeInstanceId = bridgeInstanceId;
-                _codexSourceId = codexSourceId;
-                _rememberPromptHistoryBridgeId(bridgeInstanceId);
+                _bridgeInstanceId = authoritativeBridgeId;
+                _codexSourceId = authoritativeSourceId;
+                // A Bridge that omits the additive identity is treated as a
+                // legacy peer. Do not continue trusting a remembered route
+                // hint after the authoritative handshake failed to prove it.
+                _cacheBridgeInstanceIdHint = authoritativeBridgeId;
+                _cacheCodexSourceIdHint = authoritativeBridgeId == null
+                    ? null
+                    : authoritativeSourceId;
+                if (dataSourceChanged) {
+                  for (final session in sessions) {
+                    _rememberProviderSessionBinding(
+                      session.id,
+                      session.provider,
+                      session.claudeSessionId,
+                    );
+                  }
+                }
+                _promoteCurrentConnectionEndpointQueue(
+                  bridgeInstanceId: authoritativeBridgeId,
+                  codexSourceId: authoritativeSourceId,
+                );
+                _dropQueuedNonPersistableMessagesOutsideCurrentTarget();
+                _rememberPromptHistoryBridgeId(authoritativeBridgeId);
                 final externalBySession = <String, bool>{
                   for (final session in _sessions)
                     if (session.externalDesktopTurnActive) session.id: true,
@@ -1703,6 +1848,10 @@ class BridgeService implements BridgeServiceBase {
                 _codexModelCatalogController.add(_codexModelCatalogRevision);
                 _clearPendingStartActionsForSessions(_sessions);
                 _sessionListController.add(_sessions);
+                // Persisted mutations are scoped to the authenticated Bridge
+                // and Codex Home. WebSocket readiness alone cannot prove that
+                // a saved route still reaches the same data source.
+                _flushMessageQueue();
               case RecentSessionsMessage():
                 final recentResponse = _correlateRecentSessionsResponse(msg);
                 if (recentResponse == null ||
@@ -2056,7 +2205,11 @@ class BridgeService implements BridgeServiceBase {
                   mobileRuntime: clientMobileRuntime,
                 ),
               );
-              _flushMessageQueue();
+              // Read-only/bootstrap requests may be queued before the socket
+              // becomes writable. They are safe to resume on this route, but
+              // durable mutations still wait for an authenticated
+              // session_list proving the Bridge/source identity.
+              _flushUnauthenticatedMessageQueue();
               if (_desiredClientDeliveryMode ==
                   BridgeClientDeliveryMode.notificationsOnly) {
                 unawaited(_reassertDesiredClientDeliveryMode());
@@ -2089,6 +2242,14 @@ class BridgeService implements BridgeServiceBase {
     final rightUri = Uri.tryParse(right);
     if (leftUri == null || rightUri == null) return left == right;
     return _bridgeTargetKey(leftUri) == _bridgeTargetKey(rightUri);
+  }
+
+  String? _normalizedCacheIdentityHint(String? value) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty || normalized.length > 256) {
+      return null;
+    }
+    return normalized;
   }
 
   String _bridgeTargetKey(Uri uri) {
@@ -2176,6 +2337,8 @@ class BridgeService implements BridgeServiceBase {
   void _clearOfflinePendingState() {
     _offlineQueueGeneration++;
     _messageQueue.clear();
+    _offlineMessageTargets.clear();
+    _offlineMessageQueuedEpochs.clear();
     _inFlightPendingMessages.clear();
     _inFlightInputMessages.clear();
     for (final timer in _inFlightPendingVisibilityTimers.values) {
@@ -2192,7 +2355,8 @@ class BridgeService implements BridgeServiceBase {
   Future<void> _clearPersistedOfflinePendingMessages() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_prefKeyOfflinePendingMessages);
+      await prefs.remove(_prefKeyOfflinePendingMessagesV1);
+      await prefs.remove(_prefKeyOfflinePendingMessagesV2);
     } catch (error, stackTrace) {
       logger.warning(
         'Failed to clear offline pending messages',
@@ -2474,6 +2638,8 @@ class BridgeService implements BridgeServiceBase {
         connect(
           _lastUrl!,
           logicalConnectionIdentity: _logicalConnectionIdentity,
+          expectedBridgeInstanceId: _cacheBridgeInstanceIdHint,
+          expectedCodexSourceId: _cacheCodexSourceIdHint,
         );
       }
     });
@@ -2507,11 +2673,7 @@ class BridgeService implements BridgeServiceBase {
       } on ArtifactResolveException catch (error) {
         _failPendingArtifactResolutions(error);
       } catch (error, stackTrace) {
-        logger.warning(
-          'WS artifact resolution send failed',
-          error,
-          stackTrace,
-        );
+        logger.warning('WS artifact resolution send failed', error, stackTrace);
         _failPendingArtifactResolutions(
           const ArtifactResolveException(
             code: 'bridge_disconnected',
@@ -2519,6 +2681,11 @@ class BridgeService implements BridgeServiceBase {
           ),
         );
       }
+      return;
+    }
+    if (_isPersistableOfflineMessage(message) &&
+        !_hasAuthoritativeSessionListForCurrentConnection) {
+      _queueOfflineMessage(message);
       return;
     }
     if (_channel != null && isConnected) {
@@ -2679,11 +2846,7 @@ class BridgeService implements BridgeServiceBase {
     try {
       sendEphemeralRpc(message);
     } catch (error, stackTrace) {
-      logger.warning(
-        'WS artifact resolution send failed',
-        error,
-        stackTrace,
-      );
+      logger.warning('WS artifact resolution send failed', error, stackTrace);
       throw const ArtifactResolveException(
         code: 'bridge_disconnected',
         message: 'Bridge disconnected while preparing the file.',
@@ -2744,15 +2907,23 @@ class BridgeService implements BridgeServiceBase {
     }
   }
 
-  bool _addQueuedMessageIfAbsent(ClientMessage message) {
+  bool _addQueuedMessageIfAbsent(
+    ClientMessage message, {
+    _OfflineMessageTarget? restoredTarget,
+    bool isRestored = false,
+  }) {
+    final target = isRestored ? restoredTarget : _currentOfflineMessageTarget();
     final dedupeKey = _offlineMessageDedupeKey(message);
     final shouldSkip =
         dedupeKey != null &&
         _messageQueue.any((queued) {
-          return _offlineMessageDedupeKey(queued) == dedupeKey;
+          return _offlineMessageDedupeKey(queued) == dedupeKey &&
+              _sameOfflineMessageScope(_offlineMessageTargets[queued], target);
         });
     if (shouldSkip) return false;
     _messageQueue.add(message);
+    _offlineMessageTargets[message] = target;
+    _offlineMessageQueuedEpochs[message] = isRestored ? null : _connectionEpoch;
     return true;
   }
 
@@ -2762,7 +2933,8 @@ class BridgeService implements BridgeServiceBase {
       return true;
     }
     final isQueued = _messageQueue.any((queued) {
-      return _offlineMessageDedupeKey(queued) == dedupeKey;
+      return _offlineMessageDedupeKey(queued) == dedupeKey &&
+          _isQueuedMessageForCurrentTarget(queued);
     });
     if (isQueued || _inFlightPendingMessages.containsKey(dedupeKey)) {
       _publishOfflinePendingActions();
@@ -2920,22 +3092,266 @@ class BridgeService implements BridgeServiceBase {
     unawaited(_flushMessageQueueAsync());
   }
 
-  Future<void> _flushMessageQueueAsync() async {
+  void _flushUnauthenticatedMessageQueue() {
+    unawaited(_flushUnauthenticatedMessageQueueAsync());
+  }
+
+  Future<void> _flushUnauthenticatedMessageQueueAsync() async {
     await _ensureOfflineQueueRestored();
     if (_messageQueue.isEmpty || !isConnected) return;
+    final routeIdentity = _currentOfflineRouteIdentity();
     final queued = _messageQueue
-        .where((message) => !_isEphemeralRpc(message))
+        .where(
+          (message) =>
+              !_isPersistableOfflineMessage(message) &&
+              _canFlushBeforeAuthoritativeSessionList(
+                message,
+                routeIdentity: routeIdentity,
+              ),
+        )
         .toList(growable: false);
-    _messageQueue.clear();
+    if (queued.isEmpty) return;
+
+    final flushEpoch = _connectionEpoch;
+    final queuedTargets =
+        HashMap<ClientMessage, _OfflineMessageTarget?>.identity()..addEntries(
+          queued.map(
+            (message) => MapEntry(message, _offlineMessageTargets[message]),
+          ),
+        );
+    final queuedIdentity = HashSet<ClientMessage>.identity()..addAll(queued);
+    _messageQueue.removeWhere(queuedIdentity.contains);
+    _pruneOfflineMessageTargets();
+
+    for (var index = 0; index < queued.length; index++) {
+      if (flushEpoch != _connectionEpoch ||
+          !isConnected ||
+          routeIdentity != _currentOfflineRouteIdentity()) {
+        await _requeueFencedOfflineMessages(
+          queued.sublist(index),
+          queuedTargets,
+        );
+        return;
+      }
+      send(queued[index]);
+    }
+  }
+
+  bool _canFlushBeforeAuthoritativeSessionList(
+    ClientMessage message, {
+    required String? routeIdentity,
+  }) {
+    // This request is itself how a legacy or non-pushing Bridge proves the
+    // current data source, so it must never be blocked behind that proof.
+    if (message.type == 'list_sessions') return true;
+
+    final target = _offlineMessageTargets[message];
+    if (target == null) return true;
+    // A remembered canonical identity is only a hint until the current
+    // session_list authenticates it. Do not send an old data-scoped read to a
+    // route that may now terminate at another Bridge or Codex Home.
+    if (target.bridgeInstanceId != null) return false;
+    return target.routeIdentity != null &&
+        target.routeIdentity == routeIdentity;
+  }
+
+  Future<void> _flushMessageQueueAsync() async {
+    await _ensureOfflineQueueRestored();
+    if (_messageQueue.isEmpty ||
+        !isConnected ||
+        !_hasAuthoritativeSessionListForCurrentConnection) {
+      return;
+    }
+    final queued = _messageQueue
+        .where(
+          (message) =>
+              !_isEphemeralRpc(message) &&
+              _isQueuedMessageForCurrentTarget(message),
+        )
+        .toList(growable: false);
+    if (queued.isEmpty) return;
+    final flushEpoch = _connectionEpoch;
+    final flushTarget = _currentOfflineMessageTarget();
+    if (flushTarget == null) return;
+    final queuedTargets =
+        HashMap<ClientMessage, _OfflineMessageTarget?>.identity()..addEntries(
+          queued.map(
+            (message) => MapEntry(message, _offlineMessageTargets[message]),
+          ),
+        );
+    final queuedIdentity = HashSet<ClientMessage>.identity()..addAll(queued);
+    _messageQueue.removeWhere(queuedIdentity.contains);
+    _pruneOfflineMessageTargets();
+    await _persistOfflinePendingMessages();
+    await offlineFlushBarrierForTest?.call();
+    _publishOfflinePendingActions();
+    if (!_matchesOfflineFlushFence(flushEpoch, flushTarget)) {
+      await _requeueFencedOfflineMessages(queued, queuedTargets);
+      return;
+    }
+    for (var index = 0; index < queued.length; index++) {
+      if (!_matchesOfflineFlushFence(flushEpoch, flushTarget)) {
+        await _requeueFencedOfflineMessages(
+          queued.sublist(index),
+          queuedTargets,
+        );
+        return;
+      }
+      send(queued[index]);
+    }
+  }
+
+  bool _matchesOfflineFlushFence(
+    int connectionEpoch,
+    _OfflineMessageTarget target,
+  ) {
+    return connectionEpoch == _connectionEpoch &&
+        isConnected &&
+        _hasAuthoritativeSessionListForCurrentConnection &&
+        _sameOfflineMessageScope(target, _currentOfflineMessageTarget());
+  }
+
+  Future<void> _requeueFencedOfflineMessages(
+    Iterable<ClientMessage> messages,
+    Map<ClientMessage, _OfflineMessageTarget?> targets,
+  ) async {
+    final requeued = messages.toList(growable: false);
+    for (final message in requeued) {
+      _addQueuedMessageIfAbsent(
+        message,
+        restoredTarget: targets[message],
+        isRestored: true,
+      );
+    }
     await _persistOfflinePendingMessages();
     _publishOfflinePendingActions();
-    for (final msg in queued) {
-      send(msg);
+    if (requeued.any(_isQueuedMessageForCurrentTarget) &&
+        isConnected &&
+        _hasAuthoritativeSessionListForCurrentConnection) {
+      scheduleMicrotask(_flushMessageQueue);
     }
   }
 
   Future<void> _ensureOfflineQueueRestored() {
     return _offlineQueueRestore ??= _restoreOfflinePendingMessages();
+  }
+
+  _OfflineMessageTarget? _currentOfflineMessageTarget() {
+    final bridgeInstanceId = _bridgeInstanceId ?? _cacheBridgeInstanceIdHint;
+    final codexSourceId = bridgeInstanceId == null
+        ? null
+        : (_codexSourceId ?? _cacheCodexSourceIdHint);
+    final routeIdentity = _currentOfflineRouteIdentity();
+    if (routeIdentity == null && bridgeInstanceId == null) return null;
+    return _OfflineMessageTarget(
+      routeIdentity: routeIdentity,
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: codexSourceId,
+    );
+  }
+
+  String? _currentOfflineRouteIdentity() {
+    final logicalIdentity = _logicalConnectionIdentity?.trim();
+    final url = _lastUrl;
+    final uri = url == null ? null : Uri.tryParse(url);
+    final endpointIdentity = uri == null ? null : _bridgeTargetKey(uri);
+    if (logicalIdentity != null && logicalIdentity.isNotEmpty) {
+      return endpointIdentity == null
+          ? 'logical:$logicalIdentity'
+          : 'logical:$logicalIdentity|endpoint:$endpointIdentity';
+    }
+    return endpointIdentity == null ? null : 'endpoint:$endpointIdentity';
+  }
+
+  bool _sameOfflineMessageScope(
+    _OfflineMessageTarget? left,
+    _OfflineMessageTarget? right,
+  ) {
+    if (left == null || right == null) return left == right;
+    if (left.bridgeInstanceId != null || right.bridgeInstanceId != null) {
+      return left.bridgeInstanceId != null &&
+          left.bridgeInstanceId == right.bridgeInstanceId &&
+          left.codexSourceId == right.codexSourceId;
+    }
+    return left.routeIdentity != null &&
+        left.routeIdentity == right.routeIdentity;
+  }
+
+  bool _isQueuedMessageForCurrentTarget(ClientMessage message) {
+    final target = _offlineMessageTargets[message];
+    if (_hasAuthoritativeSessionListForCurrentConnection) {
+      if (target == null) return false;
+      final bridgeInstanceId = _bridgeInstanceId;
+      if (bridgeInstanceId != null) {
+        return target.bridgeInstanceId == bridgeInstanceId &&
+            target.codexSourceId == _codexSourceId;
+      }
+      return target.bridgeInstanceId == null &&
+          target.routeIdentity != null &&
+          target.routeIdentity == _currentOfflineRouteIdentity();
+    }
+
+    // Before the authenticated session list arrives, only use the remembered
+    // identity to keep local UI state coherent. This hint never authorizes
+    // replay; _flushMessageQueueAsync requires the authoritative branch above.
+    if (target == null) return true;
+    return _sameOfflineMessageScope(target, _currentOfflineMessageTarget());
+  }
+
+  void _pruneOfflineMessageTargets() {
+    final queued = HashSet<ClientMessage>.identity()..addAll(_messageQueue);
+    _offlineMessageTargets.removeWhere(
+      (message, _) => !queued.contains(message),
+    );
+    _offlineMessageQueuedEpochs.removeWhere(
+      (message, _) => !queued.contains(message),
+    );
+  }
+
+  void _dropQueuedNonPersistableMessages() {
+    _messageQueue.removeWhere((message) {
+      if (_isPersistableOfflineMessage(message)) return false;
+      _offlineMessageTargets.remove(message);
+      _offlineMessageQueuedEpochs.remove(message);
+      return true;
+    });
+    _pruneOfflineMessageTargets();
+  }
+
+  void _dropQueuedNonPersistableMessagesOutsideCurrentTarget() {
+    _messageQueue.removeWhere((message) {
+      if (_isPersistableOfflineMessage(message) ||
+          _isQueuedMessageForCurrentTarget(message)) {
+        return false;
+      }
+      _offlineMessageTargets.remove(message);
+      _offlineMessageQueuedEpochs.remove(message);
+      return true;
+    });
+    _pruneOfflineMessageTargets();
+  }
+
+  void _promoteCurrentConnectionEndpointQueue({
+    required String? bridgeInstanceId,
+    required String? codexSourceId,
+  }) {
+    if (bridgeInstanceId == null) return;
+    final routeIdentity = _currentOfflineRouteIdentity();
+    if (routeIdentity == null) return;
+    for (final message in _messageQueue) {
+      final target = _offlineMessageTargets[message];
+      if (target == null ||
+          target.bridgeInstanceId != null ||
+          target.routeIdentity != routeIdentity ||
+          _offlineMessageQueuedEpochs[message] != _connectionEpoch) {
+        continue;
+      }
+      _offlineMessageTargets[message] = _OfflineMessageTarget(
+        routeIdentity: routeIdentity,
+        bridgeInstanceId: bridgeInstanceId,
+        codexSourceId: codexSourceId,
+      );
+    }
   }
 
   bool _isPersistableOfflineMessage(ClientMessage message) {
@@ -2958,9 +3374,7 @@ class BridgeService implements BridgeServiceBase {
       'resume_session' =>
         'resume:${json['provider'] ?? 'claude'}:${json['sessionId']}',
       'start' =>
-        'start:${_canonicalJson(
-          Map<String, dynamic>.from(json)..remove('startRequestId'),
-        )}',
+        'start:${_canonicalJson(Map<String, dynamic>.from(json)..remove('startRequestId'))}',
       _ => null,
     };
   }
@@ -3036,6 +3450,7 @@ class BridgeService implements BridgeServiceBase {
     final actions = <OfflinePendingAction>[];
     final seen = <String>{};
     for (final message in _messageQueue) {
+      if (!_isQueuedMessageForCurrentTarget(message)) continue;
       final action = _offlinePendingActionFor(message);
       if (action == null || !seen.add(action.id)) continue;
       actions.add(action);
@@ -3078,6 +3493,7 @@ class BridgeService implements BridgeServiceBase {
   Future<void> cancelOfflinePendingAction(String actionId) async {
     await _ensureOfflineQueueRestored();
     _messageQueue.removeWhere((message) {
+      if (!_isQueuedMessageForCurrentTarget(message)) return false;
       final action = _offlinePendingActionFor(message);
       return action?.id == actionId;
     });
@@ -3104,8 +3520,7 @@ class BridgeService implements BridgeServiceBase {
       if (action == null || action.provider != provider) return false;
       if (action.kind == OfflinePendingActionKind.start) return false;
       if (resumeRequestId != null) {
-        final json =
-            jsonDecode(pending.toJson()) as Map<String, dynamic>;
+        final json = jsonDecode(pending.toJson()) as Map<String, dynamic>;
         return json['resumeRequestId'] == resumeRequestId;
       }
       if (projectPath != null &&
@@ -3135,7 +3550,9 @@ class BridgeService implements BridgeServiceBase {
       final before = _messageQueue.length;
       var didRemove = false;
       _messageQueue.removeWhere((pending) {
-        if (didRemove) return false;
+        if (didRemove || !_isQueuedMessageForCurrentTarget(pending)) {
+          return false;
+        }
         if (!_shouldClearPendingStartForSessionCreated(
           pending,
           provider: provider,
@@ -3173,8 +3590,7 @@ class BridgeService implements BridgeServiceBase {
         continue;
       }
       if (resumeRequestId != null) {
-        final json =
-            jsonDecode(entry.value.toJson()) as Map<String, dynamic>;
+        final json = jsonDecode(entry.value.toJson()) as Map<String, dynamic>;
         if (json['resumeRequestId'] != resumeRequestId) continue;
       }
       if (projectPath != null &&
@@ -3217,7 +3633,11 @@ class BridgeService implements BridgeServiceBase {
     if (!removed) {
       var didRemove = false;
       _messageQueue.removeWhere((pending) {
-        if (didRemove || !matches(pending)) return false;
+        if (didRemove ||
+            !_isQueuedMessageForCurrentTarget(pending) ||
+            !matches(pending)) {
+          return false;
+        }
         didRemove = true;
         return true;
       });
@@ -3290,6 +3710,7 @@ class BridgeService implements BridgeServiceBase {
 
     final before = _messageQueue.length;
     _messageQueue.removeWhere((message) {
+      if (!_isQueuedMessageForCurrentTarget(message)) return false;
       final action = _offlinePendingActionFor(message);
       return action != null && overlapsActiveSession(action);
     });
@@ -3307,32 +3728,32 @@ class BridgeService implements BridgeServiceBase {
     final generation = _offlineQueueGeneration;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final encoded = prefs.getStringList(_prefKeyOfflinePendingMessages);
-      if (encoded == null || encoded.isEmpty) return;
+      final encodedV2 =
+          prefs.getStringList(_prefKeyOfflinePendingMessagesV2) ?? const [];
+      final encodedV1 =
+          prefs.getStringList(_prefKeyOfflinePendingMessagesV1) ?? const [];
+      if (encodedV2.isEmpty && encodedV1.isEmpty) return;
       if (generation != _offlineQueueGeneration) return;
 
-      final existingJson = _messageQueue
-          .map((message) => message.toJson())
-          .toSet();
-      final existingDedupeKeys = _messageQueue
-          .map(_offlineMessageDedupeKey)
-          .whereType<String>()
-          .toSet();
-      existingDedupeKeys.addAll(_inFlightPendingMessages.keys);
-      for (final raw in encoded) {
+      Future<void> restoreOne(String raw, {required bool isV2}) async {
         try {
-          final json = jsonDecode(raw);
-          if (json is! Map<String, dynamic>) continue;
-          final message = ClientMessage.raw(json);
-          if (!_isPersistableOfflineMessage(message)) continue;
-          final dedupeKey = _offlineMessageDedupeKey(message);
-          final isDuplicate = dedupeKey != null
-              ? !existingDedupeKeys.add(dedupeKey)
-              : !existingJson.add(message.toJson());
-          if (!isDuplicate) {
-            if (generation != _offlineQueueGeneration) return;
-            _messageQueue.add(message);
-          }
+          final decoded = jsonDecode(raw);
+          if (decoded is! Map) return;
+          final messageJson = isV2 ? decoded['message'] : decoded;
+          if (messageJson is! Map) return;
+          final message = ClientMessage.raw(
+            Map<String, dynamic>.from(messageJson),
+          );
+          if (!_isPersistableOfflineMessage(message)) return;
+          final target = isV2
+              ? _OfflineMessageTarget.fromJson(decoded['target'])
+              : null;
+          if (generation != _offlineQueueGeneration) return;
+          _addQueuedMessageIfAbsent(
+            message,
+            restoredTarget: target,
+            isRestored: true,
+          );
         } catch (error, stackTrace) {
           logger.warning(
             'Failed to restore offline pending message',
@@ -3340,6 +3761,17 @@ class BridgeService implements BridgeServiceBase {
             stackTrace,
           );
         }
+      }
+
+      for (final raw in encodedV2) {
+        await restoreOne(raw, isV2: true);
+        if (generation != _offlineQueueGeneration) return;
+      }
+      // V1 rows have no target proof. Preserve them for explicit cleanup, but
+      // never replay them automatically on an arbitrary future Bridge.
+      for (final raw in encodedV1) {
+        await restoreOne(raw, isV2: false);
+        if (generation != _offlineQueueGeneration) return;
       }
       _publishOfflinePendingActions();
     } catch (error, stackTrace) {
@@ -3362,17 +3794,25 @@ class BridgeService implements BridgeServiceBase {
 
   Future<void> _persistOfflinePendingMessages() async {
     await _ensureOfflineQueueRestored();
+    _pruneOfflineMessageTargets();
     final pending = _messageQueue
         .where(_isPersistableOfflineMessage)
-        .map((message) => message.toJson())
-        .toList();
+        .map(
+          (message) => jsonEncode({
+            'version': 2,
+            'message': jsonDecode(message.toJson()) as Map<String, dynamic>,
+            'target': _offlineMessageTargets[message]?.toJson(),
+          }),
+        )
+        .toList(growable: false);
     try {
       final prefs = await SharedPreferences.getInstance();
       if (pending.isEmpty) {
-        await prefs.remove(_prefKeyOfflinePendingMessages);
+        await prefs.remove(_prefKeyOfflinePendingMessagesV2);
       } else {
-        await prefs.setStringList(_prefKeyOfflinePendingMessages, pending);
+        await prefs.setStringList(_prefKeyOfflinePendingMessagesV2, pending);
       }
+      await prefs.remove(_prefKeyOfflinePendingMessagesV1);
     } catch (error, stackTrace) {
       logger.warning(
         'Failed to persist offline pending messages',
@@ -3761,8 +4201,7 @@ class BridgeService implements BridgeServiceBase {
         (!allowFullFallback && snapshot.cachedHistorySeq > 0);
     if (canRequestDelta) {
       if (_pendingHistoryDeltaSinceSeq.containsKey(sessionId) &&
-          _pendingHistoryDeltaConnectionEpoch[sessionId] ==
-              _connectionEpoch) {
+          _pendingHistoryDeltaConnectionEpoch[sessionId] == _connectionEpoch) {
         _pendingHistoryDeltaAllowsFullFallback[sessionId] =
             (_pendingHistoryDeltaAllowsFullFallback[sessionId] ?? false) ||
             allowFullFallback;
@@ -3940,6 +4379,7 @@ class BridgeService implements BridgeServiceBase {
     await _ensureOfflineQueueRestored();
     var updated = false;
     for (var i = 0; i < _messageQueue.length; i++) {
+      if (!_isQueuedMessageForCurrentTarget(_messageQueue[i])) continue;
       final json =
           jsonDecode(_messageQueue[i].toJson()) as Map<String, dynamic>;
       if (json['type'] != 'input' ||
@@ -3960,7 +4400,13 @@ class BridgeService implements BridgeServiceBase {
       } else {
         json.remove('mentions');
       }
-      _messageQueue[i] = ClientMessage.raw(json);
+      final previous = _messageQueue[i];
+      final target = _offlineMessageTargets.remove(previous);
+      final queuedEpoch = _offlineMessageQueuedEpochs.remove(previous);
+      final updatedMessage = ClientMessage.raw(json);
+      _messageQueue[i] = updatedMessage;
+      _offlineMessageTargets[updatedMessage] = target;
+      _offlineMessageQueuedEpochs[updatedMessage] = queuedEpoch;
       updated = true;
       break;
     }
@@ -3977,6 +4423,7 @@ class BridgeService implements BridgeServiceBase {
     await _ensureOfflineQueueRestored();
     final before = _messageQueue.length;
     _messageQueue.removeWhere((message) {
+      if (!_isQueuedMessageForCurrentTarget(message)) return false;
       final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
       return json['type'] == 'input' &&
           json['sessionId'] == sessionId &&
@@ -4134,9 +4581,7 @@ class BridgeService implements BridgeServiceBase {
     _sessionHistoryPageInvalidator = invalidate;
   }
 
-  void configureSessionHistoryUserIndex(
-    SessionHistoryUserIndexLoader? loader,
-  ) {
+  void configureSessionHistoryUserIndex(SessionHistoryUserIndexLoader? loader) {
     _sessionHistoryUserIndexLoader = loader;
   }
 
@@ -4146,8 +4591,7 @@ class BridgeService implements BridgeServiceBase {
     _sessionHistoryToolDetailLoader = loader;
   }
 
-  bool get hasSessionHistoryUserIndex =>
-      _sessionHistoryUserIndexLoader != null;
+  bool get hasSessionHistoryUserIndex => _sessionHistoryUserIndexLoader != null;
 
   Future<List<LocalSessionUserIndexEntry>?> tryLoadLocalSessionUserIndex({
     required String runtimeSessionId,
@@ -4340,9 +4784,7 @@ class BridgeService implements BridgeServiceBase {
         .toList(growable: false);
     List<HistoryToolDetail> orderedDetails(
       Map<String, HistoryToolDetail> details,
-    ) => [
-      for (final toolUseId in normalizedIds) ?details[toolUseId],
-    ];
+    ) => [for (final toolUseId in normalizedIds) ?details[toolUseId]];
     if (missingIds.isEmpty) {
       return List.unmodifiable(orderedDetails(localById));
     }
@@ -4739,8 +5181,7 @@ class BridgeService implements BridgeServiceBase {
     final next = DateTime.tryParse(candidate ?? '');
     if (next == null) return null;
     final previous = DateTime.tryParse(current);
-    if (previous != null &&
-        next.difference(previous).inMilliseconds < 1000) {
+    if (previous != null && next.difference(previous).inMilliseconds < 1000) {
       return null;
     }
     return next.toUtc().toIso8601String();
@@ -4918,8 +5359,7 @@ class BridgeService implements BridgeServiceBase {
             : current.codexModel,
         codexModelReasoningEffort:
             message.modelReasoningEffort ?? current.codexModelReasoningEffort,
-        codexServiceTier:
-            message.serviceTier ?? current.codexServiceTier,
+        codexServiceTier: message.serviceTier ?? current.codexServiceTier,
         codexNetworkAccessEnabled:
             message.networkAccessEnabled ?? current.codexNetworkAccessEnabled,
         codexWebSearchMode: message.webSearchMode ?? current.codexWebSearchMode,
@@ -5148,6 +5588,8 @@ class BridgeService implements BridgeServiceBase {
   Future<bool> autoConnect({
     String? apiKey,
     String? logicalConnectionIdentity,
+    String? expectedBridgeInstanceId,
+    String? expectedCodexSourceId,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     final url = prefs.getString(_prefKeyUrl);
@@ -5171,6 +5613,8 @@ class BridgeService implements BridgeServiceBase {
     connect(
       connectUrl,
       logicalConnectionIdentity: logicalConnectionIdentity,
+      expectedBridgeInstanceId: expectedBridgeInstanceId,
+      expectedCodexSourceId: expectedCodexSourceId,
     );
     return true;
   }
@@ -5293,6 +5737,8 @@ class BridgeService implements BridgeServiceBase {
       connect(
         _lastUrl!,
         logicalConnectionIdentity: _logicalConnectionIdentity,
+        expectedBridgeInstanceId: _cacheBridgeInstanceIdHint,
+        expectedCodexSourceId: _cacheCodexSourceIdHint,
       );
     }
     // If reconnecting, do nothing — already in progress.
@@ -5429,10 +5875,7 @@ class BridgeService implements BridgeServiceBase {
 }
 
 class _PendingFileRead {
-  const _PendingFileRead({
-    required this.requestType,
-    required this.completer,
-  });
+  const _PendingFileRead({required this.requestType, required this.completer});
 
   final String requestType;
   final Completer<FileContentMessage> completer;
@@ -5547,7 +5990,10 @@ class ArtifactSourceReadException implements Exception {
   final String code;
   final String message;
 
-  const ArtifactSourceReadException({required this.code, required this.message});
+  const ArtifactSourceReadException({
+    required this.code,
+    required this.message,
+  });
 
   @override
   String toString() => 'ArtifactSourceReadException($code): $message';

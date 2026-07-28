@@ -306,9 +306,16 @@ void main() async {
         );
         if (machineId == null) return false;
         try {
+          final machine = machineManagerService.getMachine(machineId);
+          if (machine == null) return false;
           final url = await machineManagerService.buildWsUrl(machineId);
           if (bridge.logicalConnectionIdentity != logicalIdentity) return false;
-          bridge.connect(url, logicalConnectionIdentity: logicalIdentity);
+          bridge.connect(
+            url,
+            logicalConnectionIdentity: logicalIdentity,
+            expectedBridgeInstanceId: machine.bridgeInstanceId,
+            expectedCodexSourceId: machine.codexSourceId,
+          );
           return true;
         } catch (error) {
           logger.warning(

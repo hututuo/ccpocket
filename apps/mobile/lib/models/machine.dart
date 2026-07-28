@@ -89,7 +89,8 @@ abstract class BridgeVersionInfo with _$BridgeVersionInfo {
 /// - name is optional (defaults to host:port display)
 /// - lastConnected for recency sorting
 /// - isFavorite for pinning important machines
-/// - host:port is the unique key for deduplication
+/// - host:port identifies one connection route
+/// - bridgeInstanceId links multiple routes to one authenticated Bridge
 @freezed
 abstract class Machine with _$Machine {
   const Machine._();
@@ -112,6 +113,18 @@ abstract class Machine with _$Machine {
 
     /// Whether API key is stored in secure storage
     @Default(false) bool hasApiKey,
+
+    /// Stable installation identity reported by the authenticated Bridge.
+    ///
+    /// This is a cache/data-source hint, not a credential. Different LAN,
+    /// Tailscale, DNS, or tunnel routes may legitimately share this value.
+    String? bridgeInstanceId,
+
+    /// Last authoritative Codex Home identity observed on this route.
+    ///
+    /// A single Bridge installation may be restarted against another
+    /// CODEX_HOME, so cache reuse is scoped by both identities.
+    String? codexSourceId,
 
     /// Last successful connection time
     DateTime? lastConnected,

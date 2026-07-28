@@ -8,6 +8,63 @@ import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+const _offlinePendingMessagesV1Key = 'bridge_offline_pending_messages_v1';
+const _offlinePendingMessagesV2Key = 'bridge_offline_pending_messages_v2';
+
+Map<String, dynamic> _offlineEnvelopeMessage(String raw) {
+  final envelope = jsonDecode(raw) as Map<String, dynamic>;
+  return Map<String, dynamic>.from(envelope['message'] as Map);
+}
+
+Map<String, dynamic>? _offlineEnvelopeTarget(String raw) {
+  final envelope = jsonDecode(raw) as Map<String, dynamic>;
+  final target = envelope['target'];
+  return target is Map ? Map<String, dynamic>.from(target) : null;
+}
+
+String _offlineEnvelope({
+  required Map<String, dynamic> message,
+  required String routeIdentity,
+  required String bridgeInstanceId,
+  required String codexSourceId,
+}) {
+  return jsonEncode({
+    'version': 2,
+    'message': message,
+    'target': {
+      'routeIdentity': routeIdentity,
+      'bridgeInstanceId': bridgeInstanceId,
+      'codexSourceId': codexSourceId,
+    },
+  });
+}
+
+Future<void> _waitForBridgeConnection(BridgeService bridge) async {
+  if (bridge.currentBridgeConnectionState == BridgeConnectionState.connected) {
+    return;
+  }
+  await bridge.connectionStatus
+      .firstWhere((state) => state == BridgeConnectionState.connected)
+      .timeout(const Duration(seconds: 2));
+}
+
+Future<void> _authorizeLegacyBridge(
+  BridgeService bridge,
+  WebSocket socket,
+) async {
+  final previousGeneration = bridge.authoritativeSessionListGeneration;
+  socket.add(jsonEncode({'type': 'session_list', 'sessions': const []}));
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (bridge.authoritativeSessionListGeneration > previousGeneration) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  throw TimeoutException(
+    'Bridge did not publish an authoritative session list',
+  );
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -289,12 +346,9 @@ void main() {
         bridge.requestRecentSessions();
         final request = outgoing
             .map(
-              (message) =>
-                  jsonDecode(message.toJson()) as Map<String, dynamic>,
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
             )
-            .lastWhere(
-              (message) => message['type'] == 'list_recent_sessions',
-            );
+            .lastWhere((message) => message['type'] == 'list_recent_sessions');
         firstSocket.add(
           jsonEncode({
             'type': 'recent_sessions',
@@ -987,9 +1041,6 @@ void main() {
       'queued foreground history only becomes active after reconnect send',
       () async {
         final bridge = BridgeService();
-        bridge.requestSessionHistory('queued-session');
-        expect(bridge.isSessionHistorySyncing('queued-session'), isFalse);
-
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
         final socketReady = Completer<WebSocket>();
         server.transform(WebSocketTransformer()).listen((socket) {
@@ -997,7 +1048,11 @@ void main() {
         });
         final becameActive = bridge.sessionHistorySyncChanges.first;
         bridge.connect('ws://127.0.0.1:${server.port}');
+        bridge.requestSessionHistory('queued-session');
+        expect(bridge.isSessionHistorySyncing('queued-session'), isFalse);
         final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        socket.add(jsonEncode({'type': 'session_list', 'sessions': const []}));
 
         expect(
           await becameActive.timeout(const Duration(seconds: 2)),
@@ -1580,8 +1635,7 @@ void main() {
       expect(
         outgoing
             .map(
-              (message) =>
-                  jsonDecode(message.toJson()) as Map<String, dynamic>,
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
             )
             .where((request) => request['type'] == 'get_history_delta'),
         hasLength(1),
@@ -1605,8 +1659,7 @@ void main() {
 
       final deltaRequests = outgoing
           .map(
-            (message) =>
-                jsonDecode(message.toJson()) as Map<String, dynamic>,
+            (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
           )
           .where((request) => request['type'] == 'get_history_delta')
           .toList();
@@ -1903,7 +1956,8 @@ void main() {
         final bridge = BridgeService();
         bridge.connect('ws://127.0.0.1:${server.port}');
         final socket = await socketReady.future;
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await _waitForBridgeConnection(bridge);
+        await _authorizeLegacyBridge(bridge, socket);
 
         socket.add(
           jsonEncode({
@@ -1965,7 +2019,8 @@ void main() {
         final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
         bridge.connect('ws://127.0.0.1:${server.port}');
         final socket = await socketReady.future;
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await _waitForBridgeConnection(bridge);
+        await _authorizeLegacyBridge(bridge, socket);
 
         socket.add(
           jsonEncode({
@@ -2076,7 +2131,8 @@ void main() {
       final bridge = BridgeService();
       bridge.connect('ws://127.0.0.1:${server.port}');
       final socket = await socketReady.future;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await _waitForBridgeConnection(bridge);
+      await _authorizeLegacyBridge(bridge, socket);
 
       bridge.send(
         ClientMessage.input(
@@ -2091,9 +2147,9 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
 
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getStringList('bridge_offline_pending_messages_v1');
+      final raw = prefs.getStringList(_offlinePendingMessagesV2Key);
       expect(raw, hasLength(1));
-      expect(jsonDecode(raw!.single), {
+      expect(_offlineEnvelopeMessage(raw!.single), {
         'type': 'input',
         'text': 'retry after reconnect',
         'sessionId': 's1',
@@ -2116,7 +2172,8 @@ void main() {
       final bridge = BridgeService();
       bridge.connect('ws://127.0.0.1:${server.port}');
       final socket = await socketReady.future;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await _waitForBridgeConnection(bridge);
+      await _authorizeLegacyBridge(bridge, socket);
 
       bridge.send(
         ClientMessage.input(
@@ -2138,7 +2195,8 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
 
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getStringList('bridge_offline_pending_messages_v1'), isNull);
+      expect(prefs.getStringList(_offlinePendingMessagesV2Key), isNull);
+      expect(prefs.getStringList(_offlinePendingMessagesV1Key), isNull);
 
       bridge.disconnect();
       await server.close(force: true);
@@ -2162,10 +2220,10 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
 
         final prefs = await SharedPreferences.getInstance();
-        final raw = prefs.getStringList('bridge_offline_pending_messages_v1');
+        final raw = prefs.getStringList(_offlinePendingMessagesV2Key);
         expect(raw, isNotNull);
         expect(raw, hasLength(1));
-        expect(jsonDecode(raw!.single), {
+        expect(_offlineEnvelopeMessage(raw!.single), {
           'type': 'input',
           'text': 'offline',
           'sessionId': 's1',
@@ -2211,7 +2269,7 @@ void main() {
         );
 
         final prefs = await SharedPreferences.getInstance();
-        final raw = prefs.getStringList('bridge_offline_pending_messages_v1');
+        final raw = prefs.getStringList(_offlinePendingMessagesV2Key);
         expect(raw, hasLength(2));
 
         bridge.dispose();
@@ -2265,7 +2323,8 @@ void main() {
       final bridge = BridgeService();
       bridge.connect('ws://127.0.0.1:${server.port}');
       final socket = await socketReady.future;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await _waitForBridgeConnection(bridge);
+      await _authorizeLegacyBridge(bridge, socket);
 
       bridge.send(
         ClientMessage.start(
@@ -2389,7 +2448,8 @@ void main() {
         final bridge = BridgeService();
         bridge.connect('ws://127.0.0.1:${server.port}');
         final socket = await socketReady.future;
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await _waitForBridgeConnection(bridge);
+        await _authorizeLegacyBridge(bridge, socket);
 
         bridge.send(
           ClientMessage.resumeSession(
@@ -2506,7 +2566,8 @@ void main() {
         final bridge = BridgeService();
         bridge.connect('ws://127.0.0.1:${server.port}');
         final socket = await socketReady.future;
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await _waitForBridgeConnection(bridge);
+        await _authorizeLegacyBridge(bridge, socket);
 
         bridge.send(
           ClientMessage.start(
@@ -2551,7 +2612,8 @@ void main() {
         final bridge = BridgeService();
         bridge.connect('ws://127.0.0.1:${server.port}');
         final socket = await socketReady.future;
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await _waitForBridgeConnection(bridge);
+        await _authorizeLegacyBridge(bridge, socket);
 
         bridge.send(
           ClientMessage.start(
@@ -2599,7 +2661,8 @@ void main() {
       final bridge = BridgeService();
       bridge.connect('ws://127.0.0.1:${server.port}');
       final socket = await socketReady.future;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await _waitForBridgeConnection(bridge);
+      await _authorizeLegacyBridge(bridge, socket);
 
       bridge.send(
         ClientMessage.start('/home/user/project-a', provider: 'codex'),
@@ -2646,7 +2709,8 @@ void main() {
       final bridge = BridgeService();
       bridge.connect('ws://127.0.0.1:${server.port}');
       final socket = await socketReady.future;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await _waitForBridgeConnection(bridge);
+      await _authorizeLegacyBridge(bridge, socket);
 
       bridge.send(ClientMessage.start('/home/user/app', provider: 'codex'));
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -2658,9 +2722,12 @@ void main() {
       expect(bridge.offlinePendingActions, hasLength(1));
       expect(bridge.offlinePendingActions.single.canCancel, isTrue);
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getStringList('bridge_offline_pending_messages_v1');
+      final raw = prefs.getStringList(_offlinePendingMessagesV2Key);
       expect(raw, hasLength(1));
-      expect(jsonDecode(raw!.single), containsPair('type', 'start'));
+      expect(
+        _offlineEnvelopeMessage(raw!.single),
+        containsPair('type', 'start'),
+      );
 
       bridge.disconnect();
       await server.close(force: true);
@@ -2687,10 +2754,7 @@ void main() {
 
         expect(bridge.offlinePendingActions, isEmpty);
         final prefs = await SharedPreferences.getInstance();
-        expect(
-          prefs.getStringList('bridge_offline_pending_messages_v1'),
-          isNull,
-        );
+        expect(prefs.getStringList(_offlinePendingMessagesV2Key), isNull);
 
         bridge.dispose();
       },
@@ -2726,9 +2790,9 @@ void main() {
         expect(updated, isTrue);
 
         var prefs = await SharedPreferences.getInstance();
-        var raw = prefs.getStringList('bridge_offline_pending_messages_v1');
+        var raw = prefs.getStringList(_offlinePendingMessagesV2Key);
         expect(raw, hasLength(1));
-        expect(jsonDecode(raw!.single), {
+        expect(_offlineEnvelopeMessage(raw!.single), {
           'type': 'input',
           'text': 'Edited',
           'sessionId': 's1',
@@ -2745,7 +2809,7 @@ void main() {
         );
         expect(canceled, isTrue);
         prefs = await SharedPreferences.getInstance();
-        raw = prefs.getStringList('bridge_offline_pending_messages_v1');
+        raw = prefs.getStringList(_offlinePendingMessagesV2Key);
         expect(raw, isNull);
 
         bridge.dispose();
@@ -2753,22 +2817,278 @@ void main() {
     );
 
     test(
-      'restores persisted offline messages and clears them after flush',
+      'waits for authoritative identity then replays on another route to the '
+      'same Bridge',
       () async {
         SharedPreferences.setMockInitialValues({
-          'bridge_offline_pending_messages_v1': [
-            jsonEncode({
-              'type': 'rename_session',
-              'sessionId': 's1',
-              'name': 'Renamed',
-            }),
+          _offlinePendingMessagesV2Key: [
+            _offlineEnvelope(
+              message: {
+                'type': 'rename_session',
+                'sessionId': 's1',
+                'name': 'Renamed',
+              },
+              routeIdentity: 'logical:machine:old-route',
+              bridgeInstanceId: 'bridge-1',
+              codexSourceId: 'source-1',
+            ),
           ],
         });
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-        final received = <Map<String, dynamic>>[];
+        final socketReady = Completer<WebSocket>();
+        final sawCapabilities = Completer<void>();
         final sawRename = Completer<void>();
+        final received = <Map<String, dynamic>>[];
 
         server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+          socket.listen((data) {
+            final json = jsonDecode(data as String) as Map<String, dynamic>;
+            received.add(json);
+            if (json['type'] == 'client_capabilities' &&
+                !sawCapabilities.isCompleted) {
+              sawCapabilities.complete();
+            }
+            if (json['type'] == 'rename_session' && !sawRename.isCompleted) {
+              sawRename.complete();
+            }
+          });
+        });
+
+        final bridge = BridgeService();
+        bridge.connect(
+          'ws://127.0.0.1:${server.port}',
+          logicalConnectionIdentity: 'machine:new-route',
+          expectedBridgeInstanceId: 'bridge-1',
+          expectedCodexSourceId: 'source-1',
+        );
+        final socket = await socketReady.future;
+        await sawCapabilities.future.timeout(const Duration(seconds: 2));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(
+          received.where((message) => message['type'] == 'rename_session'),
+          isEmpty,
+          reason:
+              'WebSocket readiness and a remembered identity are not '
+              'authoritative enough to replay a mutation.',
+        );
+        expect(bridge.queuedMessageCountForTest, 1);
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'bridgeInstanceId': 'bridge-1',
+            'codexSourceId': 'source-1',
+            'sessions': [],
+          }),
+        );
+
+        await sawRename.future.timeout(const Duration(seconds: 2));
+        expect(
+          received.any(
+            (message) =>
+                message['type'] == 'rename_session' &&
+                message['sessionId'] == 's1' &&
+                message['name'] == 'Renamed',
+          ),
+          isTrue,
+        );
+        expect(bridge.queuedMessageCountForTest, 0);
+
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getStringList(_offlinePendingMessagesV2Key), isNull);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    for (final scenario in [
+      (
+        name: 'different Bridge',
+        bridgeInstanceId: 'bridge-2',
+        codexSourceId: 'source-1',
+      ),
+      (
+        name: 'same Bridge with a different Codex source',
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'source-2',
+      ),
+    ]) {
+      test('keeps queued mutation for ${scenario.name}', () async {
+        SharedPreferences.setMockInitialValues({
+          _offlinePendingMessagesV2Key: [
+            _offlineEnvelope(
+              message: {
+                'type': 'rename_session',
+                'sessionId': 's1',
+                'name': 'Renamed',
+              },
+              routeIdentity: 'logical:machine:old-route',
+              bridgeInstanceId: 'bridge-1',
+              codexSourceId: 'source-1',
+            ),
+          ],
+        });
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        final sawCapabilities = Completer<void>();
+        final received = <Map<String, dynamic>>[];
+
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+          socket.listen((data) {
+            final json = jsonDecode(data as String) as Map<String, dynamic>;
+            received.add(json);
+            if (json['type'] == 'client_capabilities' &&
+                !sawCapabilities.isCompleted) {
+              sawCapabilities.complete();
+            }
+          });
+        });
+
+        final bridge = BridgeService();
+        bridge.connect(
+          'ws://127.0.0.1:${server.port}',
+          logicalConnectionIdentity: 'machine:new-route',
+          expectedBridgeInstanceId: 'bridge-1',
+          expectedCodexSourceId: 'source-1',
+        );
+        final socket = await socketReady.future;
+        await sawCapabilities.future.timeout(const Duration(seconds: 2));
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'bridgeInstanceId': scenario.bridgeInstanceId,
+            'codexSourceId': scenario.codexSourceId,
+            'sessions': [],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        expect(
+          received.where((message) => message['type'] == 'rename_session'),
+          isEmpty,
+        );
+        expect(bridge.queuedMessageCountForTest, 1);
+        final prefs = await SharedPreferences.getInstance();
+        final persisted = prefs.getStringList(_offlinePendingMessagesV2Key);
+        expect(persisted, hasLength(1));
+        expect(_offlineEnvelopeMessage(persisted!.single), {
+          'type': 'rename_session',
+          'sessionId': 's1',
+          'name': 'Renamed',
+        });
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      });
+    }
+
+    test(
+      'clears runtime bindings when one route changes Codex source',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+        final bridge = BridgeService();
+        bridge.connect(
+          'ws://127.0.0.1:${server.port}',
+          logicalConnectionIdentity: 'machine:one-route',
+          expectedBridgeInstanceId: 'bridge-1',
+          expectedCodexSourceId: 'source-1',
+        );
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'bridgeInstanceId': 'bridge-1',
+            'codexSourceId': 'source-1',
+            'allowedDirs': ['/source-1'],
+            'sessions': [
+              {
+                'id': 'runtime-source-1',
+                'provider': 'codex',
+                'claudeSessionId': 'provider-source-1',
+                'projectPath': '/source-1/project',
+                'status': 'idle',
+              },
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(
+          bridge.providerSessionIdForRuntime(
+            'runtime-source-1',
+            provider: 'codex',
+          ),
+          'provider-source-1',
+        );
+        expect(bridge.allowedDirs, ['/source-1']);
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'bridgeInstanceId': 'bridge-1',
+            'codexSourceId': 'source-2',
+            'allowedDirs': ['/source-2'],
+            'sessions': [
+              {
+                'id': 'runtime-source-2',
+                'provider': 'codex',
+                'claudeSessionId': 'provider-source-2',
+                'projectPath': '/source-2/project',
+                'status': 'idle',
+              },
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(bridge.codexSourceId, 'source-2');
+        expect(bridge.sessions.map((session) => session.id), [
+          'runtime-source-2',
+        ]);
+        expect(
+          bridge.providerSessionIdForRuntime(
+            'runtime-source-1',
+            provider: 'codex',
+          ),
+          isNull,
+        );
+        expect(
+          bridge.providerSessionIdForRuntime(
+            'runtime-source-2',
+            provider: 'codex',
+          ),
+          'provider-source-2',
+        );
+        expect(bridge.allowedDirs, ['/source-2']);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'promotes a current-epoch endpoint queue after first identity proof',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        final sawRename = Completer<void>();
+        final received = <Map<String, dynamic>>[];
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
           socket.listen((data) {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
             received.add(json);
@@ -2779,37 +3099,343 @@ void main() {
         });
 
         final bridge = BridgeService();
-        bridge.connect('ws://127.0.0.1:${server.port}');
+        bridge.connect(
+          'ws://127.0.0.1:${server.port}',
+          logicalConnectionIdentity: 'machine:first-route',
+        );
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        bridge.send(
+          ClientMessage.renameSession(
+            sessionId: 's1',
+            name: 'Queued before identity',
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(
+          received.where((message) => message['type'] == 'rename_session'),
+          isEmpty,
+        );
+        expect(bridge.queuedMessageCountForTest, 1);
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'bridgeInstanceId': 'bridge-1',
+            'codexSourceId': 'source-1',
+            'sessions': [],
+          }),
+        );
 
         await sawRename.future.timeout(const Duration(seconds: 2));
-        expect(
-          received.any(
-            (message) =>
-                message['type'] == 'client_capabilities' &&
-                message['supportedServerMessages'] is List,
-          ),
-          isTrue,
-        );
-        expect(
-          received.any(
-            (message) =>
-                message['type'] == 'rename_session' &&
-                message['sessionId'] == 's1' &&
-                message['name'] == 'Renamed',
-          ),
-          isTrue,
-        );
-
-        final prefs = await SharedPreferences.getInstance();
-        expect(
-          prefs.getStringList('bridge_offline_pending_messages_v1'),
-          isNull,
-        );
+        expect(bridge.queuedMessageCountForTest, 0);
 
         bridge.disconnect();
+        await socket.close();
         await server.close(force: true);
         bridge.dispose();
       },
     );
+
+    test(
+      'connection switch during flush requeues and resumes on the same source',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          _offlinePendingMessagesV2Key: [
+            _offlineEnvelope(
+              message: {
+                'type': 'rename_session',
+                'sessionId': 's1',
+                'name': 'Fenced rename',
+              },
+              routeIdentity: 'logical:machine:old-route',
+              bridgeInstanceId: 'bridge-1',
+              codexSourceId: 'source-1',
+            ),
+          ],
+        });
+        final firstServer = await HttpServer.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        final secondServer = await HttpServer.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        final firstSocketReady = Completer<WebSocket>();
+        final secondSocketReady = Completer<WebSocket>();
+        final firstReceived = <Map<String, dynamic>>[];
+        final secondReceived = <Map<String, dynamic>>[];
+        firstServer.transform(WebSocketTransformer()).listen((socket) {
+          firstSocketReady.complete(socket);
+          socket.listen((data) {
+            firstReceived.add(
+              jsonDecode(data as String) as Map<String, dynamic>,
+            );
+          });
+        });
+        secondServer.transform(WebSocketTransformer()).listen((socket) {
+          secondSocketReady.complete(socket);
+          socket.listen((data) {
+            secondReceived.add(
+              jsonDecode(data as String) as Map<String, dynamic>,
+            );
+          });
+        });
+
+        final firstFlushEntered = Completer<void>();
+        final releaseFirstFlush = Completer<void>();
+        var barrierCalls = 0;
+        final bridge = BridgeService()
+          ..offlineFlushBarrierForTest = () {
+            barrierCalls += 1;
+            if (barrierCalls != 1) return Future<void>.value();
+            firstFlushEntered.complete();
+            return releaseFirstFlush.future;
+          };
+        bridge.connect(
+          'ws://127.0.0.1:${firstServer.port}',
+          logicalConnectionIdentity: 'machine:first-route',
+          expectedBridgeInstanceId: 'bridge-1',
+          expectedCodexSourceId: 'source-1',
+        );
+        final firstSocket = await firstSocketReady.future;
+        await _waitForBridgeConnection(bridge);
+        firstSocket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'bridgeInstanceId': 'bridge-1',
+            'codexSourceId': 'source-1',
+            'sessions': [],
+          }),
+        );
+        await firstFlushEntered.future.timeout(const Duration(seconds: 2));
+
+        bridge.connect(
+          'ws://127.0.0.1:${secondServer.port}',
+          logicalConnectionIdentity: 'machine:second-route',
+          expectedBridgeInstanceId: 'bridge-1',
+          expectedCodexSourceId: 'source-1',
+        );
+        final secondSocket = await secondSocketReady.future;
+        await _waitForBridgeConnection(bridge);
+        secondSocket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'bridgeInstanceId': 'bridge-1',
+            'codexSourceId': 'source-1',
+            'sessions': [],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        releaseFirstFlush.complete();
+
+        for (var attempt = 0; attempt < 100; attempt++) {
+          if (secondReceived.any(
+            (message) => message['type'] == 'rename_session',
+          )) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(
+          firstReceived.where((message) => message['type'] == 'rename_session'),
+          isEmpty,
+        );
+        expect(
+          secondReceived.where(
+            (message) => message['type'] == 'rename_session',
+          ),
+          hasLength(1),
+        );
+        expect(bridge.queuedMessageCountForTest, 0);
+
+        bridge.disconnect();
+        await firstSocket.close();
+        await secondSocket.close();
+        await firstServer.close(force: true);
+        await secondServer.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test('cancel only removes the current Bridge source action', () async {
+      const pendingStart = {
+        'type': 'start',
+        'projectPath': '/home/user/app',
+        'provider': 'codex',
+      };
+      SharedPreferences.setMockInitialValues({
+        _offlinePendingMessagesV2Key: [
+          _offlineEnvelope(
+            message: pendingStart,
+            routeIdentity: 'logical:machine:source-1-route',
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'source-1',
+          ),
+          _offlineEnvelope(
+            message: pendingStart,
+            routeIdentity: 'logical:machine:source-2-route',
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'source-2',
+          ),
+        ],
+      });
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+      server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+      final bridge = BridgeService();
+      bridge.connect(
+        'ws://127.0.0.1:${server.port}',
+        logicalConnectionIdentity: 'machine:source-1-route',
+        expectedBridgeInstanceId: 'bridge-1',
+        expectedCodexSourceId: 'source-1',
+      );
+      final socket = await socketReady.future;
+      await _waitForBridgeConnection(bridge);
+      for (var attempt = 0; attempt < 100; attempt++) {
+        if (bridge.offlinePendingActions.isNotEmpty) break;
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+
+      expect(bridge.offlinePendingActions, hasLength(1));
+      await bridge.cancelOfflinePendingAction(
+        bridge.offlinePendingActions.single.id,
+      );
+
+      expect(bridge.offlinePendingActions, isEmpty);
+      final prefs = await SharedPreferences.getInstance();
+      final persisted = prefs.getStringList(_offlinePendingMessagesV2Key);
+      expect(persisted, hasLength(1));
+      expect(_offlineEnvelopeMessage(persisted!.single), pendingStart);
+      expect(_offlineEnvelopeTarget(persisted.single), {
+        'routeIdentity': 'logical:machine:source-2-route',
+        'bridgeInstanceId': 'bridge-1',
+        'codexSourceId': 'source-2',
+      });
+
+      bridge.disconnect();
+      await socket.close();
+      await server.close(force: true);
+      bridge.dispose();
+    });
+
+    test('legacy queue stays tied to the exact endpoint route', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final currentRoute =
+          'logical:machine:shared-machine|endpoint:'
+          'ws://127.0.0.1:${server.port}/';
+      final previousRoute =
+          'logical:machine:shared-machine|endpoint:'
+          'ws://127.0.0.1:${server.port == 1 ? 2 : server.port - 1}/';
+      SharedPreferences.setMockInitialValues({
+        _offlinePendingMessagesV2Key: [
+          jsonEncode({
+            'version': 2,
+            'message': {
+              'type': 'rename_session',
+              'sessionId': 's1',
+              'name': 'Legacy route rename',
+            },
+            'target': {
+              'routeIdentity': previousRoute,
+              'bridgeInstanceId': null,
+              'codexSourceId': null,
+            },
+          }),
+        ],
+      });
+      final socketReady = Completer<WebSocket>();
+      final received = <Map<String, dynamic>>[];
+      server.transform(WebSocketTransformer()).listen((socket) {
+        socketReady.complete(socket);
+        socket.listen((data) {
+          received.add(jsonDecode(data as String) as Map<String, dynamic>);
+        });
+      });
+
+      final bridge = BridgeService();
+      bridge.connect(
+        'ws://127.0.0.1:${server.port}',
+        logicalConnectionIdentity: 'machine:shared-machine',
+      );
+      final socket = await socketReady.future;
+      await _waitForBridgeConnection(bridge);
+      socket.add(jsonEncode({'type': 'session_list', 'sessions': []}));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(currentRoute, isNot(previousRoute));
+      expect(
+        received.where((message) => message['type'] == 'rename_session'),
+        isEmpty,
+      );
+      expect(bridge.queuedMessageCountForTest, 1);
+
+      bridge.disconnect();
+      await socket.close();
+      await server.close(force: true);
+      bridge.dispose();
+    });
+
+    test('does not replay legacy v1 queue without target identity', () async {
+      SharedPreferences.setMockInitialValues({
+        _offlinePendingMessagesV1Key: [
+          jsonEncode({
+            'type': 'rename_session',
+            'sessionId': 's1',
+            'name': 'Legacy rename',
+          }),
+        ],
+      });
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+      final sawCapabilities = Completer<void>();
+      final received = <Map<String, dynamic>>[];
+
+      server.transform(WebSocketTransformer()).listen((socket) {
+        socketReady.complete(socket);
+        socket.listen((data) {
+          final json = jsonDecode(data as String) as Map<String, dynamic>;
+          received.add(json);
+          if (json['type'] == 'client_capabilities' &&
+              !sawCapabilities.isCompleted) {
+            sawCapabilities.complete();
+          }
+        });
+      });
+
+      final bridge = BridgeService();
+      bridge.connect(
+        'ws://127.0.0.1:${server.port}',
+        logicalConnectionIdentity: 'machine:new-route',
+        expectedBridgeInstanceId: 'bridge-1',
+        expectedCodexSourceId: 'source-1',
+      );
+      final socket = await socketReady.future;
+      await sawCapabilities.future.timeout(const Duration(seconds: 2));
+      socket.add(
+        jsonEncode({
+          'type': 'session_list',
+          'bridgeInstanceId': 'bridge-1',
+          'codexSourceId': 'source-1',
+          'sessions': [],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(
+        received.where((message) => message['type'] == 'rename_session'),
+        isEmpty,
+      );
+      expect(bridge.queuedMessageCountForTest, 1);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getStringList(_offlinePendingMessagesV1Key), hasLength(1));
+
+      bridge.disconnect();
+      await socket.close();
+      await server.close(force: true);
+      bridge.dispose();
+    });
   });
 }

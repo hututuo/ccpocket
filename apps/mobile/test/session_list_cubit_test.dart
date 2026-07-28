@@ -29,6 +29,8 @@ class MockBridgeService extends BridgeService {
   RecentSessionsMessage? _lastRecentSessionsMessage;
   String? testBridgeInstanceId;
   String? testCodexSourceId;
+  String? testCacheBridgeInstanceIdHint;
+  String? testCacheCodexSourceIdHint;
   String? testLogicalConnectionIdentity;
   String? testLastUrl;
 
@@ -60,6 +62,15 @@ class MockBridgeService extends BridgeService {
 
   @override
   String? get codexSourceId => testCodexSourceId;
+
+  @override
+  String? get cacheBridgeInstanceIdHint =>
+      testBridgeInstanceId ?? testCacheBridgeInstanceIdHint;
+
+  @override
+  String? get cacheCodexSourceIdHint => testBridgeInstanceId != null
+      ? testCodexSourceId
+      : testCacheCodexSourceIdHint;
 
   @override
   String? get logicalConnectionIdentity => testLogicalConnectionIdentity;
@@ -520,6 +531,150 @@ void main() {
 
         expect(cubit.state.sessions.single.sessionId, 'live-session');
         expect(cache.writes, hasLength(1));
+      },
+    );
+
+    test(
+      'saved Bridge and Codex source hints prewarm canonical cache before identity frame',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testCacheBridgeInstanceIdHint = 'bridge-a'
+          ..testCacheCodexSourceIdHint = 'codex-home-a'
+          ..testLogicalConnectionIdentity = 'machine:route-b'
+          ..testLastUrl = 'wss://route-b.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        final canonicalTarget = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-a',
+          codexSourceId: 'codex-home-a',
+          logicalConnectionIdentity: 'machine:route-a',
+          websocketUrl: 'wss://route-a.example/socket',
+        );
+        cache.snapshots[canonicalTarget.fingerprint] =
+            SessionCatalogCacheSnapshot(
+              partitionId: 'bridge-a-home-a',
+              sessions: [_session(id: 'canonical-cached-session')],
+              catalogRevision: 7,
+              isComplete: true,
+              cachedAt: DateTime.utc(2026, 7, 28),
+            );
+
+        cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, 1);
+        expect(
+          cubit.state.sessions.single.sessionId,
+          'canonical-cached-session',
+        );
+        expect(cubit.state.isInitialLoading, isFalse);
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+        expect(mockBridge.testBridgeInstanceId, isNull);
+      },
+    );
+
+    test(
+      'authoritative identity mismatch switches to the matching canonical partition',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testCacheBridgeInstanceIdHint = 'bridge-a'
+          ..testCacheCodexSourceIdHint = 'codex-home-a'
+          ..testLogicalConnectionIdentity = 'machine:shared-route'
+          ..testLastUrl = 'wss://shared.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        final hintedTarget = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-a',
+          codexSourceId: 'codex-home-a',
+          logicalConnectionIdentity: mockBridge.testLogicalConnectionIdentity,
+          websocketUrl: mockBridge.testLastUrl,
+        );
+        final authoritativeTarget = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-b',
+          codexSourceId: 'codex-home-b',
+          logicalConnectionIdentity: mockBridge.testLogicalConnectionIdentity,
+          websocketUrl: mockBridge.testLastUrl,
+        );
+        cache.snapshots[hintedTarget.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'bridge-a-home-a',
+          sessions: [_session(id: 'hinted-bridge-session')],
+          catalogRevision: 1,
+          isComplete: true,
+          cachedAt: DateTime.utc(2026, 7, 28),
+        );
+        cache.snapshots[authoritativeTarget.fingerprint] =
+            SessionCatalogCacheSnapshot(
+              partitionId: 'bridge-b-home-b',
+              sessions: [_session(id: 'authoritative-bridge-session')],
+              catalogRevision: 2,
+              isComplete: true,
+              cachedAt: DateTime.utc(2026, 7, 28),
+            );
+        cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+        await pumpEventQueue();
+        expect(cubit.state.sessions.single.sessionId, 'hinted-bridge-session');
+
+        mockBridge
+          ..testBridgeInstanceId = 'bridge-b'
+          ..testCodexSourceId = 'codex-home-b';
+        mockBridge.emitSessionIdentity();
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, 2);
+        expect(
+          cubit.state.sessions.single.sessionId,
+          'authoritative-bridge-session',
+        );
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+      },
+    );
+
+    test(
+      'legacy Bridge without stable identity keeps route-scoped cache partitions',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testLogicalConnectionIdentity = 'machine:legacy-route-a'
+          ..testLastUrl = 'ws://10.0.0.10:8765';
+        final cache = FakeSessionCatalogCacheRepository();
+        final routeATarget = SessionCatalogCacheTarget.fromBridge(
+          logicalConnectionIdentity: 'machine:legacy-route-a',
+          websocketUrl: 'ws://10.0.0.10:8765',
+        );
+        final routeBTarget = SessionCatalogCacheTarget.fromBridge(
+          logicalConnectionIdentity: 'machine:legacy-route-b',
+          websocketUrl: 'ws://100.64.0.10:8765',
+        );
+        cache.snapshots[routeATarget.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'legacy-route-a',
+          sessions: [_session(id: 'legacy-route-a-session')],
+          catalogRevision: null,
+          isComplete: true,
+          cachedAt: DateTime.utc(2026, 7, 28),
+        );
+        cache.snapshots[routeBTarget.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'legacy-route-b',
+          sessions: [_session(id: 'legacy-route-b-session')],
+          catalogRevision: null,
+          isComplete: true,
+          cachedAt: DateTime.utc(2026, 7, 28),
+        );
+        cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+        await pumpEventQueue();
+        expect(cubit.state.sessions.single.sessionId, 'legacy-route-a-session');
+
+        mockBridge
+          ..testLogicalConnectionIdentity = 'machine:legacy-route-b'
+          ..testLastUrl = 'ws://100.64.0.10:8765';
+        mockBridge.emitSessionIdentity();
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, 2);
+        expect(cubit.state.sessions.single.sessionId, 'legacy-route-b-session');
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
       },
     );
 

@@ -315,6 +315,20 @@ class _StaticMachineManagerService implements MachineManagerService {
   );
 
   @override
+  Future<Machine?> bindBridgeIdentity({
+    required String machineId,
+    required String bridgeInstanceId,
+    String? codexSourceId,
+  }) async => getMachine(
+    machineId,
+  )?.copyWith(bridgeInstanceId: bridgeInstanceId, codexSourceId: codexSourceId);
+
+  @override
+  Future<Machine?> clearBridgeIdentity(String machineId) async => getMachine(
+    machineId,
+  )?.copyWith(bridgeInstanceId: null, codexSourceId: null);
+
+  @override
   Future<void> addMachine(
     Machine machine, {
     String? apiKey,

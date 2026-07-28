@@ -63,6 +63,7 @@ export 'services/session_resume_coordinator.dart'
         factualCodexResumeSettings;
 
 const _sessionRequestUuid = Uuid();
+const _machineLogicalIdentityPrefix = 'machine:';
 
 // ---- Testable helpers (top-level) ----
 
@@ -392,6 +393,8 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<RecentSessionsMessage>? _catalogReadinessSub;
   StreamSubscription<List<SessionInfo>>? _sessionListReadinessSub;
   StreamSubscription<void>? _catalogCacheReadinessSub;
+  int _lastBoundBridgeIdentityGeneration = 0;
+  Future<void> _bridgeIdentityBinding = Future<void>.value();
   late final SessionArchivePendingRequests _archivePendingRequests;
   final _catalogBootstrapGate = SessionCatalogBootstrapGate();
 
@@ -455,9 +458,11 @@ class _SessionListScreenState extends State<SessionListScreen>
       ),
     );
     _sessionListReadinessSub = bridge.sessionList.listen((_) {
+      _bindCurrentBridgeIdentityIfAuthoritative(bridge);
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
       _refreshCatalogAfterAuthoritativeSessionList(bridge);
     });
+    _bindCurrentBridgeIdentityIfAuthoritative(bridge);
     _messageSub = bridge.messages.listen((msg) {
       if (msg is SystemMessage &&
           (msg.subtype == 'session_created' ||
@@ -531,6 +536,40 @@ class _SessionListScreenState extends State<SessionListScreen>
       visibleSessionId: notifications.activeSessionId,
       visibleProvider: notifications.activeProvider,
     );
+  }
+
+  Future<void> _bindCurrentBridgeIdentity(BridgeService bridge) async {
+    if (!mounted) return;
+    final bridgeInstanceId = bridge.bridgeInstanceId?.trim();
+    final logicalIdentity = bridge.logicalConnectionIdentity?.trim();
+    if (logicalIdentity == null ||
+        !logicalIdentity.startsWith(_machineLogicalIdentityPrefix)) {
+      return;
+    }
+    final machineId = logicalIdentity.substring(
+      _machineLogicalIdentityPrefix.length,
+    );
+    if (machineId.isEmpty) return;
+    final machineManager = context.read<MachineManagerCubit?>();
+    if (bridgeInstanceId == null || bridgeInstanceId.isEmpty) {
+      await machineManager?.clearBridgeIdentity(machineId);
+      return;
+    }
+    await machineManager?.bindBridgeIdentity(
+      machineId: machineId,
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: bridge.codexSourceId,
+    );
+  }
+
+  void _bindCurrentBridgeIdentityIfAuthoritative(BridgeService bridge) {
+    final generation = bridge.authoritativeSessionListGeneration;
+    if (generation <= _lastBoundBridgeIdentityGeneration) return;
+    _lastBoundBridgeIdentityGeneration = generation;
+    _bridgeIdentityBinding = _bridgeIdentityBinding
+        .catchError((Object _) {})
+        .then((_) => _bindCurrentBridgeIdentity(bridge));
+    unawaited(_bridgeIdentityBinding);
   }
 
   Future<void> _loadMacOSNativeAppBannerState() async {
@@ -682,6 +721,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       // Try to get API key from SecureStorage via MachineManagerCubit.
       String? apiKey;
       String? logicalConnectionIdentity;
+      String? expectedBridgeInstanceId;
+      String? expectedCodexSourceId;
       try {
         final uri = Uri.tryParse(url);
         if (uri != null) {
@@ -690,6 +731,8 @@ class _SessionListScreenState extends State<SessionListScreen>
           if (!_isCurrentConnectionAttempt(attempt)) return;
           if (machine != null) {
             logicalConnectionIdentity = 'machine:${machine.id}';
+            expectedBridgeInstanceId = machine.bridgeInstanceId;
+            expectedCodexSourceId = machine.codexSourceId;
             apiKey = await cubit?.getApiKey(machine.id);
             if (!_isCurrentConnectionAttempt(attempt)) return;
             if (machine.sshJumpHost?.trim().isNotEmpty == true) {
@@ -706,6 +749,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       final attempted = await bridge.autoConnect(
         apiKey: apiKey,
         logicalConnectionIdentity: logicalConnectionIdentity,
+        expectedBridgeInstanceId: expectedBridgeInstanceId,
+        expectedCodexSourceId: expectedCodexSourceId,
       );
       if (!_isCurrentConnectionAttempt(attempt)) return;
       if (attempted) {
@@ -752,6 +797,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     // Auto-save to Machines on successful health check (or user choosing to connect)
     final trimmedApiKey = apiKey?.trim() ?? '';
     String? logicalConnectionIdentity;
+    String? expectedBridgeInstanceId;
+    String? expectedCodexSourceId;
     if (machineManagerCubit != null) {
       // Parse host and port from URL
       final uri = Uri.tryParse(
@@ -766,6 +813,8 @@ class _SessionListScreenState extends State<SessionListScreen>
         );
         if (!_isCurrentConnectionAttempt(attempt)) return;
         logicalConnectionIdentity = 'machine:${machine.id}';
+        expectedBridgeInstanceId = machine.bridgeInstanceId;
+        expectedCodexSourceId = machine.codexSourceId;
       }
     }
 
@@ -782,6 +831,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     bridge.connect(
       connectUrl,
       logicalConnectionIdentity: logicalConnectionIdentity,
+      expectedBridgeInstanceId: expectedBridgeInstanceId,
+      expectedCodexSourceId: expectedCodexSourceId,
     );
     bridge.savePreferences(url);
     _armConnectionReadinessWarning(attempt);
@@ -3071,6 +3122,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     bridge.connect(
       wsUrl,
       logicalConnectionIdentity: 'machine:${machine.id}',
+      expectedBridgeInstanceId: machine.bridgeInstanceId,
+      expectedCodexSourceId: machine.codexSourceId,
     );
     bridge.savePreferences(machine.wsUrl);
     if (tunnelService != null) {
