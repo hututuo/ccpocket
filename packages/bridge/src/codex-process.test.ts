@@ -1225,6 +1225,61 @@ describe("CodexProcess (app-server)", () => {
     expect(proc.status).toBe("idle");
   });
 
+  it("does not let another same-thread turn release a pending continuation", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    (proc as any)._threadId = "thread-owned-continuation";
+    let resolveStart!: (value: unknown) => void;
+    vi.spyOn(proc as any, "request").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+
+    let settled = false;
+    const continuation = (
+      proc as any
+    ).continueInterruptedTurnAfterBootstrap({
+      continueInterruptedTurnAfterStart: true,
+    });
+    void continuation.then(() => {
+      settled = true;
+    });
+    await tick();
+
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-owned-continuation",
+      turn: { id: "turn-from-another-client", status: "completed" },
+    });
+    await tick();
+    expect(settled).toBe(false);
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({ type: "result" }),
+    );
+
+    resolveStart({ turn: { id: "turn-owned" } });
+    await tick();
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-owned-continuation",
+      turn: { id: "turn-owned", status: "completed" },
+    });
+    await continuation;
+
+    expect(settled).toBe(true);
+    expect(
+      messages.filter(
+        (message) =>
+          (message as Record<string, unknown>).type === "result",
+      ),
+    ).toHaveLength(1);
+    expect((proc as any).lastCompletedTurn).toEqual({
+      turnId: "turn-owned",
+      status: "completed",
+    });
+  });
+
   it("validates goal payloads received from app-server", () => {
     expect(() => parseCodexGoal({ status: "active" })).toThrow("invalid shape");
     expect(
@@ -3787,6 +3842,55 @@ describe("CodexProcess (app-server)", () => {
       clearTimeoutSpy.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it("bounds core lifecycle RPCs without timing out unbounded history reads", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+
+    for (const method of [
+      "initialize",
+      "thread/start",
+      "thread/resume",
+      "thread/fork",
+      "turn/start",
+      "turn/steer",
+      "turn/interrupt",
+    ]) {
+      const promise = internal.request(method, {}) as Promise<unknown>;
+      const outgoing = nextOutgoingRequest(child);
+      expect(internal.pendingRpc.get(outgoing.id)?.timeout).toBeDefined();
+      internal.handleRpcResponse({ id: outgoing.id, result: {} });
+      await expect(promise).resolves.toEqual({});
+    }
+
+    const history = internal.request("thread/read", {
+      threadId: "large-thread",
+      includeTurns: true,
+    }) as Promise<unknown>;
+    const historyRequest = nextOutgoingRequest(child);
+    expect(internal.pendingRpc.get(historyRequest.id)?.timeout).toBeUndefined();
+    internal.handleRpcResponse({
+      id: historyRequest.id,
+      result: { thread: { id: "large-thread" } },
+    });
+    await expect(history).resolves.toEqual({
+      thread: { id: "large-thread" },
+    });
+
+    const explicitlyUnbounded = internal.request(
+      "turn/start",
+      {},
+      { timeoutMs: 0 },
+    ) as Promise<unknown>;
+    const unboundedRequest = nextOutgoingRequest(child);
+    expect(internal.pendingRpc.get(unboundedRequest.id)?.timeout).toBeUndefined();
+    internal.handleRpcResponse({ id: unboundedRequest.id, result: {} });
+    await explicitlyUnbounded;
+    proc.stop();
   });
 
   it("preserves RPC method/code and removes an aborted pending read", async () => {

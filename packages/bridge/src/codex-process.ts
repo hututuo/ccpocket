@@ -262,6 +262,17 @@ export interface CodexMcpServerStatusPage {
 
 const CODEX_MCP_STATUS_PAGE_SIZE = 64;
 const CODEX_CORE_ACTION_START_TIMEOUT_MS = 15_000;
+const CODEX_CORE_RPC_TIMEOUTS_MS = [
+  ["initialize", 60_000],
+  ["thread/start", 120_000],
+  // Resume and fork may materialize very large durable histories. Keep them
+  // bounded against a dead app-server without imposing an interactive timeout.
+  ["thread/resume", 600_000],
+  ["thread/fork", 600_000],
+  ["turn/start", 120_000],
+  ["turn/steer", 60_000],
+  ["turn/interrupt", 30_000],
+] as const;
 function isUnsupportedClientUserMessageIdError(error: unknown): boolean {
   if (!(error instanceof CodexRpcError)) return false;
   let detail = error.message;
@@ -412,6 +423,10 @@ interface ToolSuggestionApp {
 interface PendingTurnCompletion {
   resolve: () => void;
   reject: (error: Error) => void;
+  /** Bound only by the authoritative turn/start RPC response. */
+  turnId: string | null;
+  /** Same-thread completions can race ahead of that response. */
+  earlyCompletions: Map<string, Record<string, unknown>>;
 }
 
 interface RpcSuccess {
@@ -580,6 +595,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private rpcSeq = 1;
   private pendingRpc = new Map<number, PendingRpc>();
+  private readonly coreRpcTimeoutsMs = new Map<string, number>(
+    CODEX_CORE_RPC_TIMEOUTS_MS,
+  );
   /** Sticky per-method downgrade for builds predating clientUserMessageId. */
   private readonly clientUserMessageIdSupport = new Map<
     "turn/start" | "turn/steer",
@@ -3139,7 +3157,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.setStatus("running");
 
     await new Promise<void>((resolve, reject) => {
-      this.pendingTurnCompletion = { resolve, reject };
+      const turnCompletion: PendingTurnCompletion = {
+        resolve,
+        reject,
+        turnId: null,
+        earlyCompletions: new Map(),
+      };
+      this.pendingTurnCompletion = turnCompletion;
       void this.request("turn/start", {
         threadId: this._threadId,
         input,
@@ -3147,16 +3171,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         .then((result) => {
           const turn = (result as Record<string, unknown>).turn as
             Record<string, unknown> | undefined;
-          // app-server may emit turn/completed before replying to turn/start.
-          // Never resurrect a turn that the notification path already settled.
-          if (this.pendingTurnCompletion && typeof turn?.id === "string") {
-            this.pendingTurnId = turn.id;
+          if (typeof turn?.id === "string") {
+            this.bindPendingTurnCompletion(turnCompletion, turn.id);
           }
         })
         .catch((error) => {
-          this.pendingTurnCompletion = null;
-          this.pendingTurnId = null;
-          this.setStatus("idle");
+          if (this.pendingTurnCompletion === turnCompletion) {
+            this.pendingTurnCompletion = null;
+            this.pendingTurnId = null;
+            this.setStatus("idle");
+          }
           reject(error instanceof Error ? error : new Error(String(error)));
         });
     });
@@ -3590,7 +3614,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.lastTokenUsage = null;
 
       const completion = await new Promise<void>((resolve, reject) => {
-        const turnCompletion = { resolve, reject };
+        const turnCompletion: PendingTurnCompletion = {
+          resolve,
+          reject,
+          turnId: null,
+          earlyCompletions: new Map(),
+        };
         this.pendingTurnCompletion = turnCompletion;
 
         const params: Record<string, unknown> = {
@@ -3665,7 +3694,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             const turn = (result as Record<string, unknown>).turn as
               Record<string, unknown> | undefined;
             if (typeof turn?.id === "string") {
-              this.pendingTurnId = turn.id;
+              this.bindPendingTurnCompletion(turnCompletion, turn.id);
             }
           })
           .catch((err) => {
@@ -4541,6 +4570,22 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private handleTurnCompleted(turn: Record<string, unknown> | undefined): void {
     const turnId = stringValue(turn?.id) ?? this.pendingTurnId;
+    const pendingCompletion = this.pendingTurnCompletion;
+    if (pendingCompletion) {
+      if (pendingCompletion.turnId === null) {
+        if (turnId) {
+          pendingCompletion.earlyCompletions.set(turnId, turn ?? { id: turnId });
+          while (pendingCompletion.earlyCompletions.size > 8) {
+            const oldest = pendingCompletion.earlyCompletions.keys().next()
+              .value;
+            if (oldest === undefined) break;
+            pendingCompletion.earlyCompletions.delete(oldest);
+          }
+        }
+        return;
+      }
+      if (turnId !== pendingCompletion.turnId) return;
+    }
     this.observeCoreActionTurnCompleted(turnId);
     const status = String(turn?.status ?? "completed");
     if (status === "completed") {
@@ -4620,6 +4665,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.pendingTurnCompletion = null;
     }
     this.cleanupSteerTempPaths();
+  }
+
+  private bindPendingTurnCompletion(
+    expected: PendingTurnCompletion,
+    turnId: string,
+  ): void {
+    if (this.pendingTurnCompletion !== expected) return;
+    expected.turnId = turnId;
+    this.pendingTurnId = turnId;
+    const earlyCompletion = expected.earlyCompletions.get(turnId);
+    expected.earlyCompletions.clear();
+    if (earlyCompletion) this.handleTurnCompleted(earlyCompletion);
   }
 
   private prepareTurnCompletionAgentSummary(
@@ -5085,11 +5142,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     const id = this.rpcSeq++;
     const envelope =
       params === undefined ? { id, method } : { id, method, params };
+    const requestedTimeoutMs =
+      options.timeoutMs === undefined
+        ? this.coreRpcTimeoutsMs.get(method)
+        : options.timeoutMs;
     const timeoutMs =
-      typeof options.timeoutMs === "number" &&
-      Number.isFinite(options.timeoutMs) &&
-      options.timeoutMs > 0
-        ? Math.floor(options.timeoutMs)
+      typeof requestedTimeoutMs === "number" &&
+      Number.isFinite(requestedTimeoutMs) &&
+      requestedTimeoutMs > 0
+        ? Math.floor(requestedTimeoutMs)
         : undefined;
 
     return new Promise<unknown>((resolve, reject) => {
