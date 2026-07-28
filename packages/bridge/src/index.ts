@@ -240,47 +240,47 @@ export async function startServer() {
     });
 
   let fileMutationAuthorizer: FileMutationAuthorizer | undefined;
-  if (API_KEY?.trim()) {
-    const candidate = new FileMutationAuthorizer({
-      bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
-      store: new FileMutationAuthStore(),
-    });
-    try {
-      await candidate.init();
-      const state = await candidate.status();
-      if (OWNER_FULL_DISK_READ || state.passwordConfigured) {
-        fileMutationAuthorizer = candidate;
-        console.log(
-          state.passwordConfigured
-            ? "[bridge] File mutation step-up authorization enabled"
-            : "[bridge] File mutation uploads locked until a Bridge password is configured",
-        );
-      }
-    } catch (error) {
-      console.error(
-        `[bridge] File mutation authorization unavailable: ${startupErrorMessage(error)}`,
-      );
-    }
+  const candidate = new FileMutationAuthorizer({
+    bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+    store: new FileMutationAuthStore(),
+  });
+  try {
+    await candidate.init();
+    const state = await candidate.status();
+    fileMutationAuthorizer = candidate;
+    console.log(
+      state.passwordConfigured
+        ? "[bridge] File mutation step-up authorization enabled"
+        : "[bridge] File mutation uploads locked until a Bridge password is configured",
+    );
+  } catch (error) {
+    console.error(
+      `[bridge] File mutation authorization unavailable: ${startupErrorMessage(error)}`,
+    );
   }
 
-  let fileTransferRuntime =
-    OWNER_FULL_DISK_READ && !fileMutationAuthorizer
-      ? undefined
-      : await initializeFileTransferRuntime({
-          port: PORT,
-          bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
-          allowedDirs: ALLOWED_DIRS,
-          baseUrl: artifactBaseUrl,
-          stateFilePath: process.env.BRIDGE_FILE_TRANSFER_STATE_FILE?.trim(),
-          downloadDirectory:
-            process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
-          partialDirectory:
-            process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
-          fileMutationAuthorizer,
-          warn: (message) => console.warn(`[bridge] ${message}`),
-        });
+  let fileTransferRuntime = await initializeFileTransferRuntime({
+    port: PORT,
+    bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+    allowedDirs: ALLOWED_DIRS,
+    baseUrl: artifactBaseUrl,
+    stateFilePath: process.env.BRIDGE_FILE_TRANSFER_STATE_FILE?.trim(),
+    downloadDirectory:
+      process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
+    partialDirectory:
+      process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
+    fileMutationAuthorizer,
+    warn: (message) => console.warn(`[bridge] ${message}`),
+  });
   let fileTransfer = fileTransferRuntime?.manager;
   let fileTransferHttp = fileTransferRuntime?.http;
+
+  if (!fileMutationAuthorizer && fileTransferRuntime) {
+    console.warn(
+      "[bridge] Phone uploads are locked because mutation authorization " +
+        "could not start; read-only file transfer remains available",
+    );
+  }
 
   let fileBrowser: FileBrowserManager | undefined;
   try {

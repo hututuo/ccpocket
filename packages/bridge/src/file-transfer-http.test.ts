@@ -15,6 +15,7 @@ import {
   FileTransferManager,
   type FileTransferClientBinding,
 } from "./file-transfer-manager.js";
+import { FileMutationAuthorizer } from "./file-mutation-auth.js";
 import type { FileTransferServerMessage } from "./file-transfer-protocol.js";
 import { sendFileViaBridge } from "./file-transfer-send-command.js";
 import { FileTransferStateStore } from "./file-transfer-state-store.js";
@@ -67,10 +68,15 @@ async function fixture(options: {
     maxChunkSizeBytes: options.maxChunkSizeBytes,
     tokenFactory: () => `${String(++tokenSequence).padStart(43, "u")}`.slice(-43),
   });
+  const fileMutationAuthorizer = new FileMutationAuthorizer({
+    bridgeInstanceId: "bridge-test",
+  });
+  vi.spyOn(fileMutationAuthorizer, "authorize").mockResolvedValue();
   const manager = new FileTransferManager({
     downloadStore,
     uploadStore,
     baseUrl: "http://100.64.0.1:8765",
+    fileMutationAuthorizer,
   });
   await manager.init();
   const handler = new FileTransferHttpHandler(manager, options.http);

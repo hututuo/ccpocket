@@ -32,6 +32,7 @@ async function fixture(options: {
   now?: () => number;
   maxChunkSizeBytes?: number;
   mutationPassword?: string;
+  withoutMutationAuthorizer?: boolean;
 } = {}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "ccpocket-transfer-manager-"));
   roots.push(root);
@@ -65,15 +66,20 @@ async function fixture(options: {
     tokenFactory: () => `${String(++tokenSequence).padStart(43, "u")}`.slice(-43),
   });
   let fileMutationAuthorizer: FileMutationAuthorizer | undefined;
-  if (options.mutationPassword !== undefined) {
+  if (!options.withoutMutationAuthorizer) {
     const authStore = new FileMutationAuthStore({
       filePath: join(root, "file-mutation-auth.json"),
     });
-    await authStore.setPassword(options.mutationPassword);
+    if (options.mutationPassword !== undefined) {
+      await authStore.setPassword(options.mutationPassword);
+    }
     fileMutationAuthorizer = new FileMutationAuthorizer({
       store: authStore,
       bridgeInstanceId: "bridge-test",
     });
+    if (options.mutationPassword === undefined) {
+      vi.spyOn(fileMutationAuthorizer, "authorize").mockResolvedValue();
+    }
   }
   const manager = new FileTransferManager({
     downloadStore,
@@ -359,6 +365,45 @@ describe("FileTransferManager v2", () => {
       success: true,
       filename: "from phone.txt",
       sizeBytes: 5,
+    });
+  });
+
+  it("keeps downloads available but rejects every upload without an authorizer", async () => {
+    const f = await fixture({ withoutMutationAuthorizer: true });
+    const client = {};
+    const phone = binding([
+      "file_transfer_offer_v2",
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v2",
+    ]);
+    f.manager.connect(client, phone.binding);
+
+    await f.manager.handleClientMessage(client, {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "locked-upload",
+      transferId: "upload_locked001",
+      resumeToken,
+      filename: "blocked.txt",
+      sizeBytes: 1,
+    });
+
+    expect(phone.messages).toEqual([
+      expect.objectContaining({
+        type: "file_transfer_upload_result_v2",
+        requestId: "locked-upload",
+        transferId: "upload_locked001",
+        success: false,
+        errorCode: "unsupported_capability",
+      }),
+    ]);
+    expect(await f.state.listUploads()).toEqual([]);
+
+    await expect(
+      f.manager.offerFile({ filePath: f.source, projectPath: f.root }),
+    ).resolves.toMatchObject({ status: "offered" });
+    expect(phone.messages.at(-1)).toMatchObject({
+      type: "file_transfer_offer_v2",
+      filename: "report.pdf",
     });
   });
 

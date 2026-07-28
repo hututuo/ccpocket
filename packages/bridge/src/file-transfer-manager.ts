@@ -354,18 +354,20 @@ export class FileTransferManager {
       return;
     }
     try {
+      if (!this.fileMutationAuthorizer) {
+        throw new FileMutationAuthError(
+          "unsupported_capability",
+          "Phone uploads are locked until Bridge file mutation authorization is available",
+        );
+      }
       const existingAuthorization = this.authorizedUploads.get(
         message.transferId,
       );
       const requiresAuthorization =
-        this.fileMutationAuthorizer !== undefined &&
         (existingAuthorization?.client !== client ||
           existingAuthorization.filename !== message.filename ||
           existingAuthorization.sizeBytes !== message.sizeBytes);
-      if (
-        this.fileMutationAuthorizer &&
-        requiresAuthorization
-      ) {
+      if (requiresAuthorization) {
         await this.fileMutationAuthorizer.authorize(
           client,
           {
@@ -383,7 +385,7 @@ export class FileTransferManager {
         message.filename,
         message.sizeBytes,
       );
-      if (this.fileMutationAuthorizer && requiresAuthorization) {
+      if (requiresAuthorization) {
         this.authorizedUploads.set(message.transferId, {
           client,
           filename: message.filename,
