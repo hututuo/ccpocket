@@ -96,13 +96,21 @@ upstream/main:   aa215a3b
 ## 当前继续实施基线
 
 上述代码块保留的是 2026-07-26 初始审查快照，不代表当前源码。继续实施已推进到
-`fix/mobile-comprehensive-v02-20260726@29233693`；2026-07-28 重新 fetch 后的
+`fix/mobile-comprehensive-source-closure-20260728@fa3aa6db`；2026-07-28 重新 fetch 后的
 `upstream/main` 为 `82962136`，其中导航修复已由 `c2cc8379` 结合本地嵌入式
 工作区语义整合，版本记录由 `97fb5aab` 同步为 `1.109.3+205`。后续又完成
 所选 `CODEX_HOME` 的 Bridge 读写统一、跨 provider 同 ID 保留、Mobile 来源
 缓存隔离，以及 Codex 目录行、恢复/重命名/分叉/归档/删除生命周期操作和持久
-Conversation Mirror 的来源绑定；未读、路由/深链身份、完整多 Home 注册表与跨进程
-单写者协议仍未完成。
+Conversation Mirror 的来源绑定；当前批次继续完成稳定 Bridge/来源身份下的未读、
+路由、深链、通知与消息缓存隔离，顺序实例共享来源兼容，Codex 输入/RPC 生命周期、
+未来 continuity/文件节点字段兼容，以及 Mirror patch 和 idle continuity 的两处性能
+收束。用户当前明确两个外部实例不同时运行，因此跨进程并发多写者租约属于未来范围，
+不是当前源码缺口。
+
+2026-07-28 源码门禁：Mobile 2572 项通过、4 项环境 smoke 跳过；Bridge 95 个测试
+文件、1836 项全部通过；Mobile analyze 为 0 error/0 warning、52 条 info；iOS
+Simulator debug 以最终源码完成编译（Xcode 186.0 秒，产出 `Runner.app`）。物理
+iPhone、Bridge/Cloud 部署、签名 IPA 和 owner/stable 发布仍是独立门槛。
 逐项状态和验证证据以 `REQUIREMENT_LEDGER_20260727.md` 为准。
 
 ## 前序文档

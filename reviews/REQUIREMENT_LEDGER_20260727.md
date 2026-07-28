@@ -1,8 +1,8 @@
 # CC Pocket 原始需求实现台账
 
 最后核对：2026-07-28
-当前分支：`fix/mobile-comprehensive-v02-20260726`
-核对源码基线：`29233693`
+当前分支：`fix/mobile-comprehensive-source-closure-20260728`
+核对源码基线：`fa3aa6db`
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -33,13 +33,13 @@
 | 最近使用会话排在上面；已下载只显示勾号，不占独立顶部区域 | v02-003、004、011 | unified session projection、download marker、排序 reducer | **已验证** | 排序与投影回归已保留；需真机长目录视觉复核 |
 | 目录和摘要跨启动缓存；至少近期会话无需每次重读 | v02-004、010～012 | `SessionCatalogCacheRepository`、conversation hot windows；`b5963c63`、`2b08c02b`、`a1ecfb1f` | **已验证** | SQLite round-trip、代次、损坏快照退避及重开回归通过 |
 | 最近至少 10 个热会话保留尾部窗口，重连只追增量 | v02-004、012、015 | hot-window 上限 2000、cursor/revision、`ConversationContentSyncService` | **已验证** | hot-window replace/patch、known revisions、重连 cursor 回归通过 |
-| App 在前台但未点开会话时也自动更新；热会话秒级、冷会话低频；计算主要放 Bridge | v02-010、011、015 | `packages/bridge/src/local-features/conversation-content-sync.ts`；Mobile subscribe/ack；`b0255c68` 公平保留 Claude/Codex 目录监视容量；`93d02cf1` 调度优先级老化 | **部分完成** | provider monitor 与正文 scheduler 两层饥饿路径均由红测复现后闭环；超大目录扫描成本、provider rewrite 和真实多会话延迟仍需性能审计 |
+| App 在前台但未点开会话时也自动更新；热会话秒级、冷会话低频；计算主要放 Bridge | v02-010、011、015 | `packages/bridge/src/local-features/conversation-content-sync.ts`；Mobile subscribe/ack；`b0255c68` 公平保留 Claude/Codex 目录监视容量；`93d02cf1` 调度优先级老化；`fa3aa6db` 让 filesystem watch 保持实时、运行/未知会话以 750 ms 兜底、idle 会话退到 10 秒兜底 | **已验证** | provider monitor 与正文 scheduler 两层饥饿路径均由红测复现后闭环；Mobile 仍是单服务订阅，没有 per-card timer。continuity monitor 43/43、Bridge 全套 1836/1836 通过；真实多会话端到端延迟和能耗仍属于设备性能验收，不再作为源码缺口 |
 | 当前打开会话优先追平，但不能阻塞其他会话；Mobile 不能创建 N 个轮询 timer | v02-015 | Bridge scheduler + Mobile 单服务订阅；无 per-card timer；`93d02cf1` | **已验证** | 红测证明旧实现持续 focused 更新会让另一会话到第 21 次才读取；优先级老化后限制在第 4 次以内，7 项 content-sync 回归通过；最终真实多会话压力计时仍归入总性能门禁 |
 | 设置中一键清可重建缓存；已下载完整历史逐项删除 | v02-004、013、014 | `15e946b5`、`704b5e09`；`cache_management_screen.dart` | **已验证** | 12 项缓存/设置回归通过；标题读取从 N 次 SQL 降为每 300 项一批 |
 | 已有会话显示“加载/同步”，只有新线程显示“创建” | v02-005、012 | durable-open 与 pending binding 路径分离 | **已验证** | 会话直开和 pending attach 回归通过；真机文案扫描仍待本地化批次 |
 | runtime 长期停在 `starting` 时不能每 3 秒无限重读历史；弱网恢复仍要可重试 | v02-010、012 | `502b4252`；一次性退避 timer、断线暂停与重连预算 | **已验证** | 红测把旧实现虚拟 5 分钟内的 101 次请求固化；现为初始 1 次加最多 4 次指数退避，离线期间 0 次新增、重连后恢复有限预算；ChatSessionCubit 147 项全通过 |
 | 同一会话并发增量对账必须 single-flight；后台请求不能降级前台完整回退权限；重连不能让旧 socket 的请求吞掉新请求 | v02-010～012 | `7d62f978`；`BridgeService` 的连接代次、升级式 fallback 与 dirty follow-up | **已验证** | 旧实现三个并发调用会发送 3 次 delta，且最后一个后台调用可覆盖前台回退权限；现同一连接只发 1 次，响应后至多补 1 次 dirty follow-up，使用已更新 cursor。后台单独请求仍不做全量回退，前台权限只能升级；同目标重连重新发送并隔离旧代。Bridge usage + legacy fence 53 项、定向 analyze 与 diff check 全通过 |
-| 双 Cockpit/Codex 实例不能串目录、续接、未读或缓存 | v02-007、011 | `bc0601b7`、`a35cc591`、`b5963c63`；`2e1be40e` 统一所选 `CODEX_HOME` 的 app-server、目录索引、watcher、usage、context、doctor 与 LaunchAgent 环境；`54167649` 保留 Claude/Codex 原始 ID 碰撞的两条记录；`95cae34b` 暴露不含本地路径的来源身份并按来源隔离 Mobile 目录缓存；`6de89935` 给 Codex 目录行、归档记录及恢复/重命名/分叉/归档/恢复归档/永久删除请求绑定来源；`29233693` 把持久 Conversation Mirror、watch、分页游标和运行时发布 guard 按来源隔离 | **部分完成** | 单一 Bridge 选择一个 Home 时，读写、目录缓存、会话生命周期操作和持久 Mirror 均受同一来源约束；同一 Bridge 切换 Home 会取消旧请求，只恢复当前来源的 resident watch。新字段仅在 capability 协商后发送，错误来源在 provider read 前以 `codex_source_mismatch` 拒绝；旧客户端省略来源字段仍兼容。Mirror 继续使用 schema v1，来源写入旧 Dart 不会当作 Codex 命中的版本化 provider 键槽，回滚时失败关闭且不删除旧副本。此前 Bridge 438 项、Mobile 227 项通过；Mirror 批次 Bridge 299 项、Mobile 83 项与 8 文件 analyze 全通过。仍缺未读/路由/深链的来源分区、同时注册多个 Home 的 source registry，以及跨外部 Codex/Cockpit 进程都能遵守的真正单写者/租约协议；因此不能把“选定 Home 已隔离”夸大为“多实例并发安全已完成” |
+| 用户当前采用两个实例不同时运行；共享同一 Codex 会话来源时不能串目录、续接、未读、路由、通知或缓存 | v02-007、011；用户 2026-07-28 的顺序使用约束 | `2e1be40e` 统一所选 `CODEX_HOME`；`95cae34b`、`6de89935`、`29233693` 绑定目录、生命周期和 Mirror 来源；`fac56c47` 以 Bridge 稳定身份复用跨 IP 数据并隔离离线队列；`8aabde45` 支持顺序实例共享来源；`170621dd` 隔离消息缓存；`013c58d3` 隔离未读、路由、深链和通知；`78c0d011` 让 Bridge 通知携带来源身份；`0e6d2525` 记录兼容边界 | **已验证** | 单一 Bridge 选择一个 Home 时，读写、目录、生命周期、持久 Mirror、消息缓存、未读、通知和深链都受稳定 Bridge/来源身份约束；切换来源会取消旧请求，只恢复当前来源 resident watch。新字段 capability-gated，旧客户端和无来源旧缓存走明确的 best-effort fallback；Mirror 保持 schema v1。顺序共享来源是当前产品范围。真正同时运行多个外部写入者仍需要跨进程租约/冲突协议，但用户已明确暂不同时使用，故不再把未要求的并发多写者设计列为当前源码阻塞项 |
 | 运行蓝条与“正在同步历史”的光晕分别表达，且动画低开销 | v02-010、012、014 | 小 selector、独立 sync state、`RepaintBoundary` | **代码完成，待设备/部署** | 代码与 Widget 回归已有；需真机动画、CPU/能耗和可读性验收 |
 
 ## 2. 历史、折叠、渐进披露与时间
@@ -90,6 +90,8 @@
 | 受限目录不能借项目、附加写目录或工作树符号链接穿出授权根；全盘 owner 模式不受误伤 | v01 11、19；v02-006 | `25b37014`、`47e2dc81`；真实路径校验、受管工作树成员校验 | **已验证** | 漏洞均先由红测复现；WebSocket + worktree 两文件 289/289 通过，覆盖 start、Git diff、附加写根、客户端工作树、未注册删除目标和前缀碰撞；`allowedDirs=[]` 的既有全盘兼容套件保持通过 |
 | JSON、单文件 HTML、网页 URL 正确分流；Quick Look 失败走本地/WebView；提供下载/分享 | v01 11.5；v02-006、014 | `3c1985e5`、`435c3613`、`a4ecdf58`、`c4b3174d`；`56393144`；`5e1a72d0`；`6f6797e9`；`813d1071`；artifact preview/File Peek | **代码完成，待设备/部署** | `.json/.html` 路由、本地大文件 Quick Look、过期 token 自动续签和条件入口回归通过；iOS WKWebView 不提供 request/response URI 的主页面 401/403/404/410 已能进入错误页并续签；Bridge 给 Mobile 的文本预览限制为 512 KiB、单行限制为 64 KiB，1 MiB 单行 JSON 不再整段进入手机布局；Agent source、Explore、Git 与顶层项目 File Peek 均已接入同一 Quick Look→WebView fallback 与下载/分享页。新增项目预览路径要求绝对项目路径、根内相对文件、最具体授权根和项目内 canonical target；项目内 HTML 成功，指向项目外的 symlink 被 `path_not_allowed` 拒绝。Bridge 289 项、Mobile 80 项通过，定向 analyze 无问题；压缩/极小化 JSON、真实 MIME/UTType 与 Quick Look 失败样本仍待真实设备/fixture 取证 |
 | Agent 输出的内联图片、绝对 URL、data URL 与相对 Bridge 路径都能正确预览 | v01 11.1、11.5；v02-006、014 | `3ac720fe` 的 `resolveImagePreviewUrl` | **已验证** | 已有 scheme 不再被错误拼接 Bridge 地址，协议相对和无斜杠相对路径统一解析；7 项图片边界回归通过 |
+| 新 Bridge 增加未知的展示型文件节点类别时，旧 Mobile 不能因穷举枚举而崩溃；授权和修改协议仍必须严格 | v02-006、014；additive protocol 原则 | `d667ef07`；文件浏览节点解析把未来展示类别安全映射为 `other`，写入/授权枚举继续失败关闭 | **已验证** | 15/15 文件浏览解析回归通过；只放宽展示模型，不放宽 mutation、step-up auth 或服务端路径校验 |
+| 文件传输的后台任务、订阅和临时资源在取消、断线及销毁后不能迟到复活或泄漏 | v02-006、010、014 | `9019b372`；`FileTransferService` 生命周期 fence 与 teardown | **已验证** | 完整文件传输测试 60/60 通过；没有改变 v1/v2 协议、持久元数据或旧 Bridge fallback |
 | Explorer/Git 的旧 Bridge 无 requestId 时也不能串项目或无限加载 | v02-006；全局兼容门禁 | `f1f0dd04`、`3fc46236`、`935b5604`、`f8438e15`、`8374d105` | **已验证** | Explorer 16 项、Git 44 项、Bridge parser/websocket 411 项相关回归通过 |
 | Bridge/手机握手做全面安全审查，但不把密码哈希放热路径，不破坏旧客户端 | v01 11、19；decisions | Origin gate、API key、路径/TOCTOU、Argon2、capability fallback；`25b37014`、`47e2dc81`、`8a796105`、`f3e1e1e2` | **已验证** | 受限项目/附加写根/工作树的 symlink 与成员校验已闭环；`Accept & Clear` 必须绑定仍待处理的同一条 Plan 批准，主会话批准/拒绝/回答改为断线不可重放的实时帧。显式空白/超长 `sessionId` 和空审批/队列 ID 会在 parser 层拒绝，避免回退到其他活跃会话；真正省略可选 `sessionId` 的旧客户端保持兼容。auto-approval 每次执行前重核 Bridge 状态、session/process/thread 身份、pending 请求和工具输入；其持久状态按官方 Codex thread ID 归 Bridge 所有，遵循用户“Agent 原机制不额外限权”的明确决策。通用 artifact token 使用 32 字节随机值、过期/容量/文件身份栅栏；有效期内为 Quick Look/HEAD/Range 重用是预览所需语义，不作为跨会话操作授权。续传 token 只持久化哈希并做恒时比较、过期和身份复核。Bridge 423 项与 Mobile 278 项相关回归通过 |
 
@@ -98,16 +100,18 @@
 | 原始要求 | 方案位置 | 当前提交/源码证据 | 当前状态 | 验证证据与剩余门槛 |
 |---|---|---|---|---|
 | 发现确定性 bug 可顺手修，但必须先找 owning layer 和红测，不能见现象就改 | v02-006；PROJECT_HANDOFF §9 | 本轮窄提交、request/generation/Bridge partition 回归 | **持续门禁** | 所有新增修复继续要求先证实、再改、再定向回归 |
-| 会话同步、排序、折叠和进程重启整体稳定 | v02-010～013 | generation fence、half-open continuity、outbox、dedup、pagination alias、`b0255c68`、`93d02cf1`、`502b4252`、`7d62f978`、`e984ca36` | **部分完成** | watcher/provider、公平队列、starting history、delta single-flight 已闭环；Desktop 接管现保留 live history/revision/identity 并消费已预取 canonical history，销毁同步 exit 也不能再回写死会话。legacy full-history 仍无 requestId，真实重复事件线和 provider/source 多 Home 仍有高风险审查积压 |
+| 会话同步、排序、折叠和进程重启整体稳定 | v02-010～013 | generation fence、half-open continuity、outbox、dedup、pagination alias、`b0255c68`、`93d02cf1`、`502b4252`、`7d62f978`、`e984ca36`；legacy history connection fence；`c1d96f8b` 兼容未来 continuity 事件；`e50a3c82`、`1685aefc` 收束 Codex 输入、请求超时和回合归属 | **部分完成** | watcher/provider、公平队列、starting history、delta single-flight、旧 Bridge 无 requestId 的连接代隔离、Desktop 未来事件 fail-closed、核心 RPC 超时和 staged turn ownership 均有回归；Desktop 接管保留 live history/revision/identity 并消费预取 canonical history。源码层没有新的可复现稳定性缺陷；用户曾见的“整段重复”仍缺真实 raw→Bridge→Mirror→reducer→render 事件线，不能在没有证据时继续改 dedup |
+| Bridge 的 Codex 输入、JSON-RPC 和临时图片生命周期必须有界，旧回合/旧进程不得接管新回合 | v02-006、010～012；全局稳定性门禁 | `e50a3c82` 对 stdout 行长、输入循环和临时图片做有界清理；`1685aefc` 为核心 RPC 增加超时、请求归属与回合 generation fence | **已验证** | codex-process 150/150 通过；超长/迟到协议帧、异常退出、输入流重挂、旧 turn late completion 和超时清理均有定向回归 |
+| Desktop continuity 或 Bridge 新增加法字段时，旧 Mobile 必须安全忽略/降级，不能误确认未知语义 | v02-006、010、014；additive protocol 原则 | `c1d96f8b`、`d667ef07` | **已验证** | Mobile continuity 联合 181 项及文件节点 15 项通过；未知 continuity 语义不 ACK、不变更 watch，未知展示文件类型仅映射为 `other` |
 | 畸形或未来版本工具输入不能在展开 Diff 时崩溃整张会话卡片 | v02-006、009、014 | `0b83e6aa` 对 Edit/MultiEdit/Write 输入做完整形状校验 | **已验证** | 26 项 parser 回归通过；不完整 MultiEdit 会安全回退而不是渲染误导性局部 diff |
 | 多开 Bridge/SDK/Codex 进程不能由旧代迟到事件覆盖新代 | v02-007、010～012 | `a4dbf3c1`、`320f1189`、`a35cc591` | **已验证** | SDK 100/100、Codex 144/144 相关回归曾通过 |
 | 发送大图不能在 Mobile UI isolate 同步 Base64 编码；图片后立即发送的文字不能越序；编码失败或离线取消不能堵塞/迟到发送 | v02-006、014；全局性能门禁 | `99979115`；`ChatSessionCubit` 的可注入图片编码器和有序 input dispatch tail | **已验证** | 红测证明旧路径会同步发送两条消息、完全绕过异步编码器；现生产默认用 `compute` 编码，只有存在图片/既有 backlog 时进入顺序队列，纯文字无 backlog 仍同步发送。编码失败标记本地消息失败但继续后续消息，离线取消会 fence 尚未完成的编码；4 项窄测试与 ChatSessionCubit 152/152 全通过，定向 analyze 仅保留 2 条基线 info |
 | 内联 data URL 与生成图片不能在聊天列表/气泡 `build` 中重复 Base64 解码 | v02-006、014；全局性能门禁 | `94372778`；`data_image_decode.dart`、`AsyncDataImage` 和生成图片延迟映射 | **已验证** | 红测证明旧 mapper 立即物化 bytes，气泡也绕过异步 decoder；现 64 KiB 以上在 isolate 解码，小图保留低开销同步 fast path，最多缓存 8 份压缩字节，列表映射只保留 data URL。网络图片、磁盘 cache key、缩略图 decodeWidth 和全屏无界缩放语义不变；37 项图片/预览/macOS chrome 回归与 10 文件 analyze 通过 |
 | 图片草稿和待发送附件不能在 App 启动时全量 Base64 解码，也不能在每次编辑时阻塞 UI；慢的旧写入、删除和迁移不能复活过期草稿 | v02-006、014；全局性能门禁 | `7c91196e`；`DraftService` 的原始编码缓存、懒解码、异步编码和每会话 generation fence | **已验证** | 红测证明旧构造器会立即解码全部持久图片，注入的异步编码器也没有真正接管待发送消息；现只在首次读取对应会话时解码，64 KiB 以上编码移到 isolate，小附件保留同步 fast path。相同 client ID 的新编辑优先，过期编码失败不会拒绝新值，删除会隔离未完成写入，冷迁移直接复用旧 JSON 且存储 schema/key 不变；DraftService 23/23 与 2 文件 analyze 通过 |
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
-| 合并官方最新 commits | v02-014 | `c2cc8379` 语义整合官方 `3289ce93`；`97fb5aab` 同步 `1.109.3` 并保持本地 build 单调递增；本轮 fetch 的 upstream/main=`82962136` | **已验证** | 同一 Claude/Codex 会话的通知或深链会优先揭示现有路由，会话 ID 重启后以实时身份而非旧参数匹配；Codex 深链保留 provider。52 项导航/解析/重启/活动会话回归通过，6 文件 analyze 无问题。官方 build `202` 低于已经交付的本地 build 204，因此本分支采用 `1.109.3+205`，未伪装成官方原始构建号 |
-| 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账；`f9d949f7` 收束旧 Bridge Explore lane | **未完成** | 需在功能收束后执行全 Bridge/Mobile 测试、analyze、iOS Simulator build、热点基准、安全复审和产物清理。导航联合回归暴露的 WorkspaceShell pending timer 经追踪并非产品应删的迟到帧隔离：旧 Bridge 仍必须保留 quarantine；本提交让 Bridge 流关闭时立即释放 lane/timer，并让 WorkspaceShell 测试明确声明现代 request-correlation capability。Explore + WorkspaceShell 39 项通过，生产改动另有旧 Bridge 流关闭回归 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `6de89935`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent/Explore/Git 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复、旧 Bridge Explore 生命周期闭环、Plan 清上下文批准绑定、交互帧断线防重放、空身份跨会话回退防护、统一 `CODEX_HOME` 读取、跨 provider 同 ID 保留、来源缓存隔离及来源绑定生命周期操作均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| 合并官方最新 commits | v02-014 | `c2cc8379` 语义整合官方 `3289ce93`；`97fb5aab` 同步 `1.109.3` 并保持本地 build 单调递增；2026-07-28 再次 fetch 的 upstream/main=`82962136` | **已验证** | fresh fetch 确认官方没有比 `82962136` 更新的提交；`c2cc8379`、`97fb5aab` 均为当前 HEAD 祖先。同一 Claude/Codex 会话通知/深链优先揭示现有路由，Codex 深链保留 provider；官方 build `202` 低于已交付本地 build 204，当前源码保持 `1.109.3+205` |
+| 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账；`f9d949f7`；已整合 `f0d28c17`、`8bfb36fa`、`567509b1`、`f53f0105`、`a96526e1`、`b44418ad`、`bc36c23b`、`716d7118`、`26db9cd9`；`399e980c` 用 SQL aggregate/目标冲突查询替代 Mirror patch 的全代 Dart Map；`fa3aa6db` 降低 idle continuity 兜底轮询 | **代码完成，待设备/部署** | 2026-07-28 源码门禁：Mobile 全套 2572 通过、4 项环境 smoke 跳过；Bridge 全套 95 files/1836 tests 通过；Bridge 首轮与 Flutter 并发时曾有 1 个 2 秒目录监听超时，单文件 8/8 和空闲资源全套复跑均通过，判定为测试时序抖动而非可复现产品缺陷。Mobile 全量 analyze 为 0 error/0 warning、52 条 info；Mirror store 31/31、continuity 43/43 通过；iOS Simulator debug 以最终源码完成编译，Xcode 186.0 秒并产出 `Runner.app`。真机帧时间/RSS/能耗、真实多会话延迟与旧新端组合仍是独立验收门槛，不能由源码测试代替 |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `fa3aa6db`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent/Explore/Git 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复、旧 Bridge Explore 生命周期闭环、Plan 清上下文批准绑定、交互帧断线防重放、空身份跨会话回退防护、统一 `CODEX_HOME` 读取、跨 provider 同 ID 保留、来源缓存隔离、来源绑定生命周期操作、Codex RPC 生命周期及本轮两项性能修复均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -137,8 +141,7 @@ command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（�
 
 ## 8. 下一实施顺序
 
-1. 在已完成“单一所选 `CODEX_HOME` 读写一致、跨 provider 同 ID 保留、Mobile 目录与持久 Mirror 来源隔离”的基础上，先补未读、会话链接与深链的来源分区，再实现多 Home source registry、逐会话来源路由，并确定外部 Codex/Cockpit 进程也能遵守的单写者冲突策略；
-2. 处理 content scheduler、session manager、Bridge 进程生命周期的剩余高风险项；
-3. 全量回归、性能/安全复审、iOS Simulator build、磁盘与构建产物收束；
-4. 经用户确认后，才按 Cloud → Bridge → 新 Mobile 的独立门禁部署并真机验收通知去重、动作与后台保活；
-5. 最后列出需要用户在物理 iPhone 上完成的文件预览、通知、Face ID 和后台验收。
+1. 源码范围暂不再对同步/去重做猜测性修改；若真机再次出现整段重复，先采集 raw provider、Bridge、Mirror、reducer、render 五层同一事件线再定位 owning layer；
+2. iOS Simulator/native source build 门禁已通过；若要进入可安装候选，再生成新的、明确高于 build 204 的签名/IPA 候选并单独收束产物；Simulator `Runner.app` 不等于 IPA 已构建；
+3. 经用户确认后，才按 Cloud → Bridge → 新 Mobile 的独立门禁部署，并真机验收通知去重、长按动作、后台保活、文件预览与 Face ID；
+4. 用户当前不同时运行两个 Codex/Cockpit 实例；只有未来要求并发多写者时，才新增跨进程 source registry/lease/conflict 协议，不能把该未来设计偷偷混进当前兼容栈。
