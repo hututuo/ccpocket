@@ -172,7 +172,13 @@ enum FileBrowserNodeKind {
     for (final kind in values) {
       if (value == kind.wireValue) return kind;
     }
-    throw const FormatException('file browser node kind is invalid');
+    if (!_fileBrowserIsBoundedIdentifier(value, _fileBrowserMaxKindLength)) {
+      throw const FormatException('file browser node kind is invalid');
+    }
+    // Node kinds are display metadata, not an authorization decision. Keep a
+    // future fifo/socket/mount kind in the page as a non-actionable `other`;
+    // the explicit canOpen/canPreview/canDownload flags remain authoritative.
+    return other;
   }
 }
 

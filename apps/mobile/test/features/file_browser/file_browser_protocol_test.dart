@@ -496,6 +496,55 @@ void main() {
       expect(decoded.nextCursor, 'cursor-2');
     });
 
+    test('maps future bounded node kinds to other without losing the page', () {
+      final decoded =
+          ServerMessage.fromJson(
+                _listResult(
+                  entries: [
+                    _node(
+                      name: 'events.pipe',
+                      relativePath: 'Documents/events.pipe',
+                      kind: 'fifo',
+                      sizeBytes: null,
+                      mimeType: null,
+                      previewKind: null,
+                      canOpen: false,
+                      canPreview: false,
+                      canDownload: false,
+                    ),
+                    _node(
+                      name: 'Latest',
+                      relativePath: 'Documents/Latest',
+                      kind: 'symlink',
+                      targetKind: 'mount_point',
+                      isSymlink: true,
+                      sizeBytes: null,
+                      mimeType: null,
+                      previewKind: null,
+                      canPreview: false,
+                      canDownload: false,
+                    ),
+                  ],
+                ),
+              )
+              as FileBrowserListResultMessage;
+
+      expect(decoded.entries, hasLength(2));
+      expect(decoded.entries.first.kind, FileBrowserNodeKind.other);
+      expect(decoded.entries.last.kind, FileBrowserNodeKind.symlink);
+      expect(decoded.entries.last.targetKind, FileBrowserNodeKind.other);
+      expect(
+        () => ServerMessage.fromJson(
+          _listResult(
+            entries: [
+              {..._node(), 'kind': null},
+            ],
+          ),
+        ),
+        throwsFormatException,
+      );
+    });
+
     test('decodes stat existence per item with no nullable-node ambiguity', () {
       final decoded =
           ServerMessage.fromJson({
