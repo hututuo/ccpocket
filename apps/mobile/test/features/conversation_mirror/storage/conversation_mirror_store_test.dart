@@ -873,6 +873,110 @@ void main() {
       );
     });
 
+    test(
+      'atomically swaps ordinals without materializing the generation',
+      () async {
+        const key = ConversationMirrorKey(
+          bridgeInstanceId: 'bridge-a',
+          provider: 'codex',
+          providerSessionId: 'session-swap',
+        );
+        await _writeSnapshot(
+          store,
+          key,
+          generation: 'generation-active',
+          revision: _revision('before-swap'),
+          entries: _entries(3, prefix: 'swap'),
+        );
+
+        final result = await store.applyPatch(
+          key: key,
+          baseRevision: _revision('before-swap'),
+          revision: _revision('after-swap'),
+          upserts: [
+            _entry('swap-0', 1, text: 'moved to one'),
+            _entry('swap-1', 0, text: 'moved to zero'),
+          ],
+        );
+
+        expect(result.applied, isTrue);
+        expect((await store.readEntries(key)).map((entry) => entry.entryId), [
+          'swap-1',
+          'swap-0',
+          'swap-2',
+        ]);
+      },
+    );
+
+    test('rejects ordinal gaps and rolls the sparse patch back', () async {
+      const key = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-a',
+        provider: 'codex',
+        providerSessionId: 'session-gap',
+      );
+      await _writeSnapshot(
+        store,
+        key,
+        generation: 'generation-active',
+        revision: _revision('before-gap'),
+        entries: _entries(3, prefix: 'gap'),
+      );
+
+      await expectLater(
+        store.applyPatch(
+          key: key,
+          baseRevision: _revision('before-gap'),
+          revision: _revision('after-gap'),
+          deletes: ['gap-1'],
+        ),
+        throwsA(isA<ConversationMirrorValidationException>()),
+      );
+
+      expect(
+        (await store.readMetadata(key))?.revision,
+        _revision('before-gap'),
+      );
+      expect((await store.readEntries(key)).map((entry) => entry.entryId), [
+        'gap-0',
+        'gap-1',
+        'gap-2',
+      ]);
+    });
+
+    test('rejects an ordinal occupied by an untouched entry', () async {
+      const key = ConversationMirrorKey(
+        bridgeInstanceId: 'bridge-a',
+        provider: 'codex',
+        providerSessionId: 'session-collision',
+      );
+      await _writeSnapshot(
+        store,
+        key,
+        generation: 'generation-active',
+        revision: _revision('before-collision'),
+        entries: _entries(2, prefix: 'collision'),
+      );
+
+      await expectLater(
+        store.applyPatch(
+          key: key,
+          baseRevision: _revision('before-collision'),
+          revision: _revision('after-collision'),
+          upserts: [_entry('collision-0', 1, text: 'must not overwrite')],
+        ),
+        throwsA(isA<ConversationMirrorValidationException>()),
+      );
+
+      expect(
+        (await store.readMetadata(key))?.revision,
+        _revision('before-collision'),
+      );
+      expect((await store.readEntries(key)).map((entry) => entry.entryId), [
+        'collision-0',
+        'collision-1',
+      ]);
+    });
+
     test('revision mismatch is explicit and performs no writes', () async {
       const key = ConversationMirrorKey(
         bridgeInstanceId: 'bridge-a',

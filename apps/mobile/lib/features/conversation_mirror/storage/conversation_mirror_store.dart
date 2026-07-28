@@ -567,75 +567,31 @@ class ConversationMirrorStore {
         );
       }
 
-      final existingRows = await txn.query(
-        ConversationMirrorDatabase.entriesTable,
-        columns: ['entry_id', 'ordinal', 'entry_bytes'],
-        where: '$_keyWhere AND generation = ?',
-        whereArgs: [..._keyArgs(key), activeGeneration],
-      );
-      final nextById = <String, _ProjectedEntry>{
-        for (final existing in existingRows)
-          existing['entry_id'] as String: _ProjectedEntry(
-            ordinal: existing['ordinal'] as int,
-            bytes: existing['entry_bytes'] as int,
-          ),
-      };
-      for (final entryId in deleteIds) {
-        nextById.remove(entryId);
-      }
-      for (final entry in prepared) {
-        nextById[entry.input.entryId] = _ProjectedEntry(
-          ordinal: entry.input.ordinal,
-          bytes: entry.bytes,
-        );
-      }
-
-      final ordinals = <int>{};
-      var nextBytes = 0;
-      for (final projected in nextById.values) {
-        if (!ordinals.add(projected.ordinal)) {
-          throw ConversationMirrorValidationException(
-            'Patch produces duplicate ordinal ${projected.ordinal}.',
-          );
-        }
-        nextBytes += projected.bytes;
-      }
-      final nextEntryCount = nextById.length;
-      if (nextEntryCount > limits.maxEntriesPerGeneration) {
-        throw ConversationMirrorValidationException(
-          'Patch produces $nextEntryCount entries; limit is '
-          '${limits.maxEntriesPerGeneration}.',
-        );
-      }
-      if (nextBytes > limits.maxTotalBytes) {
-        throw ConversationMirrorValidationException(
-          'Patch produces $nextBytes bytes; limit is '
-          '${limits.maxTotalBytes}.',
-        );
-      }
-      final activeBytes = existingRows.fold<int>(
-        0,
-        (sum, row) => sum + (row['entry_bytes'] as int),
+      final currentProjection = await _queryGenerationProjection(
+        txn,
+        key,
+        activeGeneration,
       );
       final currentDatabaseBytes = await _databasePayloadBytes(txn);
-      final projectedDatabaseBytes =
-          currentDatabaseBytes - activeBytes + nextBytes;
-      if (projectedDatabaseBytes > limits.maxDatabaseBytes) {
-        throw ConversationMirrorValidationException(
-          'Patch would exceed the ${limits.maxDatabaseBytes}-byte '
-          'conversation mirror database limit.',
+      final affectedIds = {...deleteIds, ...upsertIds};
+      for (final entry in prepared) {
+        final occupyingRows = await txn.query(
+          ConversationMirrorDatabase.entriesTable,
+          columns: ['entry_id'],
+          where: '$_keyWhere AND generation = ? AND ordinal = ?',
+          whereArgs: [..._keyArgs(key), activeGeneration, entry.input.ordinal],
+          limit: 1,
         );
-      }
-      for (final ordinal in ordinals) {
-        if (ordinal < 0 || ordinal >= nextEntryCount) {
+        if (occupyingRows.isEmpty) continue;
+        final occupyingId = occupyingRows.single['entry_id'] as String;
+        if (!affectedIds.contains(occupyingId)) {
           throw ConversationMirrorValidationException(
-            'Patch produces non-contiguous ordinal $ordinal for '
-            '$nextEntryCount entries.',
+            'Patch produces duplicate ordinal ${entry.input.ordinal}.',
           );
         }
       }
 
-      for (final entryId in {...deleteIds, ...upsertIds}) {
+      for (final entryId in affectedIds) {
         await txn.delete(
           ConversationMirrorDatabase.entriesTable,
           where: '$_keyWhere AND generation = ? AND entry_id = ?',
@@ -652,6 +608,40 @@ class ConversationMirrorStore {
           'message_json': entry.messageJson,
           'entry_bytes': entry.bytes,
         });
+      }
+
+      final nextProjection = await _queryGenerationProjection(
+        txn,
+        key,
+        activeGeneration,
+      );
+      final nextEntryCount = nextProjection.entryCount;
+      final nextBytes = nextProjection.bytes;
+      if (nextEntryCount > limits.maxEntriesPerGeneration) {
+        throw ConversationMirrorValidationException(
+          'Patch produces $nextEntryCount entries; limit is '
+          '${limits.maxEntriesPerGeneration}.',
+        );
+      }
+      if (nextBytes > limits.maxTotalBytes) {
+        throw ConversationMirrorValidationException(
+          'Patch produces $nextBytes bytes; limit is '
+          '${limits.maxTotalBytes}.',
+        );
+      }
+      final projectedDatabaseBytes =
+          currentDatabaseBytes - currentProjection.bytes + nextBytes;
+      if (projectedDatabaseBytes > limits.maxDatabaseBytes) {
+        throw ConversationMirrorValidationException(
+          'Patch would exceed the ${limits.maxDatabaseBytes}-byte '
+          'conversation mirror database limit.',
+        );
+      }
+      if (!nextProjection.hasContiguousOrdinals) {
+        throw ConversationMirrorValidationException(
+          'Patch produces non-contiguous ordinals for '
+          '$nextEntryCount entries.',
+        );
       }
 
       final syncedAt = (lastSyncedAt ?? DateTime.now()).toUtc();
@@ -1082,6 +1072,53 @@ class ConversationMirrorStore {
     );
   }
 
+  Future<_GenerationProjection> _queryGenerationProjection(
+    DatabaseExecutor db,
+    ConversationMirrorKey key,
+    String generation,
+  ) async {
+    final rows = await db.rawQuery(
+      'SELECT '
+      'COUNT(*) AS entry_count, '
+      'COALESCE(SUM(entry_bytes), 0) AS total_bytes, '
+      'MIN(ordinal) AS min_ordinal, '
+      'MAX(ordinal) AS max_ordinal '
+      'FROM ${ConversationMirrorDatabase.entriesTable} '
+      'WHERE $_keyWhere AND generation = ?',
+      [..._keyArgs(key), generation],
+    );
+    final row = rows.single;
+    final entryCount = _requiredAggregateInt(row['entry_count'], 'entry count');
+    final bytes = _requiredAggregateInt(row['total_bytes'], 'byte total');
+    final minOrdinal = _optionalAggregateInt(
+      row['min_ordinal'],
+      'minimum ordinal',
+    );
+    final maxOrdinal = _optionalAggregateInt(
+      row['max_ordinal'],
+      'maximum ordinal',
+    );
+    return _GenerationProjection(
+      entryCount: entryCount,
+      bytes: bytes,
+      minOrdinal: minOrdinal,
+      maxOrdinal: maxOrdinal,
+    );
+  }
+
+  static int _requiredAggregateInt(Object? value, String label) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    throw ConversationMirrorCorruptionException(
+      'Conversation mirror generation $label is invalid.',
+    );
+  }
+
+  static int? _optionalAggregateInt(Object? value, String label) {
+    if (value == null) return null;
+    return _requiredAggregateInt(value, label);
+  }
+
   Future<void> _ensureMetadata(
     DatabaseExecutor db,
     ConversationMirrorKey key, {
@@ -1490,9 +1527,20 @@ class _PreparedEntry {
   final int bytes;
 }
 
-class _ProjectedEntry {
-  const _ProjectedEntry({required this.ordinal, required this.bytes});
+class _GenerationProjection {
+  const _GenerationProjection({
+    required this.entryCount,
+    required this.bytes,
+    required this.minOrdinal,
+    required this.maxOrdinal,
+  });
 
-  final int ordinal;
+  final int entryCount;
   final int bytes;
+  final int? minOrdinal;
+  final int? maxOrdinal;
+
+  bool get hasContiguousOrdinals => entryCount == 0
+      ? minOrdinal == null && maxOrdinal == null
+      : minOrdinal == 0 && maxOrdinal == entryCount - 1;
 }
