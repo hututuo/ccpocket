@@ -16,7 +16,7 @@ class SystemChip extends StatelessWidget {
     final isCodexStarted =
         message.provider == 'codex' &&
         (message.subtype == 'init' || message.subtype == 'session_created');
-    final label = isCodexStarted ? null : 'System: ${message.subtype}';
+    final label = isCodexStarted ? null : l.systemMessageLabel(message.subtype);
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),

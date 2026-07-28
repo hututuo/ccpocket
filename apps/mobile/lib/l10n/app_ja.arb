@@ -1605,5 +1605,16 @@
     "placeholders": {
       "count": {"type": "int"}
     }
+  },
+  "codexApprovalUntrustedLabel": "信頼済みのみ",
+  "codexApprovalNeverAskLabel": "確認なし",
+  "planOnShort": "プラン有効",
+  "planOffShort": "プラン無効",
+  "statusPlanning": "計画中",
+  "systemMessageLabel": "システム：{subtype}",
+  "@systemMessageLabel": {
+    "placeholders": {
+      "subtype": {"type": "String"}
+    }
   }
 }

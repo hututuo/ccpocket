@@ -49,6 +49,8 @@ void main() {
     );
 
     expect(find.text('会话已开始'), findsOneWidget);
+    expect(find.text('gpt-5.4 默认'), findsOneWidget);
+    expect(find.text('沙箱'), findsOneWidget);
     expect(find.text('Session started'), findsNothing);
   });
 
@@ -67,6 +69,20 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('localizes non-session system message labels', (tester) async {
+    const message = SystemMessage(
+      subtype: 'supported_commands',
+      provider: 'codex',
+    );
+
+    await tester.pumpWidget(
+      _wrap(const SystemChip(message: message), locale: const Locale('zh')),
+    );
+
+    expect(find.text('系统：supported_commands'), findsOneWidget);
+    expect(find.text('System: supported_commands'), findsNothing);
+  });
 
   testWidgets('chat transcript hides runtime metadata system messages', (
     tester,

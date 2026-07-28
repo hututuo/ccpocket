@@ -466,7 +466,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                           (session.status == 'running' ||
                                   session.status == 'starting') &&
                               session.resolvedPlanMode
-                          ? 'Planning'
+                          ? localizations.statusPlanning
                           : null,
                       model: session.codexModel,
                       reasoningEffort: session.codexModelReasoningEffort,

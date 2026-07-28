@@ -1431,5 +1431,16 @@
   "downloadAndKeepResident": "Download & keep resident",
   "loadingOlderToolDetails": "Loading older tool details…",
   "loadToolDetailsFailed": "Could not load details. Retry",
-  "loadNextToolDetails": "Load the next {count} tool details"
+  "loadNextToolDetails": "Load the next {count} tool details",
+  "codexApprovalUntrustedLabel": "Trusted only",
+  "codexApprovalNeverAskLabel": "Never Ask",
+  "planOnShort": "Plan On",
+  "planOffShort": "Plan Off",
+  "statusPlanning": "Planning",
+  "systemMessageLabel": "System: {subtype}",
+  "@systemMessageLabel": {
+    "placeholders": {
+      "subtype": {"type": "String"}
+    }
+  }
 }

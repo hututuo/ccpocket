@@ -6851,6 +6851,42 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'次の {count} 件のツール詳細を読み込む'**
   String loadNextToolDetails(int count);
+
+  /// No description provided for @codexApprovalUntrustedLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'信頼済みのみ'**
+  String get codexApprovalUntrustedLabel;
+
+  /// No description provided for @codexApprovalNeverAskLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'確認なし'**
+  String get codexApprovalNeverAskLabel;
+
+  /// No description provided for @planOnShort.
+  ///
+  /// In ja, this message translates to:
+  /// **'プラン有効'**
+  String get planOnShort;
+
+  /// No description provided for @planOffShort.
+  ///
+  /// In ja, this message translates to:
+  /// **'プラン無効'**
+  String get planOffShort;
+
+  /// No description provided for @statusPlanning.
+  ///
+  /// In ja, this message translates to:
+  /// **'計画中'**
+  String get statusPlanning;
+
+  /// No description provided for @systemMessageLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'システム：{subtype}'**
+  String systemMessageLabel(String subtype);
 }
 
 class _AppLocalizationsDelegate

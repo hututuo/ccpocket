@@ -3823,4 +3823,24 @@ class AppLocalizationsJa extends AppLocalizations {
   String loadNextToolDetails(int count) {
     return '次の $count 件のツール詳細を読み込む';
   }
+
+  @override
+  String get codexApprovalUntrustedLabel => '信頼済みのみ';
+
+  @override
+  String get codexApprovalNeverAskLabel => '確認なし';
+
+  @override
+  String get planOnShort => 'プラン有効';
+
+  @override
+  String get planOffShort => 'プラン無効';
+
+  @override
+  String get statusPlanning => '計画中';
+
+  @override
+  String systemMessageLabel(String subtype) {
+    return 'システム：$subtype';
+  }
 }

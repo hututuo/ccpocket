@@ -3949,4 +3949,24 @@ class AppLocalizationsEn extends AppLocalizations {
   String loadNextToolDetails(int count) {
     return 'Load the next $count tool details';
   }
+
+  @override
+  String get codexApprovalUntrustedLabel => 'Trusted only';
+
+  @override
+  String get codexApprovalNeverAskLabel => 'Never Ask';
+
+  @override
+  String get planOnShort => 'Plan On';
+
+  @override
+  String get planOffShort => 'Plan Off';
+
+  @override
+  String get statusPlanning => 'Planning';
+
+  @override
+  String systemMessageLabel(String subtype) {
+    return 'System: $subtype';
+  }
 }

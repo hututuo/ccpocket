@@ -1365,6 +1365,7 @@ class PlanModeChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
     final fg = enabled ? appColors.statusPlan : cs.onSurfaceVariant;
 
     final chip = Material(
@@ -1379,7 +1380,7 @@ class PlanModeChip extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                enabled ? 'Plan On' : 'Plan Off',
+                enabled ? l.planOnShort : l.planOffShort,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,

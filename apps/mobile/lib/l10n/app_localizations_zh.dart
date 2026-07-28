@@ -3778,4 +3778,24 @@ class AppLocalizationsZh extends AppLocalizations {
   String loadNextToolDetails(int count) {
     return '加载接下来的 $count 个工具详情';
   }
+
+  @override
+  String get codexApprovalUntrustedLabel => '仅受信任操作';
+
+  @override
+  String get codexApprovalNeverAskLabel => '永不询问';
+
+  @override
+  String get planOnShort => '规划开启';
+
+  @override
+  String get planOffShort => '规划关闭';
+
+  @override
+  String get statusPlanning => '规划中';
+
+  @override
+  String systemMessageLabel(String subtype) {
+    return '系统：$subtype';
+  }
 }

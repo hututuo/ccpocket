@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
 import '../models/messages.dart';
 import '../theme/app_theme.dart';
 
@@ -30,6 +31,7 @@ class CodexEnvironmentSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l = AppLocalizations.of(context);
     final appColors = theme.extension<AppColors>()!;
     final textStyle = theme.textTheme.bodySmall?.copyWith(
       fontSize: compact ? 11 : 12,
@@ -40,6 +42,7 @@ class CodexEnvironmentSummary extends StatelessWidget {
         ? _executionLabel(
             approvalPolicy: approvalPolicy,
             approvalsReviewer: approvalsReviewer,
+            l: l,
           )
         : null;
 
@@ -49,6 +52,7 @@ class CodexEnvironmentSummary extends StatelessWidget {
             model,
             reasoningEffort,
             showDefaultWhenUnset: showDefaultReasoning,
+            l: l,
           )
           case final modelText?)
         Text(modelText, style: textStyle, overflow: TextOverflow.ellipsis),
@@ -63,7 +67,7 @@ class CodexEnvironmentSummary extends StatelessWidget {
         ),
       _EnvironmentMeta(
         icon: _sandboxIcon(sandboxMode),
-        label: _sandboxLabel(sandboxMode),
+        label: _sandboxLabel(sandboxMode, l),
         compact: compact,
       ),
     ];
@@ -119,10 +123,11 @@ String? _displayModelSummary(
   String? model,
   String? raw, {
   required bool showDefaultWhenUnset,
+  required AppLocalizations l,
 }) {
   if (model == null || model.isEmpty) return null;
   if (raw == null || raw.isEmpty) {
-    return showDefaultWhenUnset ? '$model Default' : model;
+    return showDefaultWhenUnset ? '$model ${l.defaultLabel}' : model;
   }
   ReasoningEffort? effort;
   for (final value in ReasoningEffort.values) {
@@ -149,16 +154,20 @@ IconData _executionIcon({String? approvalPolicy, String? approvalsReviewer}) {
   };
 }
 
-String? _executionLabel({String? approvalPolicy, String? approvalsReviewer}) {
+String? _executionLabel({
+  String? approvalPolicy,
+  String? approvalsReviewer,
+  required AppLocalizations l,
+}) {
   if (approvalPolicy == 'on-request' &&
       isCodexAutoReviewApprovalsReviewer(approvalsReviewer)) {
-    return 'Auto Review';
+    return l.codexAutoReview;
   }
   return switch (approvalPolicy) {
-    'untrusted' => 'Untrusted',
-    'on-request' => 'On Request',
-    'on-failure' => 'On Request',
-    'never' => 'Never Ask',
+    'untrusted' => l.codexApprovalUntrustedLabel,
+    'on-request' => l.codexPermissionsOnRequest,
+    'on-failure' => l.codexPermissionsOnRequest,
+    'never' => l.codexApprovalNeverAskLabel,
     null || '' => null,
     final other => other,
   };
@@ -171,10 +180,10 @@ IconData _sandboxIcon(String? sandboxMode) {
   };
 }
 
-String _sandboxLabel(String? sandboxMode) {
+String _sandboxLabel(String? sandboxMode, AppLocalizations l) {
   return switch (sandboxMode) {
-    'off' || 'danger-full-access' => 'Sandbox Off',
-    'on' || 'workspace-write' || 'read-only' || null || '' => 'Sandbox',
+    'off' || 'danger-full-access' => l.sandboxOffLabel,
+    'on' || 'workspace-write' || 'read-only' || null || '' => l.sandbox,
     final other => other,
   };
 }

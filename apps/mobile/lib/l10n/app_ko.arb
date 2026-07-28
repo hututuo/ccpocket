@@ -1390,5 +1390,11 @@
   "downloadAndKeepResident": "전체 다운로드 후 유지",
   "loadingOlderToolDetails": "이전 도구 세부 정보를 불러오는 중…",
   "loadToolDetailsFailed": "세부 정보를 불러오지 못했습니다. 다시 시도",
-  "loadNextToolDetails": "다음 도구 세부 정보 {count}개 불러오기"
+  "loadNextToolDetails": "다음 도구 세부 정보 {count}개 불러오기",
+  "codexApprovalUntrustedLabel": "신뢰된 작업만",
+  "codexApprovalNeverAskLabel": "묻지 않음",
+  "planOnShort": "계획 켜짐",
+  "planOffShort": "계획 꺼짐",
+  "statusPlanning": "계획 중",
+  "systemMessageLabel": "시스템: {subtype}"
 }

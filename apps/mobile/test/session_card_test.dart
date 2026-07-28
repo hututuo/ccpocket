@@ -672,6 +672,36 @@ void main() {
       expect(find.text('gpt-5.4 Default'), findsOneWidget);
     });
 
+    testWidgets('localizes Codex planning environment metadata', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'codex-planning-zh',
+        provider: 'codex',
+        projectPath: '/home/user/my-app',
+        status: 'running',
+        planMode: true,
+        executionMode: ExecutionMode.defaultMode.value,
+        codexApprovalPolicy: 'never',
+        codexSandboxMode: 'danger-full-access',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+        codexModel: 'gpt-5.4',
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RunningSessionCard(session: session, onTap: () {}),
+          locale: const Locale('zh'),
+        ),
+      );
+
+      expect(find.text('规划中'), findsOneWidget);
+      expect(find.text('gpt-5.4 默认'), findsOneWidget);
+      expect(find.text('永不询问'), findsOneWidget);
+      expect(find.text('沙箱关闭'), findsOneWidget);
+    });
+
     testWidgets('shows agent metadata for codex sub-agent sessions', (
       tester,
     ) async {

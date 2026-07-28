@@ -3852,4 +3852,24 @@ class AppLocalizationsKo extends AppLocalizations {
   String loadNextToolDetails(int count) {
     return '다음 도구 세부 정보 $count개 불러오기';
   }
+
+  @override
+  String get codexApprovalUntrustedLabel => '신뢰된 작업만';
+
+  @override
+  String get codexApprovalNeverAskLabel => '묻지 않음';
+
+  @override
+  String get planOnShort => '계획 켜짐';
+
+  @override
+  String get planOffShort => '계획 꺼짐';
+
+  @override
+  String get statusPlanning => '계획 중';
+
+  @override
+  String systemMessageLabel(String subtype) {
+    return '시스템: $subtype';
+  }
 }
