@@ -315,8 +315,19 @@ class NotificationService extends ChangeNotifier {
 
   /// Dismiss all previously shown notifications from the notification center.
   Future<void> cancelAll() async {
-    await init();
-    await _plugin.cancelAll();
+    try {
+      await init();
+      await _plugin.cancelAll();
+    } catch (error, stackTrace) {
+      // Notification cleanup is best-effort during launch and resume. A
+      // missing or unavailable platform implementation must not block the
+      // application from reaching the connection screen.
+      logger.warning(
+        '[notifications] unable to clear delivered notifications',
+        error,
+        stackTrace,
+      );
+    }
   }
 
   Future<void> show({
