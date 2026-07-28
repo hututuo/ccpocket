@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/bridge_data_source_identity.dart';
 import '../models/messages.dart';
 
 /// Tracks completed sessions whose latest authoritative activity has not been
@@ -28,8 +29,11 @@ class UnseenSessionsCubit extends Cubit<Set<String>> {
   bool _loaded = false;
   List<SessionInfo>? _latestSessions;
   String? _latestScopeKey;
+  BridgeDataSourceIdentity? _latestDataSourceIdentity;
+  List<String> _latestLegacyScopeKeys = const [];
   String? _latestVisibleSessionId;
   String? _latestVisibleProvider;
+  BridgeDataSourceIdentity? _latestVisibleDataSourceIdentity;
   String? _activeScopeKey;
 
   UnseenSessionsCubit() : super(const <String>{}) {
@@ -67,8 +71,11 @@ class UnseenSessionsCubit extends Cubit<Set<String>> {
         updateSessions(
           sessions,
           scopeKey: _latestScopeKey!,
+          dataSourceIdentity: _latestDataSourceIdentity,
+          legacyScopeKeys: _latestLegacyScopeKeys,
           visibleSessionId: _latestVisibleSessionId,
           visibleProvider: _latestVisibleProvider,
+          visibleDataSourceIdentity: _latestVisibleDataSourceIdentity,
         );
       }
     }
@@ -95,15 +102,27 @@ class UnseenSessionsCubit extends Cubit<Set<String>> {
   void updateSessions(
     List<SessionInfo> sessions, {
     String scopeKey = 'legacy-default-bridge',
+    BridgeDataSourceIdentity? dataSourceIdentity,
+    Iterable<String> legacyScopeKeys = const [],
     String? visibleSessionId,
     String? visibleProvider,
+    BridgeDataSourceIdentity? visibleDataSourceIdentity,
   }) {
     final normalizedScope = _normalizedScope(scopeKey);
+    final normalizedLegacyScopes = <String>{
+      normalizedScope,
+      for (final legacyScope in legacyScopeKeys) _normalizedScope(legacyScope),
+    };
+    final activeScope =
+        dataSourceIdentity?.connectionScopeKey ?? normalizedScope;
     _latestSessions = List<SessionInfo>.of(sessions);
     _latestScopeKey = normalizedScope;
+    _latestDataSourceIdentity = dataSourceIdentity;
+    _latestLegacyScopeKeys = List.unmodifiable(normalizedLegacyScopes);
     _latestVisibleSessionId = visibleSessionId;
     _latestVisibleProvider = visibleProvider;
-    _switchScope(normalizedScope);
+    _latestVisibleDataSourceIdentity = visibleDataSourceIdentity;
+    _switchScope(activeScope);
     if (!_loaded) return;
 
     final unseen = <String>{};
@@ -112,19 +131,30 @@ class UnseenSessionsCubit extends Cubit<Set<String>> {
     var persistenceChanged = false;
 
     for (final session in sessions) {
-      final runtimeKey = _runtimeKey(normalizedScope, session.id);
+      final provider = _normalizedProvider(session.provider);
+      final stableScope =
+          dataSourceIdentity?.scopeKeyForProvider(provider) ?? normalizedScope;
+      final runtimeKey = _runtimeKey(activeScope, session.id);
       currentRuntimeIds.add(runtimeKey);
-      final stableKey = _stableKey(normalizedScope, session);
+      final stableKey = _stableKey(stableScope, session);
       currentStableKeys.add(stableKey);
       _runtimeToStable[runtimeKey] = stableKey;
 
       final legacyRuntimeSeenAt = _seenAt.remove(session.id);
       final legacyStableSeenAt = _seenAt.remove(_legacyStableKey(session));
+      final legacyScopedSeenAt = <String?>[
+        for (final legacyScope in normalizedLegacyScopes)
+          if (legacyScope != stableScope)
+            _seenAt.remove(_stableKey(legacyScope, session)),
+      ];
       final legacySeenAt = _newestTimestamp([
         legacyRuntimeSeenAt,
         legacyStableSeenAt,
+        ...legacyScopedSeenAt,
       ]);
-      if (legacyRuntimeSeenAt != null || legacyStableSeenAt != null) {
+      if (legacyRuntimeSeenAt != null ||
+          legacyStableSeenAt != null ||
+          legacyScopedSeenAt.any((timestamp) => timestamp != null)) {
         persistenceChanged = true;
       }
       if (legacySeenAt != null && !_seenAt.containsKey(stableKey)) {
@@ -148,8 +178,12 @@ class UnseenSessionsCubit extends Cubit<Set<String>> {
 
       final isVisible =
           visibleSessionId == session.id &&
-          _normalizedProvider(visibleProvider) ==
-              _normalizedProvider(session.provider);
+          _normalizedProvider(visibleProvider) == provider &&
+          (visibleDataSourceIdentity == null ||
+              visibleDataSourceIdentity.matchesRequest(
+                dataSourceIdentity ?? BridgeDataSourceIdentity.unscoped,
+                provider: provider,
+              ));
       if (isVisible && lastActivity.isNotEmpty) {
         persistenceChanged =
             _setSeenAt(stableKey, lastActivity) || persistenceChanged;
@@ -185,19 +219,22 @@ class UnseenSessionsCubit extends Cubit<Set<String>> {
   void markSeen(
     String sessionId, {
     String scopeKey = 'legacy-default-bridge',
+    BridgeDataSourceIdentity? dataSourceIdentity,
     String? provider,
     String? durableProviderSessionId,
   }) {
     final normalizedScope = _normalizedScope(scopeKey);
-    final scopeChanged = _switchScope(normalizedScope);
-    final runtimeKey = _runtimeKey(normalizedScope, sessionId);
+    final normalizedProvider = _normalizedProvider(provider);
+    final activeScope =
+        dataSourceIdentity?.connectionScopeKey ?? normalizedScope;
+    final stableScope =
+        dataSourceIdentity?.scopeKeyForProvider(normalizedProvider) ??
+        normalizedScope;
+    final scopeChanged = _switchScope(activeScope);
+    final runtimeKey = _runtimeKey(activeScope, sessionId);
     final durableId = durableProviderSessionId?.trim();
     final stableKey = durableId?.isNotEmpty == true
-        ? _stableKeyForIdentity(
-            normalizedScope,
-            _normalizedProvider(provider),
-            durableId!,
-          )
+        ? _stableKeyForIdentity(stableScope, normalizedProvider, durableId!)
         : _runtimeToStable[runtimeKey];
     final lastActivity = stableKey == null ? null : _lastActivityAt[stableKey];
     if (_loaded &&

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../l10n/app_localizations.dart';
+import '../../models/bridge_data_source_identity.dart';
 import '../../models/messages.dart';
 import '../../router/app_router.dart';
 import '../../router/session_stack_navigation.dart';
@@ -17,22 +18,44 @@ class SessionLinkScreen extends StatelessWidget {
     super.key,
     required this.sessionId,
     this.provider = 'claude',
+    this.providerSessionId,
+    this.bridgeInstanceId,
+    this.codexSourceId,
+    this.bridgeRouteIdentity,
   });
 
   final String sessionId;
   final String provider;
+  final String? providerSessionId;
+  final String? bridgeInstanceId;
+  final String? codexSourceId;
+  final String? bridgeRouteIdentity;
 
   @override
   Widget build(BuildContext context) {
+    final expectedDataSourceIdentity =
+        BridgeDataSourceIdentity.fromMap(<String, String?>{
+          'bridgeInstanceId': bridgeInstanceId,
+          'codexSourceId': codexSourceId,
+          'bridgeRouteIdentity': bridgeRouteIdentity,
+        });
+    final durableSessionId = providerSessionId?.trim();
     return BlocProvider(
       create: (context) => SessionLinkCubit(
         bridge: context.read<BridgeService>(),
-        sourceSessionId: sessionId,
+        sourceSessionId: durableSessionId?.isNotEmpty == true
+            ? durableSessionId!
+            : sessionId,
         provider: provider,
+        expectedDataSourceIdentity: expectedDataSourceIdentity,
       )..resolve(),
       child: _SessionLinkScreenBody(
         sourceSessionId: sessionId,
         provider: provider,
+        providerSessionId: durableSessionId?.isNotEmpty == true
+            ? durableSessionId
+            : null,
+        expectedDataSourceIdentity: expectedDataSourceIdentity,
       ),
     );
   }
@@ -42,10 +65,14 @@ class _SessionLinkScreenBody extends StatelessWidget {
   const _SessionLinkScreenBody({
     required this.sourceSessionId,
     required this.provider,
+    required this.providerSessionId,
+    required this.expectedDataSourceIdentity,
   });
 
   final String sourceSessionId;
   final String provider;
+  final String? providerSessionId;
+  final BridgeDataSourceIdentity expectedDataSourceIdentity;
 
   @override
   Widget build(BuildContext context) {
@@ -63,6 +90,7 @@ class _SessionLinkScreenBody extends StatelessWidget {
               context,
               sessionId: bridgeSessionId,
               provider: provider,
+              durableProviderSessionId: providerSessionId,
             );
           case SessionLinkOpenResumed(:final session, :final gitBranch):
             _openSession(
@@ -76,12 +104,15 @@ class _SessionLinkScreenBody extends StatelessWidget {
               sandboxMode: session.sandboxMode,
               approvalPolicy: session.approvalPolicy,
               approvalsReviewer: session.approvalsReviewer,
+              durableProviderSessionId:
+                  session.claudeSessionId ?? providerSessionId,
             );
           case SessionLinkOpenLegacy():
             _openSession(
               context,
               sessionId: sourceSessionId,
               provider: provider,
+              durableProviderSessionId: providerSessionId,
             );
           default:
             return;
@@ -111,6 +142,7 @@ class _SessionLinkScreenBody extends StatelessWidget {
     String? sandboxMode,
     String? approvalPolicy,
     String? approvalsReviewer,
+    String? durableProviderSessionId,
   }) {
     final normalizedProvider = provider == Provider.codex.value
         ? Provider.codex.value
@@ -119,6 +151,7 @@ class _SessionLinkScreenBody extends StatelessWidget {
       context.router,
       sessionId: sessionId,
       provider: normalizedProvider,
+      dataSourceIdentity: expectedDataSourceIdentity,
     )) {
       return;
     }
@@ -133,6 +166,7 @@ class _SessionLinkScreenBody extends StatelessWidget {
         sandboxMode: sandboxMode,
         approvalPolicy: approvalPolicy,
         approvalsReviewer: approvalsReviewer,
+        durableProviderSessionId: durableProviderSessionId,
       ),
     );
   }
@@ -147,6 +181,7 @@ class _SessionLinkScreenBody extends StatelessWidget {
     String? sandboxMode,
     String? approvalPolicy,
     String? approvalsReviewer,
+    String? durableProviderSessionId,
   }) {
     if (provider == Provider.codex.value) {
       return CodexSessionRoute(
@@ -158,6 +193,8 @@ class _SessionLinkScreenBody extends StatelessWidget {
         initialSandboxMode: sandboxMode,
         initialApprovalPolicy: approvalPolicy,
         initialApprovalsReviewer: approvalsReviewer,
+        durableProviderSessionId: durableProviderSessionId,
+        dataSourceIdentity: expectedDataSourceIdentity,
       );
     }
     return ClaudeSessionRoute(
@@ -167,6 +204,8 @@ class _SessionLinkScreenBody extends StatelessWidget {
       worktreePath: worktreePath,
       initialPermissionMode: permissionMode,
       initialSandboxMode: sandboxMode,
+      durableProviderSessionId: durableProviderSessionId,
+      dataSourceIdentity: expectedDataSourceIdentity,
     );
   }
 }

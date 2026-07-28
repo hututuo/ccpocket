@@ -10,6 +10,9 @@ struct NotificationApprovalActionPayload: Equatable {
   let sessionId: String
   let provider: String
   let providerSessionId: String?
+  let bridgeInstanceId: String?
+  let codexSourceId: String?
+  let bridgeRouteIdentity: String?
   let permissionId: String
   let occurredAt: String
 
@@ -23,6 +26,15 @@ struct NotificationApprovalActionPayload: Equatable {
     ]
     if let providerSessionId {
       value["providerSessionId"] = providerSessionId
+    }
+    if let bridgeInstanceId {
+      value["bridgeInstanceId"] = bridgeInstanceId
+    }
+    if let codexSourceId {
+      value["codexSourceId"] = codexSourceId
+    }
+    if let bridgeRouteIdentity {
+      value["bridgeRouteIdentity"] = bridgeRouteIdentity
     }
     return value
   }
@@ -57,11 +69,24 @@ struct NotificationApprovalActionPayload: Equatable {
       fields["providerSessionId"],
       maximumLength: 256
     )
+    let bridgeInstanceId = boundedString(
+      fields["bridgeInstanceId"],
+      maximumLength: 256
+    )
+    let codexSourceId = bridgeInstanceId == nil
+      ? nil
+      : boundedString(fields["codexSourceId"], maximumLength: 256)
+    let bridgeRouteIdentity = bridgeInstanceId == nil
+      ? boundedString(fields["bridgeRouteIdentity"], maximumLength: 1_024)
+      : nil
     return NotificationApprovalActionPayload(
       actionIdentifier: actionIdentifier,
       sessionId: sessionId,
       provider: provider,
       providerSessionId: providerSessionId,
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: codexSourceId,
+      bridgeRouteIdentity: bridgeRouteIdentity,
       permissionId: permissionId,
       occurredAt: occurredAt
     )
@@ -203,6 +228,9 @@ final class NotificationActionHostPlugin: NSObject, FlutterPlugin {
   private static func enqueueLocked(_ action: NotificationApprovalActionPayload) {
     pending.removeAll {
       $0.provider == action.provider &&
+        $0.bridgeInstanceId == action.bridgeInstanceId &&
+        $0.codexSourceId == action.codexSourceId &&
+        $0.bridgeRouteIdentity == action.bridgeRouteIdentity &&
         ($0.providerSessionId ?? $0.sessionId) ==
           (action.providerSessionId ?? action.sessionId) &&
         $0.permissionId == action.permissionId

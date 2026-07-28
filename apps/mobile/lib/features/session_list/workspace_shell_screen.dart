@@ -16,6 +16,7 @@ import '../../features/local_session_features/host/local_session_feature_host.da
 import '../../features/settings/settings_screen.dart';
 import '../../features/setup_guide/setup_guide_screen.dart';
 import '../../l10n/app_localizations.dart';
+import '../../models/bridge_data_source_identity.dart';
 import '../../models/messages.dart';
 import '../../providers/bridge_cubits.dart';
 import '../../router/app_router.dart';
@@ -283,6 +284,7 @@ class WorkspaceSessionSelection {
   final String? approvalPolicy;
   final String? approvalsReviewer;
   final ValueNotifier<SystemMessage?>? pendingSessionCreated;
+  final BridgeDataSourceIdentity dataSourceIdentity;
 
   const WorkspaceSessionSelection({
     required this.sessionId,
@@ -297,6 +299,7 @@ class WorkspaceSessionSelection {
     this.approvalPolicy,
     this.approvalsReviewer,
     this.pendingSessionCreated,
+    this.dataSourceIdentity = BridgeDataSourceIdentity.unscoped,
   });
 }
 
@@ -740,6 +743,7 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     NotificationService.instance.setActiveSession(
       sessionId: selection.sessionId,
       provider: selection.provider == Provider.codex ? 'codex' : 'claude',
+      dataSourceIdentity: selection.dataSourceIdentity,
     );
     _notifyPresentationChanged();
   }
@@ -1178,7 +1182,10 @@ class _WorkspaceContentHost extends StatelessWidget {
 
     return switch (selection.provider) {
       Provider.codex => CodexSessionScreen(
-        key: ValueKey('workspace_codex_${selection.sessionId}'),
+        key: ValueKey(
+          'workspace_codex_${selection.sessionId}_'
+          '${selection.dataSourceIdentity.notificationDiscriminatorForProvider('codex')}',
+        ),
         sessionId: selection.sessionId,
         projectPath: selection.projectPath,
         gitBranch: selection.gitBranch,
@@ -1194,9 +1201,13 @@ class _WorkspaceContentHost extends StatelessWidget {
           context,
         )?.clearSelectedSession,
         hideSessionBackButton: true,
+        dataSourceIdentity: selection.dataSourceIdentity,
       ),
       _ => ClaudeSessionScreen(
-        key: ValueKey('workspace_claude_${selection.sessionId}'),
+        key: ValueKey(
+          'workspace_claude_${selection.sessionId}_'
+          '${selection.dataSourceIdentity.notificationDiscriminatorForProvider('claude')}',
+        ),
         sessionId: selection.sessionId,
         projectPath: selection.projectPath,
         gitBranch: selection.gitBranch,
@@ -1210,6 +1221,7 @@ class _WorkspaceContentHost extends StatelessWidget {
           context,
         )?.clearSelectedSession,
         hideSessionBackButton: true,
+        dataSourceIdentity: selection.dataSourceIdentity,
       ),
     };
   }

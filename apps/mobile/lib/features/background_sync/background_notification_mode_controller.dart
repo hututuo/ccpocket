@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/logger.dart';
+import '../../models/bridge_data_source_identity.dart';
 import '../../models/messages.dart';
 import '../../models/notification_preferences.dart';
 import '../../services/bridge_service.dart';
@@ -134,6 +135,9 @@ class NotificationServiceBackgroundPresenter
     }
     final permissionId =
         notification.data['permissionId'] ?? notification.data['toolUseId'];
+    final dataSourceIdentity = BridgeDataSourceIdentity.fromMap(
+      notification.data,
+    );
     final payload = encodeSessionNotificationPayload(
       sessionId: notification.sessionId,
       provider: notification.provider,
@@ -141,6 +145,7 @@ class NotificationServiceBackgroundPresenter
       eventType: notification.eventType,
       permissionId: permissionId,
       occurredAt: notification.occurredAt,
+      dataSourceIdentity: dataSourceIdentity,
     );
     await _service.show(
       title: notification.title,
@@ -150,6 +155,9 @@ class NotificationServiceBackgroundPresenter
         notification.sessionId,
         notification.provider,
         notification.eventType,
+        dataSourceIdentity.notificationDiscriminatorForProvider(
+          notification.provider,
+        ),
       ).abs(),
       categoryIdentifier:
           notification.eventType ==

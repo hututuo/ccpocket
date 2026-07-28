@@ -1,6 +1,7 @@
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/widgets.dart';
 
+import '../models/bridge_data_source_identity.dart';
 import '../services/notification_service.dart';
 import 'app_router.dart';
 
@@ -41,6 +42,7 @@ class SessionRouteObserver extends AutoRouterObserver {
     final settings = route.settings;
     final name = settings.name;
     final sessionId = _extractSessionId(settings.arguments);
+    final dataSourceIdentity = _extractDataSourceIdentity(settings.arguments);
 
     if (sessionId == null || sessionId.isEmpty) {
       NotificationService.instance.clearActiveSession();
@@ -51,6 +53,7 @@ class SessionRouteObserver extends AutoRouterObserver {
       NotificationService.instance.setActiveSession(
         sessionId: sessionId,
         provider: 'claude',
+        dataSourceIdentity: dataSourceIdentity,
       );
       return;
     }
@@ -58,6 +61,7 @@ class SessionRouteObserver extends AutoRouterObserver {
       NotificationService.instance.setActiveSession(
         sessionId: sessionId,
         provider: 'codex',
+        dataSourceIdentity: dataSourceIdentity,
       );
       return;
     }
@@ -77,6 +81,27 @@ class SessionRouteObserver extends AutoRouterObserver {
       return dynamicArgs.sessionId?.toString();
     } catch (_) {
       return null;
+    }
+  }
+
+  BridgeDataSourceIdentity _extractDataSourceIdentity(Object? arguments) {
+    if (arguments is ClaudeSessionRouteArgs) {
+      return arguments.dataSourceIdentity;
+    }
+    if (arguments is CodexSessionRouteArgs) {
+      return arguments.dataSourceIdentity;
+    }
+    if (arguments is Map) {
+      return BridgeDataSourceIdentity.fromMap(arguments);
+    }
+    try {
+      final dynamic dynamicArgs = arguments;
+      final identity = dynamicArgs.dataSourceIdentity;
+      return identity is BridgeDataSourceIdentity
+          ? identity
+          : BridgeDataSourceIdentity.unscoped;
+    } catch (_) {
+      return BridgeDataSourceIdentity.unscoped;
     }
   }
 }

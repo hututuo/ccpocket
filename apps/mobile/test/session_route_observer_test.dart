@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/router/app_router.dart';
 import 'package:ccpocket/router/session_route_observer.dart';
 import 'package:ccpocket/services/notification_service.dart';
@@ -87,8 +88,18 @@ void main() {
   });
 
   test('tracks codex session route', () {
+    const identity = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'source-a',
+    );
     observer.didPush(
-      _route(name: CodexSessionRoute.name, arguments: _SessionArgs('codex-1')),
+      _route(
+        name: CodexSessionRoute.name,
+        arguments: CodexSessionRoute(
+          sessionId: 'codex-1',
+          dataSourceIdentity: identity,
+        ).args,
+      ),
       null,
     );
 
@@ -96,9 +107,11 @@ void main() {
       NotificationService.instance.isActiveSession(
         sessionId: 'codex-1',
         provider: 'codex',
+        dataSourceIdentity: identity,
       ),
       isTrue,
     );
+    expect(NotificationService.instance.activeDataSourceIdentity, identity);
   });
 
   test('supports map-style arguments', () {

@@ -56,6 +56,7 @@ import 'features/git/state/git_view_cache_service.dart';
 import 'features/settings/state/settings_cubit.dart';
 import 'features/settings/state/settings_state.dart';
 import 'features/side_chat/state/ephemeral_side_chat_registry_service.dart';
+import 'models/bridge_data_source_identity.dart';
 import 'models/code_font_family.dart';
 import 'models/messages.dart';
 import 'models/notification_preferences.dart';
@@ -695,10 +696,12 @@ class _CcpocketAppState extends State<CcpocketApp> {
     final data = Map<String, dynamic>.from(message.data);
     final sessionId = data['sessionId']?.toString();
     final provider = _normalizeProvider(data['provider']?.toString());
+    final dataSourceIdentity = BridgeDataSourceIdentity.fromMap(data);
     if (sessionId == null || sessionId.isEmpty) return;
     if (NotificationService.instance.isActiveSession(
       sessionId: sessionId,
       provider: provider,
+      dataSourceIdentity: dataSourceIdentity,
     )) {
       return;
     }
@@ -726,13 +729,14 @@ class _CcpocketAppState extends State<CcpocketApp> {
       eventType: eventType,
       permissionId: permissionId,
       occurredAt: DateTime.tryParse(data['occurredAt']?.toString() ?? ''),
+      dataSourceIdentity: dataSourceIdentity,
     );
 
     await NotificationService.instance.show(
       title: title,
       body: body,
       payload: payload,
-      id: _notificationId(sessionId, provider, eventType),
+      id: _notificationId(sessionId, provider, eventType, dataSourceIdentity),
       categoryIdentifier:
           eventType == NotificationPreferences.approvalRequiredEvent &&
               permissionId?.isNotEmpty == true
@@ -784,6 +788,7 @@ class _CcpocketAppState extends State<CcpocketApp> {
     final provider = _normalizeProvider(data['provider']?.toString());
     final providerSessionId = data['providerSessionId']?.toString().trim();
     final permissionId = data['permissionId']?.toString().trim() ?? '';
+    final dataSourceIdentity = BridgeDataSourceIdentity.fromMap(data);
     final occurredAt = DateTime.tryParse(
       data['occurredAt']?.toString() ?? '',
     )?.toUtc();
@@ -804,6 +809,7 @@ class _CcpocketAppState extends State<CcpocketApp> {
       decision: decision,
       occurredAt: occurredAt,
       navigationData: data,
+      expectedDataSourceIdentity: dataSourceIdentity,
     );
   }
 
@@ -814,6 +820,12 @@ class _CcpocketAppState extends State<CcpocketApp> {
       _ => null,
     };
     if (decision == null) return;
+    final dataSourceIdentity =
+        BridgeDataSourceIdentity.fromMap(<String, String?>{
+          'bridgeInstanceId': event.bridgeInstanceId,
+          'codexSourceId': event.codexSourceId,
+          'bridgeRouteIdentity': event.bridgeRouteIdentity,
+        });
     _submitNotificationAction(
       sessionId: event.sessionId,
       provider: event.provider,
@@ -824,7 +836,11 @@ class _CcpocketAppState extends State<CcpocketApp> {
       navigationData: <String, dynamic>{
         'sessionId': event.sessionId,
         'provider': event.provider,
+        if (event.providerSessionId != null)
+          'providerSessionId': event.providerSessionId,
+        ...dataSourceIdentity.toNotificationFields(),
       },
+      expectedDataSourceIdentity: dataSourceIdentity,
     );
   }
 
@@ -836,7 +852,21 @@ class _CcpocketAppState extends State<CcpocketApp> {
     required NotificationApprovalDecision decision,
     required DateTime occurredAt,
     required Map<String, dynamic> navigationData,
+    required BridgeDataSourceIdentity expectedDataSourceIdentity,
   }) {
+    final currentDataSourceIdentity = context
+        .read<BridgeService>()
+        .dataSourceIdentity;
+    if (!expectedDataSourceIdentity.isSatisfiedBy(
+      currentDataSourceIdentity,
+      provider: provider,
+    )) {
+      logger.warning(
+        '[notifications] Ignoring approval action for a different '
+        'Bridge data source.',
+      );
+      return;
+    }
     unawaited(
       widget.notificationApprovalCoordinator.submit(
         NotificationApprovalRequest(
@@ -866,23 +896,40 @@ class _CcpocketAppState extends State<CcpocketApp> {
     final sessionId = data['sessionId']?.toString();
     if (sessionId == null || sessionId.isEmpty) return;
     final provider = _normalizeProvider(data['provider']?.toString());
-    if (SessionStackNavigation.revealStackedSession(
-      _appRouter,
-      sessionId: sessionId,
+    final providerSessionId = data['providerSessionId']?.toString();
+    final expectedDataSourceIdentity = BridgeDataSourceIdentity.fromMap(data);
+    final currentDataSourceIdentity = context
+        .read<BridgeService>()
+        .dataSourceIdentity;
+    final sourceMatchesCurrent = expectedDataSourceIdentity.isSatisfiedBy(
+      currentDataSourceIdentity,
       provider: provider,
-    )) {
-      return;
-    }
-    if (NotificationService.instance.isActiveSession(
-      sessionId: sessionId,
-      provider: provider,
-    )) {
-      return;
+    );
+    if (sourceMatchesCurrent) {
+      if (SessionStackNavigation.revealStackedSession(
+        _appRouter,
+        sessionId: sessionId,
+        provider: provider,
+        dataSourceIdentity: expectedDataSourceIdentity,
+      )) {
+        return;
+      }
+      if (NotificationService.instance.isActiveSession(
+        sessionId: sessionId,
+        provider: provider,
+        dataSourceIdentity: expectedDataSourceIdentity,
+      )) {
+        return;
+      }
     }
     final route = SessionLinkRoute(
       key: UniqueKey(),
       sessionId: sessionId,
       provider: provider,
+      providerSessionId: providerSessionId,
+      bridgeInstanceId: expectedDataSourceIdentity.bridgeInstanceId,
+      codexSourceId: expectedDataSourceIdentity.codexSourceId,
+      bridgeRouteIdentity: expectedDataSourceIdentity.legacyRouteIdentity,
     );
     if (_appRouter.current.name == SessionLinkRoute.name) {
       _appRouter.replace(route);
@@ -895,8 +942,15 @@ class _CcpocketAppState extends State<CcpocketApp> {
     return provider == 'codex' ? 'codex' : 'claude';
   }
 
-  int _notificationId(String sessionId, String provider, String eventType) {
-    final raw = '$provider:$sessionId:$eventType';
+  int _notificationId(
+    String sessionId,
+    String provider,
+    String eventType,
+    BridgeDataSourceIdentity dataSourceIdentity,
+  ) {
+    final raw =
+        '$provider:$sessionId:$eventType:'
+        '${dataSourceIdentity.notificationDiscriminatorForProvider(provider)}';
     var hash = 0;
     for (final code in raw.codeUnits) {
       hash = ((hash * 31) + code) & 0x7fffffff;

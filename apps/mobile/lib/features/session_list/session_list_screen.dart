@@ -560,6 +560,7 @@ class _SessionListScreenState extends State<SessionListScreen>
             _unseenCubit.markSeen(
               sessionId,
               scopeKey: _connectionUiTargetKey(bridge),
+              dataSourceIdentity: bridge.dataSourceIdentity,
               provider: owner.provider,
             );
           }
@@ -605,8 +606,11 @@ class _SessionListScreenState extends State<SessionListScreen>
     _unseenCubit.updateSessions(
       sessions,
       scopeKey: _connectionUiTargetKey(bridge),
+      dataSourceIdentity: bridge.dataSourceIdentity,
+      legacyScopeKeys: [_connectionUiTargetKey(bridge)],
       visibleSessionId: notifications.activeSessionId,
       visibleProvider: notifications.activeProvider,
+      visibleDataSourceIdentity: notifications.activeDataSourceIdentity,
     );
   }
 
@@ -2215,10 +2219,12 @@ class _SessionListScreenState extends State<SessionListScreen>
   }) {
     final seenSessionId =
         durableProviderSessionId ?? (!isPending ? sessionId : null);
+    final bridge = context.read<BridgeService>();
     if (seenSessionId != null) {
       _unseenCubit.markSeen(
         seenSessionId,
-        scopeKey: _connectionUiTargetKey(context.read<BridgeService>()),
+        scopeKey: _connectionUiTargetKey(bridge),
+        dataSourceIdentity: bridge.dataSourceIdentity,
         provider: provider?.value,
         durableProviderSessionId: durableProviderSessionId,
       );
@@ -2241,6 +2247,7 @@ class _SessionListScreenState extends State<SessionListScreen>
           approvalPolicy: approvalPolicy,
           approvalsReviewer: approvalsReviewer,
           pendingSessionCreated: pendingNotifier,
+          dataSourceIdentity: bridge.dataSourceIdentity,
         ),
       );
       return;
@@ -2259,6 +2266,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         initialApprovalPolicy: approvalPolicy,
         initialApprovalsReviewer: approvalsReviewer,
         pendingSessionCreated: pendingNotifier,
+        dataSourceIdentity: bridge.dataSourceIdentity,
       ),
       _ => ClaudeSessionRoute(
         sessionId: sessionId,
@@ -2270,6 +2278,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         initialPermissionMode: permissionMode,
         initialSandboxMode: sandboxMode,
         pendingSessionCreated: pendingNotifier,
+        dataSourceIdentity: bridge.dataSourceIdentity,
       ),
     });
     navigation.then((_) {

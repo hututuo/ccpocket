@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/models/offline_pending_action.dart';
 import 'package:ccpocket/services/bridge_service.dart';
@@ -63,6 +64,32 @@ Future<void> _authorizeLegacyBridge(
   throw TimeoutException(
     'Bridge did not publish an authoritative session list',
   );
+}
+
+Future<void> _authorizeBridgeIdentity(
+  BridgeService bridge,
+  WebSocket socket, {
+  required String bridgeInstanceId,
+  required String codexSourceId,
+}) async {
+  final previousGeneration = bridge.authoritativeSessionListGeneration;
+  socket.add(
+    jsonEncode({
+      'type': 'session_list',
+      'sessions': const [],
+      'bridgeInstanceId': bridgeInstanceId,
+      'codexSourceId': codexSourceId,
+    }),
+  );
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (bridge.authoritativeSessionListGeneration > previousGeneration &&
+        bridge.bridgeInstanceId == bridgeInstanceId &&
+        bridge.codexSourceId == codexSourceId) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  throw TimeoutException('Bridge did not publish the expected identity');
 }
 
 void main() {
@@ -1847,6 +1874,100 @@ void main() {
       await server.close(force: true);
       bridge.dispose();
     });
+
+    test(
+      'resolveSessionLink rejects a different Codex source without sending',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+        final bridge = BridgeService();
+        final outgoing = <ClientMessage>[];
+        bridge.onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'source-b',
+        );
+        outgoing.clear();
+
+        final result = await bridge.resolveSessionLink(
+          'shared-thread',
+          provider: 'codex',
+          expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'source-a',
+          ),
+        );
+
+        expect(result.support, SessionLinkResolveSupport.unavailable);
+        expect(
+          outgoing.where(
+            (message) =>
+                jsonDecode(message.toJson())['type'] == 'resolve_session_link',
+          ),
+          isEmpty,
+        );
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'resolveSessionLink fails closed when the source changes in flight',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+        final bridge = BridgeService();
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'source-a',
+        );
+        final requestFuture = socket.where((event) {
+          final json = jsonDecode(event as String) as Map<String, dynamic>;
+          return json['type'] == 'resolve_session_link';
+        }).first;
+
+        final resolution = bridge.resolveSessionLink(
+          'shared-thread',
+          provider: 'codex',
+          expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'source-a',
+          ),
+        );
+        await requestFuture.timeout(const Duration(seconds: 2));
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'source-b',
+        );
+
+        final result = await resolution.timeout(const Duration(seconds: 2));
+        expect(result.support, SessionLinkResolveSupport.unavailable);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
 
     test(
       'resolveSessionLink waits for a connection without queueing a stale request',

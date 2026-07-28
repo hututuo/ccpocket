@@ -130,6 +130,8 @@ class ClaudeSessionRoute extends PageRouteInfo<ClaudeSessionRouteArgs> {
     ValueNotifier<SystemMessage?>? pendingSessionCreated,
     VoidCallback? onBackToSessions,
     bool hideSessionBackButton = false,
+    BridgeDataSourceIdentity dataSourceIdentity =
+        BridgeDataSourceIdentity.unscoped,
     List<PageRouteInfo>? children,
   }) : super(
          ClaudeSessionRoute.name,
@@ -146,6 +148,7 @@ class ClaudeSessionRoute extends PageRouteInfo<ClaudeSessionRouteArgs> {
            pendingSessionCreated: pendingSessionCreated,
            onBackToSessions: onBackToSessions,
            hideSessionBackButton: hideSessionBackButton,
+           dataSourceIdentity: dataSourceIdentity,
          ),
          initialChildren: children,
        );
@@ -169,6 +172,7 @@ class ClaudeSessionRoute extends PageRouteInfo<ClaudeSessionRouteArgs> {
         pendingSessionCreated: args.pendingSessionCreated,
         onBackToSessions: args.onBackToSessions,
         hideSessionBackButton: args.hideSessionBackButton,
+        dataSourceIdentity: args.dataSourceIdentity,
       );
     },
   );
@@ -188,6 +192,7 @@ class ClaudeSessionRouteArgs {
     this.pendingSessionCreated,
     this.onBackToSessions,
     this.hideSessionBackButton = false,
+    this.dataSourceIdentity = BridgeDataSourceIdentity.unscoped,
   });
 
   final Key? key;
@@ -214,9 +219,11 @@ class ClaudeSessionRouteArgs {
 
   final bool hideSessionBackButton;
 
+  final BridgeDataSourceIdentity dataSourceIdentity;
+
   @override
   String toString() {
-    return 'ClaudeSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, durableProviderSessionId: $durableProviderSessionId, initialPermissionMode: $initialPermissionMode, initialSandboxMode: $initialSandboxMode, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton}';
+    return 'ClaudeSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, durableProviderSessionId: $durableProviderSessionId, initialPermissionMode: $initialPermissionMode, initialSandboxMode: $initialSandboxMode, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton, dataSourceIdentity: $dataSourceIdentity}';
   }
 
   @override
@@ -234,7 +241,8 @@ class ClaudeSessionRouteArgs {
         initialSandboxMode == other.initialSandboxMode &&
         pendingSessionCreated == other.pendingSessionCreated &&
         onBackToSessions == other.onBackToSessions &&
-        hideSessionBackButton == other.hideSessionBackButton;
+        hideSessionBackButton == other.hideSessionBackButton &&
+        dataSourceIdentity == other.dataSourceIdentity;
   }
 
   @override
@@ -250,7 +258,8 @@ class ClaudeSessionRouteArgs {
       initialSandboxMode.hashCode ^
       pendingSessionCreated.hashCode ^
       onBackToSessions.hashCode ^
-      hideSessionBackButton.hashCode;
+      hideSessionBackButton.hashCode ^
+      dataSourceIdentity.hashCode;
 }
 
 /// generated route for
@@ -273,6 +282,8 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
     bool hideSessionBackButton = false,
     bool hideAuxiliaryDock = false,
     bool allowMessageFork = true,
+    BridgeDataSourceIdentity dataSourceIdentity =
+        BridgeDataSourceIdentity.unscoped,
     List<PageRouteInfo>? children,
   }) : super(
          CodexSessionRoute.name,
@@ -293,6 +304,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
            hideSessionBackButton: hideSessionBackButton,
            hideAuxiliaryDock: hideAuxiliaryDock,
            allowMessageFork: allowMessageFork,
+           dataSourceIdentity: dataSourceIdentity,
          ),
          initialChildren: children,
        );
@@ -320,6 +332,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
         hideSessionBackButton: args.hideSessionBackButton,
         hideAuxiliaryDock: args.hideAuxiliaryDock,
         allowMessageFork: args.allowMessageFork,
+        dataSourceIdentity: args.dataSourceIdentity,
       );
     },
   );
@@ -343,6 +356,7 @@ class CodexSessionRouteArgs {
     this.hideSessionBackButton = false,
     this.hideAuxiliaryDock = false,
     this.allowMessageFork = true,
+    this.dataSourceIdentity = BridgeDataSourceIdentity.unscoped,
   });
 
   final Key? key;
@@ -377,9 +391,11 @@ class CodexSessionRouteArgs {
 
   final bool allowMessageFork;
 
+  final BridgeDataSourceIdentity dataSourceIdentity;
+
   @override
   String toString() {
-    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, durableProviderSessionId: $durableProviderSessionId, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, initialApprovalsReviewer: $initialApprovalsReviewer, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton, hideAuxiliaryDock: $hideAuxiliaryDock, allowMessageFork: $allowMessageFork}';
+    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, durableProviderSessionId: $durableProviderSessionId, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, initialApprovalsReviewer: $initialApprovalsReviewer, pendingSessionCreated: $pendingSessionCreated, onBackToSessions: $onBackToSessions, hideSessionBackButton: $hideSessionBackButton, hideAuxiliaryDock: $hideAuxiliaryDock, allowMessageFork: $allowMessageFork, dataSourceIdentity: $dataSourceIdentity}';
   }
 
   @override
@@ -401,7 +417,8 @@ class CodexSessionRouteArgs {
         onBackToSessions == other.onBackToSessions &&
         hideSessionBackButton == other.hideSessionBackButton &&
         hideAuxiliaryDock == other.hideAuxiliaryDock &&
-        allowMessageFork == other.allowMessageFork;
+        allowMessageFork == other.allowMessageFork &&
+        dataSourceIdentity == other.dataSourceIdentity;
   }
 
   @override
@@ -421,7 +438,8 @@ class CodexSessionRouteArgs {
       onBackToSessions.hashCode ^
       hideSessionBackButton.hashCode ^
       hideAuxiliaryDock.hashCode ^
-      allowMessageFork.hashCode;
+      allowMessageFork.hashCode ^
+      dataSourceIdentity.hashCode;
 }
 
 /// generated route for
@@ -823,6 +841,10 @@ class SessionLinkRoute extends PageRouteInfo<SessionLinkRouteArgs> {
     Key? key,
     required String sessionId,
     String provider = 'claude',
+    String? providerSessionId,
+    String? bridgeInstanceId,
+    String? codexSourceId,
+    String? bridgeRouteIdentity,
     List<PageRouteInfo>? children,
   }) : super(
          SessionLinkRoute.name,
@@ -830,6 +852,10 @@ class SessionLinkRoute extends PageRouteInfo<SessionLinkRouteArgs> {
            key: key,
            sessionId: sessionId,
            provider: provider,
+           providerSessionId: providerSessionId,
+           bridgeInstanceId: bridgeInstanceId,
+           codexSourceId: codexSourceId,
+           bridgeRouteIdentity: bridgeRouteIdentity,
          ),
          initialChildren: children,
        );
@@ -844,6 +870,10 @@ class SessionLinkRoute extends PageRouteInfo<SessionLinkRouteArgs> {
         key: args.key,
         sessionId: args.sessionId,
         provider: args.provider,
+        providerSessionId: args.providerSessionId,
+        bridgeInstanceId: args.bridgeInstanceId,
+        codexSourceId: args.codexSourceId,
+        bridgeRouteIdentity: args.bridgeRouteIdentity,
       );
     },
   );
@@ -854,6 +884,10 @@ class SessionLinkRouteArgs {
     this.key,
     required this.sessionId,
     this.provider = 'claude',
+    this.providerSessionId,
+    this.bridgeInstanceId,
+    this.codexSourceId,
+    this.bridgeRouteIdentity,
   });
 
   final Key? key;
@@ -862,9 +896,17 @@ class SessionLinkRouteArgs {
 
   final String provider;
 
+  final String? providerSessionId;
+
+  final String? bridgeInstanceId;
+
+  final String? codexSourceId;
+
+  final String? bridgeRouteIdentity;
+
   @override
   String toString() {
-    return 'SessionLinkRouteArgs{key: $key, sessionId: $sessionId, provider: $provider}';
+    return 'SessionLinkRouteArgs{key: $key, sessionId: $sessionId, provider: $provider, providerSessionId: $providerSessionId, bridgeInstanceId: $bridgeInstanceId, codexSourceId: $codexSourceId, bridgeRouteIdentity: $bridgeRouteIdentity}';
   }
 
   @override
@@ -873,11 +915,22 @@ class SessionLinkRouteArgs {
     if (other is! SessionLinkRouteArgs) return false;
     return key == other.key &&
         sessionId == other.sessionId &&
-        provider == other.provider;
+        provider == other.provider &&
+        providerSessionId == other.providerSessionId &&
+        bridgeInstanceId == other.bridgeInstanceId &&
+        codexSourceId == other.codexSourceId &&
+        bridgeRouteIdentity == other.bridgeRouteIdentity;
   }
 
   @override
-  int get hashCode => key.hashCode ^ sessionId.hashCode ^ provider.hashCode;
+  int get hashCode =>
+      key.hashCode ^
+      sessionId.hashCode ^
+      provider.hashCode ^
+      providerSessionId.hashCode ^
+      bridgeInstanceId.hashCode ^
+      codexSourceId.hashCode ^
+      bridgeRouteIdentity.hashCode;
 }
 
 /// generated route for

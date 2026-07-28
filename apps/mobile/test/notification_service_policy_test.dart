@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/notification_preferences.dart';
 import 'package:ccpocket/services/notification_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +10,7 @@ void main() {
 
   tearDown(() {
     NotificationService.instance.configure(NotificationPreferences.defaults);
+    NotificationService.instance.clearActiveSession();
   });
 
   test(
@@ -43,4 +47,63 @@ void main() {
       );
     },
   );
+
+  test('active sessions are isolated by Codex source when available', () {
+    const firstSource = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-source-a',
+    );
+    const secondSource = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-source-b',
+    );
+    NotificationService.instance.setActiveSession(
+      sessionId: 'shared-thread',
+      provider: 'codex',
+      dataSourceIdentity: firstSource,
+    );
+
+    expect(
+      NotificationService.instance.isActiveSession(
+        sessionId: 'shared-thread',
+        provider: 'codex',
+        dataSourceIdentity: firstSource,
+      ),
+      isTrue,
+    );
+    expect(
+      NotificationService.instance.isActiveSession(
+        sessionId: 'shared-thread',
+        provider: 'codex',
+        dataSourceIdentity: secondSource,
+      ),
+      isFalse,
+    );
+
+    // A route observer with no source detail must not erase a source-aware
+    // identity already published by the visible session screen.
+    NotificationService.instance.setActiveSession(
+      sessionId: 'shared-thread',
+      provider: 'codex',
+    );
+    expect(NotificationService.instance.activeDataSourceIdentity, firstSource);
+  });
+
+  test('notification payload carries opaque data-source identity', () {
+    final payload =
+        jsonDecode(
+              encodeSessionNotificationPayload(
+                sessionId: 'runtime-1',
+                provider: 'codex',
+                dataSourceIdentity: const BridgeDataSourceIdentity(
+                  bridgeInstanceId: 'bridge-1',
+                  codexSourceId: 'codex-source-a',
+                ),
+              ),
+            )
+            as Map<String, dynamic>;
+
+    expect(payload['bridgeInstanceId'], 'bridge-1');
+    expect(payload['codexSourceId'], 'codex-source-a');
+  });
 }

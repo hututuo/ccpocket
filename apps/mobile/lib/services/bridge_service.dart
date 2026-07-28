@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../core/logger.dart';
+import '../models/bridge_data_source_identity.dart';
 import '../models/messages.dart';
 import '../models/offline_pending_action.dart';
 import '../utils/codex_plan_update.dart';
@@ -619,6 +620,13 @@ class BridgeService implements BridgeServiceBase {
       _lastRecentSessionsMessage;
   String? get bridgeInstanceId => _bridgeInstanceId;
   String? get codexSourceId => _codexSourceId;
+  BridgeDataSourceIdentity get dataSourceIdentity =>
+      BridgeDataSourceIdentity.fromConnection(
+        bridgeInstanceId: bridgeInstanceId,
+        codexSourceId: codexSourceId,
+        logicalConnectionIdentity: logicalConnectionIdentity,
+        websocketUrl: lastUrl,
+      );
 
   /// Last authenticated Bridge identity remembered for cache prewarming.
   ///
@@ -2272,7 +2280,7 @@ class BridgeService implements BridgeServiceBase {
         message: 'Bridge changed while preparing the file.',
       ),
     );
-    _completePendingSessionLinkResolutionsAsUnsupported();
+    _completePendingSessionLinkResolutionsAsUnavailable();
     _sessions = const [];
     _recentSessions = const [];
     _lastRecentSessionsMessage = null;
@@ -3832,6 +3840,8 @@ class BridgeService implements BridgeServiceBase {
     String sessionId, {
     String provider = 'claude',
     Duration timeout = const Duration(seconds: 10),
+    BridgeDataSourceIdentity expectedDataSourceIdentity =
+        BridgeDataSourceIdentity.unscoped,
   }) async {
     final deadline = DateTime.now().add(timeout);
     if (!isConnected) {
@@ -3849,10 +3859,35 @@ class BridgeService implements BridgeServiceBase {
       }
     }
 
+    if (expectedDataSourceIdentity.isScoped &&
+        !_hasAuthoritativeSessionListForCurrentConnection) {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) {
+        return const SessionLinkResolveResult.unavailable();
+      }
+      try {
+        await sessionList
+            .firstWhere((_) => _hasAuthoritativeSessionListForCurrentConnection)
+            .timeout(remaining);
+      } on TimeoutException {
+        return const SessionLinkResolveResult.unavailable();
+      } on StateError {
+        return const SessionLinkResolveResult.unavailable();
+      }
+    }
+    final requestIdentity = dataSourceIdentity;
+    if (!expectedDataSourceIdentity.isSatisfiedBy(
+      requestIdentity,
+      provider: provider,
+    )) {
+      return const SessionLinkResolveResult.unavailable();
+    }
+
     final remaining = deadline.difference(DateTime.now());
     if (remaining <= Duration.zero) {
       return const SessionLinkResolveResult.unavailable();
     }
+    final requestEpoch = _connectionEpoch;
     final requestId = 'session-link-${++_nextSessionLinkRequestId}';
     final completer = Completer<SessionLinkResolveResult>();
     _pendingSessionLinkResolutions[requestId] = completer;
@@ -3864,10 +3899,18 @@ class BridgeService implements BridgeServiceBase {
       ),
     );
     try {
-      return await completer.future.timeout(
+      final result = await completer.future.timeout(
         remaining,
         onTimeout: () => const SessionLinkResolveResult.unavailable(),
       );
+      if (_connectionEpoch != requestEpoch ||
+          !requestIdentity.matchesRequest(
+            dataSourceIdentity,
+            provider: provider,
+          )) {
+        return const SessionLinkResolveResult.unavailable();
+      }
+      return result;
     } finally {
       _pendingSessionLinkResolutions.remove(requestId);
       _messageQueue.removeWhere((message) {
@@ -3879,11 +3922,23 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _completePendingSessionLinkResolutionsAsUnsupported() {
+    _completePendingSessionLinkResolutions(
+      const SessionLinkResolveResult.unsupported(),
+    );
+  }
+
+  void _completePendingSessionLinkResolutionsAsUnavailable() {
+    _completePendingSessionLinkResolutions(
+      const SessionLinkResolveResult.unavailable(),
+    );
+  }
+
+  void _completePendingSessionLinkResolutions(SessionLinkResolveResult result) {
     final pending = _pendingSessionLinkResolutions.values.toList();
     _pendingSessionLinkResolutions.clear();
     for (final completer in pending) {
       if (!completer.isCompleted) {
-        completer.complete(const SessionLinkResolveResult.unsupported());
+        completer.complete(result);
       }
     }
   }
@@ -5793,7 +5848,7 @@ class BridgeService implements BridgeServiceBase {
     _resetSessionCatalogRefresh();
     _failPendingHistoryRequests(clearCursors: true);
     _clearSessionHistorySyncTracking();
-    _completePendingSessionLinkResolutionsAsUnsupported();
+    _completePendingSessionLinkResolutionsAsUnavailable();
     _reconnectTimer?.cancel();
     _cancelPendingPermissionChanges();
     _clearPendingLocalFeatureRequests();

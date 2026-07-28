@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/router/app_router.dart';
 import 'package:ccpocket/router/session_stack_navigation.dart';
 
@@ -117,6 +118,70 @@ void main() {
           arguments: arguments,
           sessionId: 'old-session',
           provider: 'claude',
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not reuse the same Codex ID from another source', () {
+      final routeIdentity = Object();
+      final owner = Object();
+      final arguments = CodexSessionRoute(sessionId: 'shared-thread').args;
+      SessionRouteRegistry.instance.update(
+        routeIdentity: routeIdentity,
+        owner: owner,
+        sessionId: 'shared-thread',
+        provider: 'codex',
+        dataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-source-a',
+        ),
+      );
+
+      expect(
+        SessionStackNavigation.matchesDestination(
+          routeIdentity: routeIdentity,
+          routeName: CodexSessionRoute.name,
+          arguments: arguments,
+          sessionId: 'shared-thread',
+          provider: 'codex',
+          dataSourceIdentity: const BridgeDataSourceIdentity(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-source-a',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        SessionStackNavigation.matchesDestination(
+          routeIdentity: routeIdentity,
+          routeName: CodexSessionRoute.name,
+          arguments: arguments,
+          sessionId: 'shared-thread',
+          provider: 'codex',
+          dataSourceIdentity: const BridgeDataSourceIdentity(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-source-b',
+          ),
+        ),
+        isFalse,
+      );
+    });
+
+    test('source-aware request does not trust route arguments alone', () {
+      final arguments = CodexSessionRoute(sessionId: 'shared-thread').args;
+
+      expect(
+        SessionStackNavigation.matchesDestination(
+          routeIdentity: Object(),
+          routeName: CodexSessionRoute.name,
+          arguments: arguments,
+          sessionId: 'shared-thread',
+          provider: 'codex',
+          dataSourceIdentity: const BridgeDataSourceIdentity(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-source-a',
+          ),
         ),
         isFalse,
       );

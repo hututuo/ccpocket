@@ -15,6 +15,7 @@ import '../features/settings/auth_help_screen.dart';
 import '../features/settings/changelog_screen.dart';
 import '../features/settings/licenses_screen.dart';
 import '../features/settings/settings_screen.dart';
+import '../models/bridge_data_source_identity.dart';
 import '../models/messages.dart';
 import '../screens/mock_preview_screen.dart';
 import '../services/connection_url_parser.dart';

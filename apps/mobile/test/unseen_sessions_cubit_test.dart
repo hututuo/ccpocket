@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/providers/unseen_sessions_cubit.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -336,6 +337,85 @@ void main() {
       });
 
       test(
+        'stable Bridge source preserves seen state across endpoint routes',
+        () async {
+          const source = BridgeDataSourceIdentity(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-source-a',
+          );
+          final cubit = UnseenSessionsCubit();
+          await cubit.ready;
+
+          cubit.updateSessions(
+            [
+              _session(
+                id: 'runtime-a',
+                provider: 'codex',
+                providerSessionId: 'thread-shared',
+              ),
+            ],
+            scopeKey: 'url:wss://first.example:443/ws',
+            dataSourceIdentity: source,
+          );
+          cubit.markSeen(
+            'runtime-a',
+            scopeKey: 'url:wss://first.example:443/ws',
+            dataSourceIdentity: source,
+          );
+          cubit.updateSessions(
+            [
+              _session(
+                id: 'runtime-b',
+                provider: 'codex',
+                providerSessionId: 'thread-shared',
+              ),
+            ],
+            scopeKey: 'url:wss://second.example:443/ws',
+            dataSourceIdentity: source,
+          );
+
+          expect(cubit.isUnseen('runtime-b'), isFalse);
+          await cubit.close();
+        },
+      );
+
+      test('same Bridge keeps different Codex sources isolated', () async {
+        const firstSource = BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-source-a',
+        );
+        const secondSource = BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-source-b',
+        );
+        final cubit = UnseenSessionsCubit();
+        await cubit.ready;
+
+        cubit.updateSessions([
+          _session(
+            id: 'runtime-a',
+            provider: 'codex',
+            providerSessionId: 'thread-shared',
+          ),
+        ], dataSourceIdentity: firstSource);
+        cubit.markSeen(
+          'runtime-a',
+          provider: 'codex',
+          dataSourceIdentity: firstSource,
+        );
+        cubit.updateSessions([
+          _session(
+            id: 'runtime-b',
+            provider: 'codex',
+            providerSessionId: 'thread-shared',
+          ),
+        ], dataSourceIdentity: secondSource);
+
+        expect(cubit.isUnseen('runtime-b'), isTrue);
+        await cubit.close();
+      });
+
+      test(
         'scope switch clears runtime mappings from the previous Bridge',
         () async {
           final cubit = UnseenSessionsCubit();
@@ -429,6 +509,45 @@ void main() {
           await nextBridge.close();
         },
       );
+
+      test('legacy route-scoped seen state migrates once', () async {
+        SharedPreferences.setMockInitialValues({
+          'unseen_sessions_seen_at': jsonEncode({
+            'v2|logical%3Amachine-a|codex|thread-1': '2026-03-11T10:00:00Z',
+          }),
+        });
+        const source = BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-source-a',
+        );
+        final cubit = UnseenSessionsCubit();
+        await cubit.ready;
+
+        cubit.updateSessions(
+          [
+            _session(
+              id: 'runtime-a',
+              provider: 'codex',
+              providerSessionId: 'thread-1',
+            ),
+          ],
+          scopeKey: 'logical:machine-a',
+          dataSourceIdentity: source,
+          legacyScopeKeys: const ['logical:machine-a'],
+        );
+        expect(cubit.isUnseen('runtime-a'), isFalse);
+        await cubit.close();
+
+        final prefs = await SharedPreferences.getInstance();
+        final stored =
+            jsonDecode(prefs.getString('unseen_sessions_seen_at')!)
+                as Map<String, dynamic>;
+        expect(
+          stored,
+          isNot(contains('v2|logical%3Amachine-a|codex|thread-1')),
+        );
+        expect(stored.values, contains('2026-03-11T10:00:00Z'));
+      });
 
       test('pruning compares mixed ISO formats by their instant', () async {
         final stored = <String, String>{

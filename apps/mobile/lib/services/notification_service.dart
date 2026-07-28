@@ -8,6 +8,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../core/logger.dart';
 import '../l10n/app_localizations.dart';
+import '../models/bridge_data_source_identity.dart';
 import '../models/messages.dart';
 import '../models/notification_preferences.dart';
 
@@ -24,6 +25,7 @@ String encodeSessionNotificationPayload({
   String? eventType,
   String? permissionId,
   DateTime? occurredAt,
+  BridgeDataSourceIdentity? dataSourceIdentity,
 }) {
   return jsonEncode(<String, String>{
     'sessionId': sessionId,
@@ -33,6 +35,8 @@ String encodeSessionNotificationPayload({
       'providerSessionId': providerSessionId!,
     if (eventType?.isNotEmpty == true) 'eventType': eventType!,
     if (permissionId?.isNotEmpty == true) 'permissionId': permissionId!,
+    if (dataSourceIdentity != null)
+      ...dataSourceIdentity.toNotificationFields(),
   });
 }
 
@@ -48,6 +52,8 @@ class NotificationService extends ChangeNotifier {
   NotificationPreferences _preferences = NotificationPreferences.defaults;
   String? _activeSessionId;
   String? _activeProvider;
+  BridgeDataSourceIdentity _activeDataSourceIdentity =
+      BridgeDataSourceIdentity.unscoped;
   bool _notifyScheduled = false;
   NotificationResponse? _pendingLaunchResponse;
   void Function(String? payload)? _onNotificationTap;
@@ -55,6 +61,8 @@ class NotificationService extends ChangeNotifier {
 
   String? get activeSessionId => _activeSessionId;
   String? get activeProvider => _activeProvider;
+  BridgeDataSourceIdentity get activeDataSourceIdentity =>
+      _activeDataSourceIdentity;
   NotificationPreferences get preferences => _preferences;
 
   /// Called when the user taps a notification. The [payload] string
@@ -276,10 +284,25 @@ class NotificationService extends ChangeNotifier {
     _onNotificationResponse(pending);
   }
 
-  void setActiveSession({required String sessionId, required String provider}) {
-    if (_activeSessionId == sessionId && _activeProvider == provider) return;
+  void setActiveSession({
+    required String sessionId,
+    required String provider,
+    BridgeDataSourceIdentity dataSourceIdentity =
+        BridgeDataSourceIdentity.unscoped,
+  }) {
+    final sameSession =
+        _activeSessionId == sessionId && _activeProvider == provider;
+    if (sameSession &&
+        !dataSourceIdentity.isScoped &&
+        _activeDataSourceIdentity.isScoped) {
+      // Route observers only know session/provider. Do not let a later route
+      // callback erase the authoritative source captured by the screen.
+      return;
+    }
+    if (sameSession && _activeDataSourceIdentity == dataSourceIdentity) return;
     _activeSessionId = sessionId;
     _activeProvider = provider;
+    _activeDataSourceIdentity = dataSourceIdentity;
     _notifyListenersSafely();
   }
 
@@ -289,6 +312,7 @@ class NotificationService extends ChangeNotifier {
     if (_activeSessionId == null && _activeProvider == null) return;
     _activeSessionId = null;
     _activeProvider = null;
+    _activeDataSourceIdentity = BridgeDataSourceIdentity.unscoped;
     _notifyListenersSafely();
   }
 
@@ -309,8 +333,18 @@ class NotificationService extends ChangeNotifier {
     });
   }
 
-  bool isActiveSession({required String sessionId, required String provider}) {
-    return _activeSessionId == sessionId && _activeProvider == provider;
+  bool isActiveSession({
+    required String sessionId,
+    required String provider,
+    BridgeDataSourceIdentity dataSourceIdentity =
+        BridgeDataSourceIdentity.unscoped,
+  }) {
+    return _activeSessionId == sessionId &&
+        _activeProvider == provider &&
+        _activeDataSourceIdentity.matchesRequest(
+          dataSourceIdentity,
+          provider: provider,
+        );
   }
 
   /// Dismiss all previously shown notifications from the notification center.

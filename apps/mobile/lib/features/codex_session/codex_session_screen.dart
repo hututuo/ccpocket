@@ -12,6 +12,7 @@ import '../../hooks/use_app_resume_callback.dart';
 import '../../hooks/use_keyboard_scroll_adjustment.dart';
 import '../../hooks/use_scroll_tracking.dart';
 import '../../l10n/app_localizations.dart';
+import '../../models/bridge_data_source_identity.dart';
 import '../../models/messages.dart';
 import '../../models/notification_preferences.dart';
 import '../../providers/bridge_cubits.dart';
@@ -110,6 +111,7 @@ class CodexSessionScreen extends StatefulWidget {
   final VoidCallback? onBackToSessions;
   final bool hideSessionBackButton;
   final bool hideAuxiliaryDock;
+  final BridgeDataSourceIdentity? dataSourceIdentity;
 
   /// Auxiliary child conversations reuse the full Codex screen, but can
   /// selectively hide operations that the child-session workflow does not
@@ -136,6 +138,7 @@ class CodexSessionScreen extends StatefulWidget {
     this.onBackToSessions,
     this.hideSessionBackButton = false,
     this.hideAuxiliaryDock = false,
+    this.dataSourceIdentity,
     this.allowMessageFork = true,
   });
 
@@ -217,11 +220,14 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   PendingSessionBinding? _retainedPendingBinding;
   final Object _sessionRouteOwner = Object();
   Object? _sessionRouteIdentity;
+  late final BridgeDataSourceIdentity _dataSourceIdentity;
 
   @override
   void initState() {
     super.initState();
     final bridge = context.read<BridgeService>();
+    _dataSourceIdentity =
+        widget.dataSourceIdentity ?? bridge.dataSourceIdentity;
     _sessionId = widget.sessionId;
     _projectPath = widget.projectPath;
     _gitBranch = widget.gitBranch;
@@ -396,11 +402,13 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       owner: _sessionRouteOwner,
       sessionId: _sessionId,
       provider: 'codex',
+      dataSourceIdentity: _dataSourceIdentity,
     );
     if (ModalRoute.of(context)?.isCurrent ?? false) {
       NotificationService.instance.setActiveSession(
         sessionId: _sessionId,
         provider: 'codex',
+        dataSourceIdentity: _dataSourceIdentity,
       );
     }
   }
@@ -724,6 +732,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         onBackToSessions: widget.onBackToSessions,
         hideSessionBackButton: widget.hideSessionBackButton,
         allowMessageFork: false,
+        dataSourceIdentity: _dataSourceIdentity,
       );
     }
     if (_isPending) {
@@ -787,6 +796,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       onBackToSessions: widget.onBackToSessions,
       hideSessionBackButton: widget.hideSessionBackButton,
       allowMessageFork: widget.allowMessageFork,
+      dataSourceIdentity: _dataSourceIdentity,
     );
   }
 }
@@ -818,6 +828,7 @@ class _CodexProviders extends StatelessWidget {
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final ChatComposerSubmission? initialSubmission;
   final ValueChanged<ChatComposerSubmission>? onInitialSubmissionConsumed;
+  final BridgeDataSourceIdentity dataSourceIdentity;
 
   const _CodexProviders({
     super.key,
@@ -843,6 +854,7 @@ class _CodexProviders extends StatelessWidget {
     this.onDeferredSubmit,
     this.initialSubmission,
     this.onInitialSubmissionConsumed,
+    required this.dataSourceIdentity,
   });
 
   @override
@@ -902,6 +914,7 @@ class _CodexProviders extends StatelessWidget {
           detachedPreview: detachedPreview,
           deferredSubmissionPending: deferredSubmissionPending,
           onDeferredSubmit: onDeferredSubmit,
+          dataSourceIdentity: dataSourceIdentity,
         ),
       ),
     );
@@ -924,6 +937,7 @@ class _CodexChatBody extends HookWidget {
   final bool detachedPreview;
   final bool deferredSubmissionPending;
   final ChatComposerSubmitCallback? onDeferredSubmit;
+  final BridgeDataSourceIdentity dataSourceIdentity;
 
   const _CodexChatBody({
     required this.sessionId,
@@ -937,6 +951,7 @@ class _CodexChatBody extends HookWidget {
     this.detachedPreview = false,
     this.deferredSubmissionPending = false,
     this.onDeferredSubmit,
+    required this.dataSourceIdentity,
   });
 
   @override
@@ -1125,6 +1140,7 @@ class _CodexChatBody extends HookWidget {
         (effects) => _executeSideEffects(
           effects,
           sessionId: sessionId,
+          dataSourceIdentity: dataSourceIdentity,
           isBackground: isBackgroundRef.value,
           approval: chatSessionCubit.state.approval,
           l: l,
@@ -2357,6 +2373,7 @@ void _openGalleryScreen(BuildContext context, {required String sessionId}) {
 void _executeSideEffects(
   Set<ChatSideEffect> effects, {
   required String sessionId,
+  required BridgeDataSourceIdentity dataSourceIdentity,
   required bool isBackground,
   required ApprovalState approval,
   required AppLocalizations l,
@@ -2389,6 +2406,7 @@ void _executeSideEffects(
                 provider: Provider.codex.value,
                 eventType: NotificationPreferences.approvalRequiredEvent,
                 permissionId: permission.toolUseId,
+                dataSourceIdentity: dataSourceIdentity,
               ),
             );
           }
@@ -2406,6 +2424,7 @@ void _executeSideEffects(
                 provider: Provider.codex.value,
                 eventType: NotificationPreferences.askUserQuestionEvent,
                 permissionId: permission.toolUseId,
+                dataSourceIdentity: dataSourceIdentity,
               ),
             );
           }
@@ -2420,6 +2439,7 @@ void _executeSideEffects(
               sessionId: sessionId,
               provider: Provider.codex.value,
               eventType: NotificationPreferences.sessionCompletedEvent,
+              dataSourceIdentity: dataSourceIdentity,
             ),
           );
         }

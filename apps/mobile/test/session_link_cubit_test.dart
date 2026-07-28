@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:ccpocket/features/session_link/state/session_link_cubit.dart';
 import 'package:ccpocket/features/session_link/state/session_link_state.dart';
 import 'package:ccpocket/features/session_list/services/session_resume_coordinator.dart';
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,6 +12,7 @@ class _SessionLinkBridge extends BridgeService {
   final controller = StreamController<ServerMessage>.broadcast();
   late SessionLinkResolveResult result;
   Object? resolveError;
+  BridgeDataSourceIdentity? expectedDataSourceIdentity;
 
   @override
   Stream<ServerMessage> get messages => controller.stream;
@@ -20,7 +22,10 @@ class _SessionLinkBridge extends BridgeService {
     String sessionId, {
     String provider = 'claude',
     Duration timeout = const Duration(seconds: 10),
+    BridgeDataSourceIdentity expectedDataSourceIdentity =
+        BridgeDataSourceIdentity.unscoped,
   }) async {
+    this.expectedDataSourceIdentity = expectedDataSourceIdentity;
     final error = resolveError;
     if (error != null) throw error;
     return result;
@@ -102,6 +107,26 @@ void main() {
         provider: 'claude',
       ),
     );
+  });
+
+  test('forwards the expected Bridge data source to the resolver', () async {
+    bridge.result = const SessionLinkResolveResult.unavailable();
+    const expected = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-source-a',
+    );
+    final cubit = SessionLinkCubit(
+      bridge: bridge,
+      sourceSessionId: 'codex-thread',
+      provider: 'codex',
+      expectedDataSourceIdentity: expected,
+    );
+    addTearDown(cubit.close);
+
+    await cubit.resolve();
+
+    expect(bridge.expectedDataSourceIdentity, expected);
+    expect(cubit.state, const SessionLinkState.unavailable());
   });
 
   test('falls back to the legacy route for an older Bridge', () async {

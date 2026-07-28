@@ -325,6 +325,8 @@ class RunnerTests: XCTestCase {
         "sessionId": "runtime-session",
         "provider": "codex",
         "providerSessionId": "durable-thread",
+        "bridgeInstanceId": "bridge-1",
+        "codexSourceId": "codex-source-1",
         "eventType": "approval_required",
         "permissionId": "opaque-permission",
         "occurredAt": occurredAt,
@@ -337,6 +339,9 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertEqual(local?.sessionId, "runtime-session")
     XCTAssertEqual(local?.providerSessionId, "durable-thread")
+    XCTAssertEqual(local?.bridgeInstanceId, "bridge-1")
+    XCTAssertEqual(local?.codexSourceId, "codex-source-1")
+    XCTAssertNil(local?.bridgeRouteIdentity)
     XCTAssertEqual(local?.permissionId, "opaque-permission")
 
     let remote = NotificationApprovalActionPayload.parse(

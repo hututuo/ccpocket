@@ -9,12 +9,17 @@ void main() {
           'sessionId': 'runtime-session',
           'provider': 'codex',
           'providerSessionId': 'durable-thread',
+          'bridgeInstanceId': 'bridge-1',
+          'codexSourceId': 'codex-source-1',
           'permissionId': 'opaque-permission',
           'occurredAt': '2026-07-25T01:02:03Z',
         });
 
     expect(event, isNotNull);
     expect(event?.providerSessionId, 'durable-thread');
+    expect(event?.bridgeInstanceId, 'bridge-1');
+    expect(event?.codexSourceId, 'codex-source-1');
+    expect(event?.bridgeRouteIdentity, isNull);
     expect(event?.occurredAt.isUtc, isTrue);
   });
 

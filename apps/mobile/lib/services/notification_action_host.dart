@@ -13,12 +13,18 @@ class NotificationApprovalActionEvent {
     required this.permissionId,
     required this.occurredAt,
     this.providerSessionId,
+    this.bridgeInstanceId,
+    this.codexSourceId,
+    this.bridgeRouteIdentity,
   });
 
   final String actionId;
   final String sessionId;
   final String provider;
   final String? providerSessionId;
+  final String? bridgeInstanceId;
+  final String? codexSourceId;
+  final String? bridgeRouteIdentity;
   final String permissionId;
   final DateTime occurredAt;
 
@@ -29,6 +35,13 @@ class NotificationApprovalActionEvent {
     final sessionId = _boundedString(data['sessionId'], 256);
     final provider = _boundedString(data['provider'], 16);
     final providerSessionId = _boundedString(data['providerSessionId'], 256);
+    final bridgeInstanceId = _boundedString(data['bridgeInstanceId'], 256);
+    final codexSourceId = bridgeInstanceId == null
+        ? null
+        : _boundedString(data['codexSourceId'], 256);
+    final bridgeRouteIdentity = bridgeInstanceId == null
+        ? _boundedString(data['bridgeRouteIdentity'], 1024)
+        : null;
     final permissionId = _boundedString(data['permissionId'], 256);
     final occurredAt = DateTime.tryParse(
       _boundedString(data['occurredAt'], 64) ?? '',
@@ -46,6 +59,9 @@ class NotificationApprovalActionEvent {
       sessionId: sessionId,
       provider: provider!,
       providerSessionId: providerSessionId,
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: codexSourceId,
+      bridgeRouteIdentity: bridgeRouteIdentity,
       permissionId: permissionId,
       occurredAt: occurredAt,
     );

@@ -2,21 +2,29 @@ import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../models/bridge_data_source_identity.dart';
 import '../../../models/messages.dart';
 import '../../../services/bridge_service.dart';
 import '../../session_list/services/session_resume_coordinator.dart';
 import 'session_link_state.dart';
+
+// Public constructor labels intentionally describe injected values; using
+// private initializing formals would make them inaccessible to callers.
+// ignore_for_file: prefer_initializing_formals
 
 class SessionLinkCubit extends Cubit<SessionLinkState> {
   SessionLinkCubit({
     required BridgeService bridge,
     required String sourceSessionId,
     required String provider,
+    BridgeDataSourceIdentity expectedDataSourceIdentity =
+        BridgeDataSourceIdentity.unscoped,
     SessionResumeCoordinator? resumeCoordinator,
     String? resumeRequestId,
   }) : _bridge = bridge,
        _sourceSessionId = sourceSessionId,
        _provider = provider,
+       _expectedDataSourceIdentity = expectedDataSourceIdentity,
        _resumeRequestId =
            resumeRequestId ??
            'session-link-${DateTime.now().microsecondsSinceEpoch}',
@@ -27,6 +35,7 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
   final BridgeService _bridge;
   final String _sourceSessionId;
   final String _provider;
+  final BridgeDataSourceIdentity _expectedDataSourceIdentity;
   final String _resumeRequestId;
   final SessionResumeCoordinator _resumeCoordinator;
   StreamSubscription<ServerMessage>? _resumeSubscription;
@@ -50,6 +59,7 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
     final result = await _bridge.resolveSessionLink(
       _sourceSessionId,
       provider: _provider,
+      expectedDataSourceIdentity: _expectedDataSourceIdentity,
     );
     if (isClosed) return;
     if (result.support == SessionLinkResolveSupport.unsupported) {
