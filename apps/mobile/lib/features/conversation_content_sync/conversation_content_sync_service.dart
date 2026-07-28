@@ -14,6 +14,7 @@ abstract interface class ConversationContentSyncGateway {
 
   BridgeConnectionState get currentBridgeConnectionState;
   String? get bridgeInstanceId;
+  String? get codexSourceId;
   String? get logicalConnectionIdentity;
   String? get lastUrl;
   bool get supportsConversationContentEvents;
@@ -48,6 +49,9 @@ class BridgeServiceConversationContentSyncGateway
 
   @override
   String? get bridgeInstanceId => bridge.bridgeInstanceId;
+
+  @override
+  String? get codexSourceId => bridge.codexSourceId;
 
   @override
   String? get logicalConnectionIdentity => bridge.logicalConnectionIdentity;
@@ -113,6 +117,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   String? _pendingSubscriptionId;
   String? _activeSubscriptionId;
   String? _subscriptionBridgeInstanceId;
+  String? _subscriptionCodexSourceId;
   bool _foreground = false;
   bool _started = false;
   bool _disposed = false;
@@ -226,6 +231,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   SessionCatalogCacheTarget get _cacheTarget =>
       SessionCatalogCacheTarget.fromBridge(
         bridgeInstanceId: bridge.bridgeInstanceId,
+        codexSourceId: bridge.codexSourceId,
         logicalConnectionIdentity: bridge.logicalConnectionIdentity,
         websocketUrl: bridge.lastUrl,
       );
@@ -251,6 +257,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _pendingSubscriptionId = null;
     _activeSubscriptionId = null;
     _subscriptionBridgeInstanceId = null;
+    _subscriptionCodexSourceId = null;
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -259,9 +266,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
 
   void _ensureSubscribed() {
     final bridgeInstanceId = bridge.bridgeInstanceId;
-    if (_subscriptionBridgeInstanceId != null &&
-        _subscriptionBridgeInstanceId != bridgeInstanceId) {
-      _stopSubscription(sendUnsubscribe: false);
+    final codexSourceId = bridge.codexSourceId;
+    final hasSubscription =
+        _pendingSubscriptionId != null || _activeSubscriptionId != null;
+    if (hasSubscription &&
+        (_subscriptionBridgeInstanceId != bridgeInstanceId ||
+            _subscriptionCodexSourceId != codexSourceId)) {
+      final sameBridge =
+          _subscriptionBridgeInstanceId != null &&
+          _subscriptionBridgeInstanceId == bridgeInstanceId;
+      _stopSubscription(sendUnsubscribe: sameBridge);
     }
     if (_disposed ||
         !_canProcessContent ||
@@ -275,6 +289,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     final requestId = _nextRequestId('subscribe');
     _pendingSubscriptionId = requestId;
     _subscriptionBridgeInstanceId = bridgeInstanceId;
+    _subscriptionCodexSourceId = codexSourceId;
     final target = _cacheTarget;
     unawaited(
       cache
@@ -285,6 +300,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 _pendingSubscriptionId != requestId ||
                 !_canProcessContent ||
                 _subscriptionBridgeInstanceId != bridge.bridgeInstanceId ||
+                _subscriptionCodexSourceId != bridge.codexSourceId ||
                 target.fingerprint != _cacheTarget.fingerprint) {
               return;
             }
@@ -520,6 +536,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _activeSubscriptionId = null;
     _pendingSubscriptionId = null;
     _subscriptionBridgeInstanceId = null;
+    _subscriptionCodexSourceId = null;
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;

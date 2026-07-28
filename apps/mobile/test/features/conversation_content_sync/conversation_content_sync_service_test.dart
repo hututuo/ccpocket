@@ -112,6 +112,7 @@ void main() {
     final cached = await repository.loadConversationWindow(
       target: SessionCatalogCacheTarget.fromBridge(
         bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-source-a',
         logicalConnectionIdentity: 'machine:1',
         websocketUrl: 'wss://bridge.example/socket',
       ),
@@ -120,6 +121,45 @@ void main() {
     );
     expect(cached?.revision, 'revision-1');
     expect(cached?.entries.single.entryId, 'entry-1');
+    expect(
+      await repository.loadConversationWindow(
+        target: SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-source-b',
+        ),
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+      ),
+      isNull,
+    );
+  });
+
+  test('source switch replaces the active content subscription', () async {
+    final firstSubscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    final firstSubscriptionId = firstSubscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.subscribed,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        requestId: firstSubscriptionId,
+        hotConversationLimit: 10,
+      ),
+    );
+
+    gateway.codexSourceId = 'codex-home-source-b';
+    gateway.emitSessionList();
+
+    final unsubscribe = await gateway.nextOutgoing(
+      'conversation_content_unsubscribe',
+    );
+    expect(unsubscribe['subscriptionId'], firstSubscriptionId);
+    final secondSubscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    expect(secondSubscribe['requestId'], isNot(firstSubscriptionId));
   });
 
   test('background lifecycle unsubscribes and rejects body events', () async {
@@ -284,6 +324,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   String? bridgeInstanceId = 'bridge-1';
 
   @override
+  String? codexSourceId = 'codex-home-source-a';
+
+  @override
   String? logicalConnectionIdentity = 'machine:1';
 
   @override
@@ -307,6 +350,10 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
     _messages.add(message);
   }
 
+  void emitSessionList() {
+    _sessions.add(const []);
+  }
+
   Future<Map<String, dynamic>> nextOutgoing(String type) async {
     for (final message in sent) {
       if (message['type'] == type && message['_observed'] != true) {
@@ -314,7 +361,11 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
         return message;
       }
     }
-    return _outgoing.stream.firstWhere((message) => message['type'] == type);
+    final message = await _outgoing.stream.firstWhere(
+      (message) => message['type'] == type,
+    );
+    message['_observed'] = true;
+    return message;
   }
 
   Future<void> close() async {

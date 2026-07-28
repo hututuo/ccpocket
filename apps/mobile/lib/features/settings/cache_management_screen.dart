@@ -58,6 +58,7 @@ class _AppCacheManagementBackend implements CacheManagementBackend {
           bridgeInstanceId: metadata.key.bridgeInstanceId,
           provider: metadata.key.provider,
           providerSessionId: metadata.key.providerSessionId,
+          codexSourceId: metadata.key.codexSourceId,
         ),
     };
     final sessions = cache == null
