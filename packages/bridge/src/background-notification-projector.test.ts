@@ -9,6 +9,8 @@ const context = {
   deliveryId: "delivery-1",
   sessionId: "session-1",
   provider: "codex" as const,
+  bridgeInstanceId: "bridge-1",
+  codexSourceId: "codex-source-1",
   label: "同步修复 (ccpocket)",
   now: Date.parse("2026-07-24T01:00:00.000Z"),
 };
@@ -167,6 +169,8 @@ describe("background notification projector", () => {
       deliveryId: "delivery-1",
       sessionId: "session-1",
       provider: "codex",
+      bridgeInstanceId: "bridge-1",
+      codexSourceId: "codex-source-1",
     });
     expect(JSON.stringify(message)).not.toContain("SensitiveToolName");
     expect(JSON.stringify(message)).not.toContain("private-tool-id");
@@ -196,6 +200,8 @@ describe("background notification projector", () => {
       sessionId: "session-1",
       provider: "codex",
       permissionId: "approval-opaque-id",
+      bridgeInstanceId: "bridge-1",
+      codexSourceId: "codex-source-1",
     });
     expect(JSON.stringify(message)).not.toContain("SensitiveToolName");
     expect(JSON.stringify(message)).not.toContain("private command");

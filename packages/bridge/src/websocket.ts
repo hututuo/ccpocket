@@ -10679,6 +10679,12 @@ export class BridgeWebSocketServer {
                   sessionId,
                   provider: projectionSession?.provider ?? "claude",
                   providerSessionId: projectionSession?.claudeSessionId,
+                  bridgeInstanceId: this.bridgeInstanceId,
+                  codexSourceId:
+                    projectionSession?.provider === "codex" &&
+                    this.bridgeInstanceId
+                      ? this.codexSourceId
+                      : undefined,
                   label: this.sessionLabel(sessionId),
                 },
                 backgroundDelivery.policy,
@@ -11675,6 +11681,18 @@ export class BridgeWebSocketServer {
     return project;
   }
 
+  private notificationDataSourceFields(
+    provider: "claude" | "codex",
+  ): Record<string, string> {
+    if (!this.bridgeInstanceId) return {};
+    return {
+      bridgeInstanceId: this.bridgeInstanceId,
+      ...(provider === "codex"
+        ? { codexSourceId: this.codexSourceId }
+        : {}),
+    };
+  }
+
   private isBackgroundNotificationCandidate(msg: ServerMessage): boolean {
     if (msg.type === "permission_request") return true;
     // The projector also clears per-turn deduplication on stopped results, so
@@ -11823,10 +11841,12 @@ export class BridgeWebSocketServer {
       });
 
       const session = this.sessionManager.get(sessionId);
+      const provider = session?.provider ?? "claude";
       const data: Record<string, string> = {
         sessionId,
-        provider: session?.provider ?? "claude",
+        provider,
         occurredAt: new Date(now).toISOString(),
+        ...this.notificationDataSourceFields(provider),
       };
       if (deliveryId) data.deliveryId = deliveryId;
       if (session?.claudeSessionId) {
@@ -11881,11 +11901,13 @@ export class BridgeWebSocketServer {
       }
 
       const session = this.sessionManager.get(sessionId);
+      const provider = session?.provider ?? "claude";
       const data: Record<string, string> = {
         sessionId,
-        provider: session?.provider ?? "claude",
+        provider,
         permissionId: msg.toolUseId,
         occurredAt: new Date().toISOString(),
+        ...this.notificationDataSourceFields(provider),
       };
       if (deliveryId) data.deliveryId = deliveryId;
       if (session?.claudeSessionId) {
@@ -11946,11 +11968,13 @@ export class BridgeWebSocketServer {
     const stats = pieces.length > 0 ? ` (${pieces.join(", ")})` : "";
 
     const session = this.sessionManager.get(sessionId);
+    const provider = session?.provider ?? "claude";
     const data: Record<string, string> = {
       sessionId,
-      provider: session?.provider ?? "claude",
+      provider,
       subtype: msg.subtype,
       occurredAt: new Date().toISOString(),
+      ...this.notificationDataSourceFields(provider),
     };
     if (deliveryId) data.deliveryId = deliveryId;
     if (session?.claudeSessionId) {

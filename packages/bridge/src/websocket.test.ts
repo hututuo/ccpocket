@@ -13541,6 +13541,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       server: httpServer,
       firebaseAuth: mockAuth as any,
     });
+    (bridge as any).bridgeInstanceId = "bridge-source-test";
     (bridge as any).tokenPrivacyMode.set("private-token", true);
 
     (bridge as any).broadcastSessionMessage("s-1", {
@@ -13559,6 +13560,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(payload.data).toMatchObject({
       sessionId: "s-1",
       permissionId: "opaque-permission-id",
+      bridgeInstanceId: "bridge-source-test",
     });
     expect(payload.data).not.toHaveProperty("toolUseId");
     expect(payload.data).not.toHaveProperty("toolName");

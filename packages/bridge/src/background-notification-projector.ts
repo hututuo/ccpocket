@@ -30,6 +30,8 @@ export interface BackgroundNotificationContext {
   sessionId: string;
   provider: "claude" | "codex";
   providerSessionId?: string;
+  bridgeInstanceId?: string;
+  codexSourceId?: string;
   label: string;
   now?: number;
 }
@@ -92,6 +94,7 @@ export function projectBackgroundNotification(
       deliveryId: context.deliveryId,
       sessionId,
       provider,
+      ...notificationDataSourceFields(context),
     };
     if (context.providerSessionId) {
       data.providerSessionId = context.providerSessionId;
@@ -165,6 +168,7 @@ export function projectBackgroundNotification(
       sessionId,
       provider,
       permissionId: msg.toolUseId,
+      ...notificationDataSourceFields(context),
     };
     if (context.providerSessionId) {
       data.providerSessionId = context.providerSessionId;
@@ -242,6 +246,7 @@ export function projectBackgroundNotification(
     deliveryId: context.deliveryId,
     sessionId,
     provider,
+    ...notificationDataSourceFields(context),
   };
   if (context.providerSessionId) {
     data.providerSessionId = context.providerSessionId;
@@ -262,5 +267,17 @@ export function projectBackgroundNotification(
     body,
     occurredAt,
     data,
+  };
+}
+
+function notificationDataSourceFields(
+  context: BackgroundNotificationContext,
+): Record<string, string> {
+  if (!context.bridgeInstanceId) return {};
+  return {
+    bridgeInstanceId: context.bridgeInstanceId,
+    ...(context.provider === "codex" && context.codexSourceId
+      ? { codexSourceId: context.codexSourceId }
+      : {}),
   };
 }
