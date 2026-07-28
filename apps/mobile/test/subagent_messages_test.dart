@@ -64,4 +64,24 @@ void main() {
       contains('subagent_history'),
     );
   });
+
+  test('structured active flags keep an idle-labelled subagent active', () {
+    final list =
+        ServerMessage.fromJson({
+              'type': 'subagent_list',
+              'sessionId': 'parent-1',
+              'requestId': 'request-flags',
+              'subagents': [
+                {
+                  'threadId': 'child-flags',
+                  'status': 'idle',
+                  'activeFlags': ['turn', '', 7],
+                },
+              ],
+            })
+            as SubagentListMessage;
+
+    expect(list.subagents.single.activeFlags, ['turn']);
+    expect(list.subagents.single.isActive, isTrue);
+  });
 }

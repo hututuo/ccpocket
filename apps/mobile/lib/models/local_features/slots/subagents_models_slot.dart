@@ -18,6 +18,7 @@ class SubagentInfo {
   final String? startedAt;
   final String? updatedAt;
   final String? completedAt;
+  final List<String> activeFlags;
 
   const SubagentInfo({
     required this.threadId,
@@ -33,6 +34,7 @@ class SubagentInfo {
     this.startedAt,
     this.updatedAt,
     this.completedAt,
+    this.activeFlags = const <String>[],
   });
 
   factory SubagentInfo.fromJson(Map<String, dynamic> json) => SubagentInfo(
@@ -58,6 +60,7 @@ class SubagentInfo {
     startedAt: _subagentDateString(json['startedAt'] ?? json['createdAt']),
     updatedAt: _subagentDateString(json['updatedAt']),
     completedAt: _subagentDateString(json['completedAt']),
+    activeFlags: _subagentStringList(json['activeFlags']),
   );
 
   String get displayName {
@@ -68,13 +71,25 @@ class SubagentInfo {
     return threadId;
   }
 
-  bool get isActive => const {
-    'active',
-    'running',
-    'pending',
-    'starting',
-    'working',
-  }.contains(status.toLowerCase());
+  bool get isActive =>
+      activeFlags.isNotEmpty ||
+      const {
+        'active',
+        'running',
+        'pending',
+        'starting',
+        'working',
+      }.contains(status.toLowerCase());
+}
+
+List<String> _subagentStringList(dynamic value) {
+  if (value is! List) return const <String>[];
+  return List<String>.unmodifiable(
+    value
+        .whereType<String>()
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty && item.length <= 128),
+  );
 }
 
 String? _subagentDateString(dynamic value) {
