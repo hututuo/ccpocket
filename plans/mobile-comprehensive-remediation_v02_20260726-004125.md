@@ -2,17 +2,23 @@
 
 > **这是本轮唯一交接文档。接手 Agent 应从本页开始，并继续读完整文件。**
 >
-> 状态：**implementation in progress / handed off**
+> 状态：**source implementation closure / device and deployment pending**
 >
 > 创建时间：2026-07-26 00:41:25 +0800
 >
 > 交接快照：2026-07-26 15:47:01 +0800
 >
-> 当前功能源码 checkpoint：
-> `341b2a2690f830ed1070af6e153eb3350ece7c1b`
+> 当前行为源码 checkpoint：
+> `fa3aa6db715bcfe47f4d93a3b090e18e508ef164`
 >
-> 本交接文档将在该 checkpoint 之后作为独立 docs commit 提交；恢复时以实际
-> `git rev-parse HEAD` 为准，并确认上述 checkpoint 是其祖先。
+> 当前继续分支：
+> `fix/mobile-comprehensive-source-closure-20260728`
+>
+> 当前继续工作树：
+> `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-comprehensive-remediation-v03-20260728`
+>
+> `fa3aa6db` 之后只有台账与交接文档提交。恢复时仍以实际
+> `git rev-parse HEAD` 为准，并确认该行为 checkpoint 是其祖先。
 >
 > 上一版方案：
 > `plans/mobile-comprehensive-remediation_v01_20260725-012458.md`
@@ -22,6 +28,28 @@
 若后文仍写着“尚未开始实施”或“待实施”，以本节和实际 Git 为准。已经落地的部分
 也仍需在整轮收束时重新做跨层回归、性能审查、模拟器构建和真机验收，不能仅凭
 commit 存在就宣称产品完成。
+
+### 当前源码收束检查点（2026-07-28）
+
+- 源码批次以 `3fb83d12` 为起点，共形成 29 个行为提交；`fa3aa6db`
+  是最后一个行为提交。完整顺序见
+  `reviews/SOURCE_CLOSURE_REPORT_20260728.md`。
+- 最终行为源码上独立复跑：Bridge 95 个测试文件、1836 项通过；Mobile
+  2572 项通过、4 项外部 SSH smoke 因环境未配置而跳过；Mobile analyze 为
+  0 error / 0 warning / 52 info。
+- iOS Simulator Debug 以相同源码成功编译并产出 `Runner.app`。这只证明
+  源码与模拟器构建门禁，不等于已生成签名 IPA、已安装物理 iPhone、已部署
+  Bridge/Cloud 或已发布 owner/stable。
+- 2026-07-28 最后一次 fetch 的 `upstream/main` 为
+  `829621364b730b866e0c39b27d0aab868084f2aa`（`1.109.3+202`）；本地语义整合
+  `c2cc8379` 与版本记录 `97fb5aab` 都是当前分支祖先，本地源码保持
+  `1.109.3+205`。
+- 用户当前合同是两个外部 Codex/Cockpit 实例顺序使用同一来源；顺序共享已纳入
+  稳定 Bridge/来源身份隔离。真正并发多写者的跨进程租约仍是未来范围，不能把它
+  误报成当前已实现或当前源码阻塞项。
+- 真机重复消息如果再次出现，必须先取得
+  `raw/provider → Bridge → Mirror/SQLite → reducer → render` 的同一事件线，
+  不能继续凭表象修改去重逻辑。
 
 ## A. 当前项目、工作树与 Git 身份
 

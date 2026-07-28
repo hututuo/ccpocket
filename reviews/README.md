@@ -7,6 +7,7 @@
 | 文件 | 说明 |
 |---|---|
 | `REQUIREMENT_LEDGER_20260727.md` | **当前产品完成度权威台账**：把用户原始要求、v02 方案、当前源码/提交和验证逐项对齐；后续修改必须持续更新 |
+| `SOURCE_CLOSURE_REPORT_20260728.md` | **本轮源码收束报告**：记录 29 个行为提交、最终 Bridge/Mobile/analyze/iOS 门禁、兼容矩阵以及仍待设备/部署验证的边界 |
 | `ccpocket-full-code-review-and-plan_v2_20260726.md` | **主文档**：规划与实施顺序。155 条精选条目 + 11 个实施批次 + 测试门禁 + 2 项待决策 |
 | `INDEPENDENT_REVIEW_REMEDIATION_20260727.md` | **后续独立复审闭环**：对 38 个修复提交的质量评价、7 个新增发现、红绿测试证据与 6 个补救提交 |
 | `raw-agent-reports/` | **原始报告 27 份（856 KB）**：各路子代理的完整输出，未经压缩 |
@@ -96,7 +97,8 @@ upstream/main:   aa215a3b
 ## 当前继续实施基线
 
 上述代码块保留的是 2026-07-26 初始审查快照，不代表当前源码。继续实施已推进到
-`fix/mobile-comprehensive-source-closure-20260728@fa3aa6db`；2026-07-28 重新 fetch 后的
+`fix/mobile-comprehensive-source-closure-20260728`，最后行为源码是 `fa3aa6db`，
+其后仅有台账与交接文档提交；2026-07-28 重新 fetch 后的
 `upstream/main` 为 `82962136`，其中导航修复已由 `c2cc8379` 结合本地嵌入式
 工作区语义整合，版本记录由 `97fb5aab` 同步为 `1.109.3+205`。后续又完成
 所选 `CODEX_HOME` 的 Bridge 读写统一、跨 provider 同 ID 保留、Mobile 来源
