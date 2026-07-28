@@ -770,3 +770,27 @@
   `docs/full-disk-read-mutation-authorization.md`. No source implementation,
   runtime configuration, Bridge deployment, IPA, OTA or physical-device
   enrollment is implied by this documentation decision.
+
+## Sequential Codex runtimes may share one explicit session authority
+
+- `CODEX_HOME` remains the physical runtime/configuration root. A separate
+  `BRIDGE_CODEX_SOURCE_ID` may identify one canonical session and lifecycle
+  authority shared by mutually exclusive Cockpit/Codex runtimes.
+- The shared ID is a public opaque identifier, not authentication. New IDs are
+  `codex-source-` plus 128 random bits; one exact existing
+  `codex-home-<24 hex>` may be selected to retain that canonical partition's
+  archive, catalog cache and Mirror data. Invalid or empty configured values
+  fail closed. When unset, the historical Home-derived identity is unchanged.
+- Bridge instance identity, connection/app-server generations, provider thread
+  identity and every source-mismatch guard remain independent. Equal source
+  IDs do not authorize cross-machine cache merging and do not make delayed
+  frames from an old runtime current.
+- Cockpit owns the external safety contract: the same Codex account/profile,
+  complete app-server database and rollout index, a persistent source ID, and
+  a fail-closed single-writer lock that detects residual processes. Bridge
+  does not infer authority from a sessions symlink or silently merge a
+  successful but incomplete `thread/list` response with filesystem scans.
+- Multi-runtime turn ownership, cross-runtime approval routing and conflict UI
+  are deferred while the owner guarantees sequential use. The detailed
+  contract, compatibility matrix and activation boundary are in
+  `docs/codex-shared-session-source.md`.
