@@ -631,8 +631,8 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   SessionCatalogCacheTarget? _currentCacheTarget() {
     final target = SessionCatalogCacheTarget.fromBridge(
-      bridgeInstanceId: _bridge.bridgeInstanceId,
-      codexSourceId: _bridge.codexSourceId,
+      bridgeInstanceId: _bridge.cacheBridgeInstanceIdHint,
+      codexSourceId: _bridge.cacheCodexSourceIdHint,
       logicalConnectionIdentity: _bridge.logicalConnectionIdentity,
       websocketUrl: _bridge.lastUrl,
     );

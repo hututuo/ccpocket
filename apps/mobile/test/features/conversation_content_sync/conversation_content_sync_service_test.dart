@@ -112,6 +112,7 @@ void main() {
     final cached = await repository.loadConversationWindow(
       target: SessionCatalogCacheTarget.fromBridge(
         bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
         logicalConnectionIdentity: 'machine:1',
         websocketUrl: 'wss://bridge.example/socket',
       ),
@@ -120,6 +121,139 @@ void main() {
     );
     expect(cached?.revision, 'revision-1');
     expect(cached?.entries.single.entryId, 'entry-1');
+  });
+
+  test('isolates hot windows by Codex source on the same Bridge', () async {
+    gateway.codexSourceId = 'codex-home-a';
+    final subscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.subscribed,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        requestId: subscriptionId,
+        hotConversationLimit: 10,
+      ),
+    );
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.snapshotBegin,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        provider: 'codex',
+        providerSessionId: 'thread-shared-id',
+        revision: 'revision-home-a',
+        entryCount: 1,
+        pageCount: 1,
+        hasEarlier: false,
+        sourceEntryCount: 1,
+      ),
+    );
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.snapshotPage,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        provider: 'codex',
+        providerSessionId: 'thread-shared-id',
+        revision: 'revision-home-a',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_wireEntry('entry-home-a', 0)],
+      ),
+    );
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.snapshotComplete,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        provider: 'codex',
+        providerSessionId: 'thread-shared-id',
+        revision: 'revision-home-a',
+        entryCount: 1,
+        hasEarlier: false,
+        sourceEntryCount: 1,
+      ),
+    );
+    await gateway.nextOutgoing('conversation_content_ack');
+
+    final homeA = await service.loadCachedWindow(
+      provider: 'codex',
+      providerSessionId: 'thread-shared-id',
+    );
+    expect(homeA?.revision, 'revision-home-a');
+    expect(homeA?.entries.single.entryId, 'entry-home-a');
+
+    gateway.codexSourceId = 'codex-home-b';
+    expect(
+      await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-shared-id',
+      ),
+      isNull,
+    );
+
+    gateway.codexSourceId = 'codex-home-a';
+    final restoredHomeA = await service.loadCachedWindow(
+      provider: 'codex',
+      providerSessionId: 'thread-shared-id',
+    );
+    expect(restoredHomeA?.revision, 'revision-home-a');
+    expect(restoredHomeA?.entries.single.entryId, 'entry-home-a');
+  });
+
+  test('resubscribes when the Codex source changes on one Bridge', () async {
+    final firstSubscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    firstSubscribe['_observed'] = true;
+    final firstSubscriptionId = firstSubscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.subscribed,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        requestId: firstSubscriptionId,
+        hotConversationLimit: 10,
+      ),
+    );
+
+    gateway.codexSourceId = 'codex-home-b';
+    gateway.addSessionList();
+    final secondSubscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    final secondSubscriptionId = secondSubscribe['requestId']! as String;
+    expect(secondSubscriptionId, isNot(firstSubscriptionId));
+
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.patch,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        provider: 'codex',
+        providerSessionId: 'thread-old-source',
+        baseRevision: 'revision-a',
+        revision: 'revision-b',
+        entries: [_wireEntry('late-old-source-entry', 1)],
+        hasEarlier: false,
+        sourceEntryCount: 2,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(
+      await repository.knownConversationRevisions(
+        SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-b',
+        ),
+      ),
+      isEmpty,
+    );
   });
 
   test('background lifecycle unsubscribes and rejects body events', () async {
@@ -157,7 +291,10 @@ void main() {
 
     expect(
       await repository.knownConversationRevisions(
-        SessionCatalogCacheTarget.fromBridge(bridgeInstanceId: 'bridge-1'),
+        SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
       ),
       isEmpty,
     );
@@ -284,6 +421,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   String? bridgeInstanceId = 'bridge-1';
 
   @override
+  String? codexSourceId = 'codex-home-a';
+
+  @override
   String? logicalConnectionIdentity = 'machine:1';
 
   @override
@@ -305,6 +445,10 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
 
   void addEvent(ConversationContentEventMessage message) {
     _messages.add(message);
+  }
+
+  void addSessionList() {
+    _sessions.add(const []);
   }
 
   Future<Map<String, dynamic>> nextOutgoing(String type) async {

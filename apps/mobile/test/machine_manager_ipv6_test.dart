@@ -179,4 +179,170 @@ void main() {
       manager.dispose();
     },
   );
+
+  test(
+    'different routes retain credentials while sharing persisted Bridge identity',
+    () async {
+      final storage = _FakeSecureStorage();
+      final manager = await createManager(storage);
+      final lanRoute = await manager.recordConnection(
+        host: '192.0.2.10',
+        port: 8765,
+        apiKey: 'lan-secret',
+      );
+      final tailnetRoute = await manager.recordConnection(
+        host: '100.64.0.10',
+        port: 8765,
+        apiKey: 'tailnet-secret',
+      );
+
+      await manager.bindBridgeIdentity(
+        machineId: lanRoute.id,
+        bridgeInstanceId: ' bridge-installation-1 ',
+        codexSourceId: ' codex-home-1 ',
+      );
+      await manager.bindBridgeIdentity(
+        machineId: tailnetRoute.id,
+        bridgeInstanceId: 'bridge-installation-1',
+        codexSourceId: 'codex-home-1',
+      );
+
+      expect(manager.currentMachines, hasLength(2));
+      expect(manager.currentMachines.map((machine) => machine.id).toSet(), {
+        lanRoute.id,
+        tailnetRoute.id,
+      });
+      expect(
+        manager.currentMachines
+            .map((machine) => machine.bridgeInstanceId)
+            .toSet(),
+        {'bridge-installation-1'},
+      );
+      expect(
+        manager.currentMachines.map((machine) => machine.codexSourceId).toSet(),
+        {'codex-home-1'},
+      );
+      expect(await manager.getApiKey(lanRoute.id), 'lan-secret');
+      expect(await manager.getApiKey(tailnetRoute.id), 'tailnet-secret');
+      manager.dispose();
+
+      final restored = await createManager(storage);
+      await restored.init();
+
+      expect(restored.currentMachines, hasLength(2));
+      final restoredLan = restored.findByHostPort('192.0.2.10', 8765);
+      final restoredTailnet = restored.findByHostPort('100.64.0.10', 8765);
+      expect(restoredLan?.id, lanRoute.id);
+      expect(restoredTailnet?.id, tailnetRoute.id);
+      expect(restoredLan?.bridgeInstanceId, 'bridge-installation-1');
+      expect(restoredTailnet?.bridgeInstanceId, 'bridge-installation-1');
+      expect(restoredLan?.codexSourceId, 'codex-home-1');
+      expect(restoredTailnet?.codexSourceId, 'codex-home-1');
+      expect(await restored.getApiKey(lanRoute.id), 'lan-secret');
+      expect(await restored.getApiKey(tailnetRoute.id), 'tailnet-secret');
+      restored.dispose();
+    },
+  );
+
+  test('editing a route endpoint clears its previous Bridge binding', () async {
+    final manager = await createManager();
+    final route = await manager.recordConnection(
+      host: '192.0.2.20',
+      port: 8765,
+    );
+    await manager.bindBridgeIdentity(
+      machineId: route.id,
+      bridgeInstanceId: 'bridge-installation-1',
+      codexSourceId: 'codex-home-1',
+    );
+
+    await manager.updateMachine(
+      manager.getMachine(route.id)!.copyWith(host: '192.0.2.21'),
+    );
+
+    final updated = manager.getMachine(route.id);
+    expect(updated?.host, '192.0.2.21');
+    expect(updated?.bridgeInstanceId, isNull);
+    expect(updated?.codexSourceId, isNull);
+    manager.dispose();
+  });
+
+  test('recording a changed TLS route clears its Bridge binding', () async {
+    final manager = await createManager();
+    final route = await manager.recordConnection(
+      host: '192.0.2.22',
+      port: 8765,
+      useSsl: false,
+    );
+    await manager.bindBridgeIdentity(
+      machineId: route.id,
+      bridgeInstanceId: 'bridge-installation-1',
+      codexSourceId: 'codex-home-1',
+    );
+
+    final updated = await manager.recordConnection(
+      host: '192.0.2.22',
+      port: 8765,
+      useSsl: true,
+    );
+
+    expect(updated.id, route.id);
+    expect(updated.useSsl, isTrue);
+    expect(updated.bridgeInstanceId, isNull);
+    expect(updated.codexSourceId, isNull);
+    manager.dispose();
+  });
+
+  test('replacing a duplicate with changed TLS clears its binding', () async {
+    final manager = await createManager();
+    final route = await manager.recordConnection(
+      host: '192.0.2.23',
+      port: 8765,
+      useSsl: false,
+    );
+    await manager.bindBridgeIdentity(
+      machineId: route.id,
+      bridgeInstanceId: 'bridge-installation-1',
+      codexSourceId: 'codex-home-1',
+    );
+
+    await manager.addMachine(
+      const Machine(
+        id: 'replacement',
+        host: '192.0.2.23',
+        port: 8765,
+        useSsl: true,
+      ),
+    );
+
+    final updated = manager.getMachine(route.id);
+    expect(updated?.useSsl, isTrue);
+    expect(updated?.bridgeInstanceId, isNull);
+    expect(updated?.codexSourceId, isNull);
+    manager.dispose();
+  });
+
+  test('legacy handshake can clear only the saved Bridge binding', () async {
+    final storage = _FakeSecureStorage();
+    final manager = await createManager(storage);
+    final route = await manager.recordConnection(
+      host: '192.0.2.30',
+      port: 8765,
+      apiKey: 'route-secret',
+    );
+    await manager.bindBridgeIdentity(
+      machineId: route.id,
+      bridgeInstanceId: 'bridge-installation-1',
+      codexSourceId: 'codex-home-1',
+    );
+
+    await manager.clearBridgeIdentity(route.id);
+
+    final updated = manager.getMachine(route.id);
+    expect(updated?.bridgeInstanceId, isNull);
+    expect(updated?.codexSourceId, isNull);
+    expect(updated?.host, '192.0.2.30');
+    expect(await manager.getApiKey(route.id), 'route-secret');
+    manager.dispose();
+  });
 }

@@ -75,6 +75,32 @@
   full copies；本轮也不默认提供“清除全部已下载历史”。以后若新增批量删除，
   必须重新确认 destructive scope，并使用批事务而不是循环触发逐项 vacuum。
 
+## 2026-07-28 stable Bridge identity across connection routes
+
+- `Machine.id` 继续表示一条连接路线，保存 IP/域名、端口、TLS、API key、SSH
+  与跳板配置；不得因为多个地址连到同一台电脑就删除或物理合并 Machine。
+- Bridge 数据身份使用认证后 `session_list` 返回的持久
+  `bridgeInstanceId`，Codex 会话缓存再叠加 `codexSourceId`。硬件序列号、MAC
+  地址和 `IOPlatformUUID` 不进入协议，也不作为授权凭证。
+- 保存到 Machine 的 Bridge/source 只用于下次连接前预热 canonical cache。
+  readiness、写操作和离线消息重放仍必须等待当前 socket 的权威
+  `session_list`；身份不匹配时切换分区，旧 Bridge 不返回身份时清除旧提示并按
+  route 隔离。
+- 离线持久 mutation 使用 v2 identity envelope，记录 route、Bridge 与 source。
+  WebSocket ready 本身不得触发重放；只有权威身份匹配才可发送。同一 Bridge 的
+  不同 IP 可以恢复队列，不同 Bridge 或不同 Codex Home 的队列保留但不误发。
+  无身份的旧 v1 队列只迁移保存，不自动重放。
+- `list_sessions` 等启动请求和首次连接中尚未绑定 canonical identity 的只读请求
+  可在 WebSocket ready 后按当前 route 发送，避免旧 Bridge 或测试宿主因等待
+  `session_list` 形成死锁。已经带有旧 Bridge/source 身份的数据请求仍等待当前
+  握手确认；显式切换 route 时丢弃旧 route 的非持久请求，不削弱上述 mutation
+  重放门禁。
+- `logicalConnectionIdentity` 保持 transport/readiness 身份，不能在握手中途替换
+  为 Bridge UUID，否则会破坏后台重连对 `machine:<UUID>` 的解析和 connection
+  generation 门禁。
+- 本节只授权隔离分支内的源码与自动验证，不等于合入稳定分支、替换运行中
+  Bridge、发布 OTA、签名 IPA 或安装真机。
+
 ## Upstream-compatible local fixes
 
 - Local compatibility fixes must preserve the official protocol and data model wherever possible.

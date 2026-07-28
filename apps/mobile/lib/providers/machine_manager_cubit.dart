@@ -223,6 +223,24 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
     );
   }
 
+  /// Bind one saved connection route to the Bridge identity proven by the
+  /// current authenticated WebSocket handshake.
+  Future<Machine?> bindBridgeIdentity({
+    required String machineId,
+    required String bridgeInstanceId,
+    String? codexSourceId,
+  }) {
+    return _service.bindBridgeIdentity(
+      machineId: machineId,
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: codexSourceId,
+    );
+  }
+
+  Future<Machine?> clearBridgeIdentity(String machineId) {
+    return _service.clearBridgeIdentity(machineId);
+  }
+
   /// Add a new machine
   Future<void> addMachine(
     Machine machine, {

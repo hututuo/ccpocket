@@ -33,6 +33,8 @@ _Machine _$MachineFromJson(Map<String, dynamic> json) => _Machine(
   port: (json['port'] as num?)?.toInt() ?? 8765,
   useSsl: json['useSsl'] as bool? ?? false,
   hasApiKey: json['hasApiKey'] as bool? ?? false,
+  bridgeInstanceId: json['bridgeInstanceId'] as String?,
+  codexSourceId: json['codexSourceId'] as String?,
   lastConnected: json['lastConnected'] == null
       ? null
       : DateTime.parse(json['lastConnected'] as String),
@@ -60,6 +62,8 @@ Map<String, dynamic> _$MachineToJson(_Machine instance) => <String, dynamic>{
   'port': instance.port,
   'useSsl': instance.useSsl,
   'hasApiKey': instance.hasApiKey,
+  'bridgeInstanceId': instance.bridgeInstanceId,
+  'codexSourceId': instance.codexSourceId,
   'lastConnected': instance.lastConnected?.toIso8601String(),
   'isFavorite': instance.isFavorite,
   'sshEnabled': instance.sshEnabled,

@@ -85,6 +85,36 @@ class MockMachineManagerService implements MachineManagerService {
   }
 
   @override
+  Future<Machine?> bindBridgeIdentity({
+    required String machineId,
+    required String bridgeInstanceId,
+    String? codexSourceId,
+  }) async {
+    calls.add('bindBridgeIdentity:$machineId:$bridgeInstanceId');
+    final machine = _machines[machineId];
+    if (machine == null) return null;
+    final updated = machine.copyWith(
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: codexSourceId,
+    );
+    _machines[machineId] = updated;
+    return updated;
+  }
+
+  @override
+  Future<Machine?> clearBridgeIdentity(String machineId) async {
+    calls.add('clearBridgeIdentity:$machineId');
+    final machine = _machines[machineId];
+    if (machine == null) return null;
+    final updated = machine.copyWith(
+      bridgeInstanceId: null,
+      codexSourceId: null,
+    );
+    _machines[machineId] = updated;
+    return updated;
+  }
+
+  @override
   Future<void> addMachine(
     Machine machine, {
     String? apiKey,

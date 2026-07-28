@@ -63,6 +63,7 @@ export 'services/session_resume_coordinator.dart'
         factualCodexResumeSettings;
 
 const _sessionRequestUuid = Uuid();
+const _machineLogicalIdentityPrefix = 'machine:';
 
 // ---- Testable helpers (top-level) ----
 
@@ -466,6 +467,8 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<RecentSessionsMessage>? _catalogReadinessSub;
   StreamSubscription<List<SessionInfo>>? _sessionListReadinessSub;
   StreamSubscription<void>? _catalogCacheReadinessSub;
+  int _lastBoundBridgeIdentityGeneration = 0;
+  Future<void> _bridgeIdentityBinding = Future<void>.value();
   late final SessionArchivePendingRequests _archivePendingRequests;
   final _catalogBootstrapGate = SessionCatalogBootstrapGate();
   final _catalogRecoveryPolicy = SessionCatalogRecoveryPolicy();
@@ -524,15 +527,14 @@ class _SessionListScreenState extends State<SessionListScreen>
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
     });
     _catalogCacheReadinessSub = sessionListCubit.catalogSnapshotChanges.listen(
-      (_) => _syncConnectionUiGate(
-        bridge,
-        bridge.currentBridgeConnectionState,
-      ),
+      (_) => _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState),
     );
     _sessionListReadinessSub = bridge.sessionList.listen((_) {
+      _bindCurrentBridgeIdentityIfAuthoritative(bridge);
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
       _refreshCatalogAfterAuthoritativeSessionList(bridge);
     });
+    _bindCurrentBridgeIdentityIfAuthoritative(bridge);
     _messageSub = bridge.messages.listen((msg) {
       if (msg is SystemMessage &&
           (msg.subtype == 'session_created' ||
@@ -606,6 +608,40 @@ class _SessionListScreenState extends State<SessionListScreen>
       visibleSessionId: notifications.activeSessionId,
       visibleProvider: notifications.activeProvider,
     );
+  }
+
+  Future<void> _bindCurrentBridgeIdentity(BridgeService bridge) async {
+    if (!mounted) return;
+    final bridgeInstanceId = bridge.bridgeInstanceId?.trim();
+    final logicalIdentity = bridge.logicalConnectionIdentity?.trim();
+    if (logicalIdentity == null ||
+        !logicalIdentity.startsWith(_machineLogicalIdentityPrefix)) {
+      return;
+    }
+    final machineId = logicalIdentity.substring(
+      _machineLogicalIdentityPrefix.length,
+    );
+    if (machineId.isEmpty) return;
+    final machineManager = context.read<MachineManagerCubit?>();
+    if (bridgeInstanceId == null || bridgeInstanceId.isEmpty) {
+      await machineManager?.clearBridgeIdentity(machineId);
+      return;
+    }
+    await machineManager?.bindBridgeIdentity(
+      machineId: machineId,
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: bridge.codexSourceId,
+    );
+  }
+
+  void _bindCurrentBridgeIdentityIfAuthoritative(BridgeService bridge) {
+    final generation = bridge.authoritativeSessionListGeneration;
+    if (generation <= _lastBoundBridgeIdentityGeneration) return;
+    _lastBoundBridgeIdentityGeneration = generation;
+    _bridgeIdentityBinding = _bridgeIdentityBinding
+        .catchError((Object _) {})
+        .then((_) => _bindCurrentBridgeIdentity(bridge));
+    unawaited(_bridgeIdentityBinding);
   }
 
   Future<void> _loadMacOSNativeAppBannerState() async {
@@ -813,9 +849,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     unawaited(_confirmAndConnectExternalBridge(params));
   }
 
-  Future<void> _confirmAndConnectExternalBridge(
-    ConnectionParams params,
-  ) async {
+  Future<void> _confirmAndConnectExternalBridge(ConnectionParams params) async {
     final target = _bridgeLabelFromUrl(params.serverUrl);
     if (target == null) return;
     final confirmed = await showExternalBridgeConnectionConfirmation(
@@ -839,6 +873,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       // Try to get API key from SecureStorage via MachineManagerCubit.
       String? apiKey;
       String? logicalConnectionIdentity;
+      String? expectedBridgeInstanceId;
+      String? expectedCodexSourceId;
       try {
         final uri = Uri.tryParse(url);
         if (uri != null) {
@@ -847,6 +883,8 @@ class _SessionListScreenState extends State<SessionListScreen>
           if (!_isCurrentConnectionAttempt(attempt)) return;
           if (machine != null) {
             logicalConnectionIdentity = 'machine:${machine.id}';
+            expectedBridgeInstanceId = machine.bridgeInstanceId;
+            expectedCodexSourceId = machine.codexSourceId;
             apiKey = await cubit?.getApiKey(machine.id);
             if (!_isCurrentConnectionAttempt(attempt)) return;
             if (machine.sshJumpHost?.trim().isNotEmpty == true) {
@@ -865,6 +903,8 @@ class _SessionListScreenState extends State<SessionListScreen>
         attempted = await bridge.autoConnect(
           apiKey: apiKey,
           logicalConnectionIdentity: logicalConnectionIdentity,
+          expectedBridgeInstanceId: expectedBridgeInstanceId,
+          expectedCodexSourceId: expectedCodexSourceId,
         );
       } catch (_) {
         _failConnectionAttemptAndRestore(attempt);
@@ -924,6 +964,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     // Auto-save to Machines on successful health check (or user choosing to connect)
     final trimmedApiKey = apiKey?.trim() ?? '';
     String? logicalConnectionIdentity;
+    String? expectedBridgeInstanceId;
+    String? expectedCodexSourceId;
     try {
       if (machineManagerCubit != null) {
         // Parse host and port from URL
@@ -941,6 +983,8 @@ class _SessionListScreenState extends State<SessionListScreen>
           );
           if (!_isCurrentConnectionAttempt(attempt)) return;
           logicalConnectionIdentity = 'machine:${machine.id}';
+          expectedBridgeInstanceId = machine.bridgeInstanceId;
+          expectedCodexSourceId = machine.codexSourceId;
         }
       }
 
@@ -957,6 +1001,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       bridge.connect(
         connectUrl,
         logicalConnectionIdentity: logicalConnectionIdentity,
+        expectedBridgeInstanceId: expectedBridgeInstanceId,
+        expectedCodexSourceId: expectedCodexSourceId,
       );
     } catch (error) {
       if (_isCurrentConnectionAttempt(attempt)) {
@@ -1138,9 +1184,7 @@ class _SessionListScreenState extends State<SessionListScreen>
           bridge.hasAuthoritativeSessionListForCurrentConnection,
       hasAuthoritativeRecentSessions:
           acceptsCurrentTransport &&
-          context
-              .read<SessionListCubit>()
-              .hasUsableCatalogForCurrentTarget,
+          context.read<SessionListCubit>().hasUsableCatalogForCurrentTarget,
     );
     final isApplicationReady =
         acceptsCurrentTransport &&
@@ -1665,9 +1709,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   String? _singleLegacyClaudeDefaultsRequestId(SystemMessage msg) {
-    final candidates = _pendingClaudeDefaultsCorrections.entries.where((
-      entry,
-    ) {
+    final candidates = _pendingClaudeDefaultsCorrections.entries.where((entry) {
       final messageProvider = msg.provider;
       if (messageProvider != null &&
           messageProvider.isNotEmpty &&
@@ -2100,10 +2142,9 @@ class _SessionListScreenState extends State<SessionListScreen>
   }) {
     final shouldAllowLegacyFallback =
         allowLegacyFallback ??
-        !context
-            .read<BridgeService>()
-            .bridgeCapabilities
-            .contains(sessionRequestCorrelationCapability);
+        !context.read<BridgeService>().bridgeCapabilities.contains(
+          sessionRequestCorrelationCapability,
+        );
     late final PendingSessionBinding binding;
     binding = PendingSessionBinding(
       kind: kind,
@@ -2242,8 +2283,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
   }
 
-  ({PendingSessionBinding binding, bool shouldDispatch})
-  _prepareDurableResume({
+  ({PendingSessionBinding binding, bool shouldDispatch}) _prepareDurableResume({
     required BridgeService bridge,
     required RecentSession session,
     required Provider provider,
@@ -2328,17 +2368,13 @@ class _SessionListScreenState extends State<SessionListScreen>
       projectPath: resumeProjectPath,
     );
     if (!prepared.shouldDispatch) return;
-    final resumeAlreadyQueuedMessage =
-        AppLocalizations.of(context).resumeAlreadyQueued;
+    final resumeAlreadyQueuedMessage = AppLocalizations.of(
+      context,
+    ).resumeAlreadyQueued;
 
     unawaited(
-      SessionResumeCoordinator(
-        bridge: bridge,
-      )
-          .resume(
-            session,
-            resumeRequestId: prepared.binding.requestId,
-          )
+      SessionResumeCoordinator(bridge: bridge)
+          .resume(session, resumeRequestId: prepared.binding.requestId)
           .then((result) {
             if (result.disposition == SessionResumeDisposition.alreadyQueued) {
               prepared.binding.rejectLocal(resumeAlreadyQueuedMessage);
@@ -2565,9 +2601,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     final hasAuthoritativeRecentSessions =
         widget.debugRecentSessions != null ||
         (!_connectionSelectionPending &&
-            context
-                .read<SessionListCubit>()
-                .hasUsableCatalogForCurrentTarget);
+            context.read<SessionListCubit>().hasUsableCatalogForCurrentTarget);
     final connectionState = widget.debugRecentSessions != null
         ? BridgeConnectionState.connected
         : _connectionUiGate.presentationState(
@@ -2683,10 +2717,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
   }
 
-  Widget _wrapHomeFileDrop({
-    required bool enabled,
-    required Widget child,
-  }) {
+  Widget _wrapHomeFileDrop({required bool enabled, required Widget child}) {
     if (!enabled) return child;
     final visible = _homeFileDropActive || _homeFileDropStaging;
     final cs = Theme.of(context).colorScheme;
@@ -2836,9 +2867,10 @@ class _SessionListScreenState extends State<SessionListScreen>
                         : null,
                     onOpenGallery: showConnectedUI ? _openGallery : null,
                     onOpenArchivedSessions:
-                        context.read<BridgeService>().bridgeCapabilities.contains(
-                          codexSessionLifecycleCapability,
-                        )
+                        context
+                            .read<BridgeService>()
+                            .bridgeCapabilities
+                            .contains(codexSessionLifecycleCapability)
                         ? _openArchivedSessions
                         : null,
                     onDisconnect: showConnectedUI ? _disconnect : null,
@@ -3097,9 +3129,10 @@ class _SessionListScreenState extends State<SessionListScreen>
             onTitleTap: _onTitleTap,
             onDisconnect: _disconnect,
             onOpenFileBrowser: _openFileBrowser,
-            onOpenArchivedSessions: bridge.bridgeCapabilities.contains(
-              codexSessionLifecycleCapability,
-            )
+            onOpenArchivedSessions:
+                bridge.bridgeCapabilities.contains(
+                  codexSessionLifecycleCapability,
+                )
                 ? _openArchivedSessions
                 : null,
             forceElevated: innerBoxIsScrolled,
@@ -3285,6 +3318,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       bridge.connect(
         wsUrl,
         logicalConnectionIdentity: 'machine:${machine.id}',
+        expectedBridgeInstanceId: machine.bridgeInstanceId,
+        expectedCodexSourceId: machine.codexSourceId,
       );
     } catch (e) {
       if (_isCurrentConnectionAttempt(attempt)) {
@@ -3560,9 +3595,8 @@ class _SessionListScreenState extends State<SessionListScreen>
 
 class _HomeFileDropCopy extends FileTransferStrings {
   _HomeFileDropCopy(super.languageTag);
-  factory _HomeFileDropCopy.of(BuildContext context) => _HomeFileDropCopy(
-    Localizations.localeOf(context).toLanguageTag(),
-  );
+  factory _HomeFileDropCopy.of(BuildContext context) =>
+      _HomeFileDropCopy(Localizations.localeOf(context).toLanguageTag());
 
   String get staging => addingToTransferQueue;
   String get transportHint => secureConnectionTransferHint;

@@ -274,6 +274,12 @@ class MachineManagerService {
       for (final machine in machines) {
         if (machine.id != winner.id) await _deleteCredentials(machine.id);
       }
+      final commonBridgeInstanceId = _commonIdentity(
+        machines.map((machine) => machine.bridgeInstanceId),
+      );
+      final commonCodexSourceId = commonBridgeInstanceId == null
+          ? null
+          : _commonIdentity(machines.map((machine) => machine.codexSourceId));
       return winner.copyWith(
         hasApiKey: apiKey != null && apiKey.isNotEmpty,
         hasCredentials:
@@ -282,6 +288,8 @@ class MachineManagerService {
         hasJumpCredentials:
             (sshJumpPassword != null && sshJumpPassword.isNotEmpty) ||
             (sshJumpPrivateKey != null && sshJumpPrivateKey.isNotEmpty),
+        bridgeInstanceId: commonBridgeInstanceId,
+        codexSourceId: commonCodexSourceId,
       );
     } catch (error) {
       logger.error(
@@ -296,6 +304,15 @@ class MachineManagerService {
     if (candidate.isFavorite != current.isFavorite) return candidate.isFavorite;
     return (candidate.lastConnected?.millisecondsSinceEpoch ?? 0) >
         (current.lastConnected?.millisecondsSinceEpoch ?? 0);
+  }
+
+  String? _commonIdentity(Iterable<String?> values) {
+    final normalized = values
+        .map((value) => value?.trim())
+        .whereType<String>()
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    return normalized.length == 1 ? normalized.single : null;
   }
 
   /// Save machines to SharedPreferences
@@ -377,6 +394,66 @@ class MachineManagerService {
     }
   }
 
+  /// Remember the authenticated Bridge data source reached through one route.
+  ///
+  /// Multiple [Machine] records may bind to the same Bridge installation.
+  /// They remain separate because API keys, SSH credentials, jump hosts, and
+  /// tunnel behavior belong to the route rather than to cached conversation
+  /// data.
+  Future<Machine?> bindBridgeIdentity({
+    required String machineId,
+    required String bridgeInstanceId,
+    String? codexSourceId,
+  }) async {
+    final index = _machines.indexWhere((machine) => machine.id == machineId);
+    if (index == -1) return null;
+    final normalizedBridge = _boundedIdentity(bridgeInstanceId, 256);
+    if (normalizedBridge == null) return null;
+    final normalizedSource = _boundedIdentity(codexSourceId, 256);
+    final current = _machines[index];
+    if (current.bridgeInstanceId == normalizedBridge &&
+        current.codexSourceId == normalizedSource) {
+      return current;
+    }
+    final updated = current.copyWith(
+      bridgeInstanceId: normalizedBridge,
+      codexSourceId: normalizedSource,
+    );
+    _machines[index] = updated;
+    await _saveToPrefs();
+    _notifyListeners();
+    return updated;
+  }
+
+  /// Forget a stale cache identity after an authoritative legacy handshake
+  /// omits Bridge identity support. Route credentials remain untouched.
+  Future<Machine?> clearBridgeIdentity(String machineId) async {
+    final index = _machines.indexWhere((machine) => machine.id == machineId);
+    if (index == -1) return null;
+    final current = _machines[index];
+    if (current.bridgeInstanceId == null && current.codexSourceId == null) {
+      return current;
+    }
+    final updated = current.copyWith(
+      bridgeInstanceId: null,
+      codexSourceId: null,
+    );
+    _machines[index] = updated;
+    await _saveToPrefs();
+    _notifyListeners();
+    return updated;
+  }
+
+  String? _boundedIdentity(String? value, int maxLength) {
+    final normalized = value?.trim();
+    if (normalized == null ||
+        normalized.isEmpty ||
+        normalized.length > maxLength) {
+      return null;
+    }
+    return normalized;
+  }
+
   // ---- Auto-save on Connection ----
 
   /// Record a successful connection (auto-save).
@@ -392,12 +469,16 @@ class MachineManagerService {
     var machine = findByHostPort(normalizedHost, port);
 
     if (machine != null) {
+      final nextUseSsl = useSsl ?? machine.useSsl;
+      final transportChanged = nextUseSsl != machine.useSsl;
       // Update existing machine
       machine = machine.copyWith(
         host: normalizedHost,
         lastConnected: DateTime.now(),
         name: name ?? machine.name,
-        useSsl: useSsl ?? machine.useSsl,
+        useSsl: nextUseSsl,
+        bridgeInstanceId: transportChanged ? null : machine.bridgeInstanceId,
+        codexSourceId: transportChanged ? null : machine.codexSourceId,
       );
       final index = _machines.indexWhere((m) => m.id == machine!.id);
       if (index != -1) {
@@ -477,9 +558,19 @@ class MachineManagerService {
       (m) => endpointIdentityKey(m.host, m.port) == normalizedMachine.uniqueKey,
     );
     final existing = existingIndex == -1 ? null : _machines[existingIndex];
+    final transportChanged =
+        existing != null && existing.useSsl != normalizedMachine.useSsl;
     final storedMachine = existing == null
         ? normalizedMachine
-        : normalizedMachine.copyWith(id: existing.id);
+        : normalizedMachine.copyWith(
+            id: existing.id,
+            bridgeInstanceId:
+                normalizedMachine.bridgeInstanceId ??
+                (transportChanged ? null : existing.bridgeInstanceId),
+            codexSourceId:
+                normalizedMachine.codexSourceId ??
+                (transportChanged ? null : existing.codexSourceId),
+          );
     if (existingIndex != -1) {
       // Update existing machine
       _machines[existingIndex] = storedMachine;
@@ -545,11 +636,23 @@ class MachineManagerService {
   }) async {
     final index = _machines.indexWhere((m) => m.id == machine.id);
     if (index == -1) return;
+    final current = _machines[index];
+    final normalizedHost = normalizeHostInput(machine.host);
+    final endpointChanged =
+        endpointIdentityKey(current.host, current.port) !=
+            endpointIdentityKey(normalizedHost, machine.port) ||
+        current.useSsl != machine.useSsl;
     final normalizedMachine = machine.copyWith(
-      host: normalizeHostInput(machine.host),
+      host: normalizedHost,
       sshJumpHost: machine.sshJumpHost == null
           ? null
           : normalizeHostInput(machine.sshJumpHost!),
+      bridgeInstanceId: endpointChanged
+          ? null
+          : (machine.bridgeInstanceId ?? current.bridgeInstanceId),
+      codexSourceId: endpointChanged
+          ? null
+          : (machine.codexSourceId ?? current.codexSourceId),
     );
 
     // Handle credential updates
