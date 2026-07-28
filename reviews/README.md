@@ -8,6 +8,7 @@
 |---|---|
 | `REQUIREMENT_LEDGER_20260727.md` | **当前产品完成度权威台账**：把用户原始要求、v02 方案、当前源码/提交和验证逐项对齐；后续修改必须持续更新 |
 | `SOURCE_CLOSURE_REPORT_20260728.md` | **本轮源码收束报告**：记录 29 个行为提交、最终 Bridge/Mobile/analyze/iOS 门禁、兼容矩阵以及仍待设备/部署验证的边界 |
+| `../plans/repository-branch-convergence_v02_20260728-222804.md` | **今日 Git 单线收束结果**：记录源码快照 `e4b8118c` 时的 109 个可达提交、官方/身份/共享来源分支的真实祖先关系、两个脏工作树的处置和最终验证 |
 | `ccpocket-full-code-review-and-plan_v2_20260726.md` | **主文档**：规划与实施顺序。155 条精选条目 + 11 个实施批次 + 测试门禁 + 2 项待决策 |
 | `INDEPENDENT_REVIEW_REMEDIATION_20260727.md` | **后续独立复审闭环**：对 38 个修复提交的质量评价、7 个新增发现、红绿测试证据与 6 个补救提交 |
 | `raw-agent-reports/` | **原始报告 27 份（856 KB）**：各路子代理的完整输出，未经压缩 |
@@ -97,21 +98,25 @@ upstream/main:   aa215a3b
 ## 当前继续实施基线
 
 上述代码块保留的是 2026-07-26 初始审查快照，不代表当前源码。继续实施已推进到
-`fix/mobile-comprehensive-source-closure-20260728`，最后行为源码是 `fa3aa6db`，
-其后仅有台账与交接文档提交；2026-07-28 重新 fetch 后的
-`upstream/main` 为 `82962136`，其中导航修复已由 `c2cc8379` 结合本地嵌入式
-工作区语义整合，版本记录由 `97fb5aab` 同步为 `1.109.3+205`。后续又完成
+`fix/mobile-comprehensive-source-closure-20260728`，收束源码 HEAD 为
+`e4b8118c`，其后仅有本报告与台账文档提交；2026-07-28 重新 fetch 后的
+`upstream/main` 为 `82962136`。导航修复已由 `c2cc8379` 结合本地嵌入式
+工作区语义适配，版本记录由 `97fb5aab` 同步为 `1.109.3+205`，并通过
+`563bcedd` 把官方 SHA 纳入真实祖先链。后续又完成
 所选 `CODEX_HOME` 的 Bridge 读写统一、跨 provider 同 ID 保留、Mobile 来源
 缓存隔离，以及 Codex 目录行、恢复/重命名/分叉/归档/删除生命周期操作和持久
 Conversation Mirror 的来源绑定；当前批次继续完成稳定 Bridge/来源身份下的未读、
 路由、深链、通知与消息缓存隔离，顺序实例共享来源兼容，Codex 输入/RPC 生命周期、
 未来 continuity/文件节点字段兼容，以及 Mirror patch 和 idle continuity 的两处性能
-收束。用户当前明确两个外部实例不同时运行，因此跨进程并发多写者租约属于未来范围，
+收束；`b20d2d01` 进一步让外部会话深链携带有界、可验证的 Bridge/source
+身份。稳定身份与共享来源原分支也分别由 `509afe71`、`df1d821d` 登记为真实
+祖先。用户当前明确两个外部实例不同时运行，因此跨进程并发多写者租约属于未来范围，
 不是当前源码缺口。
 
-2026-07-28 源码门禁：Mobile 2572 项通过、4 项环境 smoke 跳过；Bridge 95 个测试
+2026-07-28 最终源码门禁：Mobile 2576 项通过、4 项环境 smoke 跳过；Bridge 95 个测试
 文件、1836 项全部通过；Mobile analyze 为 0 error/0 warning、52 条 info；iOS
-Simulator debug 以最终源码完成编译（Xcode 186.0 秒，产出 `Runner.app`）。物理
+Simulator debug 以最终源码完成编译（Xcode 21.4 秒，产出 `Runner.app`）；
+RunnerTests 在 iPhone 17 Pro Max / iOS 26.1 Simulator 上 27/27 通过。物理
 iPhone、Bridge/Cloud 部署、签名 IPA 和 owner/stable 发布仍是独立门槛。
 逐项状态和验证证据以 `REQUIREMENT_LEDGER_20260727.md` 为准。
 

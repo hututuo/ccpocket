@@ -101,6 +101,26 @@
 - 本节只授权隔离分支内的源码与自动验证，不等于合入稳定分支、替换运行中
   Bridge、发布 OTA、签名 IPA 或安装真机。
 
+## 2026-07-28 repository single-line convergence
+
+- 当前唯一源码收束线是
+  `fix/mobile-comprehensive-source-closure-20260728`。收束源码 HEAD
+  `e4b8118c` 时，当日 109 个 ref 可达 CC Pocket 提交均为其真实祖先。
+- 官方 `upstream/main@82962136` 通过 `563bcedd` 接入真实血缘；官方导航行为
+  继续使用当前来源身份/嵌入式工作区语义下的适配提交 `c2cc8379`，版本保持本地
+  单调递增的 `1.109.3+205`。
+- 稳定 Bridge 身份原分支通过 `509afe71`、共享 Codex 来源原分支通过
+  `df1d821d` 登记为真实祖先。两次 merge 不改变当前源码树，因为有效行为已经
+  分别由 `fac56c47` 和 `8aabde45 → 170621dd → 0e6d2525` 适配。
+- 旧 v02 脏工作树只提取当前线确实缺少的外部深链来源身份，形成
+  `b20d2d01`；不复制旧的冗余 `resolve_session_link` wire 字段。旧
+  `feature/mobile-session-tools` 的 modal/持久 Side Chat 不恢复，当前官方
+  ephemeral + 原生会话 UI + 非模态 floating dock 继续作为产品合同。
+- 两个脏工作树、旧分支和 review worktree 原样保留。源码收束不授权删除、
+  stable merge、push、Bridge/Cloud 部署、签名 IPA、物理设备安装或 OTA 发布。
+- 完整提交台账、冲突处置、自动验证和未授权门槛见
+  `plans/repository-branch-convergence_v02_20260728-222804.md`。
+
 ## Upstream-compatible local fixes
 
 - Local compatibility fixes must preserve the official protocol and data model wherever possible.

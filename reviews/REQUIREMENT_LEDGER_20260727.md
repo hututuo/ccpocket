@@ -2,7 +2,7 @@
 
 最后核对：2026-07-28
 当前分支：`fix/mobile-comprehensive-source-closure-20260728`
-核对源码基线：`fa3aa6db`
+核对源码基线：`e4b8118c`（其后仅本台账/收束报告文档）
 产品语义权威：`plans/mobile-comprehensive-remediation_v02_20260726-004125.md`
 
 ## 使用规则
@@ -26,7 +26,7 @@
 |---|---|---|---|---|
 | 连接 Bridge 前不能自动跳离 IP/机器页；不能用无上下文中央加载替换连接页 | v02-001、v02-008 | `session_list_screen.dart` 的 `_SessionListConnectionUiGate`；`271e2d9b` 隔离连接代次并确认外部深链 | **已验证** | presentation gate 回归覆盖未就绪、升级中、重连、旧连接迟到与外部深链确认；仍需真机弱网视觉复核 |
 | 初始 `session_list` 即使早于“已连接”事件到达，也必须继续请求 `list_recent_sessions`，不能卡在“已连接、正在进入会话” | v02-001、008、011 | `dfc83aa7` 的 `SessionCatalogBootstrapGate`；`351d0444` 以连接 epoch 校验 recent catalog 权威性；`576c90a8` 分配 build 204 | **代码完成，待设备/部署** | 两种事件顺序、重复代次、selection pending 共 54 项 Home 回归通过；同目标重连目录 41 项 BridgeService 回归通过。build 204 IPA 已构建审计，待 AltStore 安装和真机确认 |
-| 外部会话深链在解析异常或连接流关闭后必须退出加载态，不能永久转圈 | v02-001、006、008 | `5ca11c83`；`SessionLinkCubit` 失败安全状态；`BridgeService.resolveSessionLink` 处理连接流关闭 | **已验证** | 两个定向文件 48/48 通过，覆盖 resolver 抛错和连接状态流无元素；该提交晚于 build 204，需后续安装包再做设备验收 |
+| 外部会话深链在解析异常或连接流关闭后必须退出加载态，不能永久转圈；共享 session 存储时不能解析到错误 Bridge/Home | v02-001、006～008 | `5ca11c83`；`SessionLinkCubit` 失败安全状态；`BridgeService.resolveSessionLink` 处理连接流关闭；`b20d2d01` 为 URL 绑定有界 `bridgeInstanceId`/`codexSourceId` 并保留 legacy route | **已验证** | resolver 失败安全和连接流关闭回归通过；parser 39/39 通过。只有稳定 Bridge 身份存在时才信任 source，现代 durable identity 优先，旧无来源链接继续兼容；这些提交晚于 build 204，需后续安装包再做设备验收 |
 | 首页不能先显示整页 `(no description)` | v02-008、v02-011 | 目录 readiness 与缓存 projection 已分离；会话目录先使用持久摘要再接 live | **已验证** | 目录/连接定向回归已通过；仍需大目录真机首屏计时 |
 | 所有持久会话都能直接打开和继续使用，不再要求先“激活” | v02-003、010、012、015 | `15f08b93`、`4f7ff483`、`92d6a46b`；`PendingSessionBinding`；Codex/Claude screen | **已验证** | 直开、缓存预览、后台 attach、页面租约和幂等投递回归通过 |
 | 普通 idle 不显示 Ready；working/needs-you/unknown 是正交事实，unknown 不能伪装 Ready | v02-003、014、015 | `15f08b93`、`4c215776`；`session_visual_status.dart` | **已验证** | 状态模型 267 项相关回归通过；unknown 原值保留 |
@@ -39,7 +39,7 @@
 | 已有会话显示“加载/同步”，只有新线程显示“创建” | v02-005、012 | durable-open 与 pending binding 路径分离 | **已验证** | 会话直开和 pending attach 回归通过；真机文案扫描仍待本地化批次 |
 | runtime 长期停在 `starting` 时不能每 3 秒无限重读历史；弱网恢复仍要可重试 | v02-010、012 | `502b4252`；一次性退避 timer、断线暂停与重连预算 | **已验证** | 红测把旧实现虚拟 5 分钟内的 101 次请求固化；现为初始 1 次加最多 4 次指数退避，离线期间 0 次新增、重连后恢复有限预算；ChatSessionCubit 147 项全通过 |
 | 同一会话并发增量对账必须 single-flight；后台请求不能降级前台完整回退权限；重连不能让旧 socket 的请求吞掉新请求 | v02-010～012 | `7d62f978`；`BridgeService` 的连接代次、升级式 fallback 与 dirty follow-up | **已验证** | 旧实现三个并发调用会发送 3 次 delta，且最后一个后台调用可覆盖前台回退权限；现同一连接只发 1 次，响应后至多补 1 次 dirty follow-up，使用已更新 cursor。后台单独请求仍不做全量回退，前台权限只能升级；同目标重连重新发送并隔离旧代。Bridge usage + legacy fence 53 项、定向 analyze 与 diff check 全通过 |
-| 用户当前采用两个实例不同时运行；共享同一 Codex 会话来源时不能串目录、续接、未读、路由、通知或缓存 | v02-007、011；用户 2026-07-28 的顺序使用约束 | `2e1be40e` 统一所选 `CODEX_HOME`；`95cae34b`、`6de89935`、`29233693` 绑定目录、生命周期和 Mirror 来源；`fac56c47` 以 Bridge 稳定身份复用跨 IP 数据并隔离离线队列；`8aabde45` 支持顺序实例共享来源；`170621dd` 隔离消息缓存；`013c58d3` 隔离未读、路由、深链和通知；`78c0d011` 让 Bridge 通知携带来源身份；`0e6d2525` 记录兼容边界 | **已验证** | 单一 Bridge 选择一个 Home 时，读写、目录、生命周期、持久 Mirror、消息缓存、未读、通知和深链都受稳定 Bridge/来源身份约束；切换来源会取消旧请求，只恢复当前来源 resident watch。新字段 capability-gated，旧客户端和无来源旧缓存走明确的 best-effort fallback；Mirror 保持 schema v1。顺序共享来源是当前产品范围。真正同时运行多个外部写入者仍需要跨进程租约/冲突协议，但用户已明确暂不同时使用，故不再把未要求的并发多写者设计列为当前源码阻塞项 |
+| 用户当前采用两个实例不同时运行；共享同一 Codex 会话来源时不能串目录、续接、未读、路由、通知、深链或缓存 | v02-007、011；用户 2026-07-28 的顺序使用约束 | `2e1be40e` 统一所选 `CODEX_HOME`；`95cae34b`、`6de89935`、`29233693` 绑定目录、生命周期和 Mirror 来源；`fac56c47` 以 Bridge 稳定身份复用跨 IP 数据并隔离离线队列；`8aabde45` 支持顺序实例共享来源；`170621dd` 隔离消息缓存；`013c58d3` 隔离未读、路由、深链和通知；`78c0d011` 让 Bridge 通知携带来源身份；`b20d2d01` 绑定外部 URL 来源；`0e6d2525` 记录兼容边界 | **已验证** | 单一 Bridge 选择一个 Home 时，读写、目录、生命周期、持久 Mirror、消息缓存、未读、通知和深链都受稳定 Bridge/来源身份约束；切换来源会取消旧请求，只恢复当前来源 resident watch。新字段 capability-gated，旧客户端和无来源旧缓存走明确的 best-effort fallback；Mirror 保持 schema v1。顺序共享来源是当前产品范围。真正同时运行多个外部写入者仍需要跨进程租约/冲突协议，但用户已明确暂不同时使用，故不再把未要求的并发多写者设计列为当前源码阻塞项 |
 | 运行蓝条与“正在同步历史”的光晕分别表达，且动画低开销 | v02-010、012、014 | 小 selector、独立 sync state、`RepaintBoundary` | **代码完成，待设备/部署** | 代码与 Widget 回归已有；需真机动画、CPU/能耗和可读性验收 |
 
 ## 2. 历史、折叠、渐进披露与时间
@@ -109,9 +109,9 @@
 | 内联 data URL 与生成图片不能在聊天列表/气泡 `build` 中重复 Base64 解码 | v02-006、014；全局性能门禁 | `94372778`；`data_image_decode.dart`、`AsyncDataImage` 和生成图片延迟映射 | **已验证** | 红测证明旧 mapper 立即物化 bytes，气泡也绕过异步 decoder；现 64 KiB 以上在 isolate 解码，小图保留低开销同步 fast path，最多缓存 8 份压缩字节，列表映射只保留 data URL。网络图片、磁盘 cache key、缩略图 decodeWidth 和全屏无界缩放语义不变；37 项图片/预览/macOS chrome 回归与 10 文件 analyze 通过 |
 | 图片草稿和待发送附件不能在 App 启动时全量 Base64 解码，也不能在每次编辑时阻塞 UI；慢的旧写入、删除和迁移不能复活过期草稿 | v02-006、014；全局性能门禁 | `7c91196e`；`DraftService` 的原始编码缓存、懒解码、异步编码和每会话 generation fence | **已验证** | 红测证明旧构造器会立即解码全部持久图片，注入的异步编码器也没有真正接管待发送消息；现只在首次读取对应会话时解码，64 KiB 以上编码移到 isolate，小附件保留同步 fast path。相同 client ID 的新编辑优先，过期编码失败不会拒绝新值，删除会隔离未完成写入，冷迁移直接复用旧 JSON 且存储 schema/key 不变；DraftService 23/23 与 2 文件 analyze 通过 |
 | 新旧 Mobile/Bridge、官方项目和 schema/API/native-Dart 边界兼容 | v02-006、014；PROJECT_HANDOFF | capability negotiation、additive fields、legacy lanes、无破坏性 DB 迁移 | **持续门禁** | 每个提交均保留 fallback；最终仍需旧 Bridge + 新 App、新 Bridge + 旧 App 组合回归 |
-| 合并官方最新 commits | v02-014 | `c2cc8379` 语义整合官方 `3289ce93`；`97fb5aab` 同步 `1.109.3` 并保持本地 build 单调递增；2026-07-28 再次 fetch 的 upstream/main=`82962136` | **已验证** | fresh fetch 确认官方没有比 `82962136` 更新的提交；`c2cc8379`、`97fb5aab` 均为当前 HEAD 祖先。同一 Claude/Codex 会话通知/深链优先揭示现有路由，Codex 深链保留 provider；官方 build `202` 低于已交付本地 build 204，当前源码保持 `1.109.3+205` |
-| 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账；`f9d949f7`；已整合 `f0d28c17`、`8bfb36fa`、`567509b1`、`f53f0105`、`a96526e1`、`b44418ad`、`bc36c23b`、`716d7118`、`26db9cd9`；`399e980c` 用 SQL aggregate/目标冲突查询替代 Mirror patch 的全代 Dart Map；`fa3aa6db` 降低 idle continuity 兜底轮询 | **代码完成，待设备/部署** | 2026-07-28 源码门禁：Mobile 全套 2572 通过、4 项环境 smoke 跳过；Bridge 全套 95 files/1836 tests 通过；Bridge 首轮与 Flutter 并发时曾有 1 个 2 秒目录监听超时，单文件 8/8 和空闲资源全套复跑均通过，判定为测试时序抖动而非可复现产品缺陷。Mobile 全量 analyze 为 0 error/0 warning、52 条 info；Mirror store 31/31、continuity 43/43 通过；iOS Simulator debug 以最终源码完成编译，Xcode 186.0 秒并产出 `Runner.app`。真机帧时间/RSS/能耗、真实多会话延迟与旧新端组合仍是独立验收门槛，不能由源码测试代替 |
-| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `fa3aa6db`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、iOS HTTP 错误识别、Bridge 预览限幅、Agent/Explore/Git 统一预览、草稿性能、本地化完整性/四语言收束、官方 1.109.3 导航修复、旧 Bridge Explore 生命周期闭环、Plan 清上下文批准绑定、交互帧断线防重放、空身份跨会话回退防护、统一 `CODEX_HOME` 读取、跨 provider 同 ID 保留、来源缓存隔离、来源绑定生命周期操作、Codex RPC 生命周期及本轮两项性能修复均不在 build 204。未部署新 Cloud/Bridge、未安装真机、未发布 owner/stable |
+| 合并官方最新 commits | v02-014 | `c2cc8379` 适配官方 `3289ce93`；`97fb5aab` 同步 `1.109.3` 并保持本地 build 单调递增；`563bcedd` 把 `upstream/main@82962136` 纳入真实祖先链 | **已验证** | fresh fetch 确认官方没有比 `82962136` 更新的提交；9 处 merge 冲突按 `range-diff` 保留当前严格适配版，merge 相对第一父提交无源码树变化；全量门禁随后通过。官方 build `202` 低于已交付本地 build 204，当前源码保持 `1.109.3+205` |
+| 全部功能后做全软件性能、安全和兼容审查 | v02-006、014 | 已有阶段性 perf 修复与本台账；`f9d949f7`；已整合 `f0d28c17`、`8bfb36fa`、`567509b1`、`f53f0105`、`a96526e1`、`b44418ad`、`bc36c23b`、`716d7118`、`26db9cd9`；`399e980c` 用 SQL aggregate/目标冲突查询替代 Mirror patch 的全代 Dart Map；`fa3aa6db` 降低 idle continuity 兜底轮询；`b20d2d01`/`e4b8118c` 收束来源深链和 worktree 工具链 | **代码完成，待设备/部署** | 2026-07-28 最终源码门禁：Mobile 全套 2576 通过、4 项环境 smoke 跳过；Bridge 全套 95 files/1836 tests 通过；Mobile 全量 analyze 为 0 error/0 warning、52 条 info；iOS Simulator debug 以最终源码完成编译，Xcode 21.4 秒并产出 `Runner.app`；RunnerTests 27/27 通过。真机帧时间/RSS/能耗、真实多会话延迟与旧新端组合仍是独立验收门槛，不能由源码测试代替 |
+| Bridge 部署、IPA、真机、owner/stable 各自独立，不得混称完成 | v02 H；PROJECT_HANDOFF §11 | build 204 记录：`runs/20260728-005152_ccpocket-build204-ipa/`；当前源码收束报告：`plans/repository-branch-convergence_v02_20260728-222804.md` | **部分完成** | `576c90a8` 已构建并审计未签名 build 204，专供目录启动竞态验收；当前源码已前进到 `e4b8118c`，后续深链、安全、通知 ACK、公平调度、历史/会话管理、图片发送、预览、本地化、官方 Git 血缘、共享来源、Codex RPC 生命周期及最终收束均不在 build 204。当前只构建了 Simulator `Runner.app`，未部署新 Cloud/Bridge、未构建新的签名 IPA、未安装真机、未发布 owner/stable |
 
 ## 7. 当前独立复审闭环
 
@@ -142,6 +142,7 @@ command）、`932f8bec`（二维码）、`bfe4bd5a`（截图）、`72a96edc`（�
 ## 8. 下一实施顺序
 
 1. 源码范围暂不再对同步/去重做猜测性修改；若真机再次出现整段重复，先采集 raw provider、Bridge、Mirror、reducer、render 五层同一事件线再定位 owning layer；
-2. iOS Simulator/native source build 门禁已通过；若要进入可安装候选，再生成新的、明确高于 build 204 的签名/IPA 候选并单独收束产物；Simulator `Runner.app` 不等于 IPA 已构建；
-3. 经用户确认后，才按 Cloud → Bridge → 新 Mobile 的独立门禁部署，并真机验收通知去重、长按动作、后台保活、文件预览与 Face ID；
-4. 用户当前不同时运行两个 Codex/Cockpit 实例；只有未来要求并发多写者时，才新增跨进程 source registry/lease/conflict 协议，不能把该未来设计偷偷混进当前兼容栈。
+2. 收束源码 `e4b8118c` 时的今日 109 个 ref 可达提交均已进入其祖先链，源码分支收束完成；后续文档提交自然位于其上，旧分支/worktree 的物理删除仍须用户另行授权；
+3. iOS Simulator/native source build 与 RunnerTests 门禁已通过；若要进入可安装候选，再生成新的、明确高于 build 204 的签名/IPA 候选并单独收束产物；Simulator `Runner.app` 不等于 IPA 已构建；
+4. 经用户确认后，才按 Cloud → Bridge → 新 Mobile 的独立门禁部署，并真机验收通知去重、长按动作、后台保活、文件预览与 Face ID；
+5. 用户当前不同时运行两个 Codex/Cockpit 实例；只有未来要求并发多写者时，才新增跨进程 source registry/lease/conflict 协议，不能把该未来设计偷偷混进当前兼容栈。
