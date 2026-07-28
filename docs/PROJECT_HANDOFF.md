@@ -15,6 +15,7 @@
 | owner 文件、统一会话与本地翻译实施参考 | `docs/owner-file-access-preview-and-local-translation-plan.md` | 合并全盘只读、统一预览、文件变更二次授权、固定中文化、Apple 本地翻译，以及统一会话列表和前台全会话轻量增量同步；内容完整但实现前必须重新核对源码 |
 | 全面修复与性能收束主方案 | `plans/mobile-comprehensive-remediation_v02_20260726-004125.md` | 当前权威方案；v01 已被它取代。源码行为已收束到 `fa3aa6db`，其后仅有台账/交接文档提交；物理设备、Bridge/Cloud 部署、签名 IPA 与 owner/stable 仍是独立门槛 |
 | 本轮源码收束报告 | `reviews/SOURCE_CLOSURE_REPORT_20260728.md` | 记录 `3fb83d12..fa3aa6db` 的 29 个行为提交、最终源码门禁、兼容边界和仍未越过的设备/部署门槛 |
+| 仓库、历史分支与工作树单线收束计划 | `plans/repository-branch-convergence_v01_20260728-190833.md` | 盘点 72 个本地分支和 19 个 worktree，区分已包含、语义整合、已取代、独立工具与两个脏工作树；当前为 draft，用户确认前不执行合并、清理、部署或发布 |
 
 ### 0.1 发布会话的使用规则
 
