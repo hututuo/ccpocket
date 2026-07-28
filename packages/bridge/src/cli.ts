@@ -48,6 +48,8 @@ Options:
                          Codex app-server mode: private, managed, or external
       --codex-shared-app-server-url <url>
                          Shared Codex app-server ws:// URL
+      --codex-source-id <id>
+                         Shared Codex authority ID from Cockpit
 
 Share options:
       --ttl <seconds>    Link lifetime from 60 to 86400 seconds (default: 3600)
@@ -66,6 +68,7 @@ Setup options:
       --uninstall       Remove the registered service
       setup persists --port, --host, --api-key, --public-ws-url,
       --artifact-base-url, --no-mdns, Codex app-server options,
+      --codex-source-id,
       BRIDGE_ALLOWED_DIRS, BRIDGE_AUTO_ARTIFACTS, and
       BRIDGE_ARTIFACT_REGISTRY_FILE, BRIDGE_FILE_TRANSFER_* paths, and
       BRIDGE_CODEX_ASSIST_MODEL / BRIDGE_CODEX_ASSIST_REASONING_EFFORT
@@ -79,6 +82,8 @@ BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR, BRIDGE_FILE_TRANSFER_PARTIAL_DIR,
 and BRIDGE_FILE_TRANSFER_STATE_FILE.
 Codex app-server configuration can be provided with
 BRIDGE_CODEX_APP_SERVER_MODE and BRIDGE_CODEX_SHARED_APP_SERVER_URL.
+Shared Codex authority identity can be provided with
+BRIDGE_CODEX_SOURCE_ID.
 Codex assist calls can be configured with BRIDGE_CODEX_ASSIST_MODEL and
 BRIDGE_CODEX_ASSIST_REASONING_EFFORT.`);
 }
@@ -118,6 +123,7 @@ if (parsed.helpRequested) {
     disableMdns: hasFlag(parsed, "no-mdns"),
     codexAppServerMode: parseFlag(parsed, "codex-app-server-mode"),
     codexSharedAppServerUrl: parseFlag(parsed, "codex-shared-app-server-url"),
+    codexSourceId: parseFlag(parsed, "codex-source-id"),
     codexAppServerPort: parseFlag(parsed, "codex-app-server-port"),
     codexAppServerUrl: parseFlag(parsed, "codex-app-server-url"),
   };
@@ -293,6 +299,7 @@ if (parsed.helpRequested) {
     parsed,
     "codex-shared-app-server-url",
   );
+  const codexSourceId = parseFlag(parsed, "codex-source-id");
   const codexAppServerPort = parseFlag(parsed, "codex-app-server-port");
   const codexAppServerUrl = parseFlag(parsed, "codex-app-server-url");
 
@@ -313,6 +320,9 @@ if (parsed.helpRequested) {
     process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL = codexSharedAppServerUrl;
   } else if (codexAppServerUrl) {
     process.env.BRIDGE_CODEX_APP_SERVER_URL = codexAppServerUrl;
+  }
+  if (codexSourceId !== undefined) {
+    process.env.BRIDGE_CODEX_SOURCE_ID = codexSourceId;
   }
   if (hasFlag(parsed, "no-mdns")) process.env.BRIDGE_DISABLE_MDNS = "1";
 

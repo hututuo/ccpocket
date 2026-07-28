@@ -53,12 +53,16 @@ describe("parseCliArgs", () => {
       "--port=9000",
       "--host=127.0.0.1",
       "--artifact-base-url=http://192.168.1.20:8765",
+      "--codex-source-id=codex-source-0123456789abcdef0123456789abcdef",
     ]);
 
     expect(parseFlag(parsed, "port")).toBe("9000");
     expect(parseFlag(parsed, "host")).toBe("127.0.0.1");
     expect(parseFlag(parsed, "artifact-base-url")).toBe(
       "http://192.168.1.20:8765",
+    );
+    expect(parseFlag(parsed, "codex-source-id")).toBe(
+      "codex-source-0123456789abcdef0123456789abcdef",
     );
   });
 

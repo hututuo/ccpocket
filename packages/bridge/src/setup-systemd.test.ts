@@ -42,6 +42,8 @@ const originalBridgeEnv = {
   codexAssistModel: process.env.BRIDGE_CODEX_ASSIST_MODEL,
   codexAssistReasoningEffort:
     process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT,
+  codexHome: process.env.CODEX_HOME,
+  codexSourceId: process.env.BRIDGE_CODEX_SOURCE_ID,
   codexAppServerMode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
   codexSharedAppServerUrl: process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL,
   codexAppServerPort: process.env.BRIDGE_CODEX_APP_SERVER_PORT,
@@ -98,6 +100,8 @@ describe("setup-systemd", () => {
       expect(content).not.toContain("BRIDGE_DISABLE_MDNS");
       expect(content).not.toContain("BRIDGE_CODEX_ASSIST_MODEL");
       expect(content).not.toContain("BRIDGE_CODEX_ASSIST_REASONING_EFFORT");
+      expect(content).not.toContain("CODEX_HOME");
+      expect(content).not.toContain("BRIDGE_CODEX_SOURCE_ID");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
     });
@@ -148,6 +152,29 @@ describe("setup-systemd", () => {
       expect(content).toContain(
         "Environment=BRIDGE_CODEX_ASSIST_REASONING_EFFORT=low",
       );
+    });
+
+    it("persists the Codex home and shared authority identity", () => {
+      setupSystemd({
+        codexHome: "/home/testuser/Codex Sessions",
+        codexSourceId: "codex-source-0123456789abcdef0123456789abcdef",
+      });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain(
+        'Environment="CODEX_HOME=/home/testuser/Codex Sessions"',
+      );
+      expect(content).toContain(
+        "Environment=BRIDGE_CODEX_SOURCE_ID=codex-source-0123456789abcdef0123456789abcdef",
+      );
+    });
+
+    it("rejects an invalid Codex authority before replacing the service", () => {
+      expect(() =>
+        setupSystemd({ codexSourceId: "codex-source-NOT-OPAQUE" }),
+      ).toThrow("BRIDGE_CODEX_SOURCE_ID must be");
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(mockExecSync).not.toHaveBeenCalled();
     });
 
     it("keeps standalone Codex paths before the current Node fallback", () => {
@@ -427,6 +454,8 @@ function clearBridgeEnv(): void {
   delete process.env.BRIDGE_DISABLE_MDNS;
   delete process.env.BRIDGE_CODEX_ASSIST_MODEL;
   delete process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT;
+  delete process.env.CODEX_HOME;
+  delete process.env.BRIDGE_CODEX_SOURCE_ID;
   delete process.env.BRIDGE_CODEX_APP_SERVER_MODE;
   delete process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL;
   delete process.env.BRIDGE_CODEX_APP_SERVER_PORT;
@@ -457,6 +486,11 @@ function restoreBridgeEnv(): void {
   restoreEnvVar(
     "BRIDGE_CODEX_ASSIST_REASONING_EFFORT",
     originalBridgeEnv.codexAssistReasoningEffort,
+  );
+  restoreEnvVar("CODEX_HOME", originalBridgeEnv.codexHome);
+  restoreEnvVar(
+    "BRIDGE_CODEX_SOURCE_ID",
+    originalBridgeEnv.codexSourceId,
   );
   restoreEnvVar(
     "BRIDGE_CODEX_APP_SERVER_MODE",

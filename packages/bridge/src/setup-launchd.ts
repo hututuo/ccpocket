@@ -7,7 +7,10 @@ import {
   defaultCodexSharedAppServerUrl,
   readCodexSharedAppServerUrl,
 } from "./codex-app-server-config.js";
-import { resolveCodexHome } from "./codex-home.js";
+import {
+  normalizeCodexSourceId,
+  resolveCodexHome,
+} from "./codex-home.js";
 import { parseBridgePort } from "./bridge-port.js";
 import { validateArtifactBaseUrl } from "./artifact-url.js";
 
@@ -49,6 +52,7 @@ interface SetupOptions {
   codexAppServerMode?: string;
   codexSharedAppServerUrl?: string;
   codexHome?: string;
+  codexSourceId?: string;
   /** @deprecated Use codexSharedAppServerUrl. */
   codexAppServerPort?: string;
   /** @deprecated Use codexSharedAppServerUrl. */
@@ -87,6 +91,9 @@ export function setupLaunchd(opts: SetupOptions): void {
   const codexHome = rawCodexHome.trim()
     ? resolveCodexHome({ env: { CODEX_HOME: rawCodexHome } })
     : "";
+  const codexSourceId = normalizeCodexSourceId(
+    opts.codexSourceId ?? process.env.BRIDGE_CODEX_SOURCE_ID,
+  );
   const codexAppServerMode =
     opts.codexAppServerMode ?? process.env.BRIDGE_CODEX_APP_SERVER_MODE ?? "";
   const legacyCodexAppServerPort =
@@ -195,6 +202,12 @@ export function setupLaunchd(opts: SetupOptions): void {
     envBlock += `
         <key>CODEX_HOME</key>
         <string>${escapeXml(codexHome)}</string>`;
+  }
+
+  if (codexSourceId) {
+    envBlock += `
+        <key>BRIDGE_CODEX_SOURCE_ID</key>
+        <string>${codexSourceId}</string>`;
   }
 
   if (codexAppServerMode) {

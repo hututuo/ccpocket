@@ -29,6 +29,8 @@ describe("ccpocket-bridge CLI", { timeout: 15_000 }, () => {
     expect(result.stdout).toContain("send <path>");
     expect(result.stdout).toContain("file-transfer unlock");
     expect(result.stdout).toContain("BRIDGE_FILE_TRANSFER_PARTIAL_DIR");
+    expect(result.stdout).toContain("--codex-source-id");
+    expect(result.stdout).toContain("BRIDGE_CODEX_SOURCE_ID");
   });
 
   it("reports a missing share path without starting the server", () => {
