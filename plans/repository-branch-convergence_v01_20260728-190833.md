@@ -33,6 +33,35 @@
 3. 审查并隔离旧主工作树的 Side Chat 实验，最多提取当前实现仍缺失的有效部分；
 4. 全量验证后，再由用户决定是否合入共享/稳定分支以及是否清理旧 worktree/ref。
 
+## 1A. 今天早上产生或参与本轮分叉的 worktree
+
+这是本计划最先处理的对象。今天的工作不是继续从历史分支挑代码，而是先把下表
+7 个 worktree 完整收口。
+
+| 今日 worktree | 分支 / HEAD | 当前状态 | 明确处理方式 |
+|---|---|---|---|
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-comprehensive-remediation-v03-20260728` | `fix/mobile-comprehensive-source-closure-20260728`；行为源码 `e1080577`，其后仅文档提交 | 干净 | **保留并作为唯一收束工作树。** 后续官方血缘合并、遗漏代码提取、验证和最终候选都只在由它建立的单一收束线上进行 |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-comprehensive-remediation-20260725` | `fix/mobile-comprehensive-v02-20260726@3fb83d12` | **脏：17 个 tracked + 10 个 untracked 入口** | **优先保留并提取。** 07:09～07:17 的 441/47 行源码产生在分叉前但未提交，没有进入子分支；先做 patch/校验快照，再与 `e1080577` 三方审核，提取真正缺口后才可处理该 worktree |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/bridge-device-identity-20260728` | `feature/bridge-stable-device-identity-20260728@1645dfe3` | 干净 | **不再次合并。** 已以 `fac56c47` 适配进入当前收束线；只需核对提交映射和测试证据，确认后列为已吸收，可在用户授权清理阶段移除 worktree |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-shared-codex-session-source-20260728` | `feature/mobile-shared-codex-session-source-20260728@30a33de3` | 干净 | **不再次合并。** `c56fe921 → a9f855a9 → 30a33de3` 已以 `8aabde45 → 170621dd → 0e6d2525` 进入当前线；核对后列为已吸收 |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/review-perf-security-v03-20260728` | detached `3fb83d12` | 干净、无独有 commit | **仅审核场地。** 没有代码需要合并；用户授权清理时属于第一批可移除 worktree |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/review-requirements-v03-20260728` | detached `3fb83d12` | 干净、无独有 commit | **仅审核场地。** 没有代码需要合并；用户授权清理时属于第一批可移除 worktree |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/review-startup-v03-20260728` | detached `3fb83d12` | 干净、无独有 commit | **仅审核场地。** 没有代码需要合并；用户授权清理时属于第一批可移除 worktree |
+
+今天 worktree 的实际收束顺序固定为：
+
+```text
+保留 v03/current closure 作为唯一目标
+  → 先快照并审核脏 v02 worktree 的分叉前遗漏
+  → 核对 identity 与 shared-source 两条子分支已经完整吸收
+  → 确认三个 review worktree 没有独有提交
+  → 进入官方 upstream 血缘合并
+  → 最后才处理更早的历史分支和旧主工作树
+```
+
+也就是说，历史分支调查只是为了防止漏代码；执行优先级以今天这 7 个 worktree
+为先，不能反过来先整理历史分支而把今天的脏工作树留到最后。
+
 ## 2. 实时盘点快照
 
 ### 2.1 分支
@@ -407,4 +436,3 @@ commit 混合。
 - 全量自动验证通过；
 - 用户确认最终源码候选；
 - 分支/worktree清理另获明确授权。
-
