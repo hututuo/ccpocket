@@ -5,9 +5,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-HOOKS_DIR="$REPO_ROOT/.git/hooks"
+# `.git` is a file in linked worktrees, so constructing
+# `$REPO_ROOT/.git/hooks` fails there. Ask Git for the effective shared hooks
+# directory instead; this keeps ordinary clones and linked worktrees aligned.
+HOOKS_DIR="$(git rev-parse --path-format=absolute --git-path hooks)"
 
 echo "Installing git hooks..."
+mkdir -p "$HOOKS_DIR"
 
 # pre-commit hook
 cat > "$HOOKS_DIR/pre-commit" << 'HOOK'
