@@ -153,7 +153,7 @@ void main() {
       expect(find.text('目标'), findsOneWidget);
       expect(find.text('预算耗尽'), findsOneWidget);
       expect(find.text('完成跨端 Goal 管理'), findsOneWidget);
-      expect(find.text('12.4k / 80k tokens'), findsOneWidget);
+      expect(find.text('12.4k / 80k 个 Token'), findsOneWidget);
       expect(find.text('18m'), findsOneWidget);
       final progress = tester.widget<LinearProgressIndicator>(
         find.byKey(const ValueKey('goal_budget_progress')),

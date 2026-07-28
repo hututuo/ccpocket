@@ -3,6 +3,7 @@ import 'package:ccpocket/features/local_session_features/host/local_session_feat
 import 'package:ccpocket/features/side_chat/state/ephemeral_side_chat_registry_service.dart';
 import 'package:ccpocket/features/side_chat/state/side_chat_controller.dart';
 import 'package:ccpocket/features/side_chat/widgets/ephemeral_side_chat_pane.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/draft_service.dart';
@@ -59,6 +60,9 @@ Future<_HostHarness> _pumpHost(WidgetTester tester) async {
       child: RepositoryProvider<DraftService>.value(
         value: draftService,
         child: MaterialApp(
+          locale: const Locale('en'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
           home: Builder(
             builder: (context) {
               featureContext = CodexSessionFeatureContext(

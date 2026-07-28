@@ -1,3 +1,4 @@
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/screens/qr_scan_screen.dart';
 import 'package:ccpocket/services/fcm_service.dart';
 import 'package:flutter/foundation.dart';
@@ -26,7 +27,14 @@ void main() {
   ) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.linux;
 
-    await tester.pumpWidget(const MaterialApp(home: QrScanScreen()));
+    await tester.pumpWidget(
+      const MaterialApp(
+        locale: Locale('en'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: QrScanScreen(),
+      ),
+    );
 
     expect(
       find.textContaining('QR camera scan is not available'),
