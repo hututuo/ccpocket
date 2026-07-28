@@ -397,6 +397,10 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     if (pending !== message.revision) return;
     subscription.pendingRevisions.delete(key);
     subscription.cursors.set(key, message.revision);
+    const latest = this.latestSnapshot(key);
+    if (latest && latest.revision !== message.revision) {
+      this.publishSnapshotToClient(client, subscription, key, latest);
+    }
   }
 
   private focus(
@@ -672,23 +676,33 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     snapshot: ConversationSnapshot,
   ): void {
     for (const [client, subscription] of [...this.clients]) {
-      if (!subscription.interactive || !this.clientReady(client)) continue;
-      if (subscription.pendingRevisions.get(key) === snapshot.revision) {
-        continue;
-      }
-      const knownRevision = subscription.cursors.get(key);
-      if (knownRevision === snapshot.revision) {
-        subscription.pendingRevisions.delete(key);
-        continue;
-      }
-      const base = knownRevision
-        ? this.findSnapshot(key, knownRevision)
-        : undefined;
-      const patched =
-        base != null && this.sendPatch(client, subscription, base, snapshot);
-      if (!patched) this.sendSnapshot(client, subscription, snapshot);
-      subscription.pendingRevisions.set(key, snapshot.revision);
+      this.publishSnapshotToClient(client, subscription, key, snapshot);
     }
+  }
+
+  private publishSnapshotToClient(
+    client: object,
+    subscription: ClientSubscription,
+    key: ConversationKey,
+    snapshot: ConversationSnapshot,
+    allowDeferral = true,
+  ): void {
+    if (!subscription.interactive || !this.clientReady(client)) return;
+    const pendingRevision = subscription.pendingRevisions.get(key);
+    if (pendingRevision === snapshot.revision) return;
+    const canReplayAfterAck =
+      snapshot.cacheBytes <= this.maxCachedTargetBytes &&
+      snapshot.cacheBytes <= this.maxCachedBytes;
+    if (pendingRevision && allowDeferral && canReplayAfterAck) return;
+    const knownRevision = subscription.cursors.get(key);
+    if (knownRevision === snapshot.revision) return;
+    const base = knownRevision
+      ? this.findSnapshot(key, knownRevision)
+      : undefined;
+    const patched =
+      base != null && this.sendPatch(client, subscription, base, snapshot);
+    if (!patched) this.sendSnapshot(client, subscription, snapshot);
+    subscription.pendingRevisions.set(key, snapshot.revision);
   }
 
   private sendPatch(
@@ -834,8 +848,29 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     ) {
       const oldest = this.snapshots.keys().next().value;
       if (!oldest) break;
-      this.removeCachedTarget(oldest);
+      this.evictCachedTarget(oldest);
     }
+  }
+
+  private evictCachedTarget(key: ConversationKey): void {
+    const latest = this.snapshots.get(key)?.at(-1);
+    if (latest) {
+      for (const [client, subscription] of [...this.clients]) {
+        if (
+          subscription.pendingRevisions.has(key) &&
+          subscription.pendingRevisions.get(key) !== latest.revision
+        ) {
+          this.publishSnapshotToClient(
+            client,
+            subscription,
+            key,
+            latest,
+            false,
+          );
+        }
+      }
+    }
+    this.removeCachedTarget(key);
   }
 
   private removeCachedTarget(key: ConversationKey): void {

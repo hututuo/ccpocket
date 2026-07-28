@@ -408,6 +408,50 @@ describe("ConversationContentSyncFeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("does not defer a revision that cannot be retained until ACK", async () => {
+    const fixture = createFixture(0, {
+      maxCachedTargetBytes: 1,
+      maxCachedBytes: 4 * 1024,
+    });
+    const client = {};
+    let version = 1;
+    fixture.historyReader.mockImplementation(async (target) =>
+      history(target.providerSessionId, version),
+    );
+    const focused: ConversationContentTarget = {
+      provider: "codex",
+      providerSessionId: "thread-0",
+    };
+
+    await fixture.handler.handle(
+      { ...subscribe("subscription-1"), focused },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+
+    version = 2;
+    fixture.handler.sessionCatalogChanged({ revision: 2, ...focused });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          2,
+        ),
+      { timeout: 3_000 },
+    );
+
+    fixture.handler.close();
+  });
+
   it("evicts globally in existing recency order and only reuses the newest target", async () => {
     const fixture = createFixture(3, {
       maxMessageTextBytes: 4 * 1024,
@@ -645,6 +689,197 @@ describe("ConversationContentSyncFeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("coalesces newer revisions behind one pending ACK", async () => {
+    const fixture = createFixture(1);
+    const client = {};
+    let version = 1;
+    fixture.historyReader.mockImplementation(async (target) =>
+      history(target.providerSessionId, version),
+    );
+
+    await fixture.handler.handle(subscribe("subscription-1"), {
+      client,
+      signal: new AbortController().signal,
+      runtime: fixture.runtime,
+    });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+    const initialRevision = events(
+      fixture.sent,
+      client,
+      "snapshot_complete",
+    )[0]!.revision;
+    await fixture.handler.handle(
+      {
+        type: "conversation_content_ack",
+        protocolVersion: 1,
+        subscriptionId: "subscription-1",
+        provider: "codex",
+        providerSessionId: "thread-0",
+        revision: initialRevision,
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+
+    version = 2;
+    fixture.handler.sessionCatalogChanged({
+      revision: 2,
+      provider: "codex",
+      providerSessionId: "thread-0",
+    });
+    await vi.waitFor(
+      () => expect(events(fixture.sent, client, "patch")).toHaveLength(1),
+      { timeout: 3_000 },
+    );
+    const pendingRevision = events(fixture.sent, client, "patch")[0]!.revision;
+
+    version = 3;
+    fixture.handler.sessionCatalogChanged({
+      revision: 3,
+      provider: "codex",
+      providerSessionId: "thread-0",
+    });
+    const inspectable = fixture.handler as unknown as {
+      latestSnapshot: (
+        key: string,
+      ) => { revision: string } | undefined;
+    };
+    await vi.waitFor(
+      () =>
+        expect(
+          inspectable.latestSnapshot("codex\u0000thread-0")?.revision,
+        ).not.toBe(pendingRevision),
+      { timeout: 3_000 },
+    );
+    expect(events(fixture.sent, client, "patch")).toHaveLength(1);
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_content_ack",
+        protocolVersion: 1,
+        subscriptionId: "subscription-1",
+        provider: "codex",
+        providerSessionId: "thread-0",
+        revision: pendingRevision,
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await vi.waitFor(
+      () => expect(events(fixture.sent, client, "patch")).toHaveLength(2),
+      { timeout: 3_000 },
+    );
+    expect(events(fixture.sent, client, "patch")[1]!.baseRevision).toBe(
+      pendingRevision,
+    );
+
+    fixture.handler.close();
+  });
+
+  it("flushes a coalesced revision before its cache entry is evicted", async () => {
+    const fixture = createFixture(0, { maxCachedConversations: 1 });
+    const client = {};
+    const versions = new Map<string, number>([["thread-0", 1]]);
+    fixture.historyReader.mockImplementation(async (target) =>
+      history(
+        target.providerSessionId,
+        versions.get(target.providerSessionId) ?? 1,
+      ),
+    );
+    const focused: ConversationContentTarget = {
+      provider: "codex",
+      providerSessionId: "thread-0",
+    };
+
+    await fixture.handler.handle(
+      { ...subscribe("subscription-1"), focused },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+    const initialRevision = events(
+      fixture.sent,
+      client,
+      "snapshot_complete",
+    )[0]!.revision;
+    await fixture.handler.handle(
+      {
+        type: "conversation_content_ack",
+        protocolVersion: 1,
+        subscriptionId: "subscription-1",
+        ...focused,
+        revision: initialRevision,
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+
+    versions.set("thread-0", 2);
+    fixture.handler.sessionCatalogChanged({ revision: 2, ...focused });
+    await vi.waitFor(
+      () => expect(events(fixture.sent, client, "patch")).toHaveLength(1),
+      { timeout: 3_000 },
+    );
+    const pendingRevision = events(fixture.sent, client, "patch")[0]!.revision;
+
+    versions.set("thread-0", 3);
+    fixture.handler.sessionCatalogChanged({ revision: 3, ...focused });
+    const inspectable = fixture.handler as unknown as {
+      latestSnapshot: (
+        key: string,
+      ) => { revision: string } | undefined;
+    };
+    await vi.waitFor(
+      () =>
+        expect(
+          inspectable.latestSnapshot("codex\u0000thread-0")?.revision,
+        ).not.toBe(pendingRevision),
+      { timeout: 3_000 },
+    );
+    expect(events(fixture.sent, client, "patch")).toHaveLength(1);
+
+    fixture.handler.sessionCatalogChanged({
+      revision: 4,
+      provider: "codex",
+      providerSessionId: "thread-1",
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          events(fixture.sent, client, "snapshot_complete").filter(
+            (event) => event.providerSessionId === "thread-0",
+          ),
+        ).toHaveLength(2),
+      { timeout: 3_000 },
+    );
+
+    fixture.handler.close();
+  });
+
   it("reuses Bridge snapshots for a second client without rereading history", async () => {
     const fixture = createFixture();
     const first = {};
@@ -818,6 +1053,7 @@ interface TestSyncOptions {
   maxMessageTextBytes?: number;
   maxSnapshotBytes?: number;
   maxPageBytes?: number;
+  maxCachedConversations?: number;
   maxCachedTargetBytes?: number;
   maxCachedBytes?: number;
 }
