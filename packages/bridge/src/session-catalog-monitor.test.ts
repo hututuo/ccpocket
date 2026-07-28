@@ -247,6 +247,59 @@ describe("SessionCatalogMonitor", () => {
     monitor.close();
   });
 
+  it("reclaims a deleted directory watcher for a replacement directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ccpocket-catalog-monitor-"));
+    temporaryDirectories.push(root);
+    const retiredProject = join(root, "retired-project");
+    const retainedProject = join(root, "retained-project");
+    const replacementProject = join(root, "replacement-project");
+    await Promise.all([mkdir(retiredProject), mkdir(retainedProject)]);
+
+    const changes: Array<{
+      revision?: number;
+      provider?: string;
+      providerSessionId?: string;
+    }> = [];
+    const monitor = new SessionCatalogMonitor({
+      roots: [{ path: root, kind: "claudeProjects", maxDepth: 1 }],
+      maxWatchedDirectories: 3,
+      initialRevision: 0,
+      debounceMs: 5,
+      minIntervalMs: 0,
+      onChanged: (_revision, change) => changes.push(change ?? {}),
+    });
+    await monitor.start();
+
+    try {
+      expect(monitor.watcherCount).toBe(3);
+
+      await rm(retiredProject, { recursive: true, force: true });
+      await mkdir(replacementProject);
+      const replacementSession = join(
+        replacementProject,
+        "replacement-session.jsonl",
+      );
+      await writeFile(replacementSession, '{"type":"user"}\n');
+
+      await (monitor as unknown as { scan: () => Promise<void> }).scan();
+      expect(monitor.watcherCount).toBe(3);
+
+      await vi.waitFor(
+        async () => {
+          await appendFile(replacementSession, '{"type":"assistant"}\n');
+          expect(changes).toContainEqual({
+            revision: expect.any(Number),
+            provider: "claude",
+            providerSessionId: "replacement-session",
+          });
+        },
+        { timeout: 3_000, interval: 50 },
+      );
+    } finally {
+      monitor.close();
+    }
+  });
+
   it("uses a fresh process epoch by default", () => {
     const before = Date.now();
     const monitor = new SessionCatalogMonitor({

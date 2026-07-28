@@ -44,6 +44,8 @@ interface WatchedDirectory {
 interface RootScanState {
   root: CatalogRoot;
   queue: Array<{ path: string; depth: number }>;
+  directories: Array<{ path: string; depth: number }>;
+  complete: boolean;
 }
 
 const DEFAULT_DEBOUNCE_MS = 750;
@@ -110,6 +112,7 @@ export class SessionCatalogMonitor {
   private changeTimer: NodeJS.Timeout | null = null;
   private rescanTimer: NodeJS.Timeout | null = null;
   private scanPromise: Promise<void> | null = null;
+  private scanRequested = false;
   private pendingConversationKeys = new Set<string>();
   private pendingUnscopedChange = false;
 
@@ -144,6 +147,10 @@ export class SessionCatalogMonitor {
     return this.revision;
   }
 
+  get watcherCount(): number {
+    return this.watchedDirectories.size;
+  }
+
   start(): Promise<void> {
     if (this.active) return this.scanPromise ?? Promise.resolve();
     this.active = true;
@@ -159,20 +166,34 @@ export class SessionCatalogMonitor {
     if (this.rescanTimer) clearTimeout(this.rescanTimer);
     this.changeTimer = null;
     this.rescanTimer = null;
+    this.scanRequested = false;
     this.pendingConversationKeys.clear();
     this.pendingUnscopedChange = false;
-    for (const entry of this.watchedDirectories.values()) {
+    const watchedDirectories = [...this.watchedDirectories.values()];
+    this.watchedDirectories.clear();
+    for (const entry of watchedDirectories) {
       entry.watcher.close();
     }
-    this.watchedDirectories.clear();
     this.scanPromise = null;
   }
 
   private scan(): Promise<void> {
     if (!this.active) return Promise.resolve();
-    if (this.scanPromise) return this.scanPromise;
+    if (this.scanPromise) {
+      this.scanRequested = true;
+      return this.scanPromise;
+    }
     const generation = this.generation;
-    const scan = this.installMissingWatchers(generation).finally(() => {
+    const scan = (async () => {
+      do {
+        this.scanRequested = false;
+        await this.installMissingWatchers(generation);
+      } while (
+        this.active &&
+        generation === this.generation &&
+        this.scanRequested
+      );
+    })().finally(() => {
       if (this.scanPromise === scan) this.scanPromise = null;
     });
     this.scanPromise = scan;
@@ -181,9 +202,12 @@ export class SessionCatalogMonitor {
 
   private async installMissingWatchers(generation: number): Promise<void> {
     let missingRoot = false;
+    const discoveredDirectories = new Set<string>();
     const scans: RootScanState[] = this.roots.map((root) => ({
       root,
       queue: [],
+      directories: [],
+      complete: true,
     }));
 
     // Install every provider root before spending capacity on descendants.
@@ -194,50 +218,36 @@ export class SessionCatalogMonitor {
       const installed = this.watchDirectory(scan.root.path, scan.root, 0);
       if (!installed) {
         missingRoot = true;
-        continue;
       }
       if (scan.root.maxDepth === 0) continue;
       try {
         const children = await readdir(scan.root.path, { withFileTypes: true });
+        if (!this.active || generation !== this.generation) return;
         this.enqueueChildDirectories(scan, scan.root.path, 0, children);
       } catch {
+        scan.complete = false;
         missingRoot = true;
       }
     }
 
-    const reservedRootSlots = scans.reduce(
-      (count, scan) =>
-        this.watchedDirectories.has(scan.root.path) ? count : count + 1,
-      0,
-    );
-    const descendantLimit =
-      this.maxWatchedDirectories - reservedRootSlots;
-
-    // Consume one descendant from every provider root per round. The previous
-    // root-at-a-time walk let one provider exhaust the global watcher budget
-    // before later roots were considered; rescanning repeated the starvation.
-    while (
-      scans.some((scan) => scan.queue.length > 0) &&
-      this.watchedDirectories.size < descendantLimit
-    ) {
+    // Discover the complete reachable tree independently of watcher capacity.
+    // Otherwise a stale watcher can keep the map full and prevent the scan
+    // from ever reaching the replacement directory that should take its slot.
+    while (scans.some((scan) => scan.queue.length > 0)) {
       for (const scan of scans) {
         if (!this.active || generation !== this.generation) return;
-        if (this.watchedDirectories.size >= descendantLimit) break;
         const current = scan.queue.shift();
         if (!current) continue;
 
-        const installed = this.watchDirectory(
-          current.path,
-          scan.root,
-          current.depth,
-        );
-        if (current.depth === 0 && !installed) missingRoot = true;
-        if (!installed || current.depth >= scan.root.maxDepth) continue;
+        discoveredDirectories.add(current.path);
+        scan.directories.push(current);
+        if (current.depth >= scan.root.maxDepth) continue;
 
         try {
           const children = await readdir(current.path, {
             withFileTypes: true,
           });
+          if (!this.active || generation !== this.generation) return;
           this.enqueueChildDirectories(
             scan,
             current.path,
@@ -245,11 +255,60 @@ export class SessionCatalogMonitor {
             children,
           );
         } catch {
+          scan.complete = false;
           continue;
         }
       }
     }
-    if (missingRoot) this.scheduleRescan(this.retryMs);
+
+    if (!this.active || generation !== this.generation) return;
+    this.removeUndiscoveredWatchers(
+      discoveredDirectories,
+      new Set(scans.filter((scan) => scan.complete).map((scan) => scan.root)),
+    );
+
+    const reservedRootSlots = scans.reduce(
+      (count, scan) =>
+        this.watchedDirectories.has(scan.root.path) ? count : count + 1,
+      0,
+    );
+    const descendantLimit = this.maxWatchedDirectories - reservedRootSlots;
+
+    // Consume one descendant from every provider root per round. The previous
+    // root-at-a-time walk let one provider exhaust the global watcher budget
+    // before later roots were considered; rescanning repeated the starvation.
+    while (
+      scans.some((scan) => scan.directories.length > 0) &&
+      this.watchedDirectories.size < descendantLimit
+    ) {
+      for (const scan of scans) {
+        if (!this.active || generation !== this.generation) return;
+        if (this.watchedDirectories.size >= descendantLimit) break;
+        const current = scan.directories.shift();
+        if (!current) continue;
+        this.watchDirectory(current.path, scan.root, current.depth);
+      }
+    }
+    if (missingRoot || scans.some((scan) => !scan.complete)) {
+      this.scheduleRescan(this.retryMs);
+    }
+  }
+
+  private removeUndiscoveredWatchers(
+    discoveredDirectories: ReadonlySet<string>,
+    completelyScannedRoots: ReadonlySet<CatalogRoot>,
+  ): void {
+    for (const [directory, entry] of this.watchedDirectories) {
+      if (
+        entry.depth === 0 ||
+        !completelyScannedRoots.has(entry.root) ||
+        discoveredDirectories.has(directory)
+      ) {
+        continue;
+      }
+      this.watchedDirectories.delete(directory);
+      entry.watcher.close();
+    }
   }
 
   private enqueueChildDirectories(
@@ -274,11 +333,17 @@ export class SessionCatalogMonitor {
   ): boolean {
     if (this.watchedDirectories.has(directory)) return true;
     try {
+      let entry: WatchedDirectory | null = null;
       const watcher = watch(
         directory,
         { persistent: false },
         (eventType, filename) => {
-          if (!this.active) return;
+          if (
+            !this.active ||
+            this.watchedDirectories.get(directory) !== entry
+          ) {
+            return;
+          }
           const name = filename?.toString();
           if (this.isRelevant(root, depth, eventType, name)) {
             const change = this.conversationChange(root, name);
@@ -294,13 +359,13 @@ export class SessionCatalogMonitor {
           if (eventType === "rename") this.scheduleRescan();
         },
       );
-      const entry: WatchedDirectory = { watcher, root, depth };
+      entry = { watcher, root, depth };
       this.watchedDirectories.set(directory, entry);
       watcher.on("error", () => {
         const current = this.watchedDirectories.get(directory);
         if (current !== entry) return;
-        current.watcher.close();
         this.watchedDirectories.delete(directory);
+        current.watcher.close();
         this.scheduleRescan(this.retryMs);
       });
       return true;
@@ -414,11 +479,7 @@ export class SessionCatalogMonitor {
 }
 
 function normalizeRevisionSeed(value: number | undefined): number {
-  if (
-    typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= 0
-  ) {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
     return value;
   }
   // Equality, not wall-clock meaning, is the cache contract. Date.now() gives
