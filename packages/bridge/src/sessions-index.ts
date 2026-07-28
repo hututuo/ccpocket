@@ -100,6 +100,11 @@ export interface GetRecentSessionsOptions {
   namedOnly?: boolean;
   /** Free-text search across name, firstPrompt, lastPrompt and summary. */
   searchQuery?: string;
+  /**
+   * Internal lightweight catalog projection. Indexed Claude entries keep their
+   * durable identity and modified timestamp without optional JSONL enrichment.
+   */
+  metadataOnly?: boolean;
 }
 
 export interface GetRecentSessionsResult {
@@ -197,6 +202,7 @@ function logRecentSessionsPerf(
       projectPath: projectPathLabel || undefined,
       provider: options.provider ?? "all",
       namedOnly: options.namedOnly ?? false,
+      metadataOnly: options.metadataOnly ?? false,
       searchQuery: options.searchQuery ? "<set>" : "<none>",
       archivedSessionIds: options.archivedSessionIds?.size ?? 0,
       archivedSessionKeys: options.archivedSessionKeys?.size ?? 0,
@@ -686,6 +692,7 @@ async function parseClaudeJsonlFileFast(
 async function hydrateClaudeIndexedEntry(
   dirPath: string,
   entry: RawSessionEntry,
+  options: { metadataOnly?: boolean } = {},
 ): Promise<SessionIndexEntry | null> {
   if (isAutoRenamePromptText(entry.firstPrompt ?? "")) return null;
 
@@ -706,6 +713,13 @@ async function hydrateClaudeIndexedEntry(
       : {}),
     isSidechain: entry.isSidechain ?? false,
   };
+
+  // The conversation-content scheduler only needs durable identity and the
+  // modified timestamp to decide what to enqueue. Avoid parsing every indexed
+  // JSONL merely to enrich display fields that this internal caller discards.
+  // If the timestamp is missing, retain the repair path so change detection
+  // never becomes permanently blind for a malformed/old index entry.
+  if (options.metadataOnly && base.modified) return base;
 
   const needsJsonlRepair =
     !base.firstPrompt ||
@@ -1050,7 +1064,9 @@ export async function getAllRecentSessions(
             }
 
             indexedIds.add(entry.sessionId);
-            const hydrated = await hydrateClaudeIndexedEntry(dirPath, entry);
+            const hydrated = await hydrateClaudeIndexedEntry(dirPath, entry, {
+              metadataOnly: options.metadataOnly,
+            });
             if (hydrated) {
               result.entries.push(hydrated);
               result.indexEntries += 1;
@@ -1221,7 +1237,7 @@ export async function getAllRecentSessions(
   const needLastPrompt = sliced.filter(
     (e) => e.provider === "claude" && !e.lastPrompt && e.projectPath,
   );
-  if (needLastPrompt.length > 0) {
+  if (!options.metadataOnly && needLastPrompt.length > 0) {
     const projectsDir = join(homedir(), ".claude", "projects");
     await parallelMap(
       needLastPrompt,

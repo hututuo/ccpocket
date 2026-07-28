@@ -2957,6 +2957,79 @@ describe("claude namedOnly optimization", () => {
     expect(result.sessions[0].name).toBe("My named session");
   });
 
+  it("keeps the content scheduler catalog on indexed metadata", async () => {
+    const projectDir = join(tempHome, ".claude", "projects", "-tmp-project-a");
+    const sessionId = "metadata-only-session";
+    const jsonlPath = join(projectDir, `${sessionId}.jsonl`);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "sessions-index.json"),
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            sessionId,
+            fullPath: jsonlPath,
+            fileMtime: Date.now(),
+            firstPrompt: "first prompt",
+            messageCount: 3,
+            created: "2026-02-13T11:00:00.000Z",
+            modified: "2026-02-13T12:00:00.000Z",
+            gitBranch: "main",
+            projectPath: "/tmp/project-a",
+            isSidechain: false,
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      jsonlPath,
+      [
+        JSON.stringify({
+          type: "user",
+          uuid: "user-1",
+          cwd: "/tmp/project-a",
+          timestamp: "2026-02-13T11:00:00.000Z",
+          message: { role: "user", content: "first prompt" },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "assistant-1",
+          cwd: "/tmp/project-a",
+          timestamp: "2026-02-13T11:30:00.000Z",
+          message: { role: "assistant", content: "working" },
+        }),
+        JSON.stringify({
+          type: "user",
+          uuid: "user-2",
+          cwd: "/tmp/project-a",
+          timestamp: "2026-02-13T12:00:00.000Z",
+          message: { role: "user", content: "latest prompt" },
+        }),
+      ].join("\n"),
+    );
+
+    const metadataOnly = await getAllRecentSessions({
+      provider: "claude",
+      limit: 200,
+      metadataOnly: true,
+    });
+    const enriched = await getAllRecentSessions({
+      provider: "claude",
+      limit: 200,
+    });
+
+    expect(metadataOnly.sessions).toHaveLength(1);
+    expect(metadataOnly.sessions[0]).toMatchObject({
+      sessionId,
+      modified: "2026-02-13T12:00:00.000Z",
+      firstPrompt: "first prompt",
+    });
+    expect(metadataOnly.sessions[0].lastPrompt).toBeUndefined();
+    expect(enriched.sessions).toHaveLength(1);
+    expect(enriched.sessions[0].lastPrompt).toBe("latest prompt");
+  });
+
   it("finds an exact Claude session outside the first recent page", async () => {
     const projectDir = join(tempHome, ".claude", "projects", "-tmp-project-a");
     mkdirSync(projectDir, { recursive: true });

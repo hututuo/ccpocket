@@ -176,6 +176,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
           await getAllRecentSessions({
             limit: this.maxCatalogEntries,
             offset: 0,
+            metadataOnly: true,
           })
         ).sessions);
     this.historyReader = options.historyReader ?? readDurableHistory;
