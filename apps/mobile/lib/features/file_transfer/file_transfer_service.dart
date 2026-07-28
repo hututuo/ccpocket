@@ -357,10 +357,12 @@ class FileTransferService extends ChangeNotifier {
   final Map<String, Completer<FileTransferRecord>> _uploadCompletions = {};
   final Map<String, FileMutationAuthorization>
   _uploadMutationAuthorizations = {};
+  final Set<Future<void>> _backgroundOperations = {};
   List<ReceivedFileTransfer> _receivedFiles = const [];
   Set<String> _unreadReceivedPaths = const {};
 
   FileTransferCancellation? _activeCancellation;
+  Timer? _completionRecoveryRetryTimer;
   _TransferWork? _activeWork;
   _TransferWork? _pausedWork;
   _PendingUploadResponse? _pendingUploadResponse;
@@ -375,6 +377,7 @@ class FileTransferService extends ChangeNotifier {
   bool _resumeWhenIdleRequested = false;
   bool _recoveryRescanRequested = false;
   bool _disposed = false;
+  bool _notifierDisposed = false;
   bool _autoResume = true;
   bool _receivedInboxLoaded = false;
   int _receivedSeenBeforeMicros = 0;
@@ -385,6 +388,8 @@ class FileTransferService extends ChangeNotifier {
   int _reservedReceiveBytes = 0;
   DateTime? _lastProgressNotify;
   ({bool connected, String? identity, bool supported})? _lastCapabilitySnapshot;
+  List<Future<void>>? _subscriptionCancellations;
+  Future<void>? _closeFuture;
 
   bool get platformSupported => _platformSupported;
   bool get receivedFileExportSupported => _receivedFileExportSupported;
@@ -1115,21 +1120,27 @@ class FileTransferService extends ChangeNotifier {
     );
     final retryGeneration = _completionRecoveryRetryGeneration;
     _completionRecoveryRetryScheduled = true;
-    _launch(
-      Future<void>.delayed(Duration(microseconds: retryMicros)).then((_) async {
+    _completionRecoveryRetryTimer = Timer(
+      Duration(microseconds: retryMicros),
+      () {
+        _completionRecoveryRetryTimer = null;
         if (retryGeneration != _completionRecoveryRetryGeneration) return;
         _completionRecoveryRetryScheduled = false;
         if (!uploadAvailable) return;
-        await _drain(completedOnly: true);
-        if (_completionRecoveryQueue.isNotEmpty) {
-          _scheduleCompletionRecoveryRetry();
-        }
-      }),
+        _launch(() async {
+          await _drain(completedOnly: true);
+          if (_completionRecoveryQueue.isNotEmpty) {
+            _scheduleCompletionRecoveryRetry();
+          }
+        }());
+      },
     );
   }
 
   void _resetCompletionRecoveryRetryRound({bool reopenExhausted = false}) {
     _completionRecoveryRetryGeneration++;
+    _completionRecoveryRetryTimer?.cancel();
+    _completionRecoveryRetryTimer = null;
     _completionRecoveryRetryScheduled = false;
     if (reopenExhausted) {
       for (final transferId in _completionRecoveryAttempts.keys) {
@@ -2308,6 +2319,7 @@ class FileTransferService extends ChangeNotifier {
     final recoveryGeneration = _logicalIdentityGeneration;
     final identity = _stableIdentity ?? '';
     bool stillCurrent() =>
+        !_disposed &&
         identity.isNotEmpty &&
         recoveryGeneration == _logicalIdentityGeneration &&
         uploadAvailable &&
@@ -2584,7 +2596,17 @@ class FileTransferService extends ChangeNotifier {
   }
 
   void _launch(Future<void> future) {
-    unawaited(future.catchError((Object _, StackTrace _) {}));
+    late final Future<void> tracked;
+    tracked = future
+        .catchError((Object error, StackTrace _) {
+          if (_disposed) return;
+          debugPrint('[file-transfer] background operation failed: $error');
+        })
+        .whenComplete(() {
+          _backgroundOperations.remove(tracked);
+        });
+    _backgroundOperations.add(tracked);
+    unawaited(tracked);
   }
 
   void _notifySafely(Future<void>? Function() notification) {
@@ -2727,21 +2749,50 @@ class FileTransferService extends ChangeNotifier {
     notifyListeners();
   }
 
-  @override
-  void dispose() {
+  Future<void> close() {
+    _beginClose();
+    final existing = _closeFuture;
+    if (existing != null) return existing;
+    final closing = _finishClose();
+    _closeFuture = closing;
+    return closing;
+  }
+
+  void _beginClose() {
     if (_disposed) return;
     _disposed = true;
     _activeCancellation?.cancel();
+    _completionRecoveryRetryTimer?.cancel();
+    _completionRecoveryRetryTimer = null;
+    _completionRecoveryRetryScheduled = false;
+    _completionRecoveryRetryGeneration++;
     _uploadMutationAuthorizations.clear();
     const disposed = FileTransferException('disposed');
     _failUploadCompletions(disposed);
     _failPendingUpload(disposed);
-    _failPendingDownload(const FileTransferException('disposed'));
-    _failPendingCancel(const FileTransferException('disposed'));
-    unawaited(_messageSubscription.cancel());
-    unawaited(_connectionSubscription.cancel());
-    unawaited(_capabilitySubscription.cancel());
+    _failPendingDownload(disposed);
+    _failPendingCancel(disposed);
+    _subscriptionCancellations = [
+      _messageSubscription.cancel(),
+      _connectionSubscription.cancel(),
+      _capabilitySubscription.cancel(),
+    ];
     if (_ownsHttpClient) _httpClient.close();
+  }
+
+  Future<void> _finishClose() async {
+    await Future.wait(_subscriptionCancellations ?? const []);
+    while (_backgroundOperations.isNotEmpty) {
+      await Future.wait(_backgroundOperations.toList(growable: false));
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_notifierDisposed) return;
+    _notifierDisposed = true;
+    _beginClose();
+    unawaited(close());
     super.dispose();
   }
 }

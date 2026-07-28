@@ -34,6 +34,7 @@ void main() {
   late FileTransferStorage storage;
   late _FakeBridge bridge;
   late _FakeNotifications notifications;
+  late List<FileTransferService> services;
 
   FileTransferService createService({
     required http.Client client,
@@ -46,22 +47,26 @@ void main() {
     int completionRecoveryRetryLimit = fileTransferCompletionRecoveryRetryLimit,
     Duration completionRecoveryMaxRetryDelay =
         fileTransferCompletionRecoveryMaxRetryDelay,
-  }) => FileTransferService(
-    bridge: bridge,
-    storage: storageOverride ?? storage,
-    picker: picker ?? const _FakePicker(null),
-    capacity: const _FakeCapacity(),
-    commit: const _FakeCommit(),
-    platformSupported: true,
-    notifications: notificationsOverride ?? notifications,
-    httpClient: client,
-    preferences: preferences,
-    clock: clock ?? _fixtureNow,
-    requestIdGenerator: _SequenceIds().next,
-    completionRecoveryRetryDelay: completionRecoveryRetryDelay,
-    completionRecoveryRetryLimit: completionRecoveryRetryLimit,
-    completionRecoveryMaxRetryDelay: completionRecoveryMaxRetryDelay,
-  );
+  }) {
+    final service = FileTransferService(
+      bridge: bridge,
+      storage: storageOverride ?? storage,
+      picker: picker ?? const _FakePicker(null),
+      capacity: const _FakeCapacity(),
+      commit: const _FakeCommit(),
+      platformSupported: true,
+      notifications: notificationsOverride ?? notifications,
+      httpClient: client,
+      preferences: preferences,
+      clock: clock ?? _fixtureNow,
+      requestIdGenerator: _SequenceIds().next,
+      completionRecoveryRetryDelay: completionRecoveryRetryDelay,
+      completionRecoveryRetryLimit: completionRecoveryRetryLimit,
+      completionRecoveryMaxRetryDelay: completionRecoveryMaxRetryDelay,
+    );
+    services.add(service);
+    return service;
+  }
 
   Future<ReceiveTransferCheckpoint> seedCompletedReceive({
     bool notificationPending = false,
@@ -276,9 +281,14 @@ void main() {
     );
     bridge = _FakeBridge();
     notifications = _FakeNotifications();
+    services = [];
   });
 
   tearDown(() async {
+    for (final service in services.reversed) {
+      await service.close();
+      service.dispose();
+    }
     await bridge.close();
     try {
       await root.delete(recursive: true);
@@ -2731,6 +2741,35 @@ void main() {
     });
 
     await service.initialize();
+    final completionWait = Stopwatch()..start();
+    while (!completed.isCompleted &&
+        completionWait.elapsed < const Duration(seconds: 5)) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    if (!completed.isCompleted) {
+      final sentTypes = bridge.sentJson
+          .map((message) => message['type'])
+          .whereType<String>()
+          .toList(growable: false);
+      final resultStates = service.recentResults
+          .map(
+            (result) =>
+                '${result.status.name}:${result.errorCode ?? '<no-error>'}',
+          )
+          .toList(growable: false);
+      final storedReceives = await storage.loadReceives('machine-1');
+      final partialLength = await (await storage.receivePartial(
+        checkpoint,
+      )).length();
+      fail(
+        'Automatic recovery did not finish within 5 seconds '
+        '(sent=$sentTypes, results=$resultStates, '
+        'queued=${service.queuedTransferCount}, '
+        'active=${service.activeTransfer?.status.name ?? '<none>'}, '
+        'available=${service.uploadAvailable}, '
+        'stored=${storedReceives.length}, partial=$partialLength).',
+      );
+    }
     await completed.future;
 
     expect(await File('${downloads.path}/report.bin').readAsBytes(), [
