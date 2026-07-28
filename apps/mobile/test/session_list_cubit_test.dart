@@ -23,6 +23,7 @@ class MockBridgeService extends BridgeService {
   final sentMessages = <ClientMessage>[];
   int sessionListRequestCount = 0;
   int catalogRequestCount = 0;
+  final catalogRequestLimits = <int>[];
   bool testHasAuthoritativeRecentSessions = false;
   bool throwOnSwitchFilter = false;
   void Function()? onRequestProjectHistory;
@@ -141,6 +142,7 @@ class MockBridgeService extends BridgeService {
   @override
   void requestRecentSessionsCatalog({int limit = 1000}) {
     catalogRequestCount++;
+    catalogRequestLimits.add(limit);
   }
 
   @override
@@ -912,6 +914,49 @@ void main() {
       expect(cubit.state.sessions, hasLength(2));
       expect(cubit.state.hasMore, isFalse);
     });
+
+    test(
+      'incomplete catalog refreshes expand until the snapshot is complete',
+      () async {
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: List.generate(250, (index) => _session(id: 's$index')),
+            hasMore: true,
+            limit: 200,
+            offset: 0,
+            requestScope: 'catalog',
+            catalogRevision: 10,
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(mockBridge.catalogRequestLimits, [1000]);
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: List.generate(1100, (index) => _session(id: 's$index')),
+            hasMore: true,
+            limit: 1000,
+            offset: 0,
+            requestScope: 'catalog',
+            catalogRevision: 10,
+          ),
+        );
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: List.generate(1100, (index) => _session(id: 's$index')),
+            hasMore: true,
+            limit: 1000,
+            offset: 0,
+            requestScope: 'catalog',
+            catalogRevision: 10,
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(mockBridge.catalogRequestLimits, [1000, 2200]);
+      },
+    );
 
     test(
       'selectProject triggers server re-fetch with isInitialLoading',

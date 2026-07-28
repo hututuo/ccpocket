@@ -1722,13 +1722,14 @@ class BridgeService implements BridgeServiceBase {
                   );
                 } else if (recentResponse.requestScope == 'catalog') {
                   final catalogLimit = recentResponse.limit ?? sessions.length;
-                  _recentSessionsHasMore =
-                      hasMore || _recentSessions.length > catalogLimit;
-                  _recentSessions = _replaceRecentSessionsCatalogPrefix(
-                    _recentSessions,
-                    sessions,
-                    catalogLimit,
-                  );
+                  _recentSessionsHasMore = hasMore;
+                  _recentSessions = hasMore
+                      ? _replaceRecentSessionsCatalogPrefix(
+                          _recentSessions,
+                          sessions,
+                          catalogLimit,
+                        )
+                      : sessions;
                   _finishSessionCatalogRefresh();
                 } else {
                   _recentSessionsHasMore = hasMore;

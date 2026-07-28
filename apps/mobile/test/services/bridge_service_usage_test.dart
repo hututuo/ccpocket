@@ -619,6 +619,95 @@ void main() {
     );
 
     test(
+      'a complete catalog refresh removes stale entries beyond the old prefix',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        Map<String, Object?> sessionJson(int index) => {
+          'sessionId': 'session-$index',
+          'provider': 'codex',
+          'firstPrompt': 'Session $index',
+          'created': '2026-07-25T00:00:00Z',
+          'modified': '2026-07-25T00:00:00Z',
+          'gitBranch': '',
+          'projectPath': '/project',
+          'isSidechain': false,
+        };
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [sessionCatalogWatchCapability],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        bridge.requestRecentSessions(limit: 201);
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': List.generate(201, sessionJson),
+            'hasMore': false,
+            'limit': 201,
+            'offset': 0,
+            'requestScope': 'list',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        expect(bridge.recentSessions, hasLength(201));
+        outgoing.clear();
+
+        socket.add(
+          jsonEncode({
+            'type': sessionCatalogChangedMessageType,
+            'revision': 1,
+            'occurredAt': '2026-07-25T00:00:03Z',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        final refresh = outgoing
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .firstWhere(
+              (message) =>
+                  message['type'] == 'list_recent_sessions' &&
+                  message['requestScope'] == 'catalog',
+            );
+        expect(refresh['limit'], 200);
+
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': List.generate(199, sessionJson),
+            'hasMore': false,
+            'limit': 200,
+            'offset': 0,
+            'requestScope': 'catalog',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(bridge.recentSessions, hasLength(199));
+        expect(bridge.recentSessionsHasMore, isFalse);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'computer activity timestamps reorder cached sessions without delta spam',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

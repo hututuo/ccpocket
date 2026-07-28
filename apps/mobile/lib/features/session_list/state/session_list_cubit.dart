@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -791,16 +792,25 @@ class SessionListCubit extends Cubit<SessionListState> {
     RecentSessionsMessage response, {
     required bool canReuseCompleteCache,
   }) {
+    final requestScope = response.requestScope;
+    final isListResponse = requestScope == null || requestScope == 'list';
+    final isCatalogResponse = requestScope == 'catalog';
     if (canReuseCompleteCache ||
         !response.hasMore ||
         (response.offset ?? 0) != 0 ||
-        (response.requestScope != null && response.requestScope != 'list')) {
+        (!isListResponse && !isCatalogResponse)) {
       return;
     }
+    final currentLimit = response.limit ?? response.sessions.length;
+    final expansionLimit = isCatalogResponse
+        ? max(1000, max(currentLimit, response.sessions.length) * 2)
+        : null;
     final requestKey = [
       _bridge.authoritativeSessionListGeneration,
       response.catalogRevision ?? -1,
       response.queryGeneration ?? -1,
+      requestScope ?? '',
+      expansionLimit ?? 1000,
       response.provider ?? '',
       response.namedOnly == true ? 1 : 0,
       response.searchQuery ?? '',
@@ -808,7 +818,11 @@ class SessionListCubit extends Cubit<SessionListState> {
     ].join('\n');
     if (_catalogExpansionRequestKey == requestKey) return;
     _catalogExpansionRequestKey = requestKey;
-    _bridge.requestRecentSessionsCatalog();
+    if (expansionLimit == null) {
+      _bridge.requestRecentSessionsCatalog();
+    } else {
+      _bridge.requestRecentSessionsCatalog(limit: expansionLimit);
+    }
   }
 
   /// Send a re-fetch request with all current filters applied.
