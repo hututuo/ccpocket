@@ -943,6 +943,132 @@ void main() {
     },
   );
 
+  test('snapshot pages do not rebuild global mirror listeners', () async {
+    late String requestId;
+    bridge.onSend = (request) {
+      if (request['type'] == 'conversation_mirror_watch') {
+        requestId = request['requestId'] as String;
+      }
+    };
+
+    final download = service.downloadAndWatch(_recentSession);
+    await _waitUntil(() async => bridge.sent.isNotEmpty);
+
+    final messages = [
+      <String, dynamic>{
+        'type': 'user_input',
+        'text': 'first page',
+        'userMessageUuid': 'codex:user-turn:0',
+      },
+      <String, dynamic>{
+        'type': 'assistant',
+        'messageUuid': 'assistant-1',
+        'message': {
+          'id': 'assistant-1',
+          'role': 'assistant',
+          'model': 'gpt-test',
+          'content': [
+            {'type': 'text', 'text': 'second page'},
+          ],
+        },
+      },
+    ];
+    final revision = _hashText('two-page-snapshot');
+    final generation = '$requestId:$revision';
+    final totalBytes = messages.fold<int>(
+      0,
+      (total, message) => total + utf8.encode(jsonEncode(message)).length,
+    );
+    var notifications = 0;
+    service.addListener(() => notifications += 1);
+
+    bridge
+      ..emit(_event(requestId: requestId, event: 'accepted'))
+      ..emit(
+        _event(
+          requestId: requestId,
+          event: 'watching',
+          revision: revision,
+          threadStatus: 'idle',
+        ),
+      )
+      ..emit(
+        _event(
+          requestId: requestId,
+          event: 'snapshot_begin',
+          revision: revision,
+          entryCount: messages.length,
+          pageCount: 2,
+          totalBytes: totalBytes,
+        ),
+      );
+
+    final db = await database.database;
+    Future<int?> stagedEntryCount() async {
+      final rows = await db.query(
+        ConversationMirrorDatabase.stagingTable,
+        columns: ['actual_entry_count'],
+        where:
+            'bridge_instance_id = ? AND provider = ? AND '
+            'provider_session_id = ? AND generation = ?',
+        whereArgs: [
+          'bridge-test',
+          'codex',
+          'provider-session-1',
+          generation,
+        ],
+      );
+      return rows.isEmpty ? null : rows.single['actual_entry_count'] as int;
+    }
+
+    await _waitUntil(() async => await stagedEntryCount() == 0);
+    await Future<void>.delayed(Duration.zero);
+    notifications = 0;
+
+    for (var pageIndex = 0; pageIndex < messages.length; pageIndex++) {
+      final message = messages[pageIndex];
+      bridge.emit(
+        _event(
+          requestId: requestId,
+          event: 'snapshot_page',
+          revision: revision,
+          pageIndex: pageIndex,
+          pageCount: messages.length,
+          entries: [
+            {
+              'entryId': 'entry-$pageIndex',
+              'index': pageIndex,
+              'contentHash': _hashJson(message),
+              'message': message,
+            },
+          ],
+        ),
+      );
+      await _waitUntil(
+        () async => await stagedEntryCount() == pageIndex + 1,
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        notifications,
+        0,
+        reason: 'persisting an invisible snapshot page must not rebuild Home',
+      );
+    }
+
+    bridge.emit(
+      _event(
+        requestId: requestId,
+        event: 'snapshot_complete',
+        revision: revision,
+        entryCount: messages.length,
+      ),
+    );
+    final result = await download;
+
+    expect(result.success, isTrue);
+    expect(notifications, greaterThan(0));
+  });
+
   test(
     'remove cancels a pre-accept watch and ignores its late snapshot',
     () async {

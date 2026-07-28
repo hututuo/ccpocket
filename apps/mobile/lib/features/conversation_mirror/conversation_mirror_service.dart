@@ -1406,7 +1406,12 @@ class ConversationMirrorService extends ChangeNotifier {
       _clearEntryChunksForRequest(event.requestId);
       _transferGuardsByRequestId.remove(event.requestId);
     }
-    _notifyListeners();
+    // Snapshot pages only populate an invisible staging generation. Nothing
+    // observable changes until snapshotComplete atomically promotes it, so
+    // rebuilding every Home badge for every page is pure UI work.
+    if (event.event != ConversationMirrorEventKind.snapshotPage) {
+      _notifyListeners();
+    }
   }
 
   ConversationMirrorEntryInput _entryInput(ConversationMirrorWireEntry entry) =>
