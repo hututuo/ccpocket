@@ -195,12 +195,16 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                                 visualStatus.animate,
                           ),
                           const SizedBox(width: 6),
-                          Text(
-                            statusLabel,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: statusColor,
+                          Flexible(
+                            child: Text(
+                              statusLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: statusColor,
+                              ),
                             ),
                           ),
                         ] else if (isIdleUnseen)

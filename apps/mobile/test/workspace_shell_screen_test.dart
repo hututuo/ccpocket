@@ -106,6 +106,9 @@ class _MockBridgeService extends BridgeService {
   String? get lastUrl => _lastUrl;
 
   @override
+  String? get bridgeInstanceId => 'workspace-shell-test-bridge';
+
+  @override
   List<SessionInfo> get sessions => _sessions;
 
   @override
@@ -507,7 +510,7 @@ SessionInfo _runningSession({
   id: id,
   provider: provider.value,
   projectPath: '/Users/demo/project-$id',
-  status: 'idle',
+  status: 'working',
   createdAt: '2025-01-01T00:00:00Z',
   lastActivityAt: '2025-01-01T00:00:00Z',
   gitBranch: 'main',
