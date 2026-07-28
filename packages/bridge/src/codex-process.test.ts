@@ -395,6 +395,41 @@ describe("CodexProcess (app-server)", () => {
     await inputLoop;
   });
 
+  it("keeps the input loop alive when image staging fails", async () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    const messages: Array<Record<string, unknown>> = [];
+    let inputReadyCount = 0;
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+    proc.on("input_ready", () => {
+      inputReadyCount += 1;
+    });
+    internal._threadId = "thread-image-staging";
+    vi.spyOn(internal, "toRpcInput").mockRejectedValueOnce(
+      new Error("temporary image write failed"),
+    );
+
+    const inputLoop = internal.runInputLoop() as Promise<void>;
+    await tick();
+    proc.sendInput("describe this image");
+    await tick();
+    await tick();
+
+    expect(inputReadyCount).toBe(2);
+    expect(proc.isWaitingForInput).toBe(true);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        message: "Failed to prepare Codex input: temporary image write failed",
+      }),
+    );
+
+    proc.stop();
+    await inputLoop;
+  });
+
   it("clears every pending interaction and resolves its mobile card on stop", () => {
     const proc = new CodexProcess("linux");
     const child = new FakeChildProcess();
@@ -2365,6 +2400,126 @@ describe("CodexProcess (app-server)", () => {
       }),
     );
 
+    proc.stop();
+  });
+
+  it("accepts same-chunk notifications after an authoritative thread response", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+
+    const request = internal.request("thread/start", {
+      cwd: "/tmp/project-same-chunk",
+    }) as Promise<unknown>;
+    const outgoing = nextOutgoingRequest(child);
+    internal.handleStdoutChunk(
+      [
+        JSON.stringify({
+          id: outgoing.id,
+          result: { thread: { id: "thread-same-chunk" } },
+        }),
+        JSON.stringify({
+          method: "turn/started",
+          params: {
+            threadId: "thread-same-chunk",
+            turn: { id: "turn-same-chunk" },
+          },
+        }),
+        JSON.stringify({
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "thread-same-chunk",
+            turnId: "turn-same-chunk",
+            itemId: "item-same-chunk",
+            delta: "visible",
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    await expect(request).resolves.toEqual({
+      thread: { id: "thread-same-chunk" },
+    });
+    expect(internal._threadId).toBe("thread-same-chunk");
+    expect(proc.activeTurnId).toBe("turn-same-chunk");
+    expect(messages).toContainEqual({
+      type: "stream_delta",
+      text: "visible",
+    });
+    proc.stop();
+  });
+
+  it("does not bind an invalid same-chunk ephemeral fork response", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+
+    const request = internal.request("thread/fork", {
+      threadId: "parent-thread",
+      ephemeral: true,
+    }) as Promise<unknown>;
+    const outgoing = nextOutgoingRequest(child);
+    internal.handleStdoutChunk(
+      [
+        JSON.stringify({
+          id: outgoing.id,
+          result: {
+            thread: {
+              id: "parent-thread",
+              ephemeral: false,
+              path: "/tmp/not-ephemeral.jsonl",
+            },
+          },
+        }),
+        JSON.stringify({
+          method: "turn/started",
+          params: {
+            threadId: "parent-thread",
+            turn: { id: "foreign-turn" },
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    await request;
+    expect(internal._threadId).toBeNull();
+    expect(proc.activeTurnId).toBeUndefined();
+    proc.stop();
+  });
+
+  it("bounds unterminated app-server output and recovers at the next line", () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+
+    internal.maxAppServerJsonLineBytes = 64;
+    internal.handleStdoutChunk("x".repeat(65));
+    expect(Buffer.byteLength(internal.stdoutBuffer, "utf8")).toBeLessThanOrEqual(
+      64,
+    );
+
+    internal.handleStdoutChunk(
+      `\n${JSON.stringify({
+        method: "warning",
+        params: { message: "stream recovered" },
+      })}\n`,
+    );
+    expect(messages).toContainEqual({
+      type: "error",
+      errorCode: "codex_warning",
+      message: "stream recovered",
+    });
     proc.stop();
   });
 

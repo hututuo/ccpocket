@@ -32,6 +32,10 @@ const COMPLETION_FETCH_COOLDOWN_MS = 1000;
 const NATIVE_PLAN_MODE_PROBE_TIMEOUT_MS = 1500;
 const NATIVE_PLAN_MODE_EXPLICIT_PROBE_TIMEOUT_MS = 5000;
 const GUARDIAN_REVIEW_ENRICHMENT_DELAY_MS = 75;
+// Large thread/read replies are legitimate for long sessions, so keep this
+// well above ordinary RPC frames while still preventing unbounded growth on
+// a corrupted or never-terminated line.
+const MAX_APP_SERVER_JSON_LINE_BYTES = 128 * 1024 * 1024;
 const CODEX_CLI_NOT_FOUND_MESSAGE =
   "Codex CLI is not installed or not available on PATH on the Bridge machine. Install it with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`, then restart Bridge.";
 
@@ -276,6 +280,10 @@ interface PendingRpc {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   method: string;
+  threadBinding?: {
+    sourceThreadId?: string;
+    ephemeral?: boolean;
+  };
   goalOrderingGeneration?: number;
   timeout?: ReturnType<typeof setTimeout>;
   signal?: AbortSignal;
@@ -579,6 +587,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   >();
 
   private stdoutBuffer = "";
+  private discardingOversizedStdoutLine = false;
+  private readonly maxAppServerJsonLineBytes =
+    MAX_APP_SERVER_JSON_LINE_BYTES;
 
   // Collaboration mode & plan completion state
   private _approvalPolicy: string | null | undefined = undefined;
@@ -1909,6 +1920,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.pendingUserInputs.clear();
     this.clearPendingGuardianReviewWarnings();
     this.cleanupSteerTempPaths();
+    this.stdoutBuffer = "";
+    this.discardingOversizedStdoutLine = false;
     this.rejectAllPending(error);
 
     for (const toolUseId of resolvedPermissionIds) {
@@ -3503,7 +3516,28 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         continue;
       }
 
-      const { input, tempPaths } = await this.toRpcInput(pendingInput);
+      let input: Array<Record<string, unknown>> | null;
+      let tempPaths: string[];
+      try {
+        ({ input, tempPaths } = await this.toRpcInput(pendingInput));
+      } catch (error) {
+        if (!this.isRuntimeActive(runtimeGeneration)) break;
+        const detail = error instanceof Error ? error.message : String(error);
+        const message = `Failed to prepare Codex input: ${detail}`;
+        this.emitMessage({
+          type: "error",
+          errorCode: "codex_input_prepare_failed",
+          message,
+        });
+        this.emitMessage({
+          type: "result",
+          subtype: "error",
+          error: message,
+          sessionId: this._threadId,
+        });
+        this.setStatus("idle");
+        continue;
+      }
       if (!this.isRuntimeActive(runtimeGeneration)) {
         await Promise.all(
           tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
@@ -3663,12 +3697,37 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   private handleStdoutChunk(chunk: string): void {
-    this.stdoutBuffer += chunk;
+    let remaining = chunk;
+    if (this.discardingOversizedStdoutLine) {
+      const newlineIndex = remaining.indexOf("\n");
+      if (newlineIndex < 0) return;
+      remaining = remaining.slice(newlineIndex + 1);
+      this.discardingOversizedStdoutLine = false;
+    }
+
+    this.stdoutBuffer += remaining;
     while (true) {
       const newlineIndex = this.stdoutBuffer.indexOf("\n");
-      if (newlineIndex < 0) break;
-      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
+      if (newlineIndex < 0) {
+        if (
+          Buffer.byteLength(this.stdoutBuffer, "utf8") >
+          this.maxAppServerJsonLineBytes
+        ) {
+          this.stdoutBuffer = "";
+          this.discardingOversizedStdoutLine = true;
+          this.reportOversizedStdoutLine();
+        }
+        break;
+      }
+      const rawLine = this.stdoutBuffer.slice(0, newlineIndex);
       this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
+      if (
+        Buffer.byteLength(rawLine, "utf8") > this.maxAppServerJsonLineBytes
+      ) {
+        this.reportOversizedStdoutLine();
+        continue;
+      }
+      const line = rawLine.trim();
       if (!line) continue;
 
       try {
@@ -3685,6 +3744,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           });
         }
       }
+    }
+  }
+
+  private reportOversizedStdoutLine(): void {
+    console.warn(
+      `[codex-process] discarded app-server JSON line larger than ${this.maxAppServerJsonLineBytes} bytes`,
+    );
+    if (!this.stopped) {
+      this.emitMessage({
+        type: "error",
+        errorCode: "codex_protocol_frame_too_large",
+        message:
+          "Codex app-server emitted an oversized protocol frame; the frame was discarded.",
+      });
     }
   }
 
@@ -3742,11 +3815,51 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     const result = (envelope as RpcSuccess).result;
     try {
       this.handleGoalRpcSuccess(pending, result);
+      this.bindThreadFromRpcSuccess(pending, result);
     } catch (error) {
       pending.reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
     pending.resolve(result);
+  }
+
+  private bindThreadFromRpcSuccess(
+    pending: PendingRpc,
+    result: unknown,
+  ): void {
+    const binding = pending.threadBinding;
+    if (!binding) return;
+
+    const resultRecord = asRecord(result);
+    const thread = asRecord(resultRecord?.thread);
+    const returnedThreadId = stringOrNull(thread?.id);
+    if (pending.method === "thread/start") {
+      if (returnedThreadId) this._threadId = returnedThreadId;
+      return;
+    }
+
+    const sourceThreadId = binding.sourceThreadId;
+    if (!sourceThreadId) return;
+    if (pending.method === "thread/resume") {
+      if (returnedThreadId == null || returnedThreadId === sourceThreadId) {
+        this._threadId = sourceThreadId;
+      }
+      return;
+    }
+
+    if (
+      pending.method !== "thread/fork" ||
+      !returnedThreadId ||
+      returnedThreadId === sourceThreadId
+    ) {
+      return;
+    }
+    if (binding.ephemeral) {
+      if (thread?.ephemeral !== true || thread.path !== null) return;
+    } else if (thread?.ephemeral === true) {
+      return;
+    }
+    this._threadId = returnedThreadId;
   }
 
   private handleGoalRpcSuccess(pending: PendingRpc, result: unknown): void {
@@ -4895,34 +5008,42 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       return { input, tempPaths };
     }
 
-    for (const image of pendingInput.images) {
-      const ext = extensionFromMime(image.mimeType);
-      if (!ext) {
-        this.emitMessage({
-          type: "error",
-          message: `Unsupported image mime type for Codex: ${image.mimeType}`,
-        });
-        continue;
-      }
+    try {
+      for (const image of pendingInput.images) {
+        const ext = extensionFromMime(image.mimeType);
+        if (!ext) {
+          this.emitMessage({
+            type: "error",
+            message: `Unsupported image mime type for Codex: ${image.mimeType}`,
+          });
+          continue;
+        }
 
-      let buffer: Buffer;
-      try {
-        buffer = Buffer.from(image.base64, "base64");
-      } catch {
-        this.emitMessage({
-          type: "error",
-          message: "Invalid base64 image data for Codex input",
-        });
-        continue;
-      }
+        let buffer: Buffer;
+        try {
+          buffer = Buffer.from(image.base64, "base64");
+        } catch {
+          this.emitMessage({
+            type: "error",
+            message: "Invalid base64 image data for Codex input",
+          });
+          continue;
+        }
 
-      const tempPath = join(
-        tmpdir(),
-        `ccpocket-codex-image-${randomUUID()}.${ext}`,
+        const tempPath = join(
+          tmpdir(),
+          `ccpocket-codex-image-${randomUUID()}.${ext}`,
+        );
+        // Register before writing so a partial file is removed as well.
+        tempPaths.push(tempPath);
+        await writeFile(tempPath, buffer);
+        input.push({ type: "localImage", path: tempPath });
+      }
+    } catch (error) {
+      await Promise.all(
+        tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
       );
-      await writeFile(tempPath, buffer);
-      tempPaths.push(tempPath);
-      input.push({ type: "localImage", path: tempPath });
+      throw error;
     }
 
     return { input, tempPaths };
@@ -4986,6 +5107,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         resolve,
         reject,
         method,
+        ...(method === "thread/start" ||
+        method === "thread/resume" ||
+        method === "thread/fork"
+          ? {
+              threadBinding: {
+                ...(typeof params?.threadId === "string"
+                  ? { sourceThreadId: params.threadId }
+                  : {}),
+                ...(method === "thread/fork"
+                  ? { ephemeral: params?.ephemeral === true }
+                  : {}),
+              },
+            }
+          : {}),
         ...(method === "thread/goal/get" ||
         method === "thread/goal/set" ||
         method === "thread/goal/clear"
