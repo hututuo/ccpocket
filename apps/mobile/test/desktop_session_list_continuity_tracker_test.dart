@@ -74,6 +74,16 @@ Map<String, dynamic> _json(ClientMessage message) =>
 
 Future<void> _flush() => Future<void>.delayed(Duration.zero);
 
+Future<void> _waitUntil(
+  bool Function() predicate, {
+  Duration timeout = const Duration(milliseconds: 250),
+}) async {
+  final stopwatch = Stopwatch()..start();
+  while (!predicate() && stopwatch.elapsed < timeout) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
 void main() {
   test('older Bridge does not receive an unknown list-watch request', () async {
     final bridge = _Bridge(advertisedCapabilities: const {})
@@ -523,7 +533,15 @@ void main() {
       await bridge.closeFake();
     });
 
-    await Future<void>.delayed(const Duration(milliseconds: 6));
+    await _waitUntil(
+      () =>
+          bridge.sent
+              .where(
+                (message) => message.type == 'codex_desktop_continuity_watch',
+              )
+              .length >
+          1,
+    );
     final watches = bridge.sent
         .where((message) => message.type == 'codex_desktop_continuity_watch')
         .toList(growable: false);
