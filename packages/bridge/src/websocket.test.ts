@@ -15796,7 +15796,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("merges codex thread/list into all-provider recent sessions without dropping scan-only codex sessions", async () => {
+  it("merges Claude scan with Codex thread/list without scanning Codex twice", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
       readyState: OPEN_STATE,
@@ -15839,26 +15839,6 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     getAllRecentSessionsMock.mockResolvedValue({
       sessions: [
         {
-          sessionId: "scan_codex_only",
-          provider: "codex",
-          firstPrompt: "Codex scan-only result",
-          created: "2026-03-01T00:00:00.000Z",
-          modified: "2026-03-01T00:00:00.000Z",
-          gitBranch: "main",
-          projectPath: "/tmp/project-codex",
-          isSidechain: false,
-        },
-        {
-          sessionId: "thr_codex_all",
-          provider: "codex",
-          firstPrompt: "Stale scan duplicate",
-          created: "2026-01-01T00:00:00.000Z",
-          modified: "2026-01-01T00:00:00.000Z",
-          gitBranch: "main",
-          projectPath: "/tmp/project-codex",
-          isSidechain: false,
-        },
-        {
           sessionId: "claude_recent",
           provider: "claude",
           firstPrompt: "Claude result",
@@ -15883,8 +15863,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(scanOptions).toMatchObject({
       limit: 20,
       offset: 0,
+      provider: "claude",
     });
-    expect(scanOptions).not.toHaveProperty("provider");
     expect(session.process.listThreads).toHaveBeenCalledWith({
       limit: 20,
       cwd: undefined,
@@ -15893,15 +15873,78 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
     expect(payload.hasMore).toBe(false);
     expect(payload.sessions.map((s: any) => s.sessionId)).toEqual([
-      "scan_codex_only",
       "thr_codex_all",
       "claude_recent",
     ]);
-    expect(payload.sessions[1]).toMatchObject({
+    expect(payload.sessions[0]).toMatchObject({
       sessionId: "thr_codex_all",
       provider: "codex",
       name: "Codex thread",
       firstPrompt: "Codex canonical result",
+    });
+
+    bridge.close();
+  });
+
+  it("uses a Codex-only rollout fallback when all-provider thread/list fails", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).listRecentCodexThreads = vi
+      .fn()
+      .mockRejectedValue(new Error("thread/list unavailable"));
+    getAllRecentSessionsMock
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            sessionId: "claude_recent",
+            provider: "claude",
+            firstPrompt: "Claude result",
+            created: "2026-01-01T00:00:00.000Z",
+            modified: "2026-01-01T00:00:00.000Z",
+            gitBranch: "main",
+            projectPath: "/tmp/project-claude",
+            isSidechain: false,
+          },
+        ],
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            sessionId: "codex_fallback",
+            provider: "codex",
+            firstPrompt: "Codex rollout fallback",
+            created: "2026-02-01T00:00:00.000Z",
+            modified: "2026-02-01T00:00:00.000Z",
+            gitBranch: "main",
+            projectPath: "/tmp/project-codex",
+            isSidechain: false,
+          },
+        ],
+        hasMore: false,
+      });
+
+    const payload = await (bridge as any).listRecentSessions({
+      type: "list_recent_sessions",
+      limit: 20,
+    });
+
+    expect(getAllRecentSessionsMock).toHaveBeenCalledTimes(2);
+    expect(getAllRecentSessionsMock.mock.calls[0][0]).toMatchObject({
+      limit: 20,
+      offset: 0,
+      provider: "claude",
+    });
+    expect(getAllRecentSessionsMock.mock.calls[1][0]).toMatchObject({
+      limit: 20,
+      offset: 0,
+      provider: "codex",
+    });
+    expect(payload).toMatchObject({
+      hasMore: false,
+      sessions: [
+        { sessionId: "codex_fallback", provider: "codex" },
+        { sessionId: "claude_recent", provider: "claude" },
+      ],
     });
 
     bridge.close();

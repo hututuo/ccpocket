@@ -10754,6 +10754,7 @@ export class BridgeWebSocketServer {
         limit: sourceLimit,
         offset: 0,
         projectPath: msg.projectPath,
+        provider: "claude",
         namedOnly: msg.namedOnly,
         searchQuery: msg.searchQuery,
         archivedSessionKeys: this.archiveStore.archivedKeys(this.codexSourceId),
