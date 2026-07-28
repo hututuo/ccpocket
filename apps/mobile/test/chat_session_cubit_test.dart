@@ -455,9 +455,10 @@ void main() {
       final cubit = createCubit('s1', provider: Provider.codex);
       addTearDown(cubit.close);
 
-      expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
-      expect(cubit.state.executionMode, ExecutionMode.fullAccess);
-      expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+        expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+        expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+        expect(cubit.state.codexPermissionStateKnown, isTrue);
+        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
       expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.fullAccess);
       expect(cubit.state.sandboxMode, SandboxMode.off);
       expect(cubit.state.codexModel, 'gpt-5.6-sol');
@@ -580,9 +581,16 @@ void main() {
         final cubit = createCubit('s1', provider: Provider.codex);
         addTearDown(cubit.close);
 
+        expect(cubit.state.codexPermissionStateKnown, isFalse);
         cubit.setSessionModes(planMode: true);
         expect(cubit.state.planMode, isTrue);
         expect(mockBridge.sentMessages.single.type, 'set_permission_mode');
+        final payload =
+            jsonDecode(mockBridge.sentMessages.single.toJson())
+                as Map<String, dynamic>;
+        expect(payload, isNot(contains('approvalPolicy')));
+        expect(payload, isNot(contains('approvalsReviewer')));
+        expect(payload, isNot(contains('codexPermissionsMode')));
 
         mockBridge.emitMessage(
           const ErrorMessage(
@@ -595,6 +603,7 @@ void main() {
 
         expect(cubit.state.planMode, isFalse);
         expect(cubit.state.inPlanMode, isFalse);
+        expect(cubit.state.codexPermissionStateKnown, isFalse);
         expect(
           cubit.state.codexNativePlanModeSupport,
           CodexNativePlanModeSupport.unsupported,
@@ -628,6 +637,27 @@ void main() {
         cubit.setSessionModes(planMode: true);
         expect(cubit.state.planMode, isTrue);
         expect(mockBridge.sentMessages, hasLength(2));
+      },
+    );
+
+    test(
+      'sandbox-only metadata does not fabricate a known Codex approval policy',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            provider: 'codex',
+            sandboxMode: 'danger-full-access',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.sandboxMode, SandboxMode.off);
+        expect(cubit.state.codexPermissionStateKnown, isFalse);
       },
     );
 
@@ -1590,8 +1620,9 @@ void main() {
         addTearDown(cubit.close);
         await Future.microtask(() {});
 
-        expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+      expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
         expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+        expect(cubit.state.codexPermissionStateKnown, isTrue);
         expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
         expect(cubit.state.codexApprovalsReviewer, 'user');
         expect(
@@ -1669,6 +1700,7 @@ void main() {
       await Future.microtask(() {});
 
       expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+      expect(cubit.state.codexPermissionStateKnown, isTrue);
       expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
       expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.fullAccess);
       expect(cubit.state.codexApprovalsReviewer, 'user');
@@ -1694,6 +1726,7 @@ void main() {
       await Future.microtask(() {});
 
       expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+      expect(cubit.state.codexPermissionStateKnown, isTrue);
       expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
       expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.custom);
       expect(cubit.state.codexApprovalsReviewer, 'auto_review');
@@ -1730,8 +1763,9 @@ void main() {
         await Future.microtask(() {});
 
         expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
-        expect(cubit.state.executionMode, ExecutionMode.fullAccess);
-        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+      expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+      expect(cubit.state.codexPermissionStateKnown, isTrue);
+      expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
         expect(
           cubit.state.codexPermissionsMode,
           CodexPermissionsMode.fullAccess,
@@ -4883,6 +4917,7 @@ void main() {
       addTearDown(cubit.close);
       await Future.microtask(() {});
 
+      expect(cubit.state.codexPermissionStateKnown, isFalse);
       cubit.setCodexPermissionsMode(
         CodexPermissionsMode.fullAccess,
         applyStrategy: CodexPermissionApplyStrategy.nextTurn,
@@ -4891,6 +4926,7 @@ void main() {
           (jsonDecode(mockBridge.sentMessages.last.toJson())
                   as Map<String, dynamic>)['permissionChangeId']
               as String;
+      expect(cubit.state.codexPermissionStateKnown, isTrue);
       expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.fullAccess);
       expect(cubit.state.sandboxMode, SandboxMode.off);
 
@@ -4909,6 +4945,7 @@ void main() {
         cubit.state.codexPermissionsMode,
         CodexPermissionsMode.defaultPermissions,
       );
+      expect(cubit.state.codexPermissionStateKnown, isFalse);
       expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.onRequest);
       expect(cubit.state.codexApprovalsReviewer, 'user');
       expect(cubit.state.sandboxMode, SandboxMode.on);
@@ -4946,6 +4983,7 @@ void main() {
         );
         await Future.microtask(() {});
 
+        expect(cubit.state.codexPermissionStateKnown, isTrue);
         mockBridge.emitMessage(
           ErrorMessage(
             message: 'late duplicate failure',

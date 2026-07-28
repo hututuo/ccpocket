@@ -201,6 +201,7 @@ void main() {
       provider: Provider.codex,
       bridge: bridge,
       streamingCubit: streamingCubit,
+      initialPermissionMode: PermissionMode.acceptEdits,
     );
     await Future<void>.microtask(() {});
   });
@@ -240,6 +241,25 @@ void main() {
     );
 
     expect(find.byType(VerticalDivider), findsNWidgets(2));
+  });
+
+  testWidgets('sparse Codex permission metadata is shown as unknown', (
+    tester,
+  ) async {
+    final unknownCubit = ChatSessionCubit(
+      sessionId: 'codex-session',
+      provider: Provider.codex,
+      bridge: bridge,
+      streamingCubit: streamingCubit,
+    );
+    addTearDown(unknownCubit.close);
+    await Future<void>.microtask(() {});
+
+    await tester.pumpWidget(_wrap(unknownCubit));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('Unknown'), findsOneWidget);
+    expect(find.text('On Request'), findsNothing);
   });
 
   testWidgets('mode bar glow tracks history sync instead of active Plan mode', (

@@ -85,6 +85,11 @@ abstract class ChatSessionState with _$ChatSessionState {
 
     // Canonical session modes
     @Default(ExecutionMode.defaultMode) ExecutionMode executionMode,
+    // Whether the Codex permission fields below came from the Bridge/provider
+    // or an explicit user choice. The enum defaults remain non-null for
+    // compatibility, but must not be presented or written back as facts when
+    // an older/sparse Bridge did not supply permission metadata.
+    @Default(true) bool codexPermissionStateKnown,
     @Default(CodexApprovalPolicy.onRequest)
     CodexApprovalPolicy codexApprovalPolicy,
     @Default('user') String codexApprovalsReviewer,

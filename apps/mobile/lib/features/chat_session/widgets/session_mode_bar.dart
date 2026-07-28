@@ -125,6 +125,8 @@ class SessionModeBar extends StatelessWidget {
                             chatCubit.state.codexApprovalsReviewer,
                         codexPermissionsMode:
                             chatCubit.state.codexPermissionsMode,
+                        codexPermissionStateKnown:
+                            chatCubit.state.codexPermissionStateKnown,
                         provider: chatCubit.provider,
                         onTap: () => showCodexPermissionsMenu(
                           context,
@@ -476,7 +478,9 @@ void showCodexPermissionsMenu(
     );
     return;
   }
-  final currentMode = chatCubit.state.codexPermissionsMode;
+  final currentMode = chatCubit.state.codexPermissionStateKnown
+      ? chatCubit.state.codexPermissionsMode
+      : null;
   final l = AppLocalizations.of(context);
 
   showModalBottomSheet(
@@ -1130,6 +1134,7 @@ class ExecutionModeChip extends StatelessWidget {
   final CodexApprovalPolicy? codexApprovalPolicy;
   final String? codexApprovalsReviewer;
   final CodexPermissionsMode? codexPermissionsMode;
+  final bool codexPermissionStateKnown;
   final Provider? provider;
   final VoidCallback onTap;
 
@@ -1139,6 +1144,7 @@ class ExecutionModeChip extends StatelessWidget {
     this.codexApprovalPolicy,
     this.codexApprovalsReviewer,
     this.codexPermissionsMode,
+    this.codexPermissionStateKnown = true,
     this.provider,
     required this.onTap,
   });
@@ -1152,16 +1158,22 @@ class ExecutionModeChip extends StatelessWidget {
     const purple = Color(0xFFBB86FC);
 
     final (IconData icon, String label, Color fg) = provider == Provider.codex
-        ? _codexPermissionsChipStyle(
-            codexPermissionsMode ??
-                codexPermissionsModeFromSettings(
-                  approvalPolicy: codexApprovalPolicy?.value,
-                  approvalsReviewer: codexApprovalsReviewer,
-                  sandboxMode: null,
-                ),
-            cs,
-            l,
-          )
+        ? (codexPermissionStateKnown
+              ? _codexPermissionsChipStyle(
+                  codexPermissionsMode ??
+                      codexPermissionsModeFromSettings(
+                        approvalPolicy: codexApprovalPolicy?.value,
+                        approvalsReviewer: codexApprovalsReviewer,
+                        sandboxMode: null,
+                      ),
+                  cs,
+                  l,
+                )
+              : (
+                  Icons.help_outline,
+                  l.guardianApprovalAuthorizationUnknown,
+                  cs.onSurfaceVariant,
+                ))
         : switch (currentMode) {
             ExecutionMode.defaultMode => (
               Icons.tune,

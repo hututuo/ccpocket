@@ -247,6 +247,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   CodexApprovalPolicy? _pendingCodexApprovalRollback;
   String? _pendingCodexApprovalsReviewerRollback;
   CodexPermissionsMode? _pendingCodexPermissionsModeRollback;
+  bool? _pendingCodexPermissionStateKnownRollback;
   bool? _pendingPlanRollback;
   SandboxMode? _pendingSandboxRollback;
   String? _pendingPermissionChangeId;
@@ -336,6 +337,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
              provider: provider?.value,
              permissionMode: initialPermissionMode?.value,
            ),
+           codexPermissionStateKnown:
+               provider != Provider.codex ||
+               initialPermissionMode != null ||
+               initialCodexApprovalPolicy != null ||
+               initialCodexApprovalsReviewer?.trim().isNotEmpty == true ||
+               initialCodexPermissionsMode != null,
            codexApprovalPolicy: provider == Provider.codex
                ? (initialCodexApprovalPolicy == CodexApprovalPolicy.onFailure
                      ? CodexApprovalPolicy.onRequest
@@ -1122,6 +1129,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     var nextApprovalPolicy = state.codexApprovalPolicy;
     var nextApprovalsReviewer = state.codexApprovalsReviewer;
     var nextPermissionsMode = state.codexPermissionsMode;
+    var nextCodexPermissionStateKnown = state.codexPermissionStateKnown;
     var nextSandboxMode = state.sandboxMode;
     var nextPlanMode = state.planMode;
     var nextInPlanMode = state.inPlanMode;
@@ -1131,9 +1139,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         snapshot.codexApprovalsReviewer?.trim().isNotEmpty == true ||
         snapshot.codexPermissionsMode?.trim().isNotEmpty == true ||
         snapshot.codexSandboxMode?.trim().isNotEmpty == true;
+    final hasCodexPermissionPolicySignals =
+        snapshot.permissionMode?.trim().isNotEmpty == true ||
+        snapshot.codexApprovalPolicy?.trim().isNotEmpty == true ||
+        snapshot.codexApprovalsReviewer?.trim().isNotEmpty == true ||
+        snapshot.codexPermissionsMode?.trim().isNotEmpty == true;
     // A next-turn permission mutation is optimistic until its correlated ACK.
     // A stale session_list snapshot must not roll that group back meanwhile.
     if (_pendingPermissionChangeId == null && hasPermissionSignals) {
+      nextCodexPermissionStateKnown =
+          nextCodexPermissionStateKnown || hasCodexPermissionPolicySignals;
       final rawPermissionMode = snapshot.permissionMode?.trim();
       var hasExplicitPermissionMode = false;
       for (final mode in PermissionMode.values) {
@@ -1229,6 +1244,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         nextStatus == state.status &&
         nextPermissionMode == state.permissionMode &&
         nextExecutionMode == state.executionMode &&
+        nextCodexPermissionStateKnown == state.codexPermissionStateKnown &&
         nextApprovalPolicy == state.codexApprovalPolicy &&
         nextApprovalsReviewer == state.codexApprovalsReviewer &&
         nextPermissionsMode == state.codexPermissionsMode &&
@@ -1251,6 +1267,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         status: nextStatus,
         permissionMode: nextPermissionMode,
         executionMode: nextExecutionMode,
+        codexPermissionStateKnown: nextCodexPermissionStateKnown,
         codexApprovalPolicy: nextApprovalPolicy,
         codexApprovalsReviewer: nextApprovalsReviewer,
         codexPermissionsMode: nextPermissionsMode,
@@ -2154,6 +2171,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         (originalMsg is HistoryMessage ||
             (originalMsg is SystemMessage &&
                 originalMsg.subtype != 'set_permission_mode'));
+    final updateHasCodexPermissionPolicySignals =
+        isCodex &&
+        (update.permissionMode != null ||
+            update.executionMode != null ||
+            update.codexApprovalPolicy != null ||
+            update.codexApprovalsReviewer?.trim().isNotEmpty == true ||
+            update.codexPermissionsMode != null);
     final historyStatusIsFallbackOnly =
         originalMsg is HistoryMessage &&
         isCodex &&
@@ -2701,6 +2725,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         executionMode: preservePendingCodexPermissions
             ? current.executionMode
             : (update.executionMode ?? current.executionMode),
+        codexPermissionStateKnown: preservePendingCodexPermissions
+            ? current.codexPermissionStateKnown
+            : (current.codexPermissionStateKnown ||
+                  updateHasCodexPermissionPolicySignals),
         codexApprovalPolicy: preservePendingCodexPermissions
             ? current.codexApprovalPolicy
             : (update.codexApprovalPolicy ?? current.codexApprovalPolicy),
@@ -4623,7 +4651,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       planMode: nextPlanMode,
     );
     final codexPermissionsMode =
-        isCodex && state.codexPermissionsMode != CodexPermissionsMode.custom
+        isCodex &&
+            state.codexPermissionStateKnown &&
+            state.codexPermissionsMode != CodexPermissionsMode.custom
         ? state.codexPermissionsMode
         : null;
     final codexApprovalPolicy = codexPermissionsMode != null
@@ -4640,6 +4670,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     _pendingPermissionRollback = state.permissionMode;
     _pendingExecutionRollback = state.executionMode;
+    _pendingCodexPermissionStateKnownRollback = state.codexPermissionStateKnown;
     _pendingPlanRollback = state.planMode;
 
     emit(
@@ -4702,6 +4733,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _pendingExecutionRollback = state.executionMode;
     _pendingCodexApprovalRollback = state.codexApprovalPolicy;
     _pendingCodexApprovalsReviewerRollback = state.codexApprovalsReviewer;
+    _pendingCodexPermissionStateKnownRollback = state.codexPermissionStateKnown;
     _pendingPlanRollback = state.planMode;
 
     const legacyMode = PermissionMode.acceptEdits;
@@ -4713,6 +4745,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       state.copyWith(
         permissionMode: legacyMode,
         executionMode: derivedExecution,
+        codexPermissionStateKnown: true,
         codexApprovalPolicy: policy,
         codexApprovalsReviewer: normalizedReviewer,
         planMode: false,
@@ -4768,6 +4801,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _pendingCodexApprovalRollback = state.codexApprovalPolicy;
     _pendingCodexApprovalsReviewerRollback = state.codexApprovalsReviewer;
     _pendingCodexPermissionsModeRollback = state.codexPermissionsMode;
+    _pendingCodexPermissionStateKnownRollback = state.codexPermissionStateKnown;
     _pendingSandboxRollback = state.sandboxMode;
     _pendingPlanRollback = state.planMode;
     final permissionChangeId = applyStrategy == null ? null : _uuid.v4();
@@ -4781,6 +4815,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       state.copyWith(
         permissionMode: legacyMode,
         executionMode: derivedExecution,
+        codexPermissionStateKnown: true,
         codexApprovalPolicy: policy,
         codexApprovalsReviewer: approvalsReviewer,
         codexPermissionsMode: mode,
@@ -4916,12 +4951,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return;
       }
       final previous = _pendingPermissionRollback;
+      final previousCodexPermissionStateKnown =
+          _pendingCodexPermissionStateKnownRollback ??
+          state.codexPermissionStateKnown;
       _pendingPermissionRollback = null;
       if (previous != null) {
         emit(
           state.copyWith(
             permissionMode: previous,
             executionMode: _pendingExecutionRollback ?? state.executionMode,
+            codexPermissionStateKnown: previousCodexPermissionStateKnown,
             codexApprovalPolicy:
                 _pendingCodexApprovalRollback ?? state.codexApprovalPolicy,
             codexApprovalsReviewer:
@@ -4939,22 +4978,27 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 _pendingPermissionRestartApprovalRollback ?? state.approval,
           ),
         );
+        final restoreCanonicalCodexPermissions =
+            isCodex && previousCodexPermissionStateKnown;
         _bridge.patchSessionModes(
           sessionId,
           permissionMode: previous.value,
           executionMode:
               (_pendingExecutionRollback ?? state.executionMode).value,
           planMode: _pendingPlanRollback ?? (previous == PermissionMode.plan),
-          approvalPolicy:
-              (_pendingCodexApprovalRollback ?? state.codexApprovalPolicy)
-                  .value,
-          approvalsReviewer:
-              _pendingCodexApprovalsReviewerRollback ??
-              state.codexApprovalsReviewer,
-          codexPermissionsMode:
-              (_pendingCodexPermissionsModeRollback ??
-                      state.codexPermissionsMode)
-                  .value,
+          approvalPolicy: restoreCanonicalCodexPermissions
+              ? (_pendingCodexApprovalRollback ?? state.codexApprovalPolicy)
+                    .value
+              : null,
+          approvalsReviewer: restoreCanonicalCodexPermissions
+              ? (_pendingCodexApprovalsReviewerRollback ??
+                    state.codexApprovalsReviewer)
+              : null,
+          codexPermissionsMode: restoreCanonicalCodexPermissions
+              ? (_pendingCodexPermissionsModeRollback ??
+                        state.codexPermissionsMode)
+                    .value
+              : null,
         );
         final previousSandbox = _pendingSandboxRollback;
         if (isCodex && previousSandbox != null) {
@@ -4975,6 +5019,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _pendingCodexApprovalRollback = null;
       _pendingCodexApprovalsReviewerRollback = null;
       _pendingCodexPermissionsModeRollback = null;
+      _pendingCodexPermissionStateKnownRollback = null;
       _pendingPlanRollback = null;
       _pendingSandboxRollback = null;
       _pendingPermissionChangeId = null;
@@ -5035,9 +5080,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       permissionMode: rollbackPermissionMode.value,
       executionMode: state.executionMode.value,
       planMode: false,
-      approvalPolicy: state.codexApprovalPolicy.value,
-      approvalsReviewer: state.codexApprovalsReviewer,
-      codexPermissionsMode: state.codexPermissionsMode.value,
+      approvalPolicy: state.codexPermissionStateKnown
+          ? state.codexApprovalPolicy.value
+          : null,
+      approvalsReviewer: state.codexPermissionStateKnown
+          ? state.codexApprovalsReviewer
+          : null,
+      codexPermissionsMode: state.codexPermissionStateKnown
+          ? state.codexPermissionsMode.value
+          : null,
     );
     final providerSessionId = state.claudeSessionId;
     if (providerSessionId != null && providerSessionId.isNotEmpty) {
@@ -5059,6 +5110,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _pendingCodexApprovalRollback = null;
     _pendingCodexApprovalsReviewerRollback = null;
     _pendingCodexPermissionsModeRollback = null;
+    _pendingCodexPermissionStateKnownRollback = null;
     _pendingPlanRollback = null;
     _pendingSandboxRollback = null;
     _pendingPermissionChangeId = null;
@@ -5099,6 +5151,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _pendingCodexPermissionsModeRollback =
         codexPermissionsModeFromRaw(message.codexPermissionsMode) ??
         _pendingCodexPermissionsModeRollback;
+    if (message.permissionMode?.trim().isNotEmpty == true ||
+        message.executionMode?.trim().isNotEmpty == true ||
+        message.approvalPolicy?.trim().isNotEmpty == true ||
+        message.approvalsReviewer?.trim().isNotEmpty == true ||
+        message.codexPermissionsMode?.trim().isNotEmpty == true) {
+      _pendingCodexPermissionStateKnownRollback = true;
+    }
     if (message.planMode != null) {
       _pendingPlanRollback = message.planMode;
     }
