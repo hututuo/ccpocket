@@ -289,6 +289,141 @@ void main() {
         isTrue,
       );
     });
+
+    test('failed dispatch releases the same generation for retry', () {
+      final gate = SessionCatalogBootstrapGate();
+
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 7,
+        ),
+        isTrue,
+      );
+
+      gate.completeDispatch(7, dispatched: false);
+
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 7,
+        ),
+        isTrue,
+      );
+    });
+
+    test('a dispatched generation only retries after an explicit timeout', () {
+      final gate = SessionCatalogBootstrapGate();
+
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 8,
+        ),
+        isTrue,
+      );
+      gate.completeDispatch(8, dispatched: true);
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 8,
+        ),
+        isFalse,
+      );
+
+      expect(gate.prepareRetry(8), isTrue);
+      expect(
+        gate.claim(
+          connectionState: BridgeConnectionState.connected,
+          selectionPending: false,
+          hasAuthoritativeSessionList: true,
+          generation: 8,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  group('SessionCatalogRecoveryPolicy', () {
+    test('retries a correlated catalog once, then fails explicitly', () {
+      final policy = SessionCatalogRecoveryPolicy();
+
+      expect(
+        policy.nextAction(
+          hasAuthoritativeSessionList: true,
+          hasUsableCatalog: false,
+          supportsRequestCorrelation: true,
+        ),
+        SessionCatalogRecoveryAction.retryCatalog,
+      );
+      policy.recordCatalogRetry();
+      expect(
+        policy.nextAction(
+          hasAuthoritativeSessionList: true,
+          hasUsableCatalog: false,
+          supportsRequestCorrelation: true,
+        ),
+        SessionCatalogRecoveryAction.fail,
+      );
+    });
+
+    test('does not consume a catalog retry before dispatch starts', () {
+      final policy = SessionCatalogRecoveryPolicy();
+
+      for (var attempt = 0; attempt < 2; attempt++) {
+        expect(
+          policy.nextAction(
+            hasAuthoritativeSessionList: true,
+            hasUsableCatalog: false,
+            supportsRequestCorrelation: true,
+          ),
+          SessionCatalogRecoveryAction.retryCatalog,
+        );
+      }
+    });
+
+    test('never retries an uncorrelated legacy request on the same socket', () {
+      final policy = SessionCatalogRecoveryPolicy();
+
+      expect(
+        policy.nextAction(
+          hasAuthoritativeSessionList: true,
+          hasUsableCatalog: false,
+          supportsRequestCorrelation: false,
+        ),
+        SessionCatalogRecoveryAction.fail,
+      );
+    });
+
+    test('requests a missing session list once before failing', () {
+      final policy = SessionCatalogRecoveryPolicy();
+
+      expect(
+        policy.nextAction(
+          hasAuthoritativeSessionList: false,
+          hasUsableCatalog: false,
+          supportsRequestCorrelation: false,
+        ),
+        SessionCatalogRecoveryAction.requestSessionList,
+      );
+      policy.recordSessionListRetry();
+      expect(
+        policy.nextAction(
+          hasAuthoritativeSessionList: false,
+          hasUsableCatalog: false,
+          supportsRequestCorrelation: false,
+        ),
+        SessionCatalogRecoveryAction.fail,
+      );
+    });
   });
 
   testWidgets('connection progress stays within the connection picker', (

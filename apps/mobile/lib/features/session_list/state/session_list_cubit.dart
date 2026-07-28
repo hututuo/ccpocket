@@ -29,6 +29,12 @@ class SessionCatalogQuery {
   final bool? namedOnly;
   final String? searchQuery;
 
+  bool sameAs(SessionCatalogQuery other) =>
+      projectPath == other.projectPath &&
+      provider == other.provider &&
+      namedOnly == other.namedOnly &&
+      searchQuery == other.searchQuery;
+
   bool matches(RecentSessionsMessage response) {
     // Older Bridges do not echo request correlation. BridgeService keeps
     // their per-socket list generation as the compatibility boundary.
@@ -113,6 +119,8 @@ class SessionListCubit extends Cubit<SessionListState> {
   int _queryRequestRevision = 0;
   int _cacheLoadGeneration = 0;
   int _networkCatalogSerial = 0;
+  SessionCatalogQuery? _networkCatalogQuery;
+  String? _networkCatalogTargetFingerprint;
   String? _lastCacheLoadFingerprint;
 
   SessionListCubit({
@@ -179,15 +187,29 @@ class SessionListCubit extends Cubit<SessionListState> {
   Stream<void> get catalogSnapshotChanges => _catalogSnapshotChanges.stream;
 
   bool get hasUsableCatalogForCurrentTarget {
-    if (_bridge.hasAuthoritativeRecentSessionsForCurrentConnection) return true;
-    final target = _currentCacheTarget();
-    return target != null &&
+    final currentTarget = _currentCacheTarget();
+    if (currentTarget != null &&
+        _bridge.hasAuthoritativeRecentSessionsForCurrentConnection &&
+        _networkCatalogQuery?.sameAs(_queryForState()) == true &&
+        _networkCatalogTargetFingerprint == currentTarget.fingerprint) {
+      return true;
+    }
+    return currentTarget != null &&
         _loadedCacheComplete &&
-        _loadedCacheFingerprint == target.fingerprint;
+        _loadedCacheFingerprint == currentTarget.fingerprint;
   }
 
   void _onSessionsUpdate(RecentSessionsMessage response) {
     if (!_query.matches(response)) return;
+    final establishesNetworkCatalog =
+        (response.requestScope == null ||
+            response.requestScope == 'list' ||
+            response.requestScope == 'catalog') &&
+        (response.offset ?? 0) == 0;
+    if (establishesNetworkCatalog) {
+      _networkCatalogQuery = _query;
+      _networkCatalogTargetFingerprint = _currentCacheTarget()?.fingerprint;
+    }
     _networkCatalogSerial++;
     final cache = _catalogCache;
     final cacheTarget = _currentCacheTarget();
@@ -295,6 +317,9 @@ class SessionListCubit extends Cubit<SessionListState> {
         exhaustedProjectPaths: exhaustedProjectPaths,
       ),
     );
+    if (establishesNetworkCatalog && !isCompleteCatalogResponse) {
+      _catalogSnapshotChanges.add(null);
+    }
     _requestExpandedCatalogIfNeeded(
       response,
       canReuseCompleteCache: canReuseCompleteCache,
@@ -534,12 +559,26 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   /// Refresh catalog metadata without recursively requesting another
   /// authoritative session-list snapshot.
-  Future<void> refreshCatalog() async {
-    await _preferencesLoaded;
-    if (isClosed) return;
-    _bridge.requestProjectHistory();
-    final requestRevision = ++_queryRequestRevision;
-    await _requestWithCurrentFiltersAfterPreferences(requestRevision);
+  Future<bool> refreshCatalog({
+    bool Function()? isCurrentConnection,
+  }) async {
+    try {
+      await _preferencesLoaded;
+      if (isClosed || isCurrentConnection?.call() == false) return false;
+      _bridge.requestProjectHistory();
+      final requestRevision = ++_queryRequestRevision;
+      return await _requestWithCurrentFiltersAfterPreferences(
+        requestRevision,
+        isCurrentConnection: isCurrentConnection,
+      );
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[SessionListCubit] Failed to dispatch session catalog refresh',
+        error,
+        stackTrace,
+      );
+      return false;
+    }
   }
 
   /// Ends connection-scoped work while retaining user intent and the last
@@ -548,6 +587,8 @@ class SessionListCubit extends Cubit<SessionListState> {
     _searchDebounce?.cancel();
     _queryRequestRevision++;
     _catalogExpansionRequestKey = null;
+    _networkCatalogQuery = null;
+    _networkCatalogTargetFingerprint = null;
     emit(
       state.copyWith(
         loadingProjectPaths: const {},
@@ -776,18 +817,33 @@ class SessionListCubit extends Cubit<SessionListState> {
     unawaited(_requestWithCurrentFiltersAfterPreferences(requestRevision));
   }
 
-  Future<void> _requestWithCurrentFiltersAfterPreferences(
-    int requestRevision,
-  ) async {
-    await _preferencesLoaded;
-    if (isClosed || requestRevision != _queryRequestRevision) return;
-    _query = _queryForState();
-    _bridge.switchFilter(
-      projectPath: _query.projectPath,
-      provider: _query.provider,
-      namedOnly: _query.namedOnly,
-      searchQuery: _query.searchQuery,
-    );
+  Future<bool> _requestWithCurrentFiltersAfterPreferences(
+    int requestRevision, {
+    bool Function()? isCurrentConnection,
+  }) async {
+    try {
+      await _preferencesLoaded;
+      if (isClosed ||
+          requestRevision != _queryRequestRevision ||
+          isCurrentConnection?.call() == false) {
+        return false;
+      }
+      _query = _queryForState();
+      _bridge.switchFilter(
+        projectPath: _query.projectPath,
+        provider: _query.provider,
+        namedOnly: _query.namedOnly,
+        searchQuery: _query.searchQuery,
+      );
+      return true;
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[SessionListCubit] Failed to send filtered session catalog request',
+        error,
+        stackTrace,
+      );
+      return false;
+    }
   }
 
   SessionCatalogQuery _queryForState() => SessionCatalogQuery(

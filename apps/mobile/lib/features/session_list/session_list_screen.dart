@@ -133,7 +133,8 @@ class SessionHomeConnectionGate {
 /// `WebSocketChannel.ready` publishes `connected`. Both event orderings must
 /// converge on the same catalog bootstrap instead of dropping the only trigger.
 class SessionCatalogBootstrapGate {
-  int _lastClaimedGeneration = -1;
+  int _lastDispatchedGeneration = -1;
+  int? _dispatchingGeneration;
 
   bool claim({
     required BridgeConnectionState connectionState,
@@ -144,11 +145,84 @@ class SessionCatalogBootstrapGate {
     if (connectionState != BridgeConnectionState.connected ||
         selectionPending ||
         !hasAuthoritativeSessionList ||
-        generation == _lastClaimedGeneration) {
+        generation == _lastDispatchedGeneration ||
+        generation == _dispatchingGeneration) {
       return false;
     }
-    _lastClaimedGeneration = generation;
+    _dispatchingGeneration = generation;
     return true;
+  }
+
+  void completeDispatch(int generation, {required bool dispatched}) {
+    if (_dispatchingGeneration != generation) return;
+    _dispatchingGeneration = null;
+    if (dispatched) _lastDispatchedGeneration = generation;
+  }
+
+  bool prepareRetry(int generation) {
+    if (_dispatchingGeneration == generation ||
+        _lastDispatchedGeneration != generation) {
+      return false;
+    }
+    _lastDispatchedGeneration = -1;
+    return true;
+  }
+}
+
+enum SessionCatalogRecoveryAction {
+  none,
+  requestSessionList,
+  retryCatalog,
+  fail,
+}
+
+/// Bounded recovery for the two compatibility lanes.
+///
+/// A correlated Bridge can safely receive one new catalog request because a
+/// late response carries its old request ID and is rejected. A legacy Bridge
+/// cannot distinguish two in-flight responses, so it must reconnect instead
+/// of blindly retrying on the same socket.
+class SessionCatalogRecoveryPolicy {
+  static const _maxSessionListRetries = 1;
+  static const _maxCatalogRetries = 1;
+
+  int _sessionListRetries = 0;
+  int _catalogRetries = 0;
+
+  void reset() {
+    _sessionListRetries = 0;
+    _catalogRetries = 0;
+  }
+
+  void recordSessionListRetry() {
+    _sessionListRetries += 1;
+  }
+
+  void recordCatalogRetry() {
+    _catalogRetries += 1;
+  }
+
+  SessionCatalogRecoveryAction nextAction({
+    required bool hasAuthoritativeSessionList,
+    required bool hasUsableCatalog,
+    required bool supportsRequestCorrelation,
+  }) {
+    if (hasAuthoritativeSessionList && hasUsableCatalog) {
+      return SessionCatalogRecoveryAction.none;
+    }
+    if (!hasAuthoritativeSessionList) {
+      if (_sessionListRetries < _maxSessionListRetries) {
+        return SessionCatalogRecoveryAction.requestSessionList;
+      }
+      return SessionCatalogRecoveryAction.fail;
+    }
+    if (!supportsRequestCorrelation) {
+      return SessionCatalogRecoveryAction.fail;
+    }
+    if (_catalogRetries < _maxCatalogRetries) {
+      return SessionCatalogRecoveryAction.retryCatalog;
+    }
+    return SessionCatalogRecoveryAction.fail;
   }
 }
 
@@ -394,6 +468,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<void>? _catalogCacheReadinessSub;
   late final SessionArchivePendingRequests _archivePendingRequests;
   final _catalogBootstrapGate = SessionCatalogBootstrapGate();
+  final _catalogRecoveryPolicy = SessionCatalogRecoveryPolicy();
 
   // macOS app update
   AppUpdateInfo? _appUpdateInfo;
@@ -574,6 +649,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     _connectionReadinessTimer?.cancel();
     _retryConnectionAttempt = retry;
     _connectionUiGate.reset();
+    _catalogRecoveryPolicy.reset();
     if (mounted) {
       setState(() {
         _isAutoConnecting = autoConnecting;
@@ -605,6 +681,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         _retryConnectionAttempt = null;
       });
       _refreshCatalogAfterAuthoritativeSessionList(bridge);
+      _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
       return;
     }
     _connectionReadinessTimer?.cancel();
@@ -615,16 +692,76 @@ class _SessionListScreenState extends State<SessionListScreen>
       _connectionAttemptFailed = false;
     });
     _refreshCatalogAfterAuthoritativeSessionList(bridge);
+    _scheduleConnectionReadinessTimeout(token);
+  }
+
+  void _scheduleConnectionReadinessTimeout(int token) {
+    _connectionReadinessTimer?.cancel();
     _connectionReadinessTimer = Timer(
       _connectionReadinessWarningDelay,
-      () {
-        if (!_isCurrentConnectionAttempt(token) ||
-            !_connectionAwaitingReadiness) {
+      () => unawaited(_handleConnectionReadinessTimeout(token)),
+    );
+  }
+
+  Future<void> _handleConnectionReadinessTimeout(int token) async {
+    if (!_isCurrentConnectionAttempt(token) || !_connectionAwaitingReadiness) {
+      return;
+    }
+    final bridge = context.read<BridgeService>();
+    final sessionListCubit = context.read<SessionListCubit>();
+    final action = _catalogRecoveryPolicy.nextAction(
+      hasAuthoritativeSessionList:
+          bridge.hasAuthoritativeSessionListForCurrentConnection,
+      hasUsableCatalog: sessionListCubit.hasUsableCatalogForCurrentTarget,
+      supportsRequestCorrelation:
+          bridge.supportsSessionCatalogRequestCorrelation,
+    );
+
+    switch (action) {
+      case SessionCatalogRecoveryAction.none:
+        _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+        return;
+      case SessionCatalogRecoveryAction.requestSessionList:
+        try {
+          bridge.requestSessionList();
+        } catch (_) {
+          _markConnectionReadinessFailed(token);
           return;
         }
-        setState(() => _connectionTakingLonger = true);
-      },
-    );
+        _catalogRecoveryPolicy.recordSessionListRetry();
+        break;
+      case SessionCatalogRecoveryAction.retryCatalog:
+        final generation = bridge.authoritativeSessionListGeneration;
+        _catalogBootstrapGate.prepareRetry(generation);
+        if (_refreshCatalogAfterAuthoritativeSessionList(bridge)) {
+          _catalogRecoveryPolicy.recordCatalogRetry();
+        }
+        break;
+      case SessionCatalogRecoveryAction.fail:
+        _markConnectionReadinessFailed(token);
+        return;
+    }
+
+    if (!_isCurrentConnectionAttempt(token) || !_connectionAwaitingReadiness) {
+      return;
+    }
+    setState(() {
+      _connectionTakingLonger = true;
+      _connectionAttemptFailed = false;
+    });
+    _scheduleConnectionReadinessTimeout(token);
+  }
+
+  void _markConnectionReadinessFailed(int token) {
+    _connectionReadinessTimer?.cancel();
+    _connectionReadinessTimer = null;
+    if (!_isCurrentConnectionAttempt(token) || !_connectionAwaitingReadiness) {
+      return;
+    }
+    setState(() {
+      _connectionTakingLonger = false;
+      _connectionAttemptFailed = true;
+    });
   }
 
   void _invalidateConnectionAttempt() {
@@ -632,6 +769,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     _connectionReadinessTimer?.cancel();
     _connectionReadinessTimer = null;
     _retryConnectionAttempt = null;
+    _catalogRecoveryPolicy.reset();
     if (!mounted) return;
     setState(() {
       _isAutoConnecting = false;
@@ -639,6 +777,25 @@ class _SessionListScreenState extends State<SessionListScreen>
       _connectionTakingLonger = false;
       _connectionAttemptFailed = false;
       _connectionSelectionPending = false;
+    });
+  }
+
+  void _abortConnectionAttemptAndRestore(int token) {
+    if (!_isCurrentConnectionAttempt(token)) return;
+    _invalidateConnectionAttempt();
+    if (!mounted) return;
+    final bridge = context.read<BridgeService>();
+    _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+  }
+
+  void _failConnectionAttemptAndRestore(int token) {
+    if (!_isCurrentConnectionAttempt(token)) return;
+    final retry = _retryConnectionAttempt;
+    _abortConnectionAttemptAndRestore(token);
+    if (!mounted || _connectionUiGate.hasReadyTarget) return;
+    setState(() {
+      _retryConnectionAttempt = retry;
+      _connectionAttemptFailed = true;
     });
   }
 
@@ -703,19 +860,21 @@ class _SessionListScreenState extends State<SessionListScreen>
         // Ignore — autoConnect falls back to legacy SharedPreferences.
       }
       if (!_isCurrentConnectionAttempt(attempt)) return;
-      final attempted = await bridge.autoConnect(
-        apiKey: apiKey,
-        logicalConnectionIdentity: logicalConnectionIdentity,
-      );
+      late final bool attempted;
+      try {
+        attempted = await bridge.autoConnect(
+          apiKey: apiKey,
+          logicalConnectionIdentity: logicalConnectionIdentity,
+        );
+      } catch (_) {
+        _failConnectionAttemptAndRestore(attempt);
+        return;
+      }
       if (!_isCurrentConnectionAttempt(attempt)) return;
       if (attempted) {
         _armConnectionReadinessWarning(attempt);
       } else {
-        setState(() {
-          _isAutoConnecting = false;
-          _connectionAttemptFailed = true;
-          _connectionSelectionPending = false;
-        });
+        _failConnectionAttemptAndRestore(attempt);
       }
     }
   }
@@ -738,51 +897,74 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (machineManagerCubit != null) {
       unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
     }
+    final messenger = ScaffoldMessenger.of(context);
 
     // Health check before connecting
-    final health = await BridgeService.checkHealth(url);
+    late final Map<String, dynamic>? health;
+    try {
+      health = await BridgeService.checkHealth(url);
+    } catch (error) {
+      if (_isCurrentConnectionAttempt(attempt)) {
+        messenger.showSnackBar(SnackBar(content: Text(error.toString())));
+        _failConnectionAttemptAndRestore(attempt);
+      }
+      return;
+    }
     if (!_isCurrentConnectionAttempt(attempt)) return;
     if (health == null) {
       final shouldConnect = await _showSetupGuide(url);
       if (!_isCurrentConnectionAttempt(attempt)) return;
-      if (shouldConnect != true) return;
+      if (shouldConnect != true) {
+        _abortConnectionAttemptAndRestore(attempt);
+        return;
+      }
     }
 
     if (!_isCurrentConnectionAttempt(attempt)) return;
     // Auto-save to Machines on successful health check (or user choosing to connect)
     final trimmedApiKey = apiKey?.trim() ?? '';
     String? logicalConnectionIdentity;
-    if (machineManagerCubit != null) {
-      // Parse host and port from URL
-      final uri = Uri.tryParse(
-        url.replaceFirst('ws://', 'http://').replaceFirst('wss://', 'https://'),
-      );
-      if (uri != null) {
-        final machine = await machineManagerCubit.recordConnection(
-          host: uri.host,
-          port: uri.port != 0 ? uri.port : 8765,
-          apiKey: trimmedApiKey.isNotEmpty ? trimmedApiKey : null,
-          useSsl: uri.scheme == 'https',
+    try {
+      if (machineManagerCubit != null) {
+        // Parse host and port from URL
+        final uri = Uri.tryParse(
+          url
+              .replaceFirst('ws://', 'http://')
+              .replaceFirst('wss://', 'https://'),
         );
-        if (!_isCurrentConnectionAttempt(attempt)) return;
-        logicalConnectionIdentity = 'machine:${machine.id}';
+        if (uri != null) {
+          final machine = await machineManagerCubit.recordConnection(
+            host: uri.host,
+            port: uri.port != 0 ? uri.port : 8765,
+            apiKey: trimmedApiKey.isNotEmpty ? trimmedApiKey : null,
+            useSsl: uri.scheme == 'https',
+          );
+          if (!_isCurrentConnectionAttempt(attempt)) return;
+          logicalConnectionIdentity = 'machine:${machine.id}';
+        }
       }
-    }
 
-    if (!_isCurrentConnectionAttempt(attempt)) return;
-    if (tunnelService != null) {
-      await tunnelService.closeAll();
+      if (!_isCurrentConnectionAttempt(attempt)) return;
+      if (tunnelService != null) {
+        await tunnelService.closeAll();
+      }
+      if (!_isCurrentConnectionAttempt(attempt)) return;
+      var connectUrl = url;
+      if (trimmedApiKey.isNotEmpty) {
+        final sep = connectUrl.contains('?') ? '&' : '?';
+        connectUrl = '$connectUrl${sep}token=$trimmedApiKey';
+      }
+      bridge.connect(
+        connectUrl,
+        logicalConnectionIdentity: logicalConnectionIdentity,
+      );
+    } catch (error) {
+      if (_isCurrentConnectionAttempt(attempt)) {
+        messenger.showSnackBar(SnackBar(content: Text(error.toString())));
+        _failConnectionAttemptAndRestore(attempt);
+      }
+      return;
     }
-    if (!_isCurrentConnectionAttempt(attempt)) return;
-    var connectUrl = url;
-    if (trimmedApiKey.isNotEmpty) {
-      final sep = connectUrl.contains('?') ? '&' : '?';
-      connectUrl = '$connectUrl${sep}token=$trimmedApiKey';
-    }
-    bridge.connect(
-      connectUrl,
-      logicalConnectionIdentity: logicalConnectionIdentity,
-    );
     bridge.savePreferences(url);
     _armConnectionReadinessWarning(attempt);
   }
@@ -979,6 +1161,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (readinessCompleted || readinessFailed) {
       _connectionReadinessTimer?.cancel();
       _connectionReadinessTimer = null;
+      _catalogRecoveryPolicy.reset();
     }
     if (!mounted ||
         (!changed &&
@@ -1002,18 +1185,47 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
   }
 
-  void _refreshCatalogAfterAuthoritativeSessionList(BridgeService bridge) {
+  bool _refreshCatalogAfterAuthoritativeSessionList(BridgeService bridge) {
+    final generation = bridge.authoritativeSessionListGeneration;
     if (!mounted ||
         !_catalogBootstrapGate.claim(
           connectionState: bridge.currentBridgeConnectionState,
           selectionPending: _connectionSelectionPending,
           hasAuthoritativeSessionList:
               bridge.hasAuthoritativeSessionListForCurrentConnection,
-          generation: bridge.authoritativeSessionListGeneration,
+          generation: generation,
         )) {
-      return;
+      return false;
     }
-    unawaited(context.read<SessionListCubit>().refreshCatalog());
+    final targetKey = _connectionUiTargetKey(bridge);
+    unawaited(_dispatchCatalogBootstrap(bridge, generation, targetKey));
+    return true;
+  }
+
+  Future<void> _dispatchCatalogBootstrap(
+    BridgeService bridge,
+    int generation,
+    String targetKey,
+  ) async {
+    var dispatched = false;
+    try {
+      dispatched = await context.read<SessionListCubit>().refreshCatalog(
+        isCurrentConnection: () =>
+            mounted &&
+            identical(context.read<BridgeService>(), bridge) &&
+            !_connectionSelectionPending &&
+            bridge.currentBridgeConnectionState ==
+                BridgeConnectionState.connected &&
+            bridge.hasAuthoritativeSessionListForCurrentConnection &&
+            bridge.authoritativeSessionListGeneration == generation &&
+            _connectionUiTargetKey(bridge) == targetKey,
+      );
+    } finally {
+      _catalogBootstrapGate.completeDispatch(
+        generation,
+        dispatched: dispatched,
+      );
+    }
   }
 
   String _connectionUiTargetKey(BridgeService bridge) {
@@ -3052,26 +3264,35 @@ class _SessionListScreenState extends State<SessionListScreen>
     } catch (e) {
       if (_isCurrentConnectionAttempt(attempt)) {
         messenger.showSnackBar(SnackBar(content: Text(e.toString())));
+        _failConnectionAttemptAndRestore(attempt);
       }
       return;
     }
     if (!_isCurrentConnectionAttempt(attempt)) return;
-    final apiKey = await cubit.getApiKey(machine.id);
-    if (!_isCurrentConnectionAttempt(attempt)) return;
+    try {
+      final apiKey = await cubit.getApiKey(machine.id);
+      if (!_isCurrentConnectionAttempt(attempt)) return;
 
-    // Record connection to update lastConnected
-    await cubit.recordConnection(
-      host: machine.host,
-      port: machine.port,
-      apiKey: apiKey,
-      useSsl: machine.useSsl,
-    );
+      // Record connection to update lastConnected
+      await cubit.recordConnection(
+        host: machine.host,
+        port: machine.port,
+        apiKey: apiKey,
+        useSsl: machine.useSsl,
+      );
 
-    if (!_isCurrentConnectionAttempt(attempt)) return;
-    bridge.connect(
-      wsUrl,
-      logicalConnectionIdentity: 'machine:${machine.id}',
-    );
+      if (!_isCurrentConnectionAttempt(attempt)) return;
+      bridge.connect(
+        wsUrl,
+        logicalConnectionIdentity: 'machine:${machine.id}',
+      );
+    } catch (e) {
+      if (_isCurrentConnectionAttempt(attempt)) {
+        messenger.showSnackBar(SnackBar(content: Text(e.toString())));
+        _failConnectionAttemptAndRestore(attempt);
+      }
+      return;
+    }
     bridge.savePreferences(machine.wsUrl);
     if (tunnelService != null) {
       unawaited(tunnelService.closeAllExcept(machine.id));

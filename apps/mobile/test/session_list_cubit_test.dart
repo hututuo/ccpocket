@@ -23,6 +23,9 @@ class MockBridgeService extends BridgeService {
   final sentMessages = <ClientMessage>[];
   int sessionListRequestCount = 0;
   int catalogRequestCount = 0;
+  bool testHasAuthoritativeRecentSessions = false;
+  bool throwOnSwitchFilter = false;
+  void Function()? onRequestProjectHistory;
 
   bool _hasMore = false;
   String? _projectFilter;
@@ -54,6 +57,10 @@ class MockBridgeService extends BridgeService {
   @override
   RecentSessionsMessage? get lastRecentSessionsMessage =>
       _lastRecentSessionsMessage;
+
+  @override
+  bool get hasAuthoritativeRecentSessionsForCurrentConnection =>
+      testHasAuthoritativeRecentSessions;
 
   @override
   String? get bridgeInstanceId => testBridgeInstanceId;
@@ -137,7 +144,9 @@ class MockBridgeService extends BridgeService {
   }
 
   @override
-  void requestProjectHistory() {}
+  void requestProjectHistory() {
+    onRequestProjectHistory?.call();
+  }
 
   @override
   void loadMoreRecentSessions({
@@ -169,6 +178,9 @@ class MockBridgeService extends BridgeService {
     String? searchQuery,
     int pageSize = 20,
   }) {
+    if (throwOnSwitchFilter) {
+      throw StateError('catalog dispatch failed');
+    }
     _projectFilter = projectPath;
     sentMessages.add(
       ClientMessage.listRecentSessions(
@@ -476,7 +488,7 @@ void main() {
     test(
       'catalog bootstrap does not recursively request session list',
       () async {
-        await cubit.refreshCatalog();
+        expect(await cubit.refreshCatalog(), isTrue);
 
         expect(mockBridge.sessionListRequestCount, 0);
         expect(mockBridge.sentMessages, hasLength(1));
@@ -484,6 +496,64 @@ void main() {
         await cubit.refresh();
 
         expect(mockBridge.sessionListRequestCount, 1);
+      },
+    );
+
+    test('catalog bootstrap reports a dispatch failure', () async {
+      mockBridge.throwOnSwitchFilter = true;
+
+      expect(await cubit.refreshCatalog(), isFalse);
+      expect(mockBridge.sentMessages, isEmpty);
+    });
+
+    test('catalog bootstrap rechecks its connection fence before send', () async {
+      var isCurrentConnection = true;
+      mockBridge.onRequestProjectHistory = () {
+        isCurrentConnection = false;
+      };
+
+      expect(
+        await cubit.refreshCatalog(
+          isCurrentConnection: () => isCurrentConnection,
+        ),
+        isFalse,
+      );
+      expect(mockBridge.sentMessages, isEmpty);
+    });
+
+    test(
+      'network catalog readiness requires the current top-level query',
+      () async {
+        mockBridge
+          ..testHasAuthoritativeRecentSessions = true
+          ..testLastUrl = 'wss://mac-a.example/socket';
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [_session(id: 'project-page')],
+            hasMore: false,
+            projectPath: '/another/project',
+            requestScope: 'project',
+            queryGeneration: 1,
+          ),
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [_session(id: 'top-level')],
+            hasMore: false,
+            requestScope: 'list',
+            queryGeneration: 1,
+          ),
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+
+        cubit.handleDisconnect();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
       },
     );
 
