@@ -2,6 +2,26 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.69.4-compat.3] - 2026-07-28
+
+### Added
+- Add stable Bridge/Codex-source identity, bounded background notification delivery,
+  shared-source session continuity, and owner-scoped full-disk read/preview support.
+
+### Fixed
+- Harden connection generations, session catalog/history reconciliation, process
+  ownership, notification de-duplication, file authorization, and legacy-client
+  fallbacks across the comprehensive Mobile remediation stack.
+
+### Performance
+- Bound idle continuity polling, provider catalog scans, session-content caches,
+  preview payloads, and slow-client revision queues.
+
+### Compatibility
+- Keep protocol additions capability-gated and optional; older Mobile clients retain
+  their established Bridge behavior, while new clients fail closed when a required
+  native or server capability is absent.
+
 ## [1.69.4-compat.2] - 2026-07-27
 
 ### Fixed
