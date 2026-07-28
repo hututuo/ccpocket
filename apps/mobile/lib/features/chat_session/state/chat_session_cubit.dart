@@ -806,6 +806,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     if (rawMessage is! CodexDesktopContinuityEventMessage ||
+        !rawMessage.usesSupportedSemantics ||
         rawMessage.sessionId != sessionId ||
         rawMessage.requestId != _desktopContinuityRequestId ||
         rawMessage.threadId != _desktopContinuityThreadId) {

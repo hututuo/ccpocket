@@ -160,7 +160,10 @@ class DesktopSessionListContinuityTracker {
       }
       return;
     }
-    if (message is! CodexDesktopContinuityEventMessage) return;
+    if (message is! CodexDesktopContinuityEventMessage ||
+        !message.usesSupportedSemantics) {
+      return;
+    }
     final ownRequest = _ownedRequestIds[message.sessionId];
     if (message.requestId == ownRequest) {
       if (message.event != CodexDesktopContinuityEventKind.error &&

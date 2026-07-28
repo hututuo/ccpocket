@@ -1116,10 +1116,16 @@ class BridgeService implements BridgeServiceBase {
       return true;
     }
     if (message is! LocalFeatureServerMessage) return false;
-    if (message is CodexDesktopContinuityEventMessage) {
+    final unsupportedContinuity =
+        message is CodexDesktopContinuityEventMessage &&
+        !message.usesSupportedSemantics;
+    if (message is CodexDesktopContinuityEventMessage &&
+        !unsupportedContinuity) {
       _patchExternalDesktopTurn(message);
     }
-    _clearPendingLocalFeatureRequestForTerminal(message);
+    if (!unsupportedContinuity) {
+      _clearPendingLocalFeatureRequestForTerminal(message);
+    }
     final localSessionId = message.sessionId ?? sessionId;
     _localFeatureMessageController.add((message, localSessionId));
     _messageController.add(message);
@@ -4513,6 +4519,7 @@ class BridgeService implements BridgeServiceBase {
   bool recordBackgroundDesktopContinuity(
     CodexDesktopContinuityEventMessage message,
   ) {
+    if (!message.usesSupportedSemantics) return false;
     final acceptedPayload = _desktopContinuityBacklog.record(message);
     _patchExternalDesktopTurn(message);
     final payload = message.payload;
@@ -5244,6 +5251,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _patchExternalDesktopTurn(CodexDesktopContinuityEventMessage message) {
+    if (!message.usesSupportedSemantics) return;
     _patchSessionActivity(message.sessionId, message.timestamp);
     final active = switch (message.event) {
       CodexDesktopContinuityEventKind.watching ||

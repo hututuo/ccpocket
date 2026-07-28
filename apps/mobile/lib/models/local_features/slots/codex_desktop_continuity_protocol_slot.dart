@@ -117,6 +117,8 @@ enum CodexDesktopContinuityState {
 
 class CodexDesktopContinuityEventMessage
     implements LocalFeatureTransientMessage {
+  static const supportedOrigin = 'desktop_rollout';
+
   @override
   String get featureId => 'codex_desktop_continuity';
 
@@ -137,6 +139,16 @@ class CodexDesktopContinuityEventMessage
   final ServerMessage? payload;
   final String? errorCode;
   final String? error;
+
+  /// Whether this client understands enough of the event to let it affect
+  /// request ownership, durable history, or visible runtime state.
+  ///
+  /// Future origins and event kinds stay decodable so an additive Bridge
+  /// rollout cannot poison the socket, but consumers must ignore their
+  /// semantics until the corresponding client support exists.
+  bool get usesSupportedSemantics =>
+      origin == supportedOrigin &&
+      event != CodexDesktopContinuityEventKind.unknown;
 
   const CodexDesktopContinuityEventMessage({
     required this.event,
@@ -178,6 +190,23 @@ class CodexDesktopContinuityEventMessage
     }
 
     final event = CodexDesktopContinuityEventKind.parse(json['event']);
+    final requestId = requiredString('requestId');
+    final bridgeInstanceId = requiredString('bridgeInstanceId');
+    final sessionId = requiredString('sessionId');
+    final threadId = requiredString('threadId');
+    final origin = requiredString('origin');
+    if (origin != supportedOrigin ||
+        event == CodexDesktopContinuityEventKind.unknown) {
+      return CodexDesktopContinuityEventMessage(
+        event: event,
+        requestId: requestId,
+        bridgeInstanceId: bridgeInstanceId,
+        sessionId: sessionId,
+        threadId: threadId,
+        origin: origin,
+      );
+    }
+
     final rawPayload = json['message'];
     if (rawPayload != null && rawPayload is! Map) {
       throw const FormatException(
@@ -186,11 +215,11 @@ class CodexDesktopContinuityEventMessage
     }
     final message = CodexDesktopContinuityEventMessage(
       event: event,
-      requestId: requiredString('requestId'),
-      bridgeInstanceId: requiredString('bridgeInstanceId'),
-      sessionId: requiredString('sessionId'),
-      threadId: requiredString('threadId'),
-      origin: requiredString('origin'),
+      requestId: requestId,
+      bridgeInstanceId: bridgeInstanceId,
+      sessionId: sessionId,
+      threadId: threadId,
+      origin: origin,
       state: json['state'] == null
           ? null
           : CodexDesktopContinuityState.parse(json['state']),
@@ -266,11 +295,7 @@ ClientMessage _codexDesktopContinuityRequest({
 void _validateCodexDesktopContinuityEvent(
   CodexDesktopContinuityEventMessage message,
 ) {
-  if (message.origin != 'desktop_rollout') {
-    throw FormatException(
-      'Unsupported Desktop continuity origin: ${message.origin}',
-    );
-  }
+  if (!message.usesSupportedSemantics) return;
   if (message.historyReady &&
       (message.event != CodexDesktopContinuityEventKind.state ||
           message.state != CodexDesktopContinuityState.idle)) {
@@ -303,6 +328,6 @@ void _validateCodexDesktopContinuityEvent(
     case CodexDesktopContinuityEventKind.unwatched:
       break;
     case CodexDesktopContinuityEventKind.unknown:
-      throw const FormatException('Unknown Desktop continuity event.');
+      break;
   }
 }

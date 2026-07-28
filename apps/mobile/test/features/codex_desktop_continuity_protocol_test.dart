@@ -121,6 +121,45 @@ void main() {
     );
   });
 
+  test('keeps future continuity semantics opaque for compatible clients', () {
+    final futureOrigin =
+        ServerMessage.fromJson({
+              'type': 'codex_desktop_continuity_event_v1',
+              'event': 'state',
+              'requestId': 'watch-1',
+              'bridgeInstanceId': 'bridge-1',
+              'sessionId': 'runtime-1',
+              'threadId': 'thread-1',
+              'origin': 'desktop_live_v2',
+              // A future origin may assign different meanings and shapes to
+              // fields that happen to share today's names.
+              'state': {'phase': 'running'},
+              'historyReady': 'eventually',
+              'message': 'not-a-v1-message',
+            })
+            as CodexDesktopContinuityEventMessage;
+    expect(futureOrigin.origin, 'desktop_live_v2');
+    expect(futureOrigin.usesSupportedSemantics, isFalse);
+    expect(futureOrigin.state, isNull);
+    expect(futureOrigin.payload, isNull);
+
+    final futureEvent =
+        ServerMessage.fromJson({
+              'type': 'codex_desktop_continuity_event_v1',
+              'event': 'checkpoint',
+              'requestId': 'watch-2',
+              'bridgeInstanceId': 'bridge-1',
+              'sessionId': 'runtime-1',
+              'threadId': 'thread-1',
+              'origin': 'desktop_rollout',
+              'message': 'future-event-shape',
+            })
+            as CodexDesktopContinuityEventMessage;
+    expect(futureEvent.event, CodexDesktopContinuityEventKind.unknown);
+    expect(futureEvent.usesSupportedSemantics, isFalse);
+    expect(futureEvent.payload, isNull);
+  });
+
   test('old-Bridge unsupported errors are isolated to the feature request', () {
     final request = LocalFeatureProtocolHost.describeRequest(
       requestCodexDesktopContinuityWatch(

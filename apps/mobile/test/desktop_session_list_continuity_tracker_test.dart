@@ -21,6 +21,7 @@ class _Bridge extends BridgeService {
   List<SessionInfo> snapshot = const [];
   bool connected = true;
   int historyRequests = 0;
+  int backgroundContinuityRecords = 0;
 
   @override
   bool get isConnected => connected;
@@ -47,6 +48,14 @@ class _Bridge extends BridgeService {
   @override
   void requestSessionHistory(String sessionId) {
     historyRequests++;
+  }
+
+  @override
+  bool recordBackgroundDesktopContinuity(
+    CodexDesktopContinuityEventMessage message,
+  ) {
+    backgroundContinuityRecords++;
+    return super.recordBackgroundDesktopContinuity(message);
   }
 
   void emitFeature(LocalFeatureServerMessage message) => _features.add(message);
@@ -669,4 +678,56 @@ void main() {
     await _flush();
     expect(bridge.sent, hasLength(2));
   });
+
+  test(
+    'future continuity semantics do not acknowledge or mutate a watch',
+    () async {
+      final bridge = _Bridge()..snapshot = const [_session];
+      final tracker = DesktopSessionListContinuityTracker(bridge);
+      addTearDown(() async {
+        tracker.close();
+        await bridge.closeFake();
+      });
+      final requestId = _json(bridge.sent.single)['requestId'] as String;
+
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.state,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_live_v2',
+          state: CodexDesktopContinuityState.running,
+        ),
+      );
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.unknown,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+        ),
+      );
+      await _flush();
+      expect(bridge.backgroundContinuityRecords, 0);
+      expect(bridge.historyRequests, 0);
+
+      bridge.emitFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.state,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.running,
+        ),
+      );
+      await _flush();
+      expect(bridge.backgroundContinuityRecords, 1);
+    },
+  );
 }

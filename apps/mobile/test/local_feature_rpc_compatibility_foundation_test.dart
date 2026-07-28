@@ -274,6 +274,56 @@ void main() {
     );
   });
 
+  test('future continuity frames cannot retire a v1 request', () async {
+    final bridge = _LocalRpcBridge();
+    addTearDown(bridge.dispose);
+    final local = <LocalFeatureServerMessage>[];
+    bridge.localFeatureMessagesForSession('session-1').listen(local.add);
+
+    bridge.send(
+      requestCodexDesktopContinuityWatch(
+        requestId: 'watch-1',
+        sessionId: 'session-1',
+        threadId: 'thread-1',
+        projectPath: '/project',
+      ),
+    );
+    expect(bridge.pendingLocalFeatureRequestsForTest, hasLength(1));
+
+    expect(
+      bridge.consumeLocalFeatureInfrastructureMessageForTest(
+        const CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.unwatched,
+          requestId: 'watch-1',
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_live_v2',
+        ),
+      ),
+      isTrue,
+    );
+    await _flushBroadcastStreams();
+    expect(bridge.pendingLocalFeatureRequestsForTest, hasLength(1));
+    expect(local, hasLength(1));
+
+    expect(
+      bridge.consumeLocalFeatureInfrastructureMessageForTest(
+        const CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.watching,
+          requestId: 'watch-1',
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.idle,
+        ),
+      ),
+      isTrue,
+    );
+    expect(bridge.pendingLocalFeatureRequestsForTest, isEmpty);
+  });
+
   test('send failure rolls back the pending descriptor', () {
     final bridge = _LocalRpcBridge()
       ..setLocalFeatureProtocolSlotsForTest(const [_ProbeProtocolSlot()])

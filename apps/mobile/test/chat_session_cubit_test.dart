@@ -1059,6 +1059,75 @@ void main() {
       },
     );
 
+    test('Codex conversation ignores future continuity semantics', () async {
+      final cubit = createCubit(
+        's1',
+        provider: Provider.codex,
+        initialProjectPath: '/project',
+      );
+      addTearDown(cubit.close);
+      mockBridge.emitMessage(
+        const SystemMessage(
+          subtype: 'init',
+          sessionId: 'thread-1',
+          provider: 'codex',
+          projectPath: '/project',
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      final watch = mockBridge.sentMessages.lastWhere(
+        (message) => message.type == 'codex_desktop_continuity_watch',
+      );
+      final requestId =
+          (jsonDecode(watch.toJson()) as Map<String, dynamic>)['requestId']
+              as String;
+
+      mockBridge.emitLocalFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.state,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 's1',
+          threadId: 'thread-1',
+          origin: 'desktop_live_v2',
+          state: CodexDesktopContinuityState.running,
+          turnId: 'future-turn',
+        ),
+        sessionId: 's1',
+      );
+      mockBridge.emitLocalFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.unknown,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 's1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+        ),
+        sessionId: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(cubit.state.externalDesktopTurnActive, isFalse);
+
+      mockBridge.emitLocalFeature(
+        CodexDesktopContinuityEventMessage(
+          event: CodexDesktopContinuityEventKind.state,
+          requestId: requestId,
+          bridgeInstanceId: 'bridge-1',
+          sessionId: 's1',
+          threadId: 'thread-1',
+          origin: 'desktop_rollout',
+          state: CodexDesktopContinuityState.running,
+          turnId: 'desktop-turn',
+        ),
+        sessionId: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(cubit.state.externalDesktopTurnActive, isTrue);
+      expect(cubit.state.externalDesktopTurnId, 'desktop-turn');
+    });
+
     test('Codex Desktop continuity stays disabled on an older Bridge', () async {
       mockBridge.advertisedBridgeCapabilities = const {};
       final cubit = createCubit(
