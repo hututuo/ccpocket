@@ -48,7 +48,7 @@ import {
   type CodexThreadSourceKind,
   type CodexThreadSummary,
 } from "./codex-process.js";
-import { codexHomeIdentity } from "./codex-home.js";
+import { codexSourceIdentity } from "./codex-home.js";
 import { stopManagedCodexAppServers } from "./codex-transport.js";
 import {
   parseClientMessage,
@@ -1484,7 +1484,7 @@ export class BridgeWebSocketServer {
     // the optional mirror feature unavailable rather than orphaning copies on
     // every restart.
     this.bridgeInstanceId = promptHistoryStore?.bridgeInstanceId;
-    this.codexSourceId = codexHomeIdentity();
+    this.codexSourceId = codexSourceIdentity();
     this.artifactManager = artifactManager ?? null;
     this.fileTransfer = fileTransfer ?? null;
     this.fileBrowser = fileBrowser ?? null;

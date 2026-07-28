@@ -38,6 +38,7 @@ const originalBridgeEnv = {
   codexAssistReasoningEffort:
     process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT,
   codexHome: process.env.CODEX_HOME,
+  codexSourceId: process.env.BRIDGE_CODEX_SOURCE_ID,
   codexAppServerMode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
   codexSharedAppServerUrl: process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL,
   codexAppServerPort: process.env.BRIDGE_CODEX_APP_SERVER_PORT,
@@ -82,6 +83,7 @@ describe("setup-launchd", () => {
       expect(content).not.toContain("BRIDGE_CODEX_ASSIST_MODEL");
       expect(content).not.toContain("BRIDGE_CODEX_ASSIST_REASONING_EFFORT");
       expect(content).not.toContain("<key>CODEX_HOME</key>");
+      expect(content).not.toContain("BRIDGE_CODEX_SOURCE_ID");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
     });
@@ -133,6 +135,26 @@ describe("setup-launchd", () => {
       expect(content).toContain(
         "<string>/Users/testuser/Codex &amp; Cockpit</string>",
       );
+    });
+
+    it("persists one validated shared Codex authority identity", () => {
+      setupLaunchd({
+        codexSourceId: "codex-source-0123456789abcdef0123456789abcdef",
+      });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("<key>BRIDGE_CODEX_SOURCE_ID</key>");
+      expect(content).toContain(
+        "<string>codex-source-0123456789abcdef0123456789abcdef</string>",
+      );
+    });
+
+    it("rejects an invalid Codex authority before replacing the service", () => {
+      expect(() =>
+        setupLaunchd({ codexSourceId: "shared-main" }),
+      ).toThrow("BRIDGE_CODEX_SOURCE_ID must be");
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(mockExecSync).not.toHaveBeenCalled();
     });
 
     it("includes BRIDGE_DISABLE_MDNS when requested", () => {
@@ -283,6 +305,7 @@ function clearBridgeEnv(): void {
   delete process.env.BRIDGE_CODEX_ASSIST_MODEL;
   delete process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT;
   delete process.env.CODEX_HOME;
+  delete process.env.BRIDGE_CODEX_SOURCE_ID;
   delete process.env.BRIDGE_CODEX_APP_SERVER_MODE;
   delete process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL;
   delete process.env.BRIDGE_CODEX_APP_SERVER_PORT;
@@ -315,6 +338,10 @@ function restoreBridgeEnv(): void {
     originalBridgeEnv.codexAssistReasoningEffort,
   );
   restoreEnvVar("CODEX_HOME", originalBridgeEnv.codexHome);
+  restoreEnvVar(
+    "BRIDGE_CODEX_SOURCE_ID",
+    originalBridgeEnv.codexSourceId,
+  );
   restoreEnvVar(
     "BRIDGE_CODEX_APP_SERVER_MODE",
     originalBridgeEnv.codexAppServerMode,

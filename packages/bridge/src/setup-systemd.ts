@@ -7,6 +7,10 @@ import {
   defaultCodexSharedAppServerUrl,
   readCodexSharedAppServerUrl,
 } from "./codex-app-server-config.js";
+import {
+  normalizeCodexSourceId,
+  resolveCodexHome,
+} from "./codex-home.js";
 import { parseBridgePort } from "./bridge-port.js";
 import { validateArtifactBaseUrl } from "./artifact-url.js";
 
@@ -59,6 +63,8 @@ interface SetupOptions {
   disableMdns?: boolean;
   codexAppServerMode?: string;
   codexSharedAppServerUrl?: string;
+  codexHome?: string;
+  codexSourceId?: string;
   /** @deprecated Use codexSharedAppServerUrl. */
   codexAppServerPort?: string;
   /** @deprecated Use codexSharedAppServerUrl. */
@@ -127,6 +133,13 @@ export function setupSystemd(opts: SetupOptions): void {
   const codexAssistModel = process.env.BRIDGE_CODEX_ASSIST_MODEL?.trim() ?? "";
   const codexAssistReasoningEffort =
     process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT?.trim() ?? "";
+  const rawCodexHome = opts.codexHome ?? process.env.CODEX_HOME ?? "";
+  const codexHome = rawCodexHome.trim()
+    ? resolveCodexHome({ env: { CODEX_HOME: rawCodexHome } })
+    : "";
+  const codexSourceId = normalizeCodexSourceId(
+    opts.codexSourceId ?? process.env.BRIDGE_CODEX_SOURCE_ID,
+  );
   const codexAppServerMode =
     opts.codexAppServerMode ?? process.env.BRIDGE_CODEX_APP_SERVER_MODE ?? "";
   const legacyCodexAppServerPort =
@@ -196,6 +209,12 @@ Environment="BRIDGE_CLI_ENTRY=${escapeSystemdEnvironment(bridgeCliEntry)}"`;
   }
   if (codexAssistReasoningEffort) {
     envLines += `\nEnvironment=BRIDGE_CODEX_ASSIST_REASONING_EFFORT=${codexAssistReasoningEffort}`;
+  }
+  if (codexHome) {
+    envLines += `\nEnvironment="CODEX_HOME=${escapeSystemdEnvironment(codexHome)}"`;
+  }
+  if (codexSourceId) {
+    envLines += `\nEnvironment=BRIDGE_CODEX_SOURCE_ID=${codexSourceId}`;
   }
   if (codexAppServerMode) {
     envLines += `\nEnvironment=BRIDGE_CODEX_APP_SERVER_MODE=${codexAppServerMode}`;

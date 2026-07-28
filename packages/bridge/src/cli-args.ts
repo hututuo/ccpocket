@@ -6,6 +6,7 @@ const VALUE_FLAGS = new Set([
   "artifact-base-url",
   "codex-app-server-mode",
   "codex-shared-app-server-url",
+  "codex-source-id",
   "codex-app-server-port",
   "codex-app-server-url",
   "base-url",
