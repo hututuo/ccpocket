@@ -77,6 +77,60 @@ describe("CodexRolloutMonitor", () => {
     monitor.close();
   });
 
+  it("backs off idle fallback polling without slowing active turns", async () => {
+    vi.useFakeTimers();
+    const activePath = await rollout([
+      event("event_msg", { type: "task_started", turn_id: "turn-active" }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "desktop-active",
+        message: "keep watching",
+      }),
+    ]);
+    const idlePath = await rollout([
+      event("event_msg", { type: "task_started", turn_id: "turn-idle" }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "desktop-idle",
+        message: "already finished",
+      }),
+      event("event_msg", { type: "task_complete", turn_id: "turn-idle" }),
+    ]);
+    const active = new CodexRolloutMonitor({
+      threadId: "thread-active",
+      path: activePath,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: () => {},
+    });
+    const idle = new CodexRolloutMonitor({
+      threadId: "thread-idle",
+      path: idlePath,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: () => {},
+    });
+    await active.start();
+    await idle.start();
+    expect(active.snapshot.state).toBe("running");
+    expect(idle.snapshot.state).toBe("idle");
+    const activeRefresh = vi.spyOn(active, "refreshNow");
+    const idleRefresh = vi.spyOn(idle, "refreshNow");
+
+    await vi.advanceTimersByTimeAsync(749);
+    expect(activeRefresh).not.toHaveBeenCalled();
+    expect(idleRefresh).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(activeRefresh).toHaveBeenCalledTimes(1);
+    expect(idleRefresh).not.toHaveBeenCalled();
+    active.close();
+
+    await vi.advanceTimersByTimeAsync(9_250);
+    expect(idleRefresh).toHaveBeenCalledTimes(1);
+    idle.close();
+  });
+
   it("keeps an already-running Bridge turn local when a watcher attaches", async () => {
     const path = await rollout([
       event("event_msg", { type: "task_started", turn_id: "turn-local" }),

@@ -38,7 +38,8 @@ const MAX_RETIRED_STALE_TURN_IDS = 128;
 const MAX_PENDING_ASSISTANT_MESSAGES = 128;
 const MAX_RECENT_RESPONSE_ASSISTANTS = 128;
 const ASSISTANT_PAIR_TOMBSTONE_MS = 5000;
-const POLL_MS = 750;
+const ACTIVE_POLL_MS = 750;
+const IDLE_POLL_MS = 10_000;
 const START_CLASSIFICATION_MS = 100;
 const STALE_DESKTOP_PREDECESSOR_MS = 5 * 60 * 1000;
 const ASSISTANT_MESSAGE_PAIR_MS = 40;
@@ -1066,7 +1067,7 @@ export class CodexRolloutMonitor {
   readonly watchers: WatchRegistration[] = [];
   private file: FileHandle | null = null;
   private fsWatcher: FSWatcher | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshPromise: Promise<void> | null = null;
   private refreshAgain = false;
   private offset = 0;
@@ -1173,8 +1174,7 @@ export class CodexRolloutMonitor {
     } catch {
       this.fsWatcher = null;
     }
-    this.pollTimer = setInterval(() => this.scheduleRefresh(), POLL_MS);
-    this.pollTimer.unref?.();
+    this.resetFallbackPoll();
   }
 
   addWatcher(registration: WatchRegistration): void {
@@ -1193,10 +1193,16 @@ export class CodexRolloutMonitor {
       await this.refreshPromise;
       return;
     }
-    this.refreshPromise = this.refreshLoop().finally(() => {
-      this.refreshPromise = null;
-    });
-    await this.refreshPromise;
+    const refresh = this.refreshLoop();
+    this.refreshPromise = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.refreshPromise === refresh) {
+        this.refreshPromise = null;
+        this.resetFallbackPoll();
+      }
+    }
   }
 
   close(): void {
@@ -1209,7 +1215,7 @@ export class CodexRolloutMonitor {
     this.toolIdAliases.clear();
     this.pendingCompletedTools.clear();
     this.refreshAgain = false;
-    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.pollTimer) clearTimeout(this.pollTimer);
     this.pollTimer = null;
     this.fsWatcher?.close();
     this.fsWatcher = null;
@@ -1221,6 +1227,24 @@ export class CodexRolloutMonitor {
   private scheduleRefresh(): void {
     if (this.closed) return;
     void this.refreshNow().catch(() => {});
+  }
+
+  private resetFallbackPoll(): void {
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    this.pollTimer = null;
+    if (this.closed) return;
+    // fs.watch is the primary low-latency path. Polling only recovers missed
+    // filesystem notifications, so idle rollouts can use a much slower cadence
+    // while running or ownership-unknown turns retain the existing 750 ms bound.
+    const delayMs =
+      this.snapshot.state === "idle" ? IDLE_POLL_MS : ACTIVE_POLL_MS;
+    const timer = setTimeout(() => {
+      if (this.pollTimer !== timer) return;
+      this.pollTimer = null;
+      this.scheduleRefresh();
+    }, delayMs);
+    this.pollTimer = timer;
+    timer.unref?.();
   }
 
   private async refreshLoop(): Promise<void> {
