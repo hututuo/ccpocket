@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
-import { selectTurnAwareHistoryWindow } from "../history-window.js";
+import {
+  selectTurnAwareHistoryWindow,
+  TURN_AWARE_HISTORY_ROOT_TURNS,
+} from "../history-window.js";
 import type { ServerMessage } from "../parser.js";
 import {
   getAllRecentSessions,
@@ -34,11 +37,22 @@ const DEFAULT_COLD_SCAN_MAX_MS = 5 * 60_000;
 const DEFAULT_MAX_PAGE_ENTRIES = 32;
 const DEFAULT_MAX_PAGE_BYTES = 256 * 1024;
 const DEFAULT_MAX_PATCH_BYTES = 256 * 1024;
+const DEFAULT_MAX_MESSAGE_TEXT_BYTES = 256 * 1024;
+const DEFAULT_MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_CACHED_TARGET_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_CACHED_BYTES = 32 * 1024 * 1024;
+const MIN_MAX_MESSAGE_TEXT_BYTES = 64;
+const MIN_MAX_SNAPSHOT_BYTES = 1024;
 const DEFAULT_EVENT_BATCH_MS = 75;
 const QUEUE_PRIORITY_AGING_INTERVAL = 3;
 const MAX_TOOL_RESULT_TEXT = 64 * 1024;
 const MAX_ASSISTANT_TEXT = 128 * 1024;
 const MAX_TOOL_INPUT_JSON = 32 * 1024;
+const MAX_ASSISTANT_CONTENT_BLOCKS = 1024;
+const MAX_SAFE_JSON_DEPTH = 64;
+const MAX_SAFE_JSON_NODES = 10_000;
+const TRUNCATED_TEXT_SUFFIX =
+  "\n…[truncated; load details on demand]";
 
 type ConversationKey = string;
 
@@ -72,6 +86,8 @@ interface ConversationSnapshot extends ConversationContentTarget {
   entries: SnapshotEntry[];
   hasEarlier: boolean;
   sourceEntryCount: number;
+  /** Exact UTF-8 JSON size used for deterministic cache accounting. */
+  cacheBytes: number;
 }
 
 interface ConversationContentSyncOptions {
@@ -87,6 +103,10 @@ interface ConversationContentSyncOptions {
   maxPageEntries?: number;
   maxPageBytes?: number;
   maxPatchBytes?: number;
+  maxMessageTextBytes?: number;
+  maxSnapshotBytes?: number;
+  maxCachedTargetBytes?: number;
+  maxCachedBytes?: number;
 }
 
 /**
@@ -117,6 +137,10 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   private readonly maxPageEntries: number;
   private readonly maxPageBytes: number;
   private readonly maxPatchBytes: number;
+  private readonly maxMessageTextBytes: number;
+  private readonly maxSnapshotBytes: number;
+  private readonly maxCachedTargetBytes: number;
+  private readonly maxCachedBytes: number;
 
   private readonly clients = new Map<object, ClientSubscription>();
   private readonly catalog = new Map<ConversationKey, CatalogRecord>();
@@ -128,6 +152,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   >();
   private queueSequence = 0;
   private completedTaskCount = 0;
+  private cachedSnapshotBytes = 0;
   private draining = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
   private catalogFlight?: Promise<void>;
@@ -181,6 +206,28 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     this.maxPatchBytes = positiveInteger(
       options.maxPatchBytes,
       DEFAULT_MAX_PATCH_BYTES,
+    );
+    this.maxMessageTextBytes = Math.max(
+      MIN_MAX_MESSAGE_TEXT_BYTES,
+      positiveInteger(
+        options.maxMessageTextBytes,
+        DEFAULT_MAX_MESSAGE_TEXT_BYTES,
+      ),
+    );
+    this.maxSnapshotBytes = Math.max(
+      MIN_MAX_SNAPSHOT_BYTES,
+      positiveInteger(options.maxSnapshotBytes, DEFAULT_MAX_SNAPSHOT_BYTES),
+    );
+    this.maxCachedBytes = positiveInteger(
+      options.maxCachedBytes,
+      DEFAULT_MAX_CACHED_BYTES,
+    );
+    this.maxCachedTargetBytes = Math.min(
+      this.maxCachedBytes,
+      positiveInteger(
+        options.maxCachedTargetBytes,
+        DEFAULT_MAX_CACHED_TARGET_BYTES,
+      ),
     );
   }
 
@@ -278,6 +325,8 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     this.closed = true;
     this.clients.clear();
     this.queue.clear();
+    this.snapshots.clear();
+    this.cachedSnapshotBytes = 0;
     this.cancelDrainTimer();
     this.cancelColdScan();
   }
@@ -491,7 +540,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     let count = 0;
     for (const [key, record] of this.catalog) {
       if (count >= this.hotConversationLimit) break;
-      const cached = this.snapshots.get(key)?.at(-1);
+      const cached = this.latestSnapshot(key);
       if (cached && !this.inFlightKeys.has(key) && !this.queue.has(key)) {
         this.publishSnapshot(key, cached);
       } else {
@@ -566,9 +615,12 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
         try {
           const messages = await this.historyReader(task);
           if (this.closed || !this.hasInteractiveClients()) break;
-          const snapshot = buildSnapshot(task, messages);
-          this.rememberSnapshot(task.key, snapshot);
+          const snapshot = buildSnapshot(task, messages, {
+            maxMessageTextBytes: this.maxMessageTextBytes,
+            maxSnapshotBytes: this.maxSnapshotBytes,
+          });
           this.publishSnapshot(task.key, snapshot);
+          this.rememberSnapshot(task.key, snapshot);
         } catch (error) {
           this.sendTargetErrors(
             task,
@@ -684,10 +736,23 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     subscription: ClientSubscription,
     snapshot: ConversationSnapshot,
   ): void {
+    const pageEnvelopeBytes = Buffer.byteLength(
+      JSON.stringify({
+        ...this.eventBase(subscription),
+        ...snapshotTarget(snapshot),
+        event: "snapshot_page",
+        revision: snapshot.revision,
+        pageIndex: Number.MAX_SAFE_INTEGER,
+        pageCount: Number.MAX_SAFE_INTEGER,
+        entries: [],
+      }),
+      "utf8",
+    );
     const pages = paginateEntries(
       snapshot.entries,
       this.maxPageEntries,
       this.maxPageBytes,
+      pageEnvelopeBytes,
     );
     this.send(client, {
       ...this.eventBase(subscription),
@@ -734,25 +799,79 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     snapshot: ConversationSnapshot,
   ): void {
     const previous = this.snapshots.get(key) ?? [];
-    const revisions = previous
-      .filter((value) => value.revision !== snapshot.revision)
-      .slice(-1);
-    this.snapshots.delete(key);
-    this.snapshots.set(key, [...revisions, snapshot]);
-    while (this.snapshots.size > this.maxCachedConversations) {
+    const revisions = [
+      ...previous
+        .filter((value) => value.revision !== snapshot.revision)
+        .slice(-1),
+      snapshot,
+    ];
+    this.removeCachedTarget(key);
+
+    let targetBytes = revisions.reduce(
+      (total, value) => total + value.cacheBytes,
+      0,
+    );
+    while (
+      revisions.length > 1 &&
+      targetBytes > this.maxCachedTargetBytes
+    ) {
+      targetBytes -= revisions.shift()!.cacheBytes;
+    }
+    if (
+      revisions.length === 0 ||
+      targetBytes > this.maxCachedTargetBytes ||
+      targetBytes > this.maxCachedBytes
+    ) {
+      return;
+    }
+
+    this.snapshots.set(key, revisions);
+    this.cachedSnapshotBytes += targetBytes;
+    while (
+      this.snapshots.size > this.maxCachedConversations ||
+      this.cachedSnapshotBytes > this.maxCachedBytes
+    ) {
       const oldest = this.snapshots.keys().next().value;
       if (!oldest) break;
-      this.snapshots.delete(oldest);
+      this.removeCachedTarget(oldest);
     }
+  }
+
+  private removeCachedTarget(key: ConversationKey): void {
+    const existing = this.snapshots.get(key);
+    if (!existing) return;
+    for (const snapshot of existing) {
+      this.cachedSnapshotBytes -= snapshot.cacheBytes;
+    }
+    this.cachedSnapshotBytes = Math.max(0, this.cachedSnapshotBytes);
+    this.snapshots.delete(key);
   }
 
   private findSnapshot(
     key: ConversationKey,
     revision: string,
   ): ConversationSnapshot | undefined {
-    return this.snapshots
-      .get(key)
-      ?.find((snapshot) => snapshot.revision === revision);
+    const values = this.snapshots.get(key);
+    const snapshot = values?.find((value) => value.revision === revision);
+    if (snapshot && values) this.touchCachedTarget(key, values);
+    return snapshot;
+  }
+
+  private latestSnapshot(
+    key: ConversationKey,
+  ): ConversationSnapshot | undefined {
+    const values = this.snapshots.get(key);
+    const snapshot = values?.at(-1);
+    if (snapshot && values) this.touchCachedTarget(key, values);
+    return snapshot;
+  }
+
+  private touchCachedTarget(
+    key: ConversationKey,
+    values: ConversationSnapshot[],
+  ): void {
+    this.snapshots.delete(key);
+    this.snapshots.set(key, values);
   }
 
   private focusPriority(
@@ -877,32 +996,145 @@ async function readDurableHistory(
 function buildSnapshot(
   target: ConversationContentTarget,
   rawMessages: readonly ServerMessage[],
+  limits: {
+    maxMessageTextBytes: number;
+    maxSnapshotBytes: number;
+  },
 ): ConversationSnapshot {
-  const source = rawMessages.map((message, sourceIndex) => ({
-    sourceIndex,
-    message: boundHistoryMessage(message),
-  }));
+  const firstRelevantIndex = latestRootTurnStart(
+    rawMessages,
+    TURN_AWARE_HISTORY_ROOT_TURNS,
+  );
+  const source: Array<{ sourceIndex: number; message: ServerMessage }> = [];
+  for (
+    let sourceIndex = firstRelevantIndex;
+    sourceIndex < rawMessages.length;
+    sourceIndex += 1
+  ) {
+    source.push({
+      sourceIndex,
+      message: rawMessages[sourceIndex]!,
+    });
+  }
   const selected = selectTurnAwareHistoryWindow(source);
+  const retained: Array<{
+    sourceIndex: number;
+    message: ServerMessage;
+    serialized: string;
+  }> = [];
+  let retainedMessageBytes = 0;
+  let omitted = false;
+  for (let index = selected.length - 1; index >= 0; index -= 1) {
+    const value = selected[index]!;
+    const message = boundHistoryMessage(
+      value.message,
+      limits.maxMessageTextBytes,
+    );
+    const serialized = safeJsonSerialize(
+      message,
+      limits.maxSnapshotBytes,
+    );
+    if (!serialized) {
+      throw new Error("Conversation message exceeds safe serialized byte budget");
+    }
+    if (retainedMessageBytes + serialized.bytes > limits.maxSnapshotBytes) {
+      omitted = true;
+      break;
+    }
+    retainedMessageBytes += serialized.bytes;
+    retained.unshift({
+      sourceIndex: value.sourceIndex,
+      message,
+      serialized: serialized.value,
+    });
+  }
+
   const usedIds = new Map<string, number>();
-  const entries: SnapshotEntry[] = selected.map((value) => {
+  const candidateEntries: SnapshotEntry[] = retained.map((value) => {
     const message = value.message;
-    const baseId = messageIdentity(message, value.sourceIndex);
+    const baseId = messageIdentity(
+      message,
+      value.sourceIndex,
+      value.serialized,
+    );
     const occurrence = (usedIds.get(baseId) ?? 0) + 1;
     usedIds.set(baseId, occurrence);
     const entryId = occurrence === 1 ? baseId : `${baseId}:${occurrence}`;
-    const serialized = JSON.stringify(message);
     return {
       entryId,
       index: value.sourceIndex,
       sourceIndex: value.sourceIndex,
-      contentHash: sha256(serialized),
+      contentHash: sha256(value.serialized),
       message,
     };
   });
-  const hasEarlier = (selected[0]?.sourceIndex ?? 0) > 0;
+  const emptySnapshotBytes = materializeSnapshot(
+    target,
+    [],
+    true,
+    rawMessages.length,
+  ).cacheBytes;
+  let entryBytes = emptySnapshotBytes + 32;
+  let firstEntry = candidateEntries.length;
+  for (let index = candidateEntries.length - 1; index >= 0; index -= 1) {
+    const candidateBytes = Buffer.byteLength(
+      JSON.stringify(candidateEntries[index]),
+      "utf8",
+    );
+    const separatorBytes = firstEntry === candidateEntries.length ? 0 : 1;
+    if (
+      entryBytes + separatorBytes + candidateBytes >
+      limits.maxSnapshotBytes
+    ) {
+      omitted = true;
+      break;
+    }
+    entryBytes += separatorBytes + candidateBytes;
+    firstEntry = index;
+  }
+  if (candidateEntries.length > 0 && firstEntry === candidateEntries.length) {
+    throw new Error("Conversation snapshot entry exceeds snapshot byte budget");
+  }
+  const entries = candidateEntries.slice(firstEntry);
+  const hasEarlier =
+    omitted ||
+    retained.length < selected.length ||
+    firstEntry > 0 ||
+    (entries[0]?.sourceIndex ?? rawMessages.length) > 0;
+  const snapshot = materializeSnapshot(
+    target,
+    entries,
+    hasEarlier,
+    rawMessages.length,
+  );
+  if (snapshot.cacheBytes > limits.maxSnapshotBytes) {
+    throw new Error("Conversation snapshot exceeds safe serialized byte budget");
+  }
+  return snapshot;
+}
+
+function latestRootTurnStart(
+  messages: readonly ServerMessage[],
+  rootTurns: number,
+): number {
+  let seen = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.type !== "user_input") continue;
+    seen += 1;
+    if (seen === rootTurns) return index;
+  }
+  return 0;
+}
+
+function materializeSnapshot(
+  target: ConversationContentTarget,
+  entries: SnapshotEntry[],
+  hasEarlier: boolean,
+  sourceEntryCount: number,
+): ConversationSnapshot {
   const revision = sha256(
     JSON.stringify({
-      sourceEntryCount: source.length,
+      sourceEntryCount,
       hasEarlier,
       entries: entries.map((entry) => [
         entry.entryId,
@@ -911,23 +1143,57 @@ function buildSnapshot(
       ]),
     }),
   );
-  return {
+  const value = {
     ...target,
     revision,
     entries,
     hasEarlier,
-    sourceEntryCount: source.length,
+    sourceEntryCount,
   };
+  let cacheBytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+  for (;;) {
+    const measured = Buffer.byteLength(
+      JSON.stringify({ ...value, cacheBytes }),
+      "utf8",
+    );
+    if (measured === cacheBytes) return { ...value, cacheBytes };
+    cacheBytes = measured;
+  }
 }
 
-function boundHistoryMessage(message: ServerMessage): ServerMessage {
+function boundHistoryMessage(
+  message: ServerMessage,
+  maxMessageTextBytes: number,
+): ServerMessage {
+  const budget = { remaining: maxMessageTextBytes };
+  if (message.type === "user_input") {
+    return {
+      ...message,
+      text: takeBoundedText(message.text, budget, maxMessageTextBytes),
+    };
+  }
   if (message.type === "tool_result") {
     return {
       ...message,
-      content: boundedText(message.content, MAX_TOOL_RESULT_TEXT),
+      content: takeBoundedText(message.content, budget, MAX_TOOL_RESULT_TEXT),
+    };
+  }
+  if (message.type === "tool_use_summary") {
+    return {
+      ...message,
+      summary: takeBoundedText(
+        message.summary,
+        budget,
+        maxMessageTextBytes,
+      ),
     };
   }
   if (message.type !== "assistant") return message;
+  if (message.message.content.length > MAX_ASSISTANT_CONTENT_BLOCKS) {
+    throw new Error(
+      `Assistant message exceeds ${MAX_ASSISTANT_CONTENT_BLOCKS} content blocks`,
+    );
+  }
   return {
     ...message,
     message: {
@@ -936,44 +1202,324 @@ function boundHistoryMessage(message: ServerMessage): ServerMessage {
         if (content.type === "text") {
           return {
             ...content,
-            text: boundedText(content.text, MAX_ASSISTANT_TEXT),
+            text: takeBoundedText(
+              content.text,
+              budget,
+              MAX_ASSISTANT_TEXT,
+            ),
           };
         }
         if (content.type === "thinking") {
           return {
             ...content,
-            thinking: boundedText(content.thinking, MAX_ASSISTANT_TEXT),
+            thinking: takeBoundedText(
+              content.thinking,
+              budget,
+              MAX_ASSISTANT_TEXT,
+            ),
           };
         }
         if (content.type !== "tool_use") return content;
-        const encoded = JSON.stringify(content.input);
-        if (Buffer.byteLength(encoded, "utf8") <= MAX_TOOL_INPUT_JSON) {
+        const encoded = safeJsonSerialize(
+          content.input,
+          Math.min(MAX_TOOL_INPUT_JSON, budget.remaining),
+        );
+        if (encoded) {
+          budget.remaining -= encoded.bytes;
           return content;
         }
+        const replacement = {
+          ccpocketTruncated: true,
+          preview: "[tool input omitted: exceeds safe byte budget]",
+        };
+        const replacementBytes = Buffer.byteLength(
+          JSON.stringify(replacement),
+          "utf8",
+        );
+        if (replacementBytes > budget.remaining) {
+          throw new Error(
+            "Assistant message exceeds aggregate text/input byte budget",
+          );
+        }
+        budget.remaining -= replacementBytes;
         return {
           ...content,
-          input: {
-            ccpocketTruncated: true,
-            preview: boundedText(encoded, MAX_TOOL_INPUT_JSON),
-          },
+          input: replacement,
         };
       }),
     },
   };
 }
 
-function boundedText(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-  let end = Math.min(value.length, maxBytes);
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) {
-    end = Math.floor(end * 0.9);
+function takeBoundedText(
+  value: string,
+  budget: { remaining: number },
+  blockLimit: number,
+): string {
+  const bounded = boundedText(
+    value,
+    Math.max(0, Math.min(blockLimit, budget.remaining)),
+  );
+  if (value.length > 0 && bounded.length === 0) {
+    throw new Error("Message exceeds aggregate text byte budget");
   }
-  return `${value.slice(0, end)}\n…[truncated; load details on demand]`;
+  budget.remaining = Math.max(
+    0,
+    budget.remaining - Buffer.byteLength(bounded, "utf8"),
+  );
+  return bounded;
 }
 
-function messageIdentity(message: ServerMessage, index: number): string {
+function boundedText(value: string, maxBytes: number): string {
+  if (maxBytes <= 0 || value.length === 0) return "";
+  const suffixBytes = Buffer.byteLength(TRUNCATED_TEXT_SUFFIX, "utf8");
+  const contentLimit = Math.max(0, maxBytes - suffixBytes);
+  let bytes = 0;
+  let contentEnd = 0;
+  let index = 0;
+  while (index < value.length) {
+    const width = utf8CodePointWidth(value, index);
+    if (bytes + width.bytes > maxBytes) break;
+    bytes += width.bytes;
+    index += width.codeUnits;
+    if (bytes <= contentLimit) contentEnd = index;
+  }
+  if (index === value.length) return value;
+  if (maxBytes < suffixBytes) {
+    return maxBytes >= 3 ? "…" : "";
+  }
+  return `${value.slice(0, contentEnd)}${TRUNCATED_TEXT_SUFFIX}`;
+}
+
+function utf8CodePointWidth(
+  value: string,
+  index: number,
+): { bytes: number; codeUnits: number } {
+  const first = value.charCodeAt(index);
+  if (
+    first >= 0xd800 &&
+    first <= 0xdbff &&
+    index + 1 < value.length
+  ) {
+    const second = value.charCodeAt(index + 1);
+    if (second >= 0xdc00 && second <= 0xdfff) {
+      return { bytes: 4, codeUnits: 2 };
+    }
+  }
+  if (first <= 0x7f) return { bytes: 1, codeUnits: 1 };
+  if (first <= 0x7ff) return { bytes: 2, codeUnits: 1 };
+  return { bytes: 3, codeUnits: 1 };
+}
+
+function safeJsonSerialize(
+  value: unknown,
+  maxBytes: number,
+): { value: string; bytes: number } | undefined {
+  if (maxBytes <= 0) return undefined;
+  try {
+    const estimated = measureJsonValue(
+      value,
+      maxBytes,
+      { stack: new Set(), nodes: 0 },
+      0,
+      false,
+    );
+    if (estimated === undefined || estimated > maxBytes) return undefined;
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== "string") return undefined;
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    if (bytes > maxBytes) return undefined;
+    return { value: serialized, bytes };
+  } catch {
+    return undefined;
+  }
+}
+
+function measureJsonValue(
+  value: unknown,
+  maxBytes: number,
+  state: { stack: Set<object>; nodes: number },
+  depth: number,
+  inArray: boolean,
+): number | undefined {
+  state.nodes += 1;
+  if (state.nodes > MAX_SAFE_JSON_NODES || depth > MAX_SAFE_JSON_DEPTH) {
+    return undefined;
+  }
+  if (value === null) return maxBytes >= 4 ? 4 : undefined;
+  if (typeof value === "string") {
+    return jsonStringByteLength(value, maxBytes);
+  }
+  if (typeof value === "boolean") {
+    const bytes = value ? 4 : 5;
+    return bytes <= maxBytes ? bytes : undefined;
+  }
+  if (typeof value === "number") {
+    const encoded = Number.isFinite(value)
+      ? JSON.stringify(value)
+      : "null";
+    const bytes = Buffer.byteLength(encoded, "utf8");
+    return bytes <= maxBytes ? bytes : undefined;
+  }
+  if (
+    typeof value === "undefined" ||
+    typeof value === "function" ||
+    typeof value === "symbol"
+  ) {
+    return inArray && maxBytes >= 4 ? 4 : undefined;
+  }
+  if (typeof value === "bigint" || typeof value !== "object") {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return undefined;
+    }
+  }
+  if (hasCustomJsonSerialization(value) || state.stack.has(value)) {
+    return undefined;
+  }
+
+  state.stack.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (value.length > MAX_SAFE_JSON_NODES) return undefined;
+      let bytes = 2;
+      for (let index = 0; index < value.length; index += 1) {
+        if (index > 0) bytes += 1;
+        if (bytes > maxBytes) return undefined;
+        const descriptor = Object.getOwnPropertyDescriptor(
+          value,
+          String(index),
+        );
+        if (!descriptor) {
+          bytes += 4;
+          continue;
+        }
+        if (descriptor.get || descriptor.set) return undefined;
+        const remaining = maxBytes - bytes;
+        const child = measureJsonValue(
+          descriptor.value,
+          remaining,
+          state,
+          depth + 1,
+          true,
+        );
+        if (child === undefined) return undefined;
+        bytes += child;
+      }
+      return bytes <= maxBytes ? bytes : undefined;
+    }
+
+    let bytes = 2;
+    let count = 0;
+    const record = value as Record<string, unknown>;
+    for (const key in record) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+      state.nodes += 1;
+      if (state.nodes > MAX_SAFE_JSON_NODES) return undefined;
+      const descriptor = Object.getOwnPropertyDescriptor(record, key);
+      if (!descriptor?.enumerable) continue;
+      if (descriptor.get || descriptor.set) return undefined;
+      const childValue = descriptor.value;
+      if (
+        typeof childValue === "undefined" ||
+        typeof childValue === "function" ||
+        typeof childValue === "symbol"
+      ) {
+        continue;
+      }
+      if (count > 0) bytes += 1;
+      const keyBytes = jsonStringByteLength(key, maxBytes - bytes);
+      if (keyBytes === undefined) return undefined;
+      bytes += keyBytes + 1;
+      if (bytes > maxBytes) return undefined;
+      const child = measureJsonValue(
+        childValue,
+        maxBytes - bytes,
+        state,
+        depth + 1,
+        false,
+      );
+      if (child === undefined) return undefined;
+      bytes += child;
+      count += 1;
+    }
+    return bytes <= maxBytes ? bytes : undefined;
+  } finally {
+    state.stack.delete(value);
+  }
+}
+
+function hasCustomJsonSerialization(value: object): boolean {
+  let current: object | null = value;
+  while (current) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, "toJSON");
+    if (descriptor) {
+      return (
+        descriptor.get != null ||
+        descriptor.set != null ||
+        typeof descriptor.value === "function"
+      );
+    }
+    current = Object.getPrototypeOf(current);
+  }
+  return false;
+}
+
+function jsonStringByteLength(
+  value: string,
+  maxBytes: number,
+): number | undefined {
+  let bytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0x22 || codeUnit === 0x5c) {
+      bytes += 2;
+    } else if (
+      codeUnit === 0x08 ||
+      codeUnit === 0x09 ||
+      codeUnit === 0x0a ||
+      codeUnit === 0x0c ||
+      codeUnit === 0x0d
+    ) {
+      bytes += 2;
+    } else if (codeUnit <= 0x1f) {
+      bytes += 6;
+    } else if (
+      codeUnit >= 0xd800 &&
+      codeUnit <= 0xdbff &&
+      index + 1 < value.length
+    ) {
+      const second = value.charCodeAt(index + 1);
+      if (second >= 0xdc00 && second <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 6;
+      }
+    } else if (codeUnit >= 0xd800 && codeUnit <= 0xdfff) {
+      bytes += 6;
+    } else if (codeUnit <= 0x7f) {
+      bytes += 1;
+    } else if (codeUnit <= 0x7ff) {
+      bytes += 2;
+    } else {
+      bytes += 3;
+    }
+    if (bytes > maxBytes) return undefined;
+  }
+  return bytes <= maxBytes ? bytes : undefined;
+}
+
+function messageIdentity(
+  message: ServerMessage,
+  index: number,
+  serialized: string,
+): string {
   if (message.type === "user_input") {
-    return `user:${message.userMessageUuid ?? sha256(JSON.stringify(message))}`;
+    return `user:${message.userMessageUuid ?? sha256(serialized)}`;
   }
   if (message.type === "assistant") {
     return `assistant:${message.messageUuid ?? message.message.id}`;
@@ -988,23 +1534,35 @@ function paginateEntries(
   entries: readonly SnapshotEntry[],
   maxEntries: number,
   maxBytes: number,
+  pageEnvelopeBytes: number,
 ): SnapshotEntry[][] {
   if (entries.length === 0) return [];
+  if (pageEnvelopeBytes > maxBytes) {
+    throw new Error("Conversation snapshot page envelope exceeds byte budget");
+  }
   const pages: SnapshotEntry[][] = [];
   let page: SnapshotEntry[] = [];
-  let pageBytes = 0;
+  let pageBytes = pageEnvelopeBytes;
   for (const entry of entries) {
-    const entryBytes = Buffer.byteLength(JSON.stringify(entry), "utf8");
+    const entryBytes = Buffer.byteLength(
+      JSON.stringify(toWireEntry(entry)),
+      "utf8",
+    );
+    if (pageEnvelopeBytes + entryBytes > maxBytes) {
+      throw new Error("Conversation snapshot entry exceeds page byte budget");
+    }
+    const separatorBytes = page.length === 0 ? 0 : 1;
     if (
       page.length > 0 &&
-      (page.length >= maxEntries || pageBytes + entryBytes > maxBytes)
+      (page.length >= maxEntries ||
+        pageBytes + separatorBytes + entryBytes > maxBytes)
     ) {
       pages.push(page);
       page = [];
-      pageBytes = 0;
+      pageBytes = pageEnvelopeBytes;
     }
     page.push(entry);
-    pageBytes += entryBytes;
+    pageBytes += (page.length === 1 ? 0 : 1) + entryBytes;
   }
   if (page.length > 0) pages.push(page);
   return pages;

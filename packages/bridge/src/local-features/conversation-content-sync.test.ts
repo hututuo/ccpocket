@@ -87,6 +87,487 @@ describe("conversation content protocol", () => {
 });
 
 describe("ConversationContentSyncFeatureHandler", () => {
+  it("bounds aggregate text per message without changing the wire envelope", async () => {
+    const fixture = createFixture(1, {
+      maxMessageTextBytes: 64,
+      maxSnapshotBytes: 4 * 1024,
+    });
+    const client = {};
+    fixture.historyReader.mockResolvedValue([
+      {
+        type: "user_input",
+        text: "😀".repeat(100),
+        userMessageUuid: "large-user",
+      },
+      {
+        type: "assistant",
+        messageUuid: "large-assistant",
+        message: {
+          id: "large-assistant",
+          role: "assistant",
+          model: "gpt-test",
+          content: [
+            { type: "text", text: "A".repeat(48) },
+            { type: "thinking", thinking: "B".repeat(48) },
+            { type: "text", text: "C".repeat(48) },
+          ],
+        },
+      },
+    ]);
+
+    await fixture.handler.handle(subscribe("subscription-1"), {
+      client,
+      signal: new AbortController().signal,
+      runtime: fixture.runtime,
+    });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+
+    const pages = events(fixture.sent, client, "snapshot_page");
+    const messages = pages.flatMap((page) =>
+      page.entries.map((entry) => entry.message),
+    );
+    expect(messages).toHaveLength(2);
+    for (const message of messages) {
+      expect(aggregateTextBytes(message)).toBeLessThanOrEqual(64);
+    }
+    expect(
+      messages.some((message) =>
+        JSON.stringify(message).includes("[truncated; load details on demand]"),
+      ),
+    ).toBe(true);
+
+    fixture.handler.close();
+  });
+
+  it("retains the newest entries within one bounded snapshot", async () => {
+    const fixture = createFixture(1, {
+      maxMessageTextBytes: 256,
+      maxSnapshotBytes: 1_200,
+    });
+    const client = {};
+    fixture.historyReader.mockResolvedValue(
+      Array.from({ length: 20 }, (_, index) => ({
+        type: "user_input" as const,
+        text: `${index}:`.padEnd(180, "x"),
+        userMessageUuid: `large-user-${index}`,
+      })),
+    );
+
+    await fixture.handler.handle(subscribe("subscription-1"), {
+      client,
+      signal: new AbortController().signal,
+      runtime: fixture.runtime,
+    });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+
+    const begin = events(fixture.sent, client, "snapshot_begin")[0]!;
+    const entries = events(fixture.sent, client, "snapshot_page").flatMap(
+      (page) => page.entries,
+    );
+    expect(begin.entryCount).toBeGreaterThan(0);
+    expect(begin.entryCount).toBeLessThan(5);
+    expect(begin.hasEarlier).toBe(true);
+    expect(entries.at(-1)?.message).toMatchObject({
+      type: "user_input",
+      userMessageUuid: "large-user-19",
+    });
+
+    fixture.handler.close();
+  });
+
+  it("does not let an oversized stale message outside the latest root window block sync", async () => {
+    const fixture = createFixture(1);
+    const client = {};
+    fixture.historyReader.mockResolvedValue([
+      {
+        type: "user_input",
+        text: "stale root",
+        userMessageUuid: "stale-root",
+      },
+      {
+        type: "assistant",
+        messageUuid: "stale-oversized-assistant",
+        message: {
+          id: "stale-oversized-assistant",
+          role: "assistant",
+          model: "gpt-test",
+          content: Array.from({ length: 1_025 }, () => ({
+            type: "text" as const,
+            text: "",
+          })),
+        },
+      },
+      ...Array.from({ length: 5 }, (_, index) => ({
+        type: "user_input" as const,
+        text: `recent root ${index}`,
+        userMessageUuid: `recent-root-${index}`,
+      })),
+    ]);
+
+    await fixture.handler.handle(subscribe("subscription-1"), {
+      client,
+      signal: new AbortController().signal,
+      runtime: fixture.runtime,
+    });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+    expect(events(fixture.sent, client, "snapshot_begin")[0]).toMatchObject({
+      entryCount: 5,
+      hasEarlier: true,
+    });
+
+    fixture.handler.close();
+  });
+
+  it("rejects an exact-fill message instead of silently emitting later empty blocks", async () => {
+    const fixture = createFixture(0, { maxMessageTextBytes: 64 });
+    const client = {};
+    fixture.historyReader.mockResolvedValue([
+      {
+        type: "assistant",
+        messageUuid: "exact-fill-assistant",
+        message: {
+          id: "exact-fill-assistant",
+          role: "assistant",
+          model: "gpt-test",
+          content: [
+            { type: "text", text: "x".repeat(64) },
+            { type: "text", text: "must-not-disappear" },
+          ],
+        },
+      },
+    ]);
+
+    await fixture.handler.handle(
+      {
+        ...subscribe("subscription-1"),
+        focused: { provider: "codex", providerSessionId: "thread-0" },
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await vi.waitFor(
+      () => expect(events(fixture.sent, client, "error").length).toBeGreaterThan(0),
+      { timeout: 3_000 },
+    );
+    expect(events(fixture.sent, client, "snapshot_begin")).toHaveLength(0);
+
+    fixture.handler.close();
+  });
+
+  it("rejects a single escaped entry that cannot fit the complete wire page", async () => {
+    const fixture = createFixture(0, {
+      maxMessageTextBytes: 1024,
+      maxSnapshotBytes: 4 * 1024,
+      maxPageBytes: 1_500,
+    });
+    const client = {};
+    fixture.historyReader.mockResolvedValue([
+      {
+        type: "user_input",
+        text: "\u0001".repeat(300),
+        userMessageUuid: "escaped-user",
+      },
+    ]);
+
+    await fixture.handler.handle(
+      {
+        ...subscribe("subscription-1"),
+        focused: { provider: "codex", providerSessionId: "thread-0" },
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          events(fixture.sent, client, "error").some((event) =>
+            event.error.includes("page byte budget"),
+          ),
+        ).toBe(true),
+      { timeout: 3_000 },
+    );
+    expect(events(fixture.sent, client, "snapshot_begin")).toHaveLength(0);
+
+    fixture.handler.close();
+  });
+
+  it("falls back to a full snapshot when the per-target cache budget rejects the base", async () => {
+    const fixture = createFixture(0, {
+      maxCachedTargetBytes: 1,
+      maxCachedBytes: 4 * 1024,
+    });
+    const client = {};
+    let version = 1;
+    fixture.historyReader.mockImplementation(async (target) =>
+      history(target.providerSessionId, version),
+    );
+    const focused: ConversationContentTarget = {
+      provider: "codex",
+      providerSessionId: "thread-0",
+    };
+
+    await fixture.handler.handle(
+      { ...subscribe("subscription-1"), focused },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+    const initial = events(fixture.sent, client, "snapshot_complete")[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_content_ack",
+        protocolVersion: 1,
+        subscriptionId: "subscription-1",
+        ...focused,
+        revision: initial.revision,
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+
+    version = 2;
+    fixture.handler.sessionCatalogChanged({ revision: 2, ...focused });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          2,
+        ),
+      { timeout: 3_000 },
+    );
+    expect(events(fixture.sent, client, "patch")).toHaveLength(0);
+    const second = events(fixture.sent, client, "snapshot_complete")[1]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_content_ack",
+        protocolVersion: 1,
+        subscriptionId: "subscription-1",
+        ...focused,
+        revision: second.revision,
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    const subscription = (
+      fixture.handler as unknown as {
+        clients: Map<object, { cursors: Map<string, string> }>;
+      }
+    ).clients.get(client);
+    expect(subscription?.cursors.get("codex\u0000thread-0")).toBe(
+      second.revision,
+    );
+    version = 3;
+    fixture.handler.sessionCatalogChanged({ revision: 3, ...focused });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          3,
+        ),
+      { timeout: 3_000 },
+    );
+    expect(events(fixture.sent, client, "patch")).toHaveLength(0);
+
+    fixture.handler.close();
+  });
+
+  it("evicts globally in existing recency order and only reuses the newest target", async () => {
+    const fixture = createFixture(3, {
+      maxMessageTextBytes: 4 * 1024,
+      maxSnapshotBytes: 8 * 1024,
+      maxCachedTargetBytes: 8 * 1024,
+      maxCachedBytes: 5 * 1024,
+    });
+    const first = {};
+    const second = {};
+    fixture.historyReader.mockImplementation(async (target) => [
+      {
+        type: "user_input",
+        text: `${target.providerSessionId}:`.padEnd(3_000, "x"),
+        userMessageUuid: `${target.providerSessionId}-large-user`,
+      },
+    ]);
+
+    await fixture.handler.handle(subscribe("first"), {
+      client: first,
+      signal: new AbortController().signal,
+      runtime: fixture.runtime,
+    });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, first, "snapshot_complete")).toHaveLength(
+          3,
+        ),
+      { timeout: 3_000 },
+    );
+
+    await fixture.handler.handle(subscribe("second"), {
+      client: second,
+      signal: new AbortController().signal,
+      runtime: fixture.runtime,
+    });
+    expect(
+      events(fixture.sent, second, "snapshot_complete").map(
+        (event) => event.providerSessionId,
+      ),
+    ).toEqual(["thread-2"]);
+
+    fixture.handler.close();
+  });
+
+  it("touches a read hit before global LRU eviction", async () => {
+    const fixture = createFixture(3, {
+      maxMessageTextBytes: 4 * 1024,
+      maxSnapshotBytes: 8 * 1024,
+      maxCachedTargetBytes: 8 * 1024,
+      maxCachedBytes: 8 * 1024,
+    });
+    const client = {};
+    fixture.historyReader.mockImplementation(async (target) => [
+      {
+        type: "user_input",
+        text: `${target.providerSessionId}:`.padEnd(3_000, "x"),
+        userMessageUuid: `${target.providerSessionId}-lru-user`,
+      },
+    ]);
+    await fixture.handler.handle(subscribe("subscription-1"), {
+      client,
+      signal: new AbortController().signal,
+      runtime: fixture.runtime,
+    });
+    await vi.waitFor(
+      () => expect(fixture.historyReader).toHaveBeenCalledTimes(3),
+      { timeout: 3_000 },
+    );
+
+    const inspectable = fixture.handler as unknown as {
+      snapshots: Map<string, Array<{ revision: string }>>;
+      findSnapshot: (key: string, revision: string) => unknown;
+    };
+    expect([...inspectable.snapshots.keys()]).toEqual([
+      "codex\u0000thread-1",
+      "codex\u0000thread-2",
+    ]);
+    const thread1Revision = events(
+      fixture.sent,
+      client,
+      "snapshot_complete",
+    ).find((event) => event.providerSessionId === "thread-1")!.revision;
+    expect(
+      inspectable.findSnapshot("codex\u0000thread-1", thread1Revision),
+    ).toBeDefined();
+
+    fixture.handler.sessionCatalogChanged({
+      revision: 2,
+      provider: "codex",
+      providerSessionId: "thread-0",
+    });
+    await vi.waitFor(
+      () => expect(fixture.historyReader).toHaveBeenCalledTimes(4),
+      { timeout: 3_000 },
+    );
+    expect([...inspectable.snapshots.keys()]).toEqual([
+      "codex\u0000thread-1",
+      "codex\u0000thread-0",
+    ]);
+
+    fixture.handler.close();
+  });
+
+  it("replaces unsafe oversized tool input before invoking custom serialization", async () => {
+    const fixture = createFixture(1, {
+      maxMessageTextBytes: 128,
+      maxSnapshotBytes: 4 * 1024,
+    });
+    const client = {};
+    const toJSON = vi.fn(() => {
+      throw new Error("unsafe serializer must not run");
+    });
+    fixture.historyReader.mockResolvedValue([
+      {
+        type: "assistant",
+        messageUuid: "tool-assistant",
+        message: {
+          id: "tool-assistant",
+          role: "assistant",
+          model: "gpt-test",
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "unsafe_tool",
+              input: { payload: "x".repeat(1024 * 1024), toJSON },
+            },
+          ],
+        },
+      },
+    ]);
+
+    await fixture.handler.handle(subscribe("subscription-1"), {
+      client,
+      signal: new AbortController().signal,
+      runtime: fixture.runtime,
+    });
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "snapshot_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+
+    expect(toJSON).not.toHaveBeenCalled();
+    const toolUse = events(fixture.sent, client, "snapshot_page")
+      .flatMap((page) => page.entries)
+      .flatMap((entry) =>
+        entry.message.type === "assistant" ? entry.message.message.content : [],
+      )
+      .find((content) => content.type === "tool_use");
+    expect(toolUse).toMatchObject({
+      type: "tool_use",
+      input: { ccpocketTruncated: true },
+    });
+
+    fixture.handler.close();
+  });
+
   it("serializes the hot set and pushes a patch after an acknowledged change", async () => {
     const fixture = createFixture();
     const client = {};
@@ -333,7 +814,15 @@ describe("ConversationContentSyncFeatureHandler", () => {
   });
 });
 
-function createFixture(catalogSize = 12) {
+interface TestSyncOptions {
+  maxMessageTextBytes?: number;
+  maxSnapshotBytes?: number;
+  maxPageBytes?: number;
+  maxCachedTargetBytes?: number;
+  maxCachedBytes?: number;
+}
+
+function createFixture(catalogSize = 12, options: TestSyncOptions = {}) {
   const sent = new Map<object, ConversationContentServerMessage[]>();
   const catalog = Array.from({ length: catalogSize }, (_, index) =>
     catalogSession(index),
@@ -363,6 +852,7 @@ function createFixture(catalogSize = 12) {
     historyReader,
     coldScanMinMs: 60_000,
     coldScanMaxMs: 60_000,
+    ...options,
   });
   return { handler, runtime, sent, catalog, historyReader };
 }
@@ -415,6 +905,28 @@ function history(id: string, version: number): ServerMessage[] {
       },
     },
   ];
+}
+
+function aggregateTextBytes(message: ServerMessage): number {
+  if (message.type === "user_input") {
+    return Buffer.byteLength(message.text, "utf8");
+  }
+  if (message.type === "tool_result") {
+    return Buffer.byteLength(message.content, "utf8");
+  }
+  if (message.type === "tool_use_summary") {
+    return Buffer.byteLength(message.summary, "utf8");
+  }
+  if (message.type !== "assistant") return 0;
+  return message.message.content.reduce((total, content) => {
+    if (content.type === "text") {
+      return total + Buffer.byteLength(content.text, "utf8");
+    }
+    if (content.type === "thinking") {
+      return total + Buffer.byteLength(content.thinking, "utf8");
+    }
+    return total;
+  }, 0);
 }
 
 function events<Event extends ConversationContentServerMessage["event"]>(
