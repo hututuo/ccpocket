@@ -121,6 +121,17 @@ void main() {
     );
     expect(cached?.revision, 'revision-1');
     expect(cached?.entries.single.entryId, 'entry-1');
+    expect(
+      await repository.loadConversationWindow(
+        target: SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-b',
+        ),
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+      ),
+      isNull,
+    );
   });
 
   test('isolates hot windows by Codex source on the same Bridge', () async {
@@ -223,6 +234,10 @@ void main() {
 
     gateway.codexSourceId = 'codex-home-b';
     gateway.addSessionList();
+    final unsubscribe = await gateway.nextOutgoing(
+      'conversation_content_unsubscribe',
+    );
+    expect(unsubscribe['subscriptionId'], firstSubscriptionId);
     final secondSubscribe = await gateway.nextOutgoing(
       'conversation_content_subscribe',
     );
@@ -458,7 +473,11 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
         return message;
       }
     }
-    return _outgoing.stream.firstWhere((message) => message['type'] == type);
+    final message = await _outgoing.stream.firstWhere(
+      (message) => message['type'] == type,
+    );
+    message['_observed'] = true;
+    return message;
   }
 
   Future<void> close() async {

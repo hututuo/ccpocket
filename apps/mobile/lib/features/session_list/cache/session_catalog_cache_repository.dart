@@ -20,15 +20,10 @@ class SessionCatalogCacheTarget {
   }) {
     final normalizedBridge = bridgeInstanceId?.trim();
     final normalizedCodexSource = codexSourceId?.trim();
-    final String? canonicalIdentity;
-    if (normalizedBridge == null || normalizedBridge.isEmpty) {
-      canonicalIdentity = null;
-    } else if (normalizedCodexSource == null ||
-        normalizedCodexSource.isEmpty) {
-      canonicalIdentity = normalizedBridge;
-    } else {
-      canonicalIdentity = '$normalizedBridge\u0000$normalizedCodexSource';
-    }
+    final canonicalIdentity = _bridgePartitionIdentity(
+      bridgeInstanceId: normalizedBridge,
+      codexSourceId: normalizedCodexSource,
+    );
     final canonical = _opaqueKey('bridge', canonicalIdentity);
     String? sourceScopedAlias(String? value) {
       final normalized = value?.trim();
@@ -136,14 +131,20 @@ class SessionCatalogCacheIdentity {
     required this.bridgeInstanceId,
     required this.provider,
     required this.providerSessionId,
+    this.codexSourceId,
   });
 
   final String bridgeInstanceId;
   final String provider;
   final String providerSessionId;
+  final String? codexSourceId;
 
   bool get isValid =>
-      bridgeInstanceId.trim().isNotEmpty &&
+      _bridgePartitionIdentity(
+            bridgeInstanceId: bridgeInstanceId,
+            codexSourceId: codexSourceId,
+          ) !=
+          null &&
       provider.trim().isNotEmpty &&
       providerSessionId.trim().isNotEmpty;
 
@@ -152,11 +153,22 @@ class SessionCatalogCacheIdentity {
       other is SessionCatalogCacheIdentity &&
       other.bridgeInstanceId == bridgeInstanceId &&
       other.provider == provider &&
-      other.providerSessionId == providerSessionId;
+      other.providerSessionId == providerSessionId &&
+      other.codexSourceId == codexSourceId;
 
   @override
   int get hashCode =>
-      Object.hash(bridgeInstanceId, provider, providerSessionId);
+      Object.hash(bridgeInstanceId, provider, providerSessionId, codexSourceId);
+}
+
+String? _bridgePartitionIdentity({
+  required String? bridgeInstanceId,
+  required String? codexSourceId,
+}) {
+  final bridge = bridgeInstanceId?.trim();
+  if (bridge == null || bridge.isEmpty) return null;
+  final source = codexSourceId?.trim();
+  return source == null || source.isEmpty ? bridge : '$bridge\u0000$source';
 }
 
 class SessionCatalogCacheRepository {
@@ -369,11 +381,13 @@ class SessionCatalogCacheRepository {
     required String bridgeInstanceId,
     required String provider,
     required String providerSessionId,
+    String? codexSourceId,
   }) async {
     final identity = SessionCatalogCacheIdentity(
       bridgeInstanceId: bridgeInstanceId,
       provider: provider,
       providerSessionId: providerSessionId,
+      codexSourceId: codexSourceId,
     );
     return (await findSessionsByIdentities([identity]))[identity];
   }
@@ -393,9 +407,13 @@ class SessionCatalogCacheRepository {
           SessionCatalogCacheIdentity
         >{};
     for (final identity in requested) {
+      final bridgePartitionIdentity = _bridgePartitionIdentity(
+        bridgeInstanceId: identity.bridgeInstanceId,
+        codexSourceId: identity.codexSourceId,
+      );
       final partitionId = SessionCatalogCacheTarget._opaqueKey(
         'bridge',
-        identity.bridgeInstanceId,
+        bridgePartitionIdentity,
       );
       if (partitionId == null) continue;
       lookupByStorageIdentity[(

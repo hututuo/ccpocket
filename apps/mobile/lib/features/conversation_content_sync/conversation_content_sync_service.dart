@@ -117,6 +117,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   String? _pendingSubscriptionId;
   String? _activeSubscriptionId;
   String? _subscriptionTargetFingerprint;
+  String? _subscriptionBridgeInstanceId;
   bool _foreground = false;
   bool _started = false;
   bool _disposed = false;
@@ -256,6 +257,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _pendingSubscriptionId = null;
     _activeSubscriptionId = null;
     _subscriptionTargetFingerprint = null;
+    _subscriptionBridgeInstanceId = null;
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -265,9 +267,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   void _ensureSubscribed() {
     final target = _cacheTarget;
     final targetFingerprint = target.fingerprint;
-    if (_subscriptionTargetFingerprint != null &&
-        _subscriptionTargetFingerprint != targetFingerprint) {
-      _stopSubscription(sendUnsubscribe: false);
+    final bridgeInstanceId = bridge.bridgeInstanceId;
+    final hasSubscription =
+        _pendingSubscriptionId != null || _activeSubscriptionId != null;
+    if (hasSubscription &&
+        (_subscriptionTargetFingerprint != targetFingerprint ||
+            _subscriptionBridgeInstanceId != bridgeInstanceId)) {
+      final sameBridge =
+          _subscriptionBridgeInstanceId != null &&
+          _subscriptionBridgeInstanceId == bridgeInstanceId;
+      _stopSubscription(sendUnsubscribe: sameBridge);
     }
     if (_disposed ||
         !_canProcessContent ||
@@ -281,6 +290,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     final requestId = _nextRequestId('subscribe');
     _pendingSubscriptionId = requestId;
     _subscriptionTargetFingerprint = targetFingerprint;
+    _subscriptionBridgeInstanceId = bridgeInstanceId;
     unawaited(
       cache
           .knownConversationRevisions(target)
@@ -290,6 +300,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 _pendingSubscriptionId != requestId ||
                 !_canProcessContent ||
                 _subscriptionTargetFingerprint != _cacheTarget.fingerprint ||
+                _subscriptionBridgeInstanceId != bridge.bridgeInstanceId ||
                 target.fingerprint != _cacheTarget.fingerprint) {
               return;
             }
@@ -526,6 +537,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _activeSubscriptionId = null;
     _pendingSubscriptionId = null;
     _subscriptionTargetFingerprint = null;
+    _subscriptionBridgeInstanceId = null;
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;

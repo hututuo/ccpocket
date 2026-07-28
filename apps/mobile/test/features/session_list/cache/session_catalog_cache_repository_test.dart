@@ -69,6 +69,46 @@ void main() {
     expect(first.aliasKeys.join(), isNot(contains('codex-home-a')));
   });
 
+  test('keeps display lookups isolated by Codex source', () async {
+    final sourceATarget = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-shared',
+      codexSourceId: 'codex-source-a',
+    );
+    await repository.upsertResponse(
+      target: sourceATarget,
+      response: RecentSessionsMessage(
+        sessions: [_session(id: 'thread-shared', name: 'Source A title')],
+      ),
+    );
+
+    final sourceA = SessionCatalogCacheIdentity(
+      bridgeInstanceId: 'bridge-shared',
+      codexSourceId: 'codex-source-a',
+      provider: 'codex',
+      providerSessionId: 'thread-shared',
+    );
+    final sourceB = SessionCatalogCacheIdentity(
+      bridgeInstanceId: 'bridge-shared',
+      codexSourceId: 'codex-source-b',
+      provider: 'codex',
+      providerSessionId: 'thread-shared',
+    );
+    final legacy = SessionCatalogCacheIdentity(
+      bridgeInstanceId: 'bridge-shared',
+      provider: 'codex',
+      providerSessionId: 'thread-shared',
+    );
+
+    final matches = await repository.findSessionsByIdentities([
+      sourceA,
+      sourceB,
+      legacy,
+    ]);
+    expect(matches[sourceA]?.name, 'Source A title');
+    expect(matches[sourceB], isNull);
+    expect(matches[legacy], isNull);
+  });
+
   test(
     'uses a separate rebuildable database and round-trips metadata',
     () async {
