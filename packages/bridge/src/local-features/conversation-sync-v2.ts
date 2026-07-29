@@ -135,6 +135,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   readonly messageTypes = [
     "conversation_sync_subscribe",
     "conversation_sync_ack",
+    "conversation_sync_read",
     "conversation_sync_focus",
     "conversation_sync_unsubscribe",
     "conversation_turns_page",
@@ -220,6 +221,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         return;
       case "conversation_sync_ack":
         this.ack(context.client, message);
+        return;
+      case "conversation_sync_read":
+        this.markRead(context.client, message);
         return;
       case "conversation_sync_focus":
         this.focus(context.client, message);
@@ -330,7 +334,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     const readWatermarks = new Map<ConversationKey, string>();
     for (const watermark of message.readWatermarks) {
-      readWatermarks.set(targetKey(watermark), watermark.readAt);
+      readWatermarks.set(
+        targetKey(watermark),
+        new Date(watermark.readAt).toISOString(),
+      );
     }
     const subscription: SyncSubscription = {
       id: message.requestId,
@@ -404,6 +411,25 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (subscription.dirty && subscription.outbound.length === 0) {
       this.scheduleSync(client, subscription);
     }
+  }
+
+  private markRead(
+    client: object,
+    message: Extract<
+      ConversationSyncClientMessage,
+      { type: "conversation_sync_read" }
+    >,
+  ): void {
+    const subscription = this.subscriptions.get(client);
+    if (!subscription || subscription.id !== message.subscriptionId) return;
+    const key = targetKey(message);
+    const nextReadAt = new Date(message.readAt).toISOString();
+    const currentReadAt = subscription.readWatermarks.get(key);
+    if (currentReadAt && Date.parse(currentReadAt) > Date.parse(nextReadAt)) {
+      return;
+    }
+    subscription.readWatermarks.set(key, nextReadAt);
+    this.scheduleSync(client, subscription);
   }
 
   private focus(
@@ -946,7 +972,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     if (record.status.result === "none") return false;
     const readAt = subscription.readWatermarks.get(targetKey(record.entry));
-    return !readAt || readAt < record.status.observedAt;
+    if (!readAt) return true;
+    const readTime = Date.parse(readAt);
+    const observedTime = Date.parse(record.status.observedAt);
+    return (
+      !Number.isFinite(readTime) ||
+      !Number.isFinite(observedTime) ||
+      readTime < observedTime
+    );
   }
 
   private isRecentRecord(record: CatalogRecord, index: number): boolean {

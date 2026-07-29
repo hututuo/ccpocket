@@ -277,6 +277,46 @@ void main() {
       );
     });
 
+    test('orders durable v2 status without inventing Ready for idle', () {
+      final recent = [
+        _recent(id: 'ordinary', modified: '2026-07-25T05:00:00Z'),
+        _recent(id: 'unread', modified: '2026-07-25T04:00:00Z'),
+        _recent(id: 'error', modified: '2026-07-25T03:00:00Z'),
+        _recent(id: 'working', modified: '2026-07-25T02:00:00Z'),
+        _recent(id: 'needs-you', modified: '2026-07-25T01:00:00Z'),
+      ];
+      final statuses = {
+        for (final status in [
+          _status('ordinary'),
+          _status('unread', result: 'completed'),
+          _status('error', activity: 'systemError'),
+          _status('working', activity: 'working'),
+          _status('needs-you', attention: 'approval'),
+        ])
+          status.key: status,
+      };
+
+      final items = buildUnifiedSessionList(
+        runningSessions: const [],
+        recentSessions: recent,
+        conversationStatuses: statuses,
+        unreadConversationKeys: const {'codex\u0000unread'},
+      );
+
+      expect(items.map((item) => item.providerSessionId), [
+        'needs-you',
+        'working',
+        'error',
+        'unread',
+        'ordinary',
+      ]);
+      expect(
+        sessionListUrgencyFor(items.last, unseenSessionIds: const {}),
+        SessionListUrgency.ordinary,
+      );
+      expect(items.last.syncStatus?.activity, 'idle');
+    });
+
     test('does not turn an unknown runtime status into unread', () {
       final items = buildUnifiedSessionList(
         runningSessions: [
@@ -463,4 +503,21 @@ SessionInfo _running({
   lastActivityAt: lastActivityAt,
   lastMessage: lastMessage,
   externalDesktopTurnActive: externalDesktopTurnActive,
+);
+
+ConversationSyncV2Status _status(
+  String id, {
+  String activity = 'idle',
+  String attention = 'none',
+  String result = 'none',
+}) => ConversationSyncV2Status(
+  provider: Provider.codex.value,
+  providerSessionId: id,
+  activity: activity,
+  attention: attention,
+  result: result,
+  runtimeAttachment: 'notLoaded',
+  source: 'appServer',
+  confidence: 'authoritative',
+  observedAt: '2026-07-25T05:00:00Z',
 );

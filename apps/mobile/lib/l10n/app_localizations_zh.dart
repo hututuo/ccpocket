@@ -581,6 +581,9 @@ class AppLocalizationsZh extends AppLocalizations {
       'Bridge 已连接，但绘画目录准备时间超过预期。你可以继续等待，也可以重试或取消。';
 
   @override
+  String get useCachedConversations => '使用缓存进入';
+
+  @override
   String get bridgeConnectionAttemptFailed => 'Bridge 连接没有进入可用状态。请检查地址和凭据后重试。';
 
   @override

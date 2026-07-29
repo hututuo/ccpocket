@@ -2217,10 +2217,7 @@ class _SummaryPage extends StatelessWidget {
                         borderRadius: BorderRadius.circular(6),
                       ),
                     ),
-                    child: Text(
-                      l.cancel,
-                      style: const TextStyle(fontSize: 13),
-                    ),
+                    child: Text(l.cancel, style: const TextStyle(fontSize: 13)),
                   ),
                 ),
               ),
@@ -2581,8 +2578,9 @@ String? _sessionVisualDetail(
     localizations.sessionStatusAnswerMcpRequest,
   SessionVisualDetail.grantPermissions =>
     localizations.sessionStatusGrantPermissions,
-  SessionVisualDetail.approveTool =>
-    localizations.sessionStatusApproveTool(argument ?? ''),
+  SessionVisualDetail.approveTool => localizations.sessionStatusApproveTool(
+    argument ?? '',
+  ),
   SessionVisualDetail.cleaningContext =>
     localizations.sessionStatusCleaningContext,
   null => null,
@@ -2672,6 +2670,8 @@ class RecentSessionCard extends StatelessWidget {
   final bool isProcessing;
   final bool isSelected;
   final bool isPinned;
+  final ConversationSyncV2Status? conversationStatus;
+  final bool isUnseen;
   final VoidCallback? onTogglePinned;
 
   const RecentSessionCard({
@@ -2686,6 +2686,8 @@ class RecentSessionCard extends StatelessWidget {
     this.isProcessing = false,
     this.isSelected = false,
     this.isPinned = false,
+    this.conversationStatus,
+    this.isUnseen = false,
     this.onTogglePinned,
   });
 
@@ -2796,6 +2798,10 @@ class RecentSessionCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
+                      _ConversationSyncStatusIndicator(
+                        status: conversationStatus,
+                        isUnseen: isUnseen,
+                      ),
                       ConversationMirrorBadge(session: session),
                       PinToggleButton(
                         key: ValueKey(
@@ -3017,6 +3023,78 @@ class RecentSessionCard extends StatelessWidget {
     } catch (_) {
       return '';
     }
+  }
+}
+
+class _ConversationSyncStatusIndicator extends StatelessWidget {
+  const _ConversationSyncStatusIndicator({
+    required this.status,
+    required this.isUnseen,
+  });
+
+  final ConversationSyncV2Status? status;
+  final bool isUnseen;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = status;
+    if (current == null) return const SizedBox.shrink();
+    final localizations = AppLocalizations.of(context);
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final (label, color) = switch (current) {
+      _ when current.attention != 'none' => (
+        localizations.statusNeedsYou,
+        appColors.statusApproval,
+      ),
+      _
+          when current.activity == 'working' ||
+              current.activity == 'compacting' =>
+        (localizations.statusWorking, appColors.statusRunning),
+      _
+          when current.activity == 'systemError' ||
+              current.activity == 'unknown' ||
+              current.runtimeAttachment == 'ownedElsewhere' =>
+        (localizations.statusUnavailable, appColors.subtleText),
+      _ when isUnseen => (
+        localizations.unread,
+        Theme.of(context).colorScheme.primary,
+      ),
+      _ => (null, appColors.statusIdle),
+    };
+    if (label == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Semantics(
+        label: label,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DecoratedBox(
+              key: ValueKey(
+                'conversation_sync_status_${current.providerSessionId}',
+              ),
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              child: const SizedBox(width: 8, height: 8),
+            ),
+            if (!isUnseen ||
+                current.attention != 'none' ||
+                current.activity != 'idle') ...[
+              const SizedBox(width: 5),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: color,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 

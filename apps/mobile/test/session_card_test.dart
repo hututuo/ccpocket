@@ -1480,6 +1480,89 @@ void main() {
   });
 
   group('RecentSessionCard', () {
+    testWidgets('shows authoritative v2 attention without a Ready state', (
+      tester,
+    ) async {
+      const session = RecentSession(
+        sessionId: 'v2-needs-you',
+        provider: 'codex',
+        firstPrompt: 'prompt',
+        created: '2026-07-30T00:00:00Z',
+        modified: '2026-07-30T00:01:00Z',
+        gitBranch: 'main',
+        projectPath: '/repo',
+        isSidechain: false,
+      );
+      const status = ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'v2-needs-you',
+        activity: 'idle',
+        attention: 'approval',
+        result: 'none',
+        runtimeAttachment: 'notLoaded',
+        source: 'appServer',
+        confidence: 'authoritative',
+        observedAt: '2026-07-30T00:01:00Z',
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RecentSessionCard(
+            session: session,
+            conversationStatus: status,
+            onTap: () {},
+          ),
+        ),
+      );
+
+      expect(find.text('Needs You'), findsOneWidget);
+      expect(find.text('Ready'), findsNothing);
+    });
+
+    testWidgets('uses only a blue dot for completed unread v2 sessions', (
+      tester,
+    ) async {
+      const session = RecentSession(
+        sessionId: 'v2-unread',
+        provider: 'codex',
+        firstPrompt: 'prompt',
+        created: '2026-07-30T00:00:00Z',
+        modified: '2026-07-30T00:01:00Z',
+        gitBranch: 'main',
+        projectPath: '/repo',
+        isSidechain: false,
+      );
+      const status = ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'v2-unread',
+        activity: 'idle',
+        attention: 'none',
+        result: 'completed',
+        runtimeAttachment: 'notLoaded',
+        source: 'appServer',
+        confidence: 'authoritative',
+        observedAt: '2026-07-30T00:01:00Z',
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RecentSessionCard(
+            session: session,
+            conversationStatus: status,
+            isUnseen: true,
+            onTap: () {},
+          ),
+        ),
+      );
+
+      expect(
+        find.byKey(const ValueKey('conversation_sync_status_v2-unread')),
+        findsOneWidget,
+      );
+      expect(find.text('Unread'), findsNothing);
+      expect(find.text('Ready'), findsNothing);
+    });
+
     testWidgets('uses a factual project fallback instead of no description', (
       tester,
     ) async {

@@ -596,6 +596,9 @@ class AppLocalizationsEn extends AppLocalizations {
       'The Bridge is connected, but the conversation catalog is taking longer than expected. You can keep waiting, retry, or cancel.';
 
   @override
+  String get useCachedConversations => 'Use cached conversations';
+
+  @override
   String get bridgeConnectionAttemptFailed =>
       'The Bridge connection did not become ready. Check the address and credentials, then retry.';
 

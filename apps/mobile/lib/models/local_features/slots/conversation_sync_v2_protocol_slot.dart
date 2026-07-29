@@ -611,6 +611,16 @@ ClientMessage conversationSyncV2Ack({
   'sequence': sequence,
 }, delivery: ClientMessageDelivery.ephemeral);
 
+ClientMessage conversationSyncV2Read({
+  required String subscriptionId,
+  required ConversationSyncV2ReadWatermark watermark,
+}) => ClientMessage._(<String, dynamic>{
+  'type': 'conversation_sync_read',
+  'protocolVersion': 2,
+  'subscriptionId': subscriptionId,
+  ...watermark.toJson(),
+}, delivery: ClientMessageDelivery.ephemeral);
+
 ClientMessage conversationSyncV2Focus({
   required String requestId,
   required String subscriptionId,

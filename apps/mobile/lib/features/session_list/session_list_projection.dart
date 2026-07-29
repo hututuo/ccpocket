@@ -3,7 +3,7 @@ import '../../widgets/session_visual_status.dart';
 import 'state/session_list_cubit.dart';
 import 'state/session_list_state.dart';
 
-enum SessionListUrgency { needsYou, working, unread, ordinary }
+enum SessionListUrgency { needsYou, working, error, unread, ordinary }
 
 /// One durable conversation row assembled from the Bridge runtime list and the
 /// provider's recent-session catalog.
@@ -18,12 +18,16 @@ class UnifiedSessionListItem {
     required this.running,
     required this.recent,
     required this.activityAt,
+    this.syncStatus,
+    this.syncUnread = false,
   });
 
   final String identityKey;
   final SessionInfo? running;
   final RecentSession? recent;
   final DateTime? activityAt;
+  final ConversationSyncV2Status? syncStatus;
+  final bool syncUnread;
 
   bool get isRunning => running != null;
 
@@ -60,8 +64,22 @@ class UnifiedSessionListItem {
       running: mergedRunning,
       recent: mergedRecent,
       activityAt: _latestActivity(mergedRunning, mergedRecent),
+      syncStatus: syncStatus,
+      syncUnread: syncUnread,
     );
   }
+
+  UnifiedSessionListItem withSyncStatus(
+    ConversationSyncV2Status? status, {
+    required bool unread,
+  }) => UnifiedSessionListItem(
+    identityKey: identityKey,
+    running: running,
+    recent: recent,
+    activityAt: activityAt,
+    syncStatus: status,
+    syncUnread: unread,
+  );
 }
 
 List<UnifiedSessionListItem> buildUnifiedSessionList({
@@ -70,6 +88,8 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
   Set<String> pendingResumeSessionIds = const {},
   Set<String> pinnedSessionKeys = const {},
   Set<String> unseenSessionIds = const {},
+  Map<String, ConversationSyncV2Status> conversationStatuses = const {},
+  Set<String> unreadConversationKeys = const {},
 }) {
   final byIdentity = <String, UnifiedSessionListItem>{};
 
@@ -103,7 +123,17 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
     byIdentity[identity] = existing.merge(nextRunning: keep);
   }
 
-  final items = byIdentity.values.toList(growable: false);
+  final items = byIdentity.values
+      .map((item) {
+        final providerSessionId = item.providerSessionId;
+        if (providerSessionId == null) return item;
+        final key = '${item.provider}\u0000$providerSessionId';
+        return item.withSyncStatus(
+          conversationStatuses[key],
+          unread: unreadConversationKeys.contains(key),
+        );
+      })
+      .toList(growable: false);
   final urgencyByIdentity = {
     for (final item in items)
       item.identityKey: sessionListUrgencyFor(
@@ -136,23 +166,37 @@ SessionListUrgency sessionListUrgencyFor(
   required Set<String> unseenSessionIds,
 }) {
   final running = item.running;
-  if (running == null) return SessionListUrgency.ordinary;
+  var urgency = _syncUrgency(item.syncStatus, unread: item.syncUnread);
+  if (running == null) return urgency;
   final visualStatus = sessionVisualStatusFor(
     rawStatus: running.externalDesktopTurnActive ? 'running' : running.status,
     permissionMode: running.effectivePermissionMode,
     planMode: running.resolvedPlanMode,
     pendingPermission: running.pendingPermission,
   );
-  if (visualStatus.primary == SessionPrimaryStatus.needsYou) {
-    return SessionListUrgency.needsYou;
-  }
-  if (visualStatus.primary == SessionPrimaryStatus.working) {
+  final liveUrgency = switch (visualStatus.primary) {
+    SessionPrimaryStatus.needsYou => SessionListUrgency.needsYou,
+    SessionPrimaryStatus.working => SessionListUrgency.working,
+    SessionPrimaryStatus.idle when unseenSessionIds.contains(running.id) =>
+      SessionListUrgency.unread,
+    SessionPrimaryStatus.idle ||
+    SessionPrimaryStatus.unknown => SessionListUrgency.ordinary,
+  };
+  if (liveUrgency.index < urgency.index) urgency = liveUrgency;
+  return urgency;
+}
+
+SessionListUrgency _syncUrgency(
+  ConversationSyncV2Status? status, {
+  required bool unread,
+}) {
+  if (status == null) return SessionListUrgency.ordinary;
+  if (status.attention != 'none') return SessionListUrgency.needsYou;
+  if (status.activity == 'working' || status.activity == 'compacting') {
     return SessionListUrgency.working;
   }
-  if (visualStatus.primary == SessionPrimaryStatus.idle &&
-      unseenSessionIds.contains(running.id)) {
-    return SessionListUrgency.unread;
-  }
+  if (status.activity == 'systemError') return SessionListUrgency.error;
+  if (unread) return SessionListUrgency.unread;
   return SessionListUrgency.ordinary;
 }
 

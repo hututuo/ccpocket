@@ -92,6 +92,7 @@ enum ConversationSyncCacheUpdateKind {
   catalog,
   status,
   timeline,
+  readWatermark,
   priorityReady,
   completed,
   reset,
@@ -266,6 +267,42 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       provider: provider,
       providerSessionId: providerSessionId,
     );
+  }
+
+  Future<void> markConversationRead({
+    required String provider,
+    required String providerSessionId,
+    DateTime? readAt,
+  }) async {
+    if (!bridge.supportsConversationSyncV2 || _disposed) return;
+    final target = _cacheTarget;
+    if (!target.isValid) return;
+    final watermark = ConversationSyncV2ReadWatermark(
+      provider: provider,
+      providerSessionId: providerSessionId,
+      readAt: (readAt ?? DateTime.now()).toUtc().toIso8601String(),
+    );
+    await cache.storeReadWatermark(target: target, watermark: watermark);
+    if (_disposed || target.fingerprint != _cacheTarget.fingerprint) return;
+    _syncUpdatesController.add(
+      ConversationSyncCacheUpdate(
+        kind: ConversationSyncCacheUpdateKind.readWatermark,
+        provider: provider,
+        providerSessionId: providerSessionId,
+      ),
+    );
+    final subscriptionId = _activeSubscriptionId;
+    if (subscriptionId == null || !_canProcessContent) return;
+    try {
+      bridge.send(
+        conversationSyncV2Read(
+          subscriptionId: subscriptionId,
+          watermark: watermark,
+        ),
+      );
+    } catch (_) {
+      _handleTransportLoss();
+    }
   }
 
   bool get _canProcessContent =>

@@ -34,6 +34,7 @@ import '../../widgets/adaptive_context_menu.dart';
 import '../../widgets/new_session_sheet.dart';
 import '../../widgets/rename_session_dialog.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
+import '../conversation_content_sync/conversation_content_sync_service.dart';
 import '../file_browser/file_browser_screen.dart';
 import '../file_browser/file_mutation_authorization.dart';
 import '../file_transfer/file_drop_ingress.dart';
@@ -121,6 +122,11 @@ class SessionHomeConnectionGate {
   bool shouldShowConnectedUi(BridgeConnectionState presentationState) =>
       _hasReadyTarget &&
       presentationState != BridgeConnectionState.disconnected;
+
+  void acceptCachedTarget(String targetKey) {
+    _hasReadyTarget = true;
+    _readyTargetKey = targetKey;
+  }
 
   void reset() {
     _hasReadyTarget = false;
@@ -497,7 +503,7 @@ class SessionListScreen extends StatefulWidget {
 
 class _SessionListScreenState extends State<SessionListScreen>
     with WidgetsBindingObserver {
-  static const _connectionReadinessWarningDelay = Duration(seconds: 15);
+  static const _connectionReadinessWarningDelay = Duration(seconds: 3);
 
   bool _isAutoConnecting = false;
   final _connectionUiGate = SessionHomeConnectionGate();
@@ -585,9 +591,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     _catalogReadinessSub = bridge.recentSessionResponses.listen((_) {
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
     });
-    _catalogCacheReadinessSub = sessionListCubit.catalogSnapshotChanges.listen(
-      (_) => _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState),
-    );
+    _catalogCacheReadinessSub = sessionListCubit.catalogSnapshotChanges.listen((
+      _,
+    ) {
+      if (mounted) setState(() {});
+      _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+    });
     _sessionListReadinessSub = bridge.sessionList.listen((_) {
       _bindCurrentBridgeIdentityIfAuthoritative(bridge);
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
@@ -908,6 +917,22 @@ class _SessionListScreenState extends State<SessionListScreen>
     final retry = _retryConnectionAttempt;
     if (retry == null) return;
     await retry();
+  }
+
+  void _enterWithCachedCatalog() {
+    final bridge = context.read<BridgeService>();
+    final catalog = context.read<SessionListCubit>();
+    if (!catalog.hasCachedCatalogForCurrentTarget) return;
+    _connectionReadinessTimer?.cancel();
+    _connectionReadinessTimer = null;
+    _connectionUiGate.acceptCachedTarget(_connectionUiTargetKey(bridge));
+    setState(() {
+      _isAutoConnecting = false;
+      _connectionSelectionPending = false;
+      _connectionAwaitingReadiness = false;
+      _connectionTakingLonger = false;
+      _connectionAttemptFailed = false;
+    });
   }
 
   void _onDeepLink() {
@@ -2437,6 +2462,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     final provider = session.provider == Provider.codex.value
         ? Provider.codex
         : Provider.claude;
+    unawaited(
+      context.read<ConversationContentSyncService>().markConversationRead(
+        provider: provider.value,
+        providerSessionId: session.sessionId,
+      ),
+    );
     final resumeProjectPath = session.resumeCwd?.isNotEmpty == true
         ? session.resumeCwd!
         : session.projectPath;
@@ -2799,6 +2830,13 @@ class _SessionListScreenState extends State<SessionListScreen>
                               _retryConnectionAttempt != null
                           ? () => unawaited(_retryCurrentConnection())
                           : null,
+                      onUseCachedCatalog:
+                          connectionNoticeLabel != null &&
+                              context
+                                  .read<SessionListCubit>()
+                                  .hasCachedCatalogForCurrentTarget
+                          ? _enterWithCachedCatalog
+                          : null,
                     ),
                   ),
                 ),
@@ -2917,6 +2955,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     required String? connectionNoticeLabel,
     required VoidCallback? onCancelConnection,
     required VoidCallback? onRetryConnection,
+    required VoidCallback? onUseCachedCatalog,
   }) {
     final chrome = resolveWorkspacePaneChrome(
       platform: Theme.of(context).platform,
@@ -2941,6 +2980,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       connectionNoticeLabel: connectionNoticeLabel,
       onCancelConnection: onCancelConnection,
       onRetryConnection: onRetryConnection,
+      onUseCachedCatalog: onUseCachedCatalog,
     );
 
     if (widget.embedded) {
@@ -3049,6 +3089,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     required String? connectionNoticeLabel,
     required VoidCallback? onCancelConnection,
     required VoidCallback? onRetryConnection,
+    required VoidCallback? onUseCachedCatalog,
   }) {
     if (showConnectedUI) {
       final bridge = context.read<BridgeService>();
@@ -3097,6 +3138,12 @@ class _SessionListScreenState extends State<SessionListScreen>
               hasMoreSessions: slState.hasMore,
               archivingSessionIds: _archivePendingRequests.identityKeys,
               unseenSessionIds: unseenSessionIds,
+              conversationStatuses: context
+                  .read<SessionListCubit>()
+                  .conversationStatuses,
+              unreadConversationKeys: context
+                  .read<SessionListCubit>()
+                  .unreadConversationKeys,
               currentProjectFilter: context
                   .read<SessionListCubit>()
                   .currentProjectFilter,
@@ -3269,6 +3316,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       connectionNoticeLabel: connectionNoticeLabel,
       onCancelConnection: onCancelConnection,
       onRetryConnection: onRetryConnection,
+      onUseCachedCatalog: onUseCachedCatalog,
     );
   }
 
@@ -3793,6 +3841,7 @@ class _ConnectFormWidget extends StatelessWidget {
   final String? connectionNoticeLabel;
   final VoidCallback? onCancelConnection;
   final VoidCallback? onRetryConnection;
+  final VoidCallback? onUseCachedCatalog;
 
   const _ConnectFormWidget({
     required this.discoveredServers,
@@ -3818,6 +3867,7 @@ class _ConnectFormWidget extends StatelessWidget {
     this.connectionNoticeLabel,
     this.onCancelConnection,
     this.onRetryConnection,
+    this.onUseCachedCatalog,
   });
 
   @override
@@ -3847,6 +3897,7 @@ class _ConnectFormWidget extends StatelessWidget {
       connectionNoticeLabel: connectionNoticeLabel,
       onCancelConnection: onCancelConnection,
       onRetryConnection: onRetryConnection,
+      onUseCachedCatalog: onUseCachedCatalog,
     );
   }
 }

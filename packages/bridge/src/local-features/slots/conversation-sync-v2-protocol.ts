@@ -41,6 +41,11 @@ export type ConversationSyncClientMessage =
       subscriptionId: string;
       sequence: number;
     }
+  | (ConversationSyncReadWatermark & {
+      type: "conversation_sync_read";
+      protocolVersion: 2;
+      subscriptionId: string;
+    })
   | {
       type: "conversation_sync_focus";
       protocolVersion: 2;
@@ -201,6 +206,7 @@ export type ConversationSyncServerMessage =
 const CLIENT_TYPES = [
   "conversation_sync_subscribe",
   "conversation_sync_ack",
+  "conversation_sync_read",
   "conversation_sync_focus",
   "conversation_sync_unsubscribe",
   "conversation_turns_page",
@@ -403,6 +409,35 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
         protocolVersion: 2,
         subscriptionId: message.subscriptionId,
         sequence: message.sequence as number,
+      };
+    }
+
+    if (message.type === "conversation_sync_read") {
+      const target = parseTarget({
+        provider: message.provider,
+        providerSessionId: message.providerSessionId,
+      });
+      if (
+        !hasOnlyLocalFeatureKeys(message, [
+          "type",
+          "protocolVersion",
+          "subscriptionId",
+          "provider",
+          "providerSessionId",
+          "readAt",
+        ]) ||
+        !validLocalFeatureId(message.subscriptionId, 128) ||
+        !target ||
+        !validIsoDate(message.readAt)
+      ) {
+        return null;
+      }
+      return {
+        type: "conversation_sync_read",
+        protocolVersion: 2,
+        subscriptionId: message.subscriptionId,
+        ...target,
+        readAt: message.readAt,
       };
     }
 

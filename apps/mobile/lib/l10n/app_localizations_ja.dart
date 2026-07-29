@@ -587,6 +587,9 @@ class AppLocalizationsJa extends AppLocalizations {
       'Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。';
 
   @override
+  String get useCachedConversations => 'キャッシュを使用して開く';
+
+  @override
   String get bridgeConnectionAttemptFailed =>
       'Bridge 接続を利用可能な状態にできませんでした。アドレスと認証情報を確認して再試行してください。';
 

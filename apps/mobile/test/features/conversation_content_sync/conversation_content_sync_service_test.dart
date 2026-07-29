@@ -199,6 +199,56 @@ void main() {
     );
   });
 
+  test(
+    'persists and forwards a read watermark on the active v2 stream',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-read',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-1',
+          statusState: 'status-1',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final readAt = DateTime.utc(2026, 7, 30, 1, 2, 3);
+      await service.markConversationRead(
+        provider: 'codex',
+        providerSessionId: 'thread-read',
+        readAt: readAt,
+      );
+
+      final outgoing = await gateway.nextOutgoing('conversation_sync_read');
+      expect(outgoing['providerSessionId'], 'thread-read');
+      expect(outgoing['readAt'], readAt.toIso8601String());
+      final stored = await repository.loadReadWatermarks(
+        SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      expect(stored.single.providerSessionId, 'thread-read');
+      expect(stored.single.readAt, readAt.toIso8601String());
+    },
+  );
+
   test('commits a complete snapshot before acknowledging it', () async {
     final subscribe = await gateway.nextOutgoing(
       'conversation_content_subscribe',

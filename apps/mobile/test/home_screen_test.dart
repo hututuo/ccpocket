@@ -203,6 +203,21 @@ void main() {
         isFalse,
       );
     });
+
+    test('cached home requires an explicit target-scoped user choice', () {
+      final gate = SessionHomeConnectionGate();
+      expect(gate.hasReadyTarget, isFalse);
+
+      gate.acceptCachedTarget('machine:a');
+
+      final presentation = gate.presentationState(
+        transportState: BridgeConnectionState.connected,
+        hasAuthoritativeSessionList: false,
+        hasAuthoritativeRecentSessions: false,
+      );
+      expect(presentation, BridgeConnectionState.reconnecting);
+      expect(gate.shouldShowConnectedUi(presentation), isTrue);
+    });
   });
 
   group('ConnectionAttemptFence', () {
@@ -514,6 +529,7 @@ void main() {
   ) async {
     var cancelled = false;
     var retried = false;
+    var usedCache = false;
     await tester.pumpWidget(
       MaterialApp(
         localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -528,6 +544,7 @@ void main() {
             connectionNoticeLabel: '绘画目录准备时间超过预期',
             onCancelConnection: () => cancelled = true,
             onRetryConnection: () => retried = true,
+            onUseCachedCatalog: () => usedCache = true,
           ),
         ),
       ),
@@ -541,6 +558,12 @@ void main() {
     await tester.tap(retry);
     await tester.pump();
     expect(retried, isTrue);
+
+    final useCache = find.byKey(const ValueKey('use_cached_conversations'));
+    await tester.ensureVisible(useCache);
+    await tester.tap(useCache);
+    await tester.pump();
+    expect(usedCache, isTrue);
 
     final cancel = find.byKey(
       const ValueKey('cancel_bridge_connection_notice'),

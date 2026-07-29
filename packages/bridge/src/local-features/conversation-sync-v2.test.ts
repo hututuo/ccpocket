@@ -77,6 +77,32 @@ describe("conversation_sync_v2 protocol", () => {
       }),
     ).toBeNull();
   });
+
+  it("accepts a bounded per-subscription read watermark", () => {
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        type: "conversation_sync_read",
+        protocolVersion: 2,
+        subscriptionId: "sync-1",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        readAt: "2026-07-30T00:00:00.000Z",
+      }),
+    ).toMatchObject({
+      type: "conversation_sync_read",
+      providerSessionId: "thread-1",
+    });
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        type: "conversation_sync_read",
+        protocolVersion: 2,
+        subscriptionId: "sync-1",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        readAt: "not-a-date",
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("ConversationSyncV2FeatureHandler", () => {

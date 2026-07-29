@@ -34,6 +34,7 @@ class ConnectForm extends StatelessWidget {
   final String? connectionNoticeLabel;
   final VoidCallback? onCancelConnection;
   final VoidCallback? onRetryConnection;
+  final VoidCallback? onUseCachedCatalog;
 
   const ConnectForm({
     super.key,
@@ -61,6 +62,7 @@ class ConnectForm extends StatelessWidget {
     this.connectionNoticeLabel,
     this.onCancelConnection,
     this.onRetryConnection,
+    this.onUseCachedCatalog,
   });
 
   bool get _hasMachineHandlers =>
@@ -233,7 +235,9 @@ class ConnectForm extends StatelessWidget {
                       Expanded(child: Text(connectionNoticeLabel!)),
                     ],
                   ),
-                  if (onRetryConnection != null || onCancelConnection != null)
+                  if (onRetryConnection != null ||
+                      onCancelConnection != null ||
+                      onUseCachedCatalog != null)
                     Align(
                       alignment: Alignment.centerRight,
                       child: Wrap(
@@ -252,6 +256,12 @@ class ConnectForm extends StatelessWidget {
                               key: const ValueKey('retry_bridge_connection'),
                               onPressed: onRetryConnection,
                               child: Text(l.retry),
+                            ),
+                          if (onUseCachedCatalog != null)
+                            FilledButton(
+                              key: const ValueKey('use_cached_conversations'),
+                              onPressed: onUseCachedCatalog,
+                              child: Text(l.useCachedConversations),
                             ),
                         ],
                       ),

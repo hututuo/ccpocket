@@ -62,6 +62,23 @@ void main() {
     expect(json, isNot(contains('ip')));
   });
 
+  test('builds an ephemeral per-subscription read watermark', () {
+    final message = conversationSyncV2Read(
+      subscriptionId: 'subscription-1',
+      watermark: const ConversationSyncV2ReadWatermark(
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        readAt: '2026-07-30T00:00:00.000Z',
+      ),
+    );
+
+    expect(
+      jsonDecode(message.toJson()),
+      containsPair('type', 'conversation_sync_read'),
+    );
+    expect(message.delivery, ClientMessageDelivery.ephemeral);
+  });
+
   test('rejects malformed timeline pagination and oversized data', () {
     expect(
       () => ServerMessage.fromJson({

@@ -1170,6 +1170,12 @@ abstract class AppLocalizations {
   /// **'Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。'**
   String get bridgeConnectionTakingLonger;
 
+  /// No description provided for @useCachedConversations.
+  ///
+  /// In ja, this message translates to:
+  /// **'キャッシュを使用して開く'**
+  String get useCachedConversations;
+
   /// No description provided for @bridgeConnectionAttemptFailed.
   ///
   /// In ja, this message translates to:

@@ -130,6 +130,7 @@ class SessionListCubit extends Cubit<SessionListState> {
   bool _v2CachedPriorityReady = false;
   bool _v2PriorityReady = false;
   Map<String, ConversationSyncV2Status> _conversationStatuses = const {};
+  Map<String, String> _conversationReadWatermarks = const {};
 
   SessionListCubit({
     required BridgeService bridge,
@@ -243,6 +244,24 @@ class SessionListCubit extends Cubit<SessionListState> {
       _conversationStatuses['${session.provider ?? Provider.claude.value}\u0000'
           '${session.sessionId}'];
 
+  Map<String, ConversationSyncV2Status> get conversationStatuses =>
+      _conversationStatuses;
+
+  Set<String> get unreadConversationKeys => Set.unmodifiable(
+    _conversationStatuses.entries
+        .where((entry) => _isConversationResultUnread(entry.value))
+        .map((entry) => entry.key),
+  );
+
+  bool _isConversationResultUnread(ConversationSyncV2Status status) {
+    if (status.result == 'none') return false;
+    final readAt = DateTime.tryParse(
+      _conversationReadWatermarks[status.key] ?? '',
+    );
+    final observedAt = DateTime.tryParse(status.observedAt);
+    return readAt == null || observedAt == null || readAt.isBefore(observedAt);
+  }
+
   void _onConversationSyncUpdate(ConversationSyncCacheUpdate update) {
     switch (update.kind) {
       case ConversationSyncCacheUpdateKind.started:
@@ -255,6 +274,7 @@ class SessionListCubit extends Cubit<SessionListState> {
       case ConversationSyncCacheUpdateKind.catalog:
       case ConversationSyncCacheUpdateKind.status:
       case ConversationSyncCacheUpdateKind.timeline:
+      case ConversationSyncCacheUpdateKind.readWatermark:
       case ConversationSyncCacheUpdateKind.completed:
         break;
     }
@@ -673,6 +693,7 @@ class SessionListCubit extends Cubit<SessionListState> {
     _v2CachedPriorityReady = false;
     _v2PriorityReady = false;
     _conversationStatuses = const {};
+    _conversationReadWatermarks = const {};
     _lastCacheLoadFingerprint = _currentCacheTarget()?.fingerprint;
     _catalogSnapshotChanges.add(null);
   }
@@ -720,6 +741,9 @@ class SessionListCubit extends Cubit<SessionListState> {
       final statuses = _bridge.supportsConversationSyncV2
           ? await cache.loadConversationStatuses(target)
           : const <ConversationSyncV2Status>[];
+      final readWatermarks = _bridge.supportsConversationSyncV2
+          ? await cache.loadReadWatermarks(target)
+          : const <ConversationSyncV2ReadWatermark>[];
       if (isClosed ||
           generation != _cacheLoadGeneration ||
           target.fingerprint != _currentCacheTarget()?.fingerprint) {
@@ -729,6 +753,9 @@ class SessionListCubit extends Cubit<SessionListState> {
       _v2CachedPriorityReady = syncState.priorityReady;
       _conversationStatuses = Map.unmodifiable({
         for (final status in statuses) status.key: status,
+      });
+      _conversationReadWatermarks = Map.unmodifiable({
+        for (final watermark in readWatermarks) watermark.key: watermark.readAt,
       });
       if (snapshot == null) {
         final sourceChanged =
@@ -746,6 +773,7 @@ class SessionListCubit extends Cubit<SessionListState> {
           _v2CachedPriorityReady = false;
           _v2PriorityReady = false;
           _conversationStatuses = const {};
+          _conversationReadWatermarks = const {};
           emit(
             state.copyWith(
               sessions: const [],

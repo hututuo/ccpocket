@@ -92,6 +92,8 @@ class HomeContent extends StatefulWidget {
   final bool hasMoreSessions;
   final Set<String> archivingSessionIds;
   final Set<String> unseenSessionIds;
+  final Map<String, ConversationSyncV2Status> conversationStatuses;
+  final Set<String> unreadConversationKeys;
   final String? currentProjectFilter;
   final VoidCallback onNewSession;
   final void Function(
@@ -164,6 +166,8 @@ class HomeContent extends StatefulWidget {
     required this.hasMoreSessions,
     this.archivingSessionIds = const {},
     this.unseenSessionIds = const {},
+    this.conversationStatuses = const {},
+    this.unreadConversationKeys = const {},
     required this.currentProjectFilter,
     required this.onNewSession,
     required this.onTapRunning,
@@ -560,6 +564,8 @@ class HomeContentState extends State<HomeContent> {
       pendingResumeSessionIds: pendingResumeSessionIds,
       pinnedSessionKeys: widget.pinnedSessionKeys,
       unseenSessionIds: widget.unseenSessionIds,
+      conversationStatuses: widget.conversationStatuses,
+      unreadConversationKeys: widget.unreadConversationKeys,
     );
     final alwaysVisibleSessionKeys = {
       for (final item in unifiedSessions)
@@ -601,6 +607,8 @@ class HomeContentState extends State<HomeContent> {
               item.pinKey != null &&
               widget.pinnedSessionKeys.contains(item.pinKey),
           displayMode: _displayMode,
+          conversationStatus: item.syncStatus,
+          isUnseen: item.syncUnread,
           archivingSessionIds: widget.archivingSessionIds,
           onArchiveSession: widget.onArchiveSession,
           onResumeSession: widget.onResumeSession,
@@ -924,6 +932,8 @@ class _RecentSessionSlidable extends StatelessWidget {
   final RecentSession session;
   final bool isPinned;
   final SessionDisplayMode displayMode;
+  final ConversationSyncV2Status? conversationStatus;
+  final bool isUnseen;
   final Set<String> archivingSessionIds;
   final ValueChanged<RecentSession> onArchiveSession;
   final ValueChanged<RecentSession> onResumeSession;
@@ -935,6 +945,8 @@ class _RecentSessionSlidable extends StatelessWidget {
     required this.session,
     required this.isPinned,
     required this.displayMode,
+    required this.conversationStatus,
+    required this.isUnseen,
     required this.archivingSessionIds,
     required this.onArchiveSession,
     required this.onResumeSession,
@@ -974,6 +986,8 @@ class _RecentSessionSlidable extends StatelessWidget {
         session: session,
         isPinned: isPinned,
         displayMode: displayMode,
+        conversationStatus: conversationStatus,
+        isUnseen: isUnseen,
         isSelected: false,
         draftText: context.read<DraftService>().getDraft(session.sessionId),
         isProcessing: archivingSessionIds.contains(

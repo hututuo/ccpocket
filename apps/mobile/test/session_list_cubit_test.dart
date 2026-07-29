@@ -227,6 +227,7 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
   final snapshots = <String, SessionCatalogCacheSnapshot>{};
   final syncStates = <String, ConversationSyncCacheState>{};
   final statuses = <String, List<ConversationSyncV2Status>>{};
+  final watermarks = <String, List<ConversationSyncV2ReadWatermark>>{};
   final writes =
       <({SessionCatalogCacheTarget target, RecentSessionsMessage response})>[];
   int clearCalls = 0;
@@ -254,6 +255,12 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
   }) async => statuses[target.fingerprint] ?? const [];
 
   @override
+  Future<List<ConversationSyncV2ReadWatermark>> loadReadWatermarks(
+    SessionCatalogCacheTarget target, {
+    int limit = 512,
+  }) async => watermarks[target.fingerprint] ?? const [];
+
+  @override
   Future<void> upsertResponse({
     required SessionCatalogCacheTarget target,
     required RecentSessionsMessage response,
@@ -267,6 +274,7 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
     snapshots.clear();
     syncStates.clear();
     statuses.clear();
+    watermarks.clear();
   }
 
   @override
