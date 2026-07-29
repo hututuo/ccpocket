@@ -84,6 +84,8 @@ export interface ConversationContentSnapshot extends ConversationContentTarget {
   revision: string;
   entries: ConversationContentSnapshotEntry[];
   hasEarlier: boolean;
+  /// Opaque app-server/provider cursor for the next older turn page.
+  turnsNextCursor?: string | null;
   sourceEntryCount: number;
   /** Exact UTF-8 JSON size used for deterministic cache accounting. */
   cacheBytes: number;

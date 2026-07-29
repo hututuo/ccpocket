@@ -16,7 +16,7 @@ class SessionCatalogCacheDatabase {
   SessionCatalogCacheDatabase({this.databasePath, this.openDatabase});
 
   static const fileName = 'session_catalog_cache_v1.db';
-  static const schemaVersion = 3;
+  static const schemaVersion = 4;
 
   static const partitionsTable = 'session_catalog_partitions';
   static const aliasesTable = 'session_catalog_aliases';
@@ -109,6 +109,18 @@ class SessionCatalogCacheDatabase {
     if (oldVersion < 3) {
       await _createConversationSyncSchema(database);
     }
+    if (oldVersion < 4) {
+      if (oldVersion >= 2) {
+        await database.execute(
+          'ALTER TABLE $hotWindowsTable ADD COLUMN turns_next_cursor TEXT',
+        );
+      }
+      if (oldVersion >= 3) {
+        await database.execute(
+          'ALTER TABLE $timelineStagesTable ADD COLUMN turns_next_cursor TEXT',
+        );
+      }
+    }
   }
 
   static Future<void> _createSchema(Database database, int version) async {
@@ -177,6 +189,7 @@ class SessionCatalogCacheDatabase {
         revision TEXT NOT NULL,
         entry_count INTEGER NOT NULL,
         has_earlier INTEGER NOT NULL,
+        turns_next_cursor TEXT,
         source_entry_count INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (partition_id, provider, provider_session_id),
@@ -282,6 +295,7 @@ class SessionCatalogCacheDatabase {
         mode TEXT NOT NULL,
         page_count INTEGER NOT NULL,
         has_earlier INTEGER NOT NULL,
+        turns_next_cursor TEXT,
         source_entry_count INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         PRIMARY KEY (

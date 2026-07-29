@@ -357,6 +357,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     this.entries = const [],
     this.deletes = const [],
     this.hasEarlier,
+    this.turnsNextCursor,
     this.sourceEntryCount,
     this.phase,
     this.hasMore,
@@ -398,6 +399,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
   final List<ConversationContentWireEntry> entries;
   final List<String> deletes;
   final bool? hasEarlier;
+  final String? turnsNextCursor;
   final int? sourceEntryCount;
   final String? phase;
   final bool? hasMore;
@@ -414,6 +416,48 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
 
   @override
   String? get sessionId => providerSessionId ?? target?.providerSessionId;
+
+  List<Map<String, dynamic>> pageRawMessages() {
+    final messages = <Map<String, dynamic>>[];
+    if (event == ConversationSyncV2EventKind.turnsPageResponse) {
+      for (final rawTurn in data) {
+        if (rawTurn is! Map) {
+          throw const FormatException('Conversation turn page is malformed.');
+        }
+        final rawMessages = rawTurn['messages'];
+        if (rawMessages is! List) {
+          throw const FormatException(
+            'Conversation turn messages are malformed.',
+          );
+        }
+        for (final rawMessage in rawMessages) {
+          if (rawMessage is! Map) {
+            throw const FormatException(
+              'Conversation page message is malformed.',
+            );
+          }
+          final message = Map<String, dynamic>.from(rawMessage);
+          ServerMessage.fromJson(message);
+          messages.add(Map.unmodifiable(message));
+        }
+      }
+      return List.unmodifiable(messages);
+    }
+    if (event == ConversationSyncV2EventKind.itemsPageResponse) {
+      for (final rawMessage in data) {
+        if (rawMessage is! Map) {
+          throw const FormatException(
+            'Conversation item page message is malformed.',
+          );
+        }
+        final message = Map<String, dynamic>.from(rawMessage);
+        ServerMessage.fromJson(message);
+        messages.add(Map.unmodifiable(message));
+      }
+      return List.unmodifiable(messages);
+    }
+    return const [];
+  }
 
   factory ConversationSyncV2EventMessage.fromJson(Map<String, dynamic> json) {
     final event = ConversationSyncV2EventKind.parse(json['event']);
@@ -534,6 +578,11 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         }),
       ),
       hasEarlier: json['hasEarlier'] as bool?,
+      turnsNextCursor: _conversationSyncOptionalString(
+        json,
+        'turnsNextCursor',
+        maximumLength: 512,
+      ),
       sourceEntryCount: _conversationSyncOptionalInt(
         json,
         'sourceEntryCount',
@@ -743,6 +792,7 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
           'Conversation page response is incomplete.',
         );
       }
+      message.pageRawMessages();
     case ConversationSyncV2EventKind.focusApplied:
     case ConversationSyncV2EventKind.unsubscribed:
       if (message.requestId == null) {

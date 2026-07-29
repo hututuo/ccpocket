@@ -98,6 +98,7 @@ class ConversationHotWindowSnapshot {
     required this.revision,
     required this.entries,
     required this.hasEarlier,
+    required this.turnsNextCursor,
     required this.sourceEntryCount,
     required this.cachedAt,
   });
@@ -108,6 +109,7 @@ class ConversationHotWindowSnapshot {
   final String revision;
   final List<ConversationContentWireEntry> entries;
   final bool hasEarlier;
+  final String? turnsNextCursor;
   final int sourceEntryCount;
   final DateTime cachedAt;
 }
@@ -971,6 +973,7 @@ class SessionCatalogCacheRepository {
     required List<ConversationContentWireEntry> entries,
     required List<String> deletes,
     required bool hasEarlier,
+    String? turnsNextCursor,
     required int sourceEntryCount,
   }) {
     if (!target.isValid) {
@@ -1009,6 +1012,7 @@ class SessionCatalogCacheRepository {
             'mode': mode,
             'page_count': pageCount,
             'has_earlier': hasEarlier ? 1 : 0,
+            'turns_next_cursor': turnsNextCursor,
             'source_entry_count': sourceEntryCount,
             'created_at': now,
           },
@@ -1028,6 +1032,7 @@ class SessionCatalogCacheRepository {
             stage['mode'] != mode ||
             stage['page_count'] != pageCount ||
             stage['has_earlier'] != (hasEarlier ? 1 : 0) ||
+            stage['turns_next_cursor'] != turnsNextCursor ||
             stage['source_entry_count'] != sourceEntryCount) {
           throw StateError('Conversation timeline stage metadata changed.');
         }
@@ -1154,6 +1159,7 @@ class SessionCatalogCacheRepository {
               'revision': revision,
               'entry_count': 0,
               'has_earlier': hasEarlier ? 1 : 0,
+              'turns_next_cursor': turnsNextCursor,
               'source_entry_count': sourceEntryCount,
               'updated_at': now,
             },
@@ -1204,6 +1210,7 @@ class SessionCatalogCacheRepository {
             'entry_count': committedCount,
             'revision': revision,
             'has_earlier': hasEarlier ? 1 : 0,
+            'turns_next_cursor': turnsNextCursor,
             'source_entry_count': sourceEntryCount,
             'updated_at': now,
           },
@@ -1301,6 +1308,7 @@ class SessionCatalogCacheRepository {
       revision: window['revision']! as String,
       entries: List<ConversationContentWireEntry>.unmodifiable(entries),
       hasEarlier: (window['has_earlier']! as int) != 0,
+      turnsNextCursor: window['turns_next_cursor'] as String?,
       sourceEntryCount: window['source_entry_count']! as int,
       cachedAt: DateTime.fromMillisecondsSinceEpoch(
         window['updated_at']! as int,
@@ -1316,6 +1324,7 @@ class SessionCatalogCacheRepository {
     required String revision,
     required List<ConversationContentWireEntry> entries,
     required bool hasEarlier,
+    String? turnsNextCursor,
     required int sourceEntryCount,
   }) {
     if (!target.isValid) return Future<void>.value();
@@ -1338,6 +1347,7 @@ class SessionCatalogCacheRepository {
             'revision': revision,
             'entry_count': entries.length,
             'has_earlier': hasEarlier ? 1 : 0,
+            'turns_next_cursor': turnsNextCursor,
             'source_entry_count': sourceEntryCount,
             'updated_at': now,
           },
@@ -1363,6 +1373,139 @@ class SessionCatalogCacheRepository {
     });
   }
 
+  /// Prepends one bounded provider turn page without materializing the
+  /// existing timeline in Dart memory.
+  Future<ConversationHotWindowSnapshot?> prependConversationTurnsPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required List<Map<String, dynamic>> rawMessages,
+    required String? nextCursor,
+  }) async {
+    if (!target.isValid) return null;
+    final candidates = <ConversationContentWireEntry>[];
+    final seen = <String>{};
+    for (var index = 0; index < rawMessages.length; index++) {
+      final candidate = _historyPageEntry(rawMessages[index], index);
+      if (candidate == null) continue;
+      var entryId = candidate.entryId;
+      if (!seen.add(entryId)) {
+        entryId = '$entryId:${candidate.contentHash.substring(0, 16)}';
+        if (!seen.add(entryId)) continue;
+      }
+      candidates.add(
+        ConversationContentWireEntry(
+          entryId: entryId,
+          index: 0,
+          contentHash: candidate.contentHash,
+          rawMessage: candidate.rawMessage,
+        ),
+      );
+    }
+    await _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return;
+        final windows = await transaction.query(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          columns: ['source_entry_count'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        if (windows.isEmpty) return;
+
+        final existingIds = <String>{};
+        if (candidates.isNotEmpty) {
+          final placeholders = List.filled(candidates.length, '?').join(',');
+          final rows = await transaction.query(
+            SessionCatalogCacheDatabase.hotEntriesTable,
+            columns: ['entry_id'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ? '
+                'AND entry_id IN ($placeholders)',
+            whereArgs: [
+              partitionId,
+              provider,
+              providerSessionId,
+              ...candidates.map((entry) => entry.entryId),
+            ],
+          );
+          existingIds.addAll(rows.map((row) => row['entry_id']! as String));
+        }
+        final additions = candidates
+            .where((entry) => !existingIds.contains(entry.entryId))
+            .toList(growable: false);
+        final minimumRows = await transaction.rawQuery(
+          '''
+          SELECT MIN(entry_index) AS minimum_index
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+          WHERE partition_id = ?
+            AND provider = ?
+            AND provider_session_id = ?
+          ''',
+          [partitionId, provider, providerSessionId],
+        );
+        final minimum = minimumRows.single['minimum_index'] as int? ?? 0;
+        final firstIndex = minimum - additions.length;
+        for (var index = 0; index < additions.length; index++) {
+          final entry = additions[index];
+          await _insertHotEntry(
+            transaction,
+            partitionId: partitionId,
+            provider: provider,
+            providerSessionId: providerSessionId,
+            entry: ConversationContentWireEntry(
+              entryId: entry.entryId,
+              index: firstIndex + index,
+              contentHash: entry.contentHash,
+              rawMessage: entry.rawMessage,
+            ),
+          );
+        }
+        final countRows = await transaction.rawQuery(
+          '''
+          SELECT COUNT(*) AS entry_count
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+          WHERE partition_id = ?
+            AND provider = ?
+            AND provider_session_id = ?
+          ''',
+          [partitionId, provider, providerSessionId],
+        );
+        final count = Sqflite.firstIntValue(countRows) ?? 0;
+        final previousSourceCount =
+            windows.single['source_entry_count']! as int;
+        await transaction.update(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          {
+            'entry_count': count,
+            'has_earlier': nextCursor == null ? 0 : 1,
+            'turns_next_cursor': nextCursor,
+            'source_entry_count': previousSourceCount + additions.length,
+            'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+          },
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+      });
+    });
+    return loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+  }
+
   Future<bool> applyConversationPatch({
     required SessionCatalogCacheTarget target,
     required String provider,
@@ -1372,6 +1515,7 @@ class SessionCatalogCacheRepository {
     required List<ConversationContentWireEntry> upserts,
     required List<String> deletes,
     required bool hasEarlier,
+    String? turnsNextCursor,
     required int sourceEntryCount,
   }) {
     if (!target.isValid) return Future<bool>.value(false);
@@ -1440,6 +1584,7 @@ class SessionCatalogCacheRepository {
             'revision': revision,
             'entry_count': count,
             'has_earlier': hasEarlier ? 1 : 0,
+            'turns_next_cursor': turnsNextCursor,
             'source_entry_count': sourceEntryCount,
             'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
           },
@@ -1513,6 +1658,48 @@ class SessionCatalogCacheRepository {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  static ConversationContentWireEntry? _historyPageEntry(
+    Map<String, dynamic> rawMessage,
+    int index,
+  ) {
+    try {
+      ServerMessage.fromJson(rawMessage);
+      final encoded = jsonEncode(rawMessage);
+      final contentHash = sha256.convert(utf8.encode(encoded)).toString();
+      final type = rawMessage['type'] as String? ?? 'unknown';
+      String? identity;
+      if (type == 'user_input') {
+        identity = rawMessage['userMessageUuid'] as String?;
+        identity = identity?.trim().isNotEmpty == true
+            ? 'user:$identity'
+            : 'user:$contentHash';
+      } else if (type == 'assistant') {
+        final nested = rawMessage['message'];
+        final messageId = nested is Map ? nested['id'] as String? : null;
+        final stableId =
+            (rawMessage['messageUuid'] as String?)?.trim().isNotEmpty == true
+            ? rawMessage['messageUuid'] as String
+            : messageId;
+        identity = stableId?.trim().isNotEmpty == true
+            ? 'assistant:$stableId'
+            : 'assistant:$contentHash';
+      } else if (type == 'tool_result') {
+        final toolUseId = rawMessage['toolUseId'] as String?;
+        identity = toolUseId?.trim().isNotEmpty == true
+            ? 'tool-result:$toolUseId'
+            : 'tool-result:$contentHash';
+      }
+      return ConversationContentWireEntry(
+        entryId: identity ?? 'message:$type:$contentHash',
+        index: index,
+        contentHash: contentHash,
+        rawMessage: Map.unmodifiable(rawMessage),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<void> _ensureSyncState(

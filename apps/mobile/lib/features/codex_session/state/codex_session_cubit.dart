@@ -48,6 +48,8 @@ class CodexSessionCubit extends ChatSessionCubit {
     super.initialProjectPath,
     super.detachedPreview,
     super.initialHistoryMessages,
+    super.detachedHistoryPageLoader,
+    super.initialHistoryHasEarlier,
   }) : super(provider: Provider.codex);
 
   @override

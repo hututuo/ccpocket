@@ -106,6 +106,54 @@ describe("conversation_sync_v2 protocol", () => {
 });
 
 describe("ConversationSyncV2FeatureHandler", () => {
+  it("preserves an older-turn cursor and returns legacy pages chronologically", async () => {
+    const historyReader = vi.fn(async (target) => ({
+      messages: history(target.providerSessionId),
+      nextTurnCursor: "older-turns-1",
+    }));
+    const fixture = createFixture([seed(0)], historyReader);
+    const client = {};
+    const subscription = subscribeMessage();
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    expect(events(fixture.sent, client, "timeline_page")[0]).toMatchObject({
+      hasEarlier: true,
+      turnsNextCursor: "older-turns-1",
+    });
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "turns-page-1",
+        subscriptionId: subscription.requestId,
+        provider: "claude",
+        providerSessionId: "session-0",
+        cursor: null,
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+      context(client, fixture.runtime),
+    );
+
+    const response = events(fixture.sent, client, "turns_page_response")[0]!;
+    expect(response.data).toHaveLength(1);
+    expect(response.data[0]).toMatchObject({
+      messages: [
+        { type: "user_input", text: "session-0" },
+        { type: "assistant" },
+      ],
+    });
+    fixture.handler.close();
+  });
+
   it("sends special state first, limits provider concurrency, and reuses revisions", async () => {
     const seeds = Array.from({ length: 12 }, (_, index) =>
       seed(index, index === 10 ? workingStatus(index) : undefined),
@@ -229,7 +277,10 @@ function createFixture(
   historyReader: (target: {
     provider: "claude" | "codex";
     providerSessionId: string;
-  }) => Promise<ServerMessage[]>,
+  }) => Promise<
+    | ServerMessage[]
+    | { messages: ServerMessage[]; nextTurnCursor: string | null }
+  >,
 ) {
   const sent = new Map<object, ConversationSyncServerMessage[]>();
   const runtime = {

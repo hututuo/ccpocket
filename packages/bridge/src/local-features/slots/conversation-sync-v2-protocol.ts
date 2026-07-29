@@ -154,6 +154,7 @@ export type ConversationSyncServerMessage =
         entries: ConversationContentEntry[];
         deletes: string[];
         hasEarlier: boolean;
+        turnsNextCursor?: string | null;
         sourceEntryCount: number;
       })
   | (ConversationSyncEventBase & {

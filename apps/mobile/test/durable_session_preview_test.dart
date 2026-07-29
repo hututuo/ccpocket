@@ -55,6 +55,7 @@ void main() {
                   return DurableSessionPreviewUpdater(
                     revision: value,
                     messages: messages,
+                    hasEarlier: false,
                     child: const TextField(key: ValueKey('durable-composer')),
                   );
                 },
@@ -82,6 +83,38 @@ void main() {
         ),
         hasLength(1),
       );
+    },
+  );
+
+  test(
+    'detached history paging keeps the cubit and advances hasMore',
+    () async {
+      final bridge = MockBridgeService();
+      final streaming = StreamingStateCubit();
+      var loads = 0;
+      final cubit = ChatSessionCubit(
+        sessionId: 'durable-paged-thread',
+        provider: Provider.codex,
+        bridge: bridge,
+        streamingCubit: streaming,
+        detachedPreview: true,
+        initialHistoryHasEarlier: true,
+        detachedHistoryPageLoader: () async {
+          loads += 1;
+          return (loaded: true, hasMore: false);
+        },
+      );
+      addTearDown(cubit.close);
+      addTearDown(streaming.close);
+      addTearDown(bridge.dispose);
+
+      expect(cubit.localHistoryPaging.value.hasMore, isTrue);
+      await cubit.loadOlderLocalHistory();
+
+      expect(loads, 1);
+      expect(cubit.localHistoryPaging.value.loading, isFalse);
+      expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+      expect(cubit.localHistoryPaging.value.error, isNull);
     },
   );
 }

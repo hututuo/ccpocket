@@ -121,6 +121,7 @@ void main() {
         pageCount: 2,
         entries: [_wireEntry('entry-1', 0)],
         hasEarlier: true,
+        turnsNextCursor: 'older-turns-1',
         sourceEntryCount: 50,
       ),
     );
@@ -152,6 +153,7 @@ void main() {
         pageCount: 2,
         entries: [_wireEntry('entry-2', 1)],
         hasEarlier: true,
+        turnsNextCursor: 'older-turns-1',
         sourceEntryCount: 50,
       ),
     );
@@ -167,6 +169,7 @@ void main() {
       'entry-1',
       'entry-2',
     ]);
+    expect(cached?.turnsNextCursor, 'older-turns-1');
 
     final priorityReady = service.syncUpdates.firstWhere(
       (update) => update.kind == ConversationSyncCacheUpdateKind.priorityReady,
@@ -196,6 +199,104 @@ void main() {
         ),
       )).priorityReady,
       isTrue,
+    );
+  });
+
+  test('loads an older turn page into SQLite before cumulative ACK', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+
+    final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-turn-page',
+        sequence: 1,
+        requestId: subscriptionId,
+        catalogState: 'catalog-turn-page',
+        statusState: 'status-turn-page',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.timelinePage,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-turn-page',
+        sequence: 2,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-page',
+        revision: 'revision-turn-page',
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_wireEntry('current-entry', 0)],
+        hasEarlier: true,
+        turnsNextCursor: 'cursor-1',
+        sourceEntryCount: 2,
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+
+    final load = service.loadOlderTurns(
+      provider: 'codex',
+      providerSessionId: 'thread-turn-page',
+    );
+    final request = await gateway.nextOutgoing('conversation_turns_page');
+    expect(request['cursor'], 'cursor-1');
+    final requestId = request['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.turnsPageResponse,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-turn-page',
+        sequence: 3,
+        requestId: requestId,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-page',
+        data: const [
+          {
+            'turnId': 'turn-earlier',
+            'messages': [
+              {
+                'type': 'user_input',
+                'text': 'Earlier prompt',
+                'userMessageUuid': 'user-earlier',
+              },
+            ],
+            'itemCount': 1,
+            'itemsView': 'summary',
+          },
+        ],
+        nextCursor: null,
+      ),
+    );
+
+    final result = await load;
+    expect(result.loaded, isTrue);
+    expect(result.hasMore, isFalse);
+    final cached = await service.loadCachedWindow(
+      provider: 'codex',
+      providerSessionId: 'thread-turn-page',
+    );
+    expect(cached?.entries.map((entry) => entry.entryId), [
+      'user:user-earlier',
+      'current-entry',
+    ]);
+    expect(cached?.turnsNextCursor, isNull);
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      3,
     );
   });
 

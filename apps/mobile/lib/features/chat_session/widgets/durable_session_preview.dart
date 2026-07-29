@@ -12,12 +12,14 @@ import '../state/chat_session_cubit.dart';
 class DurableSessionPreviewUpdater extends StatefulWidget {
   final String revision;
   final List<ServerMessage> messages;
+  final bool hasEarlier;
   final Widget child;
 
   const DurableSessionPreviewUpdater({
     super.key,
     required this.revision,
     required this.messages,
+    required this.hasEarlier,
     required this.child,
   });
 
@@ -31,12 +33,19 @@ class _DurableSessionPreviewUpdaterState
   @override
   void didUpdateWidget(covariant DurableSessionPreviewUpdater oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.revision == widget.revision) return;
+    if (oldWidget.revision == widget.revision &&
+        oldWidget.hasEarlier == widget.hasEarlier) {
+      return;
+    }
     final revision = widget.revision;
     final messages = widget.messages;
+    final hasEarlier = widget.hasEarlier;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || widget.revision != revision) return;
-      context.read<ChatSessionCubit>().updateDetachedPreviewHistory(messages);
+      context.read<ChatSessionCubit>().updateDetachedPreviewHistory(
+        messages,
+        hasEarlier: hasEarlier,
+      );
     });
   }
 

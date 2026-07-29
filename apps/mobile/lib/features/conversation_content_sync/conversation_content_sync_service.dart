@@ -112,6 +112,16 @@ class ConversationSyncCacheUpdate {
   final String? revision;
 }
 
+class ConversationTurnsPageLoadResult {
+  const ConversationTurnsPageLoadResult({
+    required this.loaded,
+    required this.hasMore,
+  });
+
+  final bool loaded;
+  final bool hasMore;
+}
+
 /// Maintains one foreground subscription to the Bridge-owned conversation
 /// scheduler.
 ///
@@ -138,6 +148,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final StreamController<ConversationSyncCacheUpdate> _syncUpdatesController =
       StreamController<ConversationSyncCacheUpdate>.broadcast();
   final Map<String, _SnapshotStage> _stages = {};
+  final Map<String, _PendingTurnsPage> _pendingTurnsPages = {};
 
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
   StreamSubscription<List<SessionInfo>>? _sessionListSubscription;
@@ -305,6 +316,67 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
   }
 
+  Future<ConversationTurnsPageLoadResult> loadOlderTurns({
+    required String provider,
+    required String providerSessionId,
+    int limit = 5,
+  }) async {
+    if (!bridge.supportsConversationSyncV2 || !_canProcessContent) {
+      return const ConversationTurnsPageLoadResult(
+        loaded: false,
+        hasMore: false,
+      );
+    }
+    final target = _cacheTarget;
+    final snapshot = await cache.loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+    if (snapshot == null || !snapshot.hasEarlier) {
+      return const ConversationTurnsPageLoadResult(
+        loaded: false,
+        hasMore: false,
+      );
+    }
+    final subscriptionId = _activeSubscriptionId;
+    if (subscriptionId == null ||
+        target.fingerprint != _cacheTarget.fingerprint ||
+        !_canProcessContent) {
+      return const ConversationTurnsPageLoadResult(
+        loaded: false,
+        hasMore: true,
+      );
+    }
+    final requestId = _nextRequestId('turns');
+    final completer = Completer<ConversationTurnsPageLoadResult>();
+    _pendingTurnsPages[requestId] = _PendingTurnsPage(
+      generation: _generation,
+      targetFingerprint: target.fingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      completer: completer,
+    );
+    try {
+      bridge.send(
+        conversationSyncV2TurnsPage(
+          requestId: requestId,
+          subscriptionId: subscriptionId,
+          target: ConversationSyncV2Target(
+            provider: provider,
+            providerSessionId: providerSessionId,
+          ),
+          cursor: snapshot.turnsNextCursor,
+          limit: limit.clamp(1, 20),
+          itemsView: 'summary',
+        ),
+      );
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } finally {
+      _pendingTurnsPages.remove(requestId);
+    }
+  }
+
   bool get _canProcessContent =>
       _foreground &&
       bridge.currentBridgeConnectionState == BridgeConnectionState.connected &&
@@ -345,6 +417,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
+    _failPendingTurnsPages(
+      StateError('Conversation history paging was interrupted.'),
+    );
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -593,6 +668,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           entries: event.entries,
           deletes: event.deletes,
           hasEarlier: event.hasEarlier!,
+          turnsNextCursor: event.turnsNextCursor,
           sourceEntryCount: event.sourceEntryCount!,
         );
         if (!committed.baseRevisionMatched) {
@@ -645,12 +721,62 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           providerSessionId: event.target?.providerSessionId,
         );
       case ConversationSyncV2EventKind.turnsPageResponse:
+        final request = event.requestId == null
+            ? null
+            : _pendingTurnsPages[event.requestId!];
+        if (request != null &&
+            request.generation == generation &&
+            request.targetFingerprint == target.fingerprint &&
+            request.provider == event.provider &&
+            request.providerSessionId == event.providerSessionId) {
+          final snapshot = await cache.prependConversationTurnsPage(
+            target: target,
+            provider: event.provider!,
+            providerSessionId: event.providerSessionId!,
+            rawMessages: event.pageRawMessages(),
+            nextCursor: event.nextCursor,
+          );
+          if (!request.completer.isCompleted) {
+            request.completer.complete(
+              ConversationTurnsPageLoadResult(
+                loaded: snapshot != null,
+                hasMore: event.nextCursor != null,
+              ),
+            );
+          }
+          if (snapshot != null) {
+            _updatesController.add(
+              ConversationContentCacheUpdate(
+                provider: event.provider!,
+                providerSessionId: event.providerSessionId!,
+                revision:
+                    '${snapshot.revision}:'
+                    '${snapshot.entries.length}:'
+                    '${snapshot.cachedAt.microsecondsSinceEpoch}',
+              ),
+            );
+            publish = ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.timeline,
+              provider: event.provider,
+              providerSessionId: event.providerSessionId,
+              revision: snapshot.revision,
+            );
+          }
+        }
       case ConversationSyncV2EventKind.itemsPageResponse:
       case ConversationSyncV2EventKind.focusApplied:
       case ConversationSyncV2EventKind.unsubscribed:
       // These responses do not mutate the hot cache in this service. Their
       // sequence still participates in cumulative flow control.
       case ConversationSyncV2EventKind.error:
+        final pageRequest = event.requestId == null
+            ? null
+            : _pendingTurnsPages[event.requestId!];
+        if (pageRequest != null && !pageRequest.completer.isCompleted) {
+          pageRequest.completer.completeError(
+            StateError(event.error ?? 'Conversation history page failed.'),
+          );
+        }
         if (event.requestId == _pendingSubscriptionId) {
           throw StateError(event.error ?? 'Conversation sync failed.');
         }
@@ -871,6 +997,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
+    _failPendingTurnsPages(
+      StateError('Conversation history paging was interrupted.'),
+    );
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -931,6 +1060,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       left?.provider == right?.provider &&
       left?.providerSessionId == right?.providerSessionId;
 
+  void _failPendingTurnsPages(Object error) {
+    for (final request in _pendingTurnsPages.values) {
+      if (!request.completer.isCompleted) {
+        request.completer.completeError(error);
+      }
+    }
+    _pendingTurnsPages.clear();
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
@@ -967,4 +1105,20 @@ class _SnapshotStage {
   final bool hasEarlier;
   final int sourceEntryCount;
   final Map<int, List<ConversationContentWireEntry>> pages = {};
+}
+
+class _PendingTurnsPage {
+  const _PendingTurnsPage({
+    required this.generation,
+    required this.targetFingerprint,
+    required this.provider,
+    required this.providerSessionId,
+    required this.completer,
+  });
+
+  final int generation;
+  final String targetFingerprint;
+  final String provider;
+  final String providerSessionId;
+  final Completer<ConversationTurnsPageLoadResult> completer;
 }

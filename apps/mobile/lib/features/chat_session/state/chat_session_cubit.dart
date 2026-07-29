@@ -74,6 +74,9 @@ class LocalHistoryPagingState {
   );
 }
 
+typedef DetachedHistoryPageLoader =
+    Future<({bool loaded, bool hasMore})> Function();
+
 class HistoryToolDetailLoadState {
   const HistoryToolDetailLoadState({
     this.details = const [],
@@ -218,6 +221,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _discardLocalMirrorOnNextCanonicalHistory = false;
   final ValueNotifier<LocalHistoryPagingState> localHistoryPaging =
       ValueNotifier(const LocalHistoryPagingState());
+  final DetachedHistoryPageLoader? _detachedHistoryPageLoader;
   final ValueNotifier<bool> historySyncing = ValueNotifier(false);
   final ValueNotifier<int> historyToolDetailRevision = ValueNotifier(0);
   final Map<String, HistoryToolDetailLoadState> _historyToolDetailStates = {};
@@ -323,8 +327,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     ChatImagePayloadEncoder? imagePayloadEncoder,
     this.detachedPreview = false,
     this.initialHistoryMessages = const [],
+    DetachedHistoryPageLoader? detachedHistoryPageLoader,
+    bool initialHistoryHasEarlier = false,
   }) : _bridge = bridge,
        _streamingCubit = streamingCubit,
+       _detachedHistoryPageLoader = detachedHistoryPageLoader,
        _imagePayloadEncoder =
            imagePayloadEncoder ?? _defaultChatImagePayloadEncoder,
        super(
@@ -388,6 +395,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
          ),
        ) {
     if (detachedPreview) {
+      localHistoryPaging.value = LocalHistoryPagingState(
+        enabled: detachedHistoryPageLoader != null,
+        hasMore: initialHistoryHasEarlier,
+      );
       _restoreInitialHistoryMessages();
       return;
     }
@@ -477,8 +488,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Reconciles a newer durable cache snapshot without recreating the screen
   /// or its disclosure/scroll state.
-  void updateDetachedPreviewHistory(List<ServerMessage> messages) {
-    if (!detachedPreview || messages.isEmpty || isClosed) return;
+  void updateDetachedPreviewHistory(
+    List<ServerMessage> messages, {
+    bool? hasEarlier,
+  }) {
+    if (!detachedPreview || isClosed) return;
+    if (hasEarlier != null && _detachedHistoryPageLoader != null) {
+      localHistoryPaging.value = localHistoryPaging.value.copyWith(
+        enabled: true,
+        hasMore: hasEarlier,
+        loading: false,
+        clearError: true,
+      );
+    }
+    if (messages.isEmpty) return;
     try {
       final history = HistoryMessage(messages: messages);
       final update = _handler.handle(
@@ -1539,6 +1562,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Future<bool> loadOlderLocalHistory() async {
+    if (detachedPreview) {
+      return _loadOlderDetachedHistory();
+    }
     final currentPaging = localHistoryPaging.value;
     if (isClosed ||
         !currentPaging.enabled ||
@@ -1591,6 +1617,43 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       logger.warning(
         '[session:$sessionId] Failed to load older local history',
+        error,
+        stackTrace,
+      );
+      localHistoryPaging.value = localHistoryPaging.value.copyWith(
+        loading: false,
+        error: error,
+      );
+      return false;
+    }
+  }
+
+  Future<bool> _loadOlderDetachedHistory() async {
+    final loader = _detachedHistoryPageLoader;
+    final currentPaging = localHistoryPaging.value;
+    if (isClosed ||
+        loader == null ||
+        !currentPaging.enabled ||
+        !currentPaging.hasMore ||
+        currentPaging.loading) {
+      return false;
+    }
+    localHistoryPaging.value = currentPaging.copyWith(
+      loading: true,
+      clearError: true,
+    );
+    try {
+      final result = await loader();
+      if (isClosed) return false;
+      localHistoryPaging.value = LocalHistoryPagingState(
+        enabled: true,
+        hasMore: result.hasMore,
+      );
+      return result.loaded;
+    } catch (error, stackTrace) {
+      if (isClosed) return false;
+      logger.warning(
+        '[session:$sessionId] Failed to load older durable history',
         error,
         stackTrace,
       );

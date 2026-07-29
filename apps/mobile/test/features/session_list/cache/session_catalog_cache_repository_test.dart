@@ -690,6 +690,137 @@ void main() {
     },
   );
 
+  test('migrates v3 timeline cursors without rebuilding cached rows', () async {
+    await repository.close();
+    if (await File(databasePath).exists()) {
+      await File(databasePath).delete();
+    }
+    final legacy = await databaseFactoryFfi.openDatabase(
+      databasePath,
+      options: OpenDatabaseOptions(
+        version: 3,
+        onCreate: (db, _) async {
+          await db.execute('''
+            CREATE TABLE ${SessionCatalogCacheDatabase.hotWindowsTable} (
+              partition_id TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              provider_session_id TEXT NOT NULL,
+              revision TEXT NOT NULL,
+              entry_count INTEGER NOT NULL,
+              has_earlier INTEGER NOT NULL,
+              source_entry_count INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE ${SessionCatalogCacheDatabase.timelineStagesTable} (
+              partition_id TEXT NOT NULL,
+              subscription_id TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              provider_session_id TEXT NOT NULL,
+              revision TEXT NOT NULL,
+              base_revision TEXT,
+              mode TEXT NOT NULL,
+              page_count INTEGER NOT NULL,
+              has_earlier INTEGER NOT NULL,
+              source_entry_count INTEGER NOT NULL,
+              created_at INTEGER NOT NULL
+            )
+          ''');
+        },
+      ),
+    );
+    await legacy.close();
+
+    database = SessionCatalogCacheDatabase(
+      databasePath: databasePath,
+      openDatabase: openFfi,
+    );
+    repository = SessionCatalogCacheRepository(database);
+    final upgraded = await database.database;
+    final hotColumns = await upgraded.rawQuery(
+      'PRAGMA table_info(${SessionCatalogCacheDatabase.hotWindowsTable})',
+    );
+    final stageColumns = await upgraded.rawQuery(
+      'PRAGMA table_info(${SessionCatalogCacheDatabase.timelineStagesTable})',
+    );
+
+    expect(
+      hotColumns.map((column) => column['name']),
+      contains('turns_next_cursor'),
+    );
+    expect(
+      stageColumns.map((column) => column['name']),
+      contains('turns_next_cursor'),
+    );
+  });
+
+  test(
+    'prepends turn pages idempotently and advances the stored cursor',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-turn-pages',
+        codexSourceId: 'source-turn-pages',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-turn-pages',
+        provider: 'codex',
+        providerSessionId: 'thread-turn-pages',
+        revision: 'revision-turn-pages',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('current-entry', 0, 'idle')],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'cursor-1',
+        sourceEntryCount: 2,
+      );
+
+      final first = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-pages',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'Earlier prompt',
+            'userMessageUuid': 'user-earlier',
+          },
+        ],
+        nextCursor: 'cursor-2',
+      );
+      expect(first?.entries.map((entry) => entry.entryId), [
+        'user:user-earlier',
+        'current-entry',
+      ]);
+      expect(first?.turnsNextCursor, 'cursor-2');
+      expect(first?.hasEarlier, isTrue);
+
+      final repeated = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-pages',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'Earlier prompt',
+            'userMessageUuid': 'user-earlier',
+          },
+        ],
+        nextCursor: null,
+      );
+      expect(repeated?.entries.map((entry) => entry.entryId), [
+        'user:user-earlier',
+        'current-entry',
+      ]);
+      expect(repeated?.turnsNextCursor, isNull);
+      expect(repeated?.hasEarlier, isFalse);
+    },
+  );
+
   test('rejects mutations after close begins', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-closed',

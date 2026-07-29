@@ -121,9 +121,23 @@ interface ConversationSyncV2Options {
   statusReader?: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
-  historyReader?: (target: ConversationSyncTarget) => Promise<ServerMessage[]>;
+  historyReader?: (
+    target: ConversationSyncTarget,
+  ) => Promise<ServerMessage[] | ConversationHistoryWindow>;
   statusWatchdogMs?: number;
   coldReconcileMs?: number;
+}
+
+interface ConversationHistoryWindow {
+  messages: ServerMessage[];
+  nextTurnCursor: string | null;
+}
+
+interface NormalizedConversationTurn {
+  turnId: string;
+  messages: ServerMessage[];
+  itemCount: number;
+  itemsView: "summary" | "full";
 }
 
 /**
@@ -148,7 +162,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
   private readonly historyReader: (
     target: ConversationSyncTarget,
-  ) => Promise<ServerMessage[]>;
+  ) => Promise<ServerMessage[] | ConversationHistoryWindow>;
   private readonly statusWatchdogMs: number;
   private readonly coldReconcileMs: number;
 
@@ -774,14 +788,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const existing = this.snapshotFlights.get(key);
     if (existing) return existing;
     const flight = this.historyReader(record.entry)
-      .then((messages) => {
-        const built = buildConversationContentSnapshot(record.entry, messages, {
-          maxMessageTextBytes: MAX_MESSAGE_TEXT_BYTES,
-          maxSnapshotBytes: MAX_TIMELINE_BYTES,
-        });
+      .then((history) => {
+        const window = normalizeHistoryWindow(history);
+        const built = buildConversationContentSnapshot(
+          record.entry,
+          window.messages,
+          {
+            maxMessageTextBytes: MAX_MESSAGE_TEXT_BYTES,
+            maxSnapshotBytes: MAX_TIMELINE_BYTES,
+          },
+        );
         const snapshot = {
           ...built,
           revision: record.entry.revision,
+          hasEarlier: built.hasEarlier || window.nextTurnCursor != null,
+          turnsNextCursor: window.nextTurnCursor,
         };
         this.rememberSnapshot(key, snapshot);
         return snapshot;
@@ -853,6 +874,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         entries: (pages[pageIndex] ?? []).map(toWireConversationContentEntry),
         deletes: deletePages[pageIndex] ?? [],
         hasEarlier: snapshot.hasEarlier,
+        turnsNextCursor: snapshot.turnsNextCursor,
         sourceEntryCount: snapshot.sourceEntryCount,
       });
     }
@@ -886,6 +908,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         entries: page.map(toWireConversationContentEntry),
         deletes: [],
         hasEarlier: snapshot.hasEarlier,
+        turnsNextCursor: snapshot.turnsNextCursor,
         sourceEntryCount: snapshot.sourceEntryCount,
       });
     });
@@ -919,6 +942,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         entries: [],
         deletes: [],
         hasEarlier: snapshot.hasEarlier,
+        turnsNextCursor: snapshot.turnsNextCursor,
         sourceEntryCount: snapshot.sourceEntryCount,
       }),
       "utf8",
@@ -1425,9 +1449,9 @@ async function readCurrentStatuses(
 async function readRecentConversationHistory(
   runtime: LocalFeatureRuntime,
   target: ConversationSyncTarget,
-): Promise<ServerMessage[]> {
+): Promise<ConversationHistoryWindow> {
   if (target.provider !== "codex") {
-    return readDurableConversationHistory(target);
+    return readLegacyHistoryWindow(target);
   }
   try {
     return await withCodexProcess(runtime, undefined, async (process) => {
@@ -1442,14 +1466,29 @@ async function readRecentConversationHistory(
         id: target.providerSessionId,
         turns,
       });
-      return sessionHistoryToServerMessages(history, {
-        idPrefix: "conversation-sync-v2-codex",
-      });
+      return {
+        messages: sessionHistoryToServerMessages(history, {
+          idPrefix: "conversation-sync-v2-codex",
+        }),
+        nextTurnCursor: page.nextCursor,
+      };
     });
   } catch (error) {
     if (!isUnsupportedAppServerRead(error)) throw error;
-    return readDurableConversationHistory(target);
+    return readLegacyHistoryWindow(target);
   }
+}
+
+async function readLegacyHistoryWindow(
+  target: ConversationSyncTarget,
+): Promise<ConversationHistoryWindow> {
+  const messages = await readDurableConversationHistory(target);
+  const turnCount = groupLegacyTurns(messages).length;
+  return {
+    messages,
+    nextTurnCursor:
+      turnCount > PRIORITY_RECENT_COUNT ? String(PRIORITY_RECENT_COUNT) : null,
+  };
 }
 
 async function readTurnsPage(
@@ -1458,12 +1497,14 @@ async function readTurnsPage(
     ConversationSyncClientMessage,
     { type: "conversation_turns_page" }
   >,
-  historyReader: (target: ConversationSyncTarget) => Promise<ServerMessage[]>,
+  historyReader: (
+    target: ConversationSyncTarget,
+  ) => Promise<ServerMessage[] | ConversationHistoryWindow>,
   signal: AbortSignal,
 ): Promise<{ data: unknown[]; nextCursor: string | null }> {
   if (message.provider === "codex") {
-    return withCodexProcess(runtime, undefined, (process) =>
-      process.listThreadTurns(
+    return withCodexProcess(runtime, undefined, async (process) => {
+      const page = await process.listThreadTurns(
         {
           threadId: message.providerSessionId,
           cursor: message.cursor,
@@ -1472,17 +1513,41 @@ async function readTurnsPage(
           itemsView: message.itemsView ?? "summary",
         },
         { signal },
-      ),
-    );
+      );
+      const chronologicalTurns =
+        (message.sortDirection ?? "desc") === "desc"
+          ? [...page.data].reverse()
+          : page.data;
+      return {
+        data: normalizeCodexTurns(
+          chronologicalTurns,
+          message.itemsView ?? "summary",
+          message.providerSessionId,
+        ),
+        nextCursor: page.nextCursor,
+      };
+    });
   }
-  const messages = await historyReader(message);
-  const turns = groupLegacyTurns(messages);
-  return paginateArray(
+  const history = normalizeHistoryWindow(await historyReader(message));
+  const turns = groupLegacyTurns(history.messages).map((turn) => ({
+    turnId: turn.id,
+    messages: turn.items,
+    itemCount: turn.items.length,
+    itemsView: message.itemsView ?? "summary",
+  }));
+  const page = paginateArray(
     turns,
     message.cursor,
     message.limit ?? 5,
     message.sortDirection ?? "desc",
   );
+  return {
+    data:
+      (message.sortDirection ?? "desc") === "desc"
+        ? [...page.data].reverse()
+        : page.data,
+    nextCursor: page.nextCursor,
+  };
 }
 
 async function readItemsPage(
@@ -1491,12 +1556,14 @@ async function readItemsPage(
     ConversationSyncClientMessage,
     { type: "conversation_items_page" }
   >,
-  historyReader: (target: ConversationSyncTarget) => Promise<ServerMessage[]>,
+  historyReader: (
+    target: ConversationSyncTarget,
+  ) => Promise<ServerMessage[] | ConversationHistoryWindow>,
   signal: AbortSignal,
 ): Promise<{ data: unknown[]; nextCursor: string | null }> {
   if (message.provider === "codex") {
-    return withCodexProcess(runtime, undefined, (process) =>
-      process.listThreadItems(
+    return withCodexProcess(runtime, undefined, async (process) => {
+      const page = await process.listThreadItems(
         {
           threadId: message.providerSessionId,
           turnId: message.turnId,
@@ -1505,11 +1572,19 @@ async function readItemsPage(
           sortDirection: message.sortDirection ?? "asc",
         },
         { signal },
-      ),
-    );
+      );
+      const turnId = message.turnId ?? "paged-items";
+      return {
+        data: codexTurnMessages(
+          { id: turnId, items: page.data },
+          message.providerSessionId,
+        ),
+        nextCursor: page.nextCursor,
+      };
+    });
   }
-  const messages = await historyReader(message);
-  const turns = groupLegacyTurns(messages);
+  const history = normalizeHistoryWindow(await historyReader(message));
+  const turns = groupLegacyTurns(history.messages);
   const selected = message.turnId
     ? (turns.find((turn) => turn.id === message.turnId)?.items ?? [])
     : turns.flatMap((turn) => turn.items);
@@ -1519,6 +1594,52 @@ async function readItemsPage(
     message.limit ?? 50,
     message.sortDirection ?? "asc",
   );
+}
+
+function normalizeHistoryWindow(
+  history: ServerMessage[] | ConversationHistoryWindow,
+): ConversationHistoryWindow {
+  return Array.isArray(history)
+    ? { messages: history, nextTurnCursor: null }
+    : history;
+}
+
+function normalizeCodexTurns(
+  rawTurns: readonly unknown[],
+  itemsView: "summary" | "full",
+  threadId: string,
+): NormalizedConversationTurn[] {
+  const turns: NormalizedConversationTurn[] = [];
+  rawTurns.forEach((rawTurn, index) => {
+    if (!rawTurn || typeof rawTurn !== "object") return;
+    const turn = rawTurn as Record<string, unknown>;
+    const rawId = turn.id;
+    const turnId =
+      typeof rawId === "string" && rawId.trim()
+        ? rawId.trim()
+        : `turn:${hashState([threadId, index, turn]).slice(0, 24)}`;
+    const items = Array.isArray(turn.items) ? turn.items : [];
+    turns.push({
+      turnId,
+      messages: codexTurnMessages({ ...turn, id: turnId }, threadId),
+      itemCount: items.length,
+      itemsView,
+    });
+  });
+  return turns;
+}
+
+function codexTurnMessages(
+  turn: Record<string, unknown>,
+  threadId: string,
+): ServerMessage[] {
+  const history = codexThreadToSessionHistory({
+    id: threadId,
+    turns: [turn],
+  });
+  return sessionHistoryToServerMessages(history, {
+    idPrefix: `conversation-sync-v2-page-${threadId}`,
+  });
 }
 
 async function withCodexProcess<T>(

@@ -110,6 +110,52 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('validates normalized messages inside turn page responses', () {
+    final message =
+        ServerMessage.fromJson({
+              ..._baseFrame,
+              'event': 'turns_page_response',
+              'requestId': 'request-1',
+              'provider': 'codex',
+              'providerSessionId': 'thread-1',
+              'data': [
+                {
+                  'turnId': 'turn-1',
+                  'messages': [
+                    {
+                      'type': 'user_input',
+                      'text': 'Earlier prompt',
+                      'userMessageUuid': 'user-earlier',
+                    },
+                  ],
+                  'itemCount': 1,
+                  'itemsView': 'summary',
+                },
+              ],
+              'nextCursor': 'cursor-2',
+            })
+            as ConversationSyncV2EventMessage;
+
+    expect(message.pageRawMessages().single['text'], 'Earlier prompt');
+    expect(
+      () => ServerMessage.fromJson({
+        ..._baseFrame,
+        'event': 'turns_page_response',
+        'requestId': 'request-2',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'data': [
+          {
+            'turnId': 'turn-bad',
+            'messages': ['not-a-message-map'],
+          },
+        ],
+        'nextCursor': null,
+      }),
+      throwsFormatException,
+    );
+  });
 }
 
 const _baseFrame = <String, dynamic>{

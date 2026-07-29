@@ -279,6 +279,20 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     );
   }
 
+  Future<({bool loaded, bool hasMore})> _loadOlderDurableHistory() async {
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || durableId.isEmpty) {
+      return (loaded: false, hasMore: false);
+    }
+    final result = await context
+        .read<ConversationContentSyncService>()
+        .loadOlderTurns(
+          provider: Provider.claude.value,
+          providerSessionId: durableId,
+        );
+    return (loaded: result.loaded, hasMore: result.hasMore);
+  }
+
   bool _queueDeferredSubmission(ChatComposerSubmission submission) {
     if (!_isPending || _deferredSubmission != null) return false;
     setState(() => _deferredSubmission = submission);
@@ -693,12 +707,18 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         permissionMode: _permissionMode,
         sandboxMode: _sandboxMode,
         detachedPreview: true,
-        previewRevision: cachedPreview?.revision ?? '',
+        previewRevision: cachedPreview == null
+            ? ''
+            : '${cachedPreview.revision}:'
+                  '${cachedPreview.entries.length}:'
+                  '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
         initialHistoryMessages:
             cachedPreview?.entries
                 .map((entry) => entry.decodeMessage())
                 .toList(growable: false) ??
             const [],
+        initialHistoryHasEarlier: cachedPreview?.hasEarlier ?? false,
+        detachedHistoryPageLoader: _loadOlderDurableHistory,
         deferredSubmissionPending: _deferredSubmission != null,
         onDeferredSubmit: _queueDeferredSubmission,
         onBackToSessions: widget.onBackToSessions,
@@ -783,6 +803,8 @@ class _ChatScreenProviders extends StatelessWidget {
   final bool detachedPreview;
   final String previewRevision;
   final List<ServerMessage> initialHistoryMessages;
+  final bool initialHistoryHasEarlier;
+  final DetachedHistoryPageLoader? detachedHistoryPageLoader;
   final bool deferredSubmissionPending;
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final ChatComposerSubmission? initialSubmission;
@@ -804,6 +826,8 @@ class _ChatScreenProviders extends StatelessWidget {
     this.detachedPreview = false,
     this.previewRevision = '',
     this.initialHistoryMessages = const [],
+    this.initialHistoryHasEarlier = false,
+    this.detachedHistoryPageLoader,
     this.deferredSubmissionPending = false,
     this.onDeferredSubmit,
     this.initialSubmission,
@@ -831,6 +855,8 @@ class _ChatScreenProviders extends StatelessWidget {
               initialProjectPath: projectPath,
               detachedPreview: detachedPreview,
               initialHistoryMessages: initialHistoryMessages,
+              detachedHistoryPageLoader: detachedHistoryPageLoader,
+              initialHistoryHasEarlier: initialHistoryHasEarlier,
             );
             final submission = initialSubmission;
             if (!detachedPreview && submission != null) {
@@ -853,6 +879,7 @@ class _ChatScreenProviders extends StatelessWidget {
       child: DurableSessionPreviewUpdater(
         revision: previewRevision,
         messages: initialHistoryMessages,
+        hasEarlier: initialHistoryHasEarlier,
         child: _ChatScreenBody(
           sessionId: sessionId,
           projectPath: projectPath,
