@@ -49,6 +49,7 @@
     "prepublishOnly": "npm run build",
     "pretest": "npm run build",
     "test": "vitest run",
+    "benchmark:session-sync": "npm run build && node scripts/benchmark-conversation-sync-v2.mjs",
     "test:windows-smoke": "vitest run src/path-utils.test.ts src/websocket.test.ts src/codex-process.test.ts",
     "pretest:watch": "npm run build",
     "test:watch": "vitest",

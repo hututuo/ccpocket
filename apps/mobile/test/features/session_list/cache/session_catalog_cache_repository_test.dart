@@ -168,6 +168,34 @@ void main() {
         target: provisional,
         response: RecentSessionsMessage(sessions: [_session(id: 'thread-1')]),
       );
+      await repository.applyConversationStatusPage(
+        target: provisional,
+        statusState: 'provisional-status-state',
+        pageIndex: 0,
+        pageCount: 1,
+        changes: const [
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-1',
+            activity: 'working',
+            attention: 'approval',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-07-30T00:03:00.000Z',
+          ),
+        ],
+      );
+      await repository.storeReadWatermark(
+        target: provisional,
+        watermark: const ConversationSyncV2ReadWatermark(
+          provider: 'codex',
+          providerSessionId: 'thread-1',
+          readAt: '2026-07-30T00:04:00.000Z',
+        ),
+      );
+      await repository.markConversationPriorityReady(provisional);
 
       final canonical = SessionCatalogCacheTarget.fromBridge(
         bridgeInstanceId: 'bridge-a',
@@ -190,6 +218,28 @@ void main() {
         (await repository.load(provisional))?.sessions.single.name,
         'Canonical',
       );
+      expect(
+        await repository.loadConversationSyncState(canonical),
+        isA<ConversationSyncCacheState>()
+            .having(
+              (state) => state.statusState,
+              'statusState',
+              'provisional-status-state',
+            )
+            .having((state) => state.priorityReady, 'priorityReady', isTrue),
+      );
+      expect(await repository.loadConversationStatuses(canonical), [
+        isA<ConversationSyncV2Status>()
+            .having((status) => status.activity, 'activity', 'working')
+            .having((status) => status.attention, 'attention', 'approval'),
+      ]);
+      expect(await repository.loadReadWatermarks(canonical), [
+        isA<ConversationSyncV2ReadWatermark>().having(
+          (watermark) => watermark.readAt,
+          'readAt',
+          '2026-07-30T00:04:00.000Z',
+        ),
+      ]);
       final db = await database.database;
       final partitionCount = Sqflite.firstIntValue(
         await db.rawQuery(
@@ -252,6 +302,35 @@ void main() {
       expect(
         (await repository.load(oldBridge))!.sessions.single.sessionId,
         'old-thread',
+      );
+    },
+  );
+
+  test(
+    'does not promote an unproven route cache into a scoped Codex source',
+    () async {
+      final legacyRoute = SessionCatalogCacheTarget.fromBridge(
+        logicalConnectionIdentity: 'machine:shared-route',
+        websocketUrl: 'wss://shared.example/socket',
+      );
+      await repository.upsertResponse(
+        target: legacyRoute,
+        response: RecentSessionsMessage(
+          sessions: [_session(id: 'legacy-thread', name: 'Legacy route')],
+        ),
+      );
+
+      final authenticatedSource = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-new',
+        codexSourceId: 'codex-home-new',
+        logicalConnectionIdentity: 'machine:shared-route',
+        websocketUrl: 'wss://shared.example/socket',
+      );
+
+      expect(await repository.load(authenticatedSource), isNull);
+      expect(
+        (await repository.load(legacyRoute))!.sessions.single.sessionId,
+        'legacy-thread',
       );
     },
   );

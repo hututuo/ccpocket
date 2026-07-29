@@ -10,7 +10,7 @@ import {
   type ConversationSyncServerMessage,
   type ConversationSyncStatus,
 } from "./slots/conversation-sync-v2-protocol.js";
-import type { LocalFeatureRuntime } from "./runtime.js";
+import type { LocalFeatureRuntime, LocalFeatureSession } from "./runtime.js";
 
 describe("conversation_sync_v2 protocol", () => {
   it("accepts bounded state cursors and rejects duplicate thread identities", () => {
@@ -373,6 +373,206 @@ describe("ConversationSyncV2FeatureHandler", () => {
     });
     fixture.handler.close();
   });
+
+  it("publishes a catalog change immediately without rereading a clean catalog", async () => {
+    const seeds = [seed(0)];
+    const historyReader = vi.fn(async (target) =>
+      history(target.providerSessionId),
+    );
+    const fixture = createFixture(seeds, historyReader);
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialCatalogReads = fixture.catalogReader.mock.calls.length;
+
+    seeds.push(seed(1));
+    fixture.handler.sessionCatalogChanged();
+
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "catalog_changes").some((event) =>
+          event.created.some(
+            (entry) => entry.providerSessionId === "session-1",
+          ),
+        ),
+      ).toBe(true),
+    );
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(
+      initialCatalogReads + 1,
+    );
+    fixture.handler.close();
+  });
+
+  it("coalesces live deltas into one history read without rescanning the catalog", async () => {
+    const historyReader = vi.fn(async (target) =>
+      history(target.providerSessionId),
+    );
+    const fixture = createFixture([seed(0)], historyReader);
+    const client = {};
+    fixture.runtime.getProviderSessionId = () => "session-0";
+    const session: LocalFeatureSession = {
+      id: "runtime-0",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialHistoryReads = historyReader.mock.calls.length;
+
+    for (let index = 0; index < 100; index += 1) {
+      fixture.handler.sessionMessage(session, {
+        type: index % 2 === 0 ? "stream_delta" : "thinking_delta",
+        text: `delta-${index}`,
+      });
+    }
+
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+      { timeout: 3_000 },
+    );
+    expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads + 1);
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
+    fixture.handler.close();
+  });
+
+  it("does not label an in-flight stale snapshot with a newer live revision", async () => {
+    let resolveFirstRead:
+      | ((messages: ServerMessage[]) => void)
+      | undefined;
+    const firstRead = new Promise<ServerMessage[]>((resolve) => {
+      resolveFirstRead = resolve;
+    });
+    let readCount = 0;
+    const historyReader = vi.fn(async (target) => {
+      readCount += 1;
+      if (readCount === 1) return firstRead;
+      return history(`${target.providerSessionId}-new`);
+    });
+    const fixture = createFixture([seed(0)], historyReader);
+    const client = {};
+    fixture.runtime.getProviderSessionId = () => "session-0";
+    const session: LocalFeatureSession = {
+      id: "runtime-0",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(1));
+
+    fixture.handler.sessionMessage(session, {
+      type: "assistant",
+      messageUuid: "assistant-live",
+      message: {
+        id: "assistant-live",
+        role: "assistant",
+        model: "test",
+        content: [{ type: "text", text: "new live content" }],
+      },
+    });
+    resolveFirstRead!(history("session-0-old"));
+
+    await vi.waitFor(
+      () => expect(historyReader).toHaveBeenCalledTimes(2),
+      { timeout: 3_000 },
+    );
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "sync_complete").length).toBeGreaterThanOrEqual(2),
+      { timeout: 3_000 },
+    );
+    const revisions = new Set(
+      events(fixture.sent, client, "timeline_page").map(
+        (event) => event.revision,
+      ),
+    );
+    expect(revisions.size).toBeGreaterThanOrEqual(2);
+    fixture.handler.close();
+  });
+
+  it("pushes Need You state without rereading conversation content", async () => {
+    const historyReader = vi.fn(async (target) =>
+      history(target.providerSessionId),
+    );
+    const fixture = createFixture([seed(0)], historyReader);
+    const client = {};
+    fixture.runtime.getProviderSessionId = () => "session-0";
+    let pendingApproval = false;
+    fixture.runtime.listRuntimeConversationStates = () => [
+      {
+        bridgeSessionId: "runtime-0",
+        provider: "claude",
+        providerSessionId: "session-0",
+        projectPath: "/project/0",
+        processStatus: pendingApproval ? "waiting_approval" : "idle",
+        ...(pendingApproval
+          ? {
+              pendingAttention: {
+                requestId: "approval-1",
+                kind: "approval" as const,
+              },
+            }
+          : {}),
+        observedAt: new Date().toISOString(),
+      },
+    ];
+    const session: LocalFeatureSession = {
+      id: "runtime-0",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialHistoryReads = historyReader.mock.calls.length;
+
+    pendingApproval = true;
+    fixture.handler.sessionMessage(session, {
+      type: "permission_request",
+      toolUseId: "approval-1",
+      toolName: "Bash",
+      input: {},
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "status_changes").some((event) =>
+          event.changes.some(
+            (status) =>
+              status.providerSessionId === "session-0" &&
+              status.attention === "approval",
+          ),
+        ),
+      ).toBe(true),
+    );
+    expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads);
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
+    fixture.handler.close();
+  });
 });
 
 function createFixture(
@@ -389,11 +589,13 @@ function createFixture(
   >,
 ) {
   const sent = new Map<object, ConversationSyncServerMessage[]>();
-  const runtime = {
+  const catalogReader = vi.fn(async () => seeds);
+  const runtime: LocalFeatureRuntime = {
     bridgeInstanceId: "bridge-1",
     codexSourceId: "source-1",
     getSession: () => undefined,
     getCodexThreadId: () => undefined,
+    getProviderSessionId: () => undefined,
     getActiveCodexProcess: () => null,
     createStandaloneCodexProcess: async () => {
       throw new Error("not used");
@@ -406,12 +608,13 @@ function createFixture(
     isClientOpen: () => true,
     supports: (_client: object, type: string) =>
       type === CONVERSATION_SYNC_V2_CAPABILITY,
-  } satisfies LocalFeatureRuntime;
+  };
   return {
     runtime,
     sent,
+    catalogReader,
     handler: new ConversationSyncV2FeatureHandler(runtime, {
-      catalogReader: async () => seeds,
+      catalogReader,
       statusReader: async () => new Map(),
       historyReader,
       statusWatchdogMs: 60_000,

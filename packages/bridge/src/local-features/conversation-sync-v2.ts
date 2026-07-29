@@ -68,6 +68,7 @@ const MAX_TOOL_DETAIL_COMPONENT_BYTES = 3 * 1024;
 const MAX_TOOL_DETAIL_ATTACHMENTS = 4;
 const MAX_CODEX_TURN_SCAN_PAGES = 50;
 const CODEX_TURN_SCAN_PAGE_SIZE = 20;
+const LIVE_CONTENT_BATCH_MS = 32;
 
 type ConversationKey = string;
 type ConversationSyncEventPayload =
@@ -174,6 +175,12 @@ interface CachedTurnDetails {
   bytes: number;
 }
 
+interface LiveContentRevision {
+  target: ConversationSyncTarget;
+  observedAt: string;
+  revision: string;
+}
+
 /**
  * Additive v2 synchronizer. It owns one catalog/status scheduler and one
  * bounded provider-history queue for every v2 Mobile client; v1 remains
@@ -225,11 +232,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     { result: "completed" | "failed"; observedAt: string }
   >();
   private readonly turnDetailCache = new Map<string, CachedTurnDetails>();
+  private readonly liveContentRevisions = new Map<
+    ConversationKey,
+    LiveContentRevision
+  >();
+  private readonly pendingLiveContent = new Map<
+    ConversationKey,
+    { target: ConversationSyncTarget; observedAt: string }
+  >();
   private turnDetailCacheBytes = 0;
   private catalogFlight?: Promise<void>;
+  private catalogDirty = true;
   private statusFlight?: Promise<void>;
   private watchdogTimer?: ReturnType<typeof setTimeout>;
   private coldTimer?: ReturnType<typeof setTimeout>;
+  private liveContentTimer?: ReturnType<typeof setTimeout>;
   private liveRevision = 0;
   private closed = false;
 
@@ -303,6 +320,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!subscription) return;
     subscription.interactive = mode === "interactive";
     if (subscription.interactive) {
+      this.catalogDirty = true;
       this.scheduleSync(client, subscription);
       this.ensureTimers();
     } else {
@@ -312,8 +330,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   }
 
   sessionCatalogChanged(): void {
+    this.catalogDirty = true;
     if (!this.hasInteractiveClients()) return;
-    void this.refreshCatalog();
+    void this.refreshCatalog()
+      .then(() => this.scheduleInteractiveClients())
+      .catch((error) => {
+        this.reportBackgroundError("catalog_refresh_failed", error);
+      });
   }
 
   sessionMessage(session: LocalFeatureSession, message: ServerMessage): void {
@@ -322,15 +345,6 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!target) return;
     const key = targetKey(target);
     const observedAt = new Date().toISOString();
-    const record = this.catalog.get(key);
-    if (record) {
-      record.entry.modifiedAt = observedAt;
-      record.entry.recencyAt = observedAt;
-      record.entry.revision = providerRevision(
-        target,
-        `${observedAt}:${++this.liveRevision}`,
-      );
-    }
     if (message.type === "result") {
       this.resultLedger.set(key, {
         result:
@@ -348,10 +362,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     ) {
       this.resultLedger.delete(key);
     }
+
+    if (isStreamingConversationDelta(message)) {
+      this.queueLiveContent(target, observedAt);
+      return;
+    }
+    if (isConversationTimelineMessage(message)) {
+      this.publishLiveContent(target, observedAt);
+      return;
+    }
+
+    const previousStatusState = this.statusState;
     this.applyRuntimeOverlay();
     this.recomputeStates();
-    for (const [client, subscription] of this.subscriptions) {
-      if (subscription.interactive) this.scheduleSync(client, subscription);
+    if (this.statusState !== previousStatusState) {
+      this.scheduleInteractiveClients();
     }
   }
 
@@ -366,6 +391,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.snapshots.clear();
     this.snapshotFlights.clear();
     this.turnDetailCache.clear();
+    this.liveContentRevisions.clear();
+    this.pendingLiveContent.clear();
     this.turnDetailCacheBytes = 0;
     this.cancelTimers();
   }
@@ -415,6 +442,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     };
     this.subscriptions.set(client, subscription);
     if (subscription.interactive) {
+      this.catalogDirty = true;
       this.scheduleSync(client, subscription);
       this.ensureTimers();
     }
@@ -819,32 +847,42 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     record: CatalogRecord,
   ): Promise<ConversationContentSnapshot> {
     const key = targetKey(record.entry);
+    // Capture the revision before the provider read begins. Runtime messages
+    // can mutate the catalog record while this await is in flight; labelling
+    // an older read with that newer revision would make every subscriber treat
+    // missing content as committed and suppress the required follow-up read.
+    const requestedRevision = record.entry.revision;
+    const target: ConversationSyncTarget = {
+      provider: record.entry.provider,
+      providerSessionId: record.entry.providerSessionId,
+    };
+    const preserveLatestRootTurnTools =
+      record.status.activity === "working" ||
+      record.status.activity === "compacting";
     const cached = this.snapshots
       .get(key)
-      ?.find((snapshot) => snapshot.revision === record.entry.revision);
+      ?.find((snapshot) => snapshot.revision === requestedRevision);
     if (cached) return cached;
     const existing = this.snapshotFlights.get(key);
     if (existing) return existing;
-    const flight = this.historyReader(record.entry)
+    const flight = this.historyReader(target)
       .then((history) => {
         const window = normalizeHistoryWindow(history);
         for (const turn of window.turnDetails ?? []) {
-          this.rememberTurnDetails(record.entry, turn);
+          this.rememberTurnDetails(target, turn);
         }
         const built = buildConversationContentSnapshot(
-          record.entry,
+          target,
           window.messages,
           {
             maxMessageTextBytes: MAX_MESSAGE_TEXT_BYTES,
             maxSnapshotBytes: MAX_TIMELINE_BYTES,
-            preserveLatestRootTurnTools:
-              record.status.activity === "working" ||
-              record.status.activity === "compacting",
+            preserveLatestRootTurnTools,
           },
         );
         const snapshot = {
           ...built,
-          revision: record.entry.revision,
+          revision: requestedRevision,
           hasEarlier: built.hasEarlier || window.nextTurnCursor != null,
           turnsNextCursor: window.nextTurnCursor,
         };
@@ -1059,15 +1097,25 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   }
 
   private refreshCatalog(): Promise<void> {
+    if (!this.catalogDirty) return Promise.resolve();
     if (this.catalogFlight) return this.catalogFlight;
-    const flight = this.catalogReader()
-      .then((seeds) => {
+    const flight = (async () => {
+      do {
+        this.catalogDirty = false;
+        const seeds = await this.catalogReader();
         if (this.closed) return;
         const previousStatuses = statusEntries(this.catalog);
         const next = new Map<ConversationKey, CatalogRecord>();
         for (const seed of seeds.slice(0, MAX_CATALOG_ENTRIES)) {
           if (seed.entry.availability === "ephemeral") continue;
           const key = targetKey(seed.entry);
+          const live = this.liveContentRevisions.get(key);
+          if (
+            live &&
+            Date.parse(seed.entry.recencyAt) >= Date.parse(live.observedAt)
+          ) {
+            this.liveContentRevisions.delete(key);
+          }
           const previous = previousStatuses.get(key);
           next.set(key, {
             entry: seed.entry,
@@ -1076,7 +1124,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         }
         this.catalog = next;
         this.applyRuntimeOverlay();
+        for (const key of this.liveContentRevisions.keys()) {
+          if (!this.catalog.has(key)) this.liveContentRevisions.delete(key);
+        }
+        for (const key of this.resultLedger.keys()) {
+          if (!this.catalog.has(key)) this.resultLedger.delete(key);
+        }
         this.recomputeStates();
+      } while (this.catalogDirty && !this.closed);
+    })()
+      .catch((error) => {
+        this.catalogDirty = true;
+        throw error;
       })
       .finally(() => {
         if (this.catalogFlight === flight) this.catalogFlight = undefined;
@@ -1134,6 +1193,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.catalog.set(key, record);
       }
       record.status = statusFromRuntime(runtimeState, record.status);
+    }
+    for (const [key, live] of this.liveContentRevisions) {
+      const record = this.catalog.get(key);
+      if (!record) continue;
+      record.entry.modifiedAt = live.observedAt;
+      record.entry.recencyAt = live.observedAt;
+      record.entry.revision = live.revision;
     }
     for (const [key, result] of this.resultLedger) {
       const record = this.catalog.get(key);
@@ -1232,7 +1298,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!this.watchdogTimer) {
       this.watchdogTimer = setTimeout(() => {
         this.watchdogTimer = undefined;
-        void this.refreshStatuses().finally(() => this.ensureTimers());
+        void this.refreshStatuses()
+          .catch((error) => {
+            this.reportBackgroundError("status_refresh_failed", error);
+          })
+          .finally(() => this.ensureTimers());
       }, this.statusWatchdogMs);
       this.watchdogTimer.unref?.();
     }
@@ -1240,14 +1310,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       const jitter = Math.floor(this.coldReconcileMs * Math.random() * 0.1);
       this.coldTimer = setTimeout(() => {
         this.coldTimer = undefined;
-        void this.refreshCatalog().finally(() => {
-          for (const [client, subscription] of this.subscriptions) {
-            if (subscription.interactive) {
-              this.scheduleSync(client, subscription);
-            }
-          }
-          this.ensureTimers();
-        });
+        this.catalogDirty = true;
+        void this.refreshCatalog()
+          .then(() => this.scheduleInteractiveClients())
+          .catch((error) => {
+            this.reportBackgroundError("catalog_refresh_failed", error);
+          })
+          .finally(() => this.ensureTimers());
       }, this.coldReconcileMs + jitter);
       this.coldTimer.unref?.();
     }
@@ -1256,8 +1325,87 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private cancelTimers(): void {
     if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
     if (this.coldTimer) clearTimeout(this.coldTimer);
+    if (this.liveContentTimer) clearTimeout(this.liveContentTimer);
     this.watchdogTimer = undefined;
     this.coldTimer = undefined;
+    this.liveContentTimer = undefined;
+  }
+
+  private queueLiveContent(
+    target: ConversationSyncTarget,
+    observedAt: string,
+  ): void {
+    this.pendingLiveContent.set(targetKey(target), { target, observedAt });
+    if (this.liveContentTimer || this.closed) return;
+    this.liveContentTimer = setTimeout(() => {
+      this.liveContentTimer = undefined;
+      this.flushPendingLiveContent();
+    }, LIVE_CONTENT_BATCH_MS);
+    this.liveContentTimer.unref?.();
+  }
+
+  private publishLiveContent(
+    target: ConversationSyncTarget,
+    observedAt: string,
+  ): void {
+    this.pendingLiveContent.delete(targetKey(target));
+    if (this.pendingLiveContent.size === 0 && this.liveContentTimer) {
+      clearTimeout(this.liveContentTimer);
+      this.liveContentTimer = undefined;
+    }
+    this.rememberLiveContent(target, observedAt);
+    this.applyRuntimeOverlay();
+    this.recomputeStates();
+    this.scheduleInteractiveClients();
+  }
+
+  private flushPendingLiveContent(): void {
+    if (this.closed || this.pendingLiveContent.size === 0) return;
+    const pending = [...this.pendingLiveContent.values()];
+    this.pendingLiveContent.clear();
+    for (const { target, observedAt } of pending) {
+      this.rememberLiveContent(target, observedAt);
+    }
+    this.applyRuntimeOverlay();
+    this.recomputeStates();
+    this.scheduleInteractiveClients();
+  }
+
+  private rememberLiveContent(
+    target: ConversationSyncTarget,
+    observedAt: string,
+  ): void {
+    this.liveContentRevisions.set(targetKey(target), {
+      target,
+      observedAt,
+      revision: providerRevision(
+        target,
+        `${observedAt}:${++this.liveRevision}`,
+      ),
+    });
+  }
+
+  private scheduleInteractiveClients(): void {
+    for (const [client, subscription] of this.subscriptions) {
+      if (subscription.interactive) this.scheduleSync(client, subscription);
+    }
+  }
+
+  private reportBackgroundError(errorCode: string, error: unknown): void {
+    for (const [client, subscription] of this.subscriptions) {
+      if (!subscription.interactive) continue;
+      try {
+        this.sendError(
+          client,
+          subscription,
+          undefined,
+          errorCode,
+          errorMessage(error),
+        );
+      } catch {
+        subscription.dirty = true;
+      }
+    }
   }
 
   private async sendTurnsPage(
@@ -2335,6 +2483,24 @@ function providerRevision(
       `${target.provider}\0${target.providerSessionId}\0${sourceRevision}`,
     )
     .digest("hex");
+}
+
+function isStreamingConversationDelta(message: ServerMessage): boolean {
+  return message.type === "stream_delta" || message.type === "thinking_delta";
+}
+
+function isConversationTimelineMessage(message: ServerMessage): boolean {
+  return (
+    message.type === "assistant" ||
+    message.type === "tool_result" ||
+    message.type === "result" ||
+    message.type === "guardian_approval" ||
+    message.type === "error" ||
+    message.type === "history_delta" ||
+    message.type === "history_snapshot" ||
+    message.type === "tool_use_summary" ||
+    message.type === "user_input"
+  );
 }
 
 function targetKey(target: ConversationSyncTarget): ConversationKey {

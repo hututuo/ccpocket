@@ -2122,6 +2122,110 @@ class SessionCatalogCacheRepository {
       }
     }
 
+    final sourceSyncRows = await transaction.query(
+      SessionCatalogCacheDatabase.syncStatesTable,
+      where: 'partition_id = ?',
+      whereArgs: [sourcePartitionId],
+      limit: 1,
+    );
+    if (sourceSyncRows.isNotEmpty) {
+      final sourceSync = sourceSyncRows.single;
+      final targetSyncRows = await transaction.query(
+        SessionCatalogCacheDatabase.syncStatesTable,
+        where: 'partition_id = ?',
+        whereArgs: [targetPartitionId],
+        limit: 1,
+      );
+      final targetSync = targetSyncRows.isEmpty ? null : targetSyncRows.single;
+      final sourceUpdatedAt = sourceSync['updated_at']! as int;
+      final targetUpdatedAt = targetSync?['updated_at'] as int? ?? -1;
+      final newer = sourceUpdatedAt > targetUpdatedAt ? sourceSync : targetSync;
+      await transaction.insert(
+        SessionCatalogCacheDatabase.syncStatesTable,
+        {
+          'partition_id': targetPartitionId,
+          'catalog_state': newer?['catalog_state'],
+          'status_state': newer?['status_state'],
+          'priority_ready':
+              ((sourceSync['priority_ready'] as int? ?? 0) != 0 ||
+                  (targetSync?['priority_ready'] as int? ?? 0) != 0)
+              ? 1
+              : 0,
+          'updated_at': sourceUpdatedAt > targetUpdatedAt
+              ? sourceUpdatedAt
+              : targetUpdatedAt,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+
+    final sourceStatuses = await transaction.query(
+      SessionCatalogCacheDatabase.statusesTable,
+      where: 'partition_id = ?',
+      whereArgs: [sourcePartitionId],
+    );
+    for (final sourceStatus in sourceStatuses) {
+      final provider = sourceStatus['provider']! as String;
+      final providerSessionId = sourceStatus['provider_session_id']! as String;
+      final targetRows = await transaction.query(
+        SessionCatalogCacheDatabase.statusesTable,
+        columns: ['observed_sort', 'updated_at'],
+        where:
+            'partition_id = ? AND provider = ? '
+            'AND provider_session_id = ?',
+        whereArgs: [targetPartitionId, provider, providerSessionId],
+        limit: 1,
+      );
+      final sourceObserved = sourceStatus['observed_sort']! as int;
+      final sourceUpdatedAt = sourceStatus['updated_at']! as int;
+      final targetIsNewer =
+          targetRows.isNotEmpty &&
+          (((targetRows.single['observed_sort']! as int) > sourceObserved) ||
+              ((targetRows.single['observed_sort']! as int) == sourceObserved &&
+                  (targetRows.single['updated_at']! as int) >=
+                      sourceUpdatedAt));
+      if (targetIsNewer) continue;
+      await transaction.insert(
+        SessionCatalogCacheDatabase.statusesTable,
+        {...sourceStatus, 'partition_id': targetPartitionId},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+
+    final sourceWatermarks = await transaction.query(
+      SessionCatalogCacheDatabase.readWatermarksTable,
+      where: 'partition_id = ?',
+      whereArgs: [sourcePartitionId],
+    );
+    for (final sourceWatermark in sourceWatermarks) {
+      final provider = sourceWatermark['provider']! as String;
+      final providerSessionId =
+          sourceWatermark['provider_session_id']! as String;
+      final targetRows = await transaction.query(
+        SessionCatalogCacheDatabase.readWatermarksTable,
+        columns: ['read_sort', 'updated_at'],
+        where:
+            'partition_id = ? AND provider = ? '
+            'AND provider_session_id = ?',
+        whereArgs: [targetPartitionId, provider, providerSessionId],
+        limit: 1,
+      );
+      final sourceReadSort = sourceWatermark['read_sort']! as int;
+      final sourceUpdatedAt = sourceWatermark['updated_at']! as int;
+      final targetIsNewer =
+          targetRows.isNotEmpty &&
+          (((targetRows.single['read_sort']! as int) > sourceReadSort) ||
+              ((targetRows.single['read_sort']! as int) == sourceReadSort &&
+                  (targetRows.single['updated_at']! as int) >=
+                      sourceUpdatedAt));
+      if (targetIsNewer) continue;
+      await transaction.insert(
+        SessionCatalogCacheDatabase.readWatermarksTable,
+        {...sourceWatermark, 'partition_id': targetPartitionId},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+
     final targetMetadata = await _partitionMetadata(
       transaction,
       targetPartitionId,
@@ -2141,6 +2245,9 @@ class SessionCatalogCacheRepository {
       whereArgs: [targetPartitionId],
     );
 
+    // Incomplete timeline stages are connection/subscription scoped and
+    // rebuildable. Deleting the provisional partition intentionally drops
+    // them instead of replaying stale pages under an authenticated identity.
     await transaction.delete(
       SessionCatalogCacheDatabase.partitionsTable,
       where: 'partition_id = ?',
