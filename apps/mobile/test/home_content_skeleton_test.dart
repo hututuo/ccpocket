@@ -117,10 +117,10 @@ Widget _buildHomeContent({
   List<RecentSession> recentSessions = const [],
   Set<String> exhaustedProjectPaths = const {},
   Map<String, int> projectSessionDisplayLimits = const {},
+  Set<String> unseenSessionIds = const {},
   String? currentProjectFilter,
   bool hasMoreSessions = false,
   bool isInitialLoading = false,
-  Set<String> unseenSessionIds = const {},
   bool showMacOSNativeAppBanner = false,
   VoidCallback? onDismissMacOSNativeAppBanner,
   _RunningSessionTap? onTapRunning,
@@ -153,11 +153,11 @@ Widget _buildHomeContent({
             accumulatedProjectPaths: const {},
             exhaustedProjectPaths: exhaustedProjectPaths,
             projectSessionDisplayLimits: projectSessionDisplayLimits,
+            unseenSessionIds: unseenSessionIds,
             searchQuery: '',
             isLoadingMore: false,
             isInitialLoading: isInitialLoading,
             hasMoreSessions: hasMoreSessions,
-            unseenSessionIds: unseenSessionIds,
             currentProjectFilter: currentProjectFilter,
             onNewSession: () {},
             onTapRunning:
@@ -361,6 +361,70 @@ void main() {
       );
     });
 
+    testWidgets(
+      'keeps every actionable, working, and unread session above Show more',
+      (tester) async {
+        await tester.pumpWidget(
+          _buildHomeContent(
+            sessions: [
+              _runningSession(
+                id: 'needs-you',
+                status: 'waiting_approval',
+                lastActivityAt: '2025-01-01T18:00:00Z',
+              ),
+              _runningSession(
+                id: 'running-1',
+                lastActivityAt: '2025-01-01T17:00:00Z',
+              ),
+              _runningSession(
+                id: 'running-2',
+                status: 'starting',
+                lastActivityAt: '2025-01-01T16:00:00Z',
+              ),
+              _runningSession(
+                id: 'running-3',
+                status: 'compacting',
+                lastActivityAt: '2025-01-01T15:00:00Z',
+              ),
+              _runningSession(
+                id: 'running-4',
+                lastActivityAt: '2025-01-01T14:00:00Z',
+              ),
+              _runningSession(
+                id: 'unread',
+                status: 'idle',
+                lastActivityAt: '2025-01-01T13:00:00Z',
+              ),
+            ],
+            recentSessions: [_session(id: 'ordinary')],
+            unseenSessionIds: const {'unread'},
+            exhaustedProjectPaths: const {'/home/user/project-a'},
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pump();
+
+        for (final id in const [
+          'needs-you',
+          'running-1',
+          'running-2',
+          'running-3',
+          'running-4',
+          'unread',
+        ]) {
+          expect(find.byKey(ValueKey('running_session_$id')), findsOneWidget);
+        }
+        expect(find.text('test prompt for ordinary'), findsNothing);
+        expect(
+          find.byKey(const ValueKey('project_show_more_/home/user/project-a')),
+          findsOneWidget,
+        );
+      },
+    );
     testWidgets(
       'shows expanded project sessions after display limit increases',
       (tester) async {

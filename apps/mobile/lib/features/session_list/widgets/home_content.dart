@@ -561,6 +561,14 @@ class HomeContentState extends State<HomeContent> {
       pinnedSessionKeys: widget.pinnedSessionKeys,
       unseenSessionIds: widget.unseenSessionIds,
     );
+    final alwaysVisibleSessionKeys = {
+      for (final item in unifiedSessions)
+        if (sessionListItemBypassesDisplayLimit(
+          item,
+          unseenSessionIds: widget.unseenSessionIds,
+        ))
+          item.identityKey,
+    };
     final hasConversationSessions = unifiedSessions.isNotEmpty;
     final allProjectPaths = orderProjectPathsForGroupedView(
       knownProjectPaths: <String>[
@@ -848,6 +856,7 @@ class HomeContentState extends State<HomeContent> {
                   displayLimit:
                       widget.projectSessionDisplayLimits[group.projectPath] ??
                       5,
+                  alwaysVisibleSessionKeys: alwaysVisibleSessionKeys,
                   canLoadFromBridge:
                       widget.currentProjectFilter == null &&
                       !widget.exhaustedProjectPaths.contains(group.projectPath),
@@ -1032,6 +1041,7 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
   final bool isCollapsed;
   final bool isLoadingMore;
   final int displayLimit;
+  final Set<String> alwaysVisibleSessionKeys;
   final bool canLoadFromBridge;
   final bool isPinned;
   final VoidCallback onToggleCollapsed;
@@ -1044,6 +1054,7 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
     required this.isCollapsed,
     required this.isLoadingMore,
     required this.displayLimit,
+    required this.alwaysVisibleSessionKeys,
     required this.canLoadFromBridge,
     required this.isPinned,
     required this.onToggleCollapsed,
@@ -1054,8 +1065,16 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final visibleSessions = group.sessions.take(displayLimit).toList();
-    final hasHiddenLoadedSessions = group.sessions.length > displayLimit;
+    final lastAlwaysVisibleIndex = group.sessions.lastIndexWhere(
+      (session) => alwaysVisibleSessionKeys.contains(session.identityKey),
+    );
+    final requiredVisibleCount = lastAlwaysVisibleIndex + 1;
+    final effectiveDisplayLimit = requiredVisibleCount > displayLimit
+        ? requiredVisibleCount
+        : displayLimit;
+    final visibleSessions = group.sessions.take(effectiveDisplayLimit).toList();
+    final hasHiddenLoadedSessions =
+        group.sessions.length > effectiveDisplayLimit;
     final canShowMore = hasHiddenLoadedSessions || canLoadFromBridge;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),

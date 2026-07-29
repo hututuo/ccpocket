@@ -1,6 +1,9 @@
 import '../../models/messages.dart';
+import '../../widgets/session_visual_status.dart';
 import 'state/session_list_cubit.dart';
 import 'state/session_list_state.dart';
+
+enum SessionListUrgency { needsYou, working, unread, ordinary }
 
 /// One durable conversation row assembled from the Bridge runtime list and the
 /// provider's recent-session catalog.
@@ -101,20 +104,24 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
   }
 
   final items = byIdentity.values.toList(growable: false);
+  final urgencyByIdentity = {
+    for (final item in items)
+      item.identityKey: sessionListUrgencyFor(
+        item,
+        unseenSessionIds: unseenSessionIds,
+      ),
+  };
   items.sort((left, right) {
-    final tierCompare =
-        _priorityTier(
-          left,
-          pinnedSessionKeys: pinnedSessionKeys,
-          unseenSessionIds: unseenSessionIds,
-        ).compareTo(
-          _priorityTier(
-            right,
-            pinnedSessionKeys: pinnedSessionKeys,
-            unseenSessionIds: unseenSessionIds,
-          ),
-        );
-    if (tierCompare != 0) return tierCompare;
+    final pinCompare = _pinTier(
+      left,
+      pinnedSessionKeys: pinnedSessionKeys,
+    ).compareTo(_pinTier(right, pinnedSessionKeys: pinnedSessionKeys));
+    if (pinCompare != 0) return pinCompare;
+
+    final urgencyCompare = urgencyByIdentity[left.identityKey]!.index.compareTo(
+      urgencyByIdentity[right.identityKey]!.index,
+    );
+    if (urgencyCompare != 0) return urgencyCompare;
 
     final activityCompare = (right.activityAt?.millisecondsSinceEpoch ?? -1)
         .compareTo(left.activityAt?.millisecondsSinceEpoch ?? -1);
@@ -123,6 +130,38 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
   });
   return List.unmodifiable(items);
 }
+
+SessionListUrgency sessionListUrgencyFor(
+  UnifiedSessionListItem item, {
+  required Set<String> unseenSessionIds,
+}) {
+  final running = item.running;
+  if (running == null) return SessionListUrgency.ordinary;
+  final visualStatus = sessionVisualStatusFor(
+    rawStatus: running.externalDesktopTurnActive ? 'running' : running.status,
+    permissionMode: running.effectivePermissionMode,
+    planMode: running.resolvedPlanMode,
+    pendingPermission: running.pendingPermission,
+  );
+  if (visualStatus.primary == SessionPrimaryStatus.needsYou) {
+    return SessionListUrgency.needsYou;
+  }
+  if (visualStatus.primary == SessionPrimaryStatus.working) {
+    return SessionListUrgency.working;
+  }
+  if (visualStatus.primary == SessionPrimaryStatus.idle &&
+      unseenSessionIds.contains(running.id)) {
+    return SessionListUrgency.unread;
+  }
+  return SessionListUrgency.ordinary;
+}
+
+bool sessionListItemBypassesDisplayLimit(
+  UnifiedSessionListItem item, {
+  required Set<String> unseenSessionIds,
+}) =>
+    sessionListUrgencyFor(item, unseenSessionIds: unseenSessionIds) !=
+    SessionListUrgency.ordinary;
 
 /// Orders project sections independently from per-conversation urgency.
 ///
@@ -244,16 +283,13 @@ bool recentSessionMatchesListFilters(
   ].whereType<String>().any((value) => value.toLowerCase().contains(query));
 }
 
-int _priorityTier(
+int _pinTier(
   UnifiedSessionListItem item, {
   required Set<String> pinnedSessionKeys,
-  required Set<String> unseenSessionIds,
 }) {
   final pinKey = item.pinKey;
   if (pinKey != null && pinnedSessionKeys.contains(pinKey)) return 0;
-  final runtimeId = item.running?.id;
-  if (runtimeId != null && unseenSessionIds.contains(runtimeId)) return 1;
-  return 2;
+  return 1;
 }
 
 String _recentIdentity(RecentSession session) => providerSessionIdentityKey(

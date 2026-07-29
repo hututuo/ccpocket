@@ -206,6 +206,107 @@ void main() {
       expect(items.map((item) => item.running!.id), ['pinned-read', 'unread']);
     });
 
+    test('orders actionable, working, unread, then ordinary sessions', () {
+      final pinned = _running(
+        runtimeId: 'pinned-ordinary',
+        threadId: 'pinned-ordinary-thread',
+        lastActivityAt: '2026-07-25T00:00:00Z',
+      );
+      final items = buildUnifiedSessionList(
+        runningSessions: [
+          _running(
+            runtimeId: 'ordinary',
+            threadId: 'ordinary-thread',
+            lastActivityAt: '2026-07-25T05:00:00Z',
+          ),
+          _running(
+            runtimeId: 'unread',
+            threadId: 'unread-thread',
+            lastActivityAt: '2026-07-25T04:00:00Z',
+          ),
+          _running(
+            runtimeId: 'working',
+            threadId: 'working-thread',
+            lastActivityAt: '2026-07-25T03:00:00Z',
+            status: 'running',
+          ),
+          _running(
+            runtimeId: 'desktop-working',
+            threadId: 'desktop-working-thread',
+            lastActivityAt: '2026-07-25T02:30:00Z',
+            externalDesktopTurnActive: true,
+          ),
+          _running(
+            runtimeId: 'needs-you',
+            threadId: 'needs-you-thread',
+            lastActivityAt: '2026-07-25T02:00:00Z',
+            status: 'waiting_approval',
+          ),
+          pinned,
+        ],
+        recentSessions: const [],
+        pinnedSessionKeys: {runningSessionPinKey(pinned)!},
+        unseenSessionIds: const {'unread'},
+      );
+
+      expect(items.map((item) => item.running!.id), [
+        'pinned-ordinary',
+        'needs-you',
+        'working',
+        'desktop-working',
+        'unread',
+        'ordinary',
+      ]);
+      expect(
+        sessionListUrgencyFor(items[1], unseenSessionIds: const {'unread'}),
+        SessionListUrgency.needsYou,
+      );
+      expect(
+        sessionListItemBypassesDisplayLimit(
+          items[3],
+          unseenSessionIds: const {'unread'},
+        ),
+        isTrue,
+      );
+      expect(
+        sessionListItemBypassesDisplayLimit(
+          items.last,
+          unseenSessionIds: const {'unread'},
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not turn an unknown runtime status into unread', () {
+      final items = buildUnifiedSessionList(
+        runningSessions: [
+          _running(
+            runtimeId: 'unknown',
+            threadId: 'unknown-thread',
+            lastActivityAt: '2026-07-25T01:00:00Z',
+            status: 'future_status',
+          ),
+        ],
+        recentSessions: const [],
+        unseenSessionIds: const {'unknown'},
+      );
+
+      expect(
+        sessionListUrgencyFor(
+          items.single,
+          unseenSessionIds: const {'unknown'},
+        ),
+        SessionListUrgency.ordinary,
+      );
+      expect(
+        sessionListItemBypassesDisplayLimit(
+          items.single,
+          unseenSessionIds: const {'unknown'},
+        ),
+        isFalse,
+      );
+    });
+
     test('keeps an unbound new runtime as a temporary distinct row', () {
       final items = buildUnifiedSessionList(
         runningSessions: [
@@ -349,14 +450,17 @@ SessionInfo _running({
   String projectPath = '/repo',
   String? name,
   String lastMessage = '',
+  String status = 'idle',
+  bool externalDesktopTurnActive = false,
 }) => SessionInfo(
   id: runtimeId,
   provider: Provider.codex.value,
   projectPath: projectPath,
   claudeSessionId: threadId,
   name: name,
-  status: 'idle',
+  status: status,
   createdAt: '2026-07-25T00:00:00Z',
   lastActivityAt: lastActivityAt,
   lastMessage: lastMessage,
+  externalDesktopTurnActive: externalDesktopTurnActive,
 );

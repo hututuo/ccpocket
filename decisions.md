@@ -956,3 +956,22 @@
   always-running ticker.
 - This is a Mobile-only presentation change. It adds no Bridge message,
   capability, database migration, native boundary or old-client requirement.
+
+## Important sessions bypass the automatic five-row project limit
+
+- The grouped Mobile session list keeps five rows as the default compact view
+  for ordinary sessions. A session that needs user action, is actively
+  starting/running/compacting, or is unread must remain visible even when that
+  makes the project section longer than five rows.
+- In the flat recent-chat view, ordering is explicit session pin, needs-you,
+  working, unread, then ordinary. In the grouped view, explicit session and
+  project pins determine project-section priority separately; a project pin
+  never clusters all of that project's rows at the top of the flat view.
+  Activity time continues to order sessions within the same urgency.
+- `Show more` remains available for ordinary rows after the last important
+  session. This automatic-limit exception does not undo an explicit manual
+  collapse of the entire project section.
+- The urgency classification reuses the same authoritative visual-status
+  mapping as the session card, including pending approvals, `waiting_approval`,
+  `starting`, `running`, `compacting`, and external desktop turns. Unknown
+  statuses do not silently become working or unread.
