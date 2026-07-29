@@ -881,3 +881,20 @@
   database migration, Mobile/native dependency or IPA boundary. Existing
   capable Mobile clients continue omitting resume overrides and let Bridge
   preserve the official Codex settings.
+
+## Shorebird patches require the exact uploaded release binary
+
+- A local `shorebird release --dry-run` archive is a build check, not a cloud
+  release baseline. Even when its source, version and build number match, its
+  `App.framework/App` may differ materially from an actual uploaded Shorebird
+  release and must not be assumed patch-compatible.
+- Before publishing or testing a patch, retain and checksum an AltStore input
+  IPA made from the exact archive uploaded as the Shorebird release. If an
+  earlier dry-run IPA was installed, replace it with this exact release IPA
+  before asking the app to download the patch.
+- OTA publication remains channel-gated. The default owner test path publishes
+  only to `owner`; `stable` promotion is a separate explicit user decision
+  after physical-device verification.
+- Build `1.109.3+205` release `737381` and owner Patch 1 (`570773`) establish
+  this boundary. The detailed artifact hashes and test order are recorded in
+  `runs/20260729-181000_shorebird-build205-owner-patch-1/README.md`.
