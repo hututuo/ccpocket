@@ -71,6 +71,7 @@ Future<_HostHarness> _pumpHost(WidgetTester tester) async {
                 bridge: bridge,
                 inputController: inputController,
                 draftService: draftService,
+                requestCompact: () {},
                 openPane: (featureId, {arguments = const {}}) async {
                   openedPanes.add((
                     featureId: featureId,

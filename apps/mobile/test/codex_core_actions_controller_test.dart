@@ -66,6 +66,17 @@ void main() {
       CodexActionResultMessage(
         sessionId: 's1',
         requestId: requestId,
+        action: 'review',
+        status: 'accepted',
+      ),
+    );
+    await _flush();
+    expect(controller.actionLoading, isTrue);
+
+    bridge.local.add(
+      CodexActionResultMessage(
+        sessionId: 's1',
+        requestId: requestId,
         action: 'compact',
         status: 'accepted',
       ),
@@ -103,6 +114,28 @@ void main() {
     expect(controller.lastActionResult?.accepted, isFalse);
     expect(controller.actionErrorCode, 'session_busy');
   });
+
+  test(
+    'duplicate compact is ignored and the pending request times out',
+    () async {
+      final bridge = _Bridge();
+      final controller = CodexCoreActionsController(
+        sessionId: 's1',
+        bridge: bridge,
+        requestTimeout: const Duration(milliseconds: 1),
+      )..start();
+      addTearDown(controller.dispose);
+      addTearDown(bridge.dispose);
+
+      expect(controller.requestCompact(), isTrue);
+      expect(controller.requestCompact(), isFalse);
+      expect(bridge.sent, hasLength(1));
+
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(controller.actionLoading, isFalse);
+      expect(controller.actionErrorCode, 'request_timeout');
+    },
+  );
 
   test('old Bridge generic error closes only the matching request', () async {
     final bridge = _Bridge();

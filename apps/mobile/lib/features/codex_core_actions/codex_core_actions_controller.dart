@@ -155,7 +155,8 @@ class CodexCoreActionsController extends ChangeNotifier {
       return;
     }
     if (message is CodexActionResultMessage &&
-        message.requestId == _actionRequestId) {
+        message.requestId == _actionRequestId &&
+        message.action == _expectedAction(_actionRequestType)) {
       _actionTimer?.cancel();
       _actionRequestId = null;
       _actionRequestType = null;
@@ -184,6 +185,12 @@ class CodexCoreActionsController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  String? _expectedAction(String? requestType) => switch (requestType) {
+    'codex_compact_request' => 'compact',
+    'codex_review_request' => 'review',
+    _ => null,
+  };
 
   void _onConnectionState(BridgeConnectionState state) {
     if (state == BridgeConnectionState.connected) return;

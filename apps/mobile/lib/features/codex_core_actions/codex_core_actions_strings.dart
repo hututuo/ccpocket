@@ -3,11 +3,7 @@ import 'package:flutter/widgets.dart';
 class CodexCoreActionsStrings {
   const CodexCoreActionsStrings({
     required this.title,
-    required this.compactTitle,
-    required this.compactBody,
-    required this.compactAction,
-    required this.compactConfirmTitle,
-    required this.compactConfirmBody,
+    required this.compacting,
     required this.reviewTitle,
     required this.reviewBody,
     required this.reviewAction,
@@ -29,16 +25,12 @@ class CodexCoreActionsStrings {
     required this.busy,
     required this.unsupported,
     required this.disconnected,
+    required this.timedOut,
     required this.failed,
-    required this.cancel,
   });
 
   final String title;
-  final String compactTitle;
-  final String compactBody;
-  final String compactAction;
-  final String compactConfirmTitle;
-  final String compactConfirmBody;
+  final String compacting;
   final String reviewTitle;
   final String reviewBody;
   final String reviewAction;
@@ -60,8 +52,8 @@ class CodexCoreActionsStrings {
   final String busy;
   final String unsupported;
   final String disconnected;
+  final String timedOut;
   final String failed;
-  final String cancel;
 
   static CodexCoreActionsStrings of(BuildContext context) =>
       switch (Localizations.localeOf(context).languageCode) {
@@ -73,13 +65,7 @@ class CodexCoreActionsStrings {
 
   static const _en = CodexCoreActionsStrings(
     title: 'Codex tools',
-    compactTitle: 'Compact context',
-    compactBody:
-        'Ask Codex to compact this conversation. Available only while idle.',
-    compactAction: 'Compact',
-    compactConfirmTitle: 'Compact this conversation?',
-    compactConfirmBody:
-        'Codex will summarize older context. The conversation stays available.',
+    compacting: 'Requesting context compaction…',
     reviewTitle: 'Code review',
     reviewBody: 'Start an official inline Codex review.',
     reviewAction: 'Start review',
@@ -101,17 +87,13 @@ class CodexCoreActionsStrings {
     busy: 'Wait for the current turn to finish, then try again.',
     unsupported: 'This Bridge or Codex backend does not support this action.',
     disconnected: 'Reconnect to the Bridge to use Codex tools.',
+    timedOut: 'The request timed out. Try again.',
     failed: 'The action could not be completed.',
-    cancel: 'Cancel',
   );
 
   static const _zh = CodexCoreActionsStrings(
     title: 'Codex 工具',
-    compactTitle: '压缩上下文',
-    compactBody: '让 Codex 压缩当前对话的上下文；只能在本轮结束后执行。',
-    compactAction: '开始压缩',
-    compactConfirmTitle: '压缩当前对话？',
-    compactConfirmBody: 'Codex 会总结较早的上下文，对话记录仍会保留。',
+    compacting: '正在请求压缩当前对话…',
     reviewTitle: '代码审查',
     reviewBody: '启动 Codex 官方的会话内代码审查。',
     reviewAction: '开始审查',
@@ -133,17 +115,13 @@ class CodexCoreActionsStrings {
     busy: '请等待当前一轮结束后再试。',
     unsupported: '当前 Bridge 或 Codex 后端不支持此操作。',
     disconnected: '重新连接 Bridge 后才能使用 Codex 工具。',
+    timedOut: '请求超时，请稍后重试。',
     failed: '操作未能完成。',
-    cancel: '取消',
   );
 
   static const _ja = CodexCoreActionsStrings(
     title: 'Codex ツール',
-    compactTitle: 'コンテキストを圧縮',
-    compactBody: '会話を Codex に圧縮させます。アイドル時のみ利用できます。',
-    compactAction: '圧縮',
-    compactConfirmTitle: 'この会話を圧縮しますか？',
-    compactConfirmBody: 'Codex が古いコンテキストを要約します。会話履歴は残ります。',
+    compacting: '会話の圧縮をリクエストしています…',
     reviewTitle: 'コードレビュー',
     reviewBody: 'Codex の公式インラインレビューを開始します。',
     reviewAction: 'レビュー開始',
@@ -165,17 +143,13 @@ class CodexCoreActionsStrings {
     busy: '現在のターンが終わってから再試行してください。',
     unsupported: 'この Bridge または Codex は対応していません。',
     disconnected: 'Bridge に再接続してください。',
+    timedOut: 'リクエストがタイムアウトしました。もう一度お試しください。',
     failed: '操作を完了できませんでした。',
-    cancel: 'キャンセル',
   );
 
   static const _ko = CodexCoreActionsStrings(
     title: 'Codex 도구',
-    compactTitle: '컨텍스트 압축',
-    compactBody: 'Codex가 대화를 압축합니다. 유휴 상태에서만 가능합니다.',
-    compactAction: '압축',
-    compactConfirmTitle: '이 대화를 압축할까요?',
-    compactConfirmBody: 'Codex가 이전 컨텍스트를 요약하며 대화 기록은 유지됩니다.',
+    compacting: '대화 압축을 요청하는 중…',
     reviewTitle: '코드 리뷰',
     reviewBody: 'Codex 공식 인라인 리뷰를 시작합니다.',
     reviewAction: '리뷰 시작',
@@ -197,7 +171,36 @@ class CodexCoreActionsStrings {
     busy: '현재 턴이 끝난 후 다시 시도하세요.',
     unsupported: '현재 Bridge 또는 Codex에서 지원하지 않습니다.',
     disconnected: 'Bridge에 다시 연결하세요.',
+    timedOut: '요청 시간이 초과되었습니다. 다시 시도하세요.',
     failed: '작업을 완료하지 못했습니다.',
-    cancel: '취소',
   );
+}
+
+String codexCoreActionErrorText(
+  CodexCoreActionsStrings strings,
+  String code,
+  String? detail,
+) {
+  final base = switch (code) {
+    'session_busy' => strings.busy,
+    'unsupported_backend' ||
+    'unsupported_bridge' ||
+    'unsupported_message' => strings.unsupported,
+    'disconnected' => strings.disconnected,
+    'request_timeout' => strings.timedOut,
+    _ => strings.failed,
+  };
+  final includeDetail = switch (code) {
+    'session_busy' ||
+    'unsupported_backend' ||
+    'unsupported_bridge' ||
+    'unsupported_message' ||
+    'disconnected' ||
+    'request_timeout' ||
+    'send_failed' => false,
+    _ => true,
+  };
+  return !includeDetail || detail == null || detail.trim().isEmpty
+      ? base
+      : '$base\n$detail';
 }

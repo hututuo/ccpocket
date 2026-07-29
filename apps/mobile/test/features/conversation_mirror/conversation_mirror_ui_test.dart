@@ -287,6 +287,7 @@ void main() {
                 bridge: bridge,
                 inputController: input,
                 draftService: draftService,
+                requestCompact: () {},
                 openPane: (_, {arguments = const {}}) async {},
               ),
             );

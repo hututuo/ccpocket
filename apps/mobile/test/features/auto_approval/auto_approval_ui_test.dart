@@ -197,6 +197,7 @@ void main() {
                 bridge: services.bridge,
                 inputController: input,
                 draftService: services.drafts,
+                requestCompact: () {},
                 openPane: (featureId, {arguments = const {}}) async {
                   opened.add(featureId);
                 },
@@ -314,6 +315,7 @@ void main() {
                 bridge: bridge,
                 inputController: input,
                 draftService: drafts,
+                requestCompact: () {},
                 openPane: (featureId, {arguments = const {}}) async {},
               );
               return const Scaffold(

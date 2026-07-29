@@ -38,6 +38,8 @@ import '../session_list/workspace_shell_screen.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
+import '../codex_core_actions/codex_core_actions_controller.dart';
+import '../codex_core_actions/codex_core_actions_strings.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
 import '../local_session_features/host/local_session_feature.dart';
 import '../local_session_features/host/local_session_feature_host.dart';
@@ -1033,6 +1035,70 @@ class _CodexChatBody extends HookWidget {
     final chatSessionCubit = context.read<ChatSessionCubit>();
     final sessionState = context.watch<ChatSessionCubit>().state;
     final bridgeState = context.watch<ConnectionCubit>().state;
+    final compactActionController = useMemoized(
+      () => CodexCoreActionsController(sessionId: sessionId, bridge: bridge),
+      [sessionId, bridge],
+    );
+    void showCompactFeedback(String message) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(message)));
+    }
+
+    useEffect(() {
+      String? lastFeedbackKey;
+      void onCompactActionChanged() {
+        if (compactActionController.actionLoading) {
+          lastFeedbackKey = null;
+          return;
+        }
+        final result = compactActionController.lastActionResult;
+        final errorCode = compactActionController.actionErrorCode;
+        if (result?.action != 'compact' && errorCode == null) return;
+        final feedbackKey = result != null
+            ? '${result.requestId}:${result.status}:${result.errorCode ?? ''}'
+            : '$errorCode:${compactActionController.actionError ?? ''}';
+        if (feedbackKey == lastFeedbackKey) return;
+        lastFeedbackKey = feedbackKey;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted) return;
+          final strings = CodexCoreActionsStrings.of(context);
+          final message = result?.accepted == true
+              ? strings.accepted
+              : codexCoreActionErrorText(
+                  strings,
+                  errorCode ?? result?.errorCode ?? result?.status ?? 'failed',
+                  compactActionController.actionError ?? result?.message,
+                );
+          showCompactFeedback(message);
+        });
+      }
+
+      compactActionController
+        ..addListener(onCompactActionChanged)
+        ..start();
+      return () {
+        compactActionController
+          ..removeListener(onCompactActionChanged)
+          ..dispose();
+      };
+    }, [compactActionController]);
+
+    void requestCompactImmediately() {
+      final strings = CodexCoreActionsStrings.of(context);
+      if (!compactActionController.connected) {
+        showCompactFeedback(strings.disconnected);
+        return;
+      }
+      if (compactActionController.actionLoading) {
+        showCompactFeedback(strings.compacting);
+        return;
+      }
+      final started = compactActionController.requestCompact();
+      showCompactFeedback(started ? strings.compacting : strings.failed);
+    }
+
     final localFeatureContext = CodexSessionFeatureContext(
       context: context,
       sessionId: sessionId,
@@ -1040,6 +1106,7 @@ class _CodexChatBody extends HookWidget {
       inputController: chatInputController,
       draftService: draftService,
       codexModel: sessionState.codexModel,
+      requestCompact: requestCompactImmediately,
       openPane: (featureId, {arguments = const {}}) =>
           _openLocalFeaturePaneOrSheet(
             context,
@@ -1187,13 +1254,8 @@ class _CodexChatBody extends HookWidget {
             chatInputController
               ..text = r'$'
               ..selection = const TextSelection.collapsed(offset: 1);
-          case CodexSessionUiIntent.compact:
-            unawaited(
-              localFeatureContext.openPane(
-                'codex_core_actions',
-                arguments: const {'section': 'compact'},
-              ),
-            );
+          case CodexSessionUiIntent.compactImmediately:
+            requestCompactImmediately();
           case CodexSessionUiIntent.review:
             unawaited(
               localFeatureContext.openPane(

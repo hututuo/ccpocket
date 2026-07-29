@@ -16,13 +16,14 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets(
-    'session insights belongs to the mode toolbar and keeps compact routing',
+    'session insights invokes the direct compact action without opening a pane',
     (tester) async {
       SharedPreferences.setMockInitialValues({});
       final bridge = _Bridge();
       final drafts = DraftService(await SharedPreferences.getInstance());
       final input = TextEditingController();
       final opened = <({String featureId, Map<String, Object?> arguments})>[];
+      var compactRequests = 0;
       late CodexSessionFeatureContext featureContext;
       addTearDown(bridge.dispose);
       addTearDown(input.dispose);
@@ -37,6 +38,7 @@ void main() {
                 bridge: bridge,
                 inputController: input,
                 draftService: drafts,
+                requestCompact: () => compactRequests += 1,
                 openPane: (featureId, {arguments = const {}}) async {
                   opened.add((
                     featureId: featureId,
@@ -65,9 +67,8 @@ void main() {
       expect(modeBars.single.onCompact, isNotNull);
 
       modeBars.single.onCompact!();
-      expect(opened, hasLength(1));
-      expect(opened.single.featureId, 'codex_core_actions');
-      expect(opened.single.arguments, containsPair('section', 'compact'));
+      expect(compactRequests, 1);
+      expect(opened, isEmpty);
     },
   );
 }

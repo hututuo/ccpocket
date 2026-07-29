@@ -441,8 +441,11 @@
   bounded entry adds labeled 5h and 7d utilization rings beside the context
   ring without creating another controller or toolbar slot. It is absent from
   the old status/top-right slot; tapping any part keeps the full insights detail
-  view, and that view retains the `Compact context` action routed to the
-  existing `codex_core_actions` compact request. Future upstream merges must
+  view. Both the detail view's `Compact context` action and the native
+  `/compact` command must issue the existing correlated compact request
+  immediately, without navigating to a second page or asking for another
+  confirmation. The `codex_core_actions` pane retains Review and MCP only; its
+  redundant Compact card is intentionally removed. Future upstream merges must
   preserve these invariants together.
 - No item in this integration authorizes a live Bridge replacement, physical
   iPhone installation, stable-branch merge, or remote push. Those remain

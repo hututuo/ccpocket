@@ -12,7 +12,7 @@ enum CodexSessionUiIntent {
   plan,
   planUnavailable,
   skills,
-  compact,
+  compactImmediately,
   review,
   mcp,
   model,
@@ -85,7 +85,7 @@ class CodexSessionCubit extends ChatSessionCubit {
           _uiIntentController.add(CodexSessionUiIntent.skills);
           return;
         case '/compact':
-          _uiIntentController.add(CodexSessionUiIntent.compact);
+          _uiIntentController.add(CodexSessionUiIntent.compactImmediately);
           return;
         case '/review':
           _uiIntentController.add(CodexSessionUiIntent.review);

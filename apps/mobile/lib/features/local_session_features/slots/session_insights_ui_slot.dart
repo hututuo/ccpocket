@@ -19,10 +19,7 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
       selectedModel: context.codexModel,
       compact: true,
       showLeadingDivider: true,
-      onCompact: () => context.openPane(
-        'codex_core_actions',
-        arguments: const {'section': 'compact'},
-      ),
+      onCompact: context.requestCompact,
     ),
   ];
 

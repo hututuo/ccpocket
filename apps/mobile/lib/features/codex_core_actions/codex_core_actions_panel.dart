@@ -79,7 +79,6 @@ class _CodexCoreActionsPanelState extends State<CodexCoreActionsPanel> {
   Widget build(BuildContext context) {
     final strings = CodexCoreActionsStrings.of(context);
     final sections = <String, Widget>{
-      'compact': _compactCard(context, strings),
       'review': _reviewCard(context, strings),
       'mcp': _mcpCard(context, strings),
     };
@@ -97,54 +96,6 @@ class _CodexCoreActionsPanelState extends State<CodexCoreActionsPanel> {
         ],
       ),
     );
-  }
-
-  Widget _compactCard(BuildContext context, CodexCoreActionsStrings strings) {
-    return _ActionCard(
-      key: const ValueKey('codex_core_compact_card'),
-      icon: Icons.compress,
-      title: strings.compactTitle,
-      body: strings.compactBody,
-      footer: _actionFeedback(strings, action: 'compact'),
-      child: FilledButton.icon(
-        key: const ValueKey('codex_core_compact_button'),
-        onPressed: !_controller.connected || _controller.actionLoading
-            ? null
-            : () => _confirmCompact(context, strings),
-        icon: _controller.actionLoading
-            ? const SizedBox.square(
-                dimension: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.compress),
-        label: Text(strings.compactAction),
-      ),
-    );
-  }
-
-  Future<void> _confirmCompact(
-    BuildContext context,
-    CodexCoreActionsStrings strings,
-  ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(strings.compactConfirmTitle),
-        content: Text(strings.compactConfirmBody),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: Text(strings.cancel),
-          ),
-          FilledButton(
-            key: const ValueKey('codex_core_compact_confirm'),
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: Text(strings.compactAction),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) _controller.requestCompact();
   }
 
   Widget _reviewCard(BuildContext context, CodexCoreActionsStrings strings) {
@@ -335,7 +286,7 @@ class _CodexCoreActionsPanelState extends State<CodexCoreActionsPanel> {
     final code = _controller.actionErrorCode;
     if (code == null) return null;
     return _Feedback(
-      text: _errorText(strings, code, _controller.actionError),
+      text: codexCoreActionErrorText(strings, code, _controller.actionError),
       success: false,
     );
   }
@@ -344,25 +295,9 @@ class _CodexCoreActionsPanelState extends State<CodexCoreActionsPanel> {
     final code = _controller.mcpErrorCode;
     if (code == null) return null;
     return _Feedback(
-      text: _errorText(strings, code, _controller.mcpError),
+      text: codexCoreActionErrorText(strings, code, _controller.mcpError),
       success: false,
     );
-  }
-
-  String _errorText(
-    CodexCoreActionsStrings strings,
-    String code,
-    String? detail,
-  ) {
-    final base = switch (code) {
-      'session_busy' => strings.busy,
-      'unsupported_backend' ||
-      'unsupported_bridge' ||
-      'unsupported_message' => strings.unsupported,
-      'disconnected' => strings.disconnected,
-      _ => strings.failed,
-    };
-    return detail == null || detail.trim().isEmpty ? base : '$base\n$detail';
   }
 }
 

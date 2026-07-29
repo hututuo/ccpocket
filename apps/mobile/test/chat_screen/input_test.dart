@@ -159,6 +159,37 @@ void main() {
       },
     );
 
+    patrolWidgetTest('H2d: Codex compact command sends the direct request', (
+      $,
+    ) async {
+      await $.pumpWidget(await buildTestCodexSessionScreen(bridge: bridge));
+      await pumpN($.tester);
+      await emitAndPump($.tester, bridge, [
+        const StatusMessage(status: ProcessStatus.idle),
+      ]);
+
+      await $.tester.enterText(
+        find.byKey(const ValueKey('message_input')),
+        '/compact',
+      );
+      await pumpN($.tester);
+      await $(#send_button).tap();
+      await pumpN($.tester);
+
+      final compact = findSentMessage(bridge, 'codex_compact_request');
+      expect(
+        compact,
+        isNotNull,
+        reason: bridge.sentMessages
+            .map(decodeClientMessage)
+            .toList()
+            .toString(),
+      );
+      expect(compact!['sessionId'], testSessionId);
+      expect(compact['requestId'], isNotEmpty);
+      expect(findSentMessage(bridge, 'input'), isNull);
+    });
+
     patrolWidgetTest('H3: Running shows stop button', ($) async {
       await $.pumpWidget(await buildTestChatScreen(bridge: bridge));
       await pumpN($.tester);

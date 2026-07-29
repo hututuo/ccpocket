@@ -604,7 +604,7 @@ void main() {
         CodexSessionUiIntent.permissions,
         CodexSessionUiIntent.plan,
         CodexSessionUiIntent.skills,
-        CodexSessionUiIntent.compact,
+        CodexSessionUiIntent.compactImmediately,
         CodexSessionUiIntent.review,
         CodexSessionUiIntent.mcp,
         CodexSessionUiIntent.model,
