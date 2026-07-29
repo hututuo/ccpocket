@@ -160,6 +160,22 @@ class SessionCatalogCacheStats {
   final int conversationWindows;
 }
 
+class SessionCatalogCachedConversation {
+  const SessionCatalogCachedConversation({
+    required this.provider,
+    required this.providerSessionId,
+    required this.entryCount,
+    required this.updatedAt,
+    this.session,
+  });
+
+  final String provider;
+  final String providerSessionId;
+  final int entryCount;
+  final DateTime updatedAt;
+  final RecentSession? session;
+}
+
 class SessionCatalogCacheIdentity {
   const SessionCatalogCacheIdentity({
     required this.bridgeInstanceId,
@@ -261,6 +277,9 @@ class SessionCatalogCacheRepository {
     final values = metadata.single;
     final serverRevision = values['last_server_revision'] as int?;
     final completeRevision = values['complete_revision'] as int?;
+    if (rows.isEmpty && serverRevision == null && completeRevision == null) {
+      return null;
+    }
     return SessionCatalogCacheSnapshot(
       partitionId: partitionId,
       sessions: List<RecentSession>.unmodifiable(sessions),
@@ -363,7 +382,32 @@ class SessionCatalogCacheRepository {
   Future<void> clearAll() {
     return _enqueueMutation(() async {
       final db = await database.database;
-      await db.delete(SessionCatalogCacheDatabase.partitionsTable);
+      await db.transaction((transaction) async {
+        await _clearRebuildableCache(
+          transaction,
+          where: null,
+          whereArgs: const [],
+        );
+      });
+    });
+  }
+
+  Future<void> clearTarget(SessionCatalogCacheTarget target) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return;
+        await _clearRebuildableCache(
+          transaction,
+          where: 'partition_id = ?',
+          whereArgs: [partitionId],
+        );
+      });
     });
   }
 
@@ -408,6 +452,92 @@ class SessionCatalogCacheRepository {
     return SessionCatalogCacheStats(
       sessionSummaries: row['session_count'] as int? ?? 0,
       conversationWindows: row['window_count'] as int? ?? 0,
+    );
+  }
+
+  Future<SessionCatalogCacheStats> cacheStatsForTarget(
+    SessionCatalogCacheTarget target,
+  ) async {
+    if (!target.isValid) return const SessionCatalogCacheStats.empty();
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return const SessionCatalogCacheStats.empty();
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        (SELECT COUNT(*)
+         FROM ${SessionCatalogCacheDatabase.entriesTable}
+         WHERE partition_id = ?) AS session_count,
+        (SELECT COUNT(*)
+         FROM ${SessionCatalogCacheDatabase.hotWindowsTable}
+         WHERE partition_id = ?) AS window_count
+      ''',
+      [partitionId, partitionId],
+    );
+    final row = rows.single;
+    return SessionCatalogCacheStats(
+      sessionSummaries: row['session_count'] as int? ?? 0,
+      conversationWindows: row['window_count'] as int? ?? 0,
+    );
+  }
+
+  Future<List<SessionCatalogCachedConversation>> cachedConversations(
+    SessionCatalogCacheTarget target,
+  ) async {
+    if (!target.isValid) return const [];
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return const [];
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        windows.provider,
+        windows.provider_session_id,
+        windows.entry_count,
+        windows.updated_at,
+        (
+          SELECT entries.session_json
+          FROM ${SessionCatalogCacheDatabase.entriesTable} AS entries
+          WHERE entries.partition_id = windows.partition_id
+            AND entries.provider = windows.provider
+            AND entries.session_id = windows.provider_session_id
+          ORDER BY entries.modified_sort DESC, entries.cached_at DESC
+          LIMIT 1
+        ) AS session_json
+      FROM ${SessionCatalogCacheDatabase.hotWindowsTable} AS windows
+      WHERE windows.partition_id = ?
+      ORDER BY windows.updated_at DESC
+      ''',
+      [partitionId],
+    );
+    return List.unmodifiable(
+      rows.map((row) {
+        RecentSession? session;
+        try {
+          final encoded = row['session_json'] as String?;
+          final decoded = encoded == null ? null : jsonDecode(encoded);
+          if (decoded is Map) {
+            session = RecentSession.fromJson(
+              Map<String, dynamic>.from(decoded),
+            );
+          }
+        } catch (_) {
+          // Catalog display metadata is optional. The exact cache window can
+          // still be managed by its provider identity.
+        }
+        return SessionCatalogCachedConversation(
+          provider: row['provider']! as String,
+          providerSessionId: row['provider_session_id']! as String,
+          entryCount: row['entry_count']! as int,
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(
+            row['updated_at']! as int,
+            isUtc: true,
+          ),
+          session: session,
+        );
+      }),
     );
   }
 
@@ -1608,12 +1738,54 @@ class SessionCatalogCacheRepository {
       final db = await database.database;
       final partitionId = await _resolveReadablePartition(db, target);
       if (partitionId == null) return;
-      await db.delete(
-        SessionCatalogCacheDatabase.hotWindowsTable,
-        where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
-        whereArgs: [partitionId, provider, providerSessionId],
-      );
+      await db.transaction((transaction) async {
+        for (final table in [
+          SessionCatalogCacheDatabase.timelineStagesTable,
+          SessionCatalogCacheDatabase.hotWindowsTable,
+        ]) {
+          await transaction.delete(
+            table,
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+        }
+      });
     });
+  }
+
+  static Future<void> _clearRebuildableCache(
+    Transaction transaction, {
+    required String? where,
+    required List<Object?> whereArgs,
+  }) async {
+    for (final table in [
+      SessionCatalogCacheDatabase.timelineStagesTable,
+      SessionCatalogCacheDatabase.hotWindowsTable,
+      SessionCatalogCacheDatabase.statusesTable,
+      SessionCatalogCacheDatabase.syncStatesTable,
+      SessionCatalogCacheDatabase.entriesTable,
+    ]) {
+      await transaction.delete(
+        table,
+        where: where,
+        whereArgs: where == null ? null : whereArgs,
+      );
+    }
+    await transaction.update(
+      SessionCatalogCacheDatabase.partitionsTable,
+      {
+        'last_server_revision': null,
+        'complete_revision': null,
+        'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+      },
+      where: where,
+      whereArgs: where == null ? null : whereArgs,
+    );
+    // Read watermarks are user state, not a rebuildable cache. Keeping the
+    // partition and aliases also lets all routes for the same Bridge retain
+    // the same unread boundary after catalog/history data is rebuilt.
   }
 
   Future<void> close() async {

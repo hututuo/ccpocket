@@ -372,11 +372,85 @@ void main() {
         ),
         isNull,
       );
+      final cachedConversations = await repository.cachedConversations(target);
+      expect(cachedConversations, hasLength(1));
+      expect(cachedConversations.single.providerSessionId, 'thread-display');
+      expect(cachedConversations.single.session?.name, 'Saved title');
 
       await repository.clearAll();
       final cleared = await repository.cacheStats();
       expect(cleared.sessionSummaries, 0);
       expect(cleared.conversationWindows, 0);
+    },
+  );
+
+  test(
+    'clears one rebuildable data source while preserving read watermarks',
+    () async {
+      final first = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-first',
+        codexSourceId: 'source-first',
+      );
+      final second = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-second',
+        codexSourceId: 'source-second',
+      );
+      for (final entry in [
+        (target: first, id: 'thread-first'),
+        (target: second, id: 'thread-second'),
+      ]) {
+        await repository.upsertResponse(
+          target: entry.target,
+          response: RecentSessionsMessage(
+            sessions: [_session(id: entry.id, name: entry.id)],
+          ),
+        );
+        await repository.replaceConversationWindow(
+          target: entry.target,
+          provider: 'codex',
+          providerSessionId: entry.id,
+          revision: 'revision-${entry.id}',
+          entries: [_entry('entry-${entry.id}', 0, 'idle')],
+          hasEarlier: false,
+          sourceEntryCount: 1,
+        );
+      }
+      await repository.storeReadWatermark(
+        target: first,
+        watermark: const ConversationSyncV2ReadWatermark(
+          provider: 'codex',
+          providerSessionId: 'thread-first',
+          readAt: '2026-07-30T01:02:03.000Z',
+        ),
+      );
+
+      await repository.clearTarget(first);
+
+      expect(
+        await repository.cacheStatsForTarget(first),
+        isA<SessionCatalogCacheStats>()
+            .having((stats) => stats.sessionSummaries, 'summaries', 0)
+            .having((stats) => stats.conversationWindows, 'windows', 0),
+      );
+      expect(await repository.loadReadWatermarks(first), [
+        isA<ConversationSyncV2ReadWatermark>()
+            .having(
+              (watermark) => watermark.providerSessionId,
+              'providerSessionId',
+              'thread-first',
+            )
+            .having(
+              (watermark) => watermark.readAt,
+              'readAt',
+              '2026-07-30T01:02:03.000Z',
+            ),
+      ]);
+      expect(
+        await repository.cacheStatsForTarget(second),
+        isA<SessionCatalogCacheStats>()
+            .having((stats) => stats.sessionSummaries, 'summaries', 1)
+            .having((stats) => stats.conversationWindows, 'windows', 1),
+      );
     },
   );
 

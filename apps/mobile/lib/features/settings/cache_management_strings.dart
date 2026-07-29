@@ -91,6 +91,89 @@ class CacheManagementStrings {
     return 'Downloaded conversation histories';
   }
 
+  String get byDataSourceSection {
+    if (_zh) return '按 Bridge 与数据源管理';
+    if (_ja) return 'Bridge とデータソース別';
+    if (_ko) return 'Bridge 및 데이터 소스별';
+    return 'By Bridge & data source';
+  }
+
+  String dataSourceSubtitle({
+    required int routes,
+    required String? source,
+    required int summaries,
+    required int windows,
+  }) {
+    final sourceText = source == null ? '' : ' · $source';
+    if (_zh) {
+      return '$routes 条连接路线$sourceText · $summaries 个摘要 · $windows 个最近窗口';
+    }
+    if (_ja) {
+      return '接続経路 $routes 件$sourceText · 概要 $summaries 件 · 最近 $windows 件';
+    }
+    if (_ko) {
+      return '연결 경로 $routes개$sourceText · 요약 $summaries개 · 최근 창 $windows개';
+    }
+    return '$routes routes$sourceText · $summaries summaries · $windows recent windows';
+  }
+
+  String get clearThisDataSource {
+    if (_zh) return '清理这台 Bridge 的可重建缓存';
+    if (_ja) return 'この Bridge の再構築可能なキャッシュを消去';
+    if (_ko) return '이 Bridge의 재구성 가능한 캐시 지우기';
+    return 'Clear rebuildable cache for this Bridge';
+  }
+
+  String dataSourceCleared(String name) {
+    if (_zh) return '已清理 $name 的可重建缓存；已读状态和电脑会话未改变';
+    if (_ja) return '$name の再構築可能なキャッシュを消去しました。既読状態と Mac の会話は保持されます';
+    if (_ko) return '$name의 재구성 가능한 캐시를 지웠습니다. 읽음 상태와 Mac 대화는 유지됩니다';
+    return 'Cleared rebuildable cache for $name; read state and Mac conversations were kept';
+  }
+
+  String get noRecentWindows {
+    if (_zh) return '没有已缓存的最近会话窗口';
+    if (_ja) return '最近の会話キャッシュはありません';
+    if (_ko) return '캐시된 최근 대화 창이 없습니다';
+    return 'No cached recent conversation windows';
+  }
+
+  String get removeRecentWindow {
+    if (_zh) return '删除这条最近会话缓存';
+    if (_ja) return 'この最近の会話キャッシュを削除';
+    if (_ko) return '이 최근 대화 캐시 삭제';
+    return 'Remove this recent conversation cache';
+  }
+
+  String get removeRecentWindowWarning {
+    if (_zh) return '只会删除这台手机上的最近消息和工具详情缓存，不会删除草稿、已读状态或电脑上的会话。';
+    if (_ja) return 'この端末の最近のメッセージとツール詳細キャッシュだけを削除します。下書き、既読状態、Mac の会話は保持されます。';
+    if (_ko) return '이 휴대폰의 최근 메시지와 도구 상세 캐시만 삭제합니다. 초안, 읽음 상태, Mac 대화는 유지됩니다.';
+    return 'This removes only recent messages and tool-detail cache on this phone. Drafts, read state, and Mac conversations are kept.';
+  }
+
+  String get recentWindowRemoved {
+    if (_zh) return '最近会话缓存已删除；再次打开时会按需重建';
+    if (_ja) return '最近の会話キャッシュを削除しました。次回開くときに必要に応じて再構築されます';
+    if (_ko) return '최근 대화 캐시를 삭제했습니다. 다음에 열 때 필요에 따라 다시 구성됩니다';
+    return 'Recent conversation cache removed; it will rebuild on demand';
+  }
+
+  String recentWindowSubtitle({
+    required int entries,
+    required DateTime updatedAt,
+  }) {
+    final time =
+        '${updatedAt.month.toString().padLeft(2, '0')}-'
+        '${updatedAt.day.toString().padLeft(2, '0')} '
+        '${updatedAt.hour.toString().padLeft(2, '0')}:'
+        '${updatedAt.minute.toString().padLeft(2, '0')}';
+    if (_zh) return '$entries 条缓存记录 · $time 更新';
+    if (_ja) return '$entries 件 · $time 更新';
+    if (_ko) return '$entries개 · $time 업데이트';
+    return '$entries cached records · updated $time';
+  }
+
   String get noDownloadedHistories {
     if (_zh) return '手机上暂时没有完整会话副本';
     if (_ja) return '端末に完全な会話コピーはありません';

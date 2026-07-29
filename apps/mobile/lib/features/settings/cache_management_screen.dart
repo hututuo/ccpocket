@@ -4,20 +4,49 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart' hide Provider;
 
 import '../../models/messages.dart';
+import '../../models/machine.dart';
+import '../../providers/machine_manager_cubit.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/storage/conversation_mirror_models.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
 import '../session_list/state/session_list_cubit.dart';
 import 'cache_management_strings.dart';
 
+class CacheManagementDataSource {
+  const CacheManagementDataSource({
+    required this.target,
+    required this.displayName,
+    required this.codexSourceId,
+    required this.routeCount,
+    required this.stats,
+    required this.conversations,
+  });
+
+  final SessionCatalogCacheTarget target;
+  final String displayName;
+  final String? codexSourceId;
+  final int routeCount;
+  final SessionCatalogCacheStats stats;
+  final List<SessionCatalogCachedConversation> conversations;
+}
+
 abstract interface class CacheManagementBackend {
   List<ConversationMirrorMetadata> get localCopies;
 
   Future<SessionCatalogCacheStats> temporaryCacheStats();
 
+  Future<List<CacheManagementDataSource>> dataSourceCaches();
+
   Future<Map<ConversationMirrorKey, String>> localCopyDisplayNames();
 
   Future<void> clearCatalogCache();
+
+  Future<void> clearDataSource(CacheManagementDataSource dataSource);
+
+  Future<void> removeCachedConversation(
+    CacheManagementDataSource dataSource,
+    SessionCatalogCachedConversation conversation,
+  );
 
   Future<void> removeLocalCopy(ConversationMirrorMetadata metadata);
 
@@ -27,15 +56,17 @@ abstract interface class CacheManagementBackend {
 }
 
 class _AppCacheManagementBackend implements CacheManagementBackend {
-  const _AppCacheManagementBackend({
+  _AppCacheManagementBackend({
     required this.catalogCache,
     required this.sessionListCubit,
     required this.conversationMirror,
+    required this.machineManager,
   });
 
   final SessionCatalogCacheRepository? catalogCache;
   final SessionListCubit? sessionListCubit;
   final ConversationMirrorService? conversationMirror;
+  final MachineManagerCubit? machineManager;
 
   @override
   List<ConversationMirrorMetadata> get localCopies =>
@@ -47,6 +78,58 @@ class _AppCacheManagementBackend implements CacheManagementBackend {
       Future<SessionCatalogCacheStats>.value(
         const SessionCatalogCacheStats.empty(),
       );
+
+  @override
+  Future<List<CacheManagementDataSource>> dataSourceCaches() async {
+    final cache = catalogCache;
+    if (cache == null) return const [];
+    final groups =
+        <String, ({SessionCatalogCacheTarget target, List<Machine> routes})>{};
+    for (final machineWithStatus
+        in machineManager?.state.machines ?? const []) {
+      final machine = machineWithStatus.machine;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: machine.bridgeInstanceId,
+        codexSourceId: machine.codexSourceId,
+        websocketUrl: machine.wsUrl,
+      );
+      if (!target.isValid) continue;
+      final existing = groups[target.fingerprint];
+      if (existing == null) {
+        groups[target.fingerprint] = (target: target, routes: [machine]);
+      } else {
+        existing.routes.add(machine);
+      }
+    }
+    final result = <CacheManagementDataSource>[];
+    for (final group in groups.values) {
+      group.routes.sort(
+        (left, right) =>
+            (right.lastConnected ?? DateTime.fromMillisecondsSinceEpoch(0))
+                .compareTo(
+                  left.lastConnected ?? DateTime.fromMillisecondsSinceEpoch(0),
+                ),
+      );
+      final namedRoutes = group.routes
+          .where((route) => route.name?.trim().isNotEmpty == true)
+          .toList(growable: false);
+      final preferred = namedRoutes.isEmpty
+          ? group.routes.first
+          : namedRoutes.first;
+      result.add(
+        CacheManagementDataSource(
+          target: group.target,
+          displayName: preferred.displayName,
+          codexSourceId: preferred.codexSourceId,
+          routeCount: group.routes.length,
+          stats: await cache.cacheStatsForTarget(group.target),
+          conversations: await cache.cachedConversations(group.target),
+        ),
+      );
+    }
+    result.sort((left, right) => left.displayName.compareTo(right.displayName));
+    return List.unmodifiable(result);
+  }
 
   @override
   Future<Map<ConversationMirrorKey, String>> localCopyDisplayNames() async {
@@ -80,6 +163,27 @@ class _AppCacheManagementBackend implements CacheManagementBackend {
     if (cubit != null) return cubit.clearPersistentCatalogCache();
     return catalogCache?.clearAll() ?? Future<void>.value();
   }
+
+  @override
+  Future<void> clearDataSource(CacheManagementDataSource dataSource) {
+    final cubit = sessionListCubit;
+    if (cubit != null) {
+      return cubit.clearPersistentCatalogCacheForTarget(dataSource.target);
+    }
+    return catalogCache?.clearTarget(dataSource.target) ?? Future<void>.value();
+  }
+
+  @override
+  Future<void> removeCachedConversation(
+    CacheManagementDataSource dataSource,
+    SessionCatalogCachedConversation conversation,
+  ) =>
+      catalogCache?.deleteConversationWindow(
+        target: dataSource.target,
+        provider: conversation.provider,
+        providerSessionId: conversation.providerSessionId,
+      ) ??
+      Future<void>.value();
 
   @override
   Future<void> removeLocalCopy(ConversationMirrorMetadata metadata) =>
@@ -134,9 +238,12 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
   CacheManagementBackend? _backend;
   SessionCatalogCacheStats _cacheStats = const SessionCatalogCacheStats.empty();
   Map<ConversationMirrorKey, String> _localCopyDisplayNames = const {};
+  List<CacheManagementDataSource> _dataSources = const [];
   int _loadGeneration = 0;
   bool _isLoadingCacheStats = true;
   bool _isClearingCatalog = false;
+  final Set<String> _clearingDataSources = {};
+  final Set<String> _removingCachedConversations = {};
   final Set<ConversationMirrorKey> _removingCopies = {};
 
   @override
@@ -149,6 +256,7 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
           catalogCache: context.read<SessionCatalogCacheRepository?>(),
           sessionListCubit: context.read<SessionListCubit?>(),
           conversationMirror: context.read<ConversationMirrorService?>(),
+          machineManager: context.read<MachineManagerCubit?>(),
         );
     _backend!.addListener(_handleBackendChange);
     unawaited(_reloadCacheState());
@@ -164,16 +272,84 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
     try {
       final stats = await _backend!.temporaryCacheStats();
       final displayNames = await _backend!.localCopyDisplayNames();
+      final dataSources = await _backend!.dataSourceCaches();
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _cacheStats = stats;
         _localCopyDisplayNames = displayNames;
+        _dataSources = dataSources;
         _isLoadingCacheStats = false;
       });
     } catch (error) {
       if (!mounted || generation != _loadGeneration) return;
       setState(() => _isLoadingCacheStats = false);
       _showError(error);
+    }
+  }
+
+  Future<void> _clearDataSource(CacheManagementDataSource dataSource) async {
+    final key = dataSource.target.fingerprint;
+    if (_clearingDataSources.contains(key)) return;
+    setState(() => _clearingDataSources.add(key));
+    try {
+      await _backend!.clearDataSource(dataSource);
+      await _reloadCacheState();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            CacheManagementStrings.of(
+              context,
+            ).dataSourceCleared(dataSource.displayName),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (mounted) _showError(error);
+    } finally {
+      if (mounted) setState(() => _clearingDataSources.remove(key));
+    }
+  }
+
+  Future<void> _confirmRemoveCachedConversation(
+    CacheManagementDataSource dataSource,
+    SessionCatalogCachedConversation conversation,
+  ) async {
+    final strings = CacheManagementStrings.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(strings.removeRecentWindow),
+        content: Text(strings.removeRecentWindowWarning),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(strings.cancel),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm_remove_cached_conversation'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(strings.removeRecentWindow),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final key =
+        '${dataSource.target.fingerprint}\n${conversation.provider}\n'
+        '${conversation.providerSessionId}';
+    setState(() => _removingCachedConversations.add(key));
+    try {
+      await _backend!.removeCachedConversation(dataSource, conversation);
+      await _reloadCacheState();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(strings.recentWindowRemoved)));
+    } catch (error) {
+      if (mounted) _showError(error);
+    } finally {
+      if (mounted) setState(() => _removingCachedConversations.remove(key));
     }
   }
 
@@ -286,6 +462,20 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
                     ),
             ),
           ),
+          if (_dataSources.isNotEmpty) ...[
+            _CacheSectionHeader(strings.byDataSourceSection),
+            for (final dataSource in _dataSources)
+              _DataSourceCacheCard(
+                dataSource: dataSource,
+                isClearing: _clearingDataSources.contains(
+                  dataSource.target.fingerprint,
+                ),
+                removingConversationKeys: _removingCachedConversations,
+                onClear: () => _clearDataSource(dataSource),
+                onRemoveConversation: (conversation) =>
+                    _confirmRemoveCachedConversation(dataSource, conversation),
+              ),
+          ],
           _CacheSectionHeader(strings.downloadedSection),
           if (copies.isEmpty)
             Card(
@@ -320,6 +510,143 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
       ),
     );
   }
+}
+
+class _DataSourceCacheCard extends StatelessWidget {
+  const _DataSourceCacheCard({
+    required this.dataSource,
+    required this.isClearing,
+    required this.removingConversationKeys,
+    required this.onClear,
+    required this.onRemoveConversation,
+  });
+
+  final CacheManagementDataSource dataSource;
+  final bool isClearing;
+  final Set<String> removingConversationKeys;
+  final VoidCallback onClear;
+  final ValueChanged<SessionCatalogCachedConversation> onRemoveConversation;
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = CacheManagementStrings.of(context);
+    final source = dataSource.codexSourceId;
+    return Card(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: ExpansionTile(
+        key: ValueKey('cache_data_source_${dataSource.target.fingerprint}'),
+        leading: const Icon(Icons.computer_outlined),
+        title: Text(
+          dataSource.displayName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          strings.dataSourceSubtitle(
+            routes: dataSource.routeCount,
+            source: source == null ? null : _shortIdentity(source),
+            summaries: dataSource.stats.sessionSummaries,
+            windows: dataSource.stats.conversationWindows,
+          ),
+        ),
+        children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: TextButton.icon(
+                key: ValueKey(
+                  'clear_cache_data_source_${dataSource.target.fingerprint}',
+                ),
+                onPressed: isClearing ? null : onClear,
+                icon: isClearing
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cleaning_services_outlined),
+                label: Text(strings.clearThisDataSource),
+              ),
+            ),
+          ),
+          if (dataSource.conversations.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(strings.noRecentWindows),
+              ),
+            )
+          else
+            for (final conversation in dataSource.conversations)
+              _CachedConversationTile(
+                dataSource: dataSource,
+                conversation: conversation,
+                isRemoving: removingConversationKeys.contains(
+                  '${dataSource.target.fingerprint}\n'
+                  '${conversation.provider}\n'
+                  '${conversation.providerSessionId}',
+                ),
+                onRemove: () => onRemoveConversation(conversation),
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CachedConversationTile extends StatelessWidget {
+  const _CachedConversationTile({
+    required this.dataSource,
+    required this.conversation,
+    required this.isRemoving,
+    required this.onRemove,
+  });
+
+  final CacheManagementDataSource dataSource;
+  final SessionCatalogCachedConversation conversation;
+  final bool isRemoving;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = CacheManagementStrings.of(context);
+    final title =
+        _catalogDisplayName(conversation.session) ??
+        _shortIdentity(conversation.providerSessionId);
+    return ListTile(
+      key: ValueKey(
+        'cached_conversation_${dataSource.target.fingerprint}_'
+        '${conversation.provider}_${conversation.providerSessionId}',
+      ),
+      dense: true,
+      leading: const Icon(Icons.forum_outlined, size: 20),
+      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        strings.recentWindowSubtitle(
+          entries: conversation.entryCount,
+          updatedAt: conversation.updatedAt.toLocal(),
+        ),
+      ),
+      trailing: isRemoving
+          ? const SizedBox.square(
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : IconButton(
+              tooltip: strings.removeRecentWindow,
+              onPressed: onRemove,
+              icon: const Icon(Icons.delete_outline),
+            ),
+    );
+  }
+}
+
+String _shortIdentity(String value) {
+  final normalized = value.trim();
+  return normalized.length <= 12
+      ? normalized
+      : '${normalized.substring(0, 6)}…${normalized.substring(normalized.length - 4)}';
 }
 
 class _DownloadedHistoryTile extends StatelessWidget {

@@ -685,6 +685,21 @@ class SessionListCubit extends Cubit<SessionListState> {
     _cacheLoadGeneration++;
     await _catalogCache?.clearAll();
     if (isClosed) return;
+    _resetPersistentCacheProjection();
+  }
+
+  Future<void> clearPersistentCatalogCacheForTarget(
+    SessionCatalogCacheTarget target,
+  ) async {
+    _cacheLoadGeneration++;
+    await _catalogCache?.clearTarget(target);
+    if (isClosed || target.fingerprint != _currentCacheTarget()?.fingerprint) {
+      return;
+    }
+    _resetPersistentCacheProjection();
+  }
+
+  void _resetPersistentCacheProjection() {
     _loadedCacheFingerprint = null;
     _loadedCacheCatalogRevision = null;
     _loadedCacheComplete = false;
