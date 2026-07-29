@@ -225,6 +225,51 @@ void main() {
     });
   });
 
+  group('Bridge connection entry progress', () {
+    BridgeConnectionEntryProgress? progress({
+      BridgeConnectionState state = BridgeConnectionState.disconnected,
+      bool selectionPending = false,
+      bool hasSessionList = false,
+      bool hasRecentSessions = false,
+      bool autoConnecting = false,
+    }) => bridgeConnectionEntryProgressFor(
+      transportState: state,
+      selectionPending: selectionPending,
+      hasAuthoritativeSessionList: hasSessionList,
+      hasAuthoritativeRecentSessions: hasRecentSessions,
+      autoConnecting: autoConnecting,
+    );
+
+    test('reports stable milestones instead of elapsed-time guesses', () {
+      expect(
+        progress(selectionPending: true)?.stage,
+        BridgeConnectionEntryStage.preparingTarget,
+      );
+      expect(progress(selectionPending: true)?.percent, 0);
+
+      expect(progress(state: BridgeConnectionState.connecting)?.percent, 25);
+      expect(progress(state: BridgeConnectionState.connected)?.percent, 60);
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          hasSessionList: true,
+        )?.percent,
+        85,
+      );
+    });
+
+    test('disappears only after both authoritative datasets are ready', () {
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          hasSessionList: true,
+          hasRecentSessions: true,
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('SessionCatalogBootstrapGate', () {
     test('retries when session_list arrives before connected', () {
       final gate = SessionCatalogBootstrapGate();
@@ -440,12 +485,26 @@ void main() {
             onScanQrCode: () {},
             onConnectToDiscovered: (_) {},
             connectionProgressLabel: '正在载入绘画目录…',
+            connectionProgressValue: 0.85,
           ),
         ),
       ),
     );
 
     expect(find.byKey(const ValueKey('bridge_connection_progress')), findsOne);
+    expect(
+      find.byKey(const ValueKey('bridge_connection_progress_bar')),
+      findsOne,
+    );
+    expect(find.text('85%'), findsOne);
+    expect(
+      tester
+          .widget<LinearProgressIndicator>(
+            find.byKey(const ValueKey('bridge_connection_progress_bar')),
+          )
+          .value,
+      0.85,
+    );
     expect(find.text('正在载入绘画目录…'), findsOne);
     expect(find.text('连接到 Bridge 服务'), findsOne);
   });

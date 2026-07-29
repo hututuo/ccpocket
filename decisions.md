@@ -925,3 +925,20 @@
 - Build `1.109.3+205` release `737381` and owner Patch 1 (`570773`) establish
   this boundary. The detailed artifact hashes and test order are recorded in
   `runs/20260729-181000_shorebird-build205-owner-patch-1/README.md`.
+
+## Mobile connection progress follows real readiness milestones
+
+- Keep the structured connection and catalog diagnostics introduced by
+  `6b701a39` as the single diagnostic source. Do not add a second logging
+  pipeline merely to drive the loading screen.
+- The visible percentage is deterministic stage progress, not a time or byte
+  estimate: target preparation `0%`, WebSocket connection `25%`,
+  authoritative live-session status `60%`, and conversation catalog `85%`.
+  Successful application readiness replaces the picker with the conversation
+  list, which is the user-visible `100%` boundary.
+- Machine/IP status refresh feedback is driven by
+  `MachineManagerState.isLoading`. Its refresh arrow animates only while the
+  real health check is active and stops immediately afterward, avoiding an
+  always-running ticker.
+- This is a Mobile-only presentation change. It adds no Bridge message,
+  capability, database migration, native boundary or old-client requirement.

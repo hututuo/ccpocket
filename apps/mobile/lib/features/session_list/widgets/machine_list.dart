@@ -10,6 +10,7 @@ class MachineList extends StatelessWidget {
   final String? startingMachineId;
   final String? updatingMachineId;
   final String? latestBridgeVersion;
+  final bool isRefreshing;
   final ValueChanged<MachineWithStatus> onConnect;
   final ValueChanged<MachineWithStatus> onStart;
   final ValueChanged<MachineWithStatus> onEdit;
@@ -26,6 +27,7 @@ class MachineList extends StatelessWidget {
     this.startingMachineId,
     this.updatingMachineId,
     this.latestBridgeVersion,
+    this.isRefreshing = false,
     required this.onConnect,
     required this.onStart,
     required this.onEdit,
@@ -61,8 +63,12 @@ class MachineList extends StatelessWidget {
             const Spacer(),
             if (onRefresh != null)
               IconButton(
-                onPressed: onRefresh,
-                icon: const Icon(Icons.refresh, size: 20),
+                key: const ValueKey('machine_status_refresh_button'),
+                onPressed: isRefreshing ? null : onRefresh,
+                icon: _MachineRefreshIcon(
+                  isRefreshing: isRefreshing,
+                  color: isRefreshing ? colorScheme.primary : null,
+                ),
                 tooltip: l.refreshStatus,
                 visualDensity: VisualDensity.compact,
               ),
@@ -160,6 +166,63 @@ class MachineList extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _MachineRefreshIcon extends StatefulWidget {
+  final bool isRefreshing;
+  final Color? color;
+
+  const _MachineRefreshIcon({required this.isRefreshing, this.color});
+
+  @override
+  State<_MachineRefreshIcon> createState() => _MachineRefreshIconState();
+}
+
+class _MachineRefreshIconState extends State<_MachineRefreshIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 700),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MachineRefreshIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isRefreshing != widget.isRefreshing) {
+      _syncAnimation();
+    }
+  }
+
+  void _syncAnimation() {
+    if (widget.isRefreshing) {
+      _controller.repeat();
+    } else {
+      _controller
+        ..stop()
+        ..value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      key: const ValueKey('machine_status_refresh_arrow'),
+      turns: _controller,
+      child: Icon(Icons.refresh, size: 20, color: widget.color),
     );
   }
 }

@@ -19,6 +19,7 @@ class ConnectForm extends StatelessWidget {
   final String? startingMachineId;
   final String? updatingMachineId;
   final String? latestBridgeVersion;
+  final bool isRefreshingMachines;
   final ValueChanged<MachineWithStatus>? onConnectToMachine;
   final ValueChanged<MachineWithStatus>? onStartMachine;
   final ValueChanged<MachineWithStatus>? onEditMachine;
@@ -29,6 +30,7 @@ class ConnectForm extends StatelessWidget {
   final VoidCallback? onAddMachine;
   final VoidCallback? onRefreshMachines;
   final String? connectionProgressLabel;
+  final double? connectionProgressValue;
   final String? connectionNoticeLabel;
   final VoidCallback? onCancelConnection;
   final VoidCallback? onRetryConnection;
@@ -44,6 +46,7 @@ class ConnectForm extends StatelessWidget {
     this.startingMachineId,
     this.updatingMachineId,
     this.latestBridgeVersion,
+    this.isRefreshingMachines = false,
     this.onConnectToMachine,
     this.onStartMachine,
     this.onEditMachine,
@@ -54,6 +57,7 @@ class ConnectForm extends StatelessWidget {
     this.onAddMachine,
     this.onRefreshMachines,
     this.connectionProgressLabel,
+    this.connectionProgressValue,
     this.connectionNoticeLabel,
     this.onCancelConnection,
     this.onRetryConnection,
@@ -69,6 +73,12 @@ class ConnectForm extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
+    final normalizedProgress = connectionProgressValue
+        ?.clamp(0.0, 1.0)
+        .toDouble();
+    final progressPercent = normalizedProgress == null
+        ? null
+        : (normalizedProgress * 100).round();
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
@@ -111,7 +121,9 @@ class ConnectForm extends StatelessWidget {
             const SizedBox(height: 16),
             Semantics(
               liveRegion: true,
-              label: connectionProgressLabel,
+              label: progressPercent == null
+                  ? connectionProgressLabel
+                  : '$connectionProgressLabel, $progressPercent%',
               child: Container(
                 key: const ValueKey('bridge_connection_progress'),
                 width: double.infinity,
@@ -130,26 +142,60 @@ class ConnectForm extends StatelessWidget {
                     ).colorScheme.primary.withValues(alpha: 0.28),
                   ),
                 ),
-                child: Row(
+                child: Column(
                   children: [
-                    const SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                    Row(
+                      children: [
+                        SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            value: normalizedProgress,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            connectionProgressLabel!,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        if (progressPercent != null) ...[
+                          const SizedBox(width: 8),
+                          Text(
+                            '$progressPercent%',
+                            key: const ValueKey(
+                              'bridge_connection_progress_percent',
+                            ),
+                            style: Theme.of(context).textTheme.labelLarge
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
+                          ),
+                        ],
+                        if (onCancelConnection != null &&
+                            connectionNoticeLabel == null)
+                          TextButton(
+                            key: const ValueKey('cancel_bridge_connection'),
+                            onPressed: onCancelConnection,
+                            child: Text(l.cancel),
+                          ),
+                      ],
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        connectionProgressLabel!,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
+                    if (normalizedProgress != null) ...[
+                      const SizedBox(height: 10),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: LinearProgressIndicator(
+                          key: const ValueKey('bridge_connection_progress_bar'),
+                          value: normalizedProgress,
+                          minHeight: 5,
+                        ),
                       ),
-                    ),
-                    if (onCancelConnection != null &&
-                        connectionNoticeLabel == null)
-                      TextButton(
-                        key: const ValueKey('cancel_bridge_connection'),
-                        onPressed: onCancelConnection,
-                        child: Text(l.cancel),
-                      ),
+                    ],
                   ],
                 ),
               ),
@@ -223,6 +269,7 @@ class ConnectForm extends StatelessWidget {
               startingMachineId: startingMachineId,
               updatingMachineId: updatingMachineId,
               latestBridgeVersion: latestBridgeVersion,
+              isRefreshing: isRefreshingMachines,
               onConnect: onConnectToMachine!,
               onStart: onStartMachine!,
               onEdit: onEditMachine!,

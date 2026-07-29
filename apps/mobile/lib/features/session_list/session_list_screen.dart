@@ -243,6 +243,64 @@ class ConnectionAttemptFence {
   bool isCurrent(int token) => token == _generation;
 }
 
+enum BridgeConnectionEntryStage {
+  preparingTarget,
+  connectingTransport,
+  loadingSessionStatus,
+  loadingConversationCatalog,
+}
+
+class BridgeConnectionEntryProgress {
+  final BridgeConnectionEntryStage stage;
+  final double fraction;
+
+  const BridgeConnectionEntryProgress({
+    required this.stage,
+    required this.fraction,
+  });
+
+  int get percent => (fraction * 100).round();
+}
+
+/// Converts real connection milestones into deterministic, user-visible
+/// progress. These values represent completed stages, not elapsed-time guesses.
+BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
+  required BridgeConnectionState transportState,
+  required bool selectionPending,
+  required bool hasAuthoritativeSessionList,
+  required bool hasAuthoritativeRecentSessions,
+  required bool autoConnecting,
+}) {
+  if (selectionPending) {
+    return const BridgeConnectionEntryProgress(
+      stage: BridgeConnectionEntryStage.preparingTarget,
+      fraction: 0,
+    );
+  }
+  return switch (transportState) {
+    BridgeConnectionState.connecting ||
+    BridgeConnectionState.reconnecting => const BridgeConnectionEntryProgress(
+      stage: BridgeConnectionEntryStage.connectingTransport,
+      fraction: 0.25,
+    ),
+    BridgeConnectionState.connected when !hasAuthoritativeSessionList =>
+      const BridgeConnectionEntryProgress(
+        stage: BridgeConnectionEntryStage.loadingSessionStatus,
+        fraction: 0.60,
+      ),
+    BridgeConnectionState.connected when !hasAuthoritativeRecentSessions =>
+      const BridgeConnectionEntryProgress(
+        stage: BridgeConnectionEntryStage.loadingConversationCatalog,
+        fraction: 0.85,
+      ),
+    _ when autoConnecting => const BridgeConnectionEntryProgress(
+      stage: BridgeConnectionEntryStage.preparingTarget,
+      fraction: 0,
+    ),
+    _ => null,
+  };
+}
+
 Future<bool> showExternalBridgeConnectionConfirmation({
   required BuildContext context,
   required String target,
@@ -2653,15 +2711,20 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
 
     final l = AppLocalizations.of(context);
-    final connectionProgressLabel = switch (transportConnectionState) {
-      BridgeConnectionState.connected when !hasAuthoritativeSessionList =>
-        l.loadingSessionStatus,
-      BridgeConnectionState.connected when !hasAuthoritativeRecentSessions =>
+    final connectionProgress = bridgeConnectionEntryProgressFor(
+      transportState: transportConnectionState,
+      selectionPending: _connectionSelectionPending,
+      hasAuthoritativeSessionList: hasAuthoritativeSessionList,
+      hasAuthoritativeRecentSessions: hasAuthoritativeRecentSessions,
+      autoConnecting: _isAutoConnecting,
+    );
+    final connectionProgressLabel = switch (connectionProgress?.stage) {
+      BridgeConnectionEntryStage.loadingSessionStatus => l.loadingSessionStatus,
+      BridgeConnectionEntryStage.loadingConversationCatalog =>
         l.loadingConversationCatalog,
-      BridgeConnectionState.connecting ||
-      BridgeConnectionState.reconnecting => l.connectingToBridge,
-      _ when _isAutoConnecting => l.connectingToBridge,
-      _ => null,
+      BridgeConnectionEntryStage.preparingTarget ||
+      BridgeConnectionEntryStage.connectingTransport => l.connectingToBridge,
+      null => null,
     };
     final connectionNoticeLabel = _connectionAttemptFailed
         ? l.bridgeConnectionAttemptFailed
@@ -2724,6 +2787,7 @@ class _SessionListScreenState extends State<SessionListScreen>
                       machineManagerCubit: machineManagerCubit,
                       connectedBridgeLabel: connectedBridgeLabel,
                       connectionProgressLabel: connectionProgressLabel,
+                      connectionProgressValue: connectionProgress?.fraction,
                       connectionNoticeLabel: connectionNoticeLabel,
                       onCancelConnection:
                           connectionProgressLabel != null ||
@@ -2849,6 +2913,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     required MachineManagerCubit? machineManagerCubit,
     required String? connectedBridgeLabel,
     required String? connectionProgressLabel,
+    required double? connectionProgressValue,
     required String? connectionNoticeLabel,
     required VoidCallback? onCancelConnection,
     required VoidCallback? onRetryConnection,
@@ -2872,6 +2937,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       machineManagerCubit: machineManagerCubit,
       connectedBridgeLabel: connectedBridgeLabel,
       connectionProgressLabel: connectionProgressLabel,
+      connectionProgressValue: connectionProgressValue,
       connectionNoticeLabel: connectionNoticeLabel,
       onCancelConnection: onCancelConnection,
       onRetryConnection: onRetryConnection,
@@ -2979,6 +3045,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     required MachineManagerCubit? machineManagerCubit,
     required String? connectedBridgeLabel,
     required String? connectionProgressLabel,
+    required double? connectionProgressValue,
     required String? connectionNoticeLabel,
     required VoidCallback? onCancelConnection,
     required VoidCallback? onRetryConnection,
@@ -3177,6 +3244,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       startingMachineId: machineState?.startingMachineId,
       updatingMachineId: machineState?.updatingMachineId,
       latestBridgeVersion: machineState?.latestBridgeVersion,
+      isRefreshingMachines: machineState?.isLoading ?? false,
       onScanQrCode: _scanQrCode,
       onViewSetupGuide: () {
         final shell = WorkspaceShellScreen.maybeOf(context);
@@ -3197,6 +3265,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       onAddMachine: _addMachine,
       onRefreshMachines: () => machineManagerCubit?.refreshAll(),
       connectionProgressLabel: connectionProgressLabel,
+      connectionProgressValue: connectionProgressValue,
       connectionNoticeLabel: connectionNoticeLabel,
       onCancelConnection: onCancelConnection,
       onRetryConnection: onRetryConnection,
@@ -3706,6 +3775,7 @@ class _ConnectFormWidget extends StatelessWidget {
   final String? startingMachineId;
   final String? updatingMachineId;
   final String? latestBridgeVersion;
+  final bool isRefreshingMachines;
   final VoidCallback onScanQrCode;
   final VoidCallback onViewSetupGuide;
   final ValueChanged<DiscoveredServer> onConnectToDiscovered;
@@ -3719,6 +3789,7 @@ class _ConnectFormWidget extends StatelessWidget {
   final VoidCallback onAddMachine;
   final VoidCallback? onRefreshMachines;
   final String? connectionProgressLabel;
+  final double? connectionProgressValue;
   final String? connectionNoticeLabel;
   final VoidCallback? onCancelConnection;
   final VoidCallback? onRetryConnection;
@@ -3729,6 +3800,7 @@ class _ConnectFormWidget extends StatelessWidget {
     this.startingMachineId,
     this.updatingMachineId,
     this.latestBridgeVersion,
+    this.isRefreshingMachines = false,
     required this.onScanQrCode,
     required this.onViewSetupGuide,
     required this.onConnectToDiscovered,
@@ -3742,6 +3814,7 @@ class _ConnectFormWidget extends StatelessWidget {
     required this.onAddMachine,
     this.onRefreshMachines,
     this.connectionProgressLabel,
+    this.connectionProgressValue,
     this.connectionNoticeLabel,
     this.onCancelConnection,
     this.onRetryConnection,
@@ -3759,6 +3832,7 @@ class _ConnectFormWidget extends StatelessWidget {
       startingMachineId: startingMachineId,
       updatingMachineId: updatingMachineId,
       latestBridgeVersion: latestBridgeVersion,
+      isRefreshingMachines: isRefreshingMachines,
       onConnectToMachine: onConnectToMachine,
       onStartMachine: onStartMachine,
       onEditMachine: onEditMachine,
@@ -3769,6 +3843,7 @@ class _ConnectFormWidget extends StatelessWidget {
       onAddMachine: onAddMachine,
       onRefreshMachines: onRefreshMachines,
       connectionProgressLabel: connectionProgressLabel,
+      connectionProgressValue: connectionProgressValue,
       connectionNoticeLabel: connectionNoticeLabel,
       onCancelConnection: onCancelConnection,
       onRetryConnection: onRetryConnection,
