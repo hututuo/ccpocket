@@ -202,30 +202,26 @@ describe("CodexSubagentService", () => {
     });
   });
 
-  it("merges descendants across fork lineage and both archive states", async () => {
+  it("keeps descendants scoped to the exact conversation across archive states", async () => {
     const currentChild = { ...thread("current-child", "current"), updatedAt: 3 };
-    const archivedChild = {
-      ...thread("archived-child", "previous"),
+    const archivedCurrentChild = {
+      ...thread("archived-current-child", "current"),
       updatedAt: 2,
     };
     const previousChild = {
       ...thread("previous-child", "previous"),
       updatedAt: 1,
     };
-    const readThread = vi.fn(async (threadId: string) =>
-      threadId === "current"
-        ? { id: threadId, forkedFromId: "previous" }
-        : { id: threadId, forkedFromId: null },
-    );
+    const readThread = vi.fn();
     const listThreads = vi.fn(
       async (params: { ancestorThreadId?: string; archived?: boolean }) => ({
         data:
           params.ancestorThreadId === "current"
             ? params.archived
-              ? []
+              ? [archivedCurrentChild]
               : [currentChild]
             : params.archived
-              ? [archivedChild]
+              ? []
               : [previousChild],
         nextCursor: null,
       }),
@@ -237,19 +233,21 @@ describe("CodexSubagentService", () => {
         "current",
       ),
     ).resolves.toEqual({
-      subagents: [currentChild, archivedChild, previousChild],
+      subagents: [currentChild, archivedCurrentChild],
       truncated: false,
     });
-    expect(readThread).toHaveBeenCalledTimes(2);
-    expect(listThreads).toHaveBeenCalledTimes(4);
-    expect(listThreads.mock.calls.map(([params]) => params)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ ancestorThreadId: "current", archived: false }),
-        expect.objectContaining({ ancestorThreadId: "current", archived: true }),
-        expect.objectContaining({ ancestorThreadId: "previous", archived: false }),
-        expect.objectContaining({ ancestorThreadId: "previous", archived: true }),
-      ]),
-    );
+    expect(readThread).not.toHaveBeenCalled();
+    expect(listThreads).toHaveBeenCalledTimes(2);
+    expect(listThreads.mock.calls.map(([params]) => params)).toEqual([
+      expect.objectContaining({
+        ancestorThreadId: "current",
+        archived: false,
+      }),
+      expect.objectContaining({
+        ancestorThreadId: "current",
+        archived: true,
+      }),
+    ]);
   });
 
   it("replaces the first-message preview with the latest bounded exchange", async () => {
@@ -513,12 +511,7 @@ describe("CodexSubagentService", () => {
     ).rejects.toThrow("not a subagent descendant");
     expect(listThreadTurns).not.toHaveBeenCalled();
     expect(listThreadItems).not.toHaveBeenCalled();
-    expect(readThread).toHaveBeenCalledOnce();
-    expect(readThread).toHaveBeenCalledWith(
-      "root",
-      false,
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
+    expect(readThread).not.toHaveBeenCalled();
   });
 
   it("prefers bounded newest-first item pagination and returns chronological messages", async () => {
@@ -565,7 +558,7 @@ describe("CodexSubagentService", () => {
     expect(result.truncated).toBe(false);
     expect(listThreadItems).toHaveBeenCalledTimes(2);
     expect(listThreadTurns).not.toHaveBeenCalled();
-    expect(readThread).toHaveBeenCalledOnce();
+    expect(readThread).not.toHaveBeenCalled();
   });
 
   it("uses full-turn pagination when item pagination is explicitly unsupported", async () => {
@@ -625,7 +618,7 @@ describe("CodexSubagentService", () => {
     expect(listThreadItems).toHaveBeenCalledOnce();
     expect(listThreadTurns).toHaveBeenCalledOnce();
     expect(listThreadTurns.mock.calls[0]?.[0]).not.toHaveProperty("itemsView");
-    expect(readThread).toHaveBeenCalledOnce();
+    expect(readThread).not.toHaveBeenCalled();
   });
 
   it("refuses an unbounded legacy read when both pagination adapters are unsupported", async () => {
@@ -656,7 +649,7 @@ describe("CodexSubagentService", () => {
     ).rejects.toThrow(
       "Subagent history pagination is not supported by this Codex app-server",
     );
-    expect(readThread).toHaveBeenCalledOnce();
+    expect(readThread).not.toHaveBeenCalled();
   });
 
   it("does not turn paginated-history network failures into legacy reads", async () => {
@@ -680,7 +673,7 @@ describe("CodexSubagentService", () => {
       service.readVerified(process, "root", "child"),
     ).rejects.toThrow("connection reset");
     expect(listThreadTurns).not.toHaveBeenCalled();
-    expect(readThread).toHaveBeenCalledOnce();
+    expect(readThread).not.toHaveBeenCalled();
   });
 
   it("applies one abortable total deadline to the whole list operation", async () => {

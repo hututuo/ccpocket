@@ -416,7 +416,14 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _normalizePosition(size);
-        final entries = widget.registryService.entries;
+        final parentSessionId =
+            widget.registryService
+                .entryForChild(widget.sessionId)
+                ?.parentSessionId ??
+            widget.sessionId;
+        final entries = widget.registryService.entriesForParent(
+          parentSessionId,
+        );
         final activeCount = entries
             .where(
               (entry) => const {
@@ -430,11 +437,6 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
         final badgeCount = activeCount > 0 ? activeCount : entries.length;
         final colorScheme = Theme.of(context).colorScheme;
         final panelSize = _panelSize(size);
-        final parentForNew =
-            widget.registryService
-                .entryForChild(widget.sessionId)
-                ?.parentSessionId ??
-            widget.sessionId;
 
         return Stack(
           children: [
@@ -456,7 +458,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
                   clipBehavior: Clip.antiAlias,
                   child: _AuxiliaryRegistryPanel(
                     currentSessionId: widget.sessionId,
-                    parentForNew: parentForNew,
+                    parentSessionId: parentSessionId,
                     bridgeService: widget.bridgeService,
                     registryService: widget.registryService,
                     onOpenSideChat: _openSideChat,
@@ -550,7 +552,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
 class _AuxiliaryRegistryPanel extends StatelessWidget {
   const _AuxiliaryRegistryPanel({
     required this.currentSessionId,
-    required this.parentForNew,
+    required this.parentSessionId,
     required this.bridgeService,
     required this.registryService,
     required this.onOpenSideChat,
@@ -560,7 +562,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
   });
 
   final String currentSessionId;
-  final String parentForNew;
+  final String parentSessionId;
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
   final OpenAuxiliarySideChat onOpenSideChat;
@@ -616,7 +618,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
               child: TabBarView(
                 children: [
                   _EphemeralSideChatList(
-                    parentForNew: parentForNew,
+                    parentSessionId: parentSessionId,
                     registryService: registryService,
                     onOpen: onOpenSideChat,
                   ),
@@ -636,12 +638,12 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
 
 class _EphemeralSideChatList extends StatefulWidget {
   const _EphemeralSideChatList({
-    required this.parentForNew,
+    required this.parentSessionId,
     required this.registryService,
     required this.onOpen,
   });
 
-  final String parentForNew;
+  final String parentSessionId;
   final EphemeralSideChatRegistryService registryService;
   final OpenAuxiliarySideChat onOpen;
 
@@ -699,7 +701,9 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
 
   @override
   Widget build(BuildContext context) {
-    final entries = widget.registryService.entries;
+    final entries = widget.registryService.entriesForParent(
+      widget.parentSessionId,
+    );
     return Column(
       children: [
         Padding(
@@ -709,7 +713,7 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
             child: FilledButton.icon(
               key: const ValueKey('auxiliary_new_side_chat'),
               onPressed: widget.registryService.isSupported
-                  ? () => widget.onOpen(widget.parentForNew, null)
+                  ? () => widget.onOpen(widget.parentSessionId, null)
                   : null,
               icon: const Icon(Icons.add_comment_outlined),
               label: Text(

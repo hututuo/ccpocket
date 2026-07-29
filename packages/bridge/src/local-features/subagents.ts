@@ -31,7 +31,6 @@ const MAX_HISTORY_PAGES = 20;
 const MAX_HISTORY_ENTRIES = HISTORY_PAGE_SIZE * MAX_HISTORY_PAGES;
 const DEFAULT_SUBAGENT_DEADLINE_MS = 12_000;
 const MAX_SUBAGENT_DEADLINE_MS = 15_000;
-const MAX_FORK_LINEAGE_DEPTH = 16;
 const MAX_PREVIEW_CHARS_PER_SIDE = 140;
 
 export const MAX_SUBAGENT_HISTORY_MESSAGES = 400;
@@ -250,17 +249,17 @@ export class CodexSubagentService {
     parentThreadId: string,
     deadline: OperationDeadline,
   ): Promise<CodexSubagentListResult> {
-    const lineage = await this.readForkLineage(
-      process,
-      parentThreadId,
-      deadline,
-    );
     const rolloutPaths = new Map<string, string>();
     try {
-      const collected = await this.collectLineageDescendants(
+      const collected = await this.collectArchivedStatesWithStateDbFallback(
         process,
-        lineage,
         deadline,
+        {
+          ancestorThreadId: parentThreadId,
+          // Omitted/empty sourceKinds means interactive threads in the
+          // official protocol. Explicitly request spawned descendants.
+          sourceKinds: SUBAGENT_SOURCE_KINDS,
+        },
         rolloutPaths,
       );
       return {
@@ -284,89 +283,12 @@ export class CodexSubagentService {
       );
       return {
         subagents: await hydrateLatestPreviews(
-          descendantsOfAny(collected.entries, lineage),
+          descendantsOf(collected.entries, parentThreadId),
           rolloutPaths,
         ),
         truncated: collected.truncated,
       };
     }
-  }
-
-  private async readForkLineage(
-    process: CodexProcess,
-    threadId: string,
-    deadline: OperationDeadline,
-  ): Promise<string[]> {
-    const lineage: string[] = [];
-    const seen = new Set<string>();
-    let current: string | null = threadId;
-
-    while (
-      current &&
-      lineage.length < MAX_FORK_LINEAGE_DEPTH &&
-      !seen.has(current)
-    ) {
-      lineage.push(current);
-      seen.add(current);
-      try {
-        const response: { thread?: unknown } = await process.requestReadOnlyRpc<{
-          thread?: unknown;
-        }>(
-          "thread/read",
-          { threadId: current, includeTurns: false },
-          deadline.rpcOptions(),
-        );
-        const thread: Record<string, unknown> | null = isRecord(response.thread)
-          ? response.thread
-          : null;
-        current = thread ? stringOrNull(thread.forkedFromId) : null;
-      } catch (error) {
-        if (isUnsupportedThreadReadError(error)) break;
-        throw error;
-      }
-    }
-
-    return lineage;
-  }
-
-  private async collectLineageDescendants(
-    process: CodexProcess,
-    lineage: readonly string[],
-    deadline: OperationDeadline,
-    rolloutPaths: Map<string, string>,
-  ): Promise<CollectedPageEntries<CodexSubagentInfo>> {
-    const merged = new Map<string, CodexSubagentInfo>();
-    let truncated = false;
-
-    for (const ancestorThreadId of lineage) {
-      const collected = await this.collectArchivedStatesWithStateDbFallback(
-        process,
-        deadline,
-        {
-          ancestorThreadId,
-          // Omitted/empty sourceKinds means interactive threads in the
-          // official protocol. Explicitly request spawned descendants.
-          sourceKinds: SUBAGENT_SOURCE_KINDS,
-        },
-        rolloutPaths,
-      );
-      truncated ||= collected.truncated;
-      for (const entry of collected.entries) {
-        const previous = merged.get(entry.id);
-        if (!previous || entry.updatedAt >= previous.updatedAt) {
-          merged.set(entry.id, entry);
-        }
-      }
-      if (merged.size >= MAX_THREAD_ENTRIES) {
-        truncated = true;
-        break;
-      }
-    }
-
-    const entries = [...merged.values()]
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .slice(0, MAX_THREAD_ENTRIES);
-    return { entries, truncated: truncated || merged.size > entries.length };
   }
 
   private async collectArchivedStates(
@@ -667,24 +589,6 @@ function latestExchangePreview(
     return `${latestQuestion}\n${latestAnswer}`;
   }
   return latestAnswer || latestQuestion;
-}
-
-function descendantsOfAny(
-  entries: readonly CodexSubagentInfo[],
-  roots: readonly string[],
-): CodexSubagentInfo[] {
-  const merged = new Map<string, CodexSubagentInfo>();
-  for (const root of roots) {
-    for (const entry of descendantsOf([...entries], root)) {
-      const previous = merged.get(entry.id);
-      if (!previous || entry.updatedAt >= previous.updatedAt) {
-        merged.set(entry.id, entry);
-      }
-    }
-  }
-  return [...merged.values()].sort(
-    (left, right) => right.updatedAt - left.updatedAt,
-  );
 }
 
 async function collectBoundedPages<T>(
@@ -1097,22 +1001,6 @@ function isUnsupportedStateDbOnlyError(error: unknown): boolean {
       message.includes("state db only")) &&
     unsupportedOrInvalidMessage(message)
   );
-}
-
-function isUnsupportedThreadReadError(error: unknown): boolean {
-  if (
-    error instanceof CodexRpcError &&
-    error.method === "thread/read" &&
-    error.code === -32601
-  ) {
-    return true;
-  }
-  const message = errorMessage(error).toLowerCase();
-  const namesMethod =
-    message.includes("thread/read") ||
-    message.includes("readthread") ||
-    message.includes("thread read");
-  return namesMethod && unsupportedOrInvalidMessage(message);
 }
 
 function isUnsupportedHistoryPaginationError(

@@ -44,9 +44,12 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
   void dispose() => messagesController.close();
 }
 
-EphemeralSideChatEntry _entry() => EphemeralSideChatEntry(
-  childSessionId: 'child-1',
-  parentSessionId: 'parent-1',
+EphemeralSideChatEntry _entry({
+  String childSessionId = 'child-1',
+  String parentSessionId = 'parent-1',
+}) => EphemeralSideChatEntry(
+  childSessionId: childSessionId,
+  parentSessionId: parentSessionId,
   projectPath: '/tmp/project',
   status: 'running',
   createdAt: DateTime.utc(2026, 7, 25),
@@ -68,7 +71,12 @@ void main() {
     final registry = EphemeralSideChatRegistryService(bridge: gateway);
     gateway.isConnected = true;
     gateway.messagesController.add(
-      EphemeralSideChatRegistryMessage(entries: [_entry()]),
+      EphemeralSideChatRegistryMessage(
+        entries: [
+          _entry(),
+          _entry(childSessionId: 'child-2', parentSessionId: 'parent-2'),
+        ],
+      ),
     );
     addTearDown(registry.dispose);
     addTearDown(gateway.dispose);
@@ -92,6 +100,7 @@ void main() {
       ),
     );
 
+    expect(find.text('1'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('auxiliary_floating_dock_tap')));
     await tester.pumpAndSettle();
     expect(
@@ -101,6 +110,10 @@ void main() {
     expect(
       find.byKey(const ValueKey('auxiliary_side_chat_child-1')),
       findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('auxiliary_side_chat_child-2')),
+      findsNothing,
     );
 
     await tester.tap(find.byKey(const ValueKey('auxiliary_side_chat_child-1')));
