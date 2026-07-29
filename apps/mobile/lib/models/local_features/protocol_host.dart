@@ -120,6 +120,7 @@ class LocalFeatureProtocolHost {
     fileTransferProtocolSlot,
     fileBrowserProtocolSlot,
     conversationContentProtocolSlot,
+    conversationSyncV2ProtocolSlot,
   ];
 
   static List<String> get supportedServerMessageTypes => List.unmodifiable(

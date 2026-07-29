@@ -8,6 +8,7 @@ import '../../../core/logger.dart';
 import '../../../models/messages.dart';
 import '../../../models/new_session_tab.dart';
 import '../../../services/bridge_service.dart';
+import '../../conversation_content_sync/conversation_content_sync_service.dart';
 import '../cache/session_catalog_cache_repository.dart';
 import 'session_list_state.dart';
 
@@ -101,10 +102,12 @@ List<T> prioritizePinned<T>(
 class SessionListCubit extends Cubit<SessionListState> {
   final BridgeService _bridge;
   final SessionCatalogCacheRepository? _catalogCache;
+  final ConversationContentSyncService? _conversationSync;
   StreamSubscription<RecentSessionsMessage>? _recentSub;
   StreamSubscription<List<String>>? _projectHistorySub;
   StreamSubscription<BridgeConnectionState>? _connectionSub;
   StreamSubscription<List<SessionInfo>>? _sessionIdentitySub;
+  StreamSubscription<ConversationSyncCacheUpdate>? _conversationSyncSub;
   final _catalogSnapshotChanges = StreamController<void>.broadcast();
   Timer? _searchDebounce;
   late final Future<void> _preferencesLoaded;
@@ -123,12 +126,18 @@ class SessionListCubit extends Cubit<SessionListState> {
   SessionCatalogQuery? _networkCatalogQuery;
   String? _networkCatalogTargetFingerprint;
   String? _lastCacheLoadFingerprint;
+  String? _v2StateFingerprint;
+  bool _v2CachedPriorityReady = false;
+  bool _v2PriorityReady = false;
+  Map<String, ConversationSyncV2Status> _conversationStatuses = const {};
 
   SessionListCubit({
     required BridgeService bridge,
     SessionCatalogCacheRepository? catalogCache,
+    ConversationContentSyncService? conversationSync,
   }) : _bridge = bridge,
        _catalogCache = catalogCache,
+       _conversationSync = conversationSync,
        super(const SessionListState()) {
     _recentSub = _bridge.recentSessionResponses.listen(_onSessionsUpdate);
     _projectHistorySub = _bridge.projectHistoryStream.listen(
@@ -137,6 +146,11 @@ class SessionListCubit extends Cubit<SessionListState> {
     _preferencesLoaded = _loadPreferences();
     if (_catalogCache != null) {
       _connectionSub = _bridge.connectionStatus.listen((connectionState) {
+        if (_bridge.supportsConversationSyncV2 &&
+            connectionState != BridgeConnectionState.connected) {
+          _v2PriorityReady = false;
+          _catalogSnapshotChanges.add(null);
+        }
         if (connectionState != BridgeConnectionState.disconnected) {
           unawaited(_loadCatalogCacheForCurrentTarget());
         }
@@ -144,6 +158,9 @@ class SessionListCubit extends Cubit<SessionListState> {
       _sessionIdentitySub = _bridge.sessionList.listen((_) {
         unawaited(_loadCatalogCacheForCurrentTarget());
       });
+      _conversationSyncSub = _conversationSync?.syncUpdates.listen(
+        _onConversationSyncUpdate,
+      );
       unawaited(_loadCatalogCacheForCurrentTarget());
     }
   }
@@ -189,6 +206,11 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   bool get hasUsableCatalogForCurrentTarget {
     final currentTarget = _currentCacheTarget();
+    if (_bridge.supportsConversationSyncV2) {
+      return currentTarget != null &&
+          _v2PriorityReady &&
+          _v2StateFingerprint == currentTarget.fingerprint;
+    }
     if (currentTarget != null &&
         _bridge.hasAuthoritativeRecentSessionsForCurrentConnection &&
         _networkCatalogQuery?.sameAs(_queryForState()) == true &&
@@ -198,6 +220,45 @@ class SessionListCubit extends Cubit<SessionListState> {
     return currentTarget != null &&
         _loadedCacheComplete &&
         _loadedCacheFingerprint == currentTarget.fingerprint;
+  }
+
+  /// Whether a previously committed v2 priority snapshot is available for an
+  /// explicit user-selected cached entry. This must not unlock automatic home
+  /// navigation: only [hasUsableCatalogForCurrentTarget] reflects the current
+  /// socket subscription.
+  bool get hasCachedCatalogForCurrentTarget {
+    final currentTarget = _currentCacheTarget();
+    if (_bridge.supportsConversationSyncV2) {
+      return currentTarget != null &&
+          _v2CachedPriorityReady &&
+          _loadedCacheFingerprint == currentTarget.fingerprint &&
+          _cachedSessions.isNotEmpty;
+    }
+    return currentTarget != null &&
+        _loadedCacheComplete &&
+        _loadedCacheFingerprint == currentTarget.fingerprint;
+  }
+
+  ConversationSyncV2Status? conversationStatusFor(RecentSession session) =>
+      _conversationStatuses['${session.provider ?? Provider.claude.value}\u0000'
+          '${session.sessionId}'];
+
+  void _onConversationSyncUpdate(ConversationSyncCacheUpdate update) {
+    switch (update.kind) {
+      case ConversationSyncCacheUpdateKind.started:
+      case ConversationSyncCacheUpdateKind.reset:
+        _v2PriorityReady = false;
+        _catalogSnapshotChanges.add(null);
+      case ConversationSyncCacheUpdateKind.priorityReady:
+        _v2PriorityReady = true;
+        _catalogSnapshotChanges.add(null);
+      case ConversationSyncCacheUpdateKind.catalog:
+      case ConversationSyncCacheUpdateKind.status:
+      case ConversationSyncCacheUpdateKind.timeline:
+      case ConversationSyncCacheUpdateKind.completed:
+        break;
+    }
+    unawaited(_loadCatalogCacheForCurrentTarget(force: true));
   }
 
   void _onSessionsUpdate(RecentSessionsMessage response) {
@@ -560,9 +621,7 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   /// Refresh catalog metadata without recursively requesting another
   /// authoritative session-list snapshot.
-  Future<bool> refreshCatalog({
-    bool Function()? isCurrentConnection,
-  }) async {
+  Future<bool> refreshCatalog({bool Function()? isCurrentConnection}) async {
     try {
       await _preferencesLoaded;
       if (isClosed || isCurrentConnection?.call() == false) return false;
@@ -610,6 +669,10 @@ class SessionListCubit extends Cubit<SessionListState> {
     _loadedCacheCatalogRevision = null;
     _loadedCacheComplete = false;
     _cachedSessions = const [];
+    _v2StateFingerprint = null;
+    _v2CachedPriorityReady = false;
+    _v2PriorityReady = false;
+    _conversationStatuses = const {};
     _lastCacheLoadFingerprint = _currentCacheTarget()?.fingerprint;
     _catalogSnapshotChanges.add(null);
   }
@@ -639,11 +702,11 @@ class SessionListCubit extends Cubit<SessionListState> {
     return target.isValid ? target : null;
   }
 
-  Future<void> _loadCatalogCacheForCurrentTarget() async {
+  Future<void> _loadCatalogCacheForCurrentTarget({bool force = false}) async {
     final cache = _catalogCache;
     final target = _currentCacheTarget();
     if (cache == null || target == null) return;
-    if (_lastCacheLoadFingerprint == target.fingerprint) return;
+    if (!force && _lastCacheLoadFingerprint == target.fingerprint) return;
     _lastCacheLoadFingerprint = target.fingerprint;
     final generation = ++_cacheLoadGeneration;
     final networkSerial = _networkCatalogSerial;
@@ -651,11 +714,22 @@ class SessionListCubit extends Cubit<SessionListState> {
     if (isClosed || generation != _cacheLoadGeneration) return;
     try {
       final snapshot = await cache.load(target);
+      final syncState = _bridge.supportsConversationSyncV2
+          ? await cache.loadConversationSyncState(target)
+          : const ConversationSyncCacheState.empty();
+      final statuses = _bridge.supportsConversationSyncV2
+          ? await cache.loadConversationStatuses(target)
+          : const <ConversationSyncV2Status>[];
       if (isClosed ||
           generation != _cacheLoadGeneration ||
           target.fingerprint != _currentCacheTarget()?.fingerprint) {
         return;
       }
+      _v2StateFingerprint = target.fingerprint;
+      _v2CachedPriorityReady = syncState.priorityReady;
+      _conversationStatuses = Map.unmodifiable({
+        for (final status in statuses) status.key: status,
+      });
       if (snapshot == null) {
         final sourceChanged =
             (_bridge.codexSourceId?.isNotEmpty ?? false) &&
@@ -668,6 +742,10 @@ class SessionListCubit extends Cubit<SessionListState> {
           _loadedCacheCatalogRevision = null;
           _loadedCacheComplete = false;
           _cachedSessions = const [];
+          _v2StateFingerprint = null;
+          _v2CachedPriorityReady = false;
+          _v2PriorityReady = false;
+          _conversationStatuses = const {};
           emit(
             state.copyWith(
               sessions: const [],
@@ -691,10 +769,13 @@ class SessionListCubit extends Cubit<SessionListState> {
       }
       _loadedCacheFingerprint = target.fingerprint;
       _loadedCacheCatalogRevision = snapshot.catalogRevision;
-      _loadedCacheComplete = snapshot.isComplete;
+      _loadedCacheComplete =
+          snapshot.isComplete ||
+          (_bridge.supportsConversationSyncV2 && _v2CachedPriorityReady);
       _cachedSessions = snapshot.sessions;
       if (networkSerial == _networkCatalogSerial &&
-          !_bridge.hasAuthoritativeRecentSessionsForCurrentConnection) {
+          (_bridge.supportsConversationSyncV2 ||
+              !_bridge.hasAuthoritativeRecentSessionsForCurrentConnection)) {
         final visibleSessions = _filterCachedSessions(snapshot.sessions);
         emit(
           state.copyWith(
@@ -910,6 +991,7 @@ class SessionListCubit extends Cubit<SessionListState> {
     await _projectHistorySub?.cancel();
     await _connectionSub?.cancel();
     await _sessionIdentitySub?.cancel();
+    await _conversationSyncSub?.cancel();
     await _catalogSnapshotChanges.close();
     await super.close();
   }

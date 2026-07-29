@@ -684,6 +684,12 @@ class BridgeService implements BridgeServiceBase {
       bridgeCapabilities.contains(fileListRequestCorrelationCapability);
   bool get supportsConversationContentEvents =>
       _bridgeCapabilities.contains(conversationContentEventCapability);
+  bool get supportsConversationSyncV2 =>
+      _bridgeCapabilities.contains(conversationSyncV2Capability);
+  bool get supportsAppServerStatusV1 =>
+      _bridgeCapabilities.contains(appServerStatusV1Capability);
+  bool get supportsBridgeIdentityV2 =>
+      _bridgeCapabilities.contains(bridgeIdentityV2Capability);
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>
       _desiredClientDeliveryMode;
   String? get promptHistoryBridgeId => _promptHistoryBridgeId;

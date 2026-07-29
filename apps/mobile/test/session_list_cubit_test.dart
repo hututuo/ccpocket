@@ -25,6 +25,7 @@ class MockBridgeService extends BridgeService {
   int catalogRequestCount = 0;
   final catalogRequestLimits = <int>[];
   bool testHasAuthoritativeRecentSessions = false;
+  bool testSupportsConversationSyncV2 = false;
   bool throwOnSwitchFilter = false;
   void Function()? onRequestProjectHistory;
 
@@ -64,6 +65,9 @@ class MockBridgeService extends BridgeService {
   @override
   bool get hasAuthoritativeRecentSessionsForCurrentConnection =>
       testHasAuthoritativeRecentSessions;
+
+  @override
+  bool get supportsConversationSyncV2 => testSupportsConversationSyncV2;
 
   @override
   String? get bridgeInstanceId => testBridgeInstanceId;
@@ -221,6 +225,8 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
     : super(SessionCatalogCacheDatabase(databasePath: ':memory:'));
 
   final snapshots = <String, SessionCatalogCacheSnapshot>{};
+  final syncStates = <String, ConversationSyncCacheState>{};
+  final statuses = <String, List<ConversationSyncV2Status>>{};
   final writes =
       <({SessionCatalogCacheTarget target, RecentSessionsMessage response})>[];
   int clearCalls = 0;
@@ -235,6 +241,19 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
   }
 
   @override
+  Future<ConversationSyncCacheState> loadConversationSyncState(
+    SessionCatalogCacheTarget target,
+  ) async =>
+      syncStates[target.fingerprint] ??
+      const ConversationSyncCacheState.empty();
+
+  @override
+  Future<List<ConversationSyncV2Status>> loadConversationStatuses(
+    SessionCatalogCacheTarget target, {
+    int limit = 10_000,
+  }) async => statuses[target.fingerprint] ?? const [];
+
+  @override
   Future<void> upsertResponse({
     required SessionCatalogCacheTarget target,
     required RecentSessionsMessage response,
@@ -246,6 +265,8 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
   Future<void> clearAll() async {
     clearCalls++;
     snapshots.clear();
+    syncStates.clear();
+    statuses.clear();
   }
 
   @override
@@ -519,20 +540,23 @@ void main() {
       expect(mockBridge.sentMessages, isEmpty);
     });
 
-    test('catalog bootstrap rechecks its connection fence before send', () async {
-      var isCurrentConnection = true;
-      mockBridge.onRequestProjectHistory = () {
-        isCurrentConnection = false;
-      };
+    test(
+      'catalog bootstrap rechecks its connection fence before send',
+      () async {
+        var isCurrentConnection = true;
+        mockBridge.onRequestProjectHistory = () {
+          isCurrentConnection = false;
+        };
 
-      expect(
-        await cubit.refreshCatalog(
-          isCurrentConnection: () => isCurrentConnection,
-        ),
-        isFalse,
-      );
-      expect(mockBridge.sentMessages, isEmpty);
-    });
+        expect(
+          await cubit.refreshCatalog(
+            isCurrentConnection: () => isCurrentConnection,
+          ),
+          isFalse,
+        );
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
 
     test(
       'network catalog readiness requires the current top-level query',
@@ -605,6 +629,54 @@ void main() {
         expect(cache.writes, hasLength(1));
       },
     );
+
+    test('v2 readiness waits for the committed priority checkpoint', () async {
+      await cubit.close();
+      mockBridge.dispose();
+      mockBridge = MockBridgeService()
+        ..testSupportsConversationSyncV2 = true
+        ..testCacheBridgeInstanceIdHint = 'bridge-v2'
+        ..testCacheCodexSourceIdHint = 'source-v2'
+        ..testLogicalConnectionIdentity = 'machine:mac-v2'
+        ..testLastUrl = 'wss://mac-v2.example/socket';
+      final cache = FakeSessionCatalogCacheRepository();
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-v2',
+        codexSourceId: 'source-v2',
+        logicalConnectionIdentity: 'machine:mac-v2',
+        websocketUrl: 'wss://mac-v2.example/socket',
+      );
+      cache.snapshots[target.fingerprint] = SessionCatalogCacheSnapshot(
+        partitionId: 'bridge-v2-source-v2',
+        sessions: [_session(id: 'cached-v2')],
+        catalogRevision: null,
+        isComplete: false,
+        cachedAt: DateTime.utc(2026, 7, 30),
+      );
+      cache.syncStates[target.fingerprint] = ConversationSyncCacheState(
+        catalogState: 'catalog-1',
+        statusState: 'status-1',
+        priorityReady: false,
+        updatedAt: DateTime.utc(2026, 7, 30),
+      );
+
+      cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+      await pumpEventQueue();
+      expect(cubit.state.sessions.single.sessionId, 'cached-v2');
+      expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+
+      await cubit.close();
+      cache.syncStates[target.fingerprint] = ConversationSyncCacheState(
+        catalogState: 'catalog-1',
+        statusState: 'status-1',
+        priorityReady: true,
+        updatedAt: DateTime.utc(2026, 7, 30, 0, 1),
+      );
+      cubit = SessionListCubit(bridge: mockBridge, catalogCache: cache);
+      await pumpEventQueue();
+      expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+      expect(cubit.hasCachedCatalogForCurrentTarget, isTrue);
+    });
 
     test(
       'saved Bridge and Codex source hints prewarm canonical cache before identity frame',

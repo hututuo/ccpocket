@@ -1,0 +1,883 @@
+part of '../../messages.dart';
+
+const conversationSyncV2Capability = 'conversation_sync_v2';
+const appServerStatusV1Capability = 'app_server_status_v1';
+const bridgeIdentityV2Capability = 'bridge_identity_v2';
+
+const _conversationSyncMaxCatalogChanges = 512;
+const _conversationSyncMaxStatuses = 512;
+const _conversationSyncMaxThreadStates = 512;
+const _conversationSyncMaxPageEntries = 64;
+const _conversationSyncMaxPageCount = 4096;
+const _conversationSyncMaxDataItems = 200;
+
+const LocalFeatureProtocolSlot conversationSyncV2ProtocolSlot =
+    _ConversationSyncV2ProtocolSlot();
+
+class _ConversationSyncV2ProtocolSlot implements LocalFeatureProtocolSlot {
+  const _ConversationSyncV2ProtocolSlot();
+
+  @override
+  String get featureId => 'conversation_sync_v2';
+
+  @override
+  List<String> get supportedServerMessageTypes => const [
+    conversationSyncV2Capability,
+  ];
+
+  @override
+  ServerMessage? tryDecode(Map<String, dynamic> json) {
+    if (json['type'] != conversationSyncV2Capability) return null;
+    return ConversationSyncV2EventMessage.fromJson(json);
+  }
+}
+
+enum ConversationSyncV2EventKind {
+  syncBegin('sync_begin'),
+  catalogChanges('catalog_changes'),
+  statusChanges('status_changes'),
+  timelinePage('timeline_page'),
+  syncCheckpoint('sync_checkpoint'),
+  syncComplete('sync_complete'),
+  syncReset('sync_reset'),
+  turnsPageResponse('turns_page_response'),
+  itemsPageResponse('items_page_response'),
+  focusApplied('focus_applied'),
+  unsubscribed('unsubscribed'),
+  error('error');
+
+  const ConversationSyncV2EventKind(this.wireValue);
+  final String wireValue;
+
+  static ConversationSyncV2EventKind parse(Object? value) {
+    for (final event in values) {
+      if (event.wireValue == value) return event;
+    }
+    throw FormatException('Unsupported conversation sync event: $value');
+  }
+}
+
+class ConversationSyncV2Target {
+  const ConversationSyncV2Target({
+    required this.provider,
+    required this.providerSessionId,
+  });
+
+  final String provider;
+  final String providerSessionId;
+
+  String get key => '$provider\u0000$providerSessionId';
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'provider': provider,
+    'providerSessionId': providerSessionId,
+  };
+
+  factory ConversationSyncV2Target.fromJson(Map<String, dynamic> json) =>
+      ConversationSyncV2Target(
+        provider: _conversationSyncProvider(json['provider']),
+        providerSessionId: _conversationSyncString(
+          json,
+          'providerSessionId',
+          maximumLength: 256,
+        ),
+      );
+}
+
+class ConversationSyncV2ThreadState extends ConversationSyncV2Target {
+  const ConversationSyncV2ThreadState({
+    required super.provider,
+    required super.providerSessionId,
+    required this.revision,
+  });
+
+  final String revision;
+
+  @override
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    ...super.toJson(),
+    'revision': revision,
+  };
+}
+
+class ConversationSyncV2ReadWatermark extends ConversationSyncV2Target {
+  const ConversationSyncV2ReadWatermark({
+    required super.provider,
+    required super.providerSessionId,
+    required this.readAt,
+  });
+
+  final String readAt;
+
+  @override
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    ...super.toJson(),
+    'readAt': readAt,
+  };
+}
+
+class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
+  const ConversationSyncV2CatalogEntry({
+    required super.provider,
+    required super.providerSessionId,
+    required this.revision,
+    required this.projectPath,
+    required this.createdAt,
+    required this.modifiedAt,
+    required this.recencyAt,
+    required this.availability,
+    this.name,
+    this.summary,
+    this.firstPrompt,
+    this.forkedFromThreadId,
+    this.parentThreadId,
+  });
+
+  final String revision;
+  final String projectPath;
+  final String createdAt;
+  final String modifiedAt;
+  final String recencyAt;
+  final String availability;
+  final String? name;
+  final String? summary;
+  final String? firstPrompt;
+  final String? forkedFromThreadId;
+  final String? parentThreadId;
+
+  factory ConversationSyncV2CatalogEntry.fromJson(Map<String, dynamic> json) {
+    final availability = _conversationSyncString(
+      json,
+      'availability',
+      maximumLength: 16,
+    );
+    if (availability != 'durable' &&
+        availability != 'ephemeral' &&
+        availability != 'expired') {
+      throw FormatException(
+        'Unsupported conversation availability: $availability',
+      );
+    }
+    return ConversationSyncV2CatalogEntry(
+      provider: _conversationSyncProvider(json['provider']),
+      providerSessionId: _conversationSyncString(
+        json,
+        'providerSessionId',
+        maximumLength: 256,
+      ),
+      revision: _conversationSyncString(json, 'revision', maximumLength: 128),
+      projectPath: _conversationSyncString(
+        json,
+        'projectPath',
+        maximumLength: 4096,
+        allowEmpty: true,
+      ),
+      createdAt: _conversationSyncIsoDate(json, 'createdAt'),
+      modifiedAt: _conversationSyncIsoDate(json, 'modifiedAt'),
+      recencyAt: _conversationSyncIsoDate(json, 'recencyAt'),
+      availability: availability,
+      name: _conversationSyncOptionalString(json, 'name', maximumLength: 512),
+      summary: _conversationSyncOptionalString(
+        json,
+        'summary',
+        maximumLength: 4096,
+      ),
+      firstPrompt: _conversationSyncOptionalString(
+        json,
+        'firstPrompt',
+        maximumLength: 4096,
+      ),
+      forkedFromThreadId: _conversationSyncOptionalString(
+        json,
+        'forkedFromThreadId',
+        maximumLength: 256,
+      ),
+      parentThreadId: _conversationSyncOptionalString(
+        json,
+        'parentThreadId',
+        maximumLength: 256,
+      ),
+    );
+  }
+
+  RecentSession toRecentSession({required String codexSourceId}) =>
+      RecentSession(
+        sessionId: providerSessionId,
+        provider: provider,
+        codexSourceId: codexSourceId,
+        forkedFromThreadId: forkedFromThreadId ?? parentThreadId,
+        name: name,
+        summary: summary,
+        firstPrompt: firstPrompt ?? '',
+        created: createdAt,
+        modified: recencyAt,
+        gitBranch: '',
+        projectPath: projectPath,
+        resumeCwd: projectPath,
+        isSidechain: false,
+      );
+}
+
+class ConversationSyncV2Status extends ConversationSyncV2Target {
+  const ConversationSyncV2Status({
+    required super.provider,
+    required super.providerSessionId,
+    required this.activity,
+    required this.attention,
+    required this.result,
+    required this.runtimeAttachment,
+    required this.source,
+    required this.confidence,
+    required this.observedAt,
+    this.attentionRequestId,
+  });
+
+  final String activity;
+  final String attention;
+  final String result;
+  final String runtimeAttachment;
+  final String source;
+  final String confidence;
+  final String observedAt;
+  final String? attentionRequestId;
+
+  factory ConversationSyncV2Status.fromJson(Map<String, dynamic> json) {
+    final status = ConversationSyncV2Status(
+      provider: _conversationSyncProvider(json['provider']),
+      providerSessionId: _conversationSyncString(
+        json,
+        'providerSessionId',
+        maximumLength: 256,
+      ),
+      activity: _conversationSyncString(json, 'activity', maximumLength: 32),
+      attention: _conversationSyncString(json, 'attention', maximumLength: 32),
+      result: _conversationSyncString(json, 'result', maximumLength: 32),
+      runtimeAttachment: _conversationSyncString(
+        json,
+        'runtimeAttachment',
+        maximumLength: 32,
+      ),
+      source: _conversationSyncString(json, 'source', maximumLength: 32),
+      confidence: _conversationSyncString(
+        json,
+        'confidence',
+        maximumLength: 32,
+      ),
+      observedAt: _conversationSyncIsoDate(json, 'observedAt'),
+      attentionRequestId: _conversationSyncOptionalString(
+        json,
+        'attentionRequestId',
+        maximumLength: 256,
+      ),
+    );
+    if (!const {
+          'idle',
+          'working',
+          'compacting',
+          'systemError',
+          'unknown',
+        }.contains(status.activity) ||
+        !const {
+          'none',
+          'approval',
+          'question',
+          'permission',
+          'form',
+        }.contains(status.attention) ||
+        !const {'none', 'completed', 'failed'}.contains(status.result) ||
+        !const {
+          'notLoaded',
+          'loaded',
+          'ownedElsewhere',
+        }.contains(status.runtimeAttachment) ||
+        !const {
+          'appServer',
+          'bridgeRuntime',
+          'legacyRollout',
+        }.contains(status.source) ||
+        !const {
+          'authoritative',
+          'observed',
+          'inferred',
+          'unknown',
+        }.contains(status.confidence)) {
+      throw const FormatException('Conversation sync status is unsupported.');
+    }
+    return status;
+  }
+
+  @override
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    ...super.toJson(),
+    'activity': activity,
+    'attention': attention,
+    'result': result,
+    'runtimeAttachment': runtimeAttachment,
+    'source': source,
+    'confidence': confidence,
+    'observedAt': observedAt,
+    'attentionRequestId': ?attentionRequestId,
+  };
+}
+
+class ConversationSyncV2NextState {
+  const ConversationSyncV2NextState({
+    required this.catalogState,
+    required this.statusState,
+    required this.threadContentStates,
+  });
+
+  final String catalogState;
+  final String statusState;
+  final List<ConversationSyncV2ThreadState> threadContentStates;
+}
+
+class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
+  const ConversationSyncV2EventMessage({
+    required this.event,
+    required this.subscriptionId,
+    required this.bridgeInstanceId,
+    required this.codexSourceId,
+    required this.batchId,
+    required this.sequence,
+    this.requestId,
+    this.catalogState,
+    this.statusState,
+    this.pageIndex,
+    this.pageCount,
+    this.created = const [],
+    this.updated = const [],
+    this.destroyed = const [],
+    this.statusChanges = const [],
+    this.provider,
+    this.providerSessionId,
+    this.revision,
+    this.baseRevision,
+    this.mode,
+    this.entries = const [],
+    this.deletes = const [],
+    this.hasEarlier,
+    this.sourceEntryCount,
+    this.phase,
+    this.hasMore,
+    this.nextState,
+    this.scope,
+    this.reason,
+    this.target,
+    this.turnId,
+    this.data = const [],
+    this.nextCursor,
+    this.focused,
+    this.errorCode,
+    this.error,
+  });
+
+  @override
+  String get featureId => 'conversation_sync_v2';
+
+  final ConversationSyncV2EventKind event;
+  final String subscriptionId;
+  final String bridgeInstanceId;
+  final String codexSourceId;
+  final String batchId;
+  final int sequence;
+  final String? requestId;
+  final String? catalogState;
+  final String? statusState;
+  final int? pageIndex;
+  final int? pageCount;
+  final List<ConversationSyncV2CatalogEntry> created;
+  final List<ConversationSyncV2CatalogEntry> updated;
+  final List<ConversationSyncV2Target> destroyed;
+  final List<ConversationSyncV2Status> statusChanges;
+  final String? provider;
+  final String? providerSessionId;
+  final String? revision;
+  final String? baseRevision;
+  final String? mode;
+  final List<ConversationContentWireEntry> entries;
+  final List<String> deletes;
+  final bool? hasEarlier;
+  final int? sourceEntryCount;
+  final String? phase;
+  final bool? hasMore;
+  final ConversationSyncV2NextState? nextState;
+  final String? scope;
+  final String? reason;
+  final ConversationSyncV2Target? target;
+  final String? turnId;
+  final List<Object?> data;
+  final String? nextCursor;
+  final ConversationSyncV2Target? focused;
+  final String? errorCode;
+  final String? error;
+
+  @override
+  String? get sessionId => providerSessionId ?? target?.providerSessionId;
+
+  factory ConversationSyncV2EventMessage.fromJson(Map<String, dynamic> json) {
+    final event = ConversationSyncV2EventKind.parse(json['event']);
+    final rawCreated = _conversationSyncList(
+      json['created'],
+      maximumLength: _conversationSyncMaxCatalogChanges,
+    );
+    final rawUpdated = _conversationSyncList(
+      json['updated'],
+      maximumLength: _conversationSyncMaxCatalogChanges,
+    );
+    final rawDestroyed = _conversationSyncList(
+      json['destroyed'],
+      maximumLength: _conversationSyncMaxCatalogChanges,
+    );
+    final rawStatuses = _conversationSyncList(
+      json['changes'],
+      maximumLength: _conversationSyncMaxStatuses,
+    );
+    final rawEntries = _conversationSyncList(
+      json['entries'],
+      maximumLength: _conversationSyncMaxPageEntries,
+    );
+    final rawDeletes = _conversationSyncList(
+      json['deletes'],
+      maximumLength: _conversationSyncMaxPageEntries,
+    );
+    final rawData = _conversationSyncList(
+      json['data'],
+      maximumLength: _conversationSyncMaxDataItems,
+    );
+    final message = ConversationSyncV2EventMessage(
+      event: event,
+      subscriptionId: _conversationSyncString(
+        json,
+        'subscriptionId',
+        maximumLength: 128,
+      ),
+      bridgeInstanceId: _conversationSyncString(
+        json,
+        'bridgeInstanceId',
+        maximumLength: 256,
+      ),
+      codexSourceId: _conversationSyncString(
+        json,
+        'codexSourceId',
+        maximumLength: 256,
+      ),
+      batchId: _conversationSyncString(json, 'batchId', maximumLength: 128),
+      sequence: _conversationSyncInt(json, 'sequence', minimum: 0),
+      requestId: _conversationSyncOptionalString(
+        json,
+        'requestId',
+        maximumLength: 128,
+      ),
+      catalogState: _conversationSyncOptionalString(
+        json,
+        'catalogState',
+        maximumLength: 256,
+      ),
+      statusState: _conversationSyncOptionalString(
+        json,
+        'statusState',
+        maximumLength: 256,
+      ),
+      pageIndex: _conversationSyncOptionalInt(json, 'pageIndex', minimum: 0),
+      pageCount: _conversationSyncOptionalInt(
+        json,
+        'pageCount',
+        minimum: 1,
+        maximum: _conversationSyncMaxPageCount,
+      ),
+      created: _conversationSyncMapList(
+        rawCreated,
+        ConversationSyncV2CatalogEntry.fromJson,
+      ),
+      updated: _conversationSyncMapList(
+        rawUpdated,
+        ConversationSyncV2CatalogEntry.fromJson,
+      ),
+      destroyed: _conversationSyncMapList(
+        rawDestroyed,
+        ConversationSyncV2Target.fromJson,
+      ),
+      statusChanges: _conversationSyncMapList(
+        rawStatuses,
+        ConversationSyncV2Status.fromJson,
+      ),
+      provider: _conversationSyncOptionalProvider(json['provider']),
+      providerSessionId: _conversationSyncOptionalString(
+        json,
+        'providerSessionId',
+        maximumLength: 256,
+      ),
+      revision: _conversationSyncOptionalString(
+        json,
+        'revision',
+        maximumLength: 128,
+      ),
+      baseRevision: _conversationSyncOptionalString(
+        json,
+        'baseRevision',
+        maximumLength: 128,
+      ),
+      mode: _conversationSyncOptionalString(json, 'mode', maximumLength: 16),
+      entries: _conversationSyncMapList(
+        rawEntries,
+        ConversationContentWireEntry.fromJson,
+      ),
+      deletes: List<String>.unmodifiable(
+        rawDeletes.map((value) {
+          if (value is! String || value.isEmpty || value.length > 512) {
+            throw const FormatException(
+              'Conversation sync delete id is invalid.',
+            );
+          }
+          return value;
+        }),
+      ),
+      hasEarlier: json['hasEarlier'] as bool?,
+      sourceEntryCount: _conversationSyncOptionalInt(
+        json,
+        'sourceEntryCount',
+        minimum: 0,
+      ),
+      phase: _conversationSyncOptionalString(json, 'phase', maximumLength: 16),
+      hasMore: json['hasMore'] as bool?,
+      nextState: _conversationSyncNextState(json['nextState']),
+      scope: _conversationSyncOptionalString(json, 'scope', maximumLength: 16),
+      reason: _conversationSyncOptionalString(
+        json,
+        'reason',
+        maximumLength: 256,
+      ),
+      target: _conversationSyncOptionalTarget(json['target']),
+      turnId: _conversationSyncOptionalString(
+        json,
+        'turnId',
+        maximumLength: 256,
+      ),
+      data: List<Object?>.unmodifiable(rawData),
+      nextCursor: _conversationSyncOptionalString(
+        json,
+        'nextCursor',
+        maximumLength: 512,
+      ),
+      focused: _conversationSyncOptionalTarget(json['focused']),
+      errorCode: _conversationSyncOptionalString(
+        json,
+        'errorCode',
+        maximumLength: 128,
+      ),
+      error: _conversationSyncOptionalString(
+        json,
+        'error',
+        maximumLength: 2048,
+      ),
+    );
+    _validateConversationSyncEvent(message);
+    return message;
+  }
+}
+
+ClientMessage conversationSyncV2Subscribe({
+  required String requestId,
+  String? catalogState,
+  String? statusState,
+  required List<ConversationSyncV2ThreadState> threadContentStates,
+  required List<ConversationSyncV2ReadWatermark> readWatermarks,
+  ConversationSyncV2Target? focused,
+}) => ClientMessage._(<String, dynamic>{
+  'type': 'conversation_sync_subscribe',
+  'protocolVersion': 2,
+  'requestId': requestId,
+  'catalogState': ?catalogState,
+  'statusState': ?statusState,
+  'threadContentStates': threadContentStates
+      .take(_conversationSyncMaxThreadStates)
+      .map((state) => state.toJson())
+      .toList(growable: false),
+  'readWatermarks': readWatermarks
+      .take(_conversationSyncMaxThreadStates)
+      .map((watermark) => watermark.toJson())
+      .toList(growable: false),
+  'focused': ?focused?.toJson(),
+}, delivery: ClientMessageDelivery.ephemeral);
+
+ClientMessage conversationSyncV2Ack({
+  required String subscriptionId,
+  required int sequence,
+}) => ClientMessage._(<String, dynamic>{
+  'type': 'conversation_sync_ack',
+  'protocolVersion': 2,
+  'subscriptionId': subscriptionId,
+  'sequence': sequence,
+}, delivery: ClientMessageDelivery.ephemeral);
+
+ClientMessage conversationSyncV2Focus({
+  required String requestId,
+  required String subscriptionId,
+  ConversationSyncV2Target? focused,
+}) => ClientMessage._(<String, dynamic>{
+  'type': 'conversation_sync_focus',
+  'protocolVersion': 2,
+  'requestId': requestId,
+  'subscriptionId': subscriptionId,
+  'focused': ?focused?.toJson(),
+}, delivery: ClientMessageDelivery.ephemeral);
+
+ClientMessage conversationSyncV2Unsubscribe({
+  required String requestId,
+  required String subscriptionId,
+}) => ClientMessage._(<String, dynamic>{
+  'type': 'conversation_sync_unsubscribe',
+  'protocolVersion': 2,
+  'requestId': requestId,
+  'subscriptionId': subscriptionId,
+}, delivery: ClientMessageDelivery.ephemeral);
+
+ClientMessage conversationSyncV2TurnsPage({
+  required String requestId,
+  required String subscriptionId,
+  required ConversationSyncV2Target target,
+  String? cursor,
+  int limit = 5,
+  String sortDirection = 'desc',
+  String itemsView = 'summary',
+}) => ClientMessage._(<String, dynamic>{
+  'type': 'conversation_turns_page',
+  'protocolVersion': 2,
+  'requestId': requestId,
+  'subscriptionId': subscriptionId,
+  ...target.toJson(),
+  'cursor': ?cursor,
+  'limit': limit.clamp(1, 200),
+  'sortDirection': sortDirection,
+  'itemsView': itemsView,
+}, delivery: ClientMessageDelivery.ephemeral);
+
+ClientMessage conversationSyncV2ItemsPage({
+  required String requestId,
+  required String subscriptionId,
+  required ConversationSyncV2Target target,
+  String? turnId,
+  String? cursor,
+  int limit = 200,
+  String sortDirection = 'asc',
+}) => ClientMessage._(<String, dynamic>{
+  'type': 'conversation_items_page',
+  'protocolVersion': 2,
+  'requestId': requestId,
+  'subscriptionId': subscriptionId,
+  ...target.toJson(),
+  'turnId': ?turnId,
+  'cursor': ?cursor,
+  'limit': limit.clamp(1, 200),
+  'sortDirection': sortDirection,
+}, delivery: ClientMessageDelivery.ephemeral);
+
+void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
+  final targetComplete =
+      (message.provider == null) == (message.providerSessionId == null);
+  if (!targetComplete) {
+    throw const FormatException('Conversation sync target is incomplete.');
+  }
+  final validPage =
+      message.pageIndex != null &&
+      message.pageCount != null &&
+      message.pageIndex! < message.pageCount!;
+  switch (message.event) {
+    case ConversationSyncV2EventKind.syncBegin:
+      if (message.requestId == null ||
+          message.catalogState == null ||
+          message.statusState == null) {
+        throw const FormatException('Conversation sync begin is incomplete.');
+      }
+    case ConversationSyncV2EventKind.catalogChanges:
+      if (!validPage || message.catalogState == null) {
+        throw const FormatException('Catalog changes are incomplete.');
+      }
+    case ConversationSyncV2EventKind.statusChanges:
+      if (!validPage || message.statusState == null) {
+        throw const FormatException('Status changes are incomplete.');
+      }
+    case ConversationSyncV2EventKind.timelinePage:
+      if (!validPage ||
+          message.provider == null ||
+          message.providerSessionId == null ||
+          message.revision == null ||
+          (message.mode != 'snapshot' && message.mode != 'patch') ||
+          (message.mode == 'patch' && message.baseRevision == null) ||
+          message.hasEarlier == null ||
+          message.sourceEntryCount == null) {
+        throw const FormatException('Timeline page is incomplete.');
+      }
+    case ConversationSyncV2EventKind.syncCheckpoint:
+      if (!const {'priority', 'recent', 'cold'}.contains(message.phase) ||
+          message.hasMore == null) {
+        throw const FormatException('Sync checkpoint is incomplete.');
+      }
+    case ConversationSyncV2EventKind.syncComplete:
+      if (message.nextState == null) {
+        throw const FormatException('Sync completion state is missing.');
+      }
+    case ConversationSyncV2EventKind.syncReset:
+      if (!const {'catalog', 'status', 'thread'}.contains(message.scope) ||
+          message.reason == null ||
+          (message.scope == 'thread' && message.target == null)) {
+        throw const FormatException('Sync reset is incomplete.');
+      }
+    case ConversationSyncV2EventKind.turnsPageResponse:
+    case ConversationSyncV2EventKind.itemsPageResponse:
+      if (message.requestId == null ||
+          message.provider == null ||
+          message.providerSessionId == null) {
+        throw const FormatException(
+          'Conversation page response is incomplete.',
+        );
+      }
+    case ConversationSyncV2EventKind.focusApplied:
+    case ConversationSyncV2EventKind.unsubscribed:
+      if (message.requestId == null) {
+        throw const FormatException(
+          'Conversation sync response is incomplete.',
+        );
+      }
+    case ConversationSyncV2EventKind.error:
+      if (message.errorCode == null || message.error == null) {
+        throw const FormatException('Conversation sync error is incomplete.');
+      }
+  }
+}
+
+ConversationSyncV2NextState? _conversationSyncNextState(Object? raw) {
+  if (raw == null) return null;
+  if (raw is! Map) {
+    throw const FormatException('Conversation sync next state must be a map.');
+  }
+  final json = Map<String, dynamic>.from(raw);
+  final rawStates = _conversationSyncList(
+    json['threadContentStates'],
+    maximumLength: _conversationSyncMaxThreadStates,
+  );
+  return ConversationSyncV2NextState(
+    catalogState: _conversationSyncString(
+      json,
+      'catalogState',
+      maximumLength: 256,
+    ),
+    statusState: _conversationSyncString(
+      json,
+      'statusState',
+      maximumLength: 256,
+    ),
+    threadContentStates: _conversationSyncMapList(rawStates, (entry) {
+      return ConversationSyncV2ThreadState(
+        provider: _conversationSyncProvider(entry['provider']),
+        providerSessionId: _conversationSyncString(
+          entry,
+          'providerSessionId',
+          maximumLength: 256,
+        ),
+        revision: _conversationSyncString(
+          entry,
+          'revision',
+          maximumLength: 128,
+        ),
+      );
+    }),
+  );
+}
+
+ConversationSyncV2Target? _conversationSyncOptionalTarget(Object? raw) {
+  if (raw == null) return null;
+  if (raw is! Map) {
+    throw const FormatException('Conversation sync target must be a map.');
+  }
+  return ConversationSyncV2Target.fromJson(Map<String, dynamic>.from(raw));
+}
+
+List<Object?> _conversationSyncList(Object? raw, {required int maximumLength}) {
+  if (raw == null) return const [];
+  if (raw is! List || raw.length > maximumLength) {
+    throw const FormatException('Conversation sync list is invalid.');
+  }
+  return raw;
+}
+
+List<T> _conversationSyncMapList<T>(
+  List<Object?> values,
+  T Function(Map<String, dynamic>) decode,
+) => List<T>.unmodifiable(
+  values.map((value) {
+    if (value is! Map) {
+      throw const FormatException('Conversation sync entry must be a map.');
+    }
+    return decode(Map<String, dynamic>.from(value));
+  }),
+);
+
+String _conversationSyncProvider(Object? value) {
+  if (value != 'claude' && value != 'codex') {
+    throw FormatException('Unsupported conversation sync provider: $value');
+  }
+  return value! as String;
+}
+
+String? _conversationSyncOptionalProvider(Object? value) =>
+    value == null ? null : _conversationSyncProvider(value);
+
+String _conversationSyncString(
+  Map<String, dynamic> json,
+  String key, {
+  required int maximumLength,
+  bool allowEmpty = false,
+}) {
+  final value = json[key];
+  if (value is! String ||
+      (!allowEmpty && value.isEmpty) ||
+      value.length > maximumLength) {
+    throw FormatException('Conversation sync $key is invalid.');
+  }
+  return value;
+}
+
+String? _conversationSyncOptionalString(
+  Map<String, dynamic> json,
+  String key, {
+  required int maximumLength,
+}) {
+  final value = json[key];
+  if (value == null) return null;
+  return _conversationSyncString(json, key, maximumLength: maximumLength);
+}
+
+int _conversationSyncInt(
+  Map<String, dynamic> json,
+  String key, {
+  required int minimum,
+  int? maximum,
+}) {
+  final value = json[key];
+  if (value is! int ||
+      value < minimum ||
+      (maximum != null && value > maximum)) {
+    throw FormatException('Conversation sync $key is invalid.');
+  }
+  return value;
+}
+
+int? _conversationSyncOptionalInt(
+  Map<String, dynamic> json,
+  String key, {
+  required int minimum,
+  int? maximum,
+}) {
+  if (json[key] == null) return null;
+  return _conversationSyncInt(json, key, minimum: minimum, maximum: maximum);
+}
+
+String _conversationSyncIsoDate(Map<String, dynamic> json, String key) {
+  final value = _conversationSyncString(json, key, maximumLength: 64);
+  if (DateTime.tryParse(value) == null) {
+    throw FormatException('Conversation sync $key is not an ISO date.');
+  }
+  return value;
+}

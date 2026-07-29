@@ -513,6 +513,183 @@ void main() {
     );
   });
 
+  test('commits v2 catalog and monotonic composite status state', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-v2',
+      codexSourceId: 'source-v2',
+    );
+    const catalogEntry = ConversationSyncV2CatalogEntry(
+      provider: 'codex',
+      providerSessionId: 'thread-v2',
+      revision: 'catalog-revision-1',
+      projectPath: '/workspace/v2',
+      name: 'Synced thread',
+      firstPrompt: 'Hello',
+      createdAt: '2026-07-30T00:00:00.000Z',
+      modifiedAt: '2026-07-30T00:01:00.000Z',
+      recencyAt: '2026-07-30T00:02:00.000Z',
+      availability: 'durable',
+    );
+    await repository.applyConversationCatalogPage(
+      target: target,
+      codexSourceId: 'source-v2',
+      catalogState: 'catalog-state-1',
+      pageIndex: 0,
+      pageCount: 1,
+      created: const [catalogEntry],
+      updated: const [],
+      destroyed: const [],
+    );
+    await repository.applyConversationStatusPage(
+      target: target,
+      statusState: 'status-state-1',
+      pageIndex: 0,
+      pageCount: 1,
+      changes: const [
+        ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-v2',
+          activity: 'working',
+          attention: 'approval',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-07-30T00:03:00.000Z',
+        ),
+      ],
+    );
+    await repository.applyConversationStatusPage(
+      target: target,
+      statusState: 'status-state-2',
+      pageIndex: 0,
+      pageCount: 1,
+      changes: const [
+        ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-v2',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-07-30T00:02:00.000Z',
+        ),
+      ],
+    );
+
+    final catalog = await repository.load(target);
+    expect(catalog?.sessions.single.name, 'Synced thread');
+    expect(catalog?.sessions.single.codexSourceId, 'source-v2');
+    final statuses = await repository.loadConversationStatuses(target);
+    expect(statuses.single.activity, 'working');
+    expect(statuses.single.attention, 'approval');
+    final state = await repository.loadConversationSyncState(target);
+    expect(state.catalogState, 'catalog-state-1');
+    expect(state.statusState, 'status-state-2');
+  });
+
+  test(
+    'stages v2 pages on disk and preserves untouched patch entries',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-stage',
+        codexSourceId: 'source-stage',
+      );
+      final first = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-1',
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+        revision: 'revision-1',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 2,
+        entries: [_entry('entry-1', 0, 'idle')],
+        deletes: const [],
+        hasEarlier: true,
+        sourceEntryCount: 50,
+      );
+      expect(first.pageStored, isTrue);
+      expect(first.windowCommitted, isFalse);
+      expect(
+        await repository.loadConversationWindow(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-stage',
+        ),
+        isNull,
+      );
+
+      final second = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-1',
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+        revision: 'revision-1',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 1,
+        pageCount: 2,
+        entries: [_entry('entry-2', 1, 'running')],
+        deletes: const [],
+        hasEarlier: true,
+        sourceEntryCount: 50,
+      );
+      expect(second.windowCommitted, isTrue);
+      final snapshot = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+      );
+      expect(snapshot?.entries.map((entry) => entry.entryId), [
+        'entry-1',
+        'entry-2',
+      ]);
+
+      final patched = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-1',
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+        revision: 'revision-2',
+        baseRevision: 'revision-1',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('entry-3', 2, 'idle')],
+        deletes: const ['entry-1'],
+        hasEarlier: false,
+        sourceEntryCount: 2,
+      );
+      expect(patched.baseRevisionMatched, isTrue);
+      expect(patched.windowCommitted, isTrue);
+      final finalWindow = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+      );
+      expect(finalWindow?.revision, 'revision-2');
+      expect(finalWindow?.entries.map((entry) => entry.entryId), [
+        'entry-2',
+        'entry-3',
+      ]);
+
+      final db = await database.database;
+      expect(
+        Sqflite.firstIntValue(
+          await db.rawQuery(
+            'SELECT COUNT(*) FROM '
+            '${SessionCatalogCacheDatabase.timelineStagesTable}',
+          ),
+        ),
+        0,
+      );
+    },
+  );
+
   test('rejects mutations after close begins', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-closed',

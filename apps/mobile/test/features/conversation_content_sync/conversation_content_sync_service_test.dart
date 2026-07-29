@@ -48,6 +48,157 @@ void main() {
     }
   });
 
+  test('prefers v2 and ACKs timeline pages only after SQLite commit', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+
+    final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-1',
+        sequence: 1,
+        requestId: subscriptionId,
+        catalogState: 'catalog-1',
+        statusState: 'status-1',
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      1,
+    );
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.catalogChanges,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-1',
+        sequence: 2,
+        catalogState: 'catalog-1',
+        pageIndex: 0,
+        pageCount: 1,
+        created: [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-v2',
+            revision: 'revision-1',
+            projectPath: '/workspace/v2',
+            name: 'V2 thread',
+            createdAt: '2026-07-30T00:00:00.000Z',
+            modifiedAt: '2026-07-30T00:01:00.000Z',
+            recencyAt: '2026-07-30T00:02:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      2,
+    );
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.timelinePage,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-1',
+        sequence: 3,
+        provider: 'codex',
+        providerSessionId: 'thread-v2',
+        revision: 'revision-1',
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 2,
+        entries: [_wireEntry('entry-1', 0)],
+        hasEarlier: true,
+        sourceEntryCount: 50,
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      3,
+    );
+    expect(
+      await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-v2',
+      ),
+      isNull,
+    );
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.timelinePage,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-1',
+        sequence: 4,
+        provider: 'codex',
+        providerSessionId: 'thread-v2',
+        revision: 'revision-1',
+        mode: 'snapshot',
+        pageIndex: 1,
+        pageCount: 2,
+        entries: [_wireEntry('entry-2', 1)],
+        hasEarlier: true,
+        sourceEntryCount: 50,
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      4,
+    );
+    final cached = await service.loadCachedWindow(
+      provider: 'codex',
+      providerSessionId: 'thread-v2',
+    );
+    expect(cached?.entries.map((entry) => entry.entryId), [
+      'entry-1',
+      'entry-2',
+    ]);
+
+    final priorityReady = service.syncUpdates.firstWhere(
+      (update) => update.kind == ConversationSyncCacheUpdateKind.priorityReady,
+    );
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncCheckpoint,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-1',
+        sequence: 5,
+        phase: 'priority',
+        hasMore: true,
+      ),
+    );
+    await priorityReady;
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      5,
+    );
+    expect(
+      (await repository.loadConversationSyncState(
+        SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      )).priorityReady,
+      isTrue,
+    );
+  });
+
   test('commits a complete snapshot before acknowledging it', () async {
     final subscribe = await gateway.nextOutgoing(
       'conversation_content_subscribe',
@@ -448,6 +599,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   bool supportsConversationContentEvents = true;
 
   @override
+  bool supportsConversationSyncV2 = false;
+
+  @override
   BridgeClientDeliveryMode desiredClientDeliveryMode =
       BridgeClientDeliveryMode.interactive;
 
@@ -458,7 +612,7 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
     _outgoing.add(json);
   }
 
-  void addEvent(ConversationContentEventMessage message) {
+  void addEvent(LocalFeatureServerMessage message) {
     _messages.add(message);
   }
 

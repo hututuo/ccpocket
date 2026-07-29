@@ -18,6 +18,7 @@ abstract interface class ConversationContentSyncGateway {
   String? get logicalConnectionIdentity;
   String? get lastUrl;
   bool get supportsConversationContentEvents;
+  bool get supportsConversationSyncV2;
   BridgeClientDeliveryMode get desiredClientDeliveryMode;
 
   void send(ClientMessage message);
@@ -64,6 +65,9 @@ class BridgeServiceConversationContentSyncGateway
       bridge.supportsConversationContentEvents;
 
   @override
+  bool get supportsConversationSyncV2 => bridge.supportsConversationSyncV2;
+
+  @override
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>
       bridge.desiredClientDeliveryMode;
 
@@ -83,13 +87,38 @@ class ConversationContentCacheUpdate {
   final String revision;
 }
 
+enum ConversationSyncCacheUpdateKind {
+  started,
+  catalog,
+  status,
+  timeline,
+  priorityReady,
+  completed,
+  reset,
+}
+
+class ConversationSyncCacheUpdate {
+  const ConversationSyncCacheUpdate({
+    required this.kind,
+    this.provider,
+    this.providerSessionId,
+    this.revision,
+  });
+
+  final ConversationSyncCacheUpdateKind kind;
+  final String? provider;
+  final String? providerSessionId;
+  final String? revision;
+}
+
 /// Maintains one foreground subscription to the Bridge-owned conversation
 /// scheduler.
 ///
 /// The phone never polls individual conversations. Snapshot pages are staged
-/// in memory and atomically committed before ACK; patches are applied only
-/// against the exact durable base revision. Background lifecycle states reject
-/// body events and unsubscribe, preserving notification-only behavior.
+/// directly in SQLite and atomically committed before cumulative ACK when v2 is
+/// available. The bounded v1 in-memory stage remains only for old Bridges.
+/// Background lifecycle states reject body events and unsubscribe, preserving
+/// notification-only behavior.
 class ConversationContentSyncService with WidgetsBindingObserver {
   ConversationContentSyncService({
     required this.bridge,
@@ -105,6 +134,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
 
   final StreamController<ConversationContentCacheUpdate> _updatesController =
       StreamController<ConversationContentCacheUpdate>.broadcast();
+  final StreamController<ConversationSyncCacheUpdate> _syncUpdatesController =
+      StreamController<ConversationSyncCacheUpdate>.broadcast();
   final Map<String, _SnapshotStage> _stages = {};
 
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
@@ -124,9 +155,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   int _generation = 0;
   int _requestSequence = 0;
   int _retryAttempt = 0;
+  int _highestV2CommittedSequence = 0;
+  Future<void> _v2MutationTail = Future<void>.value();
 
   Stream<ConversationContentCacheUpdate> get updates =>
       _updatesController.stream;
+  Stream<ConversationSyncCacheUpdate> get syncUpdates =>
+      _syncUpdatesController.stream;
 
   void start({AppLifecycleState? initialLifecycleState}) {
     if (_started || _disposed) return;
@@ -142,6 +177,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _messageSubscription = bridge.localFeatureMessages.listen((message) {
       if (message is ConversationContentEventMessage) {
         _handleEvent(message);
+      } else if (message is ConversationSyncV2EventMessage) {
+        _handleV2Event(message);
       }
     });
     _deliveryModeSubscription = bridge.clientDeliveryModeStates.listen(
@@ -187,11 +224,22 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (!_canProcessContent) return;
     try {
       bridge.send(
-        conversationContentFocus(
-          requestId: _nextRequestId('focus'),
-          subscriptionId: subscriptionId,
-          focused: next,
-        ),
+        bridge.supportsConversationSyncV2
+            ? conversationSyncV2Focus(
+                requestId: _nextRequestId('focus'),
+                subscriptionId: subscriptionId,
+                focused: next == null
+                    ? null
+                    : ConversationSyncV2Target(
+                        provider: next.provider,
+                        providerSessionId: next.providerSessionId,
+                      ),
+              )
+            : conversationContentFocus(
+                requestId: _nextRequestId('focus'),
+                subscriptionId: subscriptionId,
+                focused: next,
+              ),
       );
     } catch (_) {
       _handleTransportLoss();
@@ -225,7 +273,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       bridge.currentBridgeConnectionState == BridgeConnectionState.connected &&
       bridge.desiredClientDeliveryMode ==
           BridgeClientDeliveryMode.interactive &&
-      bridge.supportsConversationContentEvents &&
+      (bridge.supportsConversationSyncV2 ||
+          bridge.supportsConversationContentEvents) &&
       bridge.bridgeInstanceId?.isNotEmpty == true;
 
   SessionCatalogCacheTarget get _cacheTarget =>
@@ -249,7 +298,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _ensureSubscribed();
       return;
     }
-    _stages.clear();
+    _stopSubscription(sendUnsubscribe: true);
   }
 
   void _handleTransportLoss() {
@@ -258,6 +307,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _activeSubscriptionId = null;
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;
+    _highestV2CommittedSequence = 0;
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -291,6 +341,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _pendingSubscriptionId = requestId;
     _subscriptionTargetFingerprint = targetFingerprint;
     _subscriptionBridgeInstanceId = bridgeInstanceId;
+    if (bridge.supportsConversationSyncV2) {
+      unawaited(_subscribeV2(generation, requestId, target));
+      return;
+    }
     unawaited(
       cache
           .knownConversationRevisions(target)
@@ -328,7 +382,62 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _subscribeV2(
+    int generation,
+    String requestId,
+    SessionCatalogCacheTarget target,
+  ) async {
+    try {
+      final values = await Future.wait<Object>([
+        cache.loadConversationSyncState(target),
+        cache.knownConversationRevisions(target, limit: 512),
+        cache.loadReadWatermarks(target, limit: 512),
+      ]);
+      if (_disposed ||
+          generation != _generation ||
+          _pendingSubscriptionId != requestId ||
+          !_canProcessContent ||
+          !bridge.supportsConversationSyncV2 ||
+          target.fingerprint != _cacheTarget.fingerprint ||
+          _subscriptionBridgeInstanceId != bridge.bridgeInstanceId) {
+        return;
+      }
+      final state = values[0] as ConversationSyncCacheState;
+      final revisions = values[1] as List<ConversationContentCursor>;
+      final watermarks = values[2] as List<ConversationSyncV2ReadWatermark>;
+      bridge.send(
+        conversationSyncV2Subscribe(
+          requestId: requestId,
+          catalogState: state.catalogState,
+          statusState: state.statusState,
+          threadContentStates: revisions
+              .map(
+                (cursor) => ConversationSyncV2ThreadState(
+                  provider: cursor.provider,
+                  providerSessionId: cursor.providerSessionId,
+                  revision: cursor.revision,
+                ),
+              )
+              .toList(growable: false),
+          readWatermarks: watermarks,
+          focused: _focused == null
+              ? null
+              : ConversationSyncV2Target(
+                  provider: _focused!.provider,
+                  providerSessionId: _focused!.providerSessionId,
+                ),
+        ),
+      );
+    } catch (_) {
+      if (generation == _generation) {
+        _pendingSubscriptionId = null;
+        _scheduleRetry();
+      }
+    }
+  }
+
   void _handleEvent(ConversationContentEventMessage event) {
+    if (bridge.supportsConversationSyncV2) return;
     if (!_canProcessContent ||
         event.bridgeInstanceId != bridge.bridgeInstanceId ||
         _subscriptionTargetFingerprint != _cacheTarget.fingerprint ||
@@ -354,6 +463,192 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         unawaited(_applyPatch(event));
       case ConversationContentEventKind.error:
         _handleError(event);
+    }
+  }
+
+  void _handleV2Event(ConversationSyncV2EventMessage event) {
+    if (!bridge.supportsConversationSyncV2 ||
+        !_canProcessContent ||
+        event.bridgeInstanceId != bridge.bridgeInstanceId ||
+        event.codexSourceId != (bridge.codexSourceId ?? 'legacy') ||
+        _subscriptionTargetFingerprint != _cacheTarget.fingerprint ||
+        (event.subscriptionId != _activeSubscriptionId &&
+            event.subscriptionId != _pendingSubscriptionId)) {
+      return;
+    }
+    final generation = _generation;
+    final target = _cacheTarget;
+    _v2MutationTail = _v2MutationTail
+        .then((_) => _commitV2Event(event, generation, target))
+        .catchError((Object error) {
+          debugPrint('Conversation sync v2 commit failed: $error');
+          if (_isV2Current(event, generation, target)) {
+            _restartSubscription();
+          }
+        });
+  }
+
+  Future<void> _commitV2Event(
+    ConversationSyncV2EventMessage event,
+    int generation,
+    SessionCatalogCacheTarget target,
+  ) async {
+    if (!_isV2Current(event, generation, target)) return;
+    if (event.sequence <= _highestV2CommittedSequence) {
+      _sendV2Ack(event.subscriptionId, _highestV2CommittedSequence);
+      return;
+    }
+    if (event.sequence != _highestV2CommittedSequence + 1) {
+      throw StateError(
+        'Conversation sync sequence gap: '
+        '${_highestV2CommittedSequence + 1} -> ${event.sequence}',
+      );
+    }
+    ConversationSyncCacheUpdate? publish;
+    switch (event.event) {
+      case ConversationSyncV2EventKind.syncBegin:
+        if (event.requestId != _pendingSubscriptionId) return;
+        _activeSubscriptionId = event.subscriptionId;
+        _pendingSubscriptionId = null;
+        await cache.beginConversationSync(
+          target: target,
+          subscriptionId: event.subscriptionId,
+        );
+        publish = const ConversationSyncCacheUpdate(
+          kind: ConversationSyncCacheUpdateKind.started,
+        );
+      case ConversationSyncV2EventKind.catalogChanges:
+        await cache.applyConversationCatalogPage(
+          target: target,
+          codexSourceId: event.codexSourceId,
+          catalogState: event.catalogState!,
+          pageIndex: event.pageIndex!,
+          pageCount: event.pageCount!,
+          created: event.created,
+          updated: event.updated,
+          destroyed: event.destroyed,
+        );
+        publish = const ConversationSyncCacheUpdate(
+          kind: ConversationSyncCacheUpdateKind.catalog,
+        );
+      case ConversationSyncV2EventKind.statusChanges:
+        await cache.applyConversationStatusPage(
+          target: target,
+          statusState: event.statusState!,
+          pageIndex: event.pageIndex!,
+          pageCount: event.pageCount!,
+          changes: event.statusChanges,
+        );
+        publish = const ConversationSyncCacheUpdate(
+          kind: ConversationSyncCacheUpdateKind.status,
+        );
+      case ConversationSyncV2EventKind.timelinePage:
+        final committed = await cache.stageConversationTimelinePage(
+          target: target,
+          subscriptionId: event.subscriptionId,
+          provider: event.provider!,
+          providerSessionId: event.providerSessionId!,
+          revision: event.revision!,
+          baseRevision: event.baseRevision,
+          mode: event.mode!,
+          pageIndex: event.pageIndex!,
+          pageCount: event.pageCount!,
+          entries: event.entries,
+          deletes: event.deletes,
+          hasEarlier: event.hasEarlier!,
+          sourceEntryCount: event.sourceEntryCount!,
+        );
+        if (!committed.baseRevisionMatched) {
+          await cache.deleteConversationWindow(
+            target: target,
+            provider: event.provider!,
+            providerSessionId: event.providerSessionId!,
+          );
+          throw StateError('Conversation timeline base revision changed.');
+        }
+        if (committed.windowCommitted) {
+          _updatesController.add(
+            ConversationContentCacheUpdate(
+              provider: event.provider!,
+              providerSessionId: event.providerSessionId!,
+              revision: event.revision!,
+            ),
+          );
+          publish = ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.timeline,
+            provider: event.provider,
+            providerSessionId: event.providerSessionId,
+            revision: event.revision,
+          );
+        }
+      case ConversationSyncV2EventKind.syncCheckpoint:
+        if (event.phase == 'priority') {
+          await cache.markConversationPriorityReady(target);
+          publish = const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.priorityReady,
+          );
+        }
+      case ConversationSyncV2EventKind.syncComplete:
+        await cache.completeConversationSync(
+          target: target,
+          nextState: event.nextState!,
+        );
+        publish = const ConversationSyncCacheUpdate(
+          kind: ConversationSyncCacheUpdateKind.completed,
+        );
+      case ConversationSyncV2EventKind.syncReset:
+        await cache.resetConversationSyncScope(
+          target: target,
+          scope: event.scope!,
+          thread: event.target,
+        );
+        publish = ConversationSyncCacheUpdate(
+          kind: ConversationSyncCacheUpdateKind.reset,
+          provider: event.target?.provider,
+          providerSessionId: event.target?.providerSessionId,
+        );
+      case ConversationSyncV2EventKind.turnsPageResponse:
+      case ConversationSyncV2EventKind.itemsPageResponse:
+      case ConversationSyncV2EventKind.focusApplied:
+      case ConversationSyncV2EventKind.unsubscribed:
+      // These responses do not mutate the hot cache in this service. Their
+      // sequence still participates in cumulative flow control.
+      case ConversationSyncV2EventKind.error:
+        if (event.requestId == _pendingSubscriptionId) {
+          throw StateError(event.error ?? 'Conversation sync failed.');
+        }
+    }
+    if (!_isV2Current(event, generation, target)) return;
+    _highestV2CommittedSequence = event.sequence;
+    _sendV2Ack(event.subscriptionId, event.sequence);
+    if (publish != null) {
+      _syncUpdatesController.add(publish);
+    }
+    _retryAttempt = 0;
+  }
+
+  bool _isV2Current(
+    ConversationSyncV2EventMessage event,
+    int generation,
+    SessionCatalogCacheTarget target,
+  ) =>
+      !_disposed &&
+      generation == _generation &&
+      target.fingerprint == _cacheTarget.fingerprint &&
+      event.subscriptionId ==
+          (_activeSubscriptionId ?? _pendingSubscriptionId) &&
+      _canProcessContent;
+
+  void _sendV2Ack(String subscriptionId, int sequence) {
+    try {
+      bridge.send(
+        conversationSyncV2Ack(
+          subscriptionId: subscriptionId,
+          sequence: sequence,
+        ),
+      );
+    } catch (_) {
+      _handleTransportLoss();
     }
   }
 
@@ -538,6 +833,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _pendingSubscriptionId = null;
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;
+    _highestV2CommittedSequence = 0;
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -549,10 +845,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     try {
       bridge.send(
-        conversationContentUnsubscribe(
-          requestId: _nextRequestId('unsubscribe'),
-          subscriptionId: subscriptionId,
-        ),
+        bridge.supportsConversationSyncV2
+            ? conversationSyncV2Unsubscribe(
+                requestId: _nextRequestId('unsubscribe'),
+                subscriptionId: subscriptionId,
+              )
+            : conversationContentUnsubscribe(
+                requestId: _nextRequestId('unsubscribe'),
+                subscriptionId: subscriptionId,
+              ),
       );
     } catch (_) {
       // The socket is already unusable; connection handling owns recovery.
@@ -606,6 +907,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         _deliveryModeSubscription!.cancel(),
     ]);
     await _updatesController.close();
+    await _syncUpdatesController.close();
   }
 }
 

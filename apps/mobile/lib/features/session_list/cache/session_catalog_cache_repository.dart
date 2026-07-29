@@ -112,6 +112,38 @@ class ConversationHotWindowSnapshot {
   final DateTime cachedAt;
 }
 
+class ConversationSyncCacheState {
+  const ConversationSyncCacheState({
+    required this.catalogState,
+    required this.statusState,
+    required this.priorityReady,
+    required this.updatedAt,
+  });
+
+  const ConversationSyncCacheState.empty()
+    : catalogState = null,
+      statusState = null,
+      priorityReady = false,
+      updatedAt = null;
+
+  final String? catalogState;
+  final String? statusState;
+  final bool priorityReady;
+  final DateTime? updatedAt;
+}
+
+class ConversationTimelinePageCommit {
+  const ConversationTimelinePageCommit({
+    required this.pageStored,
+    required this.windowCommitted,
+    required this.baseRevisionMatched,
+  });
+
+  final bool pageStored;
+  final bool windowCommitted;
+  final bool baseRevisionMatched;
+}
+
 class SessionCatalogCacheStats {
   const SessionCatalogCacheStats({
     required this.sessionSummaries,
@@ -484,7 +516,7 @@ class SessionCatalogCacheRepository {
 
   Future<List<ConversationContentCursor>> knownConversationRevisions(
     SessionCatalogCacheTarget target, {
-    int limit = 256,
+    int limit = 512,
   }) async {
     if (!target.isValid || limit <= 0) return const [];
     await _mutationTail;
@@ -497,7 +529,7 @@ class SessionCatalogCacheRepository {
       where: 'partition_id = ?',
       whereArgs: [partitionId],
       orderBy: 'updated_at DESC',
-      limit: limit.clamp(1, 256),
+      limit: limit.clamp(1, 512),
     );
     return List<ConversationContentCursor>.unmodifiable(
       rows.map(
@@ -508,6 +540,711 @@ class SessionCatalogCacheRepository {
         ),
       ),
     );
+  }
+
+  Future<ConversationSyncCacheState> loadConversationSyncState(
+    SessionCatalogCacheTarget target,
+  ) async {
+    if (!target.isValid) return const ConversationSyncCacheState.empty();
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) {
+      return const ConversationSyncCacheState.empty();
+    }
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.syncStatesTable,
+      where: 'partition_id = ?',
+      whereArgs: [partitionId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return const ConversationSyncCacheState.empty();
+    final row = rows.single;
+    return ConversationSyncCacheState(
+      catalogState: row['catalog_state'] as String?,
+      statusState: row['status_state'] as String?,
+      priorityReady: (row['priority_ready'] as int? ?? 0) != 0,
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(
+        row['updated_at']! as int,
+        isUtc: true,
+      ),
+    );
+  }
+
+  Future<List<ConversationSyncV2Status>> loadConversationStatuses(
+    SessionCatalogCacheTarget target, {
+    int limit = 10_000,
+  }) async {
+    if (!target.isValid || limit <= 0) return const [];
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return const [];
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.statusesTable,
+      columns: ['status_json'],
+      where: 'partition_id = ?',
+      whereArgs: [partitionId],
+      orderBy: 'observed_sort DESC',
+      limit: limit.clamp(1, maxEntriesPerPartition),
+    );
+    final statuses = <ConversationSyncV2Status>[];
+    for (final row in rows) {
+      try {
+        final decoded = jsonDecode(row['status_json']! as String);
+        if (decoded is Map) {
+          statuses.add(
+            ConversationSyncV2Status.fromJson(
+              Map<String, dynamic>.from(decoded),
+            ),
+          );
+        }
+      } catch (_) {
+        // The status projection is rebuildable; one bad row is isolated.
+      }
+    }
+    return List.unmodifiable(statuses);
+  }
+
+  Future<List<ConversationSyncV2ReadWatermark>> loadReadWatermarks(
+    SessionCatalogCacheTarget target, {
+    int limit = 512,
+  }) async {
+    if (!target.isValid || limit <= 0) return const [];
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return const [];
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.readWatermarksTable,
+      where: 'partition_id = ?',
+      whereArgs: [partitionId],
+      orderBy: 'read_sort DESC',
+      limit: limit.clamp(1, 512),
+    );
+    return List.unmodifiable(
+      rows.map(
+        (row) => ConversationSyncV2ReadWatermark(
+          provider: row['provider']! as String,
+          providerSessionId: row['provider_session_id']! as String,
+          readAt: row['read_at']! as String,
+        ),
+      ),
+    );
+  }
+
+  Future<void> storeReadWatermark({
+    required SessionCatalogCacheTarget target,
+    required ConversationSyncV2ReadWatermark watermark,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final readSort =
+            DateTime.tryParse(
+              watermark.readAt,
+            )?.toUtc().millisecondsSinceEpoch ??
+            0;
+        final rows = await transaction.query(
+          SessionCatalogCacheDatabase.readWatermarksTable,
+          columns: ['read_sort'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [
+            partitionId,
+            watermark.provider,
+            watermark.providerSessionId,
+          ],
+          limit: 1,
+        );
+        if (rows.isNotEmpty && (rows.single['read_sort']! as int) > readSort) {
+          return;
+        }
+        await transaction.insert(
+          SessionCatalogCacheDatabase.readWatermarksTable,
+          {
+            'partition_id': partitionId,
+            'provider': watermark.provider,
+            'provider_session_id': watermark.providerSessionId,
+            'read_at': watermark.readAt,
+            'read_sort': readSort,
+            'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      });
+    });
+  }
+
+  Future<void> beginConversationSync({
+    required SessionCatalogCacheTarget target,
+    required String subscriptionId,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        await transaction.insert(
+          SessionCatalogCacheDatabase.syncStatesTable,
+          {'partition_id': partitionId, 'priority_ready': 0, 'updated_at': now},
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+        await transaction.update(
+          SessionCatalogCacheDatabase.syncStatesTable,
+          {'priority_ready': 0, 'updated_at': now},
+          where: 'partition_id = ?',
+          whereArgs: [partitionId],
+        );
+        await transaction.delete(
+          SessionCatalogCacheDatabase.timelineStagesTable,
+          where: 'partition_id = ? AND subscription_id <> ?',
+          whereArgs: [partitionId, subscriptionId],
+        );
+      });
+    });
+  }
+
+  Future<void> applyConversationCatalogPage({
+    required SessionCatalogCacheTarget target,
+    required String codexSourceId,
+    required String catalogState,
+    required int pageIndex,
+    required int pageCount,
+    required List<ConversationSyncV2CatalogEntry> created,
+    required List<ConversationSyncV2CatalogEntry> updated,
+    required List<ConversationSyncV2Target> destroyed,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        for (final entry in [...created, ...updated]) {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.entriesTable,
+            where: 'partition_id = ? AND provider = ? AND session_id = ?',
+            whereArgs: [partitionId, entry.provider, entry.providerSessionId],
+          );
+          final session = entry.toRecentSession(codexSourceId: codexSourceId);
+          await transaction.insert(
+            SessionCatalogCacheDatabase.entriesTable,
+            {
+              'partition_id': partitionId,
+              'provider': entry.provider,
+              'project_path': entry.projectPath,
+              'session_id': entry.providerSessionId,
+              'session_json': jsonEncode(session.toJson()),
+              'modified_sort':
+                  DateTime.tryParse(
+                    entry.recencyAt,
+                  )?.toUtc().millisecondsSinceEpoch ??
+                  0,
+              'cached_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        for (final entry in destroyed) {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.entriesTable,
+            where: 'partition_id = ? AND provider = ? AND session_id = ?',
+            whereArgs: [partitionId, entry.provider, entry.providerSessionId],
+          );
+          await transaction.delete(
+            SessionCatalogCacheDatabase.statusesTable,
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, entry.provider, entry.providerSessionId],
+          );
+        }
+        await _ensureSyncState(transaction, partitionId, now);
+        if (pageIndex == pageCount - 1) {
+          await transaction.update(
+            SessionCatalogCacheDatabase.syncStatesTable,
+            {'catalog_state': catalogState, 'updated_at': now},
+            where: 'partition_id = ?',
+            whereArgs: [partitionId],
+          );
+        }
+        await transaction.update(
+          SessionCatalogCacheDatabase.partitionsTable,
+          {'updated_at': now},
+          where: 'partition_id = ?',
+          whereArgs: [partitionId],
+        );
+        await _prunePartition(transaction, partitionId);
+      });
+    });
+  }
+
+  Future<void> applyConversationStatusPage({
+    required SessionCatalogCacheTarget target,
+    required String statusState,
+    required int pageIndex,
+    required int pageCount,
+    required List<ConversationSyncV2Status> changes,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        for (final status in changes) {
+          final observed =
+              DateTime.tryParse(
+                status.observedAt,
+              )?.toUtc().millisecondsSinceEpoch ??
+              0;
+          final prior = await transaction.query(
+            SessionCatalogCacheDatabase.statusesTable,
+            columns: ['observed_sort'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, status.provider, status.providerSessionId],
+            limit: 1,
+          );
+          if (prior.isNotEmpty &&
+              (prior.single['observed_sort']! as int) > observed) {
+            continue;
+          }
+          await transaction.insert(
+            SessionCatalogCacheDatabase.statusesTable,
+            {
+              'partition_id': partitionId,
+              'provider': status.provider,
+              'provider_session_id': status.providerSessionId,
+              'status_json': jsonEncode(status.toJson()),
+              'observed_sort': observed,
+              'updated_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await _ensureSyncState(transaction, partitionId, now);
+        if (pageIndex == pageCount - 1) {
+          await transaction.update(
+            SessionCatalogCacheDatabase.syncStatesTable,
+            {'status_state': statusState, 'updated_at': now},
+            where: 'partition_id = ?',
+            whereArgs: [partitionId],
+          );
+        }
+      });
+    });
+  }
+
+  Future<void> markConversationPriorityReady(SessionCatalogCacheTarget target) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        await _ensureSyncState(transaction, partitionId, now);
+        await transaction.update(
+          SessionCatalogCacheDatabase.syncStatesTable,
+          {'priority_ready': 1, 'updated_at': now},
+          where: 'partition_id = ?',
+          whereArgs: [partitionId],
+        );
+      });
+    });
+  }
+
+  Future<void> completeConversationSync({
+    required SessionCatalogCacheTarget target,
+    required ConversationSyncV2NextState nextState,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        await _ensureSyncState(transaction, partitionId, now);
+        await transaction.update(
+          SessionCatalogCacheDatabase.syncStatesTable,
+          {
+            'catalog_state': nextState.catalogState,
+            'status_state': nextState.statusState,
+            'updated_at': now,
+          },
+          where: 'partition_id = ?',
+          whereArgs: [partitionId],
+        );
+      });
+    });
+  }
+
+  Future<void> resetConversationSyncScope({
+    required SessionCatalogCacheTarget target,
+    required String scope,
+    ConversationSyncV2Target? thread,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return;
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        switch (scope) {
+          case 'catalog':
+            await transaction.delete(
+              SessionCatalogCacheDatabase.entriesTable,
+              where: 'partition_id = ?',
+              whereArgs: [partitionId],
+            );
+            await _ensureSyncState(transaction, partitionId, now);
+            await transaction.update(
+              SessionCatalogCacheDatabase.syncStatesTable,
+              {'catalog_state': null, 'priority_ready': 0, 'updated_at': now},
+              where: 'partition_id = ?',
+              whereArgs: [partitionId],
+            );
+          case 'status':
+            await transaction.delete(
+              SessionCatalogCacheDatabase.statusesTable,
+              where: 'partition_id = ?',
+              whereArgs: [partitionId],
+            );
+            await _ensureSyncState(transaction, partitionId, now);
+            await transaction.update(
+              SessionCatalogCacheDatabase.syncStatesTable,
+              {'status_state': null, 'priority_ready': 0, 'updated_at': now},
+              where: 'partition_id = ?',
+              whereArgs: [partitionId],
+            );
+          case 'thread':
+            if (thread == null) return;
+            await transaction.delete(
+              SessionCatalogCacheDatabase.hotWindowsTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [
+                partitionId,
+                thread.provider,
+                thread.providerSessionId,
+              ],
+            );
+            await transaction.delete(
+              SessionCatalogCacheDatabase.timelineStagesTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [
+                partitionId,
+                thread.provider,
+                thread.providerSessionId,
+              ],
+            );
+          default:
+            throw ArgumentError.value(scope, 'scope');
+        }
+      });
+    });
+  }
+
+  Future<ConversationTimelinePageCommit> stageConversationTimelinePage({
+    required SessionCatalogCacheTarget target,
+    required String subscriptionId,
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    required String? baseRevision,
+    required String mode,
+    required int pageIndex,
+    required int pageCount,
+    required List<ConversationContentWireEntry> entries,
+    required List<String> deletes,
+    required bool hasEarlier,
+    required int sourceEntryCount,
+  }) {
+    if (!target.isValid) {
+      return Future.value(
+        const ConversationTimelinePageCommit(
+          pageStored: false,
+          windowCommitted: false,
+          baseRevisionMatched: false,
+        ),
+      );
+    }
+    return _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final keyWhere =
+            'partition_id = ? AND subscription_id = ? AND provider = ? '
+            'AND provider_session_id = ? AND revision = ?';
+        final keyArgs = [
+          partitionId,
+          subscriptionId,
+          provider,
+          providerSessionId,
+          revision,
+        ];
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        await transaction.insert(
+          SessionCatalogCacheDatabase.timelineStagesTable,
+          {
+            'partition_id': partitionId,
+            'subscription_id': subscriptionId,
+            'provider': provider,
+            'provider_session_id': providerSessionId,
+            'revision': revision,
+            'base_revision': baseRevision,
+            'mode': mode,
+            'page_count': pageCount,
+            'has_earlier': hasEarlier ? 1 : 0,
+            'source_entry_count': sourceEntryCount,
+            'created_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+        final stages = await transaction.query(
+          SessionCatalogCacheDatabase.timelineStagesTable,
+          where: keyWhere,
+          whereArgs: keyArgs,
+          limit: 1,
+        );
+        if (stages.isEmpty) {
+          throw StateError('Conversation timeline stage was not created.');
+        }
+        final stage = stages.single;
+        if (stage['base_revision'] != baseRevision ||
+            stage['mode'] != mode ||
+            stage['page_count'] != pageCount ||
+            stage['has_earlier'] != (hasEarlier ? 1 : 0) ||
+            stage['source_entry_count'] != sourceEntryCount) {
+          throw StateError('Conversation timeline stage metadata changed.');
+        }
+        final duplicate = await transaction.query(
+          SessionCatalogCacheDatabase.timelineStagePagesTable,
+          columns: ['page_index'],
+          where: '$keyWhere AND page_index = ?',
+          whereArgs: [...keyArgs, pageIndex],
+          limit: 1,
+        );
+        if (duplicate.isEmpty) {
+          await transaction
+              .insert(SessionCatalogCacheDatabase.timelineStagePagesTable, {
+                'partition_id': partitionId,
+                'subscription_id': subscriptionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'revision': revision,
+                'page_index': pageIndex,
+              });
+          for (final entry in entries) {
+            await transaction
+                .insert(SessionCatalogCacheDatabase.timelineStageEntriesTable, {
+                  'partition_id': partitionId,
+                  'subscription_id': subscriptionId,
+                  'provider': provider,
+                  'provider_session_id': providerSessionId,
+                  'revision': revision,
+                  'page_index': pageIndex,
+                  'entry_id': entry.entryId,
+                  'entry_index': entry.index,
+                  'content_hash': entry.contentHash,
+                  'message_json': jsonEncode(entry.rawMessage),
+                });
+          }
+          for (final entryId in deletes) {
+            await transaction
+                .insert(SessionCatalogCacheDatabase.timelineStageDeletesTable, {
+                  'partition_id': partitionId,
+                  'subscription_id': subscriptionId,
+                  'provider': provider,
+                  'provider_session_id': providerSessionId,
+                  'revision': revision,
+                  'page_index': pageIndex,
+                  'entry_id': entryId,
+                });
+          }
+        }
+        final pageRows = await transaction.rawQuery('''
+          SELECT COUNT(*) AS page_count
+          FROM ${SessionCatalogCacheDatabase.timelineStagePagesTable}
+          WHERE $keyWhere
+          ''', keyArgs);
+        final storedPages = Sqflite.firstIntValue(pageRows) ?? 0;
+        if (storedPages < pageCount) {
+          return const ConversationTimelinePageCommit(
+            pageStored: true,
+            windowCommitted: false,
+            baseRevisionMatched: true,
+          );
+        }
+        if (storedPages != pageCount) {
+          throw StateError('Conversation timeline page count is invalid.');
+        }
+        final entryRows = await transaction.rawQuery('''
+          SELECT COUNT(*) AS entry_count
+          FROM ${SessionCatalogCacheDatabase.timelineStageEntriesTable}
+          WHERE $keyWhere
+          ''', keyArgs);
+        final entryCount = Sqflite.firstIntValue(entryRows) ?? 0;
+        if (entryCount > maxHotWindowEntries) {
+          throw StateError('Conversation timeline exceeds the local bound.');
+        }
+        if (mode == 'patch') {
+          final windows = await transaction.query(
+            SessionCatalogCacheDatabase.hotWindowsTable,
+            columns: ['revision'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+            limit: 1,
+          );
+          if (windows.isEmpty || windows.single['revision'] != baseRevision) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.timelineStagesTable,
+              where: keyWhere,
+              whereArgs: keyArgs,
+            );
+            return const ConversationTimelinePageCommit(
+              pageStored: true,
+              windowCommitted: false,
+              baseRevisionMatched: false,
+            );
+          }
+          await transaction.rawDelete(
+            '''
+            DELETE FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+            WHERE partition_id = ?
+              AND provider = ?
+              AND provider_session_id = ?
+              AND entry_id IN (
+                SELECT entry_id
+                FROM ${SessionCatalogCacheDatabase.timelineStageDeletesTable}
+                WHERE $keyWhere
+              )
+            ''',
+            [partitionId, provider, providerSessionId, ...keyArgs],
+          );
+        } else if (mode == 'snapshot') {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.hotEntriesTable,
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          await transaction.insert(
+            SessionCatalogCacheDatabase.hotWindowsTable,
+            {
+              'partition_id': partitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'revision': revision,
+              'entry_count': 0,
+              'has_earlier': hasEarlier ? 1 : 0,
+              'source_entry_count': sourceEntryCount,
+              'updated_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        } else {
+          throw StateError('Unsupported conversation timeline mode: $mode');
+        }
+        await transaction.rawInsert(
+          '''
+          INSERT OR REPLACE INTO
+            ${SessionCatalogCacheDatabase.hotEntriesTable} (
+              partition_id,
+              provider,
+              provider_session_id,
+              entry_id,
+              entry_index,
+              content_hash,
+              message_json
+            )
+          SELECT ?, ?, ?, entry_id, entry_index, content_hash, message_json
+          FROM ${SessionCatalogCacheDatabase.timelineStageEntriesTable}
+          WHERE $keyWhere
+          ''',
+          [partitionId, provider, providerSessionId, ...keyArgs],
+        );
+        final committedRows = await transaction.rawQuery(
+          '''
+          SELECT
+            COUNT(*) AS entry_count,
+            COUNT(DISTINCT entry_index) AS index_count
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+          WHERE partition_id = ?
+            AND provider = ?
+            AND provider_session_id = ?
+          ''',
+          [partitionId, provider, providerSessionId],
+        );
+        final committedCount = committedRows.single['entry_count']! as int;
+        final committedIndexCount = committedRows.single['index_count']! as int;
+        if (committedCount > maxHotWindowEntries ||
+            committedCount != committedIndexCount) {
+          throw StateError('Committed conversation timeline is invalid.');
+        }
+        await transaction.update(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          {
+            'entry_count': committedCount,
+            'revision': revision,
+            'has_earlier': hasEarlier ? 1 : 0,
+            'source_entry_count': sourceEntryCount,
+            'updated_at': now,
+          },
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        await transaction.delete(
+          SessionCatalogCacheDatabase.timelineStagesTable,
+          where: keyWhere,
+          whereArgs: keyArgs,
+        );
+        return const ConversationTimelinePageCommit(
+          pageStored: true,
+          windowCommitted: true,
+          baseRevisionMatched: true,
+        );
+      });
+    });
+  }
+
+  Future<void> clearConversationTimelineStages({
+    required SessionCatalogCacheTarget target,
+    String? subscriptionId,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      final partitionId = await _resolveReadablePartition(db, target);
+      if (partitionId == null) return;
+      await db.delete(
+        SessionCatalogCacheDatabase.timelineStagesTable,
+        where: subscriptionId == null
+            ? 'partition_id = ?'
+            : 'partition_id = ? AND subscription_id = ?',
+        whereArgs: subscriptionId == null
+            ? [partitionId]
+            : [partitionId, subscriptionId],
+      );
+    });
   }
 
   Future<ConversationHotWindowSnapshot?> loadConversationWindow({
@@ -775,6 +1512,18 @@ class SessionCatalogCacheRepository {
         'message_json': jsonEncode(entry.rawMessage),
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<void> _ensureSyncState(
+    DatabaseExecutor database,
+    String partitionId,
+    int now,
+  ) async {
+    await database.insert(
+      SessionCatalogCacheDatabase.syncStatesTable,
+      {'partition_id': partitionId, 'priority_ready': 0, 'updated_at': now},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
     );
   }
 

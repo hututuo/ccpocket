@@ -16,13 +16,22 @@ class SessionCatalogCacheDatabase {
   SessionCatalogCacheDatabase({this.databasePath, this.openDatabase});
 
   static const fileName = 'session_catalog_cache_v1.db';
-  static const schemaVersion = 2;
+  static const schemaVersion = 3;
 
   static const partitionsTable = 'session_catalog_partitions';
   static const aliasesTable = 'session_catalog_aliases';
   static const entriesTable = 'session_catalog_entries';
   static const hotWindowsTable = 'conversation_hot_windows';
   static const hotEntriesTable = 'conversation_hot_entries';
+  static const syncStatesTable = 'conversation_sync_states';
+  static const statusesTable = 'conversation_sync_statuses';
+  static const readWatermarksTable = 'conversation_read_watermarks';
+  static const timelineStagesTable = 'conversation_timeline_stages';
+  static const timelineStagePagesTable = 'conversation_timeline_stage_pages';
+  static const timelineStageEntriesTable =
+      'conversation_timeline_stage_entries';
+  static const timelineStageDeletesTable =
+      'conversation_timeline_stage_deletes';
 
   final String? databasePath;
   final SessionCatalogCacheDatabaseOpener? openDatabase;
@@ -97,6 +106,9 @@ class SessionCatalogCacheDatabase {
     if (oldVersion < 2) {
       await _createHotConversationSchema(database);
     }
+    if (oldVersion < 3) {
+      await _createConversationSyncSchema(database);
+    }
   }
 
   static Future<void> _createSchema(Database database, int version) async {
@@ -153,6 +165,7 @@ class SessionCatalogCacheDatabase {
     ''');
 
     await _createHotConversationSchema(database);
+    await _createConversationSyncSchema(database);
   }
 
   static Future<void> _createHotConversationSchema(Database database) async {
@@ -211,6 +224,203 @@ class SessionCatalogCacheDatabase {
         provider_session_id,
         entry_index
       )
+    ''');
+  }
+
+  static Future<void> _createConversationSyncSchema(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $syncStatesTable (
+        partition_id TEXT PRIMARY KEY,
+        catalog_state TEXT,
+        status_state TEXT,
+        priority_ready INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (partition_id)
+          REFERENCES $partitionsTable (partition_id)
+          ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $statusesTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        status_json TEXT NOT NULL,
+        observed_sort INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (partition_id, provider, provider_session_id),
+        FOREIGN KEY (partition_id)
+          REFERENCES $partitionsTable (partition_id)
+          ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $readWatermarksTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        read_at TEXT NOT NULL,
+        read_sort INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (partition_id, provider, provider_session_id),
+        FOREIGN KEY (partition_id)
+          REFERENCES $partitionsTable (partition_id)
+          ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $timelineStagesTable (
+        partition_id TEXT NOT NULL,
+        subscription_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        base_revision TEXT,
+        mode TEXT NOT NULL,
+        page_count INTEGER NOT NULL,
+        has_earlier INTEGER NOT NULL,
+        source_entry_count INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision
+        ),
+        FOREIGN KEY (partition_id)
+          REFERENCES $partitionsTable (partition_id)
+          ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $timelineStagePagesTable (
+        partition_id TEXT NOT NULL,
+        subscription_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        page_index INTEGER NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision,
+          page_index
+        ),
+        FOREIGN KEY (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision
+        ) REFERENCES $timelineStagesTable (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision
+        ) ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $timelineStageEntriesTable (
+        partition_id TEXT NOT NULL,
+        subscription_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        page_index INTEGER NOT NULL,
+        entry_id TEXT NOT NULL,
+        entry_index INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        message_json TEXT NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision,
+          entry_id
+        ),
+        FOREIGN KEY (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision
+        ) REFERENCES $timelineStagesTable (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision
+        ) ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS conversation_timeline_stage_order
+      ON $timelineStageEntriesTable (
+        partition_id,
+        subscription_id,
+        provider,
+        provider_session_id,
+        revision,
+        entry_index
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $timelineStageDeletesTable (
+        partition_id TEXT NOT NULL,
+        subscription_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        page_index INTEGER NOT NULL,
+        entry_id TEXT NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision,
+          entry_id
+        ),
+        FOREIGN KEY (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision
+        ) REFERENCES $timelineStagesTable (
+          partition_id,
+          subscription_id,
+          provider,
+          provider_session_id,
+          revision
+        ) ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS conversation_sync_status_priority
+      ON $statusesTable (partition_id, observed_sort DESC)
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS conversation_read_watermarks_recent
+      ON $readWatermarksTable (partition_id, read_sort DESC)
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS conversation_timeline_stage_created
+      ON $timelineStagesTable (partition_id, created_at)
     ''');
   }
 

@@ -509,6 +509,7 @@ void main() async {
             create: (ctx) => SessionListCubit(
               bridge: ctx.read<BridgeService>(),
               catalogCache: ctx.read<SessionCatalogCacheRepository>(),
+              conversationSync: ctx.read<ConversationContentSyncService>(),
             ),
           ),
           BlocProvider(
