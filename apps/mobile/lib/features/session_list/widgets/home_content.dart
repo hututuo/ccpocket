@@ -559,6 +559,7 @@ class HomeContentState extends State<HomeContent> {
       pendingResumeSessionIds: pendingResumeSessionIds,
       pinnedSessionKeys: widget.pinnedSessionKeys,
       pinnedProjectPaths: widget.pinnedProjectPaths,
+      unseenSessionIds: widget.unseenSessionIds,
     );
     final hasConversationSessions = unifiedSessions.isNotEmpty;
     final projectPathsWithPinnedSessions = unifiedSessions

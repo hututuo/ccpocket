@@ -360,6 +360,29 @@ void main() {
       expect(find.text('Status unavailable'), findsNothing);
     });
 
+    testWidgets('labels an unread idle session without calling it Ready', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'idle-unread',
+        projectPath: '/home/user/my-app',
+        status: 'idle',
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RunningSessionCard(session: session, isUnseen: true, onTap: () {}),
+          locale: const Locale('zh'),
+        ),
+      );
+
+      expect(find.text('未读'), findsOneWidget);
+      expect(find.text('Ready'), findsNothing);
+      expect(find.text('准备就绪'), findsNothing);
+    });
+
     testWidgets('localizes session status and approval detail', (tester) async {
       final session = SessionInfo(
         id: 'localized-approval',

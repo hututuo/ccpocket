@@ -67,6 +67,7 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
   Set<String> pendingResumeSessionIds = const {},
   Set<String> pinnedSessionKeys = const {},
   Set<String> pinnedProjectPaths = const {},
+  Set<String> unseenSessionIds = const {},
 }) {
   final byIdentity = <String, UnifiedSessionListItem>{};
 
@@ -107,11 +108,13 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
           left,
           pinnedSessionKeys: pinnedSessionKeys,
           pinnedProjectPaths: pinnedProjectPaths,
+          unseenSessionIds: unseenSessionIds,
         ).compareTo(
           _priorityTier(
             right,
             pinnedSessionKeys: pinnedSessionKeys,
             pinnedProjectPaths: pinnedProjectPaths,
+            unseenSessionIds: unseenSessionIds,
           ),
         );
     if (tierCompare != 0) return tierCompare;
@@ -184,11 +187,14 @@ int _priorityTier(
   UnifiedSessionListItem item, {
   required Set<String> pinnedSessionKeys,
   required Set<String> pinnedProjectPaths,
+  required Set<String> unseenSessionIds,
 }) {
   final pinKey = item.pinKey;
   if (pinKey != null && pinnedSessionKeys.contains(pinKey)) return 0;
   if (pinnedProjectPaths.contains(item.projectPath)) return 1;
-  return 2;
+  final runtimeId = item.running?.id;
+  if (runtimeId != null && unseenSessionIds.contains(runtimeId)) return 2;
+  return 3;
 }
 
 String _recentIdentity(RecentSession session) => providerSessionIdentityKey(

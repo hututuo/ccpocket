@@ -85,6 +85,58 @@ void main() {
       ]);
     });
 
+    test('puts unread sessions ahead of ordinary sessions', () {
+      final items = buildUnifiedSessionList(
+        runningSessions: [
+          _running(
+            runtimeId: 'newer-read',
+            threadId: 'newer-read-thread',
+            lastActivityAt: '2026-07-25T03:00:00Z',
+          ),
+          _running(
+            runtimeId: 'older-unread',
+            threadId: 'older-unread-thread',
+            lastActivityAt: '2026-07-25T01:00:00Z',
+          ),
+          _running(
+            runtimeId: 'middle-read',
+            threadId: 'middle-read-thread',
+            lastActivityAt: '2026-07-25T02:00:00Z',
+          ),
+        ],
+        recentSessions: const [],
+        unseenSessionIds: const {'older-unread'},
+      );
+
+      expect(items.map((item) => item.running!.id), [
+        'older-unread',
+        'newer-read',
+        'middle-read',
+      ]);
+    });
+
+    test('keeps an explicit pin ahead of unread sessions', () {
+      final pinned = _running(
+        runtimeId: 'pinned-read',
+        threadId: 'pinned-read-thread',
+        lastActivityAt: '2026-07-25T01:00:00Z',
+      );
+      final unread = _running(
+        runtimeId: 'unread',
+        threadId: 'unread-thread',
+        lastActivityAt: '2026-07-25T03:00:00Z',
+      );
+
+      final items = buildUnifiedSessionList(
+        runningSessions: [unread, pinned],
+        recentSessions: const [],
+        pinnedSessionKeys: {runningSessionPinKey(pinned)!},
+        unseenSessionIds: const {'unread'},
+      );
+
+      expect(items.map((item) => item.running!.id), ['pinned-read', 'unread']);
+    });
+
     test('keeps an unbound new runtime as a temporary distinct row', () {
       final items = buildUnifiedSessionList(
         runningSessions: [

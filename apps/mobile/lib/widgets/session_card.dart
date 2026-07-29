@@ -132,7 +132,9 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
     final provider = providerFromRaw(session.provider);
     final providerStyle = providerStyleFor(context, provider);
     final localizations = AppLocalizations.of(context);
-    final statusLabel = _sessionVisualLabel(localizations, visualStatus.label);
+    final statusLabel = isIdleUnseen
+        ? localizations.unread
+        : _sessionVisualLabel(localizations, visualStatus.label);
     final statusDetail = _sessionVisualDetail(
       localizations,
       visualStatus.detail,
@@ -190,6 +192,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                           _StatusDot(
                             color: statusColor,
                             animate: visualStatus.animate,
+                            glow: isIdleUnseen,
                             inPlanMode:
                                 visualStatus.showPlanBadge &&
                                 visualStatus.animate,
@@ -207,15 +210,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                               ),
                             ),
                           ),
-                        ] else if (isIdleUnseen)
-                          Semantics(
-                            label: localizations.unread,
-                            child: _StatusDot(
-                              color: statusColor,
-                              animate: false,
-                              glow: true,
-                            ),
-                          ),
+                        ],
                         if (session.externalDesktopTurnActive) ...[
                           const SizedBox(width: 5),
                           Icon(
