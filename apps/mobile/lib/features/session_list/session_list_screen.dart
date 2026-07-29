@@ -2244,6 +2244,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     required String projectPath,
     String? providerSessionId,
     bool? allowLegacyFallback,
+    Future<void> Function()? onAttachmentRequested,
   }) {
     final shouldAllowLegacyFallback =
         allowLegacyFallback ??
@@ -2258,6 +2259,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       projectPath: projectPath,
       providerSessionId: providerSessionId,
       allowLegacyFallback: shouldAllowLegacyFallback,
+      onAttachmentRequested: onAttachmentRequested,
       onDisposed: () => _pendingSessionBindings.remove(binding),
     );
     _pendingSessionBindings.add(binding);
@@ -2393,7 +2395,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
   }
 
-  ({PendingSessionBinding binding, bool shouldDispatch}) _prepareDurableResume({
+  PendingSessionBinding _prepareDurableResume({
     required BridgeService bridge,
     required RecentSession session,
     required Provider provider,
@@ -2403,7 +2405,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       if (binding.kind == PendingSessionRequestKind.resume &&
           binding.provider == provider.value &&
           binding.providerSessionId == session.sessionId) {
-        return (binding: binding, shouldDispatch: false);
+        return binding;
       }
     }
 
@@ -2417,7 +2419,8 @@ class _SessionListScreenState extends State<SessionListScreen>
             provider: provider.value,
           )
         : null;
-    final binding = _registerPendingSessionBinding(
+    late final PendingSessionBinding binding;
+    binding = _registerPendingSessionBinding(
       kind: PendingSessionRequestKind.resume,
       requestId: queuedRequestId ?? _sessionRequestUuid.v4(),
       provider: provider,
@@ -2428,8 +2431,15 @@ class _SessionListScreenState extends State<SessionListScreen>
       allowLegacyFallback: hasQueuedResume && queuedRequestId == null
           ? true
           : null,
+      onAttachmentRequested: hasQueuedResume
+          ? () async {}
+          : () async {
+              await SessionResumeCoordinator(
+                bridge: bridge,
+              ).resume(session, resumeRequestId: binding.requestId);
+            },
     );
-    return (binding: binding, shouldDispatch: !hasQueuedResume);
+    return binding;
   }
 
   void _openDurableResume(
@@ -2471,7 +2481,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     final resumeProjectPath = session.resumeCwd?.isNotEmpty == true
         ? session.resumeCwd!
         : session.projectPath;
-    final prepared = _prepareDurableResume(
+    final pendingBinding = _prepareDurableResume(
       bridge: bridge,
       session: session,
       provider: provider,
@@ -2480,26 +2490,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     _openDurableResume(
       session,
       provider: provider,
-      binding: prepared.binding,
+      binding: pendingBinding,
       projectPath: resumeProjectPath,
     );
-    if (!prepared.shouldDispatch) return;
-    final resumeAlreadyQueuedMessage = AppLocalizations.of(
-      context,
-    ).resumeAlreadyQueued;
-
-    unawaited(
-      SessionResumeCoordinator(bridge: bridge)
-          .resume(session, resumeRequestId: prepared.binding.requestId)
-          .then((result) {
-            if (result.disposition == SessionResumeDisposition.alreadyQueued) {
-              prepared.binding.rejectLocal(resumeAlreadyQueuedMessage);
-            }
-          })
-          .catchError((Object error) {
-            prepared.binding.rejectLocal(error.toString());
-          }),
-    );
+    // Opening a durable conversation is local-only. The binding requests a
+    // live runtime exactly once when the user first sends or performs another
+    // provider-side action.
   }
 
   /// Resume session with user-edited settings (from "Edit settings then start")

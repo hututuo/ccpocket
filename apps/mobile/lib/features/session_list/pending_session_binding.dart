@@ -32,6 +32,7 @@ class PendingSessionBinding extends ValueNotifier<SystemMessage?> {
     required this.projectPath,
     required this.allowLegacyFallback,
     this.providerSessionId,
+    this.onAttachmentRequested,
     this.onDisposed,
   }) : failure = ValueNotifier<PendingSessionFailure?>(null),
        super(null);
@@ -42,14 +43,46 @@ class PendingSessionBinding extends ValueNotifier<SystemMessage?> {
   final String projectPath;
   final String? providerSessionId;
   final bool allowLegacyFallback;
+  final Future<void> Function()? onAttachmentRequested;
   final VoidCallback? onDisposed;
   final ValueNotifier<PendingSessionFailure?> failure;
 
   bool _disposed = false;
+  bool _attachmentRequested = false;
   int _consumerCount = 0;
 
   bool get isDisposed => _disposed;
+  bool get attachmentRequested => _attachmentRequested;
   int get consumerCount => _consumerCount;
+
+  /// Requests the live runtime only when a detached durable preview first
+  /// needs a provider-side operation.
+  ///
+  /// Repeated taps/submissions share one request. The same client request id is
+  /// intentionally retained across an explicit retry so Bridge-side replay and
+  /// deduplication remain idempotent.
+  Future<bool> requestAttachment() async {
+    if (_disposed || value != null || failure.value != null) return false;
+    if (_attachmentRequested) return true;
+    final callback = onAttachmentRequested;
+    if (callback == null) return false;
+    _attachmentRequested = true;
+    try {
+      await callback();
+      return true;
+    } catch (error) {
+      rejectLocal(error.toString());
+      return false;
+    }
+  }
+
+  /// Re-arms an attachment after an authoritative/local failure while keeping
+  /// the cached conversation and queued user input intact.
+  void prepareAttachmentRetry() {
+    if (_disposed || value != null) return;
+    failure.value = null;
+    _attachmentRequested = false;
+  }
 
   /// Keeps a shared in-flight binding alive for one pending session page.
   ///

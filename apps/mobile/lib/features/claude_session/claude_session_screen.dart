@@ -282,6 +282,10 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   bool _queueDeferredSubmission(ChatComposerSubmission submission) {
     if (!_isPending || _deferredSubmission != null) return false;
     setState(() => _deferredSubmission = submission);
+    final binding = widget.pendingSessionCreated;
+    if (binding is PendingSessionBinding) {
+      unawaited(binding.requestAttachment());
+    }
     return true;
   }
 
@@ -465,6 +469,23 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         binding.failure.value == null ||
         !mounted ||
         !_isPending) {
+      return;
+    }
+    final durableId = widget.durableProviderSessionId;
+    if (durableId != null && durableId.isNotEmpty) {
+      final text =
+          binding.failure.value?.errorMessage ??
+          AppLocalizations.of(context).failedToStartServer;
+      binding.prepareAttachmentRetry();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(text),
+          action: SnackBarAction(
+            label: AppLocalizations.of(context).retry,
+            onPressed: () => unawaited(binding.requestAttachment()),
+          ),
+        ),
+      );
       return;
     }
     binding.removeListener(_onPendingSessionCreated);

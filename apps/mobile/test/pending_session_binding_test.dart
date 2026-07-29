@@ -3,6 +3,37 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'durable attachment is deferred, exact-once, and explicitly retryable',
+    () async {
+      var requests = 0;
+      final binding = PendingSessionBinding(
+        kind: PendingSessionRequestKind.resume,
+        requestId: 'resume-1',
+        provider: 'codex',
+        projectPath: '/tmp/project',
+        providerSessionId: 'thread-1',
+        allowLegacyFallback: false,
+        onAttachmentRequested: () async {
+          requests += 1;
+        },
+      );
+      addTearDown(binding.dispose);
+
+      expect(binding.attachmentRequested, isFalse);
+      expect(await binding.requestAttachment(), isTrue);
+      expect(await binding.requestAttachment(), isTrue);
+      expect(requests, 1);
+
+      binding.rejectLocal('temporary failure');
+      binding.prepareAttachmentRetry();
+      expect(binding.failure.value, isNull);
+      expect(binding.attachmentRequested, isFalse);
+      expect(await binding.requestAttachment(), isTrue);
+      expect(requests, 2);
+    },
+  );
+
   test('local dispatch failures use the binding failure channel', () {
     final binding = PendingSessionBinding(
       kind: PendingSessionRequestKind.resume,

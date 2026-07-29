@@ -65,6 +65,7 @@ void main() {
     patrolWidgetTest(
       'H2b: durable preview queues first input and sends after runtime binds',
       ($) async {
+        var attachmentRequests = 0;
         final binding = PendingSessionBinding(
           kind: PendingSessionRequestKind.resume,
           requestId: 'claude-resume',
@@ -72,6 +73,9 @@ void main() {
           projectPath: '/tmp/project',
           providerSessionId: 'durable-thread',
           allowLegacyFallback: false,
+          onAttachmentRequested: () async {
+            attachmentRequests += 1;
+          },
         );
         addTearDown(binding.dispose);
         await $.pumpWidget(
@@ -96,6 +100,7 @@ void main() {
 
         expect(findSentMessage(bridge, 'input'), isNull);
         expect(find.text('Send after attaching'), findsOneWidget);
+        expect(attachmentRequests, 1);
 
         binding.value = const SystemMessage(
           subtype: 'session_created',
@@ -114,6 +119,7 @@ void main() {
     patrolWidgetTest(
       'H2c: durable Codex preview sends the queued input to the bound runtime',
       ($) async {
+        var attachmentRequests = 0;
         final binding = PendingSessionBinding(
           kind: PendingSessionRequestKind.resume,
           requestId: 'codex-resume',
@@ -121,6 +127,9 @@ void main() {
           projectPath: '/tmp/project',
           providerSessionId: 'durable-codex-thread',
           allowLegacyFallback: false,
+          onAttachmentRequested: () async {
+            attachmentRequests += 1;
+          },
         );
         addTearDown(binding.dispose);
         await $.pumpWidget(
@@ -142,6 +151,7 @@ void main() {
         await $(#send_button).tap();
         await pumpN($.tester);
         expect(findSentMessage(bridge, 'input'), isNull);
+        expect(attachmentRequests, 1);
 
         binding.value = const SystemMessage(
           subtype: 'session_created',
