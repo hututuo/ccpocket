@@ -125,6 +125,30 @@
 - 本节只授权隔离分支源码与自动验证；新的物理 build、签名 IPA、安装、OTA、
   stable 合并及 Bridge 替换仍是独立门禁。
 
+## 2026-07-29 Bridge-owned next-turn queue and compaction
+
+- Codex 正在运行或压缩时，手机提交的下一条输入必须立刻发送给 Bridge。Bridge
+  只有在把它放入当前会话的单项权威队列后，才返回
+  `input_ack(queued: true)`；手机收到该确认后不再是队列权威，只展示
+  `conversation_queue`。退出手机 App 不得取消 Bridge 中的队列。
+- 手机在收到 `input_ack` / `input_rejected` 之前，仍保留一份按
+  `bridgeInstanceId + codexSourceId` 隔离的可重放 outbox。它只用于覆盖 socket
+  写入后尚未确认便退出或断线的窗口；重连时复用 `clientMessageId`，由 Bridge
+  幂等确认，不能生成重复回合。Bridge 已确认后才从手机 outbox 删除。
+- 用户取消已确认的排队输入时，手机发送现有 `cancel_queued_input`，Bridge
+  校验 `sessionId + itemId` 后清除自己的队列并广播空
+  `conversation_queue`。离线取消沿用现有身份隔离的持久 mutation 队列。
+- `thread/compact/start` 是独立 `compacting` 业务状态，不再伪装成普通
+  `running` 工具阶段。压缩请求确认到 `turn/started` 的窗口内，新输入进入
+  Bridge 队列而不是被拒绝；压缩完成、失败或启动超时恢复普通 input loop 时，
+  必须重新发布 `input_ready` 并自动排空该队列。
+- 这些行为复用既有 additive `input_ack`、`conversation_queue`、
+  `cancel_queued_input` 和稳定身份字段，不增加旧客户端必须理解的新 wire
+  字段。旧手机继续使用原输入流程；旧 Bridge 不提供权威队列确认时，手机保留
+  既有兼容回退。
+- 本节只授权隔离分支源码与自动验证；不等于稳定分支合并、运行中 Bridge
+  替换、OTA、IPA 或真机安装。
+
 ## 2026-07-28 repository single-line convergence
 
 - 当前唯一源码收束线是
