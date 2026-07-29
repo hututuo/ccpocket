@@ -4682,21 +4682,10 @@ export class BridgeWebSocketServer {
         }
 
         // A compact/review RPC can be accepted before app-server publishes the
-        // corresponding turn/started notification. During that narrow window
-        // the Codex input loop is still waiting, but consuming it would race a
-        // non-steerable core action. The process owns this admission state.
-        if (
-          session.provider === "codex" &&
-          (session.process as CodexProcess).hasPendingCoreAction
-        ) {
-          this.send(ws, {
-            type: "input_rejected",
-            sessionId: session.id,
-            ...(clientMessageId ? { clientMessageId } : {}),
-            reason: "Codex compact or review is starting",
-          });
-          break;
-        }
+        // corresponding turn/started notification. The Codex process reports
+        // itself as not ready throughout that window, so the ordinary busy
+        // path below admits the input into the Bridge-owned queue instead of
+        // either consuming it early or rejecting a valid next turn.
 
         // Snapshot busy state before dispatch. We prefer the actual enqueue
         // result returned by SdkProcess sendInput* below, but keep this as a

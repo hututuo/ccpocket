@@ -506,6 +506,9 @@ vi.mock("./session.js", async () => {
         images: session.codexQueuedInput.images,
         skills: session.codexQueuedInput.skills,
         mentions: session.codexQueuedInput.mentions,
+        ...(session.codexQueuedInput.clientMessageId
+          ? { clientMessageId: session.codexQueuedInput.clientMessageId }
+          : {}),
       });
       session.codexQueuedInput = undefined;
       return true;
@@ -2879,7 +2882,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("rejects input and a second action during the process-owned core-action ack window", async () => {
+  it("queues input and rejects a second action during the core-action ack window", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
       readyState: OPEN_STATE,
@@ -2894,8 +2897,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       { threadId: "thread-core-action-admission" },
     );
     const session = (bridge as any).sessionManager.get(sessionId);
+    session.process.sendInputStructured = vi.fn();
     session.process.compactThread = vi.fn(async () => {
       session.process.hasPendingCoreAction = true;
+      session.process.isWaitingForInput = false;
     });
     session.process.startInlineReview = vi.fn(async () => ({
       turnId: "turn-review",
@@ -2939,7 +2944,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       {
         type: "input",
         sessionId,
-        text: "must not receive a false ack",
+        text: "run after compact",
         clientMessageId: "message-admission",
       },
       ws,
@@ -2964,16 +2969,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         errorCode: "session_busy",
       }),
     );
-    expect(admissionMessages).toContainEqual({
-      type: "input_rejected",
-      sessionId,
-      clientMessageId: "message-admission",
-      reason: "Codex compact or review is starting",
-    });
-    expect(admissionMessages).not.toContainEqual(
+    expect(admissionMessages).toContainEqual(
       expect.objectContaining({
         type: "input_ack",
         clientMessageId: "message-admission",
+        queued: true,
       }),
     );
     expect(admissionMessages).not.toContainEqual(
@@ -2983,37 +2983,26 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       }),
     );
     expect(session.history).toEqual([]);
-    expect(session.codexQueuedInput).toBeUndefined();
+    expect(session.codexQueuedInput).toMatchObject({
+      text: "run after compact",
+      clientMessageId: "message-admission",
+    });
     expect(session.process.sendInput).not.toHaveBeenCalled();
     expect(session.process.startInlineReview).not.toHaveBeenCalled();
     expect(session.process.listMcpServerStatus).toHaveBeenCalledOnce();
 
-    // Models the process releasing admission after an RPC failure. Only then
-    // may the ordinary input path acknowledge and consume the message.
+    // Models compaction completing while the normal input-loop resolver is
+    // still alive. The process re-announces readiness and the Bridge drains
+    // the exact queued next turn without another phone request.
     session.process.hasPendingCoreAction = false;
-    ws.send.mockClear();
-    await (bridge as any).handleClientMessage(
-      {
-        type: "input",
-        sessionId,
-        text: "safe after admission release",
-        clientMessageId: "message-after-release",
-      },
-      ws,
-    );
-    const releasedMessages = ws.send.mock.calls.map((call: unknown[]) =>
-      JSON.parse(call[0] as string),
-    );
-    expect(releasedMessages).toContainEqual(
-      expect.objectContaining({
-        type: "input_ack",
-        clientMessageId: "message-after-release",
-        queued: false,
-      }),
-    );
-    expect(session.process.sendInput).toHaveBeenCalledWith(
-      "safe after admission release",
-      "message-after-release",
+    session.process.isWaitingForInput = true;
+    expect(
+      (bridge as any).sessionManager.drainCodexQueuedInputIfReady(sessionId),
+    ).toBe(true);
+    expect(session.codexQueuedInput).toBeUndefined();
+    expect(session.process.sendInputStructured).toHaveBeenCalledWith(
+      "run after compact",
+      expect.objectContaining({ clientMessageId: "message-admission" }),
     );
 
     bridge.close();

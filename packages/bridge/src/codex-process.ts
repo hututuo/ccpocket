@@ -545,6 +545,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private pendingTurnCompletion: PendingTurnCompletion | null = null;
   private pendingCoreAction: PendingCoreAction | null = null;
   private activeCoreActionTurnId: string | null = null;
+  private activeCoreActionMethod: CodexCoreActionMethod | null = null;
   private pendingApprovals = new Map<string, PendingApproval>();
   private pendingUserInputs = new Map<string, PendingUserInputRequest>();
   private pendingGuardianReviewWarnings = new Map<
@@ -677,6 +678,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     return (
       this.inputResolve !== null &&
       this._status !== "running" &&
+      this._status !== "compacting" &&
       this.pendingCoreAction === null &&
       this.activeCoreActionTurnId === null
     );
@@ -695,6 +697,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   /** True only while compact/review is admitted but not yet a normal Turn. */
   get hasPendingCoreAction(): boolean {
     return this.pendingCoreAction !== null;
+  }
+
+  private get isCompactingCoreAction(): boolean {
+    return (
+      this.pendingCoreAction?.method === "thread/compact/start" ||
+      this.activeCoreActionMethod === "thread/compact/start"
+    );
   }
 
   private getMessageModel(): string {
@@ -1551,7 +1560,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       observedTurnCompleted: false,
     };
     this.pendingCoreAction = action;
-    this.setStatus("running");
+    this.setStatus(
+      method === "thread/compact/start" ? "compacting" : "running",
+    );
     return { threadId, action };
   }
 
@@ -1601,13 +1612,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         `[codex-process] ${action.method} was accepted but no matching turn/started arrived within ${CODEX_CORE_ACTION_START_TIMEOUT_MS}ms`,
       );
       this.releaseCoreAction(action);
-      if (
-        this._status === "running" &&
-        !this.pendingTurnId &&
-        !this.activeCoreActionTurnId
-      ) {
-        this.setStatus("idle");
-      }
+      this.restoreIdleAfterUnstartedCoreAction(action);
     }, CODEX_CORE_ACTION_START_TIMEOUT_MS);
   }
 
@@ -1630,6 +1635,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       (!turnId || this.activeCoreActionTurnId === turnId)
     ) {
       this.activeCoreActionTurnId = null;
+      this.activeCoreActionMethod = null;
     }
 
     const action = this.pendingCoreAction;
@@ -1662,6 +1668,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   ): void {
     if (this.pendingCoreAction !== action) return;
     this.activeCoreActionTurnId = turnId;
+    this.activeCoreActionMethod = action.method;
     this.releaseCoreAction(action);
   }
 
@@ -1669,15 +1676,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (this.pendingCoreAction !== action) return;
     if (action.observedTurnId && !action.observedTurnCompleted) {
       this.activeCoreActionTurnId = action.observedTurnId;
+      this.activeCoreActionMethod = action.method;
     }
     this.releaseCoreAction(action);
-    if (
-      this._status === "running" &&
-      !this.pendingTurnId &&
-      !this.activeCoreActionTurnId
-    ) {
-      this.setStatus("idle");
-    }
+    this.restoreIdleAfterUnstartedCoreAction(action);
   }
 
   private releaseCoreAction(expected?: PendingCoreAction): void {
@@ -1685,6 +1687,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!action || (expected && action !== expected)) return;
     if (action.startTimeout) clearTimeout(action.startTimeout);
     this.pendingCoreAction = null;
+  }
+
+  private restoreIdleAfterUnstartedCoreAction(
+    action: PendingCoreAction,
+  ): void {
+    const expectedStatus =
+      action.method === "thread/compact/start" ? "compacting" : "running";
+    if (
+      this._status === expectedStatus &&
+      !this.pendingTurnId &&
+      !this.activeCoreActionTurnId
+    ) {
+      this.setStatus("idle");
+    }
   }
 
   /**
@@ -1963,6 +1979,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   ): void {
     this.releaseCoreAction();
     this.activeCoreActionTurnId = null;
+    this.activeCoreActionMethod = null;
     this.stopped = false;
     this._runtimeGeneration += 1;
     this._threadId = null;
@@ -4308,7 +4325,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           this.agentTurnTracker.startTurn(turnId);
         }
         this.lastResultText = null;
-        this.setStatus("running");
+        this.setStatus(
+          this.isCompactingCoreAction ? "compacting" : "running",
+        );
         break;
       }
 
@@ -5274,6 +5293,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private rejectAllPending(error: Error): void {
     this.releaseCoreAction();
     this.activeCoreActionTurnId = null;
+    this.activeCoreActionMethod = null;
     for (const pending of this.pendingRpc.values()) {
       this.clearPendingRpcLifecycle(pending);
       pending.reject(error);
@@ -5298,6 +5318,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this._status = status;
       this.emit("status", status);
       this.emitMessage({ type: "status", status });
+      if (status === "idle" && this.isWaitingForInput) {
+        // A compact/review core action temporarily borrows the app-server
+        // thread without consuming the normal input-loop resolver. Re-announce
+        // readiness once that action releases so a Bridge-owned queued input
+        // cannot remain stranded after compaction completes.
+        queueMicrotask(() => {
+          if (!this.stopped && this.isWaitingForInput) {
+            this.emit("input_ready");
+          }
+        });
+      }
     }
   }
 

@@ -3414,7 +3414,9 @@ describe("CodexProcess (app-server)", () => {
   it("owns the core-action ack window until turn/started takes over", async () => {
     const proc = new CodexProcess("linux");
     const inputResolve = vi.fn();
+    const inputReady = vi.fn();
     const inputError = vi.spyOn(console, "error").mockImplementation(() => {});
+    proc.on("input_ready", inputReady);
     (proc as any)._threadId = "thread-core-action-lock";
     (proc as any)._status = "idle";
     (proc as any).inputResolve = inputResolve;
@@ -3425,7 +3427,7 @@ describe("CodexProcess (app-server)", () => {
 
     await expect(proc.compactThread()).resolves.toBeUndefined();
     expect(proc.hasPendingCoreAction).toBe(true);
-    expect(proc.status).toBe("running");
+    expect(proc.status).toBe("compacting");
     expect(proc.isWaitingForInput).toBe(false);
 
     await expect(
@@ -3457,7 +3459,7 @@ describe("CodexProcess (app-server)", () => {
       turn: { id: "turn-compact" },
     });
     expect(proc.hasPendingCoreAction).toBe(false);
-    expect(proc.status).toBe("running");
+    expect(proc.status).toBe("compacting");
     expect(proc.isWaitingForInput).toBe(false);
 
     (proc as any).handleNotification("turn/completed", {
@@ -3466,6 +3468,8 @@ describe("CodexProcess (app-server)", () => {
     });
     expect(proc.status).toBe("idle");
     expect(proc.isWaitingForInput).toBe(true);
+    await Promise.resolve();
+    expect(inputReady).toHaveBeenCalledOnce();
     inputError.mockRestore();
   });
 
@@ -3545,7 +3549,7 @@ describe("CodexProcess (app-server)", () => {
 
     await expect(compact).rejects.toThrow("late RPC failure");
     expect(proc.hasPendingCoreAction).toBe(false);
-    expect(proc.status).toBe("running");
+    expect(proc.status).toBe("compacting");
     expect((proc as any).pendingTurnId).toBe("turn-compact");
 
     (proc as any).handleNotification("turn/completed", {
