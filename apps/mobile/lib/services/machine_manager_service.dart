@@ -954,7 +954,7 @@ class MachineManagerService {
     var url = await _buildWsUrl(machine);
     final apiKey = await getApiKey(machineId);
     if (apiKey != null && apiKey.isNotEmpty) {
-      url = '$url?token=$apiKey';
+      url = withBridgeApiKey(url, apiKey);
     }
     return url;
   }
@@ -974,7 +974,7 @@ class MachineManagerService {
     );
     final apiKey = await getApiKey(machineId);
     if (apiKey != null && apiKey.isNotEmpty) {
-      url = '$url?token=$apiKey';
+      url = withBridgeApiKey(url, apiKey);
     }
     return url;
   }

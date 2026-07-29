@@ -120,3 +120,21 @@ String formatUriOrigin({
   final origin = Uri(scheme: scheme, host: normalizeHostInput(host)).toString();
   return port == null ? origin : '$origin:$port';
 }
+
+/// Adds or replaces the Bridge API-key query parameter using URI encoding.
+///
+/// API keys live in secure storage, but the WebSocket handshake transports the
+/// value in the URL for compatibility with existing Bridges. Direct string
+/// concatenation would let valid characters such as `+`, `&`, and `#` change
+/// the parsed credential or inject another query component.
+String withBridgeApiKey(String url, String apiKey) {
+  final uri = Uri.parse(url);
+  return uri
+      .replace(
+        queryParameters: <String, String>{
+          ...uri.queryParameters,
+          'token': apiKey,
+        },
+      )
+      .toString();
+}

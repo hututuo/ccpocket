@@ -47,5 +47,29 @@ void main() {
     test('omits the port when one is not supplied', () {
       expect(formatUriOrigin(scheme: 'https', host: '::1'), 'https://[::1]');
     });
+
+    test('encodes Bridge API keys and preserves existing query parameters', () {
+      final url = withBridgeApiKey(
+        'wss://bridge.example/ws?route=tailscale',
+        'owner+key/1&scope=#private',
+      );
+      final parsed = Uri.parse(url);
+
+      expect(parsed.queryParameters['route'], 'tailscale');
+      expect(parsed.queryParameters['token'], 'owner+key/1&scope=#private');
+      expect(url, isNot(contains('token=owner+key/1&scope=#private')));
+    });
+
+    test('replaces a stale Bridge token instead of adding a duplicate', () {
+      final parsed = Uri.parse(
+        withBridgeApiKey(
+          'ws://127.0.0.1:8765?token=old&route=lan',
+          'new-token',
+        ),
+      );
+
+      expect(parsed.queryParametersAll['token'], ['new-token']);
+      expect(parsed.queryParameters['route'], 'lan');
+    });
   });
 }

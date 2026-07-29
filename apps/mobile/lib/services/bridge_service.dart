@@ -6047,8 +6047,7 @@ class BridgeService implements BridgeServiceBase {
 
     var connectUrl = url;
     if (effectiveApiKey != null && effectiveApiKey.isNotEmpty) {
-      final sep = connectUrl.contains('?') ? '&' : '?';
-      connectUrl = '$connectUrl${sep}token=$effectiveApiKey';
+      connectUrl = withBridgeApiKey(connectUrl, effectiveApiKey);
     }
 
     // Migrate: remove legacy plaintext API key from SharedPreferences.
