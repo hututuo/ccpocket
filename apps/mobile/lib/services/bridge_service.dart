@@ -322,6 +322,7 @@ class BridgeService implements BridgeServiceBase {
       HashMap.identity();
   final Map<ClientMessage, int?> _offlineMessageQueuedEpochs =
       HashMap.identity();
+  Future<void> _offlineQueuePersistenceTail = Future<void>.value();
   List<SessionInfo> _sessions = [];
   int _authoritativeSessionListGeneration = 0;
   bool _hasAuthoritativeSessionListForCurrentConnection = false;
@@ -399,6 +400,7 @@ class BridgeService implements BridgeServiceBase {
   int _nextHistoryToolDetailRequestId = 0;
   final Map<String, ClientMessage> _inFlightPendingMessages = {};
   final Map<String, ClientMessage> _inFlightInputMessages = {};
+  final Map<String, _OfflineMessageTarget?> _inFlightInputTargets = {};
   final Map<String, Timer> _inFlightPendingVisibilityTimers = {};
   final Set<String> _visibleInFlightPendingKeys = {};
   final Map<String, _DeliveryPendingInputState> _deliveryPendingInputs = {};
@@ -2496,6 +2498,7 @@ class BridgeService implements BridgeServiceBase {
     _offlineMessageQueuedEpochs.clear();
     _inFlightPendingMessages.clear();
     _inFlightInputMessages.clear();
+    _inFlightInputTargets.clear();
     for (final timer in _inFlightPendingVisibilityTimers.values) {
       timer.cancel();
     }
@@ -2509,6 +2512,9 @@ class BridgeService implements BridgeServiceBase {
 
   Future<void> _clearPersistedOfflinePendingMessages() async {
     try {
+      // A previously scheduled outbox write must finish before an explicit
+      // queue reset removes the persisted rows.
+      await _offlineQueuePersistenceTail;
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_prefKeyOfflinePendingMessagesV1);
       await prefs.remove(_prefKeyOfflinePendingMessagesV2);
@@ -3216,7 +3222,7 @@ class BridgeService implements BridgeServiceBase {
     final dedupeKey = _offlineMessageDedupeKey(message);
     if (dedupeKey != null) {
       _clearInFlightPendingMessage(dedupeKey);
-      _clearInFlightInputMessage(dedupeKey);
+      _clearInFlightInputMessage(dedupeKey, persist: false);
     }
     final didAdd = _addQueuedMessageIfAbsent(message);
     if (didAdd || _isPersistableOfflineMessage(message)) {
@@ -3289,6 +3295,12 @@ class BridgeService implements BridgeServiceBase {
     final dedupeKey = _offlineMessageDedupeKey(message);
     if (dedupeKey == null) return;
     _inFlightInputMessages[dedupeKey] = message;
+    _inFlightInputTargets[dedupeKey] =
+        _offlineMessageTargets[message] ?? _currentOfflineMessageTarget();
+    // Keep every input in the identity-scoped outbox until the Bridge replies
+    // with input_ack/input_rejected. This closes the app-exit window between a
+    // successful WebSocket write and Bridge-owned queue admission.
+    unawaited(_persistOfflinePendingMessages());
   }
 
   void _cacheAcceptedInFlightInput(
@@ -3326,8 +3338,12 @@ class BridgeService implements BridgeServiceBase {
     );
   }
 
-  void _clearInFlightInputMessage(String dedupeKey) {
-    _inFlightInputMessages.remove(dedupeKey);
+  void _clearInFlightInputMessage(String dedupeKey, {bool persist = true}) {
+    final removed = _inFlightInputMessages.remove(dedupeKey);
+    _inFlightInputTargets.remove(dedupeKey);
+    if (removed != null && persist) {
+      unawaited(_persistOfflinePendingMessages());
+    }
   }
 
   void _clearDeliveredDeliveryPendingInput(
@@ -3379,13 +3395,23 @@ class BridgeService implements BridgeServiceBase {
 
   void _requeueInFlightInputMessages() {
     if (_inFlightInputMessages.isEmpty) return;
-    final messages = List<ClientMessage>.from(_inFlightInputMessages.values);
+    final messages = Map<String, ClientMessage>.from(_inFlightInputMessages);
+    final targets = Map<String, _OfflineMessageTarget?>.from(
+      _inFlightInputTargets,
+    );
     _inFlightInputMessages.clear();
+    _inFlightInputTargets.clear();
     var didAdd = false;
-    for (final message in messages) {
-      didAdd = _addQueuedMessageIfAbsent(message) || didAdd;
+    for (final entry in messages.entries) {
+      didAdd =
+          _addQueuedMessageIfAbsent(
+            entry.value,
+            restoredTarget: targets[entry.key],
+            isRestored: true,
+          ) ||
+          didAdd;
     }
-    if (didAdd) {
+    if (didAdd || messages.isNotEmpty) {
       unawaited(_persistOfflinePendingMessages());
     }
   }
@@ -3496,6 +3522,11 @@ class BridgeService implements BridgeServiceBase {
           ),
         );
     final queuedIdentity = HashSet<ClientMessage>.identity()..addAll(queued);
+    for (final message in queued) {
+      if (message.type == 'input') {
+        _trackInFlightInputMessage(message);
+      }
+    }
     _messageQueue.removeWhere(queuedIdentity.contains);
     _pruneOfflineMessageTargets();
     await _persistOfflinePendingMessages();
@@ -3533,6 +3564,10 @@ class BridgeService implements BridgeServiceBase {
   ) async {
     final requeued = messages.toList(growable: false);
     for (final message in requeued) {
+      final dedupeKey = _offlineMessageDedupeKey(message);
+      if (message.type == 'input' && dedupeKey != null) {
+        _clearInFlightInputMessage(dedupeKey, persist: false);
+      }
       _addQueuedMessageIfAbsent(
         message,
         restoredTarget: targets[message],
@@ -4108,19 +4143,48 @@ class BridgeService implements BridgeServiceBase {
     return message.contains('Binding has not yet been initialized');
   }
 
-  Future<void> _persistOfflinePendingMessages() async {
+  Future<void> _persistOfflinePendingMessages() {
+    final generation = _offlineQueueGeneration;
+    final operation = _offlineQueuePersistenceTail
+        .catchError((Object _, StackTrace _) {})
+        .then((_) async {
+          if (generation != _offlineQueueGeneration) return;
+          await _writeOfflinePendingMessages();
+        });
+    _offlineQueuePersistenceTail = operation;
+    return operation;
+  }
+
+  Future<void> _writeOfflinePendingMessages() async {
     await _ensureOfflineQueueRestored();
     _pruneOfflineMessageTargets();
-    final pending = _messageQueue
-        .where(_isPersistableOfflineMessage)
-        .map(
-          (message) => jsonEncode({
-            'version': 2,
-            'message': jsonDecode(message.toJson()) as Map<String, dynamic>,
-            'target': _offlineMessageTargets[message]?.toJson(),
-          }),
-        )
-        .toList(growable: false);
+    final pending = <String>[];
+    final seen = <String>{};
+
+    void append(ClientMessage message, _OfflineMessageTarget? target) {
+      if (!_isPersistableOfflineMessage(message)) return;
+      final messageJson = jsonDecode(message.toJson()) as Map<String, dynamic>;
+      final targetJson = target?.toJson();
+      final identity =
+          '${_offlineMessageDedupeKey(message) ?? _canonicalJson(messageJson)}'
+          ':${_canonicalJson(targetJson)}';
+      if (!seen.add(identity)) return;
+      pending.add(
+        jsonEncode({
+          'version': 2,
+          'message': messageJson,
+          'target': targetJson,
+        }),
+      );
+    }
+
+    for (final message in _messageQueue) {
+      append(message, _offlineMessageTargets[message]);
+    }
+    for (final entry in _inFlightInputMessages.entries) {
+      append(entry.value, _inFlightInputTargets[entry.key]);
+    }
+
     try {
       final prefs = await SharedPreferences.getInstance();
       if (pending.isEmpty) {
@@ -6187,7 +6251,6 @@ class BridgeService implements BridgeServiceBase {
     }
     _deliveryPendingVisibilityTimers.clear();
     _deliveryPendingInputs.clear();
-    _inFlightInputMessages.clear();
     _failPendingArtifactResolutions(
       const ArtifactResolveException(
         code: 'bridge_disposed',

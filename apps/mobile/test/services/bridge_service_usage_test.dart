@@ -2371,6 +2371,126 @@ void main() {
       bridge.dispose();
     });
 
+    test(
+      'unacked input survives app disposal and replays idempotently',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final firstSocketReady = Completer<WebSocket>();
+        final secondSocketReady = Completer<WebSocket>();
+        final firstReceived = <Map<String, dynamic>>[];
+        final secondReceived = <Map<String, dynamic>>[];
+        var connectionCount = 0;
+
+        server.transform(WebSocketTransformer()).listen((socket) {
+          connectionCount += 1;
+          final received = connectionCount == 1
+              ? firstReceived
+              : secondReceived;
+          socket.listen((data) {
+            received.add(jsonDecode(data as String) as Map<String, dynamic>);
+          });
+          if (connectionCount == 1) {
+            firstSocketReady.complete(socket);
+          } else {
+            secondSocketReady.complete(socket);
+          }
+        });
+
+        final firstBridge = BridgeService();
+        firstBridge.connect('ws://127.0.0.1:${server.port}');
+        final firstSocket = await firstSocketReady.future;
+        await _waitForBridgeConnection(firstBridge);
+        await _authorizeLegacyBridge(firstBridge, firstSocket);
+
+        firstBridge.send(
+          ClientMessage.input(
+            'keep after app exit',
+            sessionId: 's1',
+            clientMessageId: 'cm-app-exit',
+          ),
+        );
+        for (var attempt = 0; attempt < 100; attempt++) {
+          final prefs = await SharedPreferences.getInstance();
+          if (prefs.getStringList(_offlinePendingMessagesV2Key)?.isNotEmpty ==
+              true) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+
+        var prefs = await SharedPreferences.getInstance();
+        var raw = prefs.getStringList(_offlinePendingMessagesV2Key);
+        expect(raw, hasLength(1));
+        expect(_offlineEnvelopeMessage(raw!.single), {
+          'type': 'input',
+          'text': 'keep after app exit',
+          'sessionId': 's1',
+          'clientMessageId': 'cm-app-exit',
+        });
+        expect(
+          firstReceived.where(
+            (message) =>
+                message['type'] == 'input' &&
+                message['clientMessageId'] == 'cm-app-exit',
+          ),
+          hasLength(1),
+        );
+
+        firstBridge.dispose();
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        prefs = await SharedPreferences.getInstance();
+        expect(prefs.getStringList(_offlinePendingMessagesV2Key), hasLength(1));
+
+        final secondBridge = BridgeService();
+        secondBridge.connect('ws://127.0.0.1:${server.port}');
+        final secondSocket = await secondSocketReady.future;
+        await _waitForBridgeConnection(secondBridge);
+        await _authorizeLegacyBridge(secondBridge, secondSocket);
+        for (var attempt = 0; attempt < 100; attempt++) {
+          if (secondReceived.any(
+            (message) =>
+                message['type'] == 'input' &&
+                message['clientMessageId'] == 'cm-app-exit',
+          )) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+
+        expect(
+          secondReceived.where(
+            (message) =>
+                message['type'] == 'input' &&
+                message['clientMessageId'] == 'cm-app-exit',
+          ),
+          hasLength(1),
+        );
+        secondSocket.add(
+          jsonEncode({
+            'type': 'input_ack',
+            'sessionId': 's1',
+            'clientMessageId': 'cm-app-exit',
+            'queued': true,
+          }),
+        );
+        for (var attempt = 0; attempt < 100; attempt++) {
+          prefs = await SharedPreferences.getInstance();
+          if (prefs.getStringList(_offlinePendingMessagesV2Key) == null) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        raw = prefs.getStringList(_offlinePendingMessagesV2Key);
+        expect(raw, isNull);
+
+        secondBridge.disconnect();
+        await firstSocket.close();
+        await secondSocket.close();
+        await server.close(force: true);
+        secondBridge.dispose();
+      },
+    );
+
     test('acked in-flight input is not requeued when socket closes', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();
