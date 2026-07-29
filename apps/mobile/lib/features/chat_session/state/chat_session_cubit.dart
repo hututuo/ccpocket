@@ -5326,7 +5326,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               ? null
               : DateTime.tryParse(message.timestamp!)?.toLocal()),
       timestampIsAuthoritative:
-          messageTimestamp?.isBridgeReceived ?? false,
+          messageTimestamp?.isAuthoritative ?? false,
     );
   }
 

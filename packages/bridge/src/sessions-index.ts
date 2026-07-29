@@ -26,6 +26,7 @@ import {
   describeCodexDesktopToolCall,
   formatCodexFileChanges,
   normalizeCodexDesktopToolOutput,
+  type CodexDesktopItemTimestamp,
   type CodexDesktopToolTimeline,
   type CodexDesktopToolTimelineEvent,
 } from "./local-features/codex-tool-history.js";
@@ -2508,6 +2509,8 @@ export interface SessionHistoryMessage {
   /** Raw provider item id, when it differs from the display-safe UUID. */
   rawItemId?: string;
   timestamp?: string;
+  /** True when timestamp came from the provider's individual event record. */
+  timestampIsAuthoritative?: boolean;
   /** Skill loading prompt or other meta message (rendered as a chip). */
   isMeta?: boolean;
   /** Number of images attached to this user message (for display indicator). */
@@ -2646,6 +2649,25 @@ function appendCodexOfficialToolResult(
   });
 }
 
+function applyCodexItemTimestamp(
+  messages: SessionHistoryMessage[],
+  startIndex: number,
+  timing: CodexDesktopItemTimestamp | undefined,
+): void {
+  if (!timing) return;
+
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const message = messages[index];
+    const isToolResult = message.role === "tool_result";
+    const timestamp = isToolResult
+      ? timing.completedAt ?? timing.startedAt
+      : timing.startedAt ?? timing.completedAt;
+    if (!timestamp) continue;
+    message.timestamp = timestamp;
+    message.timestampIsAuthoritative = true;
+  }
+}
+
 export function codexThreadToSessionHistory(
   thread: unknown,
   options: { desktopToolTimeline?: CodexDesktopToolTimeline } = {},
@@ -2669,6 +2691,18 @@ export function codexThreadToSessionHistory(
       const rawItemId = stringValue(item.id);
       const itemId = rawItemId ?? `codex-item-${messages.length}`;
       const itemTimestamp = turnCompletedAt ?? turnStartedAt;
+      const embeddedItemTiming: CodexDesktopItemTimestamp = {
+        startedAt: stringValue(item.__ccPocketEventStartedAt),
+        completedAt: stringValue(item.__ccPocketEventCompletedAt),
+      };
+      const itemTiming =
+        (rawItemId
+          ? options.desktopToolTimeline?.itemTimestamps?.get(rawItemId)
+          : undefined) ??
+        (embeddedItemTiming.startedAt || embeddedItemTiming.completedAt
+          ? embeddedItemTiming
+          : undefined);
+      const historyStartIndex = messages.length;
 
       switch (item.type) {
         case "userMessage": {
@@ -3013,6 +3047,7 @@ export function codexThreadToSessionHistory(
         default:
           break;
       }
+      applyCodexItemTimestamp(messages, historyStartIndex, itemTiming);
     }
   }
 
@@ -3032,7 +3067,12 @@ export function supplementCodexThreadWithDesktopTools(
   timeline: CodexDesktopToolTimeline,
 ): unknown {
   const root = asObject(thread);
-  if (!root || timeline.events.length === 0) return thread;
+  if (
+    !root ||
+    (timeline.events.length === 0 && !timeline.itemTimestamps?.size)
+  ) {
+    return thread;
+  }
 
   const eventsByTurn = new Map<string, CodexDesktopToolTimelineEvent[]>();
   for (const event of timeline.events) {
@@ -3046,15 +3086,52 @@ export function supplementCodexThreadWithDesktopTools(
     const turn = asObject(rawTurn);
     const turnId = stringValue(turn?.id);
     const turnEvents = turnId ? eventsByTurn.get(turnId) : undefined;
-    if (!turn || !turnEvents || turnEvents.length === 0) return rawTurn;
+    if (!turn) return rawTurn;
     const items = arrayValue(turn.items);
-    const supplemented = supplementCodexTurnItems(items, turnEvents);
-    if (supplemented === items) return rawTurn;
+    const supplemented =
+      turnEvents && turnEvents.length > 0
+        ? supplementCodexTurnItems(items, turnEvents)
+        : items;
+    const timestamped = supplementCodexItemTimestamps(
+      supplemented,
+      timeline.itemTimestamps,
+    );
+    if (timestamped === items) return rawTurn;
     changed = true;
-    return { ...turn, items: supplemented };
+    return { ...turn, items: timestamped };
   });
 
   return changed ? { ...root, turns } : thread;
+}
+
+function supplementCodexItemTimestamps(
+  original: unknown[],
+  itemTimestamps:
+    | ReadonlyMap<string, CodexDesktopItemTimestamp>
+    | undefined,
+): unknown[] {
+  if (!itemTimestamps?.size) return original;
+
+  let changed = false;
+  const timestamped = original.map((rawItem) => {
+    const item = asObject(rawItem);
+    const itemId = stringValue(item?.id);
+    const timing = itemId ? itemTimestamps.get(itemId) : undefined;
+    if (!item || !timing || (!timing.startedAt && !timing.completedAt)) {
+      return rawItem;
+    }
+    changed = true;
+    return {
+      ...item,
+      ...(timing.startedAt
+        ? { __ccPocketEventStartedAt: timing.startedAt }
+        : {}),
+      ...(timing.completedAt
+        ? { __ccPocketEventCompletedAt: timing.completedAt }
+        : {}),
+    };
+  });
+  return changed ? timestamped : original;
 }
 
 function supplementCodexTurnItems(
@@ -5025,6 +5102,9 @@ export async function getCodexSessionHistory(
   }
 
   assignStableCodexAssistantUuids(messages, threadId);
+  for (const message of messages) {
+    if (message.timestamp) message.timestampIsAuthoritative = true;
+  }
   return messages;
 }
 

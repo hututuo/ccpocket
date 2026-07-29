@@ -1166,8 +1166,10 @@ export type ServerMessage = (
 ) & {
   /** Bridge-owned wall time when this live transcript event was first seen. */
   receivedAt?: string;
-  /** Provider timestamp used only as an approximate legacy-history fallback. */
+  /** Provider event time, approximate unless explicitly marked authoritative. */
   sourceTimestamp?: string;
+  /** The source timestamp came from an individual provider event record. */
+  sourceTimestampIsAuthoritative?: boolean;
   /** Bridge-local sequence metadata retained on in-memory transcript entries. */
   historySeq?: number;
 };

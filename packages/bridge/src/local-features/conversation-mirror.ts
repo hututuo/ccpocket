@@ -610,6 +610,9 @@ function mirrorHistoryMessageToServerMessages(
         ...(history.imageCount ? { imageCount: history.imageCount } : {}),
         ...(history.timestamp ? { timestamp: history.timestamp } : {}),
         ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
+        ...(history.timestamp && history.timestampIsAuthoritative
+          ? { sourceTimestampIsAuthoritative: true }
+          : {}),
       },
     ];
   }
@@ -625,6 +628,9 @@ function mirrorHistoryMessageToServerMessages(
         content,
         ...(history.toolName ? { toolName: history.toolName } : {}),
         ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
+        ...(history.timestamp && history.timestampIsAuthoritative
+          ? { sourceTimestampIsAuthoritative: true }
+          : {}),
       },
     ];
   }
@@ -638,6 +644,9 @@ function mirrorHistoryMessageToServerMessages(
       message: { id, role: "assistant", content, model: "" },
       ...(history.uuid ? { messageUuid: history.uuid } : {}),
       ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
+      ...(history.timestamp && history.timestampIsAuthoritative
+        ? { sourceTimestampIsAuthoritative: true }
+        : {}),
     },
   ];
 }

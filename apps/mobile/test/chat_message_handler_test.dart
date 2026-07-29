@@ -1241,6 +1241,79 @@ void main() {
 
       expect(update.entriesToAdd.single.timestamp, anchor);
     });
+
+    test('history keeps each provider event timestamp distinct', () {
+      final update = handler.handle(
+        HistoryMessage(
+          messages: [
+            ServerMessage.fromJson({
+              'type': 'assistant',
+              'message': {
+                'id': 'reasoning-time',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'thinking', 'thinking': 'checking'},
+                ],
+                'model': 'codex',
+              },
+              'sourceTimestamp': '2026-07-29T05:20:01.000Z',
+              'sourceTimestampIsAuthoritative': true,
+            }),
+            ServerMessage.fromJson({
+              'type': 'assistant',
+              'message': {
+                'id': 'tool-time',
+                'role': 'assistant',
+                'content': [
+                  {
+                    'type': 'tool_use',
+                    'id': 'tool-time',
+                    'name': 'Read',
+                    'input': {'path': '/tmp/example.txt'},
+                  },
+                ],
+                'model': 'codex',
+              },
+              'sourceTimestamp': '2026-07-29T05:20:02.000Z',
+              'sourceTimestampIsAuthoritative': true,
+            }),
+            ServerMessage.fromJson({
+              'type': 'tool_result',
+              'toolUseId': 'tool-time',
+              'toolName': 'Read',
+              'content': 'contents',
+              'sourceTimestamp': '2026-07-29T05:20:04.000Z',
+              'sourceTimestampIsAuthoritative': true,
+            }),
+            ServerMessage.fromJson({
+              'type': 'assistant',
+              'message': {
+                'id': 'assistant-time',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'finished'},
+                ],
+                'model': 'codex',
+              },
+              'sourceTimestamp': '2026-07-29T05:20:05.000Z',
+              'sourceTimestampIsAuthoritative': true,
+            }),
+          ],
+        ),
+        isBackground: false,
+      );
+
+      expect(update.entriesToAdd.map((entry) => entry.timestamp.toUtc()), [
+        DateTime.parse('2026-07-29T05:20:01.000Z'),
+        DateTime.parse('2026-07-29T05:20:02.000Z'),
+        DateTime.parse('2026-07-29T05:20:04.000Z'),
+        DateTime.parse('2026-07-29T05:20:05.000Z'),
+      ]);
+      expect(
+        update.entriesToAdd.every((entry) => entry.timestampIsAuthoritative),
+        isTrue,
+      );
+    });
   });
 
   group('SystemMessage slash command handling', () {

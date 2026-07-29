@@ -92,6 +92,19 @@ void main() {
       },
       'sourceTimestamp': '2026-07-25T01:02:03.000Z',
     });
+    final authoritativeSource = ServerMessage.fromJson({
+      'type': 'assistant',
+      'message': {
+        'id': 'assistant-source-exact',
+        'role': 'assistant',
+        'content': [
+          {'type': 'text', 'text': 'source exact'},
+        ],
+        'model': 'test',
+      },
+      'sourceTimestamp': '2026-07-25T01:02:04.000Z',
+      'sourceTimestampIsAuthoritative': true,
+    });
 
     expect(
       serverMessageTimestamp(exact),
@@ -101,11 +114,7 @@ void main() {
             'value',
             DateTime.parse('2026-07-25T03:04:05.678Z'),
           )
-          .having(
-            (value) => value.isBridgeReceived,
-            'isBridgeReceived',
-            isTrue,
-          ),
+          .having((value) => value.isAuthoritative, 'isAuthoritative', isTrue),
     );
     expect(
       serverMessageTimestamp(approximate),
@@ -115,11 +124,17 @@ void main() {
             'value',
             DateTime.parse('2026-07-25T01:02:03.000Z'),
           )
+          .having((value) => value.isAuthoritative, 'isAuthoritative', isFalse),
+    );
+    expect(
+      serverMessageTimestamp(authoritativeSource),
+      isA<ServerMessageTimestamp>()
           .having(
-            (value) => value.isBridgeReceived,
-            'isBridgeReceived',
-            isFalse,
-          ),
+            (value) => value.value,
+            'value',
+            DateTime.parse('2026-07-25T01:02:04.000Z'),
+          )
+          .having((value) => value.isAuthoritative, 'isAuthoritative', isTrue),
     );
   });
 

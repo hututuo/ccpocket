@@ -3617,6 +3617,9 @@ export class BridgeWebSocketServer {
           : {}),
         ...(item.timestamp ? { timestamp: item.timestamp } : {}),
         ...(item.timestamp ? { sourceTimestamp: item.timestamp } : {}),
+        ...(item.timestamp && item.timestampIsAuthoritative
+          ? { sourceTimestampIsAuthoritative: true }
+          : {}),
         ...(images.length > 0 ? { images } : {}),
       };
     }
@@ -3638,6 +3641,9 @@ export class BridgeWebSocketServer {
         },
         ...(item.uuid ? { messageUuid: item.uuid } : {}),
         ...(item.timestamp ? { sourceTimestamp: item.timestamp } : {}),
+        ...(item.timestamp && item.timestampIsAuthoritative
+          ? { sourceTimestampIsAuthoritative: true }
+          : {}),
       };
       return await this.sessionManager.enrichArtifactsForSession(
         session,
@@ -3695,6 +3701,9 @@ export class BridgeWebSocketServer {
       content,
       ...(item.toolName ? { toolName: item.toolName } : {}),
       ...(item.timestamp ? { sourceTimestamp: item.timestamp } : {}),
+      ...(item.timestamp && item.timestampIsAuthoritative
+        ? { sourceTimestampIsAuthoritative: true }
+        : {}),
       ...(images.length > 0 ? { images } : {}),
       ...(artifactCandidates.length > 0 ? { artifactCandidates } : {}),
     };

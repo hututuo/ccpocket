@@ -51,6 +51,9 @@ function sessionHistoryMessageToServerMessages(
         ...(history.imageCount ? { imageCount: history.imageCount } : {}),
         ...(history.timestamp ? { timestamp: history.timestamp } : {}),
         ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
+        ...(history.timestamp && history.timestampIsAuthoritative
+          ? { sourceTimestampIsAuthoritative: true }
+          : {}),
       },
     ];
   }
@@ -66,6 +69,9 @@ function sessionHistoryMessageToServerMessages(
         content,
         ...(history.toolName ? { toolName: history.toolName } : {}),
         ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
+        ...(history.timestamp && history.timestampIsAuthoritative
+          ? { sourceTimestampIsAuthoritative: true }
+          : {}),
       },
     ];
   }
@@ -79,6 +85,9 @@ function sessionHistoryMessageToServerMessages(
       message: { id, role: "assistant", content, model: "" },
       ...(history.uuid ? { messageUuid: history.uuid } : {}),
       ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
+      ...(history.timestamp && history.timestampIsAuthoritative
+        ? { sourceTimestampIsAuthoritative: true }
+        : {}),
     },
   ];
 }

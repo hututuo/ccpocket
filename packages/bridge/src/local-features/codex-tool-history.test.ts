@@ -139,6 +139,58 @@ describe("Codex Desktop history tool compatibility", () => {
     ]);
   });
 
+  it("indexes exact item, tool-start, and tool-completion timestamps", () => {
+    const builder = new CodexDesktopToolTimelineBuilder();
+    const meta = { turn_id: "turn-time" };
+
+    builder.ingest({
+      timestamp: "2026-07-29T05:20:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "reasoning",
+        id: "reasoning-time",
+        internal_chat_message_metadata_passthrough: meta,
+      },
+    });
+    builder.ingest({
+      timestamp: "2026-07-29T05:20:02.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        id: "tool-item-time",
+        name: "exec",
+        call_id: "call-time",
+        input: 'const r = await tools.exec_command({cmd:"pwd"}); text(r.output);',
+        internal_chat_message_metadata_passthrough: meta,
+      },
+    });
+    builder.ingest({
+      timestamp: "2026-07-29T05:20:04.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        id: "tool-output-time",
+        call_id: "call-time",
+        output: "/tmp",
+        internal_chat_message_metadata_passthrough: meta,
+      },
+    });
+
+    const timestamps = builder.snapshot().itemTimestamps;
+    expect(timestamps?.get("reasoning-time")).toEqual({
+      startedAt: "2026-07-29T05:20:01.000Z",
+      completedAt: "2026-07-29T05:20:01.000Z",
+    });
+    expect(timestamps?.get("call-time")).toEqual({
+      startedAt: "2026-07-29T05:20:02.000Z",
+      completedAt: "2026-07-29T05:20:04.000Z",
+    });
+    expect(timestamps?.get("tool-item-time")).toEqual({
+      startedAt: "2026-07-29T05:20:02.000Z",
+      completedAt: "2026-07-29T05:20:04.000Z",
+    });
+  });
+
   it("restores all textual output blocks in order", () => {
     expect(
       codexDesktopToolOutputText([

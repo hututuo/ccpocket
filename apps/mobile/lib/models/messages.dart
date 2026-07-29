@@ -1064,11 +1064,11 @@ class ArtifactRef {
 
 class ServerMessageTimestamp {
   final DateTime value;
-  final bool isBridgeReceived;
+  final bool isAuthoritative;
 
   const ServerMessageTimestamp({
     required this.value,
-    required this.isBridgeReceived,
+    required this.isAuthoritative,
   });
 }
 
@@ -1086,7 +1086,7 @@ void _attachServerMessageTimestamp(
   if (receivedAt != null) {
     _serverMessageTimestamps[message] = ServerMessageTimestamp(
       value: receivedAt,
-      isBridgeReceived: true,
+      isAuthoritative: true,
     );
     return;
   }
@@ -1100,7 +1100,9 @@ void _attachServerMessageTimestamp(
   if (fallback != null) {
     _serverMessageTimestamps[message] = ServerMessageTimestamp(
       value: fallback,
-      isBridgeReceived: false,
+      isAuthoritative:
+          sourceTimestamp != null &&
+          json['sourceTimestampIsAuthoritative'] == true,
     );
   }
 }
@@ -6153,7 +6155,7 @@ class ServerChatEntry implements ChatEntry {
        timestampIsAuthoritative =
            timestampIsAuthoritative ??
            (timestamp == null &&
-               (serverMessageTimestamp(message)?.isBridgeReceived ?? false));
+               (serverMessageTimestamp(message)?.isAuthoritative ?? false));
 }
 
 class UserChatEntry implements ChatEntry {

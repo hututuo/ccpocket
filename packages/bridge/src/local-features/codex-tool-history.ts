@@ -28,15 +28,29 @@ export interface CodexDesktopToolTimelineEvent {
   timestamp?: string;
 }
 
+export interface CodexDesktopItemTimestamp {
+  startedAt?: string;
+  completedAt?: string;
+}
+
 export interface CodexDesktopToolTimeline {
   events: CodexDesktopToolTimelineEvent[];
   callIds: ReadonlySet<string>;
+  /**
+   * Exact local rollout timestamps keyed by the provider item/call id.
+   *
+   * This remains optional so older cached/test timelines still decode. The
+   * official Thread API exposes only turn-level time, while the local JSONL
+   * records the actual time of each message, reasoning block and tool event.
+   */
+  itemTimestamps?: ReadonlyMap<string, CodexDesktopItemTimestamp>;
 }
 
 interface PendingDesktopToolCall {
   name: string;
   turnId: string;
   imagePaths: string[];
+  timingIds: string[];
 }
 
 export interface CodexDesktopInlineImage {
@@ -59,6 +73,10 @@ export class CodexDesktopToolTimelineBuilder {
   private readonly visibleMessagesByTurn = new Map<string, number>();
   private readonly pendingCalls = new Map<string, PendingDesktopToolCall>();
   private readonly timelineEvents: CodexDesktopToolTimelineEvent[] = [];
+  private readonly itemTimestamps = new Map<
+    string,
+    CodexDesktopItemTimestamp
+  >();
   private sequence = 0;
 
   constructor(
@@ -80,6 +98,42 @@ export class CodexDesktopToolTimelineBuilder {
     );
     const payloadTurnId = stringValue(metadata?.turn_id);
     const payloadType = stringValue(payload.type) ?? "";
+    const recordTimestamp = stringValue(record.timestamp);
+    const payloadItemId = stringValue(payload.id);
+    const payloadCallId = stringValue(payload.call_id);
+    const timingIds = [
+      ...new Set(
+        [payloadCallId, payloadItemId].filter(
+          (value): value is string =>
+            typeof value === "string" && value.length > 0,
+        ),
+      ),
+    ];
+
+    if (recordTimestamp) {
+      for (const timingId of timingIds) {
+        if (
+          payloadType === "function_call_output" ||
+          payloadType === "custom_tool_call_output"
+        ) {
+          this.recordItemTimestamp(timingId, {
+            completedAt: recordTimestamp,
+          });
+        } else if (
+          payloadType === "function_call" ||
+          payloadType === "custom_tool_call"
+        ) {
+          this.recordItemTimestamp(timingId, {
+            startedAt: recordTimestamp,
+          });
+        } else {
+          this.recordItemTimestamp(timingId, {
+            startedAt: recordTimestamp,
+            completedAt: recordTimestamp,
+          });
+        }
+      }
+    }
 
     if (payloadType === "message" && payloadTurnId) {
       const role = stringValue(payload.role);
@@ -114,6 +168,7 @@ export class CodexDesktopToolTimelineBuilder {
         name: descriptor.name,
         turnId: payloadTurnId,
         imagePaths,
+        timingIds,
       });
       this.push({
         turnId: payloadTurnId,
@@ -144,6 +199,13 @@ export class CodexDesktopToolTimelineBuilder {
     const pending = this.pendingCalls.get(callId);
     const turnId = payloadTurnId ?? pending?.turnId;
     if (!turnId || !pending) return;
+    if (recordTimestamp) {
+      for (const timingId of pending.timingIds) {
+        this.recordItemTimestamp(timingId, {
+          completedAt: recordTimestamp,
+        });
+      }
+    }
     const normalized = normalizeCodexDesktopToolOutput(payload.output);
     this.push({
       turnId,
@@ -177,7 +239,37 @@ export class CodexDesktopToolTimelineBuilder {
     return {
       events,
       callIds: new Set(events.map((event) => event.callId)),
+      itemTimestamps: new Map(
+        [...this.itemTimestamps].map(([id, timestamp]) => [
+          id,
+          { ...timestamp },
+        ]),
+      ),
     };
+  }
+
+  private recordItemTimestamp(
+    itemId: string,
+    timestamp: CodexDesktopItemTimestamp,
+  ): void {
+    const previous = this.itemTimestamps.get(itemId);
+    this.itemTimestamps.delete(itemId);
+    this.itemTimestamps.set(itemId, {
+      ...previous,
+      ...timestamp,
+    });
+
+    // Bound timestamp metadata independently of result payload size. This
+    // covers the recent visible transcript without turning a large rollout
+    // into an unbounded in-memory index.
+    const maxItemTimestamps = Math.max(this.maxEvents * 2, 2_000);
+    while (this.itemTimestamps.size > maxItemTimestamps) {
+      const oldest = this.itemTimestamps.keys().next().value as
+        | string
+        | undefined;
+      if (oldest === undefined) break;
+      this.itemTimestamps.delete(oldest);
+    }
   }
 
   private push(

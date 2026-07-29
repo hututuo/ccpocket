@@ -19,6 +19,7 @@ import {
   getCodexSessionHistory,
   extractMessageImages,
   codexThreadToSessionHistory,
+  supplementCodexThreadWithDesktopTools,
 } from "./sessions-index.js";
 import { buildAutoRenamePrompt } from "./auto-rename.js";
 
@@ -118,6 +119,151 @@ describe("codexThreadToSessionHistory", () => {
         toolUseId: "cmd1",
         toolName: "Bash",
         content: "status: completed\nexitCode: 0\nclean",
+      },
+    ]);
+  });
+
+  it("uses each local provider event time instead of one turn timestamp", () => {
+    const history = codexThreadToSessionHistory(
+      {
+        turns: [
+          {
+            id: "turn-timestamps",
+            startedAt: 1_700_000_000,
+            completedAt: 1_700_000_100,
+            items: [
+              {
+                type: "userMessage",
+                id: "user-time",
+                content: [{ type: "text", text: "inspect this" }],
+              },
+              {
+                type: "reasoning",
+                id: "reasoning-time",
+                summary: ["checking"],
+              },
+              {
+                type: "dynamicToolCall",
+                id: "tool-time",
+                tool: "Read",
+                arguments: { path: "/tmp/example.txt" },
+                status: "completed",
+                contentItems: [{ type: "inputText", text: "contents" }],
+              },
+              {
+                type: "agentMessage",
+                id: "assistant-time",
+                text: "finished",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        desktopToolTimeline: {
+          callIds: new Set(["tool-time"]),
+          events: [],
+          itemTimestamps: new Map([
+            [
+              "user-time",
+              {
+                startedAt: "2026-07-29T05:20:00.000Z",
+                completedAt: "2026-07-29T05:20:00.000Z",
+              },
+            ],
+            [
+              "reasoning-time",
+              {
+                startedAt: "2026-07-29T05:20:01.000Z",
+                completedAt: "2026-07-29T05:20:01.000Z",
+              },
+            ],
+            [
+              "tool-time",
+              {
+                startedAt: "2026-07-29T05:20:02.000Z",
+                completedAt: "2026-07-29T05:20:04.000Z",
+              },
+            ],
+            [
+              "assistant-time",
+              {
+                startedAt: "2026-07-29T05:20:05.000Z",
+                completedAt: "2026-07-29T05:20:05.000Z",
+              },
+            ],
+          ]),
+        },
+      },
+    );
+
+    expect(
+      history.map((message) => ({
+        timestamp: message.timestamp,
+        authoritative: message.timestampIsAuthoritative,
+      })),
+    ).toEqual([
+      {
+        timestamp: "2026-07-29T05:20:00.000Z",
+        authoritative: true,
+      },
+      {
+        timestamp: "2026-07-29T05:20:01.000Z",
+        authoritative: true,
+      },
+      {
+        timestamp: "2026-07-29T05:20:02.000Z",
+        authoritative: true,
+      },
+      {
+        timestamp: "2026-07-29T05:20:04.000Z",
+        authoritative: true,
+      },
+      {
+        timestamp: "2026-07-29T05:20:05.000Z",
+        authoritative: true,
+      },
+    ]);
+  });
+
+  it("keeps exact event time when a mirror consumes a supplemented thread", () => {
+    const timeline = {
+      callIds: new Set<string>(),
+      events: [],
+      itemTimestamps: new Map([
+        [
+          "assistant-mirror-time",
+          {
+            startedAt: "2026-07-29T05:21:07.000Z",
+            completedAt: "2026-07-29T05:21:07.000Z",
+          },
+        ],
+      ]),
+    };
+    const supplemented = supplementCodexThreadWithDesktopTools(
+      {
+        turns: [
+          {
+            id: "turn-mirror-time",
+            completedAt: 1_700_000_100,
+            items: [
+              {
+                type: "agentMessage",
+                id: "assistant-mirror-time",
+                text: "mirrored",
+              },
+            ],
+          },
+        ],
+      },
+      timeline,
+    );
+
+    expect(codexThreadToSessionHistory(supplemented)).toMatchObject([
+      {
+        role: "assistant",
+        timestamp: "2026-07-29T05:21:07.000Z",
+        timestampIsAuthoritative: true,
       },
     ]);
   });
@@ -2375,6 +2521,7 @@ describe("codex sessions integration", () => {
       content: "Computer Use state",
       imageBase64: [{ data: imageData, mimeType: "image/png" }],
       timestamp: "2026-02-13T11:28:00.000Z",
+      timestampIsAuthoritative: true,
     });
   });
 
@@ -2451,6 +2598,7 @@ describe("codex sessions integration", () => {
           `savedPath: ${savedPath}`,
         imagePaths: [savedPath],
         timestamp: "2026-02-13T11:27:00.000Z",
+        timestampIsAuthoritative: true,
       },
     ]);
   });
@@ -2499,6 +2647,7 @@ describe("codex sessions integration", () => {
         content: "status: completed",
         imageBase64: [{ data: "aGVsbG8=", mimeType: "image/png" }],
         timestamp: "2026-02-13T11:27:00.000Z",
+        timestampIsAuthoritative: true,
       },
     ]);
   });

@@ -316,7 +316,7 @@ class ChatMessageHandler {
               imageUrls: imageUrls,
               timestamp: displayTimestamp,
               timestampIsAuthoritative:
-                  messageTimestamp?.isBridgeReceived ?? false,
+                  messageTimestamp?.isAuthoritative ?? false,
             ),
           );
         }
@@ -329,7 +329,7 @@ class ChatMessageHandler {
               status: MessageStatus.sent,
               timestamp: displayTimestamp,
               timestampIsAuthoritative:
-                  messageTimestamp?.isBridgeReceived ?? false,
+                  messageTimestamp?.isAuthoritative ?? false,
             ),
           ],
         );
@@ -479,7 +479,7 @@ class ChatMessageHandler {
     final entry = ServerChatEntry(
       displayMsg,
       timestamp: messageTimestamp?.value.toLocal(),
-      timestampIsAuthoritative: messageTimestamp?.isBridgeReceived ?? false,
+      timestampIsAuthoritative: messageTimestamp?.isAuthoritative ?? false,
     );
     final replaceStreaming = currentStreaming;
     currentStreaming = null;
@@ -672,7 +672,7 @@ class ChatMessageHandler {
             imageUrls: m.imageUrls,
             timestamp: ts,
             timestampIsAuthoritative:
-                messageTimestamp?.isBridgeReceived ?? false,
+                messageTimestamp?.isAuthoritative ?? false,
           ),
         );
       } else {
@@ -687,7 +687,7 @@ class ChatMessageHandler {
               m,
               timestamp: timestamp,
               timestampIsAuthoritative:
-                  messageTimestamp?.isBridgeReceived ?? false,
+                  messageTimestamp?.isAuthoritative ?? false,
             ),
           );
         }
