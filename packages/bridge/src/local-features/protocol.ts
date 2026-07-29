@@ -25,6 +25,11 @@ import {
   type ConversationContentServerMessage,
 } from "./slots/conversation-content-protocol.js";
 import {
+  conversationSyncV2ProtocolContribution,
+  type ConversationSyncClientMessage,
+  type ConversationSyncServerMessage,
+} from "./slots/conversation-sync-v2-protocol.js";
+import {
   fileBrowserProtocolContribution,
   type FileBrowserClientMessage,
   type FileBrowserServerMessage,
@@ -126,6 +131,22 @@ export type {
   ConversationContentTarget,
 } from "./slots/conversation-content-protocol.js";
 export { CONVERSATION_CONTENT_EVENT_CAPABILITY } from "./slots/conversation-content-protocol.js";
+export type {
+  ConversationSyncCatalogEntry,
+  ConversationSyncClientMessage,
+  ConversationSyncNextState,
+  ConversationSyncProvider,
+  ConversationSyncReadWatermark,
+  ConversationSyncServerMessage,
+  ConversationSyncStatus,
+  ConversationSyncTarget,
+  ConversationSyncThreadState,
+} from "./slots/conversation-sync-v2-protocol.js";
+export {
+  APP_SERVER_STATUS_CAPABILITY,
+  BRIDGE_IDENTITY_V2_CAPABILITY,
+  CONVERSATION_SYNC_V2_CAPABILITY,
+} from "./slots/conversation-sync-v2-protocol.js";
 export {
   CONVERSATION_MIRROR_ENTRY_CHUNK_CAPABILITY,
   CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
@@ -178,6 +199,7 @@ export type LocalFeatureClientMessage =
   | CodexDesktopContinuityClientMessage
   | ConversationMirrorClientMessage
   | ConversationContentClientMessage
+  | ConversationSyncClientMessage
   | FileBrowserClientMessage
   | SessionInsightsClientMessage
   | SubagentsClientMessage
@@ -191,6 +213,7 @@ export type LocalFeatureServerMessage =
   | CodexDesktopContinuityEventMessage
   | ConversationMirrorServerMessage
   | ConversationContentServerMessage
+  | ConversationSyncServerMessage
   | FileBrowserServerMessage
   | SessionInsightsServerMessage
   | SubagentsServerMessage
@@ -204,6 +227,7 @@ const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   codexDesktopContinuityProtocolContribution,
   conversationMirrorProtocolContribution,
   conversationContentProtocolContribution,
+  conversationSyncV2ProtocolContribution,
   fileBrowserProtocolContribution,
   sessionInsightsProtocolContribution,
   subagentsProtocolContribution,

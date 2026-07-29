@@ -1,0 +1,348 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type { ServerMessage } from "../parser.js";
+import { ConversationSyncV2FeatureHandler } from "./conversation-sync-v2.js";
+import {
+  CONVERSATION_SYNC_V2_CAPABILITY,
+  conversationSyncV2ProtocolContribution,
+  type ConversationSyncCatalogEntry,
+  type ConversationSyncClientMessage,
+  type ConversationSyncServerMessage,
+  type ConversationSyncStatus,
+} from "./slots/conversation-sync-v2-protocol.js";
+import type { LocalFeatureRuntime } from "./runtime.js";
+
+describe("conversation_sync_v2 protocol", () => {
+  it("accepts bounded state cursors and rejects duplicate thread identities", () => {
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient(
+        subscribeMessage([
+          {
+            provider: "codex",
+            providerSessionId: "thread-1",
+            revision: "revision-1",
+          },
+        ]),
+      ),
+    ).toMatchObject({
+      type: "conversation_sync_subscribe",
+      protocolVersion: 2,
+      threadContentStates: [{ providerSessionId: "thread-1" }],
+    });
+
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient(
+        subscribeMessage([
+          {
+            provider: "codex",
+            providerSessionId: "thread-1",
+            revision: "revision-1",
+          },
+          {
+            provider: "codex",
+            providerSessionId: "thread-1",
+            revision: "revision-2",
+          },
+        ]),
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps page requests read-only and rejects unbounded limits", () => {
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "turns-1",
+        subscriptionId: "sync-1",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "summary",
+      }),
+    ).toMatchObject({
+      type: "conversation_turns_page",
+      providerSessionId: "thread-1",
+    });
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "items-1",
+        subscriptionId: "sync-1",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        limit: 201,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("ConversationSyncV2FeatureHandler", () => {
+  it("sends special state first, limits provider concurrency, and reuses revisions", async () => {
+    const seeds = Array.from({ length: 12 }, (_, index) =>
+      seed(index, index === 10 ? workingStatus(index) : undefined),
+    );
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    const historyReader = vi.fn(async (target) => {
+      activeReads += 1;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      activeReads -= 1;
+      return history(target.providerSessionId);
+    });
+    const fixture = createFixture(seeds, historyReader);
+    const firstClient = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(firstClient, fixture.runtime),
+    );
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, firstClient, "sync_complete")).toHaveLength(
+          1,
+        ),
+      { timeout: 3_000 },
+    );
+
+    const timeline = events(fixture.sent, firstClient, "timeline_page");
+    expect(timeline[0]).toMatchObject({
+      providerSessionId: "session-10",
+    });
+    expect(maxActiveReads).toBeLessThanOrEqual(2);
+    expect(
+      events(fixture.sent, firstClient, "status_changes")
+        .flatMap((event) => event.changes)
+        .find((status) => status.providerSessionId === "session-0"),
+    ).toMatchObject({
+      activity: "unknown",
+      confidence: "unknown",
+    });
+    for (const message of fixture.sent.get(firstClient) ?? []) {
+      expect(
+        Buffer.byteLength(JSON.stringify(message), "utf8"),
+      ).toBeLessThanOrEqual(64 * 1024);
+    }
+
+    const completion = events(fixture.sent, firstClient, "sync_complete")[0]!;
+    const readsAfterFirstSync = historyReader.mock.calls.length;
+    const secondClient = {};
+    await fixture.handler.handle(
+      subscribeMessage(completion.nextState.threadContentStates, {
+        catalogState: completion.nextState.catalogState,
+        statusState: completion.nextState.statusState,
+      }),
+      context(secondClient, fixture.runtime),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          events(fixture.sent, secondClient, "sync_complete"),
+        ).toHaveLength(1),
+      { timeout: 3_000 },
+    );
+    expect(historyReader).toHaveBeenCalledTimes(readsAfterFirstSync);
+    fixture.handler.close();
+  });
+
+  it("keeps sent but unacknowledged frames within one MiB", async () => {
+    const seeds = Array.from({ length: 40 }, (_, index) => seed(index));
+    const historyReader = vi.fn(async (target) => [
+      {
+        type: "user_input" as const,
+        text: target.providerSessionId,
+        userMessageUuid: `user-${target.providerSessionId}`,
+      },
+      {
+        type: "assistant" as const,
+        messageUuid: `assistant-${target.providerSessionId}`,
+        message: {
+          id: `assistant-${target.providerSessionId}`,
+          role: "assistant" as const,
+          model: "test",
+          content: [{ type: "text" as const, text: "x".repeat(34 * 1024) }],
+        },
+      },
+    ]);
+    const fixture = createFixture(seeds, historyReader);
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(
+      () => expect(historyReader.mock.calls.length).toBeGreaterThan(20),
+      {
+        timeout: 3_000,
+      },
+    );
+    const sentBytes = (fixture.sent.get(client) ?? []).reduce(
+      (total, message) =>
+        total + Buffer.byteLength(JSON.stringify(message), "utf8"),
+      0,
+    );
+    expect(sentBytes).toBeLessThanOrEqual(1024 * 1024);
+    for (const message of fixture.sent.get(client) ?? []) {
+      expect(
+        Buffer.byteLength(JSON.stringify(message), "utf8"),
+      ).toBeLessThanOrEqual(64 * 1024);
+    }
+    fixture.handler.close();
+  });
+});
+
+function createFixture(
+  seeds: Array<{
+    entry: ConversationSyncCatalogEntry;
+    status: ConversationSyncStatus;
+  }>,
+  historyReader: (target: {
+    provider: "claude" | "codex";
+    providerSessionId: string;
+  }) => Promise<ServerMessage[]>,
+) {
+  const sent = new Map<object, ConversationSyncServerMessage[]>();
+  const runtime = {
+    bridgeInstanceId: "bridge-1",
+    codexSourceId: "source-1",
+    getSession: () => undefined,
+    getCodexThreadId: () => undefined,
+    getActiveCodexProcess: () => null,
+    createStandaloneCodexProcess: async () => {
+      throw new Error("not used");
+    },
+    send(client: object, message: ConversationSyncServerMessage) {
+      const messages = sent.get(client) ?? [];
+      messages.push(message);
+      sent.set(client, messages);
+    },
+    isClientOpen: () => true,
+    supports: (_client: object, type: string) =>
+      type === CONVERSATION_SYNC_V2_CAPABILITY,
+  } satisfies LocalFeatureRuntime;
+  return {
+    runtime,
+    sent,
+    handler: new ConversationSyncV2FeatureHandler(runtime, {
+      catalogReader: async () => seeds,
+      statusReader: async () => new Map(),
+      historyReader,
+      statusWatchdogMs: 60_000,
+      coldReconcileMs: 60_000,
+    }),
+  };
+}
+
+function context(client: object, runtime: LocalFeatureRuntime) {
+  return {
+    client,
+    signal: new AbortController().signal,
+    runtime,
+  };
+}
+
+function subscribeMessage(
+  threadContentStates: Array<{
+    provider: "claude" | "codex";
+    providerSessionId: string;
+    revision: string;
+  }> = [],
+  state: { catalogState?: string; statusState?: string } = {},
+): Extract<
+  ConversationSyncClientMessage,
+  { type: "conversation_sync_subscribe" }
+> {
+  return {
+    type: "conversation_sync_subscribe",
+    protocolVersion: 2,
+    requestId: `sync-${Math.random().toString(36).slice(2)}`,
+    ...state,
+    threadContentStates,
+    readWatermarks: [],
+  };
+}
+
+function seed(
+  index: number,
+  status = unknownStatus(index),
+): {
+  entry: ConversationSyncCatalogEntry;
+  status: ConversationSyncStatus;
+} {
+  const recency = new Date(Date.now() - index * 60_000).toISOString();
+  return {
+    entry: {
+      provider: "claude",
+      providerSessionId: `session-${index}`,
+      revision: `revision-${index}`,
+      projectPath: `/project/${index}`,
+      firstPrompt: `Conversation ${index}`,
+      createdAt: recency,
+      modifiedAt: recency,
+      recencyAt: recency,
+      availability: "durable",
+    },
+    status,
+  };
+}
+
+function unknownStatus(index: number): ConversationSyncStatus {
+  return {
+    provider: "claude",
+    providerSessionId: `session-${index}`,
+    activity: "unknown",
+    attention: "none",
+    result: "none",
+    runtimeAttachment: "notLoaded",
+    source: "legacyRollout",
+    confidence: "unknown",
+    observedAt: new Date(Date.now() - index * 60_000).toISOString(),
+  };
+}
+
+function workingStatus(index: number): ConversationSyncStatus {
+  return {
+    ...unknownStatus(index),
+    activity: "working",
+    runtimeAttachment: "loaded",
+    source: "bridgeRuntime",
+    confidence: "authoritative",
+  };
+}
+
+function history(id: string): ServerMessage[] {
+  return [
+    {
+      type: "user_input",
+      text: id,
+      userMessageUuid: `user-${id}`,
+    },
+    {
+      type: "assistant",
+      messageUuid: `assistant-${id}`,
+      message: {
+        id: `assistant-${id}`,
+        role: "assistant",
+        model: "test",
+        content: [{ type: "text", text: `reply-${id}` }],
+      },
+    },
+  ];
+}
+
+function events<Event extends ConversationSyncServerMessage["event"]>(
+  sent: Map<object, ConversationSyncServerMessage[]>,
+  client: object,
+  event: Event,
+): Array<Extract<ConversationSyncServerMessage, { event: Event }>> {
+  return (sent.get(client) ?? []).filter(
+    (
+      message,
+    ): message is Extract<ConversationSyncServerMessage, { event: Event }> =>
+      message.event === event,
+  );
+}

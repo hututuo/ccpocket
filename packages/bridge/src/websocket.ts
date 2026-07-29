@@ -121,10 +121,7 @@ import { generateCommitMessage } from "./git-assist.js";
 import { listWindows, takeScreenshot } from "./screenshot.js";
 import { DebugTraceStore } from "./debug-trace-store.js";
 import { RecordingStore } from "./recording-store.js";
-import {
-  PushRelayClient,
-  type PushNotifyPayload,
-} from "./push-relay.js";
+import { PushRelayClient, type PushNotifyPayload } from "./push-relay.js";
 import type { FirebaseAuthClient } from "./firebase-auth.js";
 import { type PushLocale, normalizePushLocale, t } from "./push-i18n.js";
 import {
@@ -169,8 +166,11 @@ import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import {
+  APP_SERVER_STATUS_CAPABILITY,
+  BRIDGE_IDENTITY_V2_CAPABILITY,
   CONVERSATION_CONTENT_EVENT_CAPABILITY,
   CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
+  CONVERSATION_SYNC_V2_CAPABILITY,
   EPHEMERAL_SIDE_CHAT_CAPABILITY,
   FILE_BROWSER_CAPABILITY,
   FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY,
@@ -1614,6 +1614,44 @@ export class BridgeWebSocketServer {
         this.codexThreadIdForSession(session as SessionInfo),
       getProviderSessionId: (rawSession) =>
         this.providerSessionIdForSession(rawSession as SessionInfo),
+      listRuntimeConversationStates: () =>
+        this.sessionManager.list().map((summary) => {
+          const session = this.sessionManager.get(summary.id);
+          const toolName = summary.pendingPermission?.toolName.toLowerCase();
+          const attentionKind =
+            toolName == null
+              ? undefined
+              : toolName.includes("askuser") ||
+                  toolName.includes("question") ||
+                  toolName.includes("request_user_input")
+                ? "question"
+                : toolName.includes("form") || toolName.includes("elicitation")
+                  ? "form"
+                  : toolName.includes("approval") ||
+                      toolName.includes("exitplan")
+                    ? "approval"
+                    : "permission";
+          return {
+            bridgeSessionId: summary.id,
+            provider: summary.provider,
+            ...(session
+              ? {
+                  providerSessionId: this.providerSessionIdForSession(session),
+                }
+              : {}),
+            projectPath: summary.projectPath,
+            processStatus: summary.status,
+            ...(summary.pendingPermission && attentionKind
+              ? {
+                  pendingAttention: {
+                    requestId: summary.pendingPermission.toolUseId,
+                    kind: attentionKind,
+                  },
+                }
+              : {}),
+            observedAt: summary.lastActivityAt,
+          };
+        }),
       getClientDeliveryMode: (client) =>
         this.backgroundDeliveryClients.get(client as WebSocket)?.mode ===
         "notifications_only"
@@ -10236,13 +10274,14 @@ export class BridgeWebSocketServer {
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         FILE_LIST_REQUEST_CORRELATION_CAPABILITY,
         CONVERSATION_CONTENT_EVENT_CAPABILITY,
+        BRIDGE_IDENTITY_V2_CAPABILITY,
+        CONVERSATION_SYNC_V2_CAPABILITY,
+        APP_SERVER_STATUS_CAPABILITY,
         CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
-        ...(this.fileBrowser
-          ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY]
-          : []),
+        ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
@@ -10310,13 +10349,14 @@ export class BridgeWebSocketServer {
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         FILE_LIST_REQUEST_CORRELATION_CAPABILITY,
         CONVERSATION_CONTENT_EVENT_CAPABILITY,
+        BRIDGE_IDENTITY_V2_CAPABILITY,
+        CONVERSATION_SYNC_V2_CAPABILITY,
+        APP_SERVER_STATUS_CAPABILITY,
         CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
-        ...(this.fileBrowser
-          ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY]
-          : []),
+        ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
@@ -11700,9 +11740,7 @@ export class BridgeWebSocketServer {
     if (!this.bridgeInstanceId) return {};
     return {
       bridgeInstanceId: this.bridgeInstanceId,
-      ...(provider === "codex"
-        ? { codexSourceId: this.codexSourceId }
-        : {}),
+      ...(provider === "codex" ? { codexSourceId: this.codexSourceId } : {}),
     };
   }
 

@@ -51,8 +51,7 @@ const MAX_TOOL_INPUT_JSON = 32 * 1024;
 const MAX_ASSISTANT_CONTENT_BLOCKS = 1024;
 const MAX_SAFE_JSON_DEPTH = 64;
 const MAX_SAFE_JSON_NODES = 10_000;
-const TRUNCATED_TEXT_SUFFIX =
-  "\n…[truncated; load details on demand]";
+const TRUNCATED_TEXT_SUFFIX = "\n…[truncated; load details on demand]";
 
 type ConversationKey = string;
 
@@ -77,13 +76,13 @@ interface QueueTask extends ConversationContentTarget {
   reason: string;
 }
 
-interface SnapshotEntry extends ConversationContentEntry {
+export interface ConversationContentSnapshotEntry extends ConversationContentEntry {
   sourceIndex: number;
 }
 
-interface ConversationSnapshot extends ConversationContentTarget {
+export interface ConversationContentSnapshot extends ConversationContentTarget {
   revision: string;
-  entries: SnapshotEntry[];
+  entries: ConversationContentSnapshotEntry[];
   hasEarlier: boolean;
   sourceEntryCount: number;
   /** Exact UTF-8 JSON size used for deterministic cache accounting. */
@@ -148,7 +147,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   private readonly inFlightKeys = new Set<ConversationKey>();
   private readonly snapshots = new Map<
     ConversationKey,
-    ConversationSnapshot[]
+    ConversationContentSnapshot[]
   >();
   private queueSequence = 0;
   private completedTaskCount = 0;
@@ -179,7 +178,8 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
             metadataOnly: true,
           })
         ).sessions);
-    this.historyReader = options.historyReader ?? readDurableHistory;
+    this.historyReader =
+      options.historyReader ?? readDurableConversationHistory;
     this.hotConversationLimit = positiveInteger(
       options.hotConversationLimit,
       DEFAULT_HOT_CONVERSATION_LIMIT,
@@ -620,7 +620,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
         try {
           const messages = await this.historyReader(task);
           if (this.closed || !this.hasInteractiveClients()) break;
-          const snapshot = buildSnapshot(task, messages, {
+          const snapshot = buildConversationContentSnapshot(task, messages, {
             maxMessageTextBytes: this.maxMessageTextBytes,
             maxSnapshotBytes: this.maxSnapshotBytes,
           });
@@ -655,14 +655,12 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
       );
       const agedPriority = Math.max(
         0,
-        task.priority -
-          Math.floor(tasksWaited / QUEUE_PRIORITY_AGING_INTERVAL),
+        task.priority - Math.floor(tasksWaited / QUEUE_PRIORITY_AGING_INTERVAL),
       );
       if (
         !selected ||
         agedPriority < selectedPriority ||
-        (agedPriority === selectedPriority &&
-          task.sequence < selected.sequence)
+        (agedPriority === selectedPriority && task.sequence < selected.sequence)
       ) {
         selected = task;
         selectedPriority = agedPriority;
@@ -673,7 +671,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
 
   private publishSnapshot(
     key: ConversationKey,
-    snapshot: ConversationSnapshot,
+    snapshot: ConversationContentSnapshot,
   ): void {
     for (const [client, subscription] of [...this.clients]) {
       this.publishSnapshotToClient(client, subscription, key, snapshot);
@@ -684,7 +682,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     client: object,
     subscription: ClientSubscription,
     key: ConversationKey,
-    snapshot: ConversationSnapshot,
+    snapshot: ConversationContentSnapshot,
     allowDeferral = true,
   ): void {
     if (!subscription.interactive || !this.clientReady(client)) return;
@@ -708,8 +706,8 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   private sendPatch(
     client: object,
     subscription: ClientSubscription,
-    base: ConversationSnapshot,
-    snapshot: ConversationSnapshot,
+    base: ConversationContentSnapshot,
+    snapshot: ConversationContentSnapshot,
   ): boolean {
     const baseById = new Map(
       base.entries.map((entry) => [entry.entryId, entry]),
@@ -732,7 +730,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
       event: "patch",
       baseRevision: base.revision,
       revision: snapshot.revision,
-      upserts: upserts.map(toWireEntry),
+      upserts: upserts.map(toWireConversationContentEntry),
       deletes,
       hasEarlier: snapshot.hasEarlier,
       sourceEntryCount: snapshot.sourceEntryCount,
@@ -749,7 +747,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   private sendSnapshot(
     client: object,
     subscription: ClientSubscription,
-    snapshot: ConversationSnapshot,
+    snapshot: ConversationContentSnapshot,
   ): void {
     const pageEnvelopeBytes = Buffer.byteLength(
       JSON.stringify({
@@ -763,7 +761,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
       }),
       "utf8",
     );
-    const pages = paginateEntries(
+    const pages = paginateConversationContentEntries(
       snapshot.entries,
       this.maxPageEntries,
       this.maxPageBytes,
@@ -787,7 +785,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
         revision: snapshot.revision,
         pageIndex,
         pageCount: pages.length,
-        entries: entries.map(toWireEntry),
+        entries: entries.map(toWireConversationContentEntry),
       });
     }
     this.send(client, {
@@ -811,7 +809,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
 
   private rememberSnapshot(
     key: ConversationKey,
-    snapshot: ConversationSnapshot,
+    snapshot: ConversationContentSnapshot,
   ): void {
     const previous = this.snapshots.get(key) ?? [];
     const revisions = [
@@ -826,10 +824,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
       (total, value) => total + value.cacheBytes,
       0,
     );
-    while (
-      revisions.length > 1 &&
-      targetBytes > this.maxCachedTargetBytes
-    ) {
+    while (revisions.length > 1 && targetBytes > this.maxCachedTargetBytes) {
       targetBytes -= revisions.shift()!.cacheBytes;
     }
     if (
@@ -886,7 +881,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   private findSnapshot(
     key: ConversationKey,
     revision: string,
-  ): ConversationSnapshot | undefined {
+  ): ConversationContentSnapshot | undefined {
     const values = this.snapshots.get(key);
     const snapshot = values?.find((value) => value.revision === revision);
     if (snapshot && values) this.touchCachedTarget(key, values);
@@ -895,7 +890,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
 
   private latestSnapshot(
     key: ConversationKey,
-  ): ConversationSnapshot | undefined {
+  ): ConversationContentSnapshot | undefined {
     const values = this.snapshots.get(key);
     const snapshot = values?.at(-1);
     if (snapshot && values) this.touchCachedTarget(key, values);
@@ -904,7 +899,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
 
   private touchCachedTarget(
     key: ConversationKey,
-    values: ConversationSnapshot[],
+    values: ConversationContentSnapshot[],
   ): void {
     this.snapshots.delete(key);
     this.snapshots.set(key, values);
@@ -1017,7 +1012,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   }
 }
 
-async function readDurableHistory(
+export async function readDurableConversationHistory(
   target: ConversationContentTarget,
 ): Promise<ServerMessage[]> {
   const history =
@@ -1029,14 +1024,14 @@ async function readDurableHistory(
   });
 }
 
-function buildSnapshot(
+export function buildConversationContentSnapshot(
   target: ConversationContentTarget,
   rawMessages: readonly ServerMessage[],
   limits: {
     maxMessageTextBytes: number;
     maxSnapshotBytes: number;
   },
-): ConversationSnapshot {
+): ConversationContentSnapshot {
   const firstRelevantIndex = latestRootTurnStart(
     rawMessages,
     TURN_AWARE_HISTORY_ROOT_TURNS,
@@ -1066,12 +1061,11 @@ function buildSnapshot(
       value.message,
       limits.maxMessageTextBytes,
     );
-    const serialized = safeJsonSerialize(
-      message,
-      limits.maxSnapshotBytes,
-    );
+    const serialized = safeJsonSerialize(message, limits.maxSnapshotBytes);
     if (!serialized) {
-      throw new Error("Conversation message exceeds safe serialized byte budget");
+      throw new Error(
+        "Conversation message exceeds safe serialized byte budget",
+      );
     }
     if (retainedMessageBytes + serialized.bytes > limits.maxSnapshotBytes) {
       omitted = true;
@@ -1086,24 +1080,26 @@ function buildSnapshot(
   }
 
   const usedIds = new Map<string, number>();
-  const candidateEntries: SnapshotEntry[] = retained.map((value) => {
-    const message = value.message;
-    const baseId = messageIdentity(
-      message,
-      value.sourceIndex,
-      value.serialized,
-    );
-    const occurrence = (usedIds.get(baseId) ?? 0) + 1;
-    usedIds.set(baseId, occurrence);
-    const entryId = occurrence === 1 ? baseId : `${baseId}:${occurrence}`;
-    return {
-      entryId,
-      index: value.sourceIndex,
-      sourceIndex: value.sourceIndex,
-      contentHash: sha256(value.serialized),
-      message,
-    };
-  });
+  const candidateEntries: ConversationContentSnapshotEntry[] = retained.map(
+    (value) => {
+      const message = value.message;
+      const baseId = messageIdentity(
+        message,
+        value.sourceIndex,
+        value.serialized,
+      );
+      const occurrence = (usedIds.get(baseId) ?? 0) + 1;
+      usedIds.set(baseId, occurrence);
+      const entryId = occurrence === 1 ? baseId : `${baseId}:${occurrence}`;
+      return {
+        entryId,
+        index: value.sourceIndex,
+        sourceIndex: value.sourceIndex,
+        contentHash: sha256(value.serialized),
+        message,
+      };
+    },
+  );
   const emptySnapshotBytes = materializeSnapshot(
     target,
     [],
@@ -1144,7 +1140,9 @@ function buildSnapshot(
     rawMessages.length,
   );
   if (snapshot.cacheBytes > limits.maxSnapshotBytes) {
-    throw new Error("Conversation snapshot exceeds safe serialized byte budget");
+    throw new Error(
+      "Conversation snapshot exceeds safe serialized byte budget",
+    );
   }
   return snapshot;
 }
@@ -1164,10 +1162,10 @@ function latestRootTurnStart(
 
 function materializeSnapshot(
   target: ConversationContentTarget,
-  entries: SnapshotEntry[],
+  entries: ConversationContentSnapshotEntry[],
   hasEarlier: boolean,
   sourceEntryCount: number,
-): ConversationSnapshot {
+): ConversationContentSnapshot {
   const revision = sha256(
     JSON.stringify({
       sourceEntryCount,
@@ -1217,11 +1215,7 @@ function boundHistoryMessage(
   if (message.type === "tool_use_summary") {
     return {
       ...message,
-      summary: takeBoundedText(
-        message.summary,
-        budget,
-        maxMessageTextBytes,
-      ),
+      summary: takeBoundedText(message.summary, budget, maxMessageTextBytes),
     };
   }
   if (message.type !== "assistant") return message;
@@ -1238,11 +1232,7 @@ function boundHistoryMessage(
         if (content.type === "text") {
           return {
             ...content,
-            text: takeBoundedText(
-              content.text,
-              budget,
-              MAX_ASSISTANT_TEXT,
-            ),
+            text: takeBoundedText(content.text, budget, MAX_ASSISTANT_TEXT),
           };
         }
         if (content.type === "thinking") {
@@ -1332,11 +1322,7 @@ function utf8CodePointWidth(
   index: number,
 ): { bytes: number; codeUnits: number } {
   const first = value.charCodeAt(index);
-  if (
-    first >= 0xd800 &&
-    first <= 0xdbff &&
-    index + 1 < value.length
-  ) {
+  if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
     const second = value.charCodeAt(index + 1);
     if (second >= 0xdc00 && second <= 0xdfff) {
       return { bytes: 4, codeUnits: 2 };
@@ -1391,9 +1377,7 @@ function measureJsonValue(
     return bytes <= maxBytes ? bytes : undefined;
   }
   if (typeof value === "number") {
-    const encoded = Number.isFinite(value)
-      ? JSON.stringify(value)
-      : "null";
+    const encoded = Number.isFinite(value) ? JSON.stringify(value) : "null";
     const bytes = Buffer.byteLength(encoded, "utf8");
     return bytes <= maxBytes ? bytes : undefined;
   }
@@ -1566,22 +1550,22 @@ function messageIdentity(
   return `message:${message.type}:${index}`;
 }
 
-function paginateEntries(
-  entries: readonly SnapshotEntry[],
+export function paginateConversationContentEntries(
+  entries: readonly ConversationContentSnapshotEntry[],
   maxEntries: number,
   maxBytes: number,
   pageEnvelopeBytes: number,
-): SnapshotEntry[][] {
+): ConversationContentSnapshotEntry[][] {
   if (entries.length === 0) return [];
   if (pageEnvelopeBytes > maxBytes) {
     throw new Error("Conversation snapshot page envelope exceeds byte budget");
   }
-  const pages: SnapshotEntry[][] = [];
-  let page: SnapshotEntry[] = [];
+  const pages: ConversationContentSnapshotEntry[][] = [];
+  let page: ConversationContentSnapshotEntry[] = [];
   let pageBytes = pageEnvelopeBytes;
   for (const entry of entries) {
     const entryBytes = Buffer.byteLength(
-      JSON.stringify(toWireEntry(entry)),
+      JSON.stringify(toWireConversationContentEntry(entry)),
       "utf8",
     );
     if (pageEnvelopeBytes + entryBytes > maxBytes) {
@@ -1604,7 +1588,9 @@ function paginateEntries(
   return pages;
 }
 
-function toWireEntry(entry: SnapshotEntry): ConversationContentEntry {
+export function toWireConversationContentEntry(
+  entry: ConversationContentSnapshotEntry,
+): ConversationContentEntry {
   return {
     entryId: entry.entryId,
     index: entry.index,
@@ -1614,7 +1600,7 @@ function toWireEntry(entry: SnapshotEntry): ConversationContentEntry {
 }
 
 function snapshotTarget(
-  snapshot: ConversationSnapshot,
+  snapshot: ConversationContentSnapshot,
 ): ConversationContentTarget {
   return {
     provider: snapshot.provider,
