@@ -14841,6 +14841,49 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       approvalPolicy: "never",
       sandboxMode: "danger-full-access",
     });
+    const readThread = child.process.readThread as ReturnType<typeof vi.fn>;
+    readThread.mockRejectedValue(
+      new Error("ephemeral threads do not support includeTurns"),
+    );
+    (bridge as any).sessionManager.appendHistory(childSessionId, {
+      type: "assistant",
+      message: {
+        id: "ephemeral-answer",
+        role: "assistant",
+        content: [{ type: "text", text: "live-only answer" }],
+        model: "gpt-5.6-sol",
+      },
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history",
+        sessionId: childSessionId,
+      },
+      ws,
+    );
+    const historyMessages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(
+      historyMessages.find((message: any) => message.type === "history"),
+    ).toMatchObject({
+      sessionId: childSessionId,
+      messages: [
+        {
+          type: "assistant",
+          message: {
+            id: "ephemeral-answer",
+            content: [{ type: "text", text: "live-only answer" }],
+          },
+        },
+      ],
+    });
+    expect(
+      historyMessages.find((message: any) => message.type === "error"),
+    ).toBeUndefined();
+    expect(readThread).not.toHaveBeenCalled();
     expect(
       (bridge as any).sessionManager
         .list()

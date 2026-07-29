@@ -2928,6 +2928,19 @@ export class BridgeWebSocketServer {
   private async codexCanonicalHistoryEntries(
     session: SessionInfo,
   ): Promise<HistoryEntry[] | null> {
+    if (session.auxiliary?.kind === "ephemeral_side_chat") {
+      // Official ephemeral threads are live-only and reject thread/read when
+      // the includeTurns parameter is present. Their complete available
+      // history is already captured from the live app-server stream.
+      session.codexInitialHistoryPending = false;
+      session.codexCanonicalHistoryRevision ??= 0;
+      session.codexHistoryResetRevision ??= 0;
+      return session.historyEntries.map((entry) => ({
+        seq: entry.seq,
+        message: entry.message,
+      }));
+    }
+
     const threadId = this.codexThreadIdForSession(session);
     if (!threadId) return null;
 
