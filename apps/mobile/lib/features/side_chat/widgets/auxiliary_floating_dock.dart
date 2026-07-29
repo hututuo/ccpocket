@@ -20,8 +20,9 @@ enum _DockEdge { left, right }
 
 /// A lightweight in-app handle for live auxiliary work.
 ///
-/// It has no ticker and owns no transcript state. The collapsed handle snaps
-/// half off an edge; expanding creates an in-tree panel without a route,
+/// It has no ticker and owns no transcript state. The collapsed handle can
+/// rest freely and docks half off an edge only after it is dragged far enough
+/// outside the viewport. Expanding creates an in-tree panel without a route,
 /// barrier, or modal surface, so the surrounding conversation stays usable.
 class AuxiliaryFloatingDock extends StatefulWidget {
   const AuxiliaryFloatingDock({
@@ -45,6 +46,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   static const _handleEdgePreference = 'auxiliary_floating_dock_handle_edge_v1';
   static const _handleHiddenPreference =
       'auxiliary_floating_dock_handle_hidden_v1';
+  static const _handleLeftPreference = 'auxiliary_floating_dock_handle_left_v1';
   static const _handleTopPreference = 'auxiliary_floating_dock_handle_top_v1';
   static const _panelEdgePreference = 'auxiliary_floating_dock_panel_edge_v1';
   static const _panelLeftPreference = 'auxiliary_floating_dock_panel_left_v1';
@@ -56,6 +58,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   static const _panelInset = 10.0;
   static const _panelMaxWidth = 360.0;
   static const _panelMaxHeight = 520.0;
+  static const _dockThresholdFraction = 0.25;
   double? _handleLeft;
   double? _handleTop;
   double? _panelLeft;
@@ -63,6 +66,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   Size _lastSize = Size.zero;
   _DockEdge _handleEdge = _DockEdge.right;
   _DockEdge? _panelHiddenEdge;
+  double _handleLeftFraction = 1;
   double _handleTopFraction = 0.42;
   double _panelLeftFraction = 1;
   double _panelTopFraction = 0.42;
@@ -105,6 +109,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
       final hasStoredPlacement =
           preferences.containsKey(_handleEdgePreference) ||
           preferences.containsKey(_handleHiddenPreference) ||
+          preferences.containsKey(_handleLeftPreference) ||
           preferences.containsKey(_handleTopPreference) ||
           preferences.containsKey(_panelEdgePreference) ||
           preferences.containsKey(_panelLeftPreference) ||
@@ -120,6 +125,10 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
         preferences.getDouble(_handleTopPreference),
         _handleTopFraction,
       );
+      final handleLeft = _validFraction(
+        preferences.getDouble(_handleLeftPreference),
+        handleEdge == _DockEdge.left ? 0 : _handleLeftFraction,
+      );
       final panelLeft = _validFraction(
         preferences.getDouble(_panelLeftPreference),
         _panelLeftFraction,
@@ -132,6 +141,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
         _handleEdge = handleEdge ?? _handleEdge;
         _handleHidden =
             preferences.getBool(_handleHiddenPreference) ?? _handleHidden;
+        _handleLeftFraction = handleLeft;
         _handleTopFraction = handleTop;
         _panelHiddenEdge = panelEdge;
         _panelLeftFraction = panelLeft;
@@ -154,6 +164,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
       await Future.wait([
         preferences.setString(_handleEdgePreference, _handleEdge.name),
         preferences.setBool(_handleHiddenPreference, _handleHidden),
+        preferences.setDouble(_handleLeftPreference, _handleLeftFraction),
         preferences.setDouble(_handleTopPreference, _handleTopFraction),
         preferences.setDouble(_panelLeftPreference, _panelLeftFraction),
         preferences.setDouble(_panelTopPreference, _panelTopFraction),
@@ -205,16 +216,25 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
       return;
     }
     final panelSize = _panelSize(size);
+    final minHandleLeft = _visibleInset;
+    final maxHandleLeft = math.max(
+      minHandleLeft,
+      size.width - _handleSize - _visibleInset,
+    );
     final maxHandleTop = (size.height - _handleSize - 8).clamp(
       8.0,
       size.height,
     );
-    _handleLeft = switch ((_handleEdge, _handleHidden)) {
-      (_DockEdge.left, true) => -_hiddenInset,
-      (_DockEdge.left, false) => _visibleInset,
-      (_DockEdge.right, true) => size.width - _handleSize + _hiddenInset,
-      (_DockEdge.right, false) => size.width - _handleSize - _visibleInset,
-    };
+    _handleLeft = _handleHidden
+        ? switch (_handleEdge) {
+            _DockEdge.left => -_hiddenInset,
+            _DockEdge.right => size.width - _handleSize + _hiddenInset,
+          }
+        : _positionFromFraction(
+            _handleLeftFraction,
+            minHandleLeft,
+            maxHandleLeft,
+          );
     _handleTop = _positionFromFraction(_handleTopFraction, 8, maxHandleTop);
     final maxPanelLeft = math.max(
       _panelInset,
@@ -271,12 +291,38 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
     if (size.isEmpty) return;
     setState(() {
       _dragging = false;
-      final center = (_handleLeft ?? 0) + (_handleSize / 2);
-      _handleEdge = center < size.width / 2 ? _DockEdge.left : _DockEdge.right;
-      _handleHidden = true;
-      _handleLeft = _handleEdge == _DockEdge.left
-          ? -_hiddenInset
-          : size.width - _handleSize + _hiddenInset;
+      final currentLeft = _handleLeft ?? _visibleInset;
+      final leftOverflow = math.max(0.0, -currentLeft);
+      final rightOverflow = math.max(
+        0.0,
+        currentLeft + _handleSize - size.width,
+      );
+      final threshold = _handleSize * _dockThresholdFraction;
+      final minHandleLeft = _visibleInset;
+      final maxHandleLeft = math.max(
+        minHandleLeft,
+        size.width - _handleSize - _visibleInset,
+      );
+      if (leftOverflow >= threshold) {
+        _handleEdge = _DockEdge.left;
+        _handleHidden = true;
+        _handleLeft = -_hiddenInset;
+      } else if (rightOverflow >= threshold) {
+        _handleEdge = _DockEdge.right;
+        _handleHidden = true;
+        _handleLeft = size.width - _handleSize + _hiddenInset;
+      } else {
+        _handleHidden = false;
+        _handleLeft = currentLeft.clamp(minHandleLeft, maxHandleLeft);
+        _handleEdge = (_handleLeft! + (_handleSize / 2)) < size.width / 2
+            ? _DockEdge.left
+            : _DockEdge.right;
+      }
+      _handleLeftFraction = _positionFraction(
+        _handleLeft!.clamp(minHandleLeft, maxHandleLeft),
+        minHandleLeft,
+        maxHandleLeft,
+      );
       _handleTopFraction = _positionFraction(
         _handleTop ?? 0,
         8,
@@ -321,27 +367,9 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   void _collapse() {
     final size = _lastSize;
     if (size.isEmpty) return;
-    final panelSize = _panelSize(size);
-    final panelCenter = (_panelLeft ?? 0) + (panelSize.width / 2);
     setState(() {
       _expanded = false;
       _dragging = false;
-      _handleEdge = panelCenter < size.width / 2
-          ? _DockEdge.left
-          : _DockEdge.right;
-      _handleHidden = false;
-      _handleLeft = _handleEdge == _DockEdge.left
-          ? _visibleInset
-          : size.width - _handleSize - _visibleInset;
-      _handleTop = (_panelTop ?? 0).clamp(
-        8.0,
-        (size.height - _handleSize - 8).clamp(8.0, size.height),
-      );
-      _handleTopFraction = _positionFraction(
-        _handleTop!,
-        8,
-        (size.height - _handleSize - 8).clamp(8.0, size.height),
-      );
     });
     unawaited(_persistPlacement());
   }
@@ -371,10 +399,16 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
     setState(() {
       _dragging = false;
       final currentLeft = _panelLeft ?? _panelInset;
-      if (currentLeft < 0) {
+      final leftOverflow = math.max(0.0, -currentLeft);
+      final rightOverflow = math.max(
+        0.0,
+        currentLeft + panelSize.width - size.width,
+      );
+      final threshold = panelSize.width * _dockThresholdFraction;
+      if (leftOverflow >= threshold) {
         _panelHiddenEdge = _DockEdge.left;
         _panelLeft = -panelSize.width + _panelPullWidth;
-      } else if (currentLeft + panelSize.width > size.width) {
+      } else if (rightOverflow >= threshold) {
         _panelHiddenEdge = _DockEdge.right;
         _panelLeft = size.width - _panelPullWidth;
       } else {

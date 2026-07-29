@@ -122,71 +122,105 @@ void main() {
     expect(openedChild, 'child-1');
   });
 
-  testWidgets('snaps the handle off edge and keeps the expanded panel draggable', (
-    tester,
-  ) async {
-    final bridge = _Bridge();
-    final gateway = _Gateway();
-    final registry = EphemeralSideChatRegistryService(bridge: gateway);
-    gateway.isConnected = true;
-    addTearDown(registry.dispose);
-    addTearDown(gateway.dispose);
-    addTearDown(bridge.dispose);
+  testWidgets(
+    'keeps free placement across collapse and docks only past the threshold',
+    (tester) async {
+      final bridge = _Bridge();
+      final gateway = _Gateway();
+      final registry = EphemeralSideChatRegistryService(bridge: gateway);
+      gateway.isConnected = true;
+      addTearDown(registry.dispose);
+      addTearDown(gateway.dispose);
+      addTearDown(bridge.dispose);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: AuxiliaryFloatingDock(
-            sessionId: 'parent-1',
-            bridgeService: bridge,
-            registryService: registry,
-            onOpenSideChat: (_, _) async {},
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AuxiliaryFloatingDock(
+              sessionId: 'parent-1',
+              bridgeService: bridge,
+              registryService: registry,
+              onOpenSideChat: (_, _) async {},
+            ),
           ),
         ),
-      ),
-    );
+      );
 
-    final dock = find.byKey(const ValueKey('auxiliary_floating_dock'));
-    await tester.drag(dock, const Offset(-600, 60));
-    await tester.pump();
-    expect(tester.getTopLeft(dock).dx, lessThan(0));
+      final dock = find.byKey(const ValueKey('auxiliary_floating_dock'));
+      await tester.drag(dock, const Offset(-260, 60));
+      await tester.pump();
+      final freePosition = tester.getTopLeft(dock);
+      expect(freePosition.dx, inInclusiveRange(400, 600));
 
-    await tester.tap(find.byKey(const ValueKey('auxiliary_floating_dock_tap')));
-    await tester.pumpAndSettle();
-    expect(dock, findsNothing);
-    expect(find.byType(TabBar), findsOneWidget);
-    final panel = find.byKey(const ValueKey('auxiliary_floating_panel'));
-    final initialPanelLeft = tester.getTopLeft(panel).dx;
+      await tester.tap(
+        find.byKey(const ValueKey('auxiliary_floating_dock_tap')),
+      );
+      await tester.pumpAndSettle();
+      expect(dock, findsNothing);
+      expect(find.byType(TabBar), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('auxiliary_floating_panel_collapse')),
+      );
+      await tester.pump();
+      expect(tester.getTopLeft(dock).dx, closeTo(freePosition.dx, 1));
+      expect(tester.getTopLeft(dock).dy, closeTo(freePosition.dy, 1));
 
-    await tester.drag(
-      find.byKey(const ValueKey('auxiliary_floating_panel_header')),
-      const Offset(600, 60),
-    );
-    await tester.pump();
-    expect(tester.getTopLeft(panel).dx, greaterThan(initialPanelLeft));
-    expect(tester.getTopLeft(panel).dx, greaterThan(700));
+      await tester.drag(dock, Offset(-(freePosition.dx + 8), 0));
+      await tester.pump();
+      expect(tester.getTopLeft(dock).dx, closeTo(12, 1));
 
-    final header = find.byKey(
-      const ValueKey('auxiliary_floating_panel_header'),
-    );
-    final pullGesture = await tester.startGesture(
-      Offset(778, tester.getTopLeft(header).dy + 20),
-    );
-    await pullGesture.moveBy(const Offset(-700, 0));
-    await pullGesture.up();
-    await tester.pump();
-    expect(tester.getTopLeft(panel).dx, inInclusiveRange(10, 430));
+      await tester.drag(dock, const Offset(-25, 0));
+      await tester.pump();
+      expect(tester.getTopLeft(dock).dx, closeTo(-24, 1));
 
-    await tester.tap(
-      find.byKey(const ValueKey('auxiliary_floating_panel_collapse')),
-    );
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('auxiliary_floating_dock')),
-      findsOneWidget,
-    );
-    expect(panel, findsNothing);
-  });
+      await tester.drag(dock, const Offset(140, 0));
+      await tester.pump();
+      expect(tester.getTopLeft(dock).dx, inInclusiveRange(100, 140));
+
+      await tester.tap(
+        find.byKey(const ValueKey('auxiliary_floating_dock_tap')),
+      );
+      await tester.pumpAndSettle();
+      final panel = find.byKey(const ValueKey('auxiliary_floating_panel'));
+      final initialPanelLeft = tester.getTopLeft(panel).dx;
+
+      await tester.drag(
+        find.byKey(const ValueKey('auxiliary_floating_panel_header')),
+        const Offset(30, 60),
+      );
+      await tester.pump();
+      expect(tester.getTopLeft(panel).dx, closeTo(initialPanelLeft, 1));
+      expect(tester.getTopLeft(panel).dx, lessThan(700));
+
+      await tester.drag(
+        find.byKey(const ValueKey('auxiliary_floating_panel_header')),
+        const Offset(120, 0),
+      );
+      await tester.pump();
+      expect(tester.getTopLeft(panel).dx, greaterThan(700));
+
+      final header = find.byKey(
+        const ValueKey('auxiliary_floating_panel_header'),
+      );
+      final pullGesture = await tester.startGesture(
+        Offset(778, tester.getTopLeft(header).dy + 20),
+      );
+      await pullGesture.moveBy(const Offset(-700, 0));
+      await pullGesture.up();
+      await tester.pump();
+      expect(tester.getTopLeft(panel).dx, inInclusiveRange(10, 430));
+
+      await tester.tap(
+        find.byKey(const ValueKey('auxiliary_floating_panel_collapse')),
+      );
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('auxiliary_floating_dock')),
+        findsOneWidget,
+      );
+      expect(panel, findsNothing);
+    },
+  );
 
   testWidgets('restores the snapped handle placement after reconstruction', (
     tester,
@@ -213,7 +247,8 @@ void main() {
     await tester.pumpWidget(buildDock());
     await tester.pumpAndSettle();
     var dock = find.byKey(const ValueKey('auxiliary_floating_dock'));
-    await tester.drag(dock, const Offset(-600, 100));
+    final initialLeft = tester.getTopLeft(dock).dx;
+    await tester.drag(dock, Offset(-(initialLeft + 13), 100));
     await tester.pumpAndSettle();
     final savedTop = tester.getTopLeft(dock).dy;
     expect(tester.getTopLeft(dock).dx, lessThan(0));
@@ -226,6 +261,46 @@ void main() {
     dock = find.byKey(const ValueKey('auxiliary_floating_dock'));
     expect(tester.getTopLeft(dock).dx, lessThan(0));
     expect(tester.getTopLeft(dock).dy, closeTo(savedTop, 1));
+  });
+
+  testWidgets('restores a freely placed handle after reconstruction', (
+    tester,
+  ) async {
+    final bridge = _Bridge();
+    final gateway = _Gateway();
+    final registry = EphemeralSideChatRegistryService(bridge: gateway);
+    gateway.isConnected = true;
+    addTearDown(registry.dispose);
+    addTearDown(gateway.dispose);
+    addTearDown(bridge.dispose);
+
+    Widget buildDock() => MaterialApp(
+      home: Scaffold(
+        body: AuxiliaryFloatingDock(
+          sessionId: 'parent-1',
+          bridgeService: bridge,
+          registryService: registry,
+          onOpenSideChat: (_, _) async {},
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(buildDock());
+    await tester.pumpAndSettle();
+    var dock = find.byKey(const ValueKey('auxiliary_floating_dock'));
+    await tester.drag(dock, const Offset(-250, 80));
+    await tester.pumpAndSettle();
+    final savedPosition = tester.getTopLeft(dock);
+    expect(savedPosition.dx, inInclusiveRange(400, 600));
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(buildDock());
+    await tester.pumpAndSettle();
+
+    dock = find.byKey(const ValueKey('auxiliary_floating_dock'));
+    expect(tester.getTopLeft(dock).dx, closeTo(savedPosition.dx, 1));
+    expect(tester.getTopLeft(dock).dy, closeTo(savedPosition.dy, 1));
   });
 
   testWidgets('expanded panel does not block the conversation outside its bounds', (
