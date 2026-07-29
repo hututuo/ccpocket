@@ -38,13 +38,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get reviewYourAnswers => '检查你的回答';
 
   @override
-  String get groupedSessions => '分组';
+  String get groupedSessions => '按项目';
 
   @override
-  String get sessionListView => '列表';
+  String get sessionListView => '最近聊天';
 
   @override
-  String get tooltipToggleRecentGrouping => '切换最近会话的分组方式';
+  String get tooltipToggleRecentGrouping => '切换会话列表模式';
 
   @override
   String get loadMore => '加载更多';

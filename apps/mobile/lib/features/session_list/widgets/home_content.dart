@@ -205,13 +205,14 @@ class HomeContent extends StatefulWidget {
 
 class HomeContentState extends State<HomeContent> {
   static const _displayModePreferenceKey = 'session_list_display_mode';
+  // Keep the established key so existing users retain their chosen layout.
   static const _groupRecentSessionsPreferenceKey =
       'session_list_group_recent_sessions';
 
   bool _isSearching = false;
   bool _updateBannerDismissed = false;
   bool _showSupportBanner = false;
-  bool _groupRecentSessions = true;
+  bool _groupByProject = true;
   final _searchController = TextEditingController();
   SessionDisplayMode _displayMode = SessionDisplayMode.first;
   RevenueCatService? _revenueCatService;
@@ -228,7 +229,7 @@ class HomeContentState extends State<HomeContent> {
   Future<void> _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
     final modeStr = prefs.getString(_displayModePreferenceKey);
-    final groupRecentSessions =
+    final groupByProject =
         prefs.getBool(_groupRecentSessionsPreferenceKey) ?? true;
     if (!mounted) return;
     setState(() {
@@ -238,7 +239,7 @@ class HomeContentState extends State<HomeContent> {
           orElse: () => SessionDisplayMode.first,
         );
       }
-      _groupRecentSessions = groupRecentSessions;
+      _groupByProject = groupByProject;
     });
   }
 
@@ -279,9 +280,9 @@ class HomeContentState extends State<HomeContent> {
     await prefs.setString(_displayModePreferenceKey, next.name);
   }
 
-  void _toggleRecentGrouping() async {
-    final next = !_groupRecentSessions;
-    setState(() => _groupRecentSessions = next);
+  void _toggleSessionListMode() async {
+    final next = !_groupByProject;
+    setState(() => _groupByProject = next);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_groupRecentSessionsPreferenceKey, next);
   }
@@ -558,28 +559,18 @@ class HomeContentState extends State<HomeContent> {
       recentSessions: catalogSessions,
       pendingResumeSessionIds: pendingResumeSessionIds,
       pinnedSessionKeys: widget.pinnedSessionKeys,
-      pinnedProjectPaths: widget.pinnedProjectPaths,
       unseenSessionIds: widget.unseenSessionIds,
     );
     final hasConversationSessions = unifiedSessions.isNotEmpty;
-    final projectPathsWithPinnedSessions = unifiedSessions
-        .where(
-          (session) =>
-              session.pinKey != null &&
-              widget.pinnedSessionKeys.contains(session.pinKey),
-        )
-        .map((session) => session.projectPath)
-        .toSet();
-    final allProjectPaths = prioritizePinned(
-      <String>{
+    final allProjectPaths = orderProjectPathsForGroupedView(
+      knownProjectPaths: <String>[
         if (widget.currentProjectFilter != null) widget.currentProjectFilter!,
         if (widget.currentProjectFilter == null)
-          ...unifiedSessions.map((session) => session.projectPath),
-        if (widget.currentProjectFilter == null)
           ...widget.accumulatedProjectPaths,
-      }.where((path) => path.isNotEmpty),
-      isPinned: projectPathsWithPinnedSessions.contains,
-      isProjectPinned: widget.pinnedProjectPaths.contains,
+      ],
+      sessions: unifiedSessions,
+      pinnedSessionKeys: widget.pinnedSessionKeys,
+      pinnedProjectPaths: widget.pinnedProjectPaths,
     );
     final groupedSessions = _groupSessionsByProject(
       projectPaths: allProjectPaths,
@@ -792,8 +783,8 @@ class HomeContentState extends State<HomeContent> {
           SessionFilterBar(
             displayMode: _displayMode,
             onToggleDisplayMode: _toggleDisplayMode,
-            groupRecentSessions: _groupRecentSessions,
-            onToggleRecentGrouping: _toggleRecentGrouping,
+            groupByProject: _groupByProject,
+            onToggleSessionListMode: _toggleSessionListMode,
             providerFilter: widget.providerFilter,
             onToggleProviderFilter: widget.onToggleProvider,
             projects:
@@ -826,15 +817,15 @@ class HomeContentState extends State<HomeContent> {
               buildUnifiedSessionRow(item),
             const _SessionListSkeleton(),
           ] else ...[
-            if ((!_groupRecentSessions && unifiedSessions.isEmpty) ||
-                (_groupRecentSessions && groupedSessions.isEmpty))
+            if ((!_groupByProject && unifiedSessions.isEmpty) ||
+                (_groupByProject && groupedSessions.isEmpty))
               _RecentSessionsEmptyResult(
                 title: hasActiveFilter
                     ? l.noSessionsMatchFilters
                     : l.noRecentSessions,
                 subtitle: hasActiveFilter ? l.adjustFiltersAndSearch : null,
               )
-            else if (!_groupRecentSessions) ...[
+            else if (!_groupByProject) ...[
               for (final item in unifiedSessions) buildUnifiedSessionRow(item),
               if (widget.hasMoreSessions) ...[
                 const SizedBox(height: 8),

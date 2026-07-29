@@ -159,19 +159,19 @@ abstract class AppLocalizations {
   /// No description provided for @groupedSessions.
   ///
   /// In ja, this message translates to:
-  /// **'グループ'**
+  /// **'プロジェクト別'**
   String get groupedSessions;
 
   /// No description provided for @sessionListView.
   ///
   /// In ja, this message translates to:
-  /// **'リスト'**
+  /// **'最近のチャット'**
   String get sessionListView;
 
   /// No description provided for @tooltipToggleRecentGrouping.
   ///
   /// In ja, this message translates to:
-  /// **'最近のセッションのグループ表示を切り替え'**
+  /// **'セッション一覧の表示を切り替え'**
   String get tooltipToggleRecentGrouping;
 
   /// No description provided for @loadMore.

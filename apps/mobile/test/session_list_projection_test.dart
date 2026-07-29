@@ -92,16 +92,19 @@ void main() {
             runtimeId: 'newer-read',
             threadId: 'newer-read-thread',
             lastActivityAt: '2026-07-25T03:00:00Z',
+            projectPath: '/project-a',
           ),
           _running(
             runtimeId: 'older-unread',
             threadId: 'older-unread-thread',
             lastActivityAt: '2026-07-25T01:00:00Z',
+            projectPath: '/project-b',
           ),
           _running(
             runtimeId: 'middle-read',
             threadId: 'middle-read-thread',
             lastActivityAt: '2026-07-25T02:00:00Z',
+            projectPath: '/project-c',
           ),
         ],
         recentSessions: const [],
@@ -113,6 +116,72 @@ void main() {
         'newer-read',
         'middle-read',
       ]);
+    });
+
+    test('grouped project order ignores unread conversation priority', () {
+      final items = buildUnifiedSessionList(
+        runningSessions: [
+          _running(
+            runtimeId: 'newer-read',
+            threadId: 'newer-read-thread',
+            lastActivityAt: '2026-07-25T03:00:00Z',
+            projectPath: '/project-a',
+          ),
+          _running(
+            runtimeId: 'older-unread',
+            threadId: 'older-unread-thread',
+            lastActivityAt: '2026-07-25T01:00:00Z',
+            projectPath: '/project-b',
+          ),
+        ],
+        recentSessions: const [],
+        unseenSessionIds: const {'older-unread'},
+      );
+
+      expect(items.map((item) => item.running!.id), [
+        'older-unread',
+        'newer-read',
+      ]);
+      expect(
+        orderProjectPathsForGroupedView(
+          knownProjectPaths: const [],
+          sessions: items,
+        ),
+        ['/project-a', '/project-b'],
+      );
+    });
+
+    test('grouped project order preserves explicit pin tiers', () {
+      final pinnedSession = _recent(
+        id: 'pinned-session',
+        modified: '2026-07-25T01:00:00Z',
+        projectPath: '/session-pinned-project',
+      );
+      final ordinary = _recent(
+        id: 'ordinary',
+        modified: '2026-07-25T03:00:00Z',
+        projectPath: '/ordinary-project',
+      );
+      final pinnedSessionKey = recentSessionPinKey(pinnedSession);
+      final items = buildUnifiedSessionList(
+        runningSessions: const [],
+        recentSessions: [ordinary, pinnedSession],
+        pinnedSessionKeys: {pinnedSessionKey},
+      );
+
+      expect(
+        orderProjectPathsForGroupedView(
+          knownProjectPaths: const ['/project-pinned-project'],
+          sessions: items,
+          pinnedSessionKeys: {pinnedSessionKey},
+          pinnedProjectPaths: const {'/project-pinned-project'},
+        ),
+        [
+          '/session-pinned-project',
+          '/project-pinned-project',
+          '/ordinary-project',
+        ],
+      );
     });
 
     test('keeps an explicit pin ahead of unread sessions', () {
@@ -277,12 +346,13 @@ SessionInfo _running({
   required String runtimeId,
   required String? threadId,
   required String lastActivityAt,
+  String projectPath = '/repo',
   String? name,
   String lastMessage = '',
 }) => SessionInfo(
   id: runtimeId,
   provider: Provider.codex.value,
-  projectPath: '/repo',
+  projectPath: projectPath,
   claudeSessionId: threadId,
   name: name,
   status: 'idle',

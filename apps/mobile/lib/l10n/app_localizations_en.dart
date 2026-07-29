@@ -38,13 +38,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get reviewYourAnswers => 'Review your answers';
 
   @override
-  String get groupedSessions => 'Grouped';
+  String get groupedSessions => 'By project';
 
   @override
-  String get sessionListView => 'List';
+  String get sessionListView => 'Recent chats';
 
   @override
-  String get tooltipToggleRecentGrouping => 'Toggle recent session grouping';
+  String get tooltipToggleRecentGrouping => 'Switch session list mode';
 
   @override
   String get loadMore => 'Load More';

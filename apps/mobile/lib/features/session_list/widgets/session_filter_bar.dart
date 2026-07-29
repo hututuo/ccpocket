@@ -8,8 +8,8 @@ import '../state/session_list_state.dart';
 class SessionFilterBar extends StatelessWidget {
   final SessionDisplayMode displayMode;
   final VoidCallback onToggleDisplayMode;
-  final bool groupRecentSessions;
-  final VoidCallback onToggleRecentGrouping;
+  final bool groupByProject;
+  final VoidCallback onToggleSessionListMode;
   final ProviderFilter providerFilter;
   final VoidCallback onToggleProviderFilter;
   final List<({String path, String name})> projects;
@@ -22,8 +22,8 @@ class SessionFilterBar extends StatelessWidget {
     super.key,
     required this.displayMode,
     required this.onToggleDisplayMode,
-    required this.groupRecentSessions,
-    required this.onToggleRecentGrouping,
+    required this.groupByProject,
+    required this.onToggleSessionListMode,
     required this.providerFilter,
     required this.onToggleProviderFilter,
     required this.projects,
@@ -61,13 +61,13 @@ class SessionFilterBar extends StatelessWidget {
     final l = AppLocalizations.of(context);
     return _ActionChip(
       key: const ValueKey('recent_grouping_toggle'),
-      icon: groupRecentSessions
+      icon: groupByProject
           ? Icons.account_tree_outlined
           : Icons.view_list_outlined,
-      label: groupRecentSessions ? l.groupedSessions : l.sessionListView,
+      label: groupByProject ? l.groupedSessions : l.sessionListView,
       tooltip: l.tooltipToggleRecentGrouping,
-      onTap: onToggleRecentGrouping,
-      isActive: !groupRecentSessions,
+      onTap: onToggleSessionListMode,
+      isActive: !groupByProject,
     );
   }
 

@@ -38,13 +38,13 @@ class AppLocalizationsJa extends AppLocalizations {
   String get reviewYourAnswers => '回答を確認';
 
   @override
-  String get groupedSessions => 'グループ';
+  String get groupedSessions => 'プロジェクト別';
 
   @override
-  String get sessionListView => 'リスト';
+  String get sessionListView => '最近のチャット';
 
   @override
-  String get tooltipToggleRecentGrouping => '最近のセッションのグループ表示を切り替え';
+  String get tooltipToggleRecentGrouping => 'セッション一覧の表示を切り替え';
 
   @override
   String get loadMore => 'さらに読み込む';

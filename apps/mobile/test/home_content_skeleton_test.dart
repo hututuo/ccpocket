@@ -78,25 +78,32 @@ class _MockBridgeService extends BridgeService {
 RecentSession _session({
   required String id,
   String projectPath = '/home/user/project-a',
+  String modified = '2025-01-01T00:00:00Z',
 }) {
   return RecentSession(
     sessionId: id,
     firstPrompt: 'test prompt for $id',
     created: '2025-01-01T00:00:00Z',
-    modified: '2025-01-01T00:00:00Z',
+    modified: modified,
     gitBranch: 'main',
     projectPath: projectPath,
     isSidechain: false,
   );
 }
 
-SessionInfo _runningSession({required String id, String? providerSessionId}) {
+SessionInfo _runningSession({
+  required String id,
+  String? providerSessionId,
+  String projectPath = '/home/user/project-a',
+  String status = 'running',
+  String lastActivityAt = '2025-01-01T12:00:00Z',
+}) {
   return SessionInfo.fromJson({
     'id': id,
-    'projectPath': '/home/user/project-a',
-    'status': 'running',
+    'projectPath': projectPath,
+    'status': status,
     'createdAt': '2025-01-01T12:00:00Z',
-    'lastActivityAt': '2025-01-01T12:00:00Z',
+    'lastActivityAt': lastActivityAt,
     'gitBranch': 'main',
     'lastMessage': 'Working on something',
     'messageCount': 1,
@@ -113,6 +120,7 @@ Widget _buildHomeContent({
   String? currentProjectFilter,
   bool hasMoreSessions = false,
   bool isInitialLoading = false,
+  Set<String> unseenSessionIds = const {},
   bool showMacOSNativeAppBanner = false,
   VoidCallback? onDismissMacOSNativeAppBanner,
   _RunningSessionTap? onTapRunning,
@@ -149,6 +157,7 @@ Widget _buildHomeContent({
             isLoadingMore: false,
             isInitialLoading: isInitialLoading,
             hasMoreSessions: hasMoreSessions,
+            unseenSessionIds: unseenSessionIds,
             currentProjectFilter: currentProjectFilter,
             onNewSession: () {},
             onTapRunning:
@@ -227,10 +236,7 @@ void main() {
         await tester.pumpWidget(
           _buildHomeContent(
             sessions: [
-              _runningSession(
-                id: 'runtime-1',
-                providerSessionId: 'thread-1',
-              ),
+              _runningSession(id: 'runtime-1', providerSessionId: 'thread-1'),
             ],
             onTapRunning:
                 (
@@ -380,7 +386,7 @@ void main() {
       },
     );
 
-    testWidgets('ungrouped toggle reveals loaded sessions and persists', (
+    testWidgets('recent chats mode reveals loaded sessions and persists', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -396,6 +402,7 @@ void main() {
       );
       await tester.pump();
 
+      expect(find.text('By project'), findsOneWidget);
       expect(find.text('test prompt for s6'), findsNothing);
       expect(
         find.byKey(const ValueKey('project_show_more_/home/user/project-a')),
@@ -413,13 +420,62 @@ void main() {
         find.byKey(const ValueKey('project_show_more_/home/user/project-a')),
         findsNothing,
       );
-      expect(find.text('List'), findsOneWidget);
+      expect(find.text('Recent chats'), findsOneWidget);
 
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getBool('session_list_group_recent_sessions'), isFalse);
     });
 
-    testWidgets('ungrouped mode uses global load more pagination', (
+    testWidgets('recent chats mode mixes projects and keeps project tags', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'project-a-session'),
+            _session(
+              id: 'project-b-session',
+              projectPath: '/home/user/project-b',
+            ),
+          ],
+          exhaustedProjectPaths: const {
+            '/home/user/project-a',
+            '/home/user/project-b',
+          },
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('project_header_/home/user/project-a')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('project_header_/home/user/project-b')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('recent_grouping_toggle')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('project_header_/home/user/project-a')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('project_header_/home/user/project-b')),
+        findsNothing,
+      );
+      expect(find.text('project-a'), findsOneWidget);
+      expect(find.text('project-b'), findsOneWidget);
+    });
+
+    testWidgets('recent chats mode uses global load more pagination', (
       tester,
     ) async {
       await tester.pumpWidget(

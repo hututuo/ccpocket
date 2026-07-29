@@ -66,7 +66,6 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
   required Iterable<RecentSession> recentSessions,
   Set<String> pendingResumeSessionIds = const {},
   Set<String> pinnedSessionKeys = const {},
-  Set<String> pinnedProjectPaths = const {},
   Set<String> unseenSessionIds = const {},
 }) {
   final byIdentity = <String, UnifiedSessionListItem>{};
@@ -107,13 +106,11 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
         _priorityTier(
           left,
           pinnedSessionKeys: pinnedSessionKeys,
-          pinnedProjectPaths: pinnedProjectPaths,
           unseenSessionIds: unseenSessionIds,
         ).compareTo(
           _priorityTier(
             right,
             pinnedSessionKeys: pinnedSessionKeys,
-            pinnedProjectPaths: pinnedProjectPaths,
             unseenSessionIds: unseenSessionIds,
           ),
         );
@@ -125,6 +122,70 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
     return left.identityKey.compareTo(right.identityKey);
   });
   return List.unmodifiable(items);
+}
+
+/// Orders project sections independently from per-conversation urgency.
+///
+/// The flat "recent chats" list is allowed to lift unread conversations
+/// across projects. The grouped view must not let that unread bit reorder
+/// entire project sections, so its order is derived from explicit pins and
+/// the latest activity in each project instead.
+List<String> orderProjectPathsForGroupedView({
+  required Iterable<String> knownProjectPaths,
+  required List<UnifiedSessionListItem> sessions,
+  Set<String> pinnedSessionKeys = const {},
+  Set<String> pinnedProjectPaths = const {},
+}) {
+  final paths = <String>[];
+  final firstSeenIndex = <String, int>{};
+  final latestActivityByProject = <String, DateTime?>{};
+  final projectsWithPinnedSessions = <String>{};
+
+  void includePath(String path) {
+    if (path.isEmpty || firstSeenIndex.containsKey(path)) return;
+    firstSeenIndex[path] = paths.length;
+    paths.add(path);
+  }
+
+  for (final item in sessions) {
+    final path = item.projectPath;
+    includePath(path);
+    final pinKey = item.pinKey;
+    if (pinKey != null && pinnedSessionKeys.contains(pinKey)) {
+      projectsWithPinnedSessions.add(path);
+    }
+    final activityAt = item.activityAt;
+    final currentLatest = latestActivityByProject[path];
+    if (activityAt != null &&
+        (currentLatest == null || activityAt.isAfter(currentLatest))) {
+      latestActivityByProject[path] = activityAt;
+    }
+  }
+  for (final path in knownProjectPaths) {
+    includePath(path);
+  }
+
+  int projectTier(String path) {
+    if (projectsWithPinnedSessions.contains(path)) return 0;
+    if (pinnedProjectPaths.contains(path)) return 1;
+    return 2;
+  }
+
+  paths.sort((left, right) {
+    final tierCompare = projectTier(left).compareTo(projectTier(right));
+    if (tierCompare != 0) return tierCompare;
+
+    final leftActivity = latestActivityByProject[left];
+    final rightActivity = latestActivityByProject[right];
+    if (leftActivity != null || rightActivity != null) {
+      if (leftActivity == null) return 1;
+      if (rightActivity == null) return -1;
+      final activityCompare = rightActivity.compareTo(leftActivity);
+      if (activityCompare != 0) return activityCompare;
+    }
+    return firstSeenIndex[left]!.compareTo(firstSeenIndex[right]!);
+  });
+  return List.unmodifiable(paths);
 }
 
 bool runningSessionMatchesListFilters(
@@ -186,15 +247,13 @@ bool recentSessionMatchesListFilters(
 int _priorityTier(
   UnifiedSessionListItem item, {
   required Set<String> pinnedSessionKeys,
-  required Set<String> pinnedProjectPaths,
   required Set<String> unseenSessionIds,
 }) {
   final pinKey = item.pinKey;
   if (pinKey != null && pinnedSessionKeys.contains(pinKey)) return 0;
-  if (pinnedProjectPaths.contains(item.projectPath)) return 1;
   final runtimeId = item.running?.id;
-  if (runtimeId != null && unseenSessionIds.contains(runtimeId)) return 2;
-  return 3;
+  if (runtimeId != null && unseenSessionIds.contains(runtimeId)) return 1;
+  return 2;
 }
 
 String _recentIdentity(RecentSession session) => providerSessionIdentityKey(

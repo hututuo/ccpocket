@@ -38,13 +38,13 @@ class AppLocalizationsKo extends AppLocalizations {
   String get reviewYourAnswers => '답변 검토';
 
   @override
-  String get groupedSessions => '그룹';
+  String get groupedSessions => '프로젝트별';
 
   @override
-  String get sessionListView => '목록';
+  String get sessionListView => '최근 대화';
 
   @override
-  String get tooltipToggleRecentGrouping => '최근 세션 그룹 표시 전환';
+  String get tooltipToggleRecentGrouping => '세션 목록 보기 전환';
 
   @override
   String get loadMore => '더 불러오기';
