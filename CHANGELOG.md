@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.110.1] - 2026-07-29
+
+### Fixed
+- Keep HTML File Peek content scrollable when displayed inside the draggable preview sheet.
+
+## [1.110.0] - 2026-07-29
+
+### Added
+- Render HTML files directly in File Peek with a source toggle and isolated, read-only content restrictions.
+
 ## [1.109.3] - 2026-07-28
 
 ### Fixed

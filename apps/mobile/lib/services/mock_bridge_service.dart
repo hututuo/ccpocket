@@ -752,6 +752,41 @@ User <── Rendered UI <── Stream Parser <── WebSocket <────�
 - Optional API key authentication
 - Path allowlist (`BRIDGE_ALLOWED_DIRS`)
 - Read-only file access from mobile client''',
+    'docs/design/session-preview.html': '''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session orchestration</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; padding: 28px; background: #0c111b; color: #edf3fa; }
+    main { max-width: 720px; margin: auto; }
+    .eyebrow { color: #69d8c8; font-weight: 800; letter-spacing: .12em; }
+    h1 { margin: 8px 0 12px; font-size: clamp(32px, 8vw, 56px); line-height: 1.05; }
+    p { color: #a9b5c5; line-height: 1.7; }
+    .flow { display: grid; gap: 12px; margin-top: 28px; }
+    .node { padding: 16px; border: 1px solid #2a3748; border-radius: 14px; background: #131b28; }
+    .children { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    @media (max-width: 520px) { .children { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">CCPOCKET DESIGN</div>
+    <h1>Subsession orchestration</h1>
+    <p>Keep the user in one parent session while an orchestrator delegates implementation, testing, and review.</p>
+    <div class="flow">
+      <div class="node"><strong>Parent session</strong><br>Planning and orchestration</div>
+      <div class="children">
+        <div class="node">Implementation</div>
+        <div class="node">Testing</div>
+        <div class="node">Review</div>
+      </div>
+    </div>
+  </main>
+</body>
+</html>''',
     'test/widget_test.dart': '''import 'package:flutter_test/flutter_test.dart';
 import 'package:ccpocket/main.dart';
 
@@ -876,6 +911,7 @@ const _mockProjectFiles = [
   'package.json',
   'pubspec.yaml',
   'docs/architecture.md',
+  'docs/design/session-preview.html',
   'docs/images/install-banner.png',
   'docs/images/install-qr-app-store.png',
   'docs/images/release-card-v1.86.1-en.png',

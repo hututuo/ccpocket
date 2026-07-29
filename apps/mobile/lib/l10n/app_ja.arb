@@ -90,6 +90,9 @@
   "markdownLinkOpenFailed": "リンクを開けませんでした。",
   "markdownLinkUnsupported": "この種類のリンクには対応していません。",
   "markdownFileUnavailable": "このファイルはここではプレビューできません。",
+  "filePreviewShowSource": "ソースを表示",
+  "filePreviewShowPreview": "プレビューを表示",
+  "filePreviewRenderedHtml": "HTMLレンダリングプレビュー",
   "copied": "コピーしました",
   "copiedValue": "「{value}」をコピーしました",
   "@copiedValue": {

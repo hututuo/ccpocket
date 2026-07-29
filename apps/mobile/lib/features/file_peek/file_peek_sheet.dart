@@ -23,6 +23,8 @@ import '../../widgets/workspace_pane_chrome.dart';
 import '../artifact_preview/artifact_preview_entry.dart';
 import '../file_browser/file_browser_service.dart';
 import '../file_browser/file_browser_strings.dart';
+import 'html_preview_document.dart';
+import 'widgets/html_file_preview.dart';
 
 FileBrowserService? projectFilePreviewServiceOrNull(BuildContext context) {
   if (!supportsEmbeddedArtifactPreview()) return null;
@@ -88,7 +90,6 @@ Future<void> openProjectFilePreview(
     );
   }
 }
-
 /// Resolves a potentially partial file path against the project's file list,
 /// then shows the file peek sheet.
 ///
@@ -419,7 +420,9 @@ class _FilePeekContentState extends State<_FilePeekContent> {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final fileName = widget.filePath.split('/').lastOrNull ?? widget.filePath;
     final isMarkdown = widget.filePath.endsWith('.md');
+    final isHtml = isHtmlPreviewPath(widget.filePath);
     final isImage = _result?.kind == 'image';
+    final canPreviewHtml = isHtml && supportsEmbeddedHtmlPreview;
 
     return Column(
       children: [
@@ -477,10 +480,14 @@ class _FilePeekContentState extends State<_FilePeekContent> {
                   onPressed: _openImageFullScreen,
                   visualDensity: VisualDensity.compact,
                 ),
-              if (isMarkdown && !isImage && !_loading && _result?.error == null)
+              if ((isMarkdown || canPreviewHtml) &&
+                  !isImage &&
+                  !_loading &&
+                  _result?.error == null)
                 IconButton(
+                  key: const ValueKey('file_peek_source_toggle_button'),
                   icon: Icon(
-                    Icons.text_fields,
+                    _showRaw ? Icons.preview_outlined : Icons.code,
                     size: 18,
                     color: _showRaw
                         ? Theme.of(context).colorScheme.primary
@@ -488,6 +495,9 @@ class _FilePeekContentState extends State<_FilePeekContent> {
                   ),
                   onPressed: () => setState(() => _showRaw = !_showRaw),
                   visualDensity: VisualDensity.compact,
+                  tooltip: _showRaw
+                      ? AppLocalizations.of(context).filePreviewShowPreview
+                      : AppLocalizations.of(context).filePreviewShowSource,
                 ),
               if (widget.onOpenPreviewRequested != null)
                 IconButton(
@@ -578,6 +588,8 @@ class _FilePeekContentState extends State<_FilePeekContent> {
               ? _buildError(appColors)
               : _result?.kind == 'image'
               ? _buildImageContent(appColors)
+              : (canPreviewHtml && !_showRaw)
+              ? HtmlFilePreview(html: _result!.content)
               : (isMarkdown && !_showRaw)
               ? _buildMarkdownPreview()
               : _buildCodeContent(appColors),

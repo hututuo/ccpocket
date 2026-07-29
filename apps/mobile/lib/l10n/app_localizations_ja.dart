@@ -194,6 +194,15 @@ class AppLocalizationsJa extends AppLocalizations {
   String get markdownFileUnavailable => 'このファイルはここではプレビューできません。';
 
   @override
+  String get filePreviewShowSource => 'ソースを表示';
+
+  @override
+  String get filePreviewShowPreview => 'プレビューを表示';
+
+  @override
+  String get filePreviewRenderedHtml => 'HTMLレンダリングプレビュー';
+
+  @override
   String get copied => 'コピーしました';
 
   @override

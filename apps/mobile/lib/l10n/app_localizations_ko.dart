@@ -194,6 +194,15 @@ class AppLocalizationsKo extends AppLocalizations {
   String get markdownFileUnavailable => '여기서는 이 파일을 미리 볼 수 없습니다.';
 
   @override
+  String get filePreviewShowSource => '소스 보기';
+
+  @override
+  String get filePreviewShowPreview => '미리 보기 표시';
+
+  @override
+  String get filePreviewRenderedHtml => '렌더링된 HTML 미리 보기';
+
+  @override
   String get copied => '복사됨';
 
   @override

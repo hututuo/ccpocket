@@ -432,6 +432,24 @@ abstract class AppLocalizations {
   /// **'このファイルはここではプレビューできません。'**
   String get markdownFileUnavailable;
 
+  /// No description provided for @filePreviewShowSource.
+  ///
+  /// In ja, this message translates to:
+  /// **'ソースを表示'**
+  String get filePreviewShowSource;
+
+  /// No description provided for @filePreviewShowPreview.
+  ///
+  /// In ja, this message translates to:
+  /// **'プレビューを表示'**
+  String get filePreviewShowPreview;
+
+  /// No description provided for @filePreviewRenderedHtml.
+  ///
+  /// In ja, this message translates to:
+  /// **'HTMLレンダリングプレビュー'**
+  String get filePreviewRenderedHtml;
+
   /// No description provided for @copied.
   ///
   /// In ja, this message translates to:

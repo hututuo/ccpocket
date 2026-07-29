@@ -194,6 +194,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get markdownFileUnavailable => '无法在此处预览此文件。';
 
   @override
+  String get filePreviewShowSource => '查看源代码';
+
+  @override
+  String get filePreviewShowPreview => '显示预览';
+
+  @override
+  String get filePreviewRenderedHtml => 'HTML 渲染预览';
+
+  @override
   String get copied => '已复制';
 
   @override

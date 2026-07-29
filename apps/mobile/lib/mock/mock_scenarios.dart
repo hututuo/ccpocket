@@ -3413,6 +3413,7 @@ final _filePeek = MockScenario(
                   '3. Bridge server entry point is at `packages/bridge/src/index.ts`\n'
                   '4. See `README.md` for documentation\n'
                   '5. Preview image output at `docs/images/release-card-v1.86.1-en.png`\n\n'
+                  '6. Review the UI proposal in `docs/design/session-preview.html`\n\n'
                   'You can also check `package.json` for the npm scripts configuration.',
             ),
           ],
