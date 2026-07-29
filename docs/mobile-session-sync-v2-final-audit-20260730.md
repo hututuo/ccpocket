@@ -296,18 +296,33 @@ Need You，也不伪装为无待办。
 
 ## 10. 最终运行时和 IPA 交付
 
-本节在最终集成 HEAD、Bridge 切换和 IPA 检查完成后填写：
+部署使用的已验证源码 HEAD：
+`065cddc01342ad1da41920553600ac48fec2a93f`。
 
-- 最终 HEAD：`PENDING`
-- 安全标签：`PENDING`
-- Bridge runtime：`PENDING`
-- Bridge PID/listener/health/version：`PENDING`
+- 安全标签：
+  - `safety/mobile-session-sync-v2-pre-20260730`
+  - `validated/mobile-session-sync-v2-20260730`
+- Bridge runtime：
+  `/Users/huyiyang/Library/Application Support/ccPocket Bridge/runtime/1.69.4-compat.4-065cddc0`
+- Bridge PID/listener/health/version：
+  部署时 PID `58249`；唯一 `127.0.0.1:8765`；health ok；
+  `1.69.4-compat.4`。PID 是瞬时证据，后续须以 live 检查为准。
 - Bridge rollback runtime：`1.69.4-compat.3-8c1d9907`
-- Functions 部署：`PENDING`
-- IPA：`PENDING`
-- IPA bytes / SHA-256：`PENDING`
-- Firebase configuration：`PENDING`
-- 架构、provisioning、ZIP path audit：`PENDING`
+- Functions 部署：CLI 未登录，未部署；本地 typecheck/test/build 通过。
+- IPA：
+  `/Users/huyiyang/Documents/Downloads/CC-Pocket-1.110.1-build206-session-sync-v2-065cddc0-AltStore.ipa`
+- IPA bytes / SHA-256：
+  `26,009,487` /
+  `87f1c73e87cadca50b3fb8a6f3d0c0e5270e73f76be7e0434ba70dc9217c5e03`
+- Firebase configuration：仓库 dummy plist。
+- 架构、provisioning、ZIP path audit：
+  38 个 Mach-O 全 arm64；无 provisioning/签名；ZIP/fresh extraction 通过。
+
+完整全局切换与回滚记录：
+
+- `patches/bridge-runtime-deploy_v16_20260730-053519.md`
+- `runs/20260730-053519_bridge-1.69.4-compat.4-065cddc0-deploy/DEPLOYMENT.md`
+- `backups/20260730-053519_bridge-1.69.4-compat.4-065cddc0-deploy/README.md`
 
 ## 11. 仍需物理设备验收
 
