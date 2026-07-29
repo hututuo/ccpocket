@@ -33,6 +33,45 @@ void main() {
     expect(decoded.statusChanges.single.runtimeAttachment, 'notLoaded');
   });
 
+  test(
+    'bounds legacy Bridge catalog display text instead of dropping sync',
+    () {
+      final decoded =
+          ServerMessage.fromJson(<String, dynamic>{
+                ..._baseFrame,
+                'event': 'catalog_changes',
+                'catalogState': 'catalog-1',
+                'pageIndex': 0,
+                'pageCount': 1,
+                'created': [
+                  {
+                    'provider': 'codex',
+                    'providerSessionId': 'thread-1',
+                    'revision': 'revision-1',
+                    'projectPath': '/workspace',
+                    'name': 'n' * 800,
+                    'summary': 's' * 8000,
+                    'firstPrompt': '${'p' * 4094}😀${'x' * 24000}',
+                    'createdAt': '2026-07-30T00:00:00.000Z',
+                    'modifiedAt': '2026-07-30T00:01:00.000Z',
+                    'recencyAt': '2026-07-30T00:02:00.000Z',
+                    'availability': 'durable',
+                  },
+                ],
+                'updated': const [],
+                'destroyed': const [],
+              })
+              as ConversationSyncV2EventMessage;
+
+      final entry = decoded.created.single;
+      expect(entry.name, hasLength(512));
+      expect(entry.summary, hasLength(4096));
+      expect(entry.firstPrompt, hasLength(4095));
+      expect(entry.firstPrompt, endsWith('…'));
+      expect(entry.firstPrompt, isNot(contains('\ud83d')));
+    },
+  );
+
   test('builds a bounded subscription without endpoint identity', () {
     final message = conversationSyncV2Subscribe(
       requestId: 'request-1',

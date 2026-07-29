@@ -295,6 +295,40 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("bounds catalog display text before sending it to Mobile", async () => {
+    const oversized = seed(0);
+    oversized.entry.name = "n".repeat(800);
+    oversized.entry.summary = "s".repeat(8_000);
+    oversized.entry.firstPrompt = `${"p".repeat(4_094)}😀${"x".repeat(24_000)}`;
+    const fixture = createFixture(
+      [oversized],
+      vi.fn(async (target) => history(target.providerSessionId)),
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "catalog_changes")).toHaveLength(1),
+    );
+
+    const entry = events(fixture.sent, client, "catalog_changes")[0]!
+      .created[0]!;
+    expect(entry.name).toHaveLength(512);
+    expect(entry.summary).toHaveLength(4_096);
+    expect(entry.firstPrompt).toHaveLength(4_095);
+    expect(entry.firstPrompt).toMatch(/…$/);
+    expect(entry.firstPrompt).not.toContain("\ud83d");
+    for (const message of fixture.sent.get(client) ?? []) {
+      expect(
+        Buffer.byteLength(JSON.stringify(message), "utf8"),
+      ).toBeLessThanOrEqual(64 * 1024);
+    }
+    fixture.handler.close();
+  });
+
   it("returns bounded detached tool details without a runtime session", async () => {
     const historyReader = vi.fn(async () => [
       {

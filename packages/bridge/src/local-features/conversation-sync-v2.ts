@@ -43,6 +43,10 @@ import type {
 } from "./runtime.js";
 
 const MAX_CATALOG_ENTRIES = 10_000;
+const MAX_CATALOG_NAME_LENGTH = 512;
+const MAX_CATALOG_TEXT_LENGTH = 4_096;
+const MAX_CATALOG_PATH_LENGTH = 4_096;
+const MAX_CATALOG_LINEAGE_ID_LENGTH = 256;
 const CODEX_PAGE_SIZE = 500;
 const PRIORITY_RECENT_COUNT = 5;
 const MIN_RECENT_COUNT = 10;
@@ -1108,17 +1112,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         const next = new Map<ConversationKey, CatalogRecord>();
         for (const seed of seeds.slice(0, MAX_CATALOG_ENTRIES)) {
           if (seed.entry.availability === "ephemeral") continue;
-          const key = targetKey(seed.entry);
+          const entry = normalizeCatalogEntry(seed.entry);
+          const key = targetKey(entry);
           const live = this.liveContentRevisions.get(key);
           if (
             live &&
-            Date.parse(seed.entry.recencyAt) >= Date.parse(live.observedAt)
+            Date.parse(entry.recencyAt) >= Date.parse(live.observedAt)
           ) {
             this.liveContentRevisions.delete(key);
           }
           const previous = previousStatuses.get(key);
           next.set(key, {
-            entry: seed.entry,
+            entry,
             status: preserveObservedAt(previous, seed.status),
           });
         }
@@ -2268,6 +2273,66 @@ function sessionSeed(session: SessionIndexEntry): ConversationSyncCatalogSeed {
     },
     status: unknownStatus(target, modifiedAt, "legacyRollout"),
   };
+}
+
+function normalizeCatalogEntry(
+  entry: ConversationSyncCatalogEntry,
+): ConversationSyncCatalogEntry {
+  const name = truncateCatalogText(entry.name, MAX_CATALOG_NAME_LENGTH);
+  const summary = truncateCatalogText(entry.summary, MAX_CATALOG_TEXT_LENGTH);
+  const firstPrompt = truncateCatalogText(
+    entry.firstPrompt,
+    MAX_CATALOG_TEXT_LENGTH,
+  );
+  const forkedFromThreadId = validCatalogLineageId(entry.forkedFromThreadId);
+  const parentThreadId = validCatalogLineageId(entry.parentThreadId);
+  return {
+    provider: entry.provider,
+    providerSessionId: entry.providerSessionId,
+    revision: entry.revision,
+    projectPath:
+      truncateCatalogText(entry.projectPath, MAX_CATALOG_PATH_LENGTH) ?? "",
+    ...(name ? { name } : {}),
+    ...(summary ? { summary } : {}),
+    ...(firstPrompt ? { firstPrompt } : {}),
+    createdAt: entry.createdAt,
+    modifiedAt: entry.modifiedAt,
+    recencyAt: entry.recencyAt,
+    availability: entry.availability,
+    ...(forkedFromThreadId ? { forkedFromThreadId } : {}),
+    ...(parentThreadId ? { parentThreadId } : {}),
+  };
+}
+
+function truncateCatalogText(
+  value: string | undefined,
+  maximumLength: number,
+): string | undefined {
+  if (!value) return undefined;
+  if (value.length <= maximumLength) return value;
+  let end = maximumLength - 1;
+  if (
+    end > 0 &&
+    isHighSurrogate(value.charCodeAt(end - 1)) &&
+    isLowSurrogate(value.charCodeAt(end))
+  ) {
+    end -= 1;
+  }
+  return `${value.slice(0, end)}…`;
+}
+
+function validCatalogLineageId(value: string | undefined): string | undefined {
+  return value && value.length <= MAX_CATALOG_LINEAGE_ID_LENGTH
+    ? value
+    : undefined;
+}
+
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xd800 && value <= 0xdbff;
+}
+
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xdc00 && value <= 0xdfff;
 }
 
 function codexThreadSeed(

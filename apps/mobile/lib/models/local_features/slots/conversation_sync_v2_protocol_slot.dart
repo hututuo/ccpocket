@@ -177,13 +177,17 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
       modifiedAt: _conversationSyncIsoDate(json, 'modifiedAt'),
       recencyAt: _conversationSyncIsoDate(json, 'recencyAt'),
       availability: availability,
-      name: _conversationSyncOptionalString(json, 'name', maximumLength: 512),
-      summary: _conversationSyncOptionalString(
+      name: _conversationSyncOptionalDisplayString(
+        json,
+        'name',
+        maximumLength: 512,
+      ),
+      summary: _conversationSyncOptionalDisplayString(
         json,
         'summary',
         maximumLength: 4096,
       ),
-      firstPrompt: _conversationSyncOptionalString(
+      firstPrompt: _conversationSyncOptionalDisplayString(
         json,
         'firstPrompt',
         maximumLength: 4096,
@@ -917,6 +921,30 @@ String? _conversationSyncOptionalString(
   if (value == null) return null;
   return _conversationSyncString(json, key, maximumLength: maximumLength);
 }
+
+String? _conversationSyncOptionalDisplayString(
+  Map<String, dynamic> json,
+  String key, {
+  required int maximumLength,
+}) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! String || value.isEmpty) {
+    throw FormatException('Conversation sync $key is invalid.');
+  }
+  if (value.length <= maximumLength) return value;
+  var end = maximumLength - 1;
+  if (end > 0 &&
+      _isHighSurrogate(value.codeUnitAt(end - 1)) &&
+      _isLowSurrogate(value.codeUnitAt(end))) {
+    end -= 1;
+  }
+  return '${value.substring(0, end)}…';
+}
+
+bool _isHighSurrogate(int value) => value >= 0xd800 && value <= 0xdbff;
+
+bool _isLowSurrogate(int value) => value >= 0xdc00 && value <= 0xdfff;
 
 int _conversationSyncInt(
   Map<String, dynamic> json,
