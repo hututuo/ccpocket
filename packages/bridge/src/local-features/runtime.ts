@@ -56,6 +56,30 @@ export interface EphemeralCodexChildSession {
   lastActivityAt: string;
 }
 
+export type LocalFeatureRuntimeProcessStatus =
+  "starting" | "idle" | "running" | "waiting_approval" | "compacting";
+
+export type LocalFeatureAttentionKind =
+  "approval" | "question" | "permission" | "form";
+
+/**
+ * Privacy-bounded projection of one Bridge-owned runtime. Feature handlers use
+ * this to overlay authoritative live state on the durable provider catalog
+ * without receiving permission input, tool arguments, or conversation text.
+ */
+export interface LocalFeatureRuntimeConversationState {
+  bridgeSessionId: string;
+  provider: string;
+  providerSessionId?: string;
+  projectPath: string;
+  processStatus: LocalFeatureRuntimeProcessStatus;
+  pendingAttention?: {
+    requestId: string;
+    kind: LocalFeatureAttentionKind;
+  };
+  observedAt: string;
+}
+
 export interface LocalFeatureRuntime {
   /** Stable installation identity; persisted by the Bridge host when available. */
   readonly bridgeInstanceId?: string;
@@ -66,6 +90,7 @@ export interface LocalFeatureRuntime {
   getSession(sessionId: string): LocalFeatureSession | undefined;
   getCodexThreadId(session: LocalFeatureSession): string | undefined;
   getProviderSessionId?(session: LocalFeatureSession): string | undefined;
+  listRuntimeConversationStates?(): LocalFeatureRuntimeConversationState[];
   getClientDeliveryMode?(client: object): LocalFeatureClientDeliveryMode;
   getActiveCodexProcess(): CodexProcess | null;
   createStandaloneCodexProcess(

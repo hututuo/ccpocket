@@ -1239,9 +1239,7 @@ describe("CodexProcess (app-server)", () => {
     );
 
     let settled = false;
-    const continuation = (
-      proc as any
-    ).continueInterruptedTurnAfterBootstrap({
+    const continuation = (proc as any).continueInterruptedTurnAfterBootstrap({
       continueInterruptedTurnAfterStart: true,
     });
     void continuation.then(() => {
@@ -1270,8 +1268,7 @@ describe("CodexProcess (app-server)", () => {
     expect(settled).toBe(true);
     expect(
       messages.filter(
-        (message) =>
-          (message as Record<string, unknown>).type === "result",
+        (message) => (message as Record<string, unknown>).type === "result",
       ),
     ).toHaveLength(1);
     expect((proc as any).lastCompletedTurn).toEqual({
@@ -2560,9 +2557,9 @@ describe("CodexProcess (app-server)", () => {
 
     internal.maxAppServerJsonLineBytes = 64;
     internal.handleStdoutChunk("x".repeat(65));
-    expect(Buffer.byteLength(internal.stdoutBuffer, "utf8")).toBeLessThanOrEqual(
-      64,
-    );
+    expect(
+      Buffer.byteLength(internal.stdoutBuffer, "utf8"),
+    ).toBeLessThanOrEqual(64);
 
     internal.handleStdoutChunk(
       `\n${JSON.stringify({
@@ -3285,6 +3282,155 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("exposes state-db recency and runtime status from thread/list", async () => {
+    const proc = new CodexProcess("linux");
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue({
+      data: [
+        {
+          id: "thr_active",
+          sessionId: "session-tree",
+          forkedFromId: null,
+          parentThreadId: "thr_parent",
+          preview: "Needs approval",
+          ephemeral: false,
+          createdAt: 10,
+          updatedAt: 20,
+          recencyAt: 30,
+          cwd: "/tmp/project-a",
+          modelProvider: "openai",
+          status: {
+            type: "active",
+            activeFlags: ["waitingOnApproval", "unsupported"],
+          },
+          canAcceptDirectInput: false,
+        },
+      ],
+      nextCursor: "next",
+    });
+
+    await expect(
+      proc.listThreads({
+        limit: 50,
+        sortKey: "recency_at",
+        sortDirection: "desc",
+        useStateDbOnly: true,
+      }),
+    ).resolves.toEqual({
+      data: [
+        expect.objectContaining({
+          id: "thr_active",
+          sessionId: "session-tree",
+          parentThreadId: "thr_parent",
+          recencyAt: 30,
+          modelProvider: "openai",
+          status: {
+            type: "active",
+            activeFlags: ["waitingOnApproval"],
+          },
+          canAcceptDirectInput: false,
+        }),
+      ],
+      nextCursor: "next",
+    });
+    expect(request).toHaveBeenCalledWith(
+      "thread/list",
+      expect.objectContaining({
+        limit: 50,
+        sortKey: "recency_at",
+        sortDirection: "desc",
+        archived: false,
+        useStateDbOnly: true,
+      }),
+      {},
+    );
+    proc.stop();
+  });
+
+  it("lists loaded threads through the bounded read-only RPC", async () => {
+    const proc = new CodexProcess("linux");
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue({
+      data: ["thr_a", "", 42, "thr_b"],
+      nextCursor: "loaded-next",
+    });
+
+    await expect(
+      proc.listLoadedThreads({ limit: 2, cursor: "loaded-cursor" }),
+    ).resolves.toEqual({
+      data: ["thr_a", "thr_b"],
+      nextCursor: "loaded-next",
+    });
+    expect(request).toHaveBeenCalledWith(
+      "thread/loaded/list",
+      { limit: 2, cursor: "loaded-cursor" },
+      {},
+    );
+    proc.stop();
+  });
+
+  it("paginates turns and items without resuming or taking thread ownership", async () => {
+    const proc = new CodexProcess("linux");
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({
+        data: [{ id: "turn_1" }],
+        nextCursor: "turn-next",
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: "item_1" }],
+        nextCursor: "item-next",
+      });
+
+    await expect(
+      proc.listThreadTurns({
+        threadId: "thr_a",
+        cursor: "turn-cursor",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "full",
+      }),
+    ).resolves.toEqual({
+      data: [{ id: "turn_1" }],
+      nextCursor: "turn-next",
+    });
+    await expect(
+      proc.listThreadItems({
+        threadId: "thr_a",
+        turnId: "turn_1",
+        cursor: "item-cursor",
+        limit: 200,
+        sortDirection: "asc",
+      }),
+    ).resolves.toEqual({
+      data: [{ id: "item_1" }],
+      nextCursor: "item-next",
+    });
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "thread/turns/list",
+      {
+        threadId: "thr_a",
+        cursor: "turn-cursor",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+      {},
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "thread/items/list",
+      {
+        threadId: "thr_a",
+        turnId: "turn_1",
+        cursor: "item-cursor",
+        limit: 200,
+        sortDirection: "asc",
+      },
+      {},
+    );
+    proc.stop();
+  });
+
   it("exposes one generic, read-only RPC seam for optional modules", async () => {
     const proc = new CodexProcess("linux");
     const response = { rateLimits: { limitId: "codex" } };
@@ -3891,7 +4037,9 @@ describe("CodexProcess (app-server)", () => {
       { timeoutMs: 0 },
     ) as Promise<unknown>;
     const unboundedRequest = nextOutgoingRequest(child);
-    expect(internal.pendingRpc.get(unboundedRequest.id)?.timeout).toBeUndefined();
+    expect(
+      internal.pendingRpc.get(unboundedRequest.id)?.timeout,
+    ).toBeUndefined();
     internal.handleRpcResponse({ id: unboundedRequest.id, result: {} });
     await explicitlyUnbounded;
     proc.stop();

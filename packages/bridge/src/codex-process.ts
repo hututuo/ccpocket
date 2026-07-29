@@ -355,15 +355,40 @@ export interface CodexPluginMetadata {
 
 export interface CodexThreadSummary {
   id: string;
+  sessionId: string | null;
   forkedFromThreadId?: string | null;
+  parentThreadId: string | null;
   preview: string;
+  ephemeral: boolean;
   createdAt: number;
   updatedAt: number;
+  recencyAt: number | null;
   cwd: string;
+  modelProvider: string | null;
+  status: CodexThreadStatus;
+  canAcceptDirectInput: boolean | null;
   agentNickname: string | null;
   agentRole: string | null;
   gitBranch: string | null;
   name: string | null;
+}
+
+export type CodexThreadActiveFlag = "waitingOnApproval" | "waitingOnUserInput";
+
+export type CodexThreadStatus =
+  | { type: "notLoaded" }
+  | { type: "idle" }
+  | { type: "systemError" }
+  | { type: "active"; activeFlags: CodexThreadActiveFlag[] }
+  | { type: "unknown" };
+
+export type CodexThreadSortKey = "created_at" | "updated_at" | "recency_at";
+
+export type CodexSortDirection = "asc" | "desc";
+
+export interface CodexThreadPage {
+  data: unknown[];
+  nextCursor: string | null;
 }
 
 export type CodexThreadSourceKind =
@@ -607,8 +632,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private stdoutBuffer = "";
   private discardingOversizedStdoutLine = false;
-  private readonly maxAppServerJsonLineBytes =
-    MAX_APP_SERVER_JSON_LINE_BYTES;
+  private readonly maxAppServerJsonLineBytes = MAX_APP_SERVER_JSON_LINE_BYTES;
 
   // Collaboration mode & plan completion state
   private _approvalPolicy: string | null | undefined = undefined;
@@ -1689,9 +1713,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.pendingCoreAction = null;
   }
 
-  private restoreIdleAfterUnstartedCoreAction(
-    action: PendingCoreAction,
-  ): void {
+  private restoreIdleAfterUnstartedCoreAction(action: PendingCoreAction): void {
     const expectedStatus =
       action.method === "thread/compact/start" ? "compacting" : "running";
     if (
@@ -1784,32 +1806,143 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     params: {
       limit?: number;
       cursor?: string | null;
-      cwd?: string;
+      cwd?: string | string[];
       searchTerm?: string;
       modelProviders?: string[];
       sourceKinds?: CodexThreadSourceKind[];
+      sortKey?: CodexThreadSortKey;
+      sortDirection?: CodexSortDirection;
+      archived?: boolean;
+      useStateDbOnly?: boolean;
+      parentThreadId?: string;
+      ancestorThreadId?: string;
     } = {},
+    options: CodexRpcRequestOptions = {},
   ): Promise<{ data: CodexThreadSummary[]; nextCursor: string | null }> {
-    const result = (await this.request("thread/list", {
-      sortKey: "updated_at",
-      archived: false,
-      ...(params.limit != null ? { limit: params.limit } : {}),
-      ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
-      ...(params.modelProviders !== undefined
-        ? { modelProviders: params.modelProviders }
-        : {}),
-      ...(params.sourceKinds !== undefined
-        ? { sourceKinds: params.sourceKinds }
-        : {}),
-      ...(params.cwd ? { cwd: params.cwd } : {}),
-      ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
-    })) as { data?: unknown[]; nextCursor?: unknown };
+    const result = (await this.requestReadOnlyRpc(
+      "thread/list",
+      {
+        sortKey: params.sortKey ?? "updated_at",
+        sortDirection: params.sortDirection ?? "desc",
+        archived: params.archived ?? false,
+        ...(params.limit != null ? { limit: params.limit } : {}),
+        ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+        ...(params.modelProviders !== undefined
+          ? { modelProviders: params.modelProviders }
+          : {}),
+        ...(params.sourceKinds !== undefined
+          ? { sourceKinds: params.sourceKinds }
+          : {}),
+        ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
+        ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
+        ...(params.useStateDbOnly !== undefined
+          ? { useStateDbOnly: params.useStateDbOnly }
+          : {}),
+        ...(params.parentThreadId
+          ? { parentThreadId: params.parentThreadId }
+          : {}),
+        ...(params.ancestorThreadId
+          ? { ancestorThreadId: params.ancestorThreadId }
+          : {}),
+      },
+      options,
+    )) as { data?: unknown[]; nextCursor?: unknown };
 
     const data = Array.isArray(result.data)
       ? result.data.map((entry) => toCodexThreadSummary(entry))
       : [];
     return {
       data,
+      nextCursor:
+        typeof result.nextCursor === "string" ? result.nextCursor : null,
+    };
+  }
+
+  async listLoadedThreads(
+    params: { limit?: number; cursor?: string | null } = {},
+    options: CodexRpcRequestOptions = {},
+  ): Promise<{ data: string[]; nextCursor: string | null }> {
+    const result = (await this.requestReadOnlyRpc(
+      "thread/loaded/list",
+      {
+        ...(params.limit != null ? { limit: params.limit } : {}),
+        ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+      },
+      options,
+    )) as { data?: unknown[]; nextCursor?: unknown };
+    return {
+      data: Array.isArray(result.data)
+        ? result.data.filter(
+            (threadId): threadId is string =>
+              typeof threadId === "string" && threadId.length > 0,
+          )
+        : [],
+      nextCursor:
+        typeof result.nextCursor === "string" ? result.nextCursor : null,
+    };
+  }
+
+  async listThreadTurns(
+    params: {
+      threadId: string;
+      cursor?: string | null;
+      limit?: number;
+      sortDirection?: CodexSortDirection;
+      itemsView?: "summary" | "full";
+    },
+    options: CodexRpcRequestOptions = {},
+  ): Promise<CodexThreadPage> {
+    return this.readThreadPage(
+      "thread/turns/list",
+      {
+        threadId: params.threadId,
+        ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+        ...(params.limit != null ? { limit: params.limit } : {}),
+        ...(params.sortDirection
+          ? { sortDirection: params.sortDirection }
+          : {}),
+        ...(params.itemsView ? { itemsView: params.itemsView } : {}),
+      },
+      options,
+    );
+  }
+
+  async listThreadItems(
+    params: {
+      threadId: string;
+      turnId?: string;
+      cursor?: string | null;
+      limit?: number;
+      sortDirection?: CodexSortDirection;
+    },
+    options: CodexRpcRequestOptions = {},
+  ): Promise<CodexThreadPage> {
+    return this.readThreadPage(
+      "thread/items/list",
+      {
+        threadId: params.threadId,
+        ...(params.turnId ? { turnId: params.turnId } : {}),
+        ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+        ...(params.limit != null ? { limit: params.limit } : {}),
+        ...(params.sortDirection
+          ? { sortDirection: params.sortDirection }
+          : {}),
+      },
+      options,
+    );
+  }
+
+  private async readThreadPage(
+    method: "thread/turns/list" | "thread/items/list",
+    params: Record<string, unknown>,
+    options: CodexRpcRequestOptions,
+  ): Promise<CodexThreadPage> {
+    const result = (await this.requestReadOnlyRpc(method, params, options)) as {
+      data?: unknown[];
+      nextCursor?: unknown;
+    };
+    return {
+      data: Array.isArray(result.data) ? result.data : [],
       nextCursor:
         typeof result.nextCursor === "string" ? result.nextCursor : null,
     };
@@ -3767,9 +3900,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
       const rawLine = this.stdoutBuffer.slice(0, newlineIndex);
       this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
-      if (
-        Buffer.byteLength(rawLine, "utf8") > this.maxAppServerJsonLineBytes
-      ) {
+      if (Buffer.byteLength(rawLine, "utf8") > this.maxAppServerJsonLineBytes) {
         this.reportOversizedStdoutLine();
         continue;
       }
@@ -3869,10 +4000,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     pending.resolve(result);
   }
 
-  private bindThreadFromRpcSuccess(
-    pending: PendingRpc,
-    result: unknown,
-  ): void {
+  private bindThreadFromRpcSuccess(pending: PendingRpc, result: unknown): void {
     const binding = pending.threadBinding;
     if (!binding) return;
 
@@ -4325,9 +4453,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           this.agentTurnTracker.startTurn(turnId);
         }
         this.lastResultText = null;
-        this.setStatus(
-          this.isCompactingCoreAction ? "compacting" : "running",
-        );
+        this.setStatus(this.isCompactingCoreAction ? "compacting" : "running");
         break;
       }
 
@@ -4593,10 +4719,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (pendingCompletion) {
       if (pendingCompletion.turnId === null) {
         if (turnId) {
-          pendingCompletion.earlyCompletions.set(turnId, turn ?? { id: turnId });
+          pendingCompletion.earlyCompletions.set(
+            turnId,
+            turn ?? { id: turnId },
+          );
           while (pendingCompletion.earlyCompletions.size > 8) {
-            const oldest = pendingCompletion.earlyCompletions.keys().next()
-              .value;
+            const oldest = pendingCompletion.earlyCompletions
+              .keys()
+              .next().value;
             if (oldest === undefined) break;
             pendingCompletion.earlyCompletions.delete(oldest);
           }
@@ -6330,16 +6460,49 @@ function toCodexThreadSummary(entry: unknown): CodexThreadSummary {
       : {};
   return {
     id: typeof record.id === "string" ? record.id : "",
+    sessionId: stringOrNull(record.sessionId),
     forkedFromThreadId: stringOrNull(record.forkedFromId),
+    parentThreadId: stringOrNull(record.parentThreadId),
     preview: typeof record.preview === "string" ? record.preview : "",
+    ephemeral: record.ephemeral === true,
     createdAt: numberOrUndefined(record.createdAt) ?? 0,
     updatedAt: numberOrUndefined(record.updatedAt) ?? 0,
+    recencyAt: numberOrUndefined(record.recencyAt) ?? null,
     cwd: typeof record.cwd === "string" ? record.cwd : "",
+    modelProvider: stringOrNull(record.modelProvider),
+    status: toCodexThreadStatus(record.status),
+    canAcceptDirectInput:
+      typeof record.canAcceptDirectInput === "boolean"
+        ? record.canAcceptDirectInput
+        : null,
     agentNickname: stringOrNull(record.agentNickname),
     agentRole: stringOrNull(record.agentRole),
     gitBranch: stringOrNull(gitInfo.branch),
     name: stringOrNull(record.name),
   };
+}
+
+function toCodexThreadStatus(value: unknown): CodexThreadStatus {
+  if (!value || typeof value !== "object") return { type: "unknown" };
+  const record = value as Record<string, unknown>;
+  switch (record.type) {
+    case "notLoaded":
+    case "idle":
+    case "systemError":
+      return { type: record.type };
+    case "active":
+      return {
+        type: "active",
+        activeFlags: Array.isArray(record.activeFlags)
+          ? record.activeFlags.filter(
+              (flag): flag is CodexThreadActiveFlag =>
+                flag === "waitingOnApproval" || flag === "waitingOnUserInput",
+            )
+          : [],
+      };
+    default:
+      return { type: "unknown" };
+  }
 }
 
 /**
