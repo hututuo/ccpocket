@@ -11,11 +11,12 @@ class _FakeCacheManagementBackend extends ChangeNotifier
     required this.catalogEntries,
     required List<ConversationMirrorMetadata> localCopies,
     List<CacheManagementDataSource> dataSources = const [],
-  }) : _localCopies = localCopies,
-       _dataSources = dataSources.toList();
+  }) : _dataSources = dataSources.toList() {
+    _localCopies.addAll(localCopies);
+  }
 
   int catalogEntries;
-  final List<ConversationMirrorMetadata> _localCopies;
+  final List<ConversationMirrorMetadata> _localCopies = [];
   final List<CacheManagementDataSource> _dataSources;
   int clearCalls = 0;
   final List<String> clearedDataSources = [];

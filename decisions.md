@@ -975,3 +975,41 @@
   mapping as the session card, including pending approvals, `waiting_approval`,
   `starting`, `running`, `compacting`, and external desktop turns. Unknown
   statuses do not silently become working or unread.
+
+## Durable sessions are local-first and sync by authenticated source identity
+
+- Every durable conversation is directly readable from the Mobile SQLite
+  replica. Opening a conversation must not resume it, acquire writer
+  ownership, or wait for a fresh provider-history transfer. A live provider
+  attachment is deferred until the user performs an interactive operation.
+- Bridge owns catalog, compound status, Need You, revisions, tier assignment
+  and sync scheduling. Mobile owns durable replica commits, read watermarks and
+  presentation state. IP addresses, DNS names and Tailnet routes are transport
+  aliases only; canonical cache identity is the authenticated pair
+  `(bridgeInstanceId, codexSourceId)`.
+- An endpoint-only legacy cache is not migrated into a source-scoped partition
+  until the Bridge identity is proven. This deliberate fail-closed boundary
+  prevents a reused IP or DNS route from merging data from another machine.
+  Once authenticated, all routes for the same identity reuse one catalog,
+  timeline, unread state and cache.
+- Initial synchronization is tiered. All working, compacting, Need You, error
+  and completion-unread sessions form the priority set. Recent sessions keep
+  five turn shells, three full turns and a historical 200-tool detail budget.
+  Cold sessions keep catalog/status/revision metadata until changed or opened.
+  Live current-turn details are outside the historical budget but remain
+  protected by an explicit payload ceiling.
+- Sync uses one authenticated WebSocket, monotonic state tokens, bounded
+  physical frames, ACK-after-SQLite-commit and per-thread gaps. A stale
+  generation or base revision cannot overwrite newer data. An unchanged
+  reconnect must not reread or resend history.
+- The installed app-server does not currently expose `thread/items/list`.
+  Bridge therefore implements equivalent progressive disclosure with bounded
+  `thread/turns/list` full pages, per-turn detail caches and an additive
+  `conversation_items_by_id_v1` capability. Read-only synchronization never
+  falls back to `thread/resume`.
+- Ordinary idle conversations have no `Ready` badge. `notLoaded` is runtime
+  attachment state, not user availability. Unknown or degraded observations
+  remain explicit and never silently become idle/Ready.
+- The complete implementation, performance, security, compatibility and
+  historical-branch audit is recorded in
+  `docs/mobile-session-sync-v2-final-audit-20260730.md`.
