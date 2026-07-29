@@ -830,3 +830,30 @@
 - Runtime rollback must preserve the loopback host while swapping only
   `BRIDGE_CLI_ENTRY`. Loading an older plist that restores `0.0.0.0` is unsafe
   until the Tailscale Serve listener has been deliberately removed.
+
+## Codex resume settings must be authoritative on large rollouts
+
+- Recent-session list rendering may keep using bounded head/tail JSONL reads.
+  Those windows are presentation caches and are not authoritative enough to
+  resume a Codex thread: a large rollout can place the latest
+  `turn_context` megabytes before EOF, or place the first user message outside
+  the fast head while current tool output occupies the tail.
+- A direct Codex resume now requests an explicit authoritative settings read.
+  Bridge searches backward from one stable file-size boundary in bounded
+  chunks, finds the latest complete `turn_context`, and overlays any newer
+  complete `thread_settings_applied` event. A partially appended final JSONL
+  record is ignored rather than replacing the last valid settings.
+- Official permission profiles are restored as a tuple. In particular,
+  `:danger-full-access` maps to sandbox `danger-full-access` while the paired
+  approval policy remains `never`; Bridge must not combine that sandbox with
+  its default `on-request`, because Mobile correctly renders that mixed tuple
+  as Custom.
+- Resume settings are independent of the fast presentation parser succeeding.
+  If list metadata is temporarily unavailable, an exact filename match plus a
+  valid settings record is sufficient to preserve permissions. This path is
+  only used for the thread being resumed, so the recent-session directory does
+  not scan every large rollout.
+- This is a Bridge-only compatibility repair. It adds no protocol field,
+  database migration, Mobile/native dependency or IPA boundary. Existing
+  capable Mobile clients continue omitting resume overrides and let Bridge
+  preserve the official Codex settings.

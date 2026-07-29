@@ -1624,6 +1624,219 @@ describe("codex sessions integration", () => {
     expect(result.sessions[0].firstPrompt).toBe("after large context");
   });
 
+  it("restores authoritative Codex permissions beyond the fast tail window", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68103";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    const rolloutPath = join(
+      codexDir,
+      `rollout-2026-02-13T12-00-00-${threadId}.jsonl`,
+    );
+    const lines = [
+      JSON.stringify({
+        timestamp: "2026-02-13T12:00:00.000Z",
+        type: "session_meta",
+        payload: { id: threadId, cwd: "/tmp/project-a" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-02-13T12:00:00.100Z",
+        type: "turn_context",
+        payload: {
+          model: "gpt-5.5",
+          approval_policy: "on-request",
+          approvals_reviewer: "user",
+          sandbox_policy: { type: "workspace-write" },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-02-13T12:00:00.200Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "large permission thread" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-02-13T12:00:00.300Z",
+        type: "event_msg",
+        payload: { type: "token_count", details: "x".repeat(180_000) },
+      }),
+      JSON.stringify({
+        timestamp: "2026-02-13T12:00:01.000Z",
+        type: "turn_context",
+        payload: {
+          model: "gpt-5.6-sol",
+          approval_policy: "never",
+          approvals_reviewer: "user",
+          sandbox_policy: {
+            type: "danger-full-access",
+            network_access: true,
+          },
+          web_search: "live",
+          service_tier: "priority",
+          collaboration_mode: {
+            mode: "default",
+            settings: {
+              model: "gpt-5.6-sol",
+              reasoning_effort: "max",
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-02-13T12:00:01.100Z",
+        type: "event_msg",
+        payload: { type: "token_count", details: "y".repeat(80_000) },
+      }),
+    ];
+    writeFileSync(
+      rolloutPath,
+      `${lines.join("\n")}\n{"timestamp":"2026-02-13T12:00:02.000Z","type":"turn_context","payload":{"approval_policy":"on-request"`,
+    );
+
+    const metadata = await getCodexSessionIndexMetadata([threadId], {
+      authoritativeCodexSettings: true,
+    });
+
+    expect(metadata.get(threadId)?.codexSettings).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "max",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+      networkAccessEnabled: true,
+      webSearchMode: "live",
+    });
+  });
+
+  it("applies a newer official permission profile over the prior turn", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68104";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T12-00-00-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: threadId, cwd: "/tmp/project-a" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.100Z",
+          type: "turn_context",
+          payload: {
+            model: "gpt-5.5",
+            approval_policy: "on-request",
+            approvals_reviewer: "user",
+            sandbox_policy: { type: "workspace-write" },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.200Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "change permissions" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.300Z",
+          type: "event_msg",
+          payload: { type: "token_count", details: "x".repeat(180_000) },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:01.000Z",
+          type: "event_msg",
+          payload: {
+            type: "thread_settings_applied",
+            thread_settings: {
+              model: "gpt-5.6-sol",
+              approval_policy: "never",
+              approvals_reviewer: "user",
+              active_permission_profile: { id: ":danger-full-access" },
+              reasoning_effort: "ultra",
+              service_tier: "priority",
+            },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:01.100Z",
+          type: "event_msg",
+          payload: { type: "token_count", details: "y".repeat(80_000) },
+        }),
+      ].join("\n"),
+    );
+
+    const metadata = await getCodexSessionIndexMetadata([threadId], {
+      authoritativeCodexSettings: true,
+    });
+
+    expect(metadata.get(threadId)?.codexSettings).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+    });
+  });
+
+  it("restores permissions when fast presentation metadata is unavailable", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68105";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T12-00-00-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: threadId, cwd: "/tmp/project-a" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.050Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: "d".repeat(140_000) }],
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.100Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "outside the fast head" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:01.000Z",
+          type: "turn_context",
+          payload: {
+            model: "gpt-5.6-sol",
+            approval_policy: "never",
+            approvals_reviewer: "user",
+            sandbox_policy: { type: "danger-full-access" },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:01.100Z",
+          type: "event_msg",
+          payload: { type: "token_count", details: "z".repeat(80_000) },
+        }),
+      ].join("\n"),
+    );
+
+    const fastMetadata = await getCodexSessionIndexMetadata([threadId]);
+    expect(fastMetadata.has(threadId)).toBe(false);
+
+    const resumeMetadata = await getCodexSessionIndexMetadata([threadId], {
+      authoritativeCodexSettings: true,
+    });
+    expect(resumeMetadata.get(threadId)?.codexSettings).toMatchObject({
+      model: "gpt-5.6-sol",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+    });
+  });
+
   it("loads codex index metadata only for requested thread ids", async () => {
     const wantedThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68101";
     const ignoredThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68102";

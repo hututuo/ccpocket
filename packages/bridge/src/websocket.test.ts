@@ -4345,6 +4345,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
+    expect(getCodexSessionIndexMetadataMock).toHaveBeenCalledWith(
+      ["thr_preserve_settings"],
+      { authoritativeCodexSettings: true },
+    );
     const session = (bridge as any).sessionManager.get("s-1");
     expect(session.codexOptions).toMatchObject({
       threadId: "thr_preserve_settings",

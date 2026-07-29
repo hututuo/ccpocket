@@ -5,6 +5,7 @@ import {
   appendFile,
   stat,
   open,
+  type FileHandle,
 } from "node:fs/promises";
 import { createReadStream, type Dirent } from "node:fs";
 import { createInterface } from "node:readline";
@@ -251,6 +252,16 @@ const HEAD_BYTES = 16384; // 16KB — covers first user entry + metadata
 const TAIL_BYTES = 8192;  // 8KB — covers last entries for modified/lastPrompt
 const CODEX_HEAD_BYTES = 131072; // 128KB — Codex turn_context can be large
 const CODEX_TAIL_BYTES = 16384;
+const CODEX_SETTINGS_SCAN_BYTES = 65536;
+const CODEX_TURN_CONTEXT_MARKER = Buffer.from('"type":"turn_context"');
+const CODEX_THREAD_SETTINGS_MARKER = Buffer.from(
+  '"type":"thread_settings_applied"',
+);
+const CODEX_SETTINGS_MARKER_OVERLAP =
+  Math.max(
+    CODEX_TURN_CONTEXT_MARKER.length,
+    CODEX_THREAD_SETTINGS_MARKER.length,
+  ) - 1;
 
 /**
  * Run async tasks with a concurrency limit.
@@ -1651,6 +1662,307 @@ async function parseCodexSessionJsonlFast(
   }
 }
 
+type CodexSettings = NonNullable<SessionIndexEntry["codexSettings"]>;
+type CodexSettingsRecordKind = "turn_context" | "thread_settings_applied";
+
+interface CodexSettingsMarker {
+  kind: CodexSettingsRecordKind;
+  offset: number;
+}
+
+interface CodexJsonlLine {
+  start: number;
+  text: string;
+}
+
+interface CodexSettingsRecord {
+  kind: CodexSettingsRecordKind;
+  settings: CodexSettings;
+}
+
+async function readFileRange(
+  fh: FileHandle,
+  position: number,
+  length: number,
+): Promise<Buffer> {
+  if (length <= 0) return Buffer.alloc(0);
+  const buffer = Buffer.allocUnsafe(length);
+  let totalBytesRead = 0;
+  while (totalBytesRead < length) {
+    const { bytesRead } = await fh.read(
+      buffer,
+      totalBytesRead,
+      length - totalBytesRead,
+      position + totalBytesRead,
+    );
+    if (bytesRead === 0) break;
+    totalBytesRead += bytesRead;
+  }
+  return totalBytesRead === length
+    ? buffer
+    : buffer.subarray(0, totalBytesRead);
+}
+
+async function findPreviousCodexSettingsMarker(
+  fh: FileHandle,
+  fileSize: number,
+  upperBound: number,
+): Promise<CodexSettingsMarker | null> {
+  let cursor = Math.min(fileSize, upperBound);
+  while (cursor > 0) {
+    const start = Math.max(0, cursor - CODEX_SETTINGS_SCAN_BYTES);
+    const end = Math.min(
+      fileSize,
+      cursor + CODEX_SETTINGS_MARKER_OVERLAP,
+    );
+    const buffer = await readFileRange(fh, start, end - start);
+    const lastAllowedIndex = cursor - start - 1;
+    const turnContextIndex = buffer.lastIndexOf(
+      CODEX_TURN_CONTEXT_MARKER,
+      lastAllowedIndex,
+    );
+    const threadSettingsIndex = buffer.lastIndexOf(
+      CODEX_THREAD_SETTINGS_MARKER,
+      lastAllowedIndex,
+    );
+    if (turnContextIndex >= 0 || threadSettingsIndex >= 0) {
+      if (turnContextIndex > threadSettingsIndex) {
+        return {
+          kind: "turn_context",
+          offset: start + turnContextIndex,
+        };
+      }
+      return {
+        kind: "thread_settings_applied",
+        offset: start + threadSettingsIndex,
+      };
+    }
+    cursor = start;
+  }
+  return null;
+}
+
+async function readCodexJsonlLineAtOffset(
+  fh: FileHandle,
+  fileSize: number,
+  offset: number,
+): Promise<CodexJsonlLine | null> {
+  let lineStart = Math.min(fileSize, offset);
+  let cursor = lineStart;
+  while (cursor > 0) {
+    const start = Math.max(0, cursor - CODEX_SETTINGS_SCAN_BYTES);
+    const buffer = await readFileRange(fh, start, cursor - start);
+    const newline = buffer.lastIndexOf(0x0a);
+    if (newline >= 0) {
+      lineStart = start + newline + 1;
+      break;
+    }
+    cursor = start;
+    lineStart = start;
+  }
+
+  let lineEnd = Math.min(fileSize, offset);
+  cursor = lineEnd;
+  while (cursor < fileSize) {
+    const length = Math.min(CODEX_SETTINGS_SCAN_BYTES, fileSize - cursor);
+    const buffer = await readFileRange(fh, cursor, length);
+    const newline = buffer.indexOf(0x0a);
+    if (newline >= 0) {
+      lineEnd = cursor + newline;
+      break;
+    }
+    if (buffer.length === 0) break;
+    cursor += buffer.length;
+    lineEnd = cursor;
+    if (buffer.length < length) break;
+  }
+
+  const lineBuffer = await readFileRange(fh, lineStart, lineEnd - lineStart);
+  if (lineBuffer.length === 0) return null;
+  return { start: lineStart, text: lineBuffer.toString("utf-8") };
+}
+
+function codexSandboxFromActivePermissionProfile(
+  settings: Record<string, unknown>,
+): string | undefined {
+  const activeProfile = asObject(settings.active_permission_profile);
+  const rawId = activeProfile?.id;
+  if (typeof rawId !== "string") return undefined;
+  const profileId = rawId.startsWith(":") ? rawId.slice(1) : rawId;
+  return profileId === "danger-full-access" ||
+    profileId === "workspace-write" ||
+    profileId === "read-only"
+    ? profileId
+    : undefined;
+}
+
+function codexSettingsFromTurnContext(
+  payload: Record<string, unknown>,
+): CodexSettings {
+  const sandboxPolicy = asObject(payload.sandbox_policy);
+  const collaborationMode = asObject(payload.collaboration_mode);
+  const collaborationSettings = asObject(collaborationMode?.settings);
+  return {
+    ...(typeof payload.approval_policy === "string"
+      ? { approvalPolicy: payload.approval_policy }
+      : {}),
+    ...(typeof payload.approvals_reviewer === "string"
+      ? { approvalsReviewer: payload.approvals_reviewer }
+      : {}),
+    ...(typeof sandboxPolicy?.type === "string"
+      ? { sandboxMode: sandboxPolicy.type }
+      : {}),
+    ...(typeof payload.model === "string" ? { model: payload.model } : {}),
+    ...(typeof collaborationSettings?.reasoning_effort === "string"
+      ? { modelReasoningEffort: collaborationSettings.reasoning_effort }
+      : {}),
+    serviceTier:
+      typeof payload.service_tier === "string" &&
+      payload.service_tier.trim().length > 0 &&
+      payload.service_tier !== "default"
+        ? normalizeCodexServiceTierForClient(payload.service_tier)
+        : "standard",
+    ...(typeof sandboxPolicy?.network_access === "boolean"
+      ? { networkAccessEnabled: sandboxPolicy.network_access }
+      : {}),
+    ...(typeof payload.web_search === "string"
+      ? { webSearchMode: payload.web_search }
+      : {}),
+  };
+}
+
+function codexSettingsFromThreadSettings(
+  settings: Record<string, unknown>,
+): CodexSettings {
+  const collaborationMode = asObject(settings.collaboration_mode);
+  const collaborationSettings = asObject(collaborationMode?.settings);
+  const reasoningEffort =
+    typeof settings.reasoning_effort === "string"
+      ? settings.reasoning_effort
+      : collaborationSettings?.reasoning_effort;
+  const sandboxMode = codexSandboxFromActivePermissionProfile(settings);
+  return {
+    ...(typeof settings.approval_policy === "string"
+      ? { approvalPolicy: settings.approval_policy }
+      : {}),
+    ...(typeof settings.approvals_reviewer === "string"
+      ? { approvalsReviewer: settings.approvals_reviewer }
+      : {}),
+    ...(sandboxMode ? { sandboxMode } : {}),
+    ...(typeof settings.model === "string" ? { model: settings.model } : {}),
+    ...(typeof reasoningEffort === "string"
+      ? { modelReasoningEffort: reasoningEffort }
+      : {}),
+    ...("service_tier" in settings
+      ? {
+          serviceTier: normalizeCodexServiceTierForClient(
+            settings.service_tier,
+          ),
+        }
+      : {}),
+  };
+}
+
+function parseCodexSettingsRecord(line: string): CodexSettingsRecord | null {
+  let entry: Record<string, unknown>;
+  try {
+    entry = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  if (entry.type === "turn_context") {
+    const payload = asObject(entry.payload);
+    return payload
+      ? {
+          kind: "turn_context",
+          settings: codexSettingsFromTurnContext(payload),
+        }
+      : null;
+  }
+
+  if (entry.type === "event_msg") {
+    const payload = asObject(entry.payload);
+    if (payload?.type !== "thread_settings_applied") return null;
+    const settings = asObject(payload.thread_settings);
+    return settings
+      ? {
+          kind: "thread_settings_applied",
+          settings: codexSettingsFromThreadSettings(settings),
+        }
+      : null;
+  }
+
+  return null;
+}
+
+function fillMissingCodexSettings(
+  target: CodexSettings,
+  source: CodexSettings,
+): void {
+  target.approvalPolicy ??= source.approvalPolicy;
+  target.approvalsReviewer ??= source.approvalsReviewer;
+  target.sandboxMode ??= source.sandboxMode;
+  target.model ??= source.model;
+  target.modelReasoningEffort ??= source.modelReasoningEffort;
+  target.serviceTier ??= source.serviceTier;
+  target.networkAccessEnabled ??= source.networkAccessEnabled;
+  target.webSearchMode ??= source.webSearchMode;
+}
+
+/**
+ * Read the latest complete Codex settings at a stable file-size boundary.
+ *
+ * Recent-session presentation intentionally reads only a small head/tail
+ * window. A resume is different: missing the latest turn_context can silently
+ * combine a persisted sandbox with the runtime's default approval policy.
+ * Search backwards without a history-size cutoff and stop at the latest
+ * complete turn_context, applying any newer thread_settings_applied overlay.
+ */
+async function readLatestCodexSettingsFromJsonl(
+  filePath: string,
+): Promise<CodexSettings | undefined> {
+  let fh: FileHandle;
+  try {
+    fh = await open(filePath, "r");
+  } catch {
+    return undefined;
+  }
+
+  try {
+    const fileSize = (await fh.stat()).size;
+    let upperBound = fileSize;
+    const settings: CodexSettings = {};
+    let foundSettings = false;
+
+    while (upperBound > 0) {
+      const marker = await findPreviousCodexSettingsMarker(
+        fh,
+        fileSize,
+        upperBound,
+      );
+      if (!marker) break;
+      const line = await readCodexJsonlLineAtOffset(
+        fh,
+        fileSize,
+        marker.offset,
+      );
+      upperBound = line?.start ?? marker.offset;
+      if (!line) continue;
+
+      const record = parseCodexSettingsRecord(line.text);
+      if (!record || record.kind !== marker.kind) continue;
+      fillMissingCodexSettings(settings, record.settings);
+      foundSettings = true;
+      if (record.kind === "turn_context") break;
+    }
+
+    return foundSettings ? settings : undefined;
+  } finally {
+    await fh.close();
+  }
+}
+
 function isCodexInternalSessionSource(source: unknown): boolean {
   const sourceObj = asObject(source);
   return sourceObj?.subagent !== undefined;
@@ -2057,13 +2369,14 @@ function matchingCodexThreadIdFromFilePath(
 
 export async function getCodexSessionIndexMetadata(
   threadIds: readonly string[],
+  options: { authoritativeCodexSettings?: boolean } = {},
 ): Promise<Map<string, CodexSessionIndexMetadata>> {
   const wantedThreadIds = new Set(threadIds.filter((id) => id.length > 0));
   const result = new Map<string, CodexSessionIndexMetadata>();
   if (wantedThreadIds.size === 0) return result;
 
   const files = await listCodexSessionFiles();
-  const targets: string[] = [];
+  const targets: Array<{ filePath: string; expectedThreadId: string }> = [];
   const matchedThreadIds = new Set<string>();
   for (const filePath of files) {
     const threadId = matchingCodexThreadIdFromFilePath(
@@ -2071,7 +2384,7 @@ export async function getCodexSessionIndexMetadata(
       wantedThreadIds,
     );
     if (!threadId || matchedThreadIds.has(threadId)) continue;
-    targets.push(filePath);
+    targets.push({ filePath, expectedThreadId: threadId });
     matchedThreadIds.add(threadId);
     if (matchedThreadIds.size === wantedThreadIds.size) break;
   }
@@ -2079,29 +2392,50 @@ export async function getCodexSessionIndexMetadata(
   const parsedResults = await parallelMap(
     targets,
     PARALLEL_FILE_READ_LIMIT,
-    async (filePath) => {
+    async ({ filePath, expectedThreadId }) => {
       const fallbackSessionId = basename(filePath, ".jsonl");
-      return parseCodexSessionJsonlFast(filePath, fallbackSessionId);
+      const [parsed, authoritativeSettings] = await Promise.all([
+        parseCodexSessionJsonlFast(filePath, fallbackSessionId),
+        options.authoritativeCodexSettings
+          ? readLatestCodexSettingsFromJsonl(filePath)
+          : Promise.resolve(undefined),
+      ]);
+      if (parsed && authoritativeSettings) {
+        parsed.entry.codexSettings = {
+          ...parsed.entry.codexSettings,
+          ...authoritativeSettings,
+        };
+      }
+      return { expectedThreadId, parsed, authoritativeSettings };
     },
   );
 
-  for (const parsed of parsedResults) {
-    if (!parsed || !wantedThreadIds.has(parsed.threadId)) continue;
-    result.set(parsed.threadId, {
-      ...(parsed.entry.forkedFromThreadId
+  for (const {
+    expectedThreadId,
+    parsed,
+    authoritativeSettings,
+  } of parsedResults) {
+    if (parsed && parsed.threadId !== expectedThreadId) continue;
+    if (!parsed && !authoritativeSettings) continue;
+    result.set(expectedThreadId, {
+      ...(parsed?.entry.forkedFromThreadId
         ? { forkedFromThreadId: parsed.entry.forkedFromThreadId }
         : {}),
-      ...(parsed.entry.codexSettings
+      ...(parsed?.entry.codexSettings
         ? { codexSettings: parsed.entry.codexSettings }
+        : authoritativeSettings
+          ? { codexSettings: authoritativeSettings }
+          : {}),
+      ...(parsed?.entry.resumeCwd
+        ? { resumeCwd: parsed.entry.resumeCwd }
         : {}),
-      ...(parsed.entry.resumeCwd ? { resumeCwd: parsed.entry.resumeCwd } : {}),
-      ...(parsed.entry.firstPrompt
+      ...(parsed?.entry.firstPrompt
         ? { firstPrompt: parsed.entry.firstPrompt }
         : {}),
-      ...(parsed.entry.lastPrompt
+      ...(parsed?.entry.lastPrompt
         ? { lastPrompt: parsed.entry.lastPrompt }
         : {}),
-      ...(parsed.entry.summary ? { summary: parsed.entry.summary } : {}),
+      ...(parsed?.entry.summary ? { summary: parsed.entry.summary } : {}),
     });
   }
 

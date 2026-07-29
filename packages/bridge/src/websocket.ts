@@ -7728,7 +7728,9 @@ export class BridgeWebSocketServer {
             }
 
             const indexedMetadata = (
-              await getCodexSessionIndexMetadata([sessionRefId])
+              await getCodexSessionIndexMetadata([sessionRefId], {
+                authoritativeCodexSettings: true,
+              })
             ).get(sessionRefId);
             const indexedSettings = indexedMetadata?.codexSettings;
             const requestedProfile = msg.profile ?? indexedSettings?.profile;
