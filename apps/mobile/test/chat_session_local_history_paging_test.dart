@@ -248,6 +248,57 @@ void main() {
   );
 
   test(
+    'detached tool details use the read-only provider turn loader',
+    () async {
+      final gap = HistoryToolDetailGap(
+        gapId: 'detached-gap',
+        toolUseIds: List.generate(10, (index) => 'detached-tool-$index'),
+        toolNames: List.generate(10, (_) => 'Read'),
+        toolCallCount: 10,
+        turnId: 'provider-turn-1',
+      );
+      late List<String> requested;
+      final cubit = ChatSessionCubit(
+        sessionId: 'durable-thread-1',
+        provider: Provider.codex,
+        bridge: bridge,
+        streamingCubit: streamingCubit,
+        detachedPreview: true,
+        initialHistoryMessages: [
+          AssistantServerMessage(
+            message: const AssistantMessage(
+              id: 'detached-assistant',
+              role: 'assistant',
+              content: [TextContent(text: 'Cached reply')],
+              model: 'test',
+            ),
+            historyToolDetailGaps: [gap],
+          ),
+        ],
+        detachedHistoryToolDetailLoader: (loadedGap, toolUseIds) async {
+          expect(loadedGap.turnId, 'provider-turn-1');
+          requested = toolUseIds;
+          return [
+            for (final toolUseId in toolUseIds)
+              HistoryToolDetail(
+                toolUseId: toolUseId,
+                toolName: 'Read',
+                input: const {'cached': true},
+              ),
+          ];
+        },
+      );
+      cubits.add(cubit);
+      await settleBootstrap();
+
+      expect(await cubit.loadHistoryToolDetailGap(gap), isTrue);
+      expect(requested, gap.toolUseIds.take(8));
+      expect(bridge.historyToolDetailRequests, isEmpty);
+      expect(cubit.historyToolDetailState(gap.gapId).details, hasLength(8));
+    },
+  );
+
+  test(
     'local mirror pages older history without blocking a live append',
     () async {
       final pageGate = Completer<void>();

@@ -856,6 +856,16 @@ class _ChatScreenProviders extends StatelessWidget {
               detachedPreview: detachedPreview,
               initialHistoryMessages: initialHistoryMessages,
               detachedHistoryPageLoader: detachedHistoryPageLoader,
+              detachedHistoryToolDetailLoader: detachedPreview
+                  ? (gap, toolUseIds) => context
+                        .read<ConversationContentSyncService>()
+                        .loadToolDetails(
+                          provider: Provider.claude.value,
+                          providerSessionId: sessionId,
+                          gap: gap,
+                          toolUseIds: toolUseIds,
+                        )
+                  : null,
               initialHistoryHasEarlier: initialHistoryHasEarlier,
             );
             final submission = initialSubmission;

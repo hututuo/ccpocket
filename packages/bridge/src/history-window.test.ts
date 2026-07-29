@@ -84,6 +84,7 @@ describe("selectTurnAwareHistoryWindow", () => {
         entry(1, { type: "user_input", text: "inspect" }),
         entry(2, {
           type: "assistant",
+          historyTurnId: "turn-visible",
           message: {
             id: "visible-tool",
             role: "assistant",
@@ -114,6 +115,7 @@ describe("selectTurnAwareHistoryWindow", () => {
           toolUseIds: ["only-tool"],
           toolNames: ["Read"],
           toolCallCount: 1,
+          turnId: "turn-visible",
         },
       ],
     });
@@ -170,6 +172,55 @@ describe("selectTurnAwareHistoryWindow", () => {
         content: [{ type: "text", text: "update 1999" }],
       },
     });
+  });
+
+  it("keeps every live-turn tool outside the historical 200-call budget", () => {
+    const entries = [
+      entry(1, { type: "user_input", text: "older" }),
+      ...Array.from({ length: 201 }, (_, index) => [
+        entry(index * 2 + 2, toolUse(`old-${index}`)),
+        entry(index * 2 + 3, {
+          type: "tool_result" as const,
+          toolUseId: `old-${index}`,
+          content: "old",
+        }),
+      ]).flat(),
+      entry(405, { type: "user_input", text: "running" }),
+      ...Array.from({ length: 205 }, (_, index) => [
+        entry(index * 2 + 406, toolUse(`live-${index}`)),
+        entry(index * 2 + 407, {
+          type: "tool_result" as const,
+          toolUseId: `live-${index}`,
+          content: "live",
+        }),
+      ]).flat(),
+    ];
+
+    const selected = selectTurnAwareHistoryWindow(entries, {
+      preserveLatestRootTurnTools: true,
+    });
+
+    expect(
+      selected.filter(
+        (item) =>
+          item.message.type === "tool_result" &&
+          item.message.toolUseId.startsWith("live-"),
+      ),
+    ).toHaveLength(205);
+    expect(
+      selected.some(
+        (item) =>
+          item.message.type === "tool_result" &&
+          item.message.toolUseId === "old-0",
+      ),
+    ).toBe(false);
+    expect(
+      selected.some(
+        (item) =>
+          item.message.type === "tool_result" &&
+          item.message.toolUseId === "old-200",
+      ),
+    ).toBe(true);
   });
 });
 

@@ -6,6 +6,8 @@ import {
 } from "../protocol-slot.js";
 
 export const CONVERSATION_SYNC_V2_CAPABILITY = "conversation_sync_v2" as const;
+export const CONVERSATION_ITEMS_BY_ID_CAPABILITY =
+  "conversation_items_by_id_v1" as const;
 export const APP_SERVER_STATUS_CAPABILITY = "app_server_status_v1" as const;
 export const BRIDGE_IDENTITY_V2_CAPABILITY = "bridge_identity_v2" as const;
 
@@ -75,6 +77,7 @@ export type ConversationSyncClientMessage =
       requestId: string;
       subscriptionId: string;
       turnId?: string;
+      toolUseIds?: string[];
       cursor?: string;
       limit?: number;
       sortDirection?: "asc" | "desc";
@@ -217,6 +220,7 @@ const CLIENT_TYPES = [
 const MAX_THREAD_STATES = 512;
 const MAX_READ_WATERMARKS = 512;
 const MAX_PAGE_LIMIT = 200;
+const MAX_TOOL_USE_IDS = 8;
 
 function validProvider(value: unknown): value is ConversationSyncProvider {
   return value === "claude" || value === "codex";
@@ -504,7 +508,7 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
     const allowedKeys =
       message.type === "conversation_turns_page"
         ? [...commonKeys, "itemsView"]
-        : [...commonKeys, "turnId"];
+        : [...commonKeys, "turnId", "toolUseIds"];
     if (
       !hasOnlyLocalFeatureKeys(message, allowedKeys) ||
       !validLocalFeatureId(message.requestId, 128) ||
@@ -546,6 +550,16 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
     ) {
       return null;
     }
+    const toolUseIds =
+      message.toolUseIds === undefined
+        ? undefined
+        : parseToolUseIds(message.toolUseIds);
+    if (
+      (message.toolUseIds !== undefined && toolUseIds === null) ||
+      (toolUseIds && message.turnId === undefined)
+    ) {
+      return null;
+    }
     return {
       type: "conversation_items_page",
       protocolVersion: 2,
@@ -553,6 +567,7 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
       subscriptionId: message.subscriptionId,
       ...target,
       ...(message.turnId ? { turnId: message.turnId } : {}),
+      ...(toolUseIds ? { toolUseIds } : {}),
       ...(message.cursor ? { cursor: message.cursor } : {}),
       ...(message.limit ? { limit: message.limit as number } : {}),
       ...(message.sortDirection
@@ -561,3 +576,23 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
     };
   },
 };
+
+function parseToolUseIds(value: unknown): string[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_TOOL_USE_IDS
+  ) {
+    return null;
+  }
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const raw of value) {
+    if (!validLocalFeatureId(raw, 256)) return null;
+    const id = raw.trim();
+    if (!id || seen.has(id)) return null;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}

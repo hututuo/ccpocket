@@ -5,7 +5,11 @@ import {
   CodexRpcError,
   type CodexThreadSummary,
 } from "../codex-process.js";
-import type { ServerMessage } from "../parser.js";
+import {
+  selectTurnAwareHistoryWindow,
+  TURN_AWARE_HISTORY_ENVELOPE_ENTRIES,
+} from "../history-window.js";
+import type { HistoryToolDetailPayload, ServerMessage } from "../parser.js";
 import {
   codexThreadToSessionHistory,
   getAllRecentSessions,
@@ -57,6 +61,13 @@ const MAX_SNAPSHOT_TARGETS = 32;
 const MAX_STATE_HISTORY = 4;
 const MAX_THREAD_STATES = 512;
 const PROVIDER_HISTORY_CONCURRENCY = 2;
+const FULL_RECENT_TURNS = 3;
+const MAX_TURN_DETAIL_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_TURN_DETAIL_CACHE_ENTRIES = 128;
+const MAX_TOOL_DETAIL_COMPONENT_BYTES = 3 * 1024;
+const MAX_TOOL_DETAIL_ATTACHMENTS = 4;
+const MAX_CODEX_TURN_SCAN_PAGES = 50;
+const CODEX_TURN_SCAN_PAGE_SIZE = 20;
 
 type ConversationKey = string;
 type ConversationSyncEventPayload =
@@ -131,6 +142,7 @@ interface ConversationSyncV2Options {
 interface ConversationHistoryWindow {
   messages: ServerMessage[];
   nextTurnCursor: string | null;
+  turnDetails?: ConversationTurnDetails[];
 }
 
 interface NormalizedConversationTurn {
@@ -138,6 +150,28 @@ interface NormalizedConversationTurn {
   messages: ServerMessage[];
   itemCount: number;
   itemsView: "summary" | "full";
+}
+
+interface ConversationTurnDetails {
+  turnId: string;
+  details: HistoryToolDetailPayload[];
+}
+
+interface ConversationTurnsPage {
+  data: unknown[];
+  nextCursor: string | null;
+  turnDetails?: ConversationTurnDetails[];
+}
+
+interface ConversationItemsPage {
+  data: unknown[];
+  nextCursor: string | null;
+  turnDetails?: ConversationTurnDetails;
+}
+
+interface CachedTurnDetails {
+  details: Map<string, HistoryToolDetailPayload>;
+  bytes: number;
 }
 
 /**
@@ -190,6 +224,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     ConversationKey,
     { result: "completed" | "failed"; observedAt: string }
   >();
+  private readonly turnDetailCache = new Map<string, CachedTurnDetails>();
+  private turnDetailCacheBytes = 0;
   private catalogFlight?: Promise<void>;
   private statusFlight?: Promise<void>;
   private watchdogTimer?: ReturnType<typeof setTimeout>;
@@ -329,6 +365,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.subscriptions.clear();
     this.snapshots.clear();
     this.snapshotFlights.clear();
+    this.turnDetailCache.clear();
+    this.turnDetailCacheBytes = 0;
     this.cancelTimers();
   }
 
@@ -790,12 +828,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const flight = this.historyReader(record.entry)
       .then((history) => {
         const window = normalizeHistoryWindow(history);
+        for (const turn of window.turnDetails ?? []) {
+          this.rememberTurnDetails(record.entry, turn);
+        }
         const built = buildConversationContentSnapshot(
           record.entry,
           window.messages,
           {
             maxMessageTextBytes: MAX_MESSAGE_TEXT_BYTES,
             maxSnapshotBytes: MAX_TIMELINE_BYTES,
+            preserveLatestRootTurnTools:
+              record.status.activity === "working" ||
+              record.status.activity === "compacting",
           },
         );
         const snapshot = {
@@ -1133,6 +1177,56 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
   }
 
+  private rememberTurnDetails(
+    target: ConversationSyncTarget,
+    turn: ConversationTurnDetails,
+  ): void {
+    if (!turn.turnId || turn.details.length === 0) return;
+    const key = turnDetailKey(target, turn.turnId);
+    const details = new Map(
+      turn.details.map((detail) => [detail.toolUseId, detail]),
+    );
+    const bytes = Buffer.byteLength(
+      JSON.stringify([...details.values()]),
+      "utf8",
+    );
+    if (bytes > MAX_TURN_DETAIL_CACHE_BYTES) return;
+    const previous = this.turnDetailCache.get(key);
+    if (previous) this.turnDetailCacheBytes -= previous.bytes;
+    this.turnDetailCache.delete(key);
+    this.turnDetailCache.set(key, { details, bytes });
+    this.turnDetailCacheBytes += bytes;
+    while (
+      this.turnDetailCache.size > MAX_TURN_DETAIL_CACHE_ENTRIES ||
+      this.turnDetailCacheBytes > MAX_TURN_DETAIL_CACHE_BYTES
+    ) {
+      const oldestKey = this.turnDetailCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.turnDetailCache.get(oldestKey);
+      this.turnDetailCache.delete(oldestKey);
+      if (oldest) this.turnDetailCacheBytes -= oldest.bytes;
+    }
+  }
+
+  private cachedTurnDetails(
+    target: ConversationSyncTarget,
+    turnId: string,
+    toolUseIds: readonly string[],
+  ): HistoryToolDetailPayload[] | null {
+    const key = turnDetailKey(target, turnId);
+    const cached = this.turnDetailCache.get(key);
+    if (!cached) return null;
+    const details = toolUseIds
+      .map((toolUseId) => cached.details.get(toolUseId))
+      .filter(
+        (detail): detail is HistoryToolDetailPayload => detail !== undefined,
+      );
+    if (details.length !== toolUseIds.length) return null;
+    this.turnDetailCache.delete(key);
+    this.turnDetailCache.set(key, cached);
+    return details;
+  }
+
   private ensureTimers(): void {
     if (this.closed || !this.hasInteractiveClients()) return;
     if (!this.watchdogTimer) {
@@ -1183,6 +1277,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.historyReader,
         signal,
       );
+      for (const turn of page.turnDetails ?? []) {
+        this.rememberTurnDetails(message, turn);
+      }
       this.sendEvent(client, subscription, {
         event: "turns_page_response",
         requestId: message.requestId,
@@ -1214,12 +1311,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const subscription = this.validSubscription(client, message.subscriptionId);
     if (!subscription) return;
     try {
-      const page = await readItemsPage(
-        this.runtime,
-        message,
-        this.historyReader,
-        signal,
-      );
+      const cached =
+        message.turnId && message.toolUseIds
+          ? this.cachedTurnDetails(message, message.turnId, message.toolUseIds)
+          : null;
+      const page = cached
+        ? historyToolDetailsPage(message, cached)
+        : await readItemsPage(
+            this.runtime,
+            message,
+            this.historyReader,
+            signal,
+          );
+      if (page.turnDetails) {
+        this.rememberTurnDetails(message, page.turnDetails);
+      }
       this.sendEvent(client, subscription, {
         event: "items_page_response",
         requestId: message.requestId,
@@ -1459,18 +1565,29 @@ async function readRecentConversationHistory(
         threadId: target.providerSessionId,
         limit: 5,
         sortDirection: "desc",
+        // The current app-server summary view keeps only the user/final spine
+        // and omits tool ids/counts. Read one bounded full page at the Bridge,
+        // then compact the older two turns before crossing the wire.
         itemsView: "full",
       });
       const turns = [...page.data].reverse();
-      const history = codexThreadToSessionHistory({
-        id: target.providerSessionId,
+      const normalized = normalizeCodexTurns(
         turns,
-      });
+        "full",
+        target.providerSessionId,
+      );
+      const fullStart = Math.max(
+        0,
+        normalized.turns.length - FULL_RECENT_TURNS,
+      );
       return {
-        messages: sessionHistoryToServerMessages(history, {
-          idPrefix: "conversation-sync-v2-codex",
-        }),
+        messages: normalized.turns.flatMap((turn, index) =>
+          index < fullStart
+            ? compactTurnMessages(turn.messages, turn.turnId)
+            : turn.messages,
+        ),
         nextTurnCursor: page.nextCursor,
+        turnDetails: normalized.turnDetails,
       };
     });
   } catch (error) {
@@ -1483,11 +1600,32 @@ async function readLegacyHistoryWindow(
   target: ConversationSyncTarget,
 ): Promise<ConversationHistoryWindow> {
   const messages = await readDurableConversationHistory(target);
-  const turnCount = groupLegacyTurns(messages).length;
+  const turns = groupLegacyTurns(messages);
+  const recentStart = Math.max(0, turns.length - PRIORITY_RECENT_COUNT);
+  const fullStart = Math.max(recentStart, turns.length - FULL_RECENT_TURNS);
+  const normalizedMessages = turns.flatMap((turn, index) => {
+    const annotated = annotateTurnMessages(turn.items, turn.id);
+    if (index >= recentStart && index < fullStart) {
+      return compactTurnMessages(annotated, turn.id);
+    }
+    return annotated;
+  });
+  const turnDetails = turns
+    .slice(recentStart)
+    .map((turn) => ({
+      turnId: turn.id,
+      details: historyToolDetailPayloads(
+        annotateTurnMessages(turn.items, turn.id),
+      ),
+    }))
+    .filter((turn) => turn.details.length > 0);
   return {
-    messages,
+    messages: normalizedMessages,
     nextTurnCursor:
-      turnCount > PRIORITY_RECENT_COUNT ? String(PRIORITY_RECENT_COUNT) : null,
+      turns.length > PRIORITY_RECENT_COUNT
+        ? String(PRIORITY_RECENT_COUNT)
+        : null,
+    turnDetails,
   };
 }
 
@@ -1501,7 +1639,7 @@ async function readTurnsPage(
     target: ConversationSyncTarget,
   ) => Promise<ServerMessage[] | ConversationHistoryWindow>,
   signal: AbortSignal,
-): Promise<{ data: unknown[]; nextCursor: string | null }> {
+): Promise<ConversationTurnsPage> {
   if (message.provider === "codex") {
     return withCodexProcess(runtime, undefined, async (process) => {
       const page = await process.listThreadTurns(
@@ -1510,7 +1648,10 @@ async function readTurnsPage(
           cursor: message.cursor,
           limit: message.limit ?? 5,
           sortDirection: message.sortDirection ?? "desc",
-          itemsView: message.itemsView ?? "summary",
+          // `summary` currently omits all tool ids. A bounded full provider
+          // page is compacted at the Bridge so Mobile still receives a useful
+          // process shell without the heavy details.
+          itemsView: "full",
         },
         { signal },
       );
@@ -1518,23 +1659,37 @@ async function readTurnsPage(
         (message.sortDirection ?? "desc") === "desc"
           ? [...page.data].reverse()
           : page.data;
+      const normalized = normalizeCodexTurns(
+        chronologicalTurns,
+        message.itemsView ?? "summary",
+        message.providerSessionId,
+      );
       return {
-        data: normalizeCodexTurns(
-          chronologicalTurns,
-          message.itemsView ?? "summary",
-          message.providerSessionId,
-        ),
+        data: normalized.turns,
         nextCursor: page.nextCursor,
+        turnDetails: normalized.turnDetails,
       };
     });
   }
   const history = normalizeHistoryWindow(await historyReader(message));
-  const turns = groupLegacyTurns(history.messages).map((turn) => ({
-    turnId: turn.id,
-    messages: turn.items,
-    itemCount: turn.items.length,
-    itemsView: message.itemsView ?? "summary",
-  }));
+  const cachedDetailsByTurn = new Map(
+    (history.turnDetails ?? []).map((turn) => [turn.turnId, turn.details]),
+  );
+  const turns = groupLegacyTurns(history.messages).map((turn) => {
+    const annotated = annotateTurnMessages(turn.items, turn.id);
+    return {
+      turnId: turn.id,
+      messages:
+        (message.itemsView ?? "summary") === "summary"
+          ? compactTurnMessages(annotated, turn.id)
+          : annotated,
+      itemCount: turn.items.length,
+      itemsView: message.itemsView ?? "summary",
+      details:
+        cachedDetailsByTurn.get(turn.id) ??
+        historyToolDetailPayloads(annotated),
+    };
+  });
   const page = paginateArray(
     turns,
     message.cursor,
@@ -1544,9 +1699,12 @@ async function readTurnsPage(
   return {
     data:
       (message.sortDirection ?? "desc") === "desc"
-        ? [...page.data].reverse()
-        : page.data,
+        ? [...page.data].reverse().map(({ details: _, ...turn }) => turn)
+        : page.data.map(({ details: _, ...turn }) => turn),
     nextCursor: page.nextCursor,
+    turnDetails: page.data
+      .filter((turn) => turn.details.length > 0)
+      .map((turn) => ({ turnId: turn.turnId, details: turn.details })),
   };
 }
 
@@ -1560,26 +1718,56 @@ async function readItemsPage(
     target: ConversationSyncTarget,
   ) => Promise<ServerMessage[] | ConversationHistoryWindow>,
   signal: AbortSignal,
-): Promise<{ data: unknown[]; nextCursor: string | null }> {
+): Promise<ConversationItemsPage> {
   if (message.provider === "codex") {
     return withCodexProcess(runtime, undefined, async (process) => {
-      const page = await process.listThreadItems(
-        {
-          threadId: message.providerSessionId,
-          turnId: message.turnId,
-          cursor: message.cursor,
-          limit: message.limit ?? 50,
-          sortDirection: message.sortDirection ?? "asc",
-        },
-        { signal },
-      );
       const turnId = message.turnId ?? "paged-items";
-      return {
-        data: codexTurnMessages(
-          { id: turnId, items: page.data },
+      let messages: ServerMessage[];
+      let nextCursor: string | null = null;
+      try {
+        const page = await process.listThreadItems(
+          {
+            threadId: message.providerSessionId,
+            turnId: message.turnId,
+            cursor: message.cursor,
+            limit: message.limit ?? 200,
+            sortDirection: message.sortDirection ?? "asc",
+          },
+          { signal },
+        );
+        // The official response is ThreadItemEntry { turnId, item }, not a
+        // bare ThreadItem. Accept the bare form as a forward-compatible
+        // fallback for older experimental app-server builds.
+        const items = page.data.map(unwrapCodexThreadItem);
+        messages = codexTurnMessages(
+          { id: turnId, items },
           message.providerSessionId,
-        ),
-        nextCursor: page.nextCursor,
+        );
+        nextCursor = page.nextCursor;
+      } catch (error) {
+        if (!message.turnId || !isUnsupportedAppServerRead(error)) throw error;
+        messages = await findCodexTurnMessages(
+          process,
+          message.providerSessionId,
+          message.turnId,
+          signal,
+        );
+      }
+      const details = historyToolDetailPayloads(messages, message.toolUseIds);
+      const turnDetails = {
+        turnId,
+        details: historyToolDetailPayloads(messages),
+      };
+      if (message.toolUseIds) {
+        return {
+          ...historyToolDetailsPage(message, details),
+          turnDetails,
+        };
+      }
+      return {
+        data: messages,
+        nextCursor,
+        turnDetails,
       };
     });
   }
@@ -1588,8 +1776,41 @@ async function readItemsPage(
   const selected = message.turnId
     ? (turns.find((turn) => turn.id === message.turnId)?.items ?? [])
     : turns.flatMap((turn) => turn.items);
+  const annotated = message.turnId
+    ? annotateTurnMessages(selected, message.turnId)
+    : selected;
+  if (message.toolUseIds) {
+    const cached = message.turnId
+      ? history.turnDetails?.find((turn) => turn.turnId === message.turnId)
+          ?.details
+      : undefined;
+    const cachedById = new Map(
+      (cached ?? []).map((detail) => [detail.toolUseId, detail]),
+    );
+    const details =
+      cached &&
+      message.toolUseIds.every((toolUseId) => cachedById.has(toolUseId))
+        ? message.toolUseIds
+            .map((toolUseId) => cachedById.get(toolUseId))
+            .filter(
+              (detail): detail is HistoryToolDetailPayload =>
+                detail !== undefined,
+            )
+        : historyToolDetailPayloads(annotated, message.toolUseIds);
+    return {
+      ...historyToolDetailsPage(message, details),
+      ...(message.turnId
+        ? {
+            turnDetails: {
+              turnId: message.turnId,
+              details: cached ?? historyToolDetailPayloads(annotated),
+            },
+          }
+        : {}),
+    };
+  }
   return paginateArray(
-    selected,
+    annotated,
     message.cursor,
     message.limit ?? 50,
     message.sortDirection ?? "asc",
@@ -1608,8 +1829,12 @@ function normalizeCodexTurns(
   rawTurns: readonly unknown[],
   itemsView: "summary" | "full",
   threadId: string,
-): NormalizedConversationTurn[] {
+): {
+  turns: NormalizedConversationTurn[];
+  turnDetails: ConversationTurnDetails[];
+} {
   const turns: NormalizedConversationTurn[] = [];
+  const turnDetails: ConversationTurnDetails[] = [];
   rawTurns.forEach((rawTurn, index) => {
     if (!rawTurn || typeof rawTurn !== "object") return;
     const turn = rawTurn as Record<string, unknown>;
@@ -1619,14 +1844,23 @@ function normalizeCodexTurns(
         ? rawId.trim()
         : `turn:${hashState([threadId, index, turn]).slice(0, 24)}`;
     const items = Array.isArray(turn.items) ? turn.items : [];
+    const fullMessages = annotateTurnMessages(
+      codexTurnMessages({ ...turn, id: turnId }, threadId),
+      turnId,
+    );
+    const details = historyToolDetailPayloads(fullMessages);
+    if (details.length > 0) turnDetails.push({ turnId, details });
     turns.push({
       turnId,
-      messages: codexTurnMessages({ ...turn, id: turnId }, threadId),
+      messages:
+        itemsView === "summary"
+          ? compactTurnMessages(fullMessages, turnId)
+          : fullMessages,
       itemCount: items.length,
       itemsView,
     });
   });
-  return turns;
+  return { turns, turnDetails };
 }
 
 function codexTurnMessages(
@@ -1640,6 +1874,211 @@ function codexTurnMessages(
   return sessionHistoryToServerMessages(history, {
     idPrefix: `conversation-sync-v2-page-${threadId}`,
   });
+}
+
+function annotateTurnMessages(
+  messages: readonly ServerMessage[],
+  turnId: string,
+): ServerMessage[] {
+  return messages.map((message) => {
+    if (message.type === "assistant" || message.type === "tool_result") {
+      return { ...message, historyTurnId: turnId };
+    }
+    return message;
+  });
+}
+
+function compactTurnMessages(
+  messages: readonly ServerMessage[],
+  turnId: string,
+): ServerMessage[] {
+  const annotated = annotateTurnMessages(messages, turnId);
+  return selectTurnAwareHistoryWindow(
+    annotated.map((message, sourceIndex) => ({ message, sourceIndex })),
+    {
+      rootTurns: 1,
+      toolCalls: 0,
+      envelopeEntries: TURN_AWARE_HISTORY_ENVELOPE_ENTRIES,
+    },
+  ).map((entry) => entry.message);
+}
+
+function historyToolDetailPayloads(
+  messages: readonly ServerMessage[],
+  requestedIds?: readonly string[],
+): HistoryToolDetailPayload[] {
+  const requested = requestedIds ? new Set(requestedIds) : null;
+  const details = new Map<string, HistoryToolDetailPayload>();
+  for (const message of messages) {
+    if (message.type === "assistant") {
+      for (const content of message.message.content) {
+        if (
+          content.type !== "tool_use" ||
+          (requested && !requested.has(content.id))
+        ) {
+          continue;
+        }
+        const existing = details.get(content.id);
+        details.set(content.id, {
+          toolUseId: content.id,
+          toolName: content.name,
+          input: boundedToolDetailInput(content.input),
+          ...(existing?.result ? { result: existing.result } : {}),
+        });
+      }
+      continue;
+    }
+    if (
+      message.type !== "tool_result" ||
+      (requested && !requested.has(message.toolUseId))
+    ) {
+      continue;
+    }
+    const existing = details.get(message.toolUseId);
+    details.set(message.toolUseId, {
+      toolUseId: message.toolUseId,
+      toolName:
+        existing?.toolName ??
+        (message.toolName?.trim().length ? message.toolName : "Tool"),
+      input: existing?.input ?? {},
+      result: {
+        content: boundedUtf8Text(
+          message.content,
+          MAX_TOOL_DETAIL_COMPONENT_BYTES,
+        ),
+        ...(message.toolName ? { toolName: message.toolName } : {}),
+        ...(message.images?.length
+          ? {
+              images: message.images.slice(0, MAX_TOOL_DETAIL_ATTACHMENTS),
+            }
+          : {}),
+        ...(message.artifacts?.length
+          ? {
+              artifacts: message.artifacts.slice(
+                0,
+                MAX_TOOL_DETAIL_ATTACHMENTS,
+              ),
+            }
+          : {}),
+      },
+    });
+  }
+  const order = requestedIds ?? [...details.keys()];
+  return order
+    .map((toolUseId) => details.get(toolUseId))
+    .filter(
+      (detail): detail is HistoryToolDetailPayload => detail !== undefined,
+    );
+}
+
+function boundedToolDetailInput(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  try {
+    if (
+      Buffer.byteLength(JSON.stringify(input), "utf8") <=
+      MAX_TOOL_DETAIL_COMPONENT_BYTES
+    ) {
+      return input;
+    }
+  } catch {
+    // Fall through to the bounded marker.
+  }
+  return {
+    ccpocketTruncated: true,
+    preview: "[tool input omitted: exceeds detail page budget]",
+  };
+}
+
+function boundedUtf8Text(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  const suffix = "\n… [truncated]";
+  const suffixBytes = Buffer.byteLength(suffix, "utf8");
+  const contentLimit = Math.max(0, maxBytes - suffixBytes);
+  let bytes = 0;
+  let result = "";
+  for (const codePoint of value) {
+    const width = Buffer.byteLength(codePoint, "utf8");
+    if (bytes + width > contentLimit) break;
+    result += codePoint;
+    bytes += width;
+  }
+  return `${result}${suffix}`;
+}
+
+function historyToolDetailsPage(
+  message: Extract<
+    ConversationSyncClientMessage,
+    { type: "conversation_items_page" }
+  >,
+  details: readonly HistoryToolDetailPayload[],
+): ConversationItemsPage {
+  return {
+    data: [
+      {
+        type: "history_tool_details",
+        requestId: message.requestId,
+        sessionId: message.providerSessionId,
+        details: [...details],
+      } satisfies ServerMessage,
+    ],
+    nextCursor: null,
+  };
+}
+
+function unwrapCodexThreadItem(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const item = (value as Record<string, unknown>).item;
+  return item && typeof item === "object" && !Array.isArray(item)
+    ? item
+    : value;
+}
+
+async function findCodexTurnMessages(
+  process: CodexProcess,
+  threadId: string,
+  turnId: string,
+  signal: AbortSignal,
+): Promise<ServerMessage[]> {
+  let cursor: string | null = null;
+  for (
+    let pageIndex = 0;
+    pageIndex < MAX_CODEX_TURN_SCAN_PAGES;
+    pageIndex += 1
+  ) {
+    signal.throwIfAborted();
+    const page = await process.listThreadTurns(
+      {
+        threadId,
+        cursor,
+        limit: CODEX_TURN_SCAN_PAGE_SIZE,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+      { signal },
+    );
+    const found = page.data.find((rawTurn) => {
+      if (!rawTurn || typeof rawTurn !== "object" || Array.isArray(rawTurn)) {
+        return false;
+      }
+      return (rawTurn as Record<string, unknown>).id === turnId;
+    });
+    if (found && typeof found === "object" && !Array.isArray(found)) {
+      return annotateTurnMessages(
+        codexTurnMessages(found as Record<string, unknown>, threadId),
+        turnId,
+      );
+    }
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  throw new Error("Requested Codex turn is outside the bounded read window");
+}
+
+function turnDetailKey(target: ConversationSyncTarget, turnId: string): string {
+  return `${targetKey(target)}\0${turnId}`;
 }
 
 async function withCodexProcess<T>(

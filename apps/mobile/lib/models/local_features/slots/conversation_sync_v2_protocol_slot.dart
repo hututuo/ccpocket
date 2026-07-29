@@ -1,6 +1,7 @@
 part of '../../messages.dart';
 
 const conversationSyncV2Capability = 'conversation_sync_v2';
+const conversationItemsByIdCapability = 'conversation_items_by_id_v1';
 const appServerStatusV1Capability = 'app_server_status_v1';
 const bridgeIdentityV2Capability = 'bridge_identity_v2';
 
@@ -717,6 +718,7 @@ ClientMessage conversationSyncV2ItemsPage({
   required String subscriptionId,
   required ConversationSyncV2Target target,
   String? turnId,
+  List<String>? toolUseIds,
   String? cursor,
   int limit = 200,
   String sortDirection = 'asc',
@@ -727,6 +729,13 @@ ClientMessage conversationSyncV2ItemsPage({
   'subscriptionId': subscriptionId,
   ...target.toJson(),
   'turnId': ?turnId,
+  if (toolUseIds != null)
+    'toolUseIds': toolUseIds
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toSet()
+        .take(8)
+        .toList(growable: false),
   'cursor': ?cursor,
   'limit': limit.clamp(1, 200),
   'sortDirection': sortDirection,

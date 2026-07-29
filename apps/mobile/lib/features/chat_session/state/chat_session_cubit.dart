@@ -76,6 +76,11 @@ class LocalHistoryPagingState {
 
 typedef DetachedHistoryPageLoader =
     Future<({bool loaded, bool hasMore})> Function();
+typedef DetachedHistoryToolDetailLoader =
+    Future<List<HistoryToolDetail>?> Function(
+      HistoryToolDetailGap gap,
+      List<String> toolUseIds,
+    );
 
 class HistoryToolDetailLoadState {
   const HistoryToolDetailLoadState({
@@ -222,6 +227,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final ValueNotifier<LocalHistoryPagingState> localHistoryPaging =
       ValueNotifier(const LocalHistoryPagingState());
   final DetachedHistoryPageLoader? _detachedHistoryPageLoader;
+  final DetachedHistoryToolDetailLoader? detachedHistoryToolDetailLoader;
   final ValueNotifier<bool> historySyncing = ValueNotifier(false);
   final ValueNotifier<int> historyToolDetailRevision = ValueNotifier(0);
   final Map<String, HistoryToolDetailLoadState> _historyToolDetailStates = {};
@@ -328,6 +334,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     this.detachedPreview = false,
     this.initialHistoryMessages = const [],
     DetachedHistoryPageLoader? detachedHistoryPageLoader,
+    this.detachedHistoryToolDetailLoader,
     bool initialHistoryHasEarlier = false,
   }) : _bridge = bridge,
        _streamingCubit = streamingCubit,
@@ -1699,10 +1706,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
     historyToolDetailRevision.value += 1;
     try {
-      final details = await _bridge.requestHistoryToolDetails(
-        runtimeSessionId: sessionId,
-        toolUseIds: requestedIds,
-      );
+      final details = detachedHistoryToolDetailLoader == null
+          ? await _bridge.requestHistoryToolDetails(
+              runtimeSessionId: sessionId,
+              toolUseIds: requestedIds,
+            )
+          : await detachedHistoryToolDetailLoader!(gap, requestedIds);
       if (isClosed || !_historyToolDetailGapIsActive(gap.gapId)) {
         return false;
       }

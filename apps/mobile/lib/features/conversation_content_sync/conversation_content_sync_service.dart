@@ -19,6 +19,7 @@ abstract interface class ConversationContentSyncGateway {
   String? get lastUrl;
   bool get supportsConversationContentEvents;
   bool get supportsConversationSyncV2;
+  bool get supportsConversationItemsById;
   BridgeClientDeliveryMode get desiredClientDeliveryMode;
 
   void send(ClientMessage message);
@@ -66,6 +67,10 @@ class BridgeServiceConversationContentSyncGateway
 
   @override
   bool get supportsConversationSyncV2 => bridge.supportsConversationSyncV2;
+
+  @override
+  bool get supportsConversationItemsById =>
+      bridge.supportsConversationItemsById;
 
   @override
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>
@@ -149,6 +154,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       StreamController<ConversationSyncCacheUpdate>.broadcast();
   final Map<String, _SnapshotStage> _stages = {};
   final Map<String, _PendingTurnsPage> _pendingTurnsPages = {};
+  final Map<String, _PendingItemsPage> _pendingItemsPages = {};
 
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
   StreamSubscription<List<SessionInfo>>? _sessionListSubscription;
@@ -377,6 +383,65 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
   }
 
+  Future<List<HistoryToolDetail>?> loadToolDetails({
+    required String provider,
+    required String providerSessionId,
+    required HistoryToolDetailGap gap,
+    required List<String> toolUseIds,
+  }) async {
+    final turnId = gap.turnId;
+    final normalizedIds = toolUseIds
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty && value.length <= 256)
+        .toSet()
+        .take(8)
+        .toList(growable: false);
+    if (turnId == null ||
+        normalizedIds.isEmpty ||
+        !bridge.supportsConversationSyncV2 ||
+        !_canProcessContent) {
+      return null;
+    }
+    final target = _cacheTarget;
+    final subscriptionId = _activeSubscriptionId;
+    if (subscriptionId == null ||
+        target.fingerprint != _cacheTarget.fingerprint ||
+        !_canProcessContent) {
+      return null;
+    }
+    final requestId = _nextRequestId('items');
+    final completer = Completer<List<HistoryToolDetail>?>();
+    _pendingItemsPages[requestId] = _PendingItemsPage(
+      generation: _generation,
+      targetFingerprint: target.fingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      turnId: turnId,
+      toolUseIds: normalizedIds,
+      completer: completer,
+    );
+    try {
+      bridge.send(
+        conversationSyncV2ItemsPage(
+          requestId: requestId,
+          subscriptionId: subscriptionId,
+          target: ConversationSyncV2Target(
+            provider: provider,
+            providerSessionId: providerSessionId,
+          ),
+          turnId: turnId,
+          toolUseIds: bridge.supportsConversationItemsById
+              ? normalizedIds
+              : null,
+          limit: 200,
+        ),
+      );
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } finally {
+      _pendingItemsPages.remove(requestId);
+    }
+  }
+
   bool get _canProcessContent =>
       _foreground &&
       bridge.currentBridgeConnectionState == BridgeConnectionState.connected &&
@@ -419,6 +484,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _highestV2CommittedSequence = 0;
     _failPendingTurnsPages(
       StateError('Conversation history paging was interrupted.'),
+    );
+    _failPendingItemsPages(
+      StateError('Conversation item paging was interrupted.'),
     );
     _stages.clear();
     _retryTimer?.cancel();
@@ -764,6 +832,23 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           }
         }
       case ConversationSyncV2EventKind.itemsPageResponse:
+        final request = event.requestId == null
+            ? null
+            : _pendingItemsPages[event.requestId!];
+        if (request != null &&
+            request.generation == generation &&
+            request.targetFingerprint == target.fingerprint &&
+            request.provider == event.provider &&
+            request.providerSessionId == event.providerSessionId &&
+            request.turnId == event.turnId) {
+          final details = _historyToolDetailsFromPage(
+            event.pageRawMessages(),
+            request.toolUseIds,
+          );
+          if (!request.completer.isCompleted) {
+            request.completer.complete(details);
+          }
+        }
       case ConversationSyncV2EventKind.focusApplied:
       case ConversationSyncV2EventKind.unsubscribed:
       // These responses do not mutate the hot cache in this service. Their
@@ -775,6 +860,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         if (pageRequest != null && !pageRequest.completer.isCompleted) {
           pageRequest.completer.completeError(
             StateError(event.error ?? 'Conversation history page failed.'),
+          );
+        }
+        final itemRequest = event.requestId == null
+            ? null
+            : _pendingItemsPages[event.requestId!];
+        if (itemRequest != null && !itemRequest.completer.isCompleted) {
+          itemRequest.completer.completeError(
+            StateError(event.error ?? 'Conversation item page failed.'),
           );
         }
         if (event.requestId == _pendingSubscriptionId) {
@@ -1000,6 +1093,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _failPendingTurnsPages(
       StateError('Conversation history paging was interrupted.'),
     );
+    _failPendingItemsPages(
+      StateError('Conversation item paging was interrupted.'),
+    );
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -1060,6 +1156,54 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       left?.provider == right?.provider &&
       left?.providerSessionId == right?.providerSessionId;
 
+  static List<HistoryToolDetail>? _historyToolDetailsFromPage(
+    List<Map<String, dynamic>> rawMessages,
+    List<String> requestedIds,
+  ) {
+    final requested = requestedIds.toSet();
+    final details = <String, HistoryToolDetail>{};
+    for (final raw in rawMessages) {
+      final message = ServerMessage.fromJson(raw);
+      if (message is HistoryToolDetailsMessage) {
+        for (final detail in message.details) {
+          if (requested.contains(detail.toolUseId)) {
+            details[detail.toolUseId] = detail;
+          }
+        }
+        continue;
+      }
+      if (message is AssistantServerMessage) {
+        for (final content in message.message.content) {
+          if (content is! ToolUseContent || !requested.contains(content.id)) {
+            continue;
+          }
+          final existing = details[content.id];
+          details[content.id] = HistoryToolDetail(
+            toolUseId: content.id,
+            toolName: content.name,
+            input: content.input,
+            result: existing?.result,
+          );
+        }
+        continue;
+      }
+      if (message is ToolResultMessage &&
+          requested.contains(message.toolUseId)) {
+        final existing = details[message.toolUseId];
+        details[message.toolUseId] = HistoryToolDetail(
+          toolUseId: message.toolUseId,
+          toolName: existing?.toolName ?? message.toolName ?? 'Tool',
+          input: existing?.input ?? const {},
+          result: message,
+        );
+      }
+    }
+    if (details.isEmpty) return null;
+    return List.unmodifiable([
+      for (final toolUseId in requestedIds) ?details[toolUseId],
+    ]);
+  }
+
   void _failPendingTurnsPages(Object error) {
     for (final request in _pendingTurnsPages.values) {
       if (!request.completer.isCompleted) {
@@ -1067,6 +1211,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       }
     }
     _pendingTurnsPages.clear();
+  }
+
+  void _failPendingItemsPages(Object error) {
+    for (final request in _pendingItemsPages.values) {
+      if (!request.completer.isCompleted) {
+        request.completer.completeError(error);
+      }
+    }
+    _pendingItemsPages.clear();
   }
 
   Future<void> dispose() async {
@@ -1121,4 +1274,24 @@ class _PendingTurnsPage {
   final String provider;
   final String providerSessionId;
   final Completer<ConversationTurnsPageLoadResult> completer;
+}
+
+class _PendingItemsPage {
+  const _PendingItemsPage({
+    required this.generation,
+    required this.targetFingerprint,
+    required this.provider,
+    required this.providerSessionId,
+    required this.turnId,
+    required this.toolUseIds,
+    required this.completer,
+  });
+
+  final int generation;
+  final String targetFingerprint;
+  final String provider;
+  final String providerSessionId;
+  final String turnId;
+  final List<String> toolUseIds;
+  final Completer<List<HistoryToolDetail>?> completer;
 }

@@ -61,6 +61,11 @@ export interface HistoryToolDetailGap {
   toolUseIds: string[];
   toolNames: string[];
   toolCallCount: number;
+  /**
+   * Additive provider turn identity for detached, read-only detail paging.
+   * Older clients ignore it; the Bridge never needs to resume the thread.
+   */
+  turnId?: string;
 }
 
 export interface HistoryToolDetailPayload {
@@ -700,6 +705,8 @@ export type ServerMessage = (
       messageUuid?: string;
       artifacts?: ArtifactRef[];
       historyToolDetailGaps?: HistoryToolDetailGap[];
+      /** Bridge-internal provenance used to attach a gap to its provider turn. */
+      historyTurnId?: string;
     }
   | {
       type: "tool_result";
@@ -712,6 +719,8 @@ export type ServerMessage = (
       /** Bridge-internal only; SessionManager strips it before history/broadcast. */
       artifactCandidates?: ArtifactCandidate[];
       artifacts?: ArtifactRef[];
+      /** Bridge-internal provenance used to attach a gap to its provider turn. */
+      historyTurnId?: string;
     }
   | {
       type: "artifact_resolved";

@@ -1032,6 +1032,7 @@ export function buildConversationContentSnapshot(
   limits: {
     maxMessageTextBytes: number;
     maxSnapshotBytes: number;
+    preserveLatestRootTurnTools?: boolean;
   },
 ): ConversationContentSnapshot {
   const firstRelevantIndex = latestRootTurnStart(
@@ -1049,7 +1050,9 @@ export function buildConversationContentSnapshot(
       message: rawMessages[sourceIndex]!,
     });
   }
-  const selected = selectTurnAwareHistoryWindow(source);
+  const selected = selectTurnAwareHistoryWindow(source, {
+    preserveLatestRootTurnTools: limits.preserveLatestRootTurnTools,
+  });
   const retained: Array<{
     sourceIndex: number;
     message: ServerMessage;

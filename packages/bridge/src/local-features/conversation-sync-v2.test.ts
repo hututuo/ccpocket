@@ -76,6 +76,33 @@ describe("conversation_sync_v2 protocol", () => {
         limit: 201,
       }),
     ).toBeNull();
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "items-2",
+        subscriptionId: "sync-1",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        turnId: "turn-1",
+        toolUseIds: ["tool-1", "tool-2"],
+      }),
+    ).toMatchObject({
+      type: "conversation_items_page",
+      turnId: "turn-1",
+      toolUseIds: ["tool-1", "tool-2"],
+    });
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "items-3",
+        subscriptionId: "sync-1",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        toolUseIds: ["tool-1"],
+      }),
+    ).toBeNull();
   });
 
   it("accepts a bounded per-subscription read watermark", () => {
@@ -265,6 +292,85 @@ describe("ConversationSyncV2FeatureHandler", () => {
         Buffer.byteLength(JSON.stringify(message), "utf8"),
       ).toBeLessThanOrEqual(64 * 1024);
     }
+    fixture.handler.close();
+  });
+
+  it("returns bounded detached tool details without a runtime session", async () => {
+    const historyReader = vi.fn(async () => [
+      {
+        type: "user_input" as const,
+        text: "prompt",
+        userMessageUuid: "user-session-0",
+      },
+      {
+        type: "assistant" as const,
+        message: {
+          id: "assistant-tools",
+          role: "assistant" as const,
+          model: "test",
+          content: [
+            {
+              type: "tool_use" as const,
+              id: "tool-1",
+              name: "Read",
+              input: { path: "/outside/runtime.txt" },
+            },
+          ],
+        },
+      },
+      {
+        type: "tool_result" as const,
+        toolUseId: "tool-1",
+        toolName: "Read",
+        content: "detail result",
+      },
+    ]);
+    const fixture = createFixture([seed(0)], historyReader);
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "items-page-1",
+        subscriptionId: subscription.requestId,
+        provider: "claude",
+        providerSessionId: "session-0",
+        turnId: "legacy-turn:user-session-0",
+        toolUseIds: ["tool-1"],
+        limit: 200,
+        sortDirection: "asc",
+      },
+      context(client, fixture.runtime),
+    );
+
+    expect(
+      events(fixture.sent, client, "items_page_response")[0],
+    ).toMatchObject({
+      requestId: "items-page-1",
+      turnId: "legacy-turn:user-session-0",
+      data: [
+        {
+          type: "history_tool_details",
+          details: [
+            {
+              toolUseId: "tool-1",
+              toolName: "Read",
+              input: { path: "/outside/runtime.txt" },
+              result: { content: "detail result" },
+            },
+          ],
+        },
+      ],
+    });
     fixture.handler.close();
   });
 });

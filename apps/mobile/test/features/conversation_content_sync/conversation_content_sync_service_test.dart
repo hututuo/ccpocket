@@ -300,6 +300,86 @@ void main() {
     );
   });
 
+  test('loads detached tool details by provider turn before ACK', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    gateway.supportsConversationItemsById = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+
+    final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-items',
+        sequence: 1,
+        requestId: subscriptionId,
+        catalogState: 'catalog-items',
+        statusState: 'status-items',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+
+    final load = service.loadToolDetails(
+      provider: 'codex',
+      providerSessionId: 'thread-items',
+      gap: const HistoryToolDetailGap(
+        gapId: 'gap-items',
+        toolUseIds: ['tool-1'],
+        toolNames: ['Read'],
+        toolCallCount: 1,
+        turnId: 'turn-1',
+      ),
+      toolUseIds: const ['tool-1'],
+    );
+    final request = await gateway.nextOutgoing('conversation_items_page');
+    expect(request['turnId'], 'turn-1');
+    expect(request['toolUseIds'], ['tool-1']);
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.itemsPageResponse,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-items',
+        sequence: 2,
+        requestId: request['requestId']! as String,
+        provider: 'codex',
+        providerSessionId: 'thread-items',
+        turnId: 'turn-1',
+        data: const [
+          {
+            'type': 'history_tool_details',
+            'requestId': 'nested-items',
+            'sessionId': 'thread-items',
+            'details': [
+              {
+                'toolUseId': 'tool-1',
+                'toolName': 'Read',
+                'input': {'path': '/tmp/example'},
+                'result': {'content': 'loaded'},
+              },
+            ],
+          },
+        ],
+        nextCursor: null,
+      ),
+    );
+
+    final details = await load;
+    expect(details?.single.toolUseId, 'tool-1');
+    expect(details?.single.input, {'path': '/tmp/example'});
+    expect(details?.single.result?.content, 'loaded');
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      2,
+    );
+  });
+
   test(
     'persists and forwards a read watermark on the active v2 stream',
     () async {
@@ -751,6 +831,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
 
   @override
   bool supportsConversationSyncV2 = false;
+
+  @override
+  bool supportsConversationItemsById = true;
 
   @override
   BridgeClientDeliveryMode desiredClientDeliveryMode =

@@ -1098,6 +1098,7 @@ void main() {
                     'toolUseIds': [' tool-1 ', 'tool-1', '', 'tool-2'],
                     'toolNames': ['Read', 'Duplicate', '', 'Search'],
                     'toolCallCount': 999999,
+                    'turnId': 'turn-1',
                   },
                   {
                     'gapId': '',
@@ -1114,6 +1115,7 @@ void main() {
       expect(gap.toolUseIds, ['tool-1', 'tool-2']);
       expect(gap.toolNames, ['Read', 'Search']);
       expect(gap.toolCallCount, 2);
+      expect(gap.turnId, 'turn-1');
     });
 
     test('ServerMessage parses correlated history tool details', () {

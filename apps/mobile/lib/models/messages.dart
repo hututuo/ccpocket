@@ -2148,12 +2148,14 @@ class HistoryToolDetailGap {
   final List<String> toolUseIds;
   final List<String> toolNames;
   final int toolCallCount;
+  final String? turnId;
 
   const HistoryToolDetailGap({
     required this.gapId,
     required this.toolUseIds,
     required this.toolNames,
     required this.toolCallCount,
+    this.turnId,
   });
 
   bool get isValid => gapId.isNotEmpty && toolUseIds.isNotEmpty;
@@ -2181,6 +2183,7 @@ class HistoryToolDetailGap {
       if (toolUseIds.length >= maxToolUseIds) break;
     }
     final rawGapId = (json['gapId'] as String? ?? '').trim();
+    final rawTurnId = (json['turnId'] as String? ?? '').trim();
     return HistoryToolDetailGap(
       gapId: rawGapId.length <= 128 ? rawGapId : '',
       toolUseIds: List.unmodifiable(toolUseIds),
@@ -2188,6 +2191,9 @@ class HistoryToolDetailGap {
       // Count only validated IDs. The client must never allocate or display
       // work based on an untrusted wire count.
       toolCallCount: toolUseIds.length,
+      turnId: rawTurnId.isNotEmpty && rawTurnId.length <= 256
+          ? rawTurnId
+          : null,
     );
   }
 }

@@ -928,6 +928,16 @@ class _CodexProviders extends StatelessWidget {
               detachedPreview: detachedPreview,
               initialHistoryMessages: initialHistoryMessages,
               detachedHistoryPageLoader: detachedHistoryPageLoader,
+              detachedHistoryToolDetailLoader: detachedPreview
+                  ? (gap, toolUseIds) => context
+                        .read<ConversationContentSyncService>()
+                        .loadToolDetails(
+                          provider: Provider.codex.value,
+                          providerSessionId: sessionId,
+                          gap: gap,
+                          toolUseIds: toolUseIds,
+                        )
+                  : null,
               initialHistoryHasEarlier: initialHistoryHasEarlier,
             );
             final submission = initialSubmission;

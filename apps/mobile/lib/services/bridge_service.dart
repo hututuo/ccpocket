@@ -686,6 +686,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(conversationContentEventCapability);
   bool get supportsConversationSyncV2 =>
       _bridgeCapabilities.contains(conversationSyncV2Capability);
+  bool get supportsConversationItemsById =>
+      _bridgeCapabilities.contains(conversationItemsByIdCapability);
   bool get supportsAppServerStatusV1 =>
       _bridgeCapabilities.contains(appServerStatusV1Capability);
   bool get supportsBridgeIdentityV2 =>
