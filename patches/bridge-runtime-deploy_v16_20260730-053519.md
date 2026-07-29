@@ -1,6 +1,7 @@
 # Bridge 1.69.4-compat.4 与 Mobile build 206 交付
 
-Status: active.
+Status: superseded for the live Bridge runtime by v17. The build 206 IPA
+delivery record remains valid.
 
 ## 目的
 

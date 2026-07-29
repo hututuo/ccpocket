@@ -1,5 +1,22 @@
 # ccPocket Compatibility Decisions
 
+## 2026-07-30 conversation sync catalog display bounds
+
+- `conversation_sync_v2` 的 catalog 是有限展示摘要，不是权威历史。Bridge 必须
+  在 state hash 和分帧之前把 `name` 限制为 512 字符，把 `summary`、
+  `firstPrompt` 和展示用 `projectPath` 限制为 4,096 字符，并避免拆分 UTF-16
+  surrogate pair。不得用目录摘要截断去改写 Provider 权威会话正文。
+- 新 Mobile 同时容忍旧 Bridge 发送的超长可选展示字段：本地安全截断后继续提交
+  整批目录。结构身份、revision、时间和枚举字段继续严格校验；不能把所有协议
+  错误都静默吞掉。
+- 物理手机停在 85% 的已确认链路是：`sync_begin` ACK → 第一个
+  `catalog_changes` 含约 28 KiB `firstPrompt` → Mobile 4,096 字符边界解码失败
+  → 下一帧 sequence gap → unsubscribe/retry。连接成功、Bridge 目录读取成功和
+  App readiness 必须继续作为不同门禁诊断。
+- build 206 没有对应 Shorebird 云端 base release，不能发布定向 patch。Bridge
+  端边界修复可让现有 build 206 直接恢复；Mobile 容错必须进入下一次真实 base
+  IPA/release，不能把 dry-run archive 说成 OTA 基线。
+
 ## 2026-07-25 comprehensive remediation execution
 
 - `plans/mobile-comprehensive-remediation_v01_20260725-012458.md` 是 build 202
