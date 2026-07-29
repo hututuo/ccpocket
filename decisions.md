@@ -101,6 +101,30 @@
 - 本节只授权隔离分支内的源码与自动验证，不等于合入稳定分支、替换运行中
   Bridge、发布 OTA、签名 IPA 或安装真机。
 
+## 2026-07-29 Mobile application-readiness watchdog
+
+- `WebSocketChannel.ready` 只代表 transport 可写，不代表当前 Bridge/source 已
+  认证，也不代表会话目录可用。交互模式下每个新 socket 由 `BridgeService`
+  自己发送一次 `list_sessions`，不得依赖某个页面生命周期回调恰好触发。
+- 当前 epoch 的 authority 请求实际写入 socket 后启动 10 秒看门狗。超时必须先
+  推进 connection epoch，再关闭旧 socket、保留一份只读 authority 请求并按既有
+  指数退避重连；旧 socket 的迟到 frame/onDone 不得满足或破坏新连接。
+  `_reconnectAttempt` 只有在权威 `session_list` 成功解析后才归零，单纯 Upgrade
+  成功不能把连续半开连接伪装成多次独立成功。
+- 同一 epoch 已有 authority 请求在等待时，重复 `list_sessions` 合并为一次。
+  旧 Bridge 不返回 `bridgeInstanceId`/`codexSourceId` 时仍以 legacy
+  `session_list` 完成 readiness，不新增 capability 或 wire 字段。
+- `notifications_only` 后台连接不请求完整 `session_list`、不启动 authority
+  看门狗，也不记录每个后台 frame；恢复 interactive 后先发送模式切换，再恢复
+  authority 请求，保持后台轻量投递和功耗边界。
+- 手机诊断沿用 Debug 页的 Talker 内存日志，最多保留 1000 条。连接日志只允许
+  epoch、事件/消息类型、字节数、耗时、计数、重连原因和错误类别；不得写 URL、
+  token、主机地址、会话正文/标题、项目路径或 raw payload。目录 bootstrap 只记
+  generation、布尔 readiness 与 bounded recovery action；每个连接普通 frame
+  诊断最多 32 条，避免调试本身放大流式负载。
+- 本节只授权隔离分支源码与自动验证；新的物理 build、签名 IPA、安装、OTA、
+  stable 合并及 Bridge 替换仍是独立门禁。
+
 ## 2026-07-28 repository single-line convergence
 
 - 当前唯一源码收束线是

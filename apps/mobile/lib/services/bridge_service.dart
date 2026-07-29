@@ -357,6 +357,7 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, _PendingPermissionChange> _pendingPermissionChanges = {};
   final CodexGoalRequestRouter _goalRequestRouter = CodexGoalRequestRouter();
   final Duration permissionChangeTimeout;
+  final Duration authoritativeSessionListTimeout;
   final bool fileTransferClientSupported;
   final String? clientAppVersion;
   final Map<String, dynamic>? clientMobileRuntime;
@@ -454,9 +455,20 @@ class BridgeService implements BridgeServiceBase {
   String? _cacheCodexSourceIdHint;
   int _connectionEpoch = 0;
   Timer? _reconnectTimer;
+  Timer? _authoritativeSessionListWatchdog;
   int _reconnectAttempt = 0;
   static const _maxReconnectDelay = 30;
   bool _intentionalDisconnect = false;
+  Stopwatch? _connectionDiagnosticStopwatch;
+  int? _sessionListRequestStartedAtMs;
+  int _remainingFrameDiagnostics = _maxFrameDiagnosticsPerConnection;
+  static const _maxFrameDiagnosticsPerConnection = 32;
+  static final RegExp _diagnosticTokenPattern = RegExp(
+    r'^[A-Za-z0-9_.-]{1,64}$',
+  );
+
+  @visibleForTesting
+  Duration Function(int attempt)? reconnectDelayForTest;
 
   @override
   Stream<ServerMessage> get messages => _messageController.stream;
@@ -736,6 +748,7 @@ class BridgeService implements BridgeServiceBase {
 
   BridgeService({
     this.permissionChangeTimeout = const Duration(seconds: 30),
+    this.authoritativeSessionListTimeout = const Duration(seconds: 10),
     this.fileTransferClientSupported = false,
     this.clientAppVersion,
     this.clientMobileRuntime,
@@ -1453,11 +1466,19 @@ class BridgeService implements BridgeServiceBase {
 
   void _setBridgeConnectionState(BridgeConnectionState state) {
     if (state != BridgeConnectionState.connected) {
+      _cancelAuthoritativeSessionListWatchdog();
       _hasAuthoritativeSessionListForCurrentConnection = false;
       _gitOperationLaneOwners.clear();
     }
+    final previousState = _connectionState;
     _connectionState = state;
     _connectionController.add(state);
+    if (previousState != state) {
+      _logConnectionDiagnostic(
+        'state_changed',
+        state: '${previousState.name}_to_${state.name}',
+      );
+    }
   }
 
   void _invalidatePermissionApplyCapabilities({bool notifySessions = true}) {
@@ -1564,6 +1585,7 @@ class BridgeService implements BridgeServiceBase {
     String? expectedBridgeInstanceId,
     String? expectedCodexSourceId,
   }) {
+    _cancelAuthoritativeSessionListWatchdog();
     _failPendingPermissionChanges(
       'Bridge connection changed before the permission change was confirmed.',
     );
@@ -1610,6 +1632,9 @@ class BridgeService implements BridgeServiceBase {
     _clearPendingLocalFeatureRequests();
     _goalRequestRouter.clear();
     final epoch = _connectionEpoch;
+    _connectionDiagnosticStopwatch = Stopwatch()..start();
+    _sessionListRequestStartedAtMs = null;
+    _remainingFrameDiagnostics = _maxFrameDiagnosticsPerConnection;
     _intentionalDisconnect = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
@@ -1634,6 +1659,7 @@ class BridgeService implements BridgeServiceBase {
     _cacheCodexSourceIdHint = nextCacheSourceHint;
     _publishOfflinePendingActions();
 
+    _logConnectionDiagnostic('connect_started', epoch: epoch);
     _setBridgeConnectionState(BridgeConnectionState.connecting);
     try {
       final channel = WebSocketChannel.connect(Uri.parse(url));
@@ -1641,8 +1667,24 @@ class BridgeService implements BridgeServiceBase {
       _channelSub = channel.stream.listen(
         (data) {
           if (epoch != _connectionEpoch) return;
+          int? frameBytes;
           try {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
+            final diagnosticType = _diagnosticToken(json['type']);
+            if (_desiredClientDeliveryMode !=
+                    BridgeClientDeliveryMode.notificationsOnly &&
+                !_hasAuthoritativeSessionListForCurrentConnection &&
+                _claimFrameDiagnosticSlot(
+                  priority: diagnosticType == 'session_list',
+                )) {
+              frameBytes = _diagnosticFrameBytes(data);
+              _logConnectionDiagnostic(
+                'frame_received',
+                epoch: epoch,
+                type: diagnosticType,
+                bytes: frameBytes,
+              );
+            }
             if (_shouldSuppressBackgroundWireMessage(json)) return;
             var sessionId = json['sessionId'] as String?;
             var msg = ServerMessage.fromJson(json);
@@ -1774,6 +1816,11 @@ class BridgeService implements BridgeServiceBase {
                 :final bridgeVersion,
                 :final bridgeCapabilities,
               ):
+                final requestStartedAtMs = _sessionListRequestStartedAtMs;
+                final elapsedMs =
+                    _connectionDiagnosticStopwatch?.elapsedMilliseconds;
+                _cancelAuthoritativeSessionListWatchdog();
+                _reconnectAttempt = 0;
                 if (droppedSessionCount > 0) {
                   logger.warning(
                     'session_list contained $droppedSessionCount malformed '
@@ -1804,6 +1851,17 @@ class BridgeService implements BridgeServiceBase {
                 }
                 _hasAuthoritativeSessionListForCurrentConnection = true;
                 _authoritativeSessionListGeneration++;
+                _logConnectionDiagnostic(
+                  'session_list_authoritative',
+                  epoch: epoch,
+                  type: 'session_list',
+                  elapsedMs: elapsedMs == null
+                      ? null
+                      : requestStartedAtMs == null
+                      ? elapsedMs
+                      : elapsedMs - requestStartedAtMs,
+                  count: sessions.length,
+                );
                 _bridgeInstanceId = authoritativeBridgeId;
                 _codexSourceId = authoritativeSourceId;
                 // A Bridge that omits the additive identity is treated as a
@@ -2149,16 +2207,33 @@ class BridgeService implements BridgeServiceBase {
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
             }
-          } catch (e, st) {
-            logger.error('WS parse error', e, st);
-            final errorMsg = ErrorMessage(message: 'Parse error: $e');
+          } catch (e) {
+            if (_claimFrameDiagnosticSlot()) {
+              frameBytes ??= _diagnosticFrameBytes(data);
+              _logConnectionDiagnostic(
+                'frame_parse_failed',
+                epoch: epoch,
+                bytes: frameBytes,
+                errorKind: _diagnosticToken(e.runtimeType.toString()),
+                warning: true,
+              );
+            }
+            final errorMsg = const ErrorMessage(
+              message: 'Bridge sent an unreadable response.',
+            );
             _taggedMessageController.add((errorMsg, null));
             _messageController.add(errorMsg);
           }
         },
         onError: (error, stackTrace) {
           if (epoch != _connectionEpoch) return;
-          logger.error('WS stream error', error, stackTrace);
+          _cancelAuthoritativeSessionListWatchdog();
+          _logConnectionDiagnostic(
+            'socket_error',
+            epoch: epoch,
+            errorKind: _diagnosticToken(error.runtimeType.toString()),
+            warning: true,
+          );
           _failPendingHistoryRequests(clearCursors: false);
           _clearPendingLocalFeatureRequests();
           _goalRequestRouter.clear();
@@ -2175,10 +2250,12 @@ class BridgeService implements BridgeServiceBase {
           );
           _requeueInFlightInputMessages();
           _requeueInFlightPendingMessages();
-          _scheduleReconnect();
+          _scheduleReconnect(reason: 'socket_error');
         },
         onDone: () {
           if (epoch != _connectionEpoch) return;
+          _cancelAuthoritativeSessionListWatchdog();
+          _logConnectionDiagnostic('socket_done', epoch: epoch);
           _channel = null;
           _failPendingHistoryRequests(clearCursors: false);
           _clearPendingLocalFeatureRequests();
@@ -2197,7 +2274,7 @@ class BridgeService implements BridgeServiceBase {
             );
             _requeueInFlightInputMessages();
             _requeueInFlightPendingMessages();
-            _scheduleReconnect();
+            _scheduleReconnect(reason: 'socket_done');
           } else {
             _setBridgeConnectionState(BridgeConnectionState.disconnected);
           }
@@ -2205,42 +2282,30 @@ class BridgeService implements BridgeServiceBase {
       );
       unawaited(
         channel.ready
-            .then((_) {
-              if (epoch != _connectionEpoch ||
-                  !identical(_channel, channel) ||
-                  _intentionalDisconnect) {
-                return;
-              }
-              _setBridgeConnectionState(BridgeConnectionState.connected);
-              _reconnectAttempt = 0;
-              send(
-                ClientMessage.clientCapabilities(
-                  appVersion: clientAppVersion,
-                  fileTransferSupported: fileTransferClientSupported,
-                  mobileRuntime: clientMobileRuntime,
-                ),
-              );
-              // Read-only/bootstrap requests may be queued before the socket
-              // becomes writable. They are safe to resume on this route, but
-              // durable mutations still wait for an authenticated
-              // session_list proving the Bridge/source identity.
-              _flushUnauthenticatedMessageQueue();
-              if (_desiredClientDeliveryMode ==
-                  BridgeClientDeliveryMode.notificationsOnly) {
-                unawaited(_reassertDesiredClientDeliveryMode());
-              }
-            })
+            .then((_) => _completeWebSocketHandshake(channel, epoch))
             .catchError((Object error, StackTrace stackTrace) {
               if (epoch != _connectionEpoch || _intentionalDisconnect) return;
-              logger.error('WS handshake failed', error, stackTrace);
+              _cancelAuthoritativeSessionListWatchdog();
+              _logConnectionDiagnostic(
+                'handshake_failed',
+                epoch: epoch,
+                errorKind: _diagnosticToken(error.runtimeType.toString()),
+                warning: true,
+              );
               _setBridgeConnectionState(BridgeConnectionState.disconnected);
               _requeueInFlightInputMessages();
               _requeueInFlightPendingMessages();
-              _scheduleReconnect();
+              _scheduleReconnect(reason: 'handshake_failed');
             }),
       );
-    } catch (e, st) {
-      logger.error('WS connect failed', e, st);
+    } catch (e) {
+      _cancelAuthoritativeSessionListWatchdog();
+      _logConnectionDiagnostic(
+        'connect_failed',
+        epoch: epoch,
+        errorKind: _diagnosticToken(e.runtimeType.toString()),
+        warning: true,
+      );
       _clearPendingLocalFeatureRequests();
       _goalRequestRouter.clear();
       _failPendingPermissionChanges(
@@ -2248,8 +2313,83 @@ class BridgeService implements BridgeServiceBase {
       );
       _invalidatePermissionApplyCapabilities();
       _setBridgeConnectionState(BridgeConnectionState.disconnected);
-      _scheduleReconnect();
+      _scheduleReconnect(reason: 'connect_failed');
     }
+  }
+
+  Future<void> _completeWebSocketHandshake(
+    WebSocketChannel channel,
+    int epoch,
+  ) async {
+    if (epoch != _connectionEpoch ||
+        !identical(_channel, channel) ||
+        _intentionalDisconnect) {
+      return;
+    }
+    _logConnectionDiagnostic(
+      'websocket_ready',
+      epoch: epoch,
+      elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
+    );
+    _setBridgeConnectionState(BridgeConnectionState.connected);
+    send(
+      ClientMessage.clientCapabilities(
+        appVersion: clientAppVersion,
+        fileTransferSupported: fileTransferClientSupported,
+        mobileRuntime: clientMobileRuntime,
+      ),
+    );
+    if (_desiredClientDeliveryMode ==
+        BridgeClientDeliveryMode.notificationsOnly) {
+      _removeQueuedSessionListRequests();
+      unawaited(_reassertDesiredClientDeliveryMode());
+      return;
+    }
+    // Identity proof must not wait for SharedPreferences/offline-queue
+    // restoration. Collapse any screen-owned pre-connect request into the
+    // transport-owned request and send it immediately on the writable socket.
+    _ensureInteractiveAuthorityRequest();
+    // Other read-only/bootstrap requests may be queued before the socket
+    // becomes writable and can now follow the authority request.
+    await _flushUnauthenticatedMessageQueueAsync();
+    if (epoch != _connectionEpoch ||
+        !identical(_channel, channel) ||
+        _intentionalDisconnect) {
+      return;
+    }
+    // Bridge identity and the catalog bootstrap both depend on this response.
+    // Own the request at the transport layer so a screen lifecycle callback
+    // cannot strand an otherwise writable socket before application readiness.
+    if (!_hasAuthoritativeSessionListForCurrentConnection &&
+        _authoritativeSessionListWatchdog == null) {
+      requestSessionList();
+    }
+    if (_desiredClientDeliveryMode ==
+        BridgeClientDeliveryMode.notificationsOnly) {
+      unawaited(_reassertDesiredClientDeliveryMode());
+    }
+  }
+
+  void _ensureInteractiveAuthorityRequest() {
+    if (_desiredClientDeliveryMode ==
+            BridgeClientDeliveryMode.notificationsOnly ||
+        _intentionalDisconnect ||
+        !isConnected ||
+        _hasAuthoritativeSessionListForCurrentConnection ||
+        (_authoritativeSessionListWatchdog?.isActive ?? false)) {
+      return;
+    }
+    _removeQueuedSessionListRequests();
+    requestSessionList();
+  }
+
+  void _removeQueuedSessionListRequests() {
+    _messageQueue.removeWhere((message) {
+      if (message.type != 'list_sessions') return false;
+      _offlineMessageTargets.remove(message);
+      _offlineMessageQueuedEpochs.remove(message);
+      return true;
+    });
   }
 
   bool _sameBridgeTarget(String left, String right) {
@@ -2638,7 +2778,142 @@ class BridgeService implements BridgeServiceBase {
     _finishActiveSessionHistorySyncs();
   }
 
-  void _scheduleReconnect() {
+  void _logConnectionDiagnostic(
+    String event, {
+    int? epoch,
+    String? state,
+    String? type,
+    String? reason,
+    String? errorKind,
+    int? bytes,
+    int? elapsedMs,
+    int? count,
+    int? attempt,
+    int? delayMs,
+    bool warning = false,
+  }) {
+    final fields = <String>[
+      '[bridge_connection]',
+      'event=${_diagnosticToken(event)}',
+      'epoch=${epoch ?? _connectionEpoch}',
+      if (state != null) 'state=${_diagnosticToken(state)}',
+      if (type != null) 'type=${_diagnosticToken(type)}',
+      if (reason != null) 'reason=${_diagnosticToken(reason)}',
+      if (errorKind != null) 'error=${_diagnosticToken(errorKind)}',
+      if (bytes != null && bytes >= 0) 'bytes=$bytes',
+      if (elapsedMs != null && elapsedMs >= 0) 'elapsedMs=$elapsedMs',
+      if (count != null && count >= 0) 'count=$count',
+      if (attempt != null && attempt >= 0) 'attempt=$attempt',
+      if (delayMs != null && delayMs >= 0) 'delayMs=$delayMs',
+    ];
+    final line = fields.join(' ');
+    if (warning) {
+      logger.warning(line);
+    } else {
+      logger.info(line);
+    }
+  }
+
+  String _diagnosticToken(Object? value) {
+    final token = value?.toString();
+    if (token == null || !_diagnosticTokenPattern.hasMatch(token)) {
+      return 'unknown';
+    }
+    return token;
+  }
+
+  int? _diagnosticFrameBytes(Object? data) {
+    if (data is String) return utf8.encode(data).length;
+    if (data is List<int>) return data.length;
+    return null;
+  }
+
+  bool _claimFrameDiagnosticSlot({bool priority = false}) {
+    if (_remainingFrameDiagnostics > 0) {
+      _remainingFrameDiagnostics -= 1;
+      return true;
+    }
+    return priority;
+  }
+
+  void _noteSessionListRequestSent(String encodedMessage) {
+    if (_hasAuthoritativeSessionListForCurrentConnection || !isConnected) {
+      return;
+    }
+    final epoch = _connectionEpoch;
+    final elapsedMs = _connectionDiagnosticStopwatch?.elapsedMilliseconds;
+    _sessionListRequestStartedAtMs ??= elapsedMs;
+    _logConnectionDiagnostic(
+      'session_list_sent',
+      epoch: epoch,
+      type: 'list_sessions',
+      bytes: utf8.encode(encodedMessage).length,
+      elapsedMs: elapsedMs,
+    );
+    if (_authoritativeSessionListWatchdog?.isActive ?? false) return;
+    _authoritativeSessionListWatchdog = Timer(
+      authoritativeSessionListTimeout,
+      () => _handleAuthoritativeSessionListTimeout(epoch),
+    );
+  }
+
+  void _cancelAuthoritativeSessionListWatchdog() {
+    _authoritativeSessionListWatchdog?.cancel();
+    _authoritativeSessionListWatchdog = null;
+  }
+
+  void _handleAuthoritativeSessionListTimeout(int epoch) {
+    if (epoch != _connectionEpoch ||
+        _intentionalDisconnect ||
+        !isConnected ||
+        _desiredClientDeliveryMode ==
+            BridgeClientDeliveryMode.notificationsOnly ||
+        _hasAuthoritativeSessionListForCurrentConnection) {
+      return;
+    }
+    _authoritativeSessionListWatchdog = null;
+    _logConnectionDiagnostic(
+      'session_list_timeout',
+      epoch: epoch,
+      reason: 'authority_not_received',
+      elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
+      warning: true,
+    );
+
+    // Preserve exactly one read-only authority request for the replacement
+    // socket. It is safe before identity proof and does not authorize a
+    // mutation or expose cached data to a different Bridge.
+    if (!_messageQueue.any((message) => message.type == 'list_sessions')) {
+      _queueOfflineMessage(ClientMessage.listSessions());
+    }
+
+    // Advance the epoch before closing so a late frame or onDone callback from
+    // the half-open socket cannot revive its state or satisfy the next route.
+    _connectionEpoch++;
+    _channelSub?.cancel();
+    _channelSub = null;
+    _channel?.sink.close();
+    _channel = null;
+    _failPendingHistoryRequests(clearCursors: false);
+    _clearPendingLocalFeatureRequests();
+    _goalRequestRouter.clear();
+    _failPendingPermissionChanges(
+      'Bridge did not confirm the connection before the permission change.',
+    );
+    _invalidatePermissionApplyCapabilities();
+    _failPendingArtifactResolutions(
+      const ArtifactResolveException(
+        code: 'bridge_disconnected',
+        message: 'Bridge disconnected while preparing the file.',
+      ),
+    );
+    _requeueInFlightInputMessages();
+    _requeueInFlightPendingMessages();
+    _setBridgeConnectionState(BridgeConnectionState.disconnected);
+    _scheduleReconnect(reason: 'session_list_timeout');
+  }
+
+  void _scheduleReconnect({String reason = 'transport_lost'}) {
     if (_intentionalDisconnect || _lastUrl == null) return;
     if (_reconnectTimer?.isActive ?? false) {
       _setBridgeConnectionState(BridgeConnectionState.reconnecting);
@@ -2646,9 +2921,20 @@ class BridgeService implements BridgeServiceBase {
     }
 
     _reconnectAttempt++;
-    final delay = min(pow(2, _reconnectAttempt).toInt(), _maxReconnectDelay);
+    final defaultDelay = Duration(
+      seconds: min(pow(2, _reconnectAttempt).toInt(), _maxReconnectDelay),
+    );
+    final configuredDelay =
+        reconnectDelayForTest?.call(_reconnectAttempt) ?? defaultDelay;
+    final delay = configuredDelay.isNegative ? Duration.zero : configuredDelay;
+    _logConnectionDiagnostic(
+      'reconnect_scheduled',
+      reason: reason,
+      attempt: _reconnectAttempt,
+      delayMs: delay.inMilliseconds,
+    );
     _setBridgeConnectionState(BridgeConnectionState.reconnecting);
-    _reconnectTimer = Timer(Duration(seconds: delay), () {
+    _reconnectTimer = Timer(delay, () {
       if (_lastUrl != null && !_intentionalDisconnect) {
         connect(
           _lastUrl!,
@@ -2703,12 +2989,22 @@ class BridgeService implements BridgeServiceBase {
       _queueOfflineMessage(message);
       return;
     }
+    if (message.type == 'list_sessions' &&
+        !_hasAuthoritativeSessionListForCurrentConnection &&
+        (_authoritativeSessionListWatchdog?.isActive ?? false)) {
+      _logConnectionDiagnostic('session_list_coalesced', type: 'list_sessions');
+      return;
+    }
     if (_channel != null && isConnected) {
       if (!_trackInFlightPendingMessage(message)) return;
       _trackInFlightInputMessage(message);
       final historySyncSessionId = _beginPendingSessionHistorySync(message);
       try {
-        _channel!.sink.add(message.toJson());
+        final encodedMessage = message.toJson();
+        _channel!.sink.add(encodedMessage);
+        if (message.type == 'list_sessions') {
+          _noteSessionListRequestSent(encodedMessage);
+        }
         if (message.type == 'get_history' && historySyncSessionId != null) {
           // Legacy history ownership belongs to the socket that actually sent
           // the request. Recording it while an offline message is merely
@@ -2723,7 +3019,7 @@ class BridgeService implements BridgeServiceBase {
         logger.warning('WS send failed; queued message', error, stackTrace);
         _queueOfflineMessage(message);
         _setBridgeConnectionState(BridgeConnectionState.disconnected);
-        _scheduleReconnect();
+        _scheduleReconnect(reason: 'send_failed');
       }
     } else {
       _queueOfflineMessage(message);
@@ -2743,6 +3039,10 @@ class BridgeService implements BridgeServiceBase {
     _deliveryPrivacyMode = privacyMode;
     _deliveryEnabledEventTypes = List.unmodifiable(enabledEventTypes);
     _latestDeliveryModeRequestId = requestId;
+    if (mode == BridgeClientDeliveryMode.notificationsOnly) {
+      _cancelAuthoritativeSessionListWatchdog();
+      _removeQueuedSessionListRequests();
+    }
     if (!isTransportHealthy) {
       return null;
     }
@@ -2758,11 +3058,15 @@ class BridgeService implements BridgeServiceBase {
           enabledEventTypes: enabledEventTypes,
         ),
       );
+      if (mode == BridgeClientDeliveryMode.interactive) {
+        _ensureInteractiveAuthorityRequest();
+      }
       return await completer.future.timeout(timeout);
     } catch (error, stackTrace) {
       if (_latestDeliveryModeRequestId == requestId &&
           mode == BridgeClientDeliveryMode.notificationsOnly) {
         _desiredClientDeliveryMode = BridgeClientDeliveryMode.interactive;
+        _ensureInteractiveAuthorityRequest();
       }
       logger.warning(
         'Client delivery mode was not acknowledged',
@@ -2843,6 +3147,7 @@ class BridgeService implements BridgeServiceBase {
   void _failPendingDeliveryModeRequests({required bool resetDesiredMode}) {
     if (resetDesiredMode) {
       _desiredClientDeliveryMode = BridgeClientDeliveryMode.interactive;
+      scheduleMicrotask(_ensureInteractiveAuthorityRequest);
     }
     for (final completer in _pendingDeliveryModeRequests.values) {
       if (!completer.isCompleted) {
@@ -2885,7 +3190,7 @@ class BridgeService implements BridgeServiceBase {
         stackTrace,
       );
       _setBridgeConnectionState(BridgeConnectionState.disconnected);
-      _scheduleReconnect();
+      _scheduleReconnect(reason: 'ephemeral_send_failed');
       throw StateError('Bridge disconnected while sending ${message.type}.');
     }
   }
@@ -3105,10 +3410,6 @@ class BridgeService implements BridgeServiceBase {
 
   void _flushMessageQueue() {
     unawaited(_flushMessageQueueAsync());
-  }
-
-  void _flushUnauthenticatedMessageQueue() {
-    unawaited(_flushUnauthenticatedMessageQueueAsync());
   }
 
   Future<void> _flushUnauthenticatedMessageQueueAsync() async {
@@ -3839,6 +4140,15 @@ class BridgeService implements BridgeServiceBase {
 
   @override
   void requestSessionList() {
+    if (_desiredClientDeliveryMode ==
+        BridgeClientDeliveryMode.notificationsOnly) {
+      _logConnectionDiagnostic(
+        'session_list_suppressed',
+        reason: 'notifications_only',
+        type: 'list_sessions',
+      );
+      return;
+    }
     send(ClientMessage.listSessions());
   }
 
@@ -5795,7 +6105,10 @@ class BridgeService implements BridgeServiceBase {
       // The channel may appear "connected" but the underlying socket is dead.
       // A non-null closeCode means the socket has already been closed.
       if (_channel?.closeCode != null) {
-        _scheduleReconnect();
+        _scheduleReconnect(reason: 'closed_socket');
+      } else if (!_hasAuthoritativeSessionListForCurrentConnection &&
+          _authoritativeSessionListWatchdog == null) {
+        _ensureInteractiveAuthorityRequest();
       }
     } else if (_connectionState == BridgeConnectionState.disconnected) {
       connect(
@@ -5809,6 +6122,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void disconnect() {
+    _cancelAuthoritativeSessionListWatchdog();
     _failPendingPermissionChanges(
       'Bridge disconnected before the permission change was confirmed.',
     );
@@ -5853,6 +6167,7 @@ class BridgeService implements BridgeServiceBase {
 
   void dispose() {
     _intentionalDisconnect = true;
+    _cancelAuthoritativeSessionListWatchdog();
     _resetSessionCatalogRefresh();
     _failPendingHistoryRequests(clearCursors: true);
     _clearSessionHistorySyncTracking();

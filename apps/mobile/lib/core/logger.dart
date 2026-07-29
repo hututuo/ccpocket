@@ -9,6 +9,8 @@ import 'package:talker/talker.dart';
 /// logger.error('failed', exception, stackTrace);
 /// ```
 final logger = Talker(
-  settings: TalkerSettings(useConsoleLogs: true),
+  // Keep diagnostics available on the in-app log screen without allowing a
+  // long-running client to grow an unbounded in-memory history.
+  settings: TalkerSettings(useConsoleLogs: true, maxHistoryItems: 1000),
   logger: TalkerLogger(settings: TalkerLoggerSettings(enableColors: false)),
 );

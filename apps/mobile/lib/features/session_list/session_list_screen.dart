@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/logger.dart';
 import '../../l10n/app_localizations.dart';
 import '../../utils/network_endpoint.dart';
 import '../../utils/platform_helper.dart';
@@ -756,6 +757,12 @@ class _SessionListScreenState extends State<SessionListScreen>
       supportsRequestCorrelation:
           bridge.supportsSessionCatalogRequestCorrelation,
     );
+    logger.info(
+      '[session_catalog] event=readiness_timeout '
+      'action=${action.name} '
+      'authority=${bridge.hasAuthoritativeSessionListForCurrentConnection} '
+      'catalog=${sessionListCubit.hasUsableCatalogForCurrentTarget}',
+    );
 
     switch (action) {
       case SessionCatalogRecoveryAction.none:
@@ -1210,6 +1217,10 @@ class _SessionListScreenState extends State<SessionListScreen>
       _connectionReadinessTimer?.cancel();
       _connectionReadinessTimer = null;
       _catalogRecoveryPolicy.reset();
+      logger.info(
+        '[session_catalog] event=${readinessCompleted ? 'application_ready' : 'readiness_failed'} '
+        'generation=${bridge.authoritativeSessionListGeneration}',
+      );
     }
     if (!mounted ||
         (!changed &&
@@ -1246,6 +1257,9 @@ class _SessionListScreenState extends State<SessionListScreen>
       return false;
     }
     final targetKey = _connectionUiTargetKey(bridge);
+    logger.info(
+      '[session_catalog] event=bootstrap_claimed generation=$generation',
+    );
     unawaited(_dispatchCatalogBootstrap(bridge, generation, targetKey));
     return true;
   }
@@ -1272,6 +1286,10 @@ class _SessionListScreenState extends State<SessionListScreen>
       _catalogBootstrapGate.completeDispatch(
         generation,
         dispatched: dispatched,
+      );
+      logger.info(
+        '[session_catalog] event=bootstrap_completed '
+        'generation=$generation dispatched=$dispatched',
       );
     }
   }
