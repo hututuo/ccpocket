@@ -39,6 +39,7 @@ class AutoApprovalService extends ChangeNotifier {
   final Map<String, bool> _enabledByProviderSessionId = {};
   final Map<String, int> _approvedCountsByProviderSessionId = {};
   final Map<String, bool> _supportByRuntimeSessionId = {};
+  final Map<String, String> _unavailableReasonByRuntimeSessionId = {};
   final Map<String, _SettingIntent> _settingIntents = {};
   final Map<String, _PendingRequest> _pendingRequests = {};
   final Map<String, int> _queriedGenerationByProviderSessionId = {};
@@ -78,6 +79,9 @@ class AutoApprovalService extends ChangeNotifier {
         _bridge.isConnected &&
         _supportByRuntimeSessionId[runtimeSessionId] != false;
   }
+
+  String? unavailableReasonForSession(String runtimeSessionId) =>
+      _unavailableReasonByRuntimeSessionId[runtimeSessionId];
 
   bool isEnabledForSession(String runtimeSessionId) {
     final target = _targetForRuntime(runtimeSessionId);
@@ -170,6 +174,7 @@ class AutoApprovalService extends ChangeNotifier {
     if (state == BridgeConnectionState.connected) {
       _connectionGeneration += 1;
       _supportByRuntimeSessionId.clear();
+      _unavailableReasonByRuntimeSessionId.clear();
       _queriedGenerationByProviderSessionId.clear();
       _requestBridgeState();
       _handleSessions(_bridge.sessions);
@@ -251,7 +256,16 @@ class AutoApprovalService extends ChangeNotifier {
     pending?.timer.cancel();
     final runtimeSessionId = pending?.runtimeSessionId ?? message.sessionId;
     if (runtimeSessionId != _bridgeScopedSessionId) {
-      _supportByRuntimeSessionId[runtimeSessionId] = true;
+      if (message.supervisionAvailable == false) {
+        _supportByRuntimeSessionId[runtimeSessionId] = false;
+        final reason = message.unavailableReason;
+        if (reason != null) {
+          _unavailableReasonByRuntimeSessionId[runtimeSessionId] = reason;
+        }
+      } else if (message.supervisionAvailable == true || message.isSuccess) {
+        _supportByRuntimeSessionId[runtimeSessionId] = true;
+        _unavailableReasonByRuntimeSessionId.remove(runtimeSessionId);
+      }
     }
     if (message.isSuccess) {
       _authoritativeEnabledCount = message.enabledConversationCount;
@@ -287,7 +301,9 @@ class AutoApprovalService extends ChangeNotifier {
         _handleSessions(_bridge.sessions);
       }
     } else {
-      if (message.errorCode == 'unsupported_session' &&
+      if ((message.errorCode == 'unsupported_session' ||
+              message.errorCode ==
+                  'external_app_server_approval_unsupported') &&
           pending?.runtimeSessionId != null) {
         _supportByRuntimeSessionId[pending!.runtimeSessionId!] = false;
       }

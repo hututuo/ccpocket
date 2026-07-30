@@ -13,6 +13,7 @@ void main() {
       'enabled': true,
       'enabledConversationCount': 2,
       'approvedCount': 3,
+      'supervisionAvailable': true,
       'reason': 'auto_approved',
     });
 
@@ -22,8 +23,32 @@ void main() {
       isA<AutoApprovalStateMessage>()
           .having((value) => value.sessionId, 'sessionId', 'runtime-1')
           .having((value) => value.enabled, 'enabled', isTrue)
-          .having((value) => value.approvedCount, 'approvedCount', 3),
+          .having((value) => value.approvedCount, 'approvedCount', 3)
+          .having(
+            (value) => value.supervisionAvailable,
+            'supervisionAvailable',
+            isTrue,
+          ),
     );
+  });
+
+  test('decodes explicit independent app-server boundary', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'auto_approval_state_v1',
+              'sessionId': 'runtime-1',
+              'enabledConversationCount': 0,
+              'supervisionAvailable': false,
+              'unavailableReason': 'external_app_server',
+              'reason': 'query',
+              'error': 'independent server',
+              'errorCode': 'external_app_server_approval_unsupported',
+            })
+            as AutoApprovalStateMessage;
+
+    expect(message.isSuccess, isFalse);
+    expect(message.supervisionAvailable, isFalse);
+    expect(message.unavailableReason, 'external_app_server');
   });
 
   test('rejects unbounded or extended state payloads', () {

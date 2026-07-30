@@ -11,6 +11,7 @@ class AutoApprovalStrings {
     required this.warningBody,
     required this.exclusions,
     required this.unavailable,
+    required this.externalAppServerUnavailable,
     required this.updateFailed,
     required this.statusEnabled,
     required this.approvedCount,
@@ -33,6 +34,7 @@ class AutoApprovalStrings {
   final String warningBody;
   final String exclusions;
   final String unavailable;
+  final String externalAppServerUnavailable;
   final String updateFailed;
   final String statusEnabled;
   final String Function(int count) approvedCount;
@@ -72,6 +74,10 @@ class AutoApprovalStrings {
         'answer, and plugin or connector installation remain manual.',
     unavailable:
         'Connect a current Bridge and open a Codex conversation with a stable ID.',
+    externalAppServerUnavailable:
+        'This turn is owned by an independent Codex app-server. Bridge cannot '
+        'observe or answer that server’s approval requests; handle them in '
+        'Codex Desktop.',
     updateFailed: 'Could not save the auto-approval setting.',
     statusEnabled: 'Auto approval on',
     approvedCount: (count) => '$count requests approved by this Bridge run',
@@ -98,6 +104,8 @@ class AutoApprovalStrings {
     warningBody: '命令、联网访问、文件修改、额外权限和 MCP 审批可能不再逐次询问；批准计划完成后会立即开始执行该计划。',
     exclusions: 'rm 等破坏性 shell 命令、需要你填写答案的问题，以及插件或连接器安装，始终保留人工处理。',
     unavailable: '请连接最新版 Bridge，并打开带稳定标识的 Codex 会话。',
+    externalAppServerUnavailable:
+        '当前会话由独立的 Codex app-server 托管；Bridge 无法观察或代答该进程的审批请求，请在 Codex Desktop 中处理。',
     updateFailed: '无法保存自动批准设置，请重试。',
     statusEnabled: '自动批准已开启',
     approvedCount: (count) => '本次 Bridge 运行已自动批准 $count 次',
@@ -123,6 +131,8 @@ class AutoApprovalStrings {
         '計画完了の承認後は、その計画の実行が直ちに開始されます。',
     exclusions: 'rm などの破壊的コマンド、回答が必要な質問、プラグイン／コネクタのインストールは手動のままです。',
     unavailable: '最新の Bridge と安定した ID を持つ Codex 会話が必要です。',
+    externalAppServerUnavailable:
+        'この会話は独立した Codex app-server が所有しています。Bridge はその承認要求を監視・回答できないため、Codex Desktop で処理してください。',
     updateFailed: '自動承認の設定を保存できませんでした。',
     statusEnabled: '自動承認オン',
     approvedCount: (count) => 'この起動中に承認を $count 件送信',
@@ -148,6 +158,8 @@ class AutoApprovalStrings {
         '계획 완료를 승인하면 해당 계획 실행이 즉시 시작됩니다.',
     exclusions: 'rm 같은 파괴적 명령, 답변이 필요한 질문, 플러그인 또는 커넥터 설치는 수동으로 처리합니다.',
     unavailable: '최신 Bridge와 안정적인 ID가 있는 Codex 대화가 필요합니다.',
+    externalAppServerUnavailable:
+        '이 대화는 독립 Codex app-server가 소유합니다. Bridge는 해당 승인 요청을 관찰하거나 응답할 수 없으므로 Codex Desktop에서 처리하세요.',
     updateFailed: '자동 승인 설정을 저장하지 못했습니다.',
     statusEnabled: '자동 승인 켜짐',
     approvedCount: (count) => '이번 앱 실행에서 승인 요청 $count건 전송',

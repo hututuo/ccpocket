@@ -277,16 +277,26 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
       return;
     }
 
-    const target = this.resolveTarget(message.sessionId);
-    if (!target) {
+    const targetResolution = this.resolveTarget(message.sessionId);
+    if (!targetResolution.target) {
+      const external =
+        targetResolution.unavailableReason === "external_app_server";
       await this.sendFailure(
         message,
         context,
-        new Error("Auto approval requires an active Codex conversation"),
-        "unsupported_session",
+        new Error(
+          external
+            ? "This conversation is owned by an independent Codex app-server; this Bridge cannot observe or answer its approval requests"
+            : "Auto approval requires a Bridge-owned Codex conversation",
+        ),
+        external
+          ? "external_app_server_approval_unsupported"
+          : "unsupported_session",
+        targetResolution.unavailableReason,
       );
       return;
     }
+    const target = targetResolution.target;
 
     try {
       if (message.type === "set_auto_approval") {
@@ -401,19 +411,21 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
     }
   }
 
-  private resolveTarget(
-    sessionId: string,
-  ): { session: LocalFeatureSession; threadId: string } | null {
+  private resolveTarget(sessionId: string): {
+    target: { session: LocalFeatureSession; threadId: string } | null;
+    unavailableReason?: "external_app_server" | "unsupported_session";
+  } {
     const session = this.runtime.getSession(sessionId);
-    if (
-      !session ||
-      session.provider !== "codex" ||
-      !(session.process instanceof CodexProcess)
-    ) {
-      return null;
+    if (!session || session.provider !== "codex") {
+      return { target: null, unavailableReason: "unsupported_session" };
+    }
+    if (!(session.process instanceof CodexProcess)) {
+      return { target: null, unavailableReason: "external_app_server" };
     }
     const threadId = this.runtime.getCodexThreadId(session);
-    return threadId ? { session, threadId } : null;
+    return threadId
+      ? { target: { session, threadId } }
+      : { target: null, unavailableReason: "unsupported_session" };
   }
 
   private supportsClient(client: object): boolean {
@@ -434,6 +446,7 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
       type: AUTO_APPROVAL_STATE_CAPABILITY,
       ...fields,
       ...visible,
+      supervisionAvailable: true,
       ...(fields.providerSessionId
         ? { approvedCount: this.approvedCounts.get(fields.providerSessionId) ?? 0 }
         : {}),
@@ -461,6 +474,7 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
     context: LocalFeatureHandleContext,
     error: unknown,
     errorCode = "state_update_failed",
+    unavailableReason?: "external_app_server" | "unsupported_session",
   ): Promise<void> {
     const visible = await this.store.visibleState();
     context.runtime.send(context.client, {
@@ -468,6 +482,12 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
       requestId: message.requestId,
       sessionId: message.sessionId,
       enabledConversationCount: visible.enabledConversationCount,
+      ...(unavailableReason
+        ? {
+            supervisionAvailable: false,
+            unavailableReason,
+          }
+        : {}),
       reason: message.type === "disable_all_auto_approvals"
         ? "disabled_all"
         : message.type === "import_legacy_auto_approvals"

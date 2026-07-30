@@ -71,6 +71,8 @@ class AutoApprovalStateMessage implements LocalFeatureTransientMessage {
   final bool? enabled;
   final int enabledConversationCount;
   final int? approvedCount;
+  final bool? supervisionAvailable;
+  final String? unavailableReason;
   final String reason;
   final String? error;
   final String? errorCode;
@@ -83,6 +85,8 @@ class AutoApprovalStateMessage implements LocalFeatureTransientMessage {
     this.providerSessionId,
     this.enabled,
     this.approvedCount,
+    this.supervisionAvailable,
+    this.unavailableReason,
     this.error,
     this.errorCode,
   });
@@ -101,6 +105,8 @@ class AutoApprovalStateMessage implements LocalFeatureTransientMessage {
       'enabled',
       'enabledConversationCount',
       'approvedCount',
+      'supervisionAvailable',
+      'unavailableReason',
       'reason',
       'error',
       'errorCode',
@@ -118,6 +124,12 @@ class AutoApprovalStateMessage implements LocalFeatureTransientMessage {
     final enabled = json['enabled'];
     final enabledConversationCount = json['enabledConversationCount'];
     final approvedCount = json['approvedCount'];
+    final supervisionAvailable = json['supervisionAvailable'];
+    final unavailableReason = _autoApprovalOptionalString(
+      json,
+      'unavailableReason',
+      64,
+    );
     final reason = _autoApprovalRequiredString(json, 'reason', 32);
     final error = _autoApprovalOptionalString(json, 'error', 1024);
     final errorCode = _autoApprovalOptionalString(json, 'errorCode', 128);
@@ -127,6 +139,13 @@ class AutoApprovalStateMessage implements LocalFeatureTransientMessage {
         enabledConversationCount > 4096 ||
         (approvedCount != null &&
             (approvedCount is! int || approvedCount < 0)) ||
+        (supervisionAvailable != null && supervisionAvailable is! bool) ||
+        (unavailableReason != null &&
+            !const {
+              'external_app_server',
+              'unsupported_session',
+            }.contains(unavailableReason)) ||
+        (supervisionAvailable != false && unavailableReason != null) ||
         !const {
           'query',
           'updated',
@@ -144,6 +163,8 @@ class AutoApprovalStateMessage implements LocalFeatureTransientMessage {
       enabled: enabled as bool?,
       enabledConversationCount: enabledConversationCount,
       approvedCount: approvedCount as int?,
+      supervisionAvailable: supervisionAvailable as bool?,
+      unavailableReason: unavailableReason,
       reason: reason,
       error: error,
       errorCode: errorCode,

@@ -214,6 +214,32 @@ void main() {
     );
   });
 
+  test('independent app-server boundary is retained for explicit UI', () async {
+    final harness = await _harness();
+    addTearDown(harness.service.dispose);
+    addTearDown(harness.bridge.dispose);
+    final query = harness.bridge.sent.single;
+    harness.bridge.emitFeature(
+      AutoApprovalStateMessage(
+        sessionId: 'runtime-1',
+        requestId: query['requestId'] as String,
+        enabledConversationCount: 0,
+        supervisionAvailable: false,
+        unavailableReason: 'external_app_server',
+        reason: 'query',
+        error: 'independent server',
+        errorCode: 'external_app_server_approval_unsupported',
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(harness.service.canConfigureSession('runtime-1'), isFalse);
+    expect(
+      harness.service.unavailableReasonForSession('runtime-1'),
+      'external_app_server',
+    );
+  });
+
   test(
     'imports matching legacy identities once and clears Mobile ownership',
     () async {

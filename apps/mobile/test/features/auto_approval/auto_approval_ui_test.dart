@@ -22,6 +22,7 @@ class _Bridge extends BridgeService {
   final sent = <ClientMessage>[];
   bool connected = true;
   bool autoApprovalEnabled = false;
+  bool externalAppServer = false;
   List<SessionInfo> currentSessions = const [
     SessionInfo(
       id: 'session-1',
@@ -61,11 +62,19 @@ class _Bridge extends BridgeService {
             AutoApprovalStateMessage(
               sessionId: json['sessionId'] as String,
               requestId: json['requestId'] as String,
-              providerSessionId: 'thread-1',
-              enabled: autoApprovalEnabled,
+              providerSessionId: externalAppServer ? null : 'thread-1',
+              enabled: externalAppServer ? null : autoApprovalEnabled,
               enabledConversationCount: autoApprovalEnabled ? 1 : 0,
               approvedCount: 0,
+              supervisionAvailable: !externalAppServer,
+              unavailableReason: externalAppServer
+                  ? 'external_app_server'
+                  : null,
               reason: 'query',
+              error: externalAppServer ? 'independent server' : null,
+              errorCode: externalAppServer
+                  ? 'external_app_server_approval_unsupported'
+                  : null,
             ),
           );
         case 'set_auto_approval':
@@ -121,10 +130,14 @@ Future<
     SharedPreferences preferences,
   })
 >
-_services({Map<String, Object> initialPreferences = const {}}) async {
+_services({
+  Map<String, Object> initialPreferences = const {},
+  bool externalAppServer = false,
+}) async {
   SharedPreferences.setMockInitialValues(initialPreferences);
   final preferences = await SharedPreferences.getInstance();
   final bridge = _Bridge();
+  bridge.externalAppServer = externalAppServer;
   final service = AutoApprovalService(bridge: bridge, preferences: preferences)
     ..initialize();
   return (
@@ -167,6 +180,30 @@ void main() {
 
     expect(services.service.isEnabledForSession('session-1'), isTrue);
     expect(find.text('Scope and risk'), findsOneWidget);
+  });
+
+  testWidgets('panel explains independent Desktop app-server boundary', (
+    tester,
+  ) async {
+    final services = await _services(externalAppServer: true);
+    addTearDown(services.service.dispose);
+    addTearDown(services.bridge.dispose);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AutoApprovalService>.value(
+        value: services.service,
+        child: const MaterialApp(
+          home: Scaffold(body: AutoApprovalPanel(sessionId: 'session-1')),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('independent Codex app-server'), findsOneWidget);
+    final toggle = tester.widget<SwitchListTile>(
+      find.byKey(const ValueKey('auto_approval_switch')),
+    );
+    expect(toggle.onChanged, isNull);
   });
 
   testWidgets('host registers an isolated menu, status, and pane slot', (

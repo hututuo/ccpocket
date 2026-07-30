@@ -17,6 +17,7 @@ class AutoApprovalPanel extends StatelessWidget {
     final available = service.canConfigureSession(sessionId);
     final enabled = service.isEnabledForSession(sessionId);
     final approvedCount = service.approvedCountForSession(sessionId);
+    final unavailableReason = service.unavailableReasonForSession(sessionId);
     final cs = Theme.of(context).colorScheme;
 
     return SafeArea(
@@ -55,7 +56,9 @@ class AutoApprovalPanel extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Text(
-                strings.unavailable,
+                unavailableReason == 'external_app_server'
+                    ? strings.externalAppServerUnavailable
+                    : strings.unavailable,
                 key: const ValueKey('auto_approval_unavailable'),
                 style: TextStyle(color: cs.error),
               ),

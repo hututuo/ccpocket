@@ -169,7 +169,36 @@ describe("AutoApprovalFeatureHandler", () => {
       enabled: true,
       enabledConversationCount: 1,
       approvedCount: 0,
+      supervisionAvailable: true,
       reason: "updated",
+    });
+  });
+
+  it("does not claim supervision for an independent Desktop app-server", async () => {
+    const store = await storeFixture();
+    const fixture = handlerFixture(store);
+    fixture.session.process = {};
+    fixture.handler.capabilitiesChanged(fixture.client);
+
+    await fixture.handler.handle(
+      {
+        type: "get_auto_approval_state",
+        sessionId: fixture.session.id,
+        requestId: "desktop-request",
+      },
+      fixture.context,
+    );
+
+    expect(fixture.sent).toContainEqual({
+      type: "auto_approval_state_v1",
+      requestId: "desktop-request",
+      sessionId: "session-1",
+      enabledConversationCount: 0,
+      supervisionAvailable: false,
+      unavailableReason: "external_app_server",
+      reason: "query",
+      errorCode: "external_app_server_approval_unsupported",
+      error: expect.stringContaining("independent Codex app-server"),
     });
   });
 
