@@ -215,6 +215,15 @@ class CodexDesktopContinuityEventMessage
         'Desktop continuity message payload must be a map.',
       );
     }
+    final timestamp = optionalString('timestamp');
+    Map<String, dynamic>? payloadJson;
+    if (rawPayload != null) {
+      payloadJson = Map<String, dynamic>.from(rawPayload);
+      if (timestamp != null) {
+        payloadJson.putIfAbsent('sourceTimestamp', () => timestamp);
+        payloadJson.putIfAbsent('sourceTimestampIsAuthoritative', () => true);
+      }
+    }
     final message = CodexDesktopContinuityEventMessage(
       event: event,
       requestId: requestId,
@@ -230,11 +239,9 @@ class CodexDesktopContinuityEventMessage
       outcome: optionalString('outcome'),
       historyReady: json['historyReady'] as bool? ?? false,
       handoffQueued: json['handoffQueued'] as bool? ?? false,
-      timestamp: optionalString('timestamp'),
+      timestamp: timestamp,
       itemKey: optionalString('itemKey'),
-      payload: rawPayload == null
-          ? null
-          : ServerMessage.fromJson(Map<String, dynamic>.from(rawPayload)),
+      payload: payloadJson == null ? null : ServerMessage.fromJson(payloadJson),
       errorCode: optionalString('errorCode'),
       error: optionalString('error'),
     );

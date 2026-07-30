@@ -10,6 +10,7 @@ CodexDesktopContinuityEventMessage _event({
   String? turnId = 'turn-1',
   String bridgeInstanceId = 'bridge-1',
   bool turnSteerable = false,
+  String? timestamp,
 }) {
   return CodexDesktopContinuityEventMessage(
     event: event,
@@ -21,10 +22,20 @@ CodexDesktopContinuityEventMessage _event({
     state: state,
     turnId: turnId,
     turnSteerable: turnSteerable,
+    timestamp: timestamp,
     itemKey: itemKey,
     payload: payload,
   );
 }
+
+ServerMessage _timestampedPayload(
+  Map<String, dynamic> json,
+  String sourceTimestamp,
+) => ServerMessage.fromJson({
+  ...json,
+  'sourceTimestamp': sourceTimestamp,
+  'sourceTimestampIsAuthoritative': true,
+});
 
 void main() {
   test('aggregates live deltas and deduplicates continuity item keys', () {
@@ -86,6 +97,65 @@ void main() {
       'Partial answer',
     );
     expect(backlog.take('session-1'), isNull);
+  });
+
+  test('retains authoritative time when backlog deltas are aggregated', () {
+    final backlog = DesktopContinuityBacklog();
+    backlog.record(
+      _event(
+        event: CodexDesktopContinuityEventKind.message,
+        itemKey: 'thinking-1',
+        payload: _timestampedPayload({
+          'type': 'thinking_delta',
+          'text': 'first ',
+        }, '2026-07-31T01:00:00.000Z'),
+      ),
+    );
+    backlog.record(
+      _event(
+        event: CodexDesktopContinuityEventKind.message,
+        itemKey: 'thinking-2',
+        payload: _timestampedPayload({
+          'type': 'thinking_delta',
+          'text': 'second',
+        }, '2026-07-31T01:00:01.000Z'),
+      ),
+    );
+    backlog.record(
+      _event(
+        event: CodexDesktopContinuityEventKind.message,
+        itemKey: 'output-1',
+        payload: _timestampedPayload({
+          'type': 'stream_delta',
+          'text': 'answer',
+        }, '2026-07-31T01:00:02.000Z'),
+      ),
+    );
+
+    final snapshot = backlog.take('session-1')!;
+    final thinking = snapshot.transientPayloads.first.payload;
+    final output = snapshot.transientPayloads.last.payload;
+
+    expect(
+      serverMessageTimestamp(thinking),
+      isA<ServerMessageTimestamp>()
+          .having(
+            (value) => value.value,
+            'value',
+            DateTime.parse('2026-07-31T01:00:01.000Z'),
+          )
+          .having((value) => value.isAuthoritative, 'isAuthoritative', isTrue),
+    );
+    expect(
+      serverMessageTimestamp(output),
+      isA<ServerMessageTimestamp>()
+          .having(
+            (value) => value.value,
+            'value',
+            DateTime.parse('2026-07-31T01:00:02.000Z'),
+          )
+          .having((value) => value.isAuthoritative, 'isAuthoritative', isTrue),
+    );
   });
 
   test('terminal state clears stale live deltas before handoff', () {

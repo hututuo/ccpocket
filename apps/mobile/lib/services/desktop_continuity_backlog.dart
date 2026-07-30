@@ -90,6 +90,7 @@ class DesktopContinuityBacklog {
             message.turnId,
             _TransientKind.thinking,
             payload.text,
+            timestamp: serverMessageTimestamp(payload),
             maxCharacters: maxTransientCharactersPerSession,
           );
         } else if (payload is StreamDeltaMessage) {
@@ -97,6 +98,7 @@ class DesktopContinuityBacklog {
             message.turnId,
             _TransientKind.output,
             payload.text,
+            timestamp: serverMessageTimestamp(payload),
             maxCharacters: maxTransientCharactersPerSession,
           );
         } else if (payload is AssistantServerMessage ||
@@ -241,6 +243,7 @@ class _PendingSession {
     String? turnId,
     _TransientKind kind,
     String text, {
+    ServerMessageTimestamp? timestamp,
     required int maxCharacters,
   }) {
     if (text.isEmpty) return;
@@ -251,6 +254,9 @@ class _PendingSession {
     );
     accumulator.chunks.add(text);
     accumulator.characters += text.length;
+    if (timestamp != null) {
+      accumulator.timestamp = timestamp;
+    }
     transientCharacters += text.length;
     while (transientCharacters > maxCharacters && _transients.isNotEmpty) {
       truncated = true;
@@ -285,12 +291,21 @@ class _PendingSession {
     for (final accumulator in _transients.values) {
       final text = accumulator.chunks.join();
       if (text.isEmpty) continue;
+      final payload = accumulator.kind == _TransientKind.thinking
+          ? ThinkingDeltaMessage(text: text)
+          : StreamDeltaMessage(text: text);
+      final timestamp = accumulator.timestamp;
+      if (timestamp != null) {
+        attachServerMessageTimestamp(
+          payload,
+          value: timestamp.value,
+          isAuthoritative: timestamp.isAuthoritative,
+        );
+      }
       payloads.add(
         DesktopContinuityTransientPayload(
           turnId: accumulator.turnId,
-          payload: accumulator.kind == _TransientKind.thinking
-              ? ThinkingDeltaMessage(text: text)
-              : StreamDeltaMessage(text: text),
+          payload: payload,
         ),
       );
     }
@@ -316,4 +331,5 @@ class _TransientChunks {
   final _TransientKind kind;
   final Queue<String> chunks = Queue();
   int characters = 0;
+  ServerMessageTimestamp? timestamp;
 }

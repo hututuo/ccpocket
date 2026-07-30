@@ -353,24 +353,30 @@ void main() {
         ),
       );
       bridge.emitFeature(
-        CodexDesktopContinuityEventMessage(
-          event: CodexDesktopContinuityEventKind.message,
-          requestId: requestId,
-          bridgeInstanceId: 'bridge-1',
-          sessionId: 'session-1',
-          threadId: 'thread-1',
-          origin: 'desktop_rollout',
-          turnId: 'turn-1',
-          itemKey: 'assistant-1',
-          payload: const AssistantServerMessage(
-            message: AssistantMessage(
-              id: 'assistant-1',
-              role: 'assistant',
-              content: [TextContent(text: 'Desktop reply')],
-              model: 'codex',
-            ),
-          ),
-        ),
+        ServerMessage.fromJson({
+              'type': 'codex_desktop_continuity_event_v1',
+              'event': 'message',
+              'requestId': requestId,
+              'bridgeInstanceId': 'bridge-1',
+              'sessionId': 'session-1',
+              'threadId': 'thread-1',
+              'origin': 'desktop_rollout',
+              'turnId': 'turn-1',
+              'timestamp': '2026-07-31T01:02:03.456Z',
+              'itemKey': 'assistant-1',
+              'message': {
+                'type': 'assistant',
+                'message': {
+                  'id': 'assistant-1',
+                  'role': 'assistant',
+                  'content': [
+                    {'type': 'text', 'text': 'Desktop reply'},
+                  ],
+                  'model': 'codex',
+                },
+              },
+            })
+            as CodexDesktopContinuityEventMessage,
       );
       bridge.emitFeature(
         CodexDesktopContinuityEventMessage(
@@ -395,6 +401,25 @@ void main() {
             .message
             .id,
         'assistant-1',
+      );
+      expect(
+        serverMessageTimestamp(
+          bridge
+              .cachedSessionMessages('session-1')
+              .whereType<AssistantServerMessage>()
+              .single,
+        ),
+        isA<ServerMessageTimestamp>()
+            .having(
+              (value) => value.value,
+              'value',
+              DateTime.parse('2026-07-31T01:02:03.456Z'),
+            )
+            .having(
+              (value) => value.isAuthoritative,
+              'isAuthoritative',
+              isTrue,
+            ),
       );
       final handoff = bridge.takeBackgroundDesktopContinuity(
         'session-1',

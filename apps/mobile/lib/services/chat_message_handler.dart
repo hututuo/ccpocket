@@ -203,7 +203,7 @@ class ChatMessageHandler {
         currentThinkingText += text;
         return const ChatStateUpdate();
       case StreamDeltaMessage(:final text):
-        return _handleStreamDelta(text);
+        return _handleStreamDelta(msg, text);
       case AssistantServerMessage(:final message):
         return _handleAssistant(
           msg,
@@ -448,9 +448,14 @@ class ChatMessageHandler {
     );
   }
 
-  ChatStateUpdate _handleStreamDelta(String text) {
+  ChatStateUpdate _handleStreamDelta(StreamDeltaMessage message, String text) {
     if (currentStreaming == null) {
-      currentStreaming = StreamingChatEntry(text: text);
+      final timestamp = serverMessageTimestamp(message);
+      currentStreaming = StreamingChatEntry(
+        text: text,
+        timestamp: timestamp?.value.toLocal(),
+        timestampIsAuthoritative: timestamp?.isAuthoritative ?? false,
+      );
       return ChatStateUpdate(entriesToAdd: [currentStreaming!]);
     }
     currentStreaming!.text += text;
