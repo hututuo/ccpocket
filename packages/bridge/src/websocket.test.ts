@@ -15450,6 +15450,120 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("keeps external Desktop guidance queued without proven app-server ownership", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    Object.setPrototypeOf(session.process, CodexProcess.prototype);
+    session.process.activeTurnId = undefined;
+    session.codexQueuedInput = {
+      itemId: "queued-external",
+      text: "keep this for later",
+      createdAt: new Date().toISOString(),
+    };
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "hasExternalCodexActivity",
+    ).mockReturnValue(true);
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "externalCodexTurnId",
+    ).mockReturnValue("desktop-turn");
+    const steerQueuedInput = vi.spyOn(
+      (bridge as any).sessionManager,
+      "steerCodexQueuedInput",
+    );
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "steer_queued_input",
+        sessionId: created.sessionId,
+        itemId: "queued-external",
+        expectedTurnId: "desktop-turn",
+      },
+      ws,
+    );
+
+    expect(steerQueuedInput).not.toHaveBeenCalled();
+    expect(session.process.steerTurnStructured).not.toHaveBeenCalled();
+    expect(session.codexQueuedInput?.itemId).toBe("queued-external");
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "error",
+      errorCode: "external_turn_not_steerable",
+      sessionId: created.sessionId,
+    });
+    bridge.close();
+  });
+
+  it("steers an external turn only when the Bridge process owns the exact turn", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    Object.setPrototypeOf(session.process, CodexProcess.prototype);
+    session.process.activeTurnId = "shared-turn";
+    session.codexQueuedInput = {
+      itemId: "queued-shared",
+      text: "guide the shared turn",
+      createdAt: new Date().toISOString(),
+    };
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "hasExternalCodexActivity",
+    ).mockReturnValue(true);
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "externalCodexTurnId",
+    ).mockReturnValue("shared-turn");
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "steer_queued_input",
+        sessionId: created.sessionId,
+        itemId: "queued-shared",
+        expectedTurnId: "shared-turn",
+      },
+      ws,
+    );
+
+    expect(session.process.steerTurnStructured).toHaveBeenCalledWith(
+      "shared-turn",
+      "guide the shared turn",
+      {
+        images: undefined,
+        skills: undefined,
+        mentions: undefined,
+      },
+    );
+    expect(session.codexQueuedInput).toBeUndefined();
+    bridge.close();
+  });
+
   it("rejects guidance when overlapping Desktop turns have no unique target", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;

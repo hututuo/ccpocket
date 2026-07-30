@@ -767,6 +767,27 @@ void main() {
         expect(steerJson['expectedTurnId'], 'turn-desktop');
         expect(steerMessage.delivery, ClientMessageDelivery.ephemeral);
 
+        mockBridge.emitMessage(
+          const ErrorMessage(
+            message:
+                'This Desktop turn is owned by another app-server connection.',
+            errorCode: 'external_turn_not_steerable',
+            sessionId: 's1',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.queuedInput?.itemId, 'queued-1');
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().where(
+            (entry) =>
+                entry.message is ErrorMessage &&
+                (entry.message as ErrorMessage).errorCode ==
+                    'external_turn_not_steerable',
+          ),
+          hasLength(1),
+        );
+
         mockBridge.emitLocalFeature(
           CodexDesktopContinuityEventMessage(
             event: CodexDesktopContinuityEventKind.state,

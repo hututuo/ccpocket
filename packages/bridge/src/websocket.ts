@@ -5264,11 +5264,28 @@ export class BridgeWebSocketServer {
               type: "error",
               message: "The Desktop turn changed before guidance was applied.",
               errorCode: "queued_input_steer_stale_turn",
+              sessionId: session.id,
+            });
+            return;
+          }
+          const owningProcess = session.process;
+          if (
+            !(owningProcess instanceof CodexProcess) ||
+            owningProcess.activeTurnId !== msg.expectedTurnId
+          ) {
+            this.send(ws, {
+              type: "error",
+              message:
+                "This Desktop turn is visible to Bridge but is owned by another app-server connection. The queued message was kept.",
+              errorCode: "external_turn_not_steerable",
+              sessionId: session.id,
             });
             return;
           }
           targetTurnId = msg.expectedTurnId;
           isExpectedTurnCurrent = () =>
+            this.sessionManager.get(session.id)?.process === owningProcess &&
+            owningProcess.activeTurnId === targetTurnId &&
             this.localFeatures.hasExternalCodexActivity(session) &&
             this.localFeatures.externalCodexTurnId(session) === targetTurnId;
         } else {
@@ -5284,6 +5301,7 @@ export class BridgeWebSocketServer {
                 externalTurnId === undefined
                   ? "queued_input_steer_ambiguous_turn"
                   : "queued_input_steer_stale_turn",
+              sessionId: session.id,
             });
             return;
           }
@@ -5294,6 +5312,7 @@ export class BridgeWebSocketServer {
               type: "error",
               message: "No exact local Codex turn is available to guide.",
               errorCode: "queued_input_steer_stale_turn",
+              sessionId: session.id,
             });
             return;
           }
@@ -5320,6 +5339,7 @@ export class BridgeWebSocketServer {
                     "The target turn changed before guidance was applied."
                   ? "queued_input_steer_stale_turn"
                   : "queued_input_steer_failed",
+            sessionId: session.id,
           });
           return;
         }
