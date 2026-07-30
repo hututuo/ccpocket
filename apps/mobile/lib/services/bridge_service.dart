@@ -2548,7 +2548,11 @@ class BridgeService implements BridgeServiceBase {
                   : 'bridge_frame_parse_failed',
               sessionId: diagnosticSessionId,
             );
-            _taggedMessageController.add((errorMsg, diagnosticSessionId));
+            // A malformed frame without a proven session owner is a
+            // connection diagnostic, not a message for every open chat.
+            if (diagnosticSessionId != null) {
+              _taggedMessageController.add((errorMsg, diagnosticSessionId));
+            }
             _messageController.add(errorMsg);
             if (diagnosticType == 'session_list' || isSessionListFrame) {
               final errorKind = _diagnosticToken(e.runtimeType.toString());
@@ -5293,7 +5297,10 @@ class BridgeService implements BridgeServiceBase {
     if (_outstandingLegacyHistoryRequests.isEmpty) return;
     String? target;
     if (sessionId != null) {
-      if (msg.errorCode == 'session_not_found') target = sessionId;
+      if (msg.errorCode == 'session_not_found' ||
+          msg.errorCode == 'history_read_failed') {
+        target = sessionId;
+      }
     } else {
       target = _legacySessionNotFoundPattern.firstMatch(msg.message)?.group(1);
     }

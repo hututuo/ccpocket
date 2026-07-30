@@ -91,7 +91,7 @@ void main() {
         );
         await _waitUntil(() => listSessionRequests == 1);
         bridge.requestSessionList();
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await Future<void>.delayed(Duration.zero);
         expect(requestsByConnection[1], 1);
 
         await _waitUntil(
@@ -407,6 +407,18 @@ void main() {
           .firstWhere(
             (message) => message.errorCode == 'bridge_frame_parse_failed',
           );
+      final sessionAErrors = <ErrorMessage>[];
+      final sessionBErrors = <ErrorMessage>[];
+      final sessionASubscription = bridge
+          .messagesForSession('session-a')
+          .where((message) => message is ErrorMessage)
+          .cast<ErrorMessage>()
+          .listen(sessionAErrors.add);
+      final sessionBSubscription = bridge
+          .messagesForSession('session-b')
+          .where((message) => message is ErrorMessage)
+          .cast<ErrorMessage>()
+          .listen(sessionBErrors.add);
       try {
         bridge.connect('ws://127.0.0.1:${server.port}');
         await _waitUntil(
@@ -422,7 +434,12 @@ void main() {
         expect(diagnostics, contains('event=frame_parse_failed'));
         expect(diagnostics, contains('error=FormatException'));
         expect(diagnostics, isNot(contains('private-payload-is-not-json')));
+        await Future<void>.delayed(Duration.zero);
+        expect(sessionAErrors, isEmpty);
+        expect(sessionBErrors, isEmpty);
       } finally {
+        await sessionASubscription.cancel();
+        await sessionBSubscription.cancel();
         await _closeFixture(bridge, server, sockets);
       }
     },
@@ -477,6 +494,63 @@ void main() {
         ),
         isEmpty,
       );
+    } finally {
+      await otherSubscription.cancel();
+      await _closeFixture(bridge, server, sockets);
+    }
+  });
+
+  test('targeted history errors stay in the requested session', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final sockets = <WebSocket>[];
+    server.transform(WebSocketTransformer()).listen((socket) {
+      sockets.add(socket);
+      socket.listen((data) {
+        final message = jsonDecode(data as String) as Map<String, dynamic>;
+        switch (message['type']) {
+          case 'list_sessions':
+            socket.add(
+              jsonEncode({'type': 'session_list', 'sessions': const []}),
+            );
+          case 'get_history':
+            socket.add(
+              jsonEncode({
+                'type': 'error',
+                'message': 'Failed to read Codex thread history',
+                'errorCode': 'history_read_failed',
+                'sessionId': message['sessionId'],
+              }),
+            );
+        }
+      });
+    });
+
+    final bridge = BridgeService(
+      authoritativeSessionListTimeout: _testAuthorityTimeout,
+    );
+    final otherSessionErrors = <ErrorMessage>[];
+    final otherSubscription = bridge
+        .messagesForSession('session-b')
+        .where((message) => message is ErrorMessage)
+        .cast<ErrorMessage>()
+        .listen(otherSessionErrors.add);
+    final scopedError = bridge
+        .messagesForSession('session-a')
+        .where((message) => message is ErrorMessage)
+        .cast<ErrorMessage>()
+        .firstWhere((message) => message.errorCode == 'history_read_failed');
+    try {
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      await _waitUntil(
+        () => bridge.hasAuthoritativeSessionListForCurrentConnection,
+      );
+      bridge.requestSessionHistory('session-a');
+
+      final error = await scopedError.timeout(const Duration(seconds: 1));
+      expect(error.message, 'Failed to read Codex thread history');
+      expect(error.sessionId, 'session-a');
+      await Future<void>.delayed(Duration.zero);
+      expect(otherSessionErrors, isEmpty);
     } finally {
       await otherSubscription.cancel();
       await _closeFixture(bridge, server, sockets);
