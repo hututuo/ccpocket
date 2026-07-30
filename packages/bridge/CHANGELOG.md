@@ -2,6 +2,20 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.69.4-compat.6] - 2026-07-30
+
+### Fixed
+- Distinguish an ordinary app-server `notLoaded` thread from a genuinely
+  unavailable runtime, so build 206 and older no longer label every dormant
+  conversation as unavailable.
+- Invalidate the prior status snapshot token before applying the corrected
+  compatibility projection.
+
+### Compatibility
+- Preserve canonical `unknown` plus `notLoaded` status semantics for clients
+  that advertise `app_server_status_v1`; older clients receive a neutral
+  activity projection while retaining unknown confidence and attachment data.
+
 ## [1.69.4-compat.3] - 2026-07-28
 
 ### Added
