@@ -241,7 +241,21 @@ type ResumeOperation = {
     completedAt: number;
   };
 };
-const RESUME_OPERATION_TIMEOUT_MS = 5 * 60 * 1000;
+const RESUME_OPERATION_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const RESUME_PROGRESS_STAGE_RANK: Record<SessionLinkProgressStage, number> = {
+  request_accepted: 0,
+  runtime_checked: 1,
+  catalog_scanning: 2,
+  catalog_scanned: 3,
+  resolution_ready: 4,
+  resume_lock_waiting: 5,
+  resume_lock_acquired: 6,
+  history_reading: 7,
+  history_read: 8,
+  runtime_starting: 9,
+  metadata_loading: 10,
+  ready: 11,
+};
 const RESUME_COMPLETED_TTL_MS = 30 * 1000;
 type ClaudePermissionMode =
   "default" | "auto" | "acceptEdits" | "bypassPermissions" | "plan";
@@ -10109,6 +10123,37 @@ export class BridgeWebSocketServer {
     }
   }
 
+  private armResumeOperationIdleTimeout(
+    key: string,
+    operation: ResumeOperation,
+  ): void {
+    if (operation.timeout) clearTimeout(operation.timeout);
+    const timeout = setTimeout(() => {
+      this.failResumeOperation(
+        key,
+        operation.id,
+        "Session restore made no progress for five minutes. Please reconnect and try again.",
+      );
+    }, RESUME_OPERATION_IDLE_TIMEOUT_MS);
+    timeout.unref?.();
+    operation.timeout = timeout;
+  }
+
+  private isEffectiveResumeOperationProgress(
+    previous: ResumeOperationProgress | undefined,
+    next: ResumeOperationProgress,
+  ): boolean {
+    if (!previous) return true;
+    const previousRank = RESUME_PROGRESS_STAGE_RANK[previous.stage];
+    const nextRank = RESUME_PROGRESS_STAGE_RANK[next.stage];
+    if (nextRank > previousRank) return true;
+    if (next.stage !== previous.stage) return false;
+    return (
+      next.completedUnits !== undefined &&
+      next.completedUnits > (previous.completedUnits ?? 0)
+    );
+  }
+
   private ensurePendingClaudeResume(
     ws: WebSocket,
     sourceSessionId: string,
@@ -10244,16 +10289,8 @@ export class BridgeWebSocketServer {
         },
       ],
     };
-    const timeout = setTimeout(() => {
-      this.failResumeOperation(
-        key,
-        operationId,
-        "Session restore is taking longer than expected. Please reconnect and try again.",
-      );
-    }, RESUME_OPERATION_TIMEOUT_MS);
-    timeout.unref?.();
-    newOperation.timeout = timeout;
     this.resumeOperations.set(key, newOperation);
+    this.armResumeOperationIdleTimeout(key, newOperation);
     return { key, operationId, isOwner: true };
   }
 
@@ -10344,12 +10381,18 @@ export class BridgeWebSocketServer {
     if (!operation || operation.id !== operationId || operation.completed) {
       return;
     }
-    operation.latestProgress = { stage, ...counts };
+    const progress = { stage, ...counts };
+    if (
+      this.isEffectiveResumeOperationProgress(
+        operation.latestProgress,
+        progress,
+      )
+    ) {
+      operation.latestProgress = progress;
+      this.armResumeOperationIdleTimeout(key, operation);
+    }
     for (const waiter of operation.waiters) {
-      this.sendResumeProgressToWaiter(waiter, operation, {
-        stage,
-        ...counts,
-      });
+      this.sendResumeProgressToWaiter(waiter, operation, progress);
     }
   }
 

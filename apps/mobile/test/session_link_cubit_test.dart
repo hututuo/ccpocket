@@ -350,6 +350,98 @@ void main() {
     },
   );
 
+  test(
+    'effective resume progress can continue beyond the old hard cap',
+    () async {
+      final recentSession = _recentSession();
+      bridge.progressSupported = true;
+      bridge.result = SessionLinkResolveResult.resolved(
+        SessionLinkResolutionMessage(
+          requestId: 'request-long-running',
+          sourceSessionId: recentSession.sessionId,
+          status: SessionLinkResolutionStatus.recent,
+          provider: 'claude',
+          recentSession: recentSession,
+          generation: 12,
+        ),
+        generation: 12,
+      );
+      final cubit = SessionLinkCubit(
+        bridge: bridge,
+        sourceSessionId: recentSession.sessionId,
+        provider: 'claude',
+        resumeCoordinator: _ResumeCoordinator(bridge: bridge),
+        resumeRequestId: 'link-request-long-running',
+        progressIdleTimeout: const Duration(milliseconds: 500),
+        progressHardTimeout: const Duration(milliseconds: 40),
+      );
+      addTearDown(cubit.close);
+
+      await cubit.resolve();
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+
+      expect(cubit.state, const SessionLinkState.resuming());
+      bridge.controller.add(
+        SessionLinkProgressMessage(
+          requestId: 'link-request-long-running',
+          sourceSessionId: recentSession.sessionId,
+          generation: 12,
+          operation: SessionLinkProgressOperation.resume,
+          stage: SessionLinkProgressStage.historyReading,
+          sequence: 1,
+          observedAt: '2026-07-31T00:00:01Z',
+          completedUnits: 1,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      bridge.controller.add(
+        const SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'bridge-long-running',
+          resumeRequestId: 'link-request-long-running',
+          sessionLinkGeneration: 12,
+          provider: 'claude',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(cubit.state, isA<SessionLinkOpenResumed>());
+      expect(cubit.lastFailureCode, isNull);
+    },
+  );
+
+  test('resume fails only after effective progress becomes idle', () async {
+    final recentSession = _recentSession();
+    bridge.progressSupported = true;
+    bridge.result = SessionLinkResolveResult.resolved(
+      SessionLinkResolutionMessage(
+        requestId: 'request-stalled',
+        sourceSessionId: recentSession.sessionId,
+        status: SessionLinkResolutionStatus.recent,
+        provider: 'claude',
+        recentSession: recentSession,
+        generation: 13,
+      ),
+      generation: 13,
+    );
+    final cubit = SessionLinkCubit(
+      bridge: bridge,
+      sourceSessionId: recentSession.sessionId,
+      provider: 'claude',
+      resumeCoordinator: _ResumeCoordinator(bridge: bridge),
+      resumeRequestId: 'link-request-stalled',
+      progressIdleTimeout: const Duration(milliseconds: 60),
+      progressHardTimeout: const Duration(milliseconds: 10),
+    );
+    addTearDown(cubit.close);
+
+    await cubit.resolve();
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+
+    expect(cubit.state, const SessionLinkState.unavailable());
+    expect(cubit.lastFailureCode, 'progress_idle_timeout');
+  });
+
   test('ignores resume completions owned by another caller', () async {
     final recentSession = _recentSession();
     bridge.result = SessionLinkResolveResult.resolved(

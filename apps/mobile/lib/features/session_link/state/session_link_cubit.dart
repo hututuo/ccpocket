@@ -180,22 +180,9 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
         observedAt: DateTime.now().toUtc().toIso8601String(),
       ),
     );
-    _armResumeHardTimer();
-    final dispatch = await _resumeCoordinator.resume(
-      session,
-      resumeRequestId: _resumeRequestId,
-      sessionLinkGeneration: _bridge.supportsSessionLinkProgress
-          ? _linkGeneration
-          : null,
-    );
-    if (isClosed) return;
-    _resumeGitBranch = dispatch.gitBranch;
-    if (dispatch.disposition == SessionResumeDisposition.alreadyQueued) {
-      await _cancelResumeSubscription();
-      _showUnavailable('resume_already_queued');
-      return;
-    }
-    if (_bridge.supportsSessionLinkProgress && _linkGeneration != null) {
+    final progressCapable =
+        _bridge.supportsSessionLinkProgress && _linkGeneration != null;
+    if (progressCapable) {
       _armResumeIdleTimer();
     } else {
       _resumeHardTimer?.cancel();
@@ -203,6 +190,18 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
         _legacyResumeTimeout,
         () => _onResumeTimeout('legacy_resume_timeout'),
       );
+    }
+    final dispatch = await _resumeCoordinator.resume(
+      session,
+      resumeRequestId: _resumeRequestId,
+      sessionLinkGeneration: progressCapable ? _linkGeneration : null,
+    );
+    if (isClosed || state is! SessionLinkResuming) return;
+    _resumeGitBranch = dispatch.gitBranch;
+    if (dispatch.disposition == SessionResumeDisposition.alreadyQueued) {
+      await _cancelResumeSubscription();
+      _showUnavailable('resume_already_queued');
+      return;
     }
   }
 
@@ -290,14 +289,6 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
     _resumeIdleTimer = Timer(
       _progressIdleTimeout,
       () => _onResumeTimeout('progress_idle_timeout'),
-    );
-  }
-
-  void _armResumeHardTimer() {
-    _resumeHardTimer?.cancel();
-    _resumeHardTimer = Timer(
-      _progressHardTimeout,
-      () => _onResumeTimeout('progress_hard_timeout'),
     );
   }
 

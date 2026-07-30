@@ -5293,7 +5293,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         ws.send.mock.calls
           .map((call: unknown[]) => JSON.parse(call[0] as string))
           .find((message: any) => message.type === "error")?.message,
-      ).toContain("taking longer than expected");
+      ).toContain("made no progress");
       expect(
         ws.send.mock.calls
           .map((call: unknown[]) => JSON.parse(call[0] as string))
@@ -5307,6 +5307,69 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         provider: "claude",
         projectPath: resolve("/tmp/project-a"),
       });
+      bridge.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a resume alive while meaningful progress crosses the old hard cap", async () => {
+    vi.useFakeTimers();
+    try {
+      let reportHistoryProgress:
+        | ((progress: { completedUnits: number }) => void)
+        | undefined;
+      getSessionHistoryMock.mockImplementation(
+        (
+          _sessionId: string,
+          options: {
+            onProgress?: (progress: { completedUnits: number }) => void;
+          },
+        ) => {
+          reportHistoryProgress = options.onProgress;
+          return new Promise(() => {});
+        },
+      );
+      const bridge = new BridgeWebSocketServer({ server: httpServer });
+      const ws = {
+        readyState: OPEN_STATE,
+        send: vi.fn(),
+      } as any;
+
+      void (bridge as any).handleClientMessage(
+        {
+          type: "resume_session",
+          sessionId: "claude-session-progressing",
+          projectPath: "/tmp/project-a",
+          provider: "claude",
+        },
+        ws,
+      );
+      expect(reportHistoryProgress).toBeTypeOf("function");
+
+      await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+      reportHistoryProgress?.({ completedUnits: 1 });
+      await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+      reportHistoryProgress?.({ completedUnits: 2 });
+
+      expect((bridge as any).resumeOperations.size).toBe(1);
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .some(
+            (message: any) =>
+              message.type === "system" &&
+              message.subtype === "session_resume_failed",
+          ),
+      ).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      expect((bridge as any).resumeOperations.size).toBe(0);
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .find((message: any) => message.type === "error")?.message,
+      ).toContain("made no progress");
       bridge.close();
     } finally {
       vi.useRealTimers();

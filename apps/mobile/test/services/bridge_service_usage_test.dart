@@ -1936,6 +1936,76 @@ void main() {
     );
 
     test(
+      'progress-capable resolution survives the former hard deadline',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+        final bridge = BridgeService();
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-long-running',
+          codexSourceId: 'source-long-running',
+          bridgeCapabilities: const [sessionLinkProgressCapability],
+        );
+        final requestFuture = socket
+            .where((event) {
+              final json = jsonDecode(event as String) as Map<String, dynamic>;
+              return json['type'] == 'resolve_session_link';
+            })
+            .map((event) => jsonDecode(event as String) as Map<String, dynamic>)
+            .first;
+        final resolution = bridge.resolveSessionLink(
+          'claude-long-running',
+          progressIdleTimeout: const Duration(seconds: 1),
+          progressHardTimeout: const Duration(milliseconds: 50),
+        );
+        final request = await requestFuture.timeout(const Duration(seconds: 2));
+        final generation = request['sessionLinkGeneration'] as int;
+
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        socket.add(
+          jsonEncode({
+            'type': sessionLinkProgressCapability,
+            'requestId': request['requestId'],
+            'sourceSessionId': 'claude-long-running',
+            'generation': generation,
+            'operation': 'resolve',
+            'stage': 'catalog_scanning',
+            'sequence': 1,
+            'completedUnits': 1,
+            'observedAt': '2026-07-31T00:00:01Z',
+          }),
+        );
+        socket.add(
+          jsonEncode({
+            'type': 'session_link_resolution',
+            'requestId': request['requestId'],
+            'sourceSessionId': 'claude-long-running',
+            'sessionLinkGeneration': generation,
+            'status': 'live',
+            'bridgeSessionId': 'bridge-live',
+            'provider': 'claude',
+          }),
+        );
+
+        final result = await resolution.timeout(const Duration(seconds: 2));
+        expect(result.support, SessionLinkResolveSupport.resolved);
+        expect(result.resolution?.bridgeSessionId, 'bridge-live');
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'duplicate session link heartbeat does not renew the idle timeout',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
