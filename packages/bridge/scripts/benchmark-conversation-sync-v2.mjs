@@ -4,8 +4,13 @@ import { CodexProcess } from "../dist/codex-process.js";
 import { ConversationSyncV2FeatureHandler } from "../dist/local-features/conversation-sync-v2.js";
 
 const CAPABILITY = "conversation_sync_v2";
-const CATALOG_ENTRIES = 1_500;
-const ITERATIONS = 20;
+const LIVE_CATALOG_LIMIT = 1_500;
+const LIVE_CATALOG_ITERATIONS = 20;
+const LIVE_DELTA_COUNT = 1_000;
+const BENCHMARK_CASES = [
+  { catalogEntries: 1_500, iterations: 20 },
+  { catalogEntries: 10_000, iterations: 5 },
+];
 
 function percentile(samples, quantile) {
   const index = Math.min(
@@ -15,8 +20,8 @@ function percentile(samples, quantile) {
   return samples[index];
 }
 
-function syntheticSeeds() {
-  return Array.from({ length: CATALOG_ENTRIES }, (_, index) => {
+function syntheticSeeds(catalogEntries) {
+  return Array.from({ length: catalogEntries }, (_, index) => {
     const timestamp =
       index < 10
         ? Date.now() - index * 60_000
@@ -78,10 +83,11 @@ function context(client, runtime) {
   };
 }
 
-async function runSyntheticIteration(iteration) {
-  const seeds = syntheticSeeds();
+async function runSyntheticIteration(iteration, catalogEntries) {
+  const seeds = syntheticSeeds(catalogEntries);
   const firstClient = {};
   let handler;
+  let catalogReads = 0;
   let historyReads = 0;
   let activeReads = 0;
   let maxActiveReads = 0;
@@ -130,7 +136,10 @@ async function runSyntheticIteration(iteration) {
     },
   };
   handler = new ConversationSyncV2FeatureHandler(runtime, {
-    catalogReader: async () => seeds,
+    catalogReader: async () => {
+      catalogReads += 1;
+      return seeds;
+    },
     statusReader: async () => new Map(),
     historyReader: async (target) => {
       historyReads += 1;
@@ -202,11 +211,54 @@ async function runSyntheticIteration(iteration) {
       setTimeout(() => reject(new Error("Repeat sync timed out.")), 5_000),
     ),
   ]);
+
+  const historyReadsBeforeLive = historyReads;
+  let firstLiveCompletion;
+  let secondLiveCompletion;
+  const firstLive = new Promise((resolve) => {
+    firstLiveCompletion = resolve;
+  });
+  const secondLive = new Promise((resolve) => {
+    secondLiveCompletion = resolve;
+  });
+  const sendBeforeLive = runtime.send;
+  runtime.send = (client, message) => {
+    sendBeforeLive(client, message);
+    if (message.event !== "sync_complete") return;
+    if (client === firstClient) firstLiveCompletion(message);
+    if (client === secondClient) secondLiveCompletion(message);
+  };
+  runtime.getProviderSessionId = () => "thread-700";
+  const liveSession = {
+    id: "runtime-thread-700",
+    provider: "claude",
+    process: {},
+    projectPath: "/benchmark/700",
+  };
+  const liveDispatchStartedAt = performance.now();
+  for (let index = 0; index < LIVE_DELTA_COUNT; index += 1) {
+    handler.sessionMessage(liveSession, {
+      type: index % 2 === 0 ? "stream_delta" : "thinking_delta",
+      text: `delta-${index}`,
+    });
+  }
+  const liveDispatchMs = performance.now() - liveDispatchStartedAt;
+  await Promise.race([
+    Promise.all([firstLive, secondLive]),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Live sync timed out.")), 5_000),
+    ),
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
   const result = {
     priorityMs,
     completeMs,
     historyReadsFirst: readsAfterFirstSync,
-    historyReadsRepeat: historyReads - readsAfterFirstSync,
+    historyReadsRepeat: historyReadsBeforeLive - readsAfterFirstSync,
+    historyReadsLive: historyReads - historyReadsBeforeLive,
+    catalogReads,
+    liveDispatchMs,
     maxActiveReads,
     maxFrameBytes,
     totalSentBytes,
@@ -215,17 +267,24 @@ async function runSyntheticIteration(iteration) {
   return result;
 }
 
-async function benchmarkSyntheticSync() {
+async function benchmarkSyntheticSync(catalogEntries, iterations) {
   const results = [];
-  for (let iteration = 0; iteration <= ITERATIONS; iteration += 1) {
-    const result = await runSyntheticIteration(iteration);
+  for (let iteration = 0; iteration <= iterations; iteration += 1) {
+    const result = await runSyntheticIteration(iteration, catalogEntries);
     if (iteration > 0) results.push(result);
   }
-  const priority = results.map((result) => result.priorityMs).sort((a, b) => a - b);
-  const complete = results.map((result) => result.completeMs).sort((a, b) => a - b);
+  const priority = results
+    .map((result) => result.priorityMs)
+    .sort((a, b) => a - b);
+  const complete = results
+    .map((result) => result.completeMs)
+    .sort((a, b) => a - b);
+  const liveDispatch = results
+    .map((result) => result.liveDispatchMs)
+    .sort((a, b) => a - b);
   const last = results.at(-1);
-  return {
-    catalogEntries: CATALOG_ENTRIES,
+  const summary = {
+    catalogEntries,
     iterations: results.length,
     priorityP50Ms: percentile(priority, 0.5),
     priorityP95Ms: percentile(priority, 0.95),
@@ -233,6 +292,11 @@ async function benchmarkSyntheticSync() {
     completeP95Ms: percentile(complete, 0.95),
     historyReadsFirst: last.historyReadsFirst,
     historyReadsRepeat: last.historyReadsRepeat,
+    historyReadsLive: last.historyReadsLive,
+    catalogReads: last.catalogReads,
+    liveDeltaCount: LIVE_DELTA_COUNT,
+    liveDispatchP50Ms: percentile(liveDispatch, 0.5),
+    liveDispatchP95Ms: percentile(liveDispatch, 0.95),
     maxActiveReads: Math.max(
       ...results.map((result) => result.maxActiveReads),
     ),
@@ -241,6 +305,22 @@ async function benchmarkSyntheticSync() {
       ...results.map((result) => result.totalSentBytes),
     ),
   };
+  if (summary.historyReadsRepeat !== 0) {
+    throw new Error("Unchanged repeat sync reread provider history.");
+  }
+  if (summary.historyReadsLive > 1) {
+    throw new Error("One dirty timeline caused more than one provider read.");
+  }
+  if (summary.catalogReads !== 1) {
+    throw new Error("A second client or live delta rescanned the catalog.");
+  }
+  if (summary.maxActiveReads > 2) {
+    throw new Error("Provider history concurrency exceeded the bound of 2.");
+  }
+  if (summary.maxFrameBytes > 64 * 1024) {
+    throw new Error("A conversation_sync_v2 frame exceeded 64 KiB.");
+  }
+  return summary;
 }
 
 async function benchmarkLiveCatalog() {
@@ -249,7 +329,11 @@ async function benchmarkLiveCatalog() {
   const samples = [];
   let observedEntries = 0;
   try {
-    for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
+    for (
+      let iteration = 0;
+      iteration < LIVE_CATALOG_ITERATIONS;
+      iteration += 1
+    ) {
       const startedAt = performance.now();
       let cursor = null;
       let count = 0;
@@ -264,7 +348,7 @@ async function benchmarkLiveCatalog() {
         });
         count += page.data.length;
         cursor = page.nextCursor;
-      } while (cursor && count < CATALOG_ENTRIES);
+      } while (cursor && count < LIVE_CATALOG_LIMIT);
       samples.push(performance.now() - startedAt);
       observedEntries = count;
     }
@@ -274,7 +358,7 @@ async function benchmarkLiveCatalog() {
   samples.sort((left, right) => left - right);
   return {
     observedEntries,
-    requestedLimit: CATALOG_ENTRIES,
+    requestedLimit: LIVE_CATALOG_LIMIT,
     iterations: samples.length,
     medianMs: percentile(samples, 0.5),
     p95Ms: percentile(samples, 0.95),
@@ -282,9 +366,18 @@ async function benchmarkLiveCatalog() {
   };
 }
 
+const syntheticSync = {};
+for (const benchmarkCase of BENCHMARK_CASES) {
+  syntheticSync[`catalog${benchmarkCase.catalogEntries}`] =
+    await benchmarkSyntheticSync(
+      benchmarkCase.catalogEntries,
+      benchmarkCase.iterations,
+    );
+}
+
 const result = {
   generatedAt: new Date().toISOString(),
   liveCatalog: await benchmarkLiveCatalog(),
-  syntheticSync: await benchmarkSyntheticSync(),
+  syntheticSync,
 };
 console.log(JSON.stringify(result, null, 2));
