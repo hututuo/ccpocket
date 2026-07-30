@@ -346,11 +346,15 @@ SessionInfo _preferRunning(SessionInfo left, SessionInfo right) {
 }
 
 DateTime? _latestActivity(SessionInfo? running, RecentSession? recent) {
+  // Runtime attachment is transient. Once a durable catalog row exists, its
+  // provider timestamp is the stable ordering authority; attaching or
+  // detaching an app-server watcher must not move the card.
+  if (recent != null) {
+    return _parseDate(recent.modified) ?? _parseDate(recent.created);
+  }
   final candidates = <DateTime>[
     ?_parseDate(running?.lastActivityAt),
-    ?_parseDate(recent?.modified),
     ?_parseDate(running?.createdAt),
-    ?_parseDate(recent?.created),
   ];
   if (candidates.isEmpty) return null;
   return candidates.reduce(

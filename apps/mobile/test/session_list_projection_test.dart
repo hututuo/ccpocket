@@ -23,8 +23,36 @@ void main() {
       expect(items, hasLength(1));
       expect(items.single.running, same(running));
       expect(items.single.recent, same(recent));
-      expect(items.single.activityAt, DateTime.utc(2026, 7, 25, 2));
+      expect(items.single.activityAt, DateTime.utc(2026, 7, 25, 1));
     });
+
+    test(
+      'runtime attachment does not change durable conversation ordering',
+      () {
+        final recent = _recent(
+          id: 'thread-1',
+          modified: '2026-07-25T01:00:00Z',
+        );
+
+        final detached = buildUnifiedSessionList(
+          runningSessions: const [],
+          recentSessions: [recent],
+        ).single;
+        final attached = buildUnifiedSessionList(
+          runningSessions: [
+            _running(
+              runtimeId: 'runtime-a',
+              threadId: 'thread-1',
+              lastActivityAt: '2026-07-25T09:00:00Z',
+            ),
+          ],
+          recentSessions: [recent],
+        ).single;
+
+        expect(attached.identityKey, detached.identityKey);
+        expect(attached.activityAt, detached.activityAt);
+      },
+    );
 
     test('sorts newest activity first inside each pin tier', () {
       final olderPinned = _recent(
