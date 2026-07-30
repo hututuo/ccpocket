@@ -97,8 +97,7 @@ describe("CodexProcess (app-server)", () => {
 
   it("persists client message identity on start and steer RPCs", async () => {
     const proc = new CodexProcess("linux");
-    const request = vi
-      .spyOn(proc as any, "request")
+    const request = vi.spyOn(proc as any, "request")
       .mockResolvedValue({ turn: { id: "turn-1" } });
 
     await (proc as any).requestWithClientUserMessageIdFallback(
@@ -173,6 +172,72 @@ describe("CodexProcess (app-server)", () => {
       ["turn/start", params],
     ]);
     expect(warning).toHaveBeenCalledTimes(1);
+    warning.mockRestore();
+  });
+
+  it("emits authoritative provider receipts for accepted and rejected steer RPCs", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const deliveries: unknown[] = [];
+    proc.on("input_delivery", (event) => deliveries.push(event));
+    vi.spyOn(proc as any, "request")
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(
+        new CodexRpcError("turn/steer", "writer unavailable", -32000),
+      );
+
+    await proc.steerTurnStructured("turn-1", "accepted", {
+      clientMessageId: "mobile-accepted",
+    });
+    await expect(
+      proc.steerTurnStructured("turn-1", "rejected", {
+        clientMessageId: "mobile-rejected",
+      }),
+    ).rejects.toThrow("writer unavailable");
+
+    expect(deliveries).toEqual([
+      expect.objectContaining({
+        clientMessageId: "mobile-accepted",
+        stage: "provider_accepted",
+        method: "turn/steer",
+        clientUserMessageIdAccepted: true,
+      }),
+      expect.objectContaining({
+        clientMessageId: "mobile-rejected",
+        stage: "provider_rejected",
+        method: "turn/steer",
+        error: "writer unavailable",
+      }),
+    ]);
+  });
+
+  it("reports provider acceptance without claiming durable client identity on an older app-server", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const deliveries: unknown[] = [];
+    proc.on("input_delivery", (event) => deliveries.push(event));
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(proc as any, "request")
+      .mockRejectedValueOnce(
+        new CodexRpcError(
+          "turn/steer",
+          "invalid params: unknown field clientUserMessageId",
+          -32602,
+        ),
+      )
+      .mockResolvedValueOnce({});
+
+    await proc.steerTurnStructured("turn-1", "legacy", {
+      clientMessageId: "mobile-legacy",
+    });
+
+    expect(deliveries).toEqual([
+      expect.objectContaining({
+        clientMessageId: "mobile-legacy",
+        stage: "provider_accepted",
+        clientUserMessageIdAccepted: false,
+      }),
+    ]);
     warning.mockRestore();
   });
 
