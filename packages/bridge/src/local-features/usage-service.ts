@@ -16,10 +16,14 @@ interface UsageServiceOptions {
   ) => Promise<CodexProcess>;
   cacheTtlMs?: number;
   requestTimeoutMs?: number;
+  standaloneTimeoutMs?: number;
+  fallbackTimeoutMs?: number;
   fallback?: () => Promise<SessionUsageInfoPayload[]>;
 }
 
-const DEFAULT_USAGE_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_USAGE_REQUEST_TIMEOUT_MS = 4_000;
+const DEFAULT_USAGE_STANDALONE_TIMEOUT_MS = 2_500;
+const DEFAULT_USAGE_FALLBACK_TIMEOUT_MS = 2_500;
 const USAGE_TIMEOUT_GUARD_GRACE_MS = 100;
 
 class UsageOperationTimeoutError extends Error {}
@@ -50,11 +54,7 @@ export class UsageFeatureHandler implements LocalFeatureHandler {
       return;
     }
     const session = context.runtime.getSession(message.sessionId);
-    if (
-      !session ||
-      session.provider !== "codex" ||
-      !isCodexReadOnlyProcess(session.process)
-    ) {
+    if (session && session.provider !== "codex") {
       context.runtime.send(context.client, {
         type: "session_usage_result",
         providers: [],
@@ -68,8 +68,17 @@ export class UsageFeatureHandler implements LocalFeatureHandler {
     try {
       // Caller cancellation releases the WebSocket operation immediately, but
       // does not cancel the Bridge/account single-flight shared by other clients.
+      // Account quota is not tied to a live runtime session. Durable threads
+      // therefore reuse any authenticated Codex process, or a short-lived
+      // read-only app-server when no runtime is currently attached.
+      const preferredProcess =
+        session && isCodexReadOnlyProcess(session.process)
+          ? session.process
+          : undefined;
       const providers = await waitForCaller(
-        this.service.getUsage(session.process),
+        preferredProcess
+          ? this.service.getUsage(preferredProcess)
+          : this.service.getUsage(),
         context.signal,
       );
       context.runtime.send(context.client, {
@@ -101,6 +110,8 @@ export class UsageFeatureHandler implements LocalFeatureHandler {
 export class UsageService {
   private readonly cacheTtlMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly standaloneTimeoutMs: number;
+  private readonly fallbackTimeoutMs: number;
   private readonly fallback: () => Promise<SessionUsageInfoPayload[]>;
   private cache: {
     expiresAt: number;
@@ -113,6 +124,17 @@ export class UsageService {
     this.requestTimeoutMs = normalizeTimeout(
       options.requestTimeoutMs,
       DEFAULT_USAGE_REQUEST_TIMEOUT_MS,
+    );
+    this.standaloneTimeoutMs = normalizeTimeout(
+      options.standaloneTimeoutMs,
+      Math.min(
+        this.requestTimeoutMs,
+        DEFAULT_USAGE_STANDALONE_TIMEOUT_MS,
+      ),
+    );
+    this.fallbackTimeoutMs = normalizeTimeout(
+      options.fallbackTimeoutMs,
+      Math.min(this.requestTimeoutMs, DEFAULT_USAGE_FALLBACK_TIMEOUT_MS),
     );
     this.fallback = options.fallback ?? fetchBoundedCodexUsageFallback;
   }
@@ -153,8 +175,10 @@ export class UsageService {
   private async fetchFresh(
     preferredProcess: CodexProcess | null,
   ): Promise<SessionUsageInfoPayload[]> {
+    const startedAt = Date.now();
     let process = preferredProcess;
     let ownsProcess = false;
+    let primaryError: unknown;
     try {
       if (!process) {
         process = await this.createOwnedProcess();
@@ -166,38 +190,38 @@ export class UsageService {
           {},
           { timeoutMs: this.requestTimeoutMs },
         ),
-        this.guardTimeoutMs,
+        guardTimeout(this.requestTimeoutMs),
         "account/rateLimits/read",
       );
       return [parseCodexAccountRateLimits(response)];
     } catch (error) {
-      console.warn(
-        `[usage] account/rateLimits/read failed, falling back to rollout data: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return withTimeout(
-        this.fallback(),
-        this.guardTimeoutMs,
-        "bounded rollout usage fallback",
-      );
+      primaryError = error;
     } finally {
       if (ownsProcess) process?.stop();
     }
-  }
 
-  private get guardTimeoutMs(): number {
-    return this.requestTimeoutMs + USAGE_TIMEOUT_GUARD_GRACE_MS;
+    // Do not include app-server payloads, thread identifiers, paths, or raw
+    // exception messages in the long-lived Bridge log.
+    console.warn(
+      `[usage] result=fallback reason=${usageFailureKind(primaryError)} elapsedMs=${
+        Date.now() - startedAt
+      }`,
+    );
+    return withTimeout(
+      this.fallback(),
+      guardTimeout(this.fallbackTimeoutMs),
+      "bounded rollout usage fallback",
+    );
   }
 
   private async createOwnedProcess(): Promise<CodexProcess> {
     const creation = this.options.createStandaloneCodexProcess(
-      this.requestTimeoutMs,
+      this.standaloneTimeoutMs,
     );
     try {
       return await withTimeout(
         creation,
-        this.guardTimeoutMs,
+        guardTimeout(this.standaloneTimeoutMs),
         "standalone Codex initialization",
       );
     } catch (error) {
@@ -214,10 +238,20 @@ export class UsageService {
   }
 }
 
+function guardTimeout(timeoutMs: number): number {
+  return timeoutMs + USAGE_TIMEOUT_GUARD_GRACE_MS;
+}
+
 function normalizeTimeout(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : fallback;
+}
+
+function usageFailureKind(error: unknown): string {
+  if (error instanceof UsageOperationTimeoutError) return "timeout";
+  if (error instanceof Error) return error.name || "error";
+  return "unknown";
 }
 
 function withTimeout<T>(

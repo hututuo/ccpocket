@@ -284,6 +284,91 @@ describe("UsageService", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps the default standalone, RPC, and fallback deadlines inside the Mobile window", async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fallback = vi.fn(async () => [
+        {
+          provider: "codex" as const,
+          fiveHour: null,
+          sevenDay: null,
+          source: "session_log" as const,
+        },
+      ]);
+      const neverCreated = new Promise<CodexProcess>(() => {});
+      const standalone = vi.fn(() => neverCreated);
+      const service = new UsageService({
+        getActiveCodexProcess: () => null,
+        createStandaloneCodexProcess: standalone,
+        fallback,
+      });
+
+      const request = service.getUsage();
+      expect(standalone).toHaveBeenCalledWith(2_500);
+      await vi.advanceTimersByTimeAsync(2_600);
+      await expect(request).resolves.toMatchObject([
+        { source: "session_log" },
+      ]);
+      expect(fallback).toHaveBeenCalledTimes(1);
+
+      const active = {
+        requestReadOnlyRpc: vi.fn(
+          () => new Promise<Record<string, unknown>>(() => {}),
+        ),
+        stop: vi.fn(),
+      } as unknown as CodexProcess;
+      const activeService = new UsageService({
+        getActiveCodexProcess: () => active,
+        createStandaloneCodexProcess: vi.fn(),
+        cacheTtlMs: 0,
+        fallback,
+      });
+      const activeRequest = activeService.getUsage();
+      expect(active.requestReadOnlyRpc).toHaveBeenCalledWith(
+        "account/rateLimits/read",
+        {},
+        { timeoutMs: 4_000 },
+      );
+      await vi.advanceTimersByTimeAsync(4_100);
+      await expect(activeRequest).resolves.toMatchObject([
+        { source: "session_log" },
+      ]);
+    } finally {
+      warning.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs only a safe result category and elapsed time on fallback", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const active = {
+        requestReadOnlyRpc: vi.fn(async () => {
+          throw new Error(
+            "private thread 019f1234-5678-7abc-8def-0123456789ab failed",
+          );
+        }),
+        stop: vi.fn(),
+      } as unknown as CodexProcess;
+      const service = new UsageService({
+        getActiveCodexProcess: () => active,
+        createStandaloneCodexProcess: vi.fn(),
+        fallback: async () => [],
+      });
+
+      await expect(service.getUsage()).resolves.toEqual([]);
+      const output = warning.mock.calls.flat().join(" ");
+      expect(output).toContain("result=fallback");
+      expect(output).toContain("reason=Error");
+      expect(output).toMatch(/elapsedMs=\d+/);
+      expect(output).not.toContain("019f1234");
+      expect(output).not.toContain("private thread");
+    } finally {
+      warning.mockRestore();
+    }
+  });
 });
 
 describe("UsageFeatureHandler", () => {
@@ -345,6 +430,88 @@ describe("UsageFeatureHandler", () => {
       expect.objectContaining({
         type: "error",
         errorCode: "unsupported_capability",
+      }),
+    ]);
+  });
+
+  it("serves account quota for a durable thread through the active process", async () => {
+    const sent: unknown[] = [];
+    const process = {
+      requestReadOnlyRpc: vi.fn(async () => response),
+      stop: vi.fn(),
+    } as unknown as CodexProcess;
+    const standalone = vi.fn();
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => undefined,
+      getCodexThreadId: () => undefined,
+      getActiveCodexProcess: () => process,
+      createStandaloneCodexProcess: standalone,
+      send: (_client, message) => sent.push(message),
+      supports: (_client, type) => type === "session_usage_result",
+    };
+
+    await new UsageFeatureHandler(runtime).handle(
+      {
+        type: "get_session_usage",
+        sessionId: "019f1234-5678-7abc-8def-0123456789ab",
+        requestId: "quota-durable-active",
+      },
+      {
+        client: {},
+        signal: new AbortController().signal,
+        runtime,
+      },
+    );
+
+    expect(process.requestReadOnlyRpc).toHaveBeenCalledTimes(1);
+    expect(standalone).not.toHaveBeenCalled();
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "session_usage_result",
+        sessionId: "019f1234-5678-7abc-8def-0123456789ab",
+        requestId: "quota-durable-active",
+        providers: [expect.objectContaining({ source: "app_server" })],
+      }),
+    ]);
+  });
+
+  it("serves account quota for a durable thread through a short-lived process", async () => {
+    const sent: unknown[] = [];
+    const process = {
+      requestReadOnlyRpc: vi.fn(async () => response),
+      stop: vi.fn(),
+    } as unknown as CodexProcess;
+    const standalone = vi.fn(async () => process);
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => undefined,
+      getCodexThreadId: () => undefined,
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: standalone,
+      send: (_client, message) => sent.push(message),
+      supports: (_client, type) => type === "session_usage_result",
+    };
+
+    await new UsageFeatureHandler(runtime).handle(
+      {
+        type: "get_session_usage",
+        sessionId: "019f1234-5678-7abc-8def-0123456789ab",
+        requestId: "quota-durable-standalone",
+      },
+      {
+        client: {},
+        signal: new AbortController().signal,
+        runtime,
+      },
+    );
+
+    expect(standalone).toHaveBeenCalledWith(2_500);
+    expect(process.requestReadOnlyRpc).toHaveBeenCalledTimes(1);
+    expect(process.stop).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "session_usage_result",
+        requestId: "quota-durable-standalone",
+        providers: [expect.objectContaining({ source: "app_server" })],
       }),
     ]);
   });

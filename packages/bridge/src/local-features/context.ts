@@ -2,7 +2,7 @@ import type {
   ContextUsageMessage,
   CodexTokenUsageBreakdown,
 } from "./protocol.js";
-import { open, readdir } from "node:fs/promises";
+import { open, readdir, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveCodexSessionsDir } from "../codex-home.js";
 import type {
@@ -21,6 +21,9 @@ const EMPTY_BREAKDOWN: CodexTokenUsageBreakdown = {
 };
 
 const EXPLICIT_CONTEXT_DEADLINE_MS = 2_500;
+const MAX_ROLLOUT_IDENTITY_HEAD_BYTES = 256 * 1024;
+const CODEX_THREAD_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type ContextUsageLoader = (
   threadId: string,
@@ -28,6 +31,7 @@ type ContextUsageLoader = (
     signal: AbortSignal;
     scanDeadlineMs: number;
     maxDirectoryReads: number;
+    requireVerifiedIdentity: boolean;
   },
 ) => Promise<ContextUsageMessage | null>;
 
@@ -78,15 +82,25 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
     }
 
     const session = context.runtime.getSession(message.sessionId);
-    const threadId = session
-      ? context.runtime.getCodexThreadId(session)
-      : undefined;
-    if (!session || session.provider !== "codex" || !threadId) {
+    const runtimeThreadId =
+      session?.provider === "codex"
+        ? context.runtime.getCodexThreadId(session)
+        : undefined;
+    const durableThreadId =
+      session === undefined
+        ? normalizeCodexThreadId(message.sessionId)
+        : undefined;
+    const threadId = runtimeThreadId ?? durableThreadId;
+    const requireVerifiedIdentity = durableThreadId !== undefined;
+    if (
+      (session !== undefined && session.provider !== "codex") ||
+      !threadId
+    ) {
       this.sendFailure(
         message.sessionId,
         context,
         "context_usage_session_not_found",
-        `Session ${message.sessionId} not found`,
+        "Codex session not found",
       );
       return;
     }
@@ -98,6 +112,7 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
             signal,
             scanDeadlineMs: this.scanDeadlineMs,
             maxDirectoryReads: this.maxDirectoryReads,
+            requireVerifiedIdentity,
           }),
         context.signal,
         this.deadlineMs,
@@ -112,6 +127,13 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
                 sessionId: message.sessionId,
               }
             : { ...usage, sessionId: message.sessionId },
+        );
+      } else if (requireVerifiedIdentity) {
+        this.sendFailure(
+          message.sessionId,
+          context,
+          "context_usage_unavailable",
+          "Context usage is unavailable for this durable thread",
         );
       }
     } catch (error) {
@@ -211,8 +233,15 @@ export async function loadCodexContextUsageFromRollout(
     scanDeadlineMs?: number;
     maxDirectoryReads?: number;
     signal?: AbortSignal;
+    requireVerifiedIdentity?: boolean;
   } = {},
 ): Promise<ContextUsageMessage | null> {
+  const requireVerifiedIdentity = options.requireVerifiedIdentity === true;
+  if (requireVerifiedIdentity) {
+    const normalized = normalizeCodexThreadId(threadId);
+    if (!normalized) return null;
+    threadId = normalized;
+  }
   const sessionsDir =
     options.sessionsDir ?? resolveCodexSessionsDir();
   const scanBudget = {
@@ -228,6 +257,7 @@ export async function loadCodexContextUsageFromRollout(
     sessionsDir,
     threadId,
     scanBudget,
+    requireVerifiedIdentity,
   );
   if (!rolloutPath) return null;
 
@@ -238,6 +268,17 @@ export async function loadCodexContextUsageFromRollout(
     const maxTailBytes = Math.max(4096, options.maxTailBytes ?? 512 * 1024);
     const length = Math.min(stats.size, maxTailBytes);
     if (!stats.isFile()) return null;
+    if (
+      requireVerifiedIdentity &&
+      !(await rolloutContainsThreadIdentity(
+        handle,
+        stats.size,
+        threadId,
+        options.signal,
+      ))
+    ) {
+      return null;
+    }
     const buffer = Buffer.alloc(length);
     let bytesRead = 0;
     while (bytesRead < length) {
@@ -279,8 +320,10 @@ async function findRolloutByThreadId(
   sessionsDir: string,
   threadId: string,
   budget: DirectoryScanBudget,
+  requireVerifiedIdentity: boolean,
 ): Promise<string | null> {
   const suffix = `${threadId}.jsonl`;
+  const strictSuffix = `-${threadId}.jsonl`;
   let years;
   try {
     years = await boundedReadDir(sessionsDir, budget);
@@ -300,13 +343,68 @@ async function findRolloutByThreadId(
         const dayPath = join(monthPath, day);
         const entries = await boundedReadDir(dayPath, budget);
         const match = entries.find(
-          (entry) => entry.isFile() && entry.name.endsWith(suffix),
+          (entry) =>
+            entry.isFile() &&
+            (requireVerifiedIdentity
+              ? entry.name === suffix || entry.name.endsWith(strictSuffix)
+              : entry.name.endsWith(suffix)),
         );
         if (match) return join(dayPath, match.name);
       }
     }
   }
   return null;
+}
+
+async function rolloutContainsThreadIdentity(
+  handle: FileHandle,
+  fileSize: number,
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) return false;
+  const length = Math.min(fileSize, MAX_ROLLOUT_IDENTITY_HEAD_BYTES);
+  if (length <= 0) return false;
+  const buffer = Buffer.alloc(length);
+  let bytesRead = 0;
+  while (bytesRead < length) {
+    if (signal?.aborted) return false;
+    const result = await handle.read(
+      buffer,
+      bytesRead,
+      length - bytesRead,
+      bytesRead,
+    );
+    if (result.bytesRead === 0) break;
+    bytesRead += result.bytesRead;
+  }
+  if (bytesRead === 0) return false;
+
+  let text = buffer.subarray(0, bytesRead).toString("utf-8");
+  if (bytesRead < fileSize) {
+    const lastNewline = text.lastIndexOf("\n");
+    text = lastNewline >= 0 ? text.slice(0, lastNewline) : "";
+  }
+  for (const rawLine of text.split("\n")) {
+    if (!rawLine.includes('"session_meta"')) continue;
+    try {
+      const entry = asRecord(JSON.parse(rawLine));
+      if (entry?.type !== "session_meta") continue;
+      const payload = asRecord(entry.payload);
+      const candidate = normalizeCodexThreadId(payload?.id);
+      if (candidate === threadId) return true;
+    } catch {
+      // Identity validation is fail-closed; later complete metadata may match.
+    }
+  }
+  return false;
+}
+
+function normalizeCodexThreadId(value: unknown): string | undefined {
+  if (typeof value !== "string" || !CODEX_THREAD_ID_PATTERN.test(value)) {
+    return undefined;
+  }
+  return value.toLowerCase();
 }
 
 interface DirectoryScanBudget {

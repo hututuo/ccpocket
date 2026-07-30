@@ -11,6 +11,8 @@ import {
 import type { LocalFeatureRuntime } from "./runtime.js";
 
 const temporaryRoots: string[] = [];
+const durableThreadId = "019f1234-5678-7abc-8def-0123456789ab";
+const otherDurableThreadId = "019f1234-5678-7abc-8def-0123456789ac";
 
 afterEach(async () => {
   await Promise.all(
@@ -162,6 +164,58 @@ describe("Codex context usage", () => {
     ).resolves.toBeNull();
   });
 
+  it("requires matching rollout metadata for a durable provider thread", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ccpocket-context-durable-"));
+    temporaryRoots.push(root);
+    const day = join(root, "2026", "07", "18");
+    await mkdir(day, { recursive: true });
+    const tokenCount = JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          last_token_usage: { total_tokens: 90 },
+          total_token_usage: { total_tokens: 190 },
+        },
+      },
+    });
+    const rolloutPath = join(
+      day,
+      `rollout-2026-07-18T00-00-00-${durableThreadId}.jsonl`,
+    );
+    await writeFile(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "session_meta",
+        payload: { id: otherDurableThreadId },
+      })}\n${tokenCount}\n`,
+    );
+
+    await expect(
+      loadCodexContextUsageFromRollout(durableThreadId, {
+        sessionsDir: root,
+        requireVerifiedIdentity: true,
+      }),
+    ).resolves.toBeNull();
+
+    await writeFile(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "session_meta",
+        payload: { id: durableThreadId },
+      })}\n${tokenCount}\n`,
+    );
+    await expect(
+      loadCodexContextUsageFromRollout(durableThreadId.toUpperCase(), {
+        sessionsDir: root,
+        requireVerifiedIdentity: true,
+      }),
+    ).resolves.toMatchObject({
+      last: { totalTokens: 90 },
+      total: { totalTokens: 190 },
+    });
+  });
+
   it("serves explicit usage with strict session correlation", async () => {
     const sent: unknown[] = [];
     const load = vi.fn(async () => ({
@@ -191,6 +245,7 @@ describe("Codex context usage", () => {
         signal: expect.any(AbortSignal),
         scanDeadlineMs: 1_500,
         maxDirectoryReads: 256,
+        requireVerifiedIdentity: false,
       }),
     );
     expect(sent).toEqual([
@@ -198,6 +253,135 @@ describe("Codex context usage", () => {
         type: "context_usage_result",
         sessionId: "session-1",
         last: expect.objectContaining({ totalTokens: 10 }),
+      }),
+    ]);
+  });
+
+  it("loads a verified durable thread without creating or resuming a runtime", async () => {
+    const sent: unknown[] = [];
+    const load = vi.fn(async () => ({
+      type: "context_usage" as const,
+      last: {
+        totalTokens: 10,
+        inputTokens: 8,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 2,
+        reasoningOutputTokens: 0,
+      },
+      total: {
+        totalTokens: 20,
+        inputTokens: 16,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 4,
+        reasoningOutputTokens: 0,
+      },
+      modelContextWindow: 100,
+    }));
+    const runtime = durableContextRuntime(
+      sent,
+      new Set([
+        "context_usage",
+        "context_usage_result",
+        "context_usage_error",
+      ]),
+    );
+
+    await new ContextFeatureHandler({ load }).handle(
+      { type: "get_context_usage", sessionId: durableThreadId },
+      {
+        client: {},
+        signal: new AbortController().signal,
+        runtime,
+      },
+    );
+
+    expect(load).toHaveBeenCalledWith(
+      durableThreadId,
+      expect.objectContaining({ requireVerifiedIdentity: true }),
+    );
+    expect(runtime.createStandaloneCodexProcess).not.toHaveBeenCalled();
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "context_usage_result",
+        sessionId: durableThreadId,
+      }),
+    ]);
+  });
+
+  it("rejects a malformed durable id before touching rollout storage", async () => {
+    const sent: unknown[] = [];
+    const load = vi.fn();
+    const runtime = durableContextRuntime(
+      sent,
+      new Set([
+        "context_usage",
+        "context_usage_result",
+        "context_usage_error",
+      ]),
+    );
+
+    await new ContextFeatureHandler({ load }).handle(
+      { type: "get_context_usage", sessionId: "../../not-a-thread" },
+      {
+        client: {},
+        signal: new AbortController().signal,
+        runtime,
+      },
+    );
+
+    expect(load).not.toHaveBeenCalled();
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "context_usage_error",
+        errorCode: "context_usage_session_not_found",
+      }),
+    ]);
+  });
+
+  it("keeps the legacy context_usage response for older capable clients", async () => {
+    const sent: unknown[] = [];
+    const runtime = durableContextRuntime(
+      sent,
+      new Set(["context_usage"]),
+    );
+    const handler = new ContextFeatureHandler({
+      load: async () => ({
+        type: "context_usage",
+        last: {
+          totalTokens: 1,
+          inputTokens: 1,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        total: {
+          totalTokens: 2,
+          inputTokens: 2,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        modelContextWindow: 100,
+      }),
+    });
+
+    await handler.handle(
+      { type: "get_context_usage", sessionId: durableThreadId },
+      {
+        client: {},
+        signal: new AbortController().signal,
+        runtime,
+      },
+    );
+
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "context_usage",
+        sessionId: durableThreadId,
       }),
     ]);
   });
@@ -250,6 +434,22 @@ function contextRuntime(
     createStandaloneCodexProcess: async () => {
       throw new Error("not used");
     },
+    send: (_client, message) => sent.push(message),
+    supports: (_client, type) => supported.has(type),
+  };
+}
+
+function durableContextRuntime(
+  sent: unknown[],
+  supported: Set<string>,
+): LocalFeatureRuntime {
+  return {
+    getSession: () => undefined,
+    getCodexThreadId: () => undefined,
+    getActiveCodexProcess: () => null,
+    createStandaloneCodexProcess: vi.fn(async () => {
+      throw new Error("must not create a runtime for context usage");
+    }),
     send: (_client, message) => sent.push(message),
     supports: (_client, type) => supported.has(type),
   };
