@@ -2,6 +2,7 @@ import 'package:ccpocket/features/session_list/session_list_projection.dart';
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/session_list/state/session_list_state.dart';
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/widgets/session_visual_status.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -317,6 +318,63 @@ void main() {
       expect(items.last.syncStatus?.activity, 'idle');
     });
 
+    test(
+      'uses the same v2-first presentation for urgency and visible status',
+      () {
+        final items = buildUnifiedSessionList(
+          runningSessions: [
+            _running(
+              runtimeId: 'runtime-working',
+              threadId: 'thread-working',
+              lastActivityAt: '2026-07-25T01:00:00Z',
+            ),
+            _running(
+              runtimeId: 'runtime-stale-attention',
+              threadId: 'thread-idle',
+              lastActivityAt: '2026-07-25T02:00:00Z',
+              status: 'waiting_approval',
+              externalDesktopTurnActive: true,
+            ),
+          ],
+          recentSessions: [
+            _recent(id: 'thread-working', modified: '2026-07-25T01:00:00Z'),
+            _recent(id: 'thread-idle', modified: '2026-07-25T02:00:00Z'),
+          ],
+          conversationStatuses: {
+            'codex\u0000thread-working': _status(
+              'thread-working',
+              activity: 'working',
+              source: 'appServer',
+            ),
+            'codex\u0000thread-idle': _status(
+              'thread-idle',
+              source: 'bridgeRuntime',
+            ),
+          },
+        );
+
+        expect(items.map((item) => item.providerSessionId), [
+          'thread-working',
+          'thread-idle',
+        ]);
+        expect(
+          sessionListUrgencyFor(items.first, unseenSessionIds: const {}),
+          SessionListUrgency.working,
+        );
+        expect(
+          sessionListUrgencyFor(items.last, unseenSessionIds: const {}),
+          SessionListUrgency.ordinary,
+        );
+        expect(
+          sessionCardPresentationFor(
+            syncStatus: items.last.syncStatus,
+            runtimeSession: items.last.running,
+          ).visualStatus.primary,
+          SessionPrimaryStatus.idle,
+        );
+      },
+    );
+
     test('does not turn an unknown runtime status into unread', () {
       final items = buildUnifiedSessionList(
         runningSessions: [
@@ -510,6 +568,7 @@ ConversationSyncV2Status _status(
   String activity = 'idle',
   String attention = 'none',
   String result = 'none',
+  String source = 'appServer',
 }) => ConversationSyncV2Status(
   provider: Provider.codex.value,
   providerSessionId: id,
@@ -517,7 +576,7 @@ ConversationSyncV2Status _status(
   attention: attention,
   result: result,
   runtimeAttachment: 'notLoaded',
-  source: 'appServer',
+  source: source,
   confidence: 'authoritative',
   observedAt: '2026-07-25T05:00:00Z',
 );

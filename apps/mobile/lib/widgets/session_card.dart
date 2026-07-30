@@ -34,6 +34,7 @@ class RunningSessionCard extends StatefulWidget {
   final bool isSelected;
   final bool isPinned;
   final VoidCallback? onTogglePinned;
+  final ConversationSyncV2Status? conversationStatus;
 
   const RunningSessionCard({
     super.key,
@@ -50,6 +51,7 @@ class RunningSessionCard extends StatefulWidget {
     this.isSelected = false,
     this.isPinned = false,
     this.onTogglePinned,
+    this.conversationStatus,
   });
 
   @override
@@ -97,17 +99,17 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
   Widget build(BuildContext context) {
     final session = widget.session;
     final appColors = Theme.of(context).extension<AppColors>()!;
-    final visualStatus = sessionVisualStatusFor(
-      rawStatus: session.externalDesktopTurnActive ? 'running' : session.status,
-      permissionMode: session.effectivePermissionMode,
-      planMode: session.resolvedPlanMode,
-      pendingPermission: session.pendingPermission,
+    final presentation = sessionCardPresentationFor(
+      syncStatus: widget.conversationStatus,
+      runtimeSession: session,
+      isUnseen: widget.isUnseen,
     );
-    final isIdleUnseen =
-        visualStatus.primary == SessionPrimaryStatus.idle && widget.isUnseen;
+    final visualStatus = presentation.visualStatus;
+    final isIdleUnseen = presentation.isUnread;
     final statusColor = switch (visualStatus.primary) {
       SessionPrimaryStatus.working => appColors.statusRunning,
       SessionPrimaryStatus.needsYou => appColors.statusApproval,
+      SessionPrimaryStatus.error => appColors.subtleText,
       SessionPrimaryStatus.idle =>
         isIdleUnseen
             ? Theme.of(context).colorScheme.primary
@@ -132,14 +134,6 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
     final provider = providerFromRaw(session.provider);
     final providerStyle = providerStyleFor(context, provider);
     final localizations = AppLocalizations.of(context);
-    final statusLabel = isIdleUnseen
-        ? localizations.unread
-        : _sessionVisualLabel(localizations, visualStatus.label);
-    final statusDetail = _sessionVisualDetail(
-      localizations,
-      visualStatus.detail,
-      visualStatus.detailArgument,
-    );
     final elapsed = _formatElapsed(session.lastActivityAt);
     final agentLabel = _formatAgentLabel(
       session.agentNickname,
@@ -169,77 +163,13 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Status bar with gradient
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    statusColor.withValues(alpha: 0.15),
-                    statusColor.withValues(alpha: 0.04),
-                  ],
-                ),
-              ),
-              child: Row(
+            _SessionStatusHeader(
+              presentation: presentation,
+              identity: session.id,
+              showUnreadLabel: true,
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Expanded(
-                    child: Row(
-                      children: [
-                        if (statusLabel != null) ...[
-                          _StatusDot(
-                            color: statusColor,
-                            animate: visualStatus.animate,
-                            glow: isIdleUnseen,
-                            inPlanMode:
-                                visualStatus.showPlanBadge &&
-                                visualStatus.animate,
-                          ),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              statusLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: statusColor,
-                              ),
-                            ),
-                          ),
-                        ],
-                        if (session.externalDesktopTurnActive) ...[
-                          const SizedBox(width: 5),
-                          Icon(
-                            Icons.computer,
-                            key: ValueKey(
-                              'desktop_active_session_badge_${session.id}',
-                            ),
-                            size: 13,
-                            color: statusColor,
-                            semanticLabel: localizations.runningOnDesktop,
-                          ),
-                        ],
-                        if (statusDetail != null) ...[
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              statusDetail,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: statusColor.withValues(alpha: 0.82),
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
                   ConversationMirrorRunningBadge(session: session),
                   PinToggleButton(
                     key: ValueKey('running_session_pin_${session.id}_button'),
@@ -2699,6 +2629,10 @@ class RecentSessionCard extends StatelessWidget {
     final provider = providerFromRaw(session.provider);
     final providerStyle = providerStyleFor(context, provider);
     final isCodex = session.provider == 'codex';
+    final presentation = sessionCardPresentationFor(
+      syncStatus: conversationStatus,
+      isUnseen: isUnseen,
+    );
     final agentLabel = _formatAgentLabel(
       session.agentNickname,
       session.agentRole,
@@ -2729,6 +2663,16 @@ class RecentSessionCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (presentation.hasVisibleStatus) ...[
+                    _SessionStatusHeader(
+                      presentation: presentation,
+                      identity: session.sessionId,
+                      statusDotKey: ValueKey(
+                        'conversation_sync_status_${session.sessionId}',
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   // Title Row
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
@@ -2798,10 +2742,6 @@ class RecentSessionCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      _ConversationSyncStatusIndicator(
-                        status: conversationStatus,
-                        isUnseen: isUnseen,
-                      ),
                       ConversationMirrorBadge(session: session),
                       PinToggleButton(
                         key: ValueKey(
@@ -3026,74 +2966,147 @@ class RecentSessionCard extends StatelessWidget {
   }
 }
 
-class _ConversationSyncStatusIndicator extends StatelessWidget {
-  const _ConversationSyncStatusIndicator({
-    required this.status,
-    required this.isUnseen,
+class _SessionStatusHeader extends StatelessWidget {
+  const _SessionStatusHeader({
+    required this.presentation,
+    required this.identity,
+    this.showUnreadLabel = false,
+    this.statusDotKey,
+    this.trailing,
   });
 
-  final ConversationSyncV2Status? status;
-  final bool isUnseen;
+  final SessionCardPresentation presentation;
+  final String identity;
+  final bool showUnreadLabel;
+  final Key? statusDotKey;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
-    final current = status;
-    if (current == null) return const SizedBox.shrink();
+    final visualStatus = presentation.visualStatus;
     final localizations = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
-    final (label, color) = switch (current) {
-      _ when current.attention != 'none' => (
-        localizations.statusNeedsYou,
-        appColors.statusApproval,
-      ),
-      _
-          when current.activity == 'working' ||
-              current.activity == 'compacting' =>
-        (localizations.statusWorking, appColors.statusRunning),
-      _
-          when current.activity == 'systemError' ||
-              (current.activity == 'unknown' &&
-                  current.runtimeAttachment != 'notLoaded') ||
-              current.runtimeAttachment == 'ownedElsewhere' =>
-        (localizations.statusUnavailable, appColors.subtleText),
-      _ when isUnseen => (
-        localizations.unread,
-        Theme.of(context).colorScheme.primary,
-      ),
-      _ => (null, appColors.statusIdle),
+    final statusColor = switch (visualStatus.primary) {
+      SessionPrimaryStatus.working => appColors.statusRunning,
+      SessionPrimaryStatus.needsYou => appColors.statusApproval,
+      SessionPrimaryStatus.error ||
+      SessionPrimaryStatus.unknown => appColors.subtleText,
+      SessionPrimaryStatus.idle =>
+        presentation.isUnread
+            ? Theme.of(context).colorScheme.primary
+            : appColors.statusIdle,
     };
-    if (label == null) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: Semantics(
-        label: label,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            DecoratedBox(
-              key: ValueKey(
-                'conversation_sync_status_${current.providerSessionId}',
-              ),
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-              child: const SizedBox(width: 8, height: 8),
-            ),
-            if (!isUnseen ||
-                current.attention != 'none' ||
-                current.activity != 'idle') ...[
-              const SizedBox(width: 5),
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: color,
-                ),
-              ),
-            ],
+    final semanticLabel = presentation.isUnread
+        ? localizations.unread
+        : _sessionVisualLabel(localizations, visualStatus.label);
+    final visibleLabel = presentation.isUnread && !showUnreadLabel
+        ? null
+        : semanticLabel;
+    final statusDetail = _sessionVisualDetail(
+      localizations,
+      visualStatus.detail,
+      visualStatus.detailArgument,
+    );
+    final showExecutionHost =
+        presentation.executionHost != SessionExecutionHost.unknown &&
+        (visualStatus.primary == SessionPrimaryStatus.working ||
+            visualStatus.primary == SessionPrimaryStatus.needsYou);
+    final showStatus = presentation.hasVisibleStatus;
+    if (!showStatus && trailing == null) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            statusColor.withValues(alpha: 0.15),
+            statusColor.withValues(alpha: 0.04),
           ],
         ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: showStatus
+                ? Semantics(
+                    label: semanticLabel,
+                    child: Row(
+                      children: [
+                        KeyedSubtree(
+                          key: statusDotKey,
+                          child: _StatusDot(
+                            color: statusColor,
+                            animate: visualStatus.animate,
+                            glow: presentation.isUnread,
+                            inPlanMode:
+                                visualStatus.showPlanBadge &&
+                                visualStatus.animate,
+                          ),
+                        ),
+                        if (visibleLabel != null) ...[
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              visibleLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: statusColor,
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (showExecutionHost) ...[
+                          const SizedBox(width: 5),
+                          switch (presentation.executionHost) {
+                            SessionExecutionHost.desktopAppServer => Icon(
+                              Icons.computer,
+                              key: ValueKey(
+                                'desktop_active_session_badge_$identity',
+                              ),
+                              size: 13,
+                              color: statusColor,
+                              semanticLabel: localizations.runningOnDesktop,
+                            ),
+                            SessionExecutionHost.bridge => Icon(
+                              Icons.hub_outlined,
+                              key: ValueKey(
+                                'bridge_active_session_badge_$identity',
+                              ),
+                              size: 13,
+                              color: statusColor,
+                              semanticLabel: 'Bridge',
+                            ),
+                            SessionExecutionHost.unknown =>
+                              const SizedBox.shrink(),
+                          },
+                        ],
+                        if (statusDetail != null) ...[
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              statusDetail,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: statusColor.withValues(alpha: 0.82),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+          ?trailing,
+        ],
       ),
     );
   }
