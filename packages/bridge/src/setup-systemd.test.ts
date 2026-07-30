@@ -30,6 +30,7 @@ const SERVICE_PATH =
   "/home/testuser/.config/systemd/user/ccpocket-bridge.service";
 const originalBridgeEnv = {
   port: process.env.BRIDGE_PORT,
+  host: process.env.BRIDGE_HOST,
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
   artifactBaseUrl: process.env.BRIDGE_ARTIFACT_BASE_URL,
@@ -443,6 +444,7 @@ describe("setup-systemd", () => {
 
 function clearBridgeEnv(): void {
   delete process.env.BRIDGE_PORT;
+  delete process.env.BRIDGE_HOST;
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
   delete process.env.BRIDGE_ARTIFACT_BASE_URL;
@@ -464,6 +466,7 @@ function clearBridgeEnv(): void {
 
 function restoreBridgeEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalBridgeEnv.port);
+  restoreEnvVar("BRIDGE_HOST", originalBridgeEnv.host);
   restoreEnvVar("BRIDGE_ALLOWED_DIRS", originalBridgeEnv.allowedDirs);
   restoreEnvVar("BRIDGE_PUBLIC_WS_URL", originalBridgeEnv.publicWsUrl);
   restoreEnvVar(
