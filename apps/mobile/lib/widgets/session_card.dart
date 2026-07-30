@@ -129,7 +129,14 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
       SessionPrimaryStatus.unknown => appColors.subtleText,
     };
 
-    final permission = session.pendingPermission;
+    // Conversation Sync v2 is authoritative for attention. A resolved
+    // request can linger briefly in the legacy runtime body, so an explicit
+    // `none` must mask it. Old Bridges omit v2 and retain the legacy fallback.
+    final permission =
+        widget.conversationStatus == null ||
+            widget.conversationStatus!.attention != 'none'
+        ? session.pendingPermission
+        : null;
     final hasPermission = permission != null;
     final queuedInput = session.queuedInput;
     final isCodexSession = session.provider == Provider.codex.value;
