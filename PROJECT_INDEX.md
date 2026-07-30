@@ -2,6 +2,8 @@
 
 | Path or ref | Type | Purpose | Deletable | Status |
 |---|---|---|---|---|
+| `plans/mobile-provider-state-consistency_v01_20260731-005052.md` | Active implementation plan | Unify Bridge/Codex-hosted state, source identity, ordering, loading progress, auto approval, and queued-message acknowledgements | No | `active`; implementation branch `fix/mobile-provider-state-consistency-20260731` at base `c5b55b73` |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-provider-state-consistency-20260731` | Isolated task worktree | Current post-convergence implementation and verification line | No while active | branch `fix/mobile-provider-state-consistency-20260731`; based on verified convergence tag |
 | `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-tiered-session-sync-20260730` | Authoritative source worktree | Baseline for all future CC Pocket code tasks | No | `active / clean`; branch `integration/mobile-session-sync-v2-20260730`, verified product commit `fbfc528b81d998bf97cf8dd649c75b58d219af29` |
 | `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat` | Primary repository checkout | Shared Git object store and archive-ref access | No | `clean / detached` at `fbfc528b`; not a development worktree |
 | `refs/archive/ccpocket/pre-multi-agent-20260730/*` | Exact historical branch-tip archive | Restore deleted ordinary local branches without keeping them active | No until a later archive-retention audit | `82 refs`; includes the newly archived old root, comprehensive, and list-mode tips |

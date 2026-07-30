@@ -1,5 +1,24 @@
 # CC Pocket Compatibility Fork Context
 
+## Active implementation after repository convergence
+
+The repository-convergence baseline below is now being used by one isolated
+task worktree:
+
+- Worktree:
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-provider-state-consistency-20260731`
+- Branch: `fix/mobile-provider-state-consistency-20260731`
+- Base: `c5b55b73ec479345a17bfd88f87cda4099db70dc`
+- Active plan:
+  `plans/mobile-provider-state-consistency_v01_20260731-005052.md`
+
+This task unifies the visible activity state and execution-host semantics for
+Bridge-hosted and Codex Desktop/app-server-hosted conversations, then fixes the
+related history ordering, source identity, loading-progress, auto-approval, and
+queued-message acknowledgement paths. The integration branch remains the
+verified fallback until this task has passed its own compatibility, performance,
+and audit gates.
+
 ## Authoritative source baseline
 
 The authoritative source and future multi-Agent baseline is:
