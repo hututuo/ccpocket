@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 
+import '../../core/logger.dart';
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
@@ -174,6 +175,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   int _requestSequence = 0;
   int _retryAttempt = 0;
   int _highestV2CommittedSequence = 0;
+  String? _v2RecoveryTargetFingerprint;
   Future<void> _v2MutationTail = Future<void>.value();
 
   Stream<ConversationContentCacheUpdate> get updates =>
@@ -660,12 +662,52 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     final target = _cacheTarget;
     _v2MutationTail = _v2MutationTail
         .then((_) => _commitV2Event(event, generation, target))
-        .catchError((Object error) {
-          debugPrint('Conversation sync v2 commit failed: $error');
-          if (_isV2Current(event, generation, target)) {
-            _restartSubscription();
-          }
-        });
+        .catchError(
+          (Object error) =>
+              _recoverFromV2CommitFailure(event, generation, target, error),
+        );
+  }
+
+  Future<void> _recoverFromV2CommitFailure(
+    ConversationSyncV2EventMessage event,
+    int generation,
+    SessionCatalogCacheTarget target,
+    Object error,
+  ) async {
+    if (!_isV2Current(event, generation, target)) return;
+
+    final targetToken = target.fingerprint.hashCode
+        .toUnsigned(32)
+        .toRadixString(16)
+        .padLeft(8, '0');
+    final threadRevisionMismatch =
+        error is _ConversationTimelineBaseRevisionMismatch;
+    var recovery = threadRevisionMismatch ? 'thread_reset' : 'retry';
+
+    if (!threadRevisionMismatch &&
+        _v2RecoveryTargetFingerprint != target.fingerprint) {
+      _v2RecoveryTargetFingerprint = target.fingerprint;
+      try {
+        await cache.clearTarget(target);
+        recovery = 'target_reset';
+      } catch (clearError) {
+        recovery = 'target_reset_failed';
+        logger.warning(
+          '[conversation_sync_v2] event=cache_reset '
+          'generation=$generation target=$targetToken '
+          'error=${clearError.runtimeType}',
+        );
+      }
+    }
+
+    logger.warning(
+      '[conversation_sync_v2] event=${event.event.name} '
+      'sequence=${event.sequence} generation=$generation '
+      'target=$targetToken error=${error.runtimeType} recovery=$recovery',
+    );
+    if (_isV2Current(event, generation, target)) {
+      _restartSubscription();
+    }
   }
 
   Future<void> _commitV2Event(
@@ -745,7 +787,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             provider: event.provider!,
             providerSessionId: event.providerSessionId!,
           );
-          throw StateError('Conversation timeline base revision changed.');
+          throw const _ConversationTimelineBaseRevisionMismatch();
         }
         if (committed.windowCommitted) {
           _updatesController.add(
@@ -880,7 +922,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (publish != null) {
       _syncUpdatesController.add(publish);
     }
-    _retryAttempt = 0;
+    final reachedStableCheckpoint =
+        (event.event == ConversationSyncV2EventKind.syncCheckpoint &&
+            event.phase == 'priority') ||
+        event.event == ConversationSyncV2EventKind.syncComplete;
+    if (reachedStableCheckpoint) {
+      _retryAttempt = 0;
+      _v2RecoveryTargetFingerprint = null;
+    }
   }
 
   bool _isV2Current(
@@ -1237,6 +1286,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     await _updatesController.close();
     await _syncUpdatesController.close();
   }
+}
+
+class _ConversationTimelineBaseRevisionMismatch implements Exception {
+  const _ConversationTimelineBaseRevisionMismatch();
 }
 
 class _SnapshotStage {

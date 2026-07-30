@@ -1630,7 +1630,7 @@ class _ChatScreenBody extends HookWidget {
                 if (bridgeState == BridgeConnectionState.reconnecting ||
                     bridgeState == BridgeConnectionState.disconnected)
                   ReconnectBanner(bridgeState: bridgeState),
-                if (detachedPreview)
+                if (detachedPreview && deferredSubmissionPending)
                   DurableSessionBindingBanner(
                     messageQueued: deferredSubmissionPending,
                   ),

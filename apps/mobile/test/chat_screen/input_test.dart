@@ -1,4 +1,5 @@
 import 'package:ccpocket/features/chat_session/widgets/chat_input_with_overlays.dart';
+import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
 import 'package:ccpocket/features/session_list/pending_session_binding.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/material.dart';
@@ -90,6 +91,7 @@ void main() {
         await pumpN($.tester);
 
         expect($(#message_input), findsOneWidget);
+        expect(find.byType(DurableSessionBindingBanner), findsNothing);
         await $.tester.enterText(
           find.byKey(const ValueKey('message_input')),
           'Send after attaching',
@@ -101,6 +103,7 @@ void main() {
         expect(findSentMessage(bridge, 'input'), isNull);
         expect(find.text('Send after attaching'), findsOneWidget);
         expect(attachmentRequests, 1);
+        expect(find.byType(DurableSessionBindingBanner), findsOneWidget);
 
         binding.value = const SystemMessage(
           subtype: 'session_created',
@@ -113,6 +116,7 @@ void main() {
         expect(input, isNotNull);
         expect(input!['sessionId'], 'live-runtime');
         expect(input['text'], 'Send after attaching');
+        expect(find.byType(DurableSessionBindingBanner), findsNothing);
       },
     );
 
@@ -143,6 +147,7 @@ void main() {
         );
         await pumpN($.tester);
 
+        expect(find.byType(DurableSessionBindingBanner), findsNothing);
         await $.tester.enterText(
           find.byKey(const ValueKey('message_input')),
           'Continue the Codex task',
@@ -152,6 +157,7 @@ void main() {
         await pumpN($.tester);
         expect(findSentMessage(bridge, 'input'), isNull);
         expect(attachmentRequests, 1);
+        expect(find.byType(DurableSessionBindingBanner), findsOneWidget);
 
         binding.value = const SystemMessage(
           subtype: 'session_created',
@@ -165,6 +171,7 @@ void main() {
         expect(input, isNotNull);
         expect(input!['sessionId'], 'live-codex-runtime');
         expect(input['text'], 'Continue the Codex task');
+        expect(find.byType(DurableSessionBindingBanner), findsNothing);
         await $.tester.pump(const Duration(milliseconds: 700));
       },
     );
