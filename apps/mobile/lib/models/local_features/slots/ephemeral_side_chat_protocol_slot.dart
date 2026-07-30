@@ -1,6 +1,8 @@
 part of '../../messages.dart';
 
 const ephemeralSideChatCapability = 'ephemeral_side_chat_v1';
+const ephemeralSideChatParentIdentityCapability =
+    'ephemeral_side_chat_parent_identity_v1';
 
 const LocalFeatureProtocolSlot ephemeralSideChatProtocolSlot =
     _EphemeralSideChatProtocolSlot();
@@ -74,6 +76,7 @@ class _EphemeralSideChatProtocolSlot
 class EphemeralSideChatEntry {
   final String childSessionId;
   final String parentSessionId;
+  final String? parentProviderSessionId;
   final String projectPath;
   final String? worktreePath;
   final String? worktreeBranch;
@@ -88,6 +91,7 @@ class EphemeralSideChatEntry {
   const EphemeralSideChatEntry({
     required this.childSessionId,
     required this.parentSessionId,
+    this.parentProviderSessionId,
     required this.projectPath,
     this.worktreePath,
     this.worktreeBranch,
@@ -99,6 +103,9 @@ class EphemeralSideChatEntry {
     required this.createdAt,
     required this.lastActivityAt,
   });
+
+  String get canonicalParentSessionId =>
+      parentProviderSessionId ?? parentSessionId;
 
   factory EphemeralSideChatEntry.fromJson(Map<String, dynamic> json) {
     final createdAt = DateTime.tryParse(
@@ -115,6 +122,10 @@ class EphemeralSideChatEntry {
     return EphemeralSideChatEntry(
       childSessionId: _sideChatRequiredString(json, 'childSessionId'),
       parentSessionId: _sideChatRequiredString(json, 'parentSessionId'),
+      parentProviderSessionId: _sideChatOptionalString(
+        json,
+        'parentProviderSessionId',
+      ),
       projectPath: _sideChatRequiredString(json, 'projectPath'),
       worktreePath: _sideChatOptionalString(json, 'worktreePath'),
       worktreeBranch: _sideChatOptionalString(json, 'worktreeBranch'),
@@ -244,9 +255,16 @@ class EphemeralSideChatRegistryMessage implements LocalFeatureTransientMessage {
 ClientMessage requestOpenEphemeralSideChat({
   required String parentSessionId,
   required String requestId,
+  String? parentProviderSessionId,
 }) => ClientMessage._(<String, dynamic>{
   'type': 'open_ephemeral_side_chat',
   'parentSessionId': _sideChatClientId(parentSessionId, 'parentSessionId', 256),
+  if (parentProviderSessionId != null)
+    'parentProviderSessionId': _sideChatClientId(
+      parentProviderSessionId,
+      'parentProviderSessionId',
+      256,
+    ),
   'requestId': _sideChatClientId(requestId, 'requestId', 128),
 }, delivery: ClientMessageDelivery.ephemeral);
 

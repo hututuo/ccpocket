@@ -56,6 +56,8 @@ class _SideChatUiSlot extends LocalSessionFeatureSlot {
         rememberPerSession: false,
         builder: (context) => EphemeralSideChatPane(
           parentSessionId: context.sessionId,
+          parentProviderSessionId:
+              context.arguments['parentProviderSessionId'] as String?,
           bridgeService: context.bridge,
           registryService: context.context
               .read<EphemeralSideChatRegistryService>(),

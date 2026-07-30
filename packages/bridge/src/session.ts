@@ -82,6 +82,8 @@ export interface SessionInfo {
   auxiliary?: {
     kind: "ephemeral_side_chat";
     parentSessionId: string;
+    /** Stable provider thread identity; unlike parentSessionId it survives runtime detach. */
+    parentProviderSessionId?: string;
   };
   /** User-assigned session name (via /rename or mobile rename). */
   name?: string;

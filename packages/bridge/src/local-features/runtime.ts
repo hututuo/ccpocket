@@ -44,6 +44,7 @@ export interface PersistedCodexChildSession {
 export interface EphemeralCodexChildSession {
   childSessionId: string;
   parentSessionId: string;
+  parentProviderSessionId?: string;
   projectPath: string;
   worktreePath?: string;
   worktreeBranch?: string;
@@ -106,7 +107,11 @@ export interface LocalFeatureRuntime {
   /** Register an official in-memory Codex fork in the ordinary session runtime. */
   createEphemeralCodexChildSession?(
     parentSessionId: string,
-    options: { threadSource: string; excludeTurnsOnOpen: boolean },
+    options: {
+      threadSource: string;
+      excludeTurnsOnOpen: boolean;
+      parentProviderSessionId?: string;
+    },
   ): Promise<EphemeralCodexChildSession>;
   listEphemeralCodexChildSessions?(): EphemeralCodexChildSession[];
   closeEphemeralCodexChildSession?(childSessionId: string): boolean;

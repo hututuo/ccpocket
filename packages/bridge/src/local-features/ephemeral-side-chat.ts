@@ -75,6 +75,9 @@ export class EphemeralSideChatFeatureHandler implements LocalFeatureHandler {
       const entry = await create(message.parentSessionId, {
         threadSource: "ccpocket_side_chat",
         excludeTurnsOnOpen: true,
+        ...(message.parentProviderSessionId
+          ? { parentProviderSessionId: message.parentProviderSessionId }
+          : {}),
       });
       if (context.signal.aborted) return;
       context.runtime.send(context.client, {

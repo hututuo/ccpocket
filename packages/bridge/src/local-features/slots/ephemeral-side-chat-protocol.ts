@@ -5,10 +5,13 @@ import {
 } from "../protocol-slot.js";
 
 export const EPHEMERAL_SIDE_CHAT_CAPABILITY = "ephemeral_side_chat_v1";
+export const EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY =
+  "ephemeral_side_chat_parent_identity_v1";
 
 export interface OpenEphemeralSideChatMessage {
   type: "open_ephemeral_side_chat";
   parentSessionId: string;
+  parentProviderSessionId?: string;
   requestId: string;
 }
 
@@ -31,6 +34,7 @@ export type EphemeralSideChatClientMessage =
 export interface EphemeralSideChatEntry {
   childSessionId: string;
   parentSessionId: string;
+  parentProviderSessionId?: string;
   projectPath: string;
   worktreePath?: string;
   worktreeBranch?: string;
@@ -82,13 +86,19 @@ export const ephemeralSideChatProtocolContribution: LocalFeatureProtocolContribu
       return hasOnlyLocalFeatureKeys(message, [
         "type",
         "parentSessionId",
+        "parentProviderSessionId",
         "requestId",
       ]) &&
         validLocalFeatureId(message.parentSessionId, 256) &&
+        (message.parentProviderSessionId === undefined ||
+          validLocalFeatureId(message.parentProviderSessionId, 256)) &&
         validLocalFeatureId(message.requestId, 128)
         ? {
             type: "open_ephemeral_side_chat",
             parentSessionId: message.parentSessionId,
+            ...(message.parentProviderSessionId
+              ? { parentProviderSessionId: message.parentProviderSessionId }
+              : {}),
             requestId: message.requestId,
           }
         : null;

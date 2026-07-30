@@ -53,10 +53,12 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
 EphemeralSideChatEntry _entry({
   String childSessionId = 'child-1',
   String parentSessionId = 'parent-1',
+  String? parentProviderSessionId,
   String status = 'idle',
 }) => EphemeralSideChatEntry(
   childSessionId: childSessionId,
   parentSessionId: parentSessionId,
+  parentProviderSessionId: parentProviderSessionId,
   projectPath: '/tmp/project',
   status: status,
   createdAt: DateTime.utc(2026, 7, 25),
@@ -96,6 +98,91 @@ void main() {
       await gateway.close();
     },
   );
+
+  test(
+    'sends canonical parent identity only to a Bridge that advertises it',
+    () async {
+      final gateway = _Gateway()
+        ..capabilities = {
+          ephemeralSideChatCapability,
+          ephemeralSideChatParentIdentityCapability,
+        }
+        ..isConnected = true;
+      final service = EphemeralSideChatRegistryService(
+        bridge: gateway,
+        requestTimeout: const Duration(seconds: 1),
+      );
+      await Future<void>.delayed(Duration.zero);
+      final refreshId = gateway.sentJson(0)['requestId'] as String;
+      gateway.messageController.add(
+        EphemeralSideChatRegistryMessage(
+          requestId: refreshId,
+          entries: const [],
+        ),
+      );
+
+      final openFuture = service.open(
+        'runtime-parent',
+        parentProviderSessionId: 'durable-thread',
+      );
+      final openRequest = gateway.sentJson(1);
+      expect(openRequest, containsPair('parentSessionId', 'runtime-parent'));
+      expect(
+        openRequest,
+        containsPair('parentProviderSessionId', 'durable-thread'),
+      );
+      final entry = _entry(
+        parentSessionId: 'runtime-parent',
+        parentProviderSessionId: 'durable-thread',
+      );
+      gateway.messageController.add(
+        EphemeralSideChatOpenedMessage(
+          parentSessionId: 'runtime-parent',
+          requestId: openRequest['requestId'] as String,
+          entry: entry,
+        ),
+      );
+      await openFuture;
+      expect(service.entriesForParent('durable-thread'), [entry]);
+      expect(service.entriesForParent('runtime-parent'), isEmpty);
+
+      service.dispose();
+      await gateway.close();
+    },
+  );
+
+  test('omits canonical parent identity for a legacy Bridge', () async {
+    final gateway = _Gateway()
+      ..capabilities = {ephemeralSideChatCapability}
+      ..isConnected = true;
+    final service = EphemeralSideChatRegistryService(
+      bridge: gateway,
+      requestTimeout: const Duration(seconds: 1),
+    );
+    await Future<void>.delayed(Duration.zero);
+    final refreshId = gateway.sentJson(0)['requestId'] as String;
+    gateway.messageController.add(
+      EphemeralSideChatRegistryMessage(requestId: refreshId, entries: const []),
+    );
+
+    final openFuture = service.open(
+      'runtime-parent',
+      parentProviderSessionId: 'durable-thread',
+    );
+    final openRequest = gateway.sentJson(1);
+    expect(openRequest, isNot(contains('parentProviderSessionId')));
+    gateway.messageController.add(
+      EphemeralSideChatOpenedMessage(
+        parentSessionId: 'runtime-parent',
+        requestId: openRequest['requestId'] as String,
+        entry: _entry(parentSessionId: 'runtime-parent'),
+      ),
+    );
+    await openFuture;
+
+    service.dispose();
+    await gateway.close();
+  });
 
   test(
     'opens, lists, closes, and removes stopped children authoritatively',

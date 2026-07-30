@@ -174,6 +174,7 @@ import {
   CONVERSATION_SYNC_V2_CAPABILITY,
   DURABLE_SESSION_INSIGHTS_CAPABILITY,
   EPHEMERAL_SIDE_CHAT_CAPABILITY,
+  EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY,
   FILE_BROWSER_CAPABILITY,
   FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY,
   isLocalFeatureServerMessageType,
@@ -2674,10 +2675,15 @@ export class BridgeWebSocketServer {
 
   private async createEphemeralCodexChildSession(
     parentSessionId: string,
-    childOptions: { threadSource: string; excludeTurnsOnOpen: boolean },
+    childOptions: {
+      threadSource: string;
+      excludeTurnsOnOpen: boolean;
+      parentProviderSessionId?: string;
+    },
   ): Promise<{
     childSessionId: string;
     parentSessionId: string;
+    parentProviderSessionId?: string;
     projectPath: string;
     worktreePath?: string;
     worktreeBranch?: string;
@@ -2691,16 +2697,52 @@ export class BridgeWebSocketServer {
   }> {
     const parent = this.sessionManager.get(parentSessionId);
     if (
-      !parent ||
-      parent.provider !== "codex" ||
-      parent.auxiliary ||
-      !(parent.process instanceof CodexProcess)
+      parent &&
+      (parent.provider !== "codex" ||
+        parent.auxiliary ||
+        !(parent.process instanceof CodexProcess))
     ) {
-      throw new Error("The parent Codex session is no longer active");
+      throw new Error("The parent session is not a durable Codex thread");
     }
-    const parentThreadId = this.codexThreadIdForSession(parent);
+    const runtimeParentThreadId = parent
+      ? this.codexThreadIdForSession(parent)
+      : undefined;
+    if (
+      runtimeParentThreadId &&
+      childOptions.parentProviderSessionId &&
+      runtimeParentThreadId !== childOptions.parentProviderSessionId
+    ) {
+      throw new Error(
+        "The parent runtime does not match the requested Codex thread",
+      );
+    }
+    const parentThreadId =
+      runtimeParentThreadId ?? childOptions.parentProviderSessionId;
     if (!parentThreadId) {
-      throw new Error("The parent Codex thread is not ready yet");
+      throw new Error(
+        "The parent Codex runtime is detached and no provider thread was supplied",
+      );
+    }
+
+    const indexedMetadata = parent
+      ? undefined
+      : (
+          await getCodexSessionIndexMetadata([parentThreadId], {
+            authoritativeCodexSettings: true,
+          })
+        ).get(parentThreadId);
+    if (!parent && !indexedMetadata) {
+      throw new Error("The durable Codex parent thread was not found");
+    }
+    const rawProjectPath = parent?.projectPath ?? indexedMetadata?.resumeCwd;
+    if (!rawProjectPath) {
+      throw new Error("The durable Codex parent has no project directory");
+    }
+    const projectPath = resolvePlatformPath(rawProjectPath, this.platform);
+    if (!this.isExistingProjectPathAllowed(projectPath)) {
+      throw new Error(
+        "The durable Codex parent project is outside Bridge access",
+      );
     }
     const allChildren = this.sessionManager.listEphemeralSideChats();
     if (allChildren.length >= 8) {
@@ -2708,22 +2750,35 @@ export class BridgeWebSocketServer {
     }
     if (
       allChildren.filter(
-        (child) => child.auxiliary?.parentSessionId === parentSessionId,
+        (child) =>
+          child.auxiliary?.parentProviderSessionId === parentThreadId ||
+          child.auxiliary?.parentSessionId === parentSessionId,
       ).length >= 4
     ) {
       throw new Error("This conversation has reached the side chat limit");
     }
 
-    const settings = parent.codexSettings ?? {};
-    const process = parent.process;
-    const worktreeOptions: WorktreeOptions | undefined = parent.worktreePath
+    const settings =
+      parent?.codexSettings ?? indexedMetadata?.codexSettings ?? {};
+    const codexPermissionsMode = parent?.codexSettings?.codexPermissionsMode;
+    const additionalWritableRoots = this.normalizeAdditionalWritableRoots(
+      settings.additionalWritableRoots,
+      projectPath,
+    );
+    if (additionalWritableRoots.deniedRoot) {
+      throw new Error(
+        "The durable Codex parent has a writable root outside Bridge access",
+      );
+    }
+    const process = parent?.process;
+    const worktreeOptions: WorktreeOptions | undefined = parent?.worktreePath
       ? {
           existingWorktreePath: parent.worktreePath,
           worktreeBranch: parent.worktreeBranch,
         }
       : undefined;
     const childSessionId = this.sessionManager.create(
-      parent.projectPath,
+      projectPath,
       undefined,
       [],
       worktreeOptions,
@@ -2738,22 +2793,32 @@ export class BridgeWebSocketServer {
         approvalsReviewer:
           settings.approvalsReviewer as CodexStartOptions["approvalsReviewer"],
         codexPermissionsMode:
-          settings.codexPermissionsMode as CodexStartOptions["codexPermissionsMode"],
+          codexPermissionsMode as CodexStartOptions["codexPermissionsMode"],
         sandboxMode: settings.sandboxMode as CodexStartOptions["sandboxMode"],
-        model: settings.model ?? process.knownModel,
+        model:
+          settings.model ??
+          (process instanceof CodexProcess ? process.knownModel : undefined),
         modelReasoningEffort:
-          settings.modelReasoningEffort ?? process.modelReasoningEffort,
-        serviceTier: settings.serviceTier ?? process.knownServiceTier,
+          settings.modelReasoningEffort ??
+          (process instanceof CodexProcess
+            ? process.modelReasoningEffort
+            : undefined),
+        serviceTier:
+          settings.serviceTier ??
+          (process instanceof CodexProcess
+            ? process.knownServiceTier
+            : undefined),
         networkAccessEnabled: settings.networkAccessEnabled,
         webSearchMode:
           settings.webSearchMode as CodexStartOptions["webSearchMode"],
-        additionalWritableRoots: settings.additionalWritableRoots,
+        additionalWritableRoots: additionalWritableRoots.roots,
         collaborationMode: "default",
       },
       {
         auxiliary: {
           kind: "ephemeral_side_chat",
           parentSessionId,
+          parentProviderSessionId: parentThreadId,
         },
       },
     );
@@ -2789,6 +2854,11 @@ export class BridgeWebSocketServer {
     return {
       childSessionId: session.id,
       parentSessionId,
+      ...(session.auxiliary?.parentProviderSessionId
+        ? {
+            parentProviderSessionId: session.auxiliary.parentProviderSessionId,
+          }
+        : {}),
       projectPath: session.projectPath,
       ...(session.worktreePath ? { worktreePath: session.worktreePath } : {}),
       ...(session.worktreeBranch
@@ -10275,6 +10345,7 @@ export class BridgeWebSocketServer {
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         BACKGROUND_NOTIFICATION_ACK_CAPABILITY,
         EPHEMERAL_SIDE_CHAT_CAPABILITY,
+        EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
         HISTORY_TOOL_DETAIL_CAPABILITY,
@@ -10353,6 +10424,7 @@ export class BridgeWebSocketServer {
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
         BACKGROUND_NOTIFICATION_ACK_CAPABILITY,
         EPHEMERAL_SIDE_CHAT_CAPABILITY,
+        EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY,
         TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
         HISTORY_PAGE_CAPABILITY,
         HISTORY_TOOL_DETAIL_CAPABILITY,

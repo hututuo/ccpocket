@@ -109,15 +109,26 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
     return List.unmodifiable(values);
   }
 
-  List<EphemeralSideChatEntry> entriesForParent(String parentSessionId) =>
-      List.unmodifiable(
-        entries.where((entry) => entry.parentSessionId == parentSessionId),
-      );
+  List<EphemeralSideChatEntry> entriesForParent(
+    String parentSessionId, {
+    String? legacyParentSessionId,
+  }) => List.unmodifiable(
+    entries.where(
+      (entry) =>
+          entry.canonicalParentSessionId == parentSessionId ||
+          (entry.parentProviderSessionId == null &&
+              legacyParentSessionId != null &&
+              entry.parentSessionId == legacyParentSessionId),
+    ),
+  );
 
   EphemeralSideChatEntry? entryForChild(String childSessionId) =>
       _entriesById[childSessionId];
 
-  Future<EphemeralSideChatEntry> open(String parentSessionId) {
+  Future<EphemeralSideChatEntry> open(
+    String parentSessionId, {
+    String? parentProviderSessionId,
+  }) {
     _synchronizeBridgeScope();
     _requireAvailable();
     final requestId = const Uuid().v4();
@@ -138,6 +149,12 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
       _bridge.send(
         requestOpenEphemeralSideChat(
           parentSessionId: parentSessionId,
+          parentProviderSessionId:
+              _bridge.capabilities.contains(
+                ephemeralSideChatParentIdentityCapability,
+              )
+              ? parentProviderSessionId
+              : null,
           requestId: requestId,
         ),
       );
