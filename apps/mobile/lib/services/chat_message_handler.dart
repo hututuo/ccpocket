@@ -56,6 +56,7 @@ class ChatStateUpdate {
   final bool resetStreaming;
   final bool markUserMessagesSent;
   final bool markUserMessagesFailed;
+  final MessageStatus? userMessageStatus;
   final String? userStatusClientMessageId;
   final String? projectPath;
 
@@ -118,6 +119,7 @@ class ChatStateUpdate {
     this.resetStreaming = false,
     this.markUserMessagesSent = false,
     this.markUserMessagesFailed = false,
+    this.userMessageStatus,
     this.userStatusClientMessageId,
     this.projectPath,
     this.markUserMessagesQueued = false,
@@ -333,10 +335,23 @@ class ChatMessageHandler {
             ),
           ],
         );
-      case InputAckMessage(:final queued, :final clientMessageId):
+      case InputAckMessage(:final queued, :final clientMessageId, :final stage):
+        if (stage == InputAckStage.bridgeAccepted) {
+          return ChatStateUpdate(
+            userMessageStatus: MessageStatus.bridgeAccepted,
+            userStatusClientMessageId: clientMessageId,
+          );
+        }
         return ChatStateUpdate(
           markUserMessagesSent: true,
           markUserMessagesQueued: queued,
+          userStatusClientMessageId: clientMessageId,
+        );
+      case InputDeliveryStatusMessage(:final stage, :final clientMessageId):
+        return ChatStateUpdate(
+          userMessageStatus: stage == InputDeliveryStage.providerAccepted
+              ? MessageStatus.providerAccepted
+              : MessageStatus.providerRejected,
           userStatusClientMessageId: clientMessageId,
         );
       case InputRejectedMessage(:final clientMessageId):
@@ -647,7 +662,9 @@ class ChatMessageHandler {
       } else if (m is ConversationQueueMessage) {
         queuedInput = m.items.isNotEmpty ? m.items.first : null;
         clearQueuedInput = m.items.isEmpty;
-      } else if (m is InputAckMessage || m is InputRejectedMessage) {
+      } else if (m is InputAckMessage ||
+          m is InputDeliveryStatusMessage ||
+          m is InputRejectedMessage) {
         // Runtime cache may contain transient acknowledgements. They should
         // not become visible history entries during cache restoration.
         continue;

@@ -135,7 +135,7 @@ class _StandardBubble extends StatelessWidget {
       child: AdaptiveContextMenuRegion(
         onOpen: onShowContextMenu,
         child: GestureDetector(
-          onTap: status == MessageStatus.failed ? onRetry : null,
+          onTap: status.canRetry ? onRetry : null,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -289,7 +289,7 @@ class _CommandBubble extends StatelessWidget {
       child: AdaptiveContextMenuRegion(
         onOpen: onShowContextMenu,
         child: GestureDetector(
-          onTap: status == MessageStatus.failed ? onRetry : null,
+          onTap: status.canRetry ? onRetry : null,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -387,6 +387,36 @@ class _StatusIndicator extends StatelessWidget {
         Icons.check,
         size: 14,
         color: appColors.subtleText,
+      ),
+      MessageStatus.bridgeAccepted => Icon(
+        Icons.check,
+        size: 14,
+        color: appColors.subtleText,
+      ),
+      MessageStatus.providerAccepted => Icon(
+        Icons.done_all,
+        size: 14,
+        color: appColors.subtleText,
+      ),
+      MessageStatus.providerRejected => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check, size: 14, color: appColors.subtleText),
+          const SizedBox(width: 3),
+          Icon(
+            Icons.error_outline,
+            size: 14,
+            color: Theme.of(context).colorScheme.error,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            AppLocalizations.of(context).tapToRetry,
+            style: TextStyle(
+              fontSize: 11,
+              color: Theme.of(context).colorScheme.error,
+            ),
+          ),
+        ],
       ),
       MessageStatus.failed => Row(
         mainAxisSize: MainAxisSize.min,

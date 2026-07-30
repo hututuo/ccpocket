@@ -799,6 +799,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(conversationItemsByIdCapability);
   bool get supportsAppServerStatusV1 =>
       _bridgeCapabilities.contains(appServerStatusV1Capability);
+  bool get supportsInputDeliveryAck =>
+      _bridgeCapabilities.contains(inputDeliveryAckBridgeCapability);
   bool get supportsBridgeIdentityV2 =>
       _bridgeCapabilities.contains(bridgeIdentityV2Capability);
   bool get supportsPromptHistoryRequestCorrelation =>
@@ -3673,9 +3675,10 @@ class BridgeService implements BridgeServiceBase {
     _inFlightInputMessages[dedupeKey] = message;
     _inFlightInputTargets[dedupeKey] =
         _offlineMessageTargets[message] ?? _currentOfflineMessageTarget();
-    // Keep every input in the identity-scoped outbox until the Bridge replies
-    // with input_ack/input_rejected. This closes the app-exit window between a
-    // successful WebSocket write and Bridge-owned queue admission.
+    // Keep every input in the identity-scoped outbox until a legacy Bridge
+    // replies with input_ack/input_rejected, or a staged Bridge reports the
+    // provider terminal receipt. The first staged ack is only an in-memory
+    // Bridge admission and does not claim Bridge-restart durability.
     unawaited(_persistOfflinePendingMessages());
   }
 
@@ -3734,6 +3737,11 @@ class BridgeService implements BridgeServiceBase {
           sessionId,
           itemId: 'pending:$clientMessageId',
         );
+      case InputDeliveryStatusMessage(:final clientMessageId):
+        clearDeliveryPendingInput(
+          sessionId,
+          itemId: 'pending:$clientMessageId',
+        );
       case InputRejectedMessage(:final clientMessageId):
         if (clientMessageId == null) return;
         clearDeliveryPendingInput(
@@ -3752,8 +3760,13 @@ class BridgeService implements BridgeServiceBase {
     required String? sessionId,
   }) {
     switch (message) {
-      case InputAckMessage(:final clientMessageId) ||
-          InputRejectedMessage(:final clientMessageId):
+      case InputAckMessage(:final clientMessageId, :final stage)
+          when stage == null:
+        if (clientMessageId == null) return;
+        _clearInFlightInputMessage('input:${sessionId ?? ''}:$clientMessageId');
+      case InputDeliveryStatusMessage(:final clientMessageId):
+        _clearInFlightInputMessage('input:${sessionId ?? ''}:$clientMessageId');
+      case InputRejectedMessage(:final clientMessageId):
         if (clientMessageId == null) return;
         _clearInFlightInputMessage('input:${sessionId ?? ''}:$clientMessageId');
       case AssistantServerMessage():

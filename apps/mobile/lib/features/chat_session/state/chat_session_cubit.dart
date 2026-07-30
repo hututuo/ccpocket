@@ -2227,6 +2227,44 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     emit(state.copyWith(goalMutationError: null, goalMutationErrorKind: null));
   }
 
+  MessageStatus _mergeUserDeliveryStatus(
+    MessageStatus current,
+    MessageStatus incoming,
+  ) {
+    if (current == MessageStatus.providerAccepted ||
+        current == MessageStatus.providerRejected) {
+      return current;
+    }
+    if (incoming == MessageStatus.providerAccepted ||
+        incoming == MessageStatus.providerRejected) {
+      return incoming;
+    }
+    if (incoming == MessageStatus.bridgeAccepted) {
+      return MessageStatus.bridgeAccepted;
+    }
+    if (current == MessageStatus.bridgeAccepted &&
+        incoming == MessageStatus.sent) {
+      // An assistant/result after Bridge admission is secondary provider
+      // evidence. Preserve the staged contract even if the dedicated receipt
+      // was delayed by the transport.
+      return MessageStatus.providerAccepted;
+    }
+    if (current == MessageStatus.bridgeAccepted &&
+        incoming == MessageStatus.queued) {
+      return current;
+    }
+    return incoming;
+  }
+
+  MessageStatus _preserveStagedUserStatus(MessageStatus current) {
+    return switch (current) {
+      MessageStatus.bridgeAccepted ||
+      MessageStatus.providerAccepted ||
+      MessageStatus.providerRejected => current,
+      _ => MessageStatus.sent,
+    };
+  }
+
   void _applyUpdate(
     ChatStateUpdate update,
     ServerMessage originalMsg, {
@@ -2260,6 +2298,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         : update.status;
     final markUserMessagesSent =
         update.markUserMessagesSent && allowUserDelivery;
+    final userMessageStatus = allowUserDelivery
+        ? update.userMessageStatus
+        : null;
 
     // --- Streaming state (separate cubit) ---
     if (update.resetStreaming) {
@@ -2309,10 +2350,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // - queued ack: first sending -> queued
     // - sent ack / assistant/result: first queued -> sent
     //   (fallback to first sending -> sent for non-queued path)
-    if (markUserMessagesSent) {
-      final targetStatus = update.markUserMessagesQueued
-          ? MessageStatus.queued
-          : MessageStatus.sent;
+    if (markUserMessagesSent || userMessageStatus != null) {
+      final targetStatus =
+          userMessageStatus ??
+          (update.markUserMessagesQueued
+              ? MessageStatus.queued
+              : MessageStatus.sent);
       int targetIndex = -1;
       final clientMessageId = update.userStatusClientMessageId;
       if (clientMessageId != null) {
@@ -2335,21 +2378,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       if (targetIndex != -1) {
         final entry = entries[targetIndex] as UserChatEntry;
-        final updatedEntry = UserChatEntry(
-          entry.text,
-          sessionId: entry.sessionId,
-          clientMessageId: entry.clientMessageId,
-          imageBytesList: entry.imageBytesList,
-          imageUrls: entry.imageUrls,
-          imageCount: entry.imageCount,
-          status: targetStatus,
-          messageUuid: entry.messageUuid,
-          timestamp: entry.timestamp,
-          timestampIsAuthoritative: entry.timestampIsAuthoritative,
-        );
-        entries = [...entries];
-        entries[targetIndex] = updatedEntry;
-        didModifyEntries = true;
+        final nextStatus = _mergeUserDeliveryStatus(entry.status, targetStatus);
+        if (nextStatus != entry.status) {
+          final updatedEntry = UserChatEntry(
+            entry.text,
+            sessionId: entry.sessionId,
+            clientMessageId: entry.clientMessageId,
+            imageBytesList: entry.imageBytesList,
+            imageUrls: entry.imageUrls,
+            imageCount: entry.imageCount,
+            status: nextStatus,
+            messageUuid: entry.messageUuid,
+            timestamp: entry.timestamp,
+            timestampIsAuthoritative: entry.timestampIsAuthoritative,
+          );
+          entries = [...entries];
+          entries[targetIndex] = updatedEntry;
+          didModifyEntries = true;
+        }
       }
     }
 
@@ -2361,7 +2407,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         if (e is UserChatEntry &&
             (clientMessageId != null
                 ? e.clientMessageId == clientMessageId
-                : e.status == MessageStatus.sending)) {
+                : e.status == MessageStatus.sending) &&
+            e.status != MessageStatus.bridgeAccepted &&
+            e.status != MessageStatus.providerAccepted &&
+            e.status != MessageStatus.providerRejected) {
           changed = true;
           return UserChatEntry(
             e.text,
@@ -2423,7 +2472,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               imageBytesList: e.imageBytesList,
               imageUrls: imageUrls.isNotEmpty ? imageUrls : e.imageUrls,
               imageCount: imageCount > 0 ? imageCount : e.imageCount,
-              status: MessageStatus.sent,
+              status: _preserveStagedUserStatus(e.status),
               messageUuid: uuid,
               timestamp: shouldReplaceTimestamp ? timestamp : e.timestamp,
               timestampIsAuthoritative: shouldReplaceTimestamp
@@ -2687,14 +2736,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         : (update.projectPath?.trim().isNotEmpty == true
               ? update.projectPath
               : current.projectPath);
-    if (originalMsg
-        case InputAckMessage(:final clientMessageId) ||
-            InputRejectedMessage(:final clientMessageId)
-        when clientMessageId != null) {
-      _deliveryPendingTimers.remove(clientMessageId)?.cancel();
+    final deliveryMessageClientId = switch (originalMsg) {
+      InputAckMessage(:final clientMessageId) => clientMessageId,
+      InputDeliveryStatusMessage(:final clientMessageId) => clientMessageId,
+      InputRejectedMessage(:final clientMessageId) => clientMessageId,
+      _ => null,
+    };
+    if (deliveryMessageClientId != null) {
+      _deliveryPendingTimers.remove(deliveryMessageClientId)?.cancel();
       _bridge.clearDeliveryPendingInput(
         sessionId,
-        itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
+        itemId: '$deliveryPendingQueuedInputPrefix$deliveryMessageClientId',
       );
     } else if (markUserMessagesSent) {
       for (final timer in _deliveryPendingTimers.values) {
@@ -2737,6 +2789,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (originalMsg.clientMessageId != null) {
         _deliveryPendingInputs.remove(originalMsg.clientMessageId);
       }
+      if (deliveryPendingClientMessageId(nextQueuedInput) ==
+          originalMsg.clientMessageId) {
+        nextQueuedInput = null;
+      }
+    }
+    if (originalMsg is InputDeliveryStatusMessage) {
+      _deliveryPendingInputs.remove(originalMsg.clientMessageId);
       if (deliveryPendingClientMessageId(nextQueuedInput) ==
           originalMsg.clientMessageId) {
         nextQueuedInput = null;
@@ -3183,7 +3242,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             ? canonical.imageCount
             : existing.imageCount,
         status: canonical.status == MessageStatus.sent
-            ? MessageStatus.sent
+            ? _preserveStagedUserStatus(existing.status)
             : existing.status,
         messageUuid: canonical.messageUuid ?? existing.messageUuid,
         timestamp: preferredTimestamp?.value,
@@ -3559,6 +3618,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (entry is ServerChatEntry) {
       return entry.message is! StatusMessage &&
           entry.message is! InputAckMessage &&
+          entry.message is! InputDeliveryStatusMessage &&
           entry.message is! InputRejectedMessage &&
           entry.message is! ConversationQueueMessage;
     }
@@ -3585,7 +3645,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         imageUrls: imageUrls,
         imageCount: imageCount,
         status: incoming.status == MessageStatus.sent
-            ? MessageStatus.sent
+            ? _preserveStagedUserStatus(existing.status)
             : existing.status,
         messageUuid: existing.messageUuid ?? incoming.messageUuid,
         timestamp: preferredTimestamp?.value,

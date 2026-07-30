@@ -6056,6 +6056,112 @@ void main() {
     );
 
     test(
+      'staged input acknowledgement advances monotonically from one check to two',
+      () async {
+        final cubit = createCubit('s1');
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.sendMessage('Staged message');
+        final user = cubit.state.entries.whereType<UserChatEntry>().single;
+        final clientMessageId = user.clientMessageId!;
+
+        mockBridge.emitMessage(
+          InputAckMessage(
+            sessionId: 's1',
+            clientMessageId: clientMessageId,
+            queued: true,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.bridgeAccepted,
+        );
+
+        mockBridge.emitMessage(
+          InputDeliveryStatusMessage(
+            sessionId: 's1',
+            clientMessageId: clientMessageId,
+            stage: InputDeliveryStage.providerAccepted,
+            provider: 'codex',
+            method: 'turn/start',
+            occurredAt: '2026-07-31T00:00:00.000Z',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.providerAccepted,
+        );
+
+        // A duplicate first-stage ack after reconnect must not remove the
+        // authoritative provider receipt.
+        mockBridge.emitMessage(
+          InputAckMessage(
+            sessionId: 's1',
+            clientMessageId: clientMessageId,
+            queued: true,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.providerAccepted,
+        );
+      },
+    );
+
+    test(
+      'provider rejection preserves Bridge acceptance and remains retryable',
+      () async {
+        final cubit = createCubit('s1');
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.sendMessage('Rejected after queue');
+        final clientMessageId = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .single
+            .clientMessageId!;
+        mockBridge.emitMessage(
+          InputAckMessage(
+            sessionId: 's1',
+            clientMessageId: clientMessageId,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        mockBridge.emitMessage(
+          InputDeliveryStatusMessage(
+            sessionId: 's1',
+            clientMessageId: clientMessageId,
+            stage: InputDeliveryStage.providerRejected,
+            provider: 'codex',
+            method: 'turn/start',
+            occurredAt: '2026-07-31T00:00:00.000Z',
+            error: 'writer unavailable',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        final status = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .single
+            .status;
+        expect(status, MessageStatus.providerRejected);
+        expect(status.canRetry, isTrue);
+      },
+    );
+
+    test(
       'input_rejected with clientMessageId fails only the matching message',
       () async {
         final cubit = createCubit('s1');
