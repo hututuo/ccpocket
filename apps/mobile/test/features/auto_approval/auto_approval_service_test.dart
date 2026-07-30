@@ -241,6 +241,36 @@ void main() {
   });
 
   test(
+    'enabled policy becomes ineffective without being erased by external ownership',
+    () async {
+      final harness = await _harness();
+      addTearDown(harness.service.dispose);
+      addTearDown(harness.bridge.dispose);
+      _answerLatestQuery(harness.bridge, enabled: true, count: 1);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.service.isEnabledForSession('runtime-1'), isTrue);
+      expect(harness.service.isEffectiveForSession('runtime-1'), isTrue);
+      harness.bridge.emitFeature(
+        const AutoApprovalStateMessage(
+          sessionId: 'runtime-1',
+          enabledConversationCount: 1,
+          supervisionAvailable: false,
+          unavailableReason: 'external_app_server',
+          reason: 'query',
+          error: 'independent server',
+          errorCode: 'external_app_server_approval_unsupported',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.service.isEnabledForSession('runtime-1'), isTrue);
+      expect(harness.service.isEffectiveForSession('runtime-1'), isFalse);
+      expect(harness.service.enabledConversationCount, 1);
+    },
+  );
+
+  test(
     'imports matching legacy identities once and clears Mobile ownership',
     () async {
       final legacy = jsonEncode([

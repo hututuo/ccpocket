@@ -7,6 +7,7 @@ class AutoApprovalStrings {
     required this.switchTitle,
     required this.enabledDescription,
     required this.disabledDescription,
+    required this.configuredButUnavailable,
     required this.warningTitle,
     required this.warningBody,
     required this.exclusions,
@@ -30,6 +31,7 @@ class AutoApprovalStrings {
   final String switchTitle;
   final String enabledDescription;
   final String disabledDescription;
+  final String configuredButUnavailable;
   final String warningTitle;
   final String warningBody;
   final String exclusions;
@@ -64,6 +66,9 @@ class AutoApprovalStrings {
     enabledDescription:
         'The Bridge on your computer keeps supervising this conversation, even when the phone disconnects.',
     disabledDescription: 'Approval requests still wait for you.',
+    configuredButUnavailable:
+        'Auto approval remains configured, but Bridge cannot supervise this '
+        'conversation right now, so it is not taking effect.',
     warningTitle: 'Scope and risk',
     warningBody:
         'Commands, network access, file changes, additional permissions, MCP '
@@ -100,6 +105,7 @@ class AutoApprovalStrings {
     switchTitle: '自动批准此会话',
     enabledDescription: '由电脑端 Bridge 持续托管；即使手机断开，仍会继续处理符合条件的审批。',
     disabledDescription: '审批请求仍会等待你手动处理。',
+    configuredButUnavailable: '自动批准设置仍会保留，但 Bridge 当前无法托管此会话，因此暂时不会生效。',
     warningTitle: '托管范围与风险',
     warningBody: '命令、联网访问、文件修改、额外权限和 MCP 审批可能不再逐次询问；批准计划完成后会立即开始执行该计划。',
     exclusions: 'rm 等破坏性 shell 命令、需要你填写答案的问题，以及插件或连接器安装，始终保留人工处理。',
@@ -125,6 +131,8 @@ class AutoApprovalStrings {
     switchTitle: 'この会話を自動承認',
     enabledDescription: 'パソコン側の Bridge が、スマートフォン切断後も監督を続けます。',
     disabledDescription: '承認リクエストは手動操作を待ちます。',
+    configuredButUnavailable:
+        '自動承認の設定は保持されていますが、Bridge は現在この会話を監督できないため、有効ではありません。',
     warningTitle: '範囲とリスク',
     warningBody:
         'コマンド、ネットワーク、ファイル変更、追加権限、MCP 承認、計画完了が確認なしで進む場合があります。'
@@ -152,6 +160,8 @@ class AutoApprovalStrings {
     switchTitle: '이 대화 자동 승인',
     enabledDescription: '컴퓨터의 Bridge가 휴대전화 연결이 끊겨도 계속 관리합니다.',
     disabledDescription: '승인 요청은 계속 사용자의 처리를 기다립니다.',
+    configuredButUnavailable:
+        '자동 승인 설정은 유지되지만 Bridge가 현재 이 대화를 관리할 수 없어 적용되지 않습니다.',
     warningTitle: '범위 및 위험',
     warningBody:
         '명령, 네트워크, 파일 변경, 추가 권한, MCP 승인 및 계획 완료가 추가 확인 없이 진행될 수 있습니다. '

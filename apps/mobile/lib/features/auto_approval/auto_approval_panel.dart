@@ -15,7 +15,8 @@ class AutoApprovalPanel extends StatelessWidget {
     if (service == null) return const SizedBox.shrink();
     final strings = AutoApprovalStrings.of(context);
     final available = service.canConfigureSession(sessionId);
-    final enabled = service.isEnabledForSession(sessionId);
+    final configured = service.isEnabledForSession(sessionId);
+    final effective = service.isEffectiveForSession(sessionId);
     final approvedCount = service.approvedCountForSession(sessionId);
     final unavailableReason = service.unavailableReasonForSession(sessionId);
     final cs = Theme.of(context).colorScheme;
@@ -27,7 +28,7 @@ class AutoApprovalPanel extends StatelessWidget {
           SwitchListTile.adaptive(
             key: const ValueKey('auto_approval_switch'),
             contentPadding: EdgeInsets.zero,
-            value: enabled,
+            value: configured,
             onChanged: available
                 ? (value) async {
                     final updated = await service.setEnabledForSession(
@@ -43,13 +44,23 @@ class AutoApprovalPanel extends StatelessWidget {
                 : null,
             title: Text(strings.switchTitle),
             subtitle: Text(
-              enabled
+              configured && !effective
+                  ? strings.configuredButUnavailable
+                  : effective
                   ? strings.enabledDescription
                   : strings.disabledDescription,
             ),
             secondary: Icon(
-              enabled ? Icons.smart_toy_outlined : Icons.approval_outlined,
-              color: enabled ? cs.primary : cs.onSurfaceVariant,
+              effective
+                  ? Icons.smart_toy_outlined
+                  : configured
+                  ? Icons.warning_amber_rounded
+                  : Icons.approval_outlined,
+              color: effective
+                  ? cs.primary
+                  : configured
+                  ? cs.error
+                  : cs.onSurfaceVariant,
             ),
           ),
           if (!available)
@@ -63,7 +74,7 @@ class AutoApprovalPanel extends StatelessWidget {
                 style: TextStyle(color: cs.error),
               ),
             ),
-          if (enabled && approvedCount > 0)
+          if (effective && approvedCount > 0)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Text(
@@ -121,7 +132,7 @@ class AutoApprovalStatusChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final service = context.watch<AutoApprovalService?>();
     if (service == null) return const SizedBox.shrink();
-    if (!service.isEnabledForSession(sessionId)) {
+    if (!service.isEffectiveForSession(sessionId)) {
       return const SizedBox.shrink();
     }
     final strings = AutoApprovalStrings.of(context);

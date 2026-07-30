@@ -91,6 +91,17 @@ class AutoApprovalService extends ChangeNotifier {
             (_enabledByProviderSessionId[target.providerSessionId] ?? false));
   }
 
+  /// Whether the configured policy is known to be enforceable by Bridge.
+  ///
+  /// A disconnected phone does not make computer-side supervision ineffective:
+  /// Bridge may still be running. Only an authoritative unsupported response
+  /// (for example, an external app-server owner) suppresses the active UI.
+  bool isEffectiveForSession(String runtimeSessionId) {
+    if (!isEnabledForSession(runtimeSessionId)) return false;
+    return _targetForRuntime(runtimeSessionId) != null &&
+        _supportByRuntimeSessionId[runtimeSessionId] != false;
+  }
+
   int approvedCountForSession(String runtimeSessionId) {
     final target = _targetForRuntime(runtimeSessionId);
     return target == null
