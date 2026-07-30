@@ -2388,6 +2388,10 @@ class _StatusDotState extends State<_StatusDot> with TickerProviderStateMixin {
   late final AnimationController _pulseController;
   late final Animation<double> _pulseAnimation;
   late final AnimationController _orbitController;
+  bool _animationsAllowed = false;
+
+  bool get debugPulseAnimating => _pulseController.isAnimating;
+  bool get debugOrbitAnimating => _orbitController.isAnimating;
 
   @override
   void initState() {
@@ -2403,23 +2407,46 @@ class _StatusDotState extends State<_StatusDot> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(milliseconds: 2000),
     );
-    if (widget.animate) _pulseController.repeat(reverse: true);
-    if (widget.inPlanMode) _orbitController.repeat();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAnimations();
   }
 
   @override
   void didUpdateWidget(_StatusDot oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.animate && !_pulseController.isAnimating) {
+    _syncAnimations();
+  }
+
+  void _syncAnimations() {
+    _animationsAllowed =
+        TickerMode.valuesOf(context).enabled &&
+        !(MediaQuery.maybeOf(context)?.disableAnimations ?? false);
+
+    if (_animationsAllowed && widget.animate && !_pulseController.isAnimating) {
       _pulseController.repeat(reverse: true);
-    } else if (!widget.animate && _pulseController.isAnimating) {
+    } else if ((!_animationsAllowed || !widget.animate) &&
+        _pulseController.isAnimating) {
       _pulseController.stop();
+    }
+    if ((!_animationsAllowed || !widget.animate) &&
+        _pulseController.value != 1.0) {
       _pulseController.value = 1.0;
     }
-    if (widget.inPlanMode && !_orbitController.isAnimating) {
+
+    if (_animationsAllowed &&
+        widget.inPlanMode &&
+        !_orbitController.isAnimating) {
       _orbitController.repeat();
-    } else if (!widget.inPlanMode && _orbitController.isAnimating) {
+    } else if ((!_animationsAllowed || !widget.inPlanMode) &&
+        _orbitController.isAnimating) {
       _orbitController.stop();
+    }
+    if ((!_animationsAllowed || !widget.inPlanMode) &&
+        _orbitController.value != 0.0) {
       _orbitController.reset();
     }
   }

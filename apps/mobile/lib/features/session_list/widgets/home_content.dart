@@ -867,12 +867,7 @@ class HomeContentState extends State<HomeContent> {
       );
     }
 
-    return ListView(
-      key: const ValueKey('session_list'),
-      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.all(12),
-      children: [
+    final contentChildren = <Widget>[
         if (isReconnecting) const SessionReconnectBanner(),
         ?receivedFileBanner,
         ?connectedBridgeBanner,
@@ -1035,7 +1030,15 @@ class HomeContentState extends State<HomeContent> {
             ],
           ],
         ],
-      ],
+    ];
+
+    return ListView.builder(
+      key: const ValueKey('session_list'),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(12),
+      itemCount: contentChildren.length,
+      itemBuilder: (context, index) => contentChildren[index],
     );
   }
 }

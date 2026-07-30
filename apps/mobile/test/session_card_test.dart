@@ -754,6 +754,60 @@ void main() {
       expect(find.byIcon(Icons.stop_circle_outlined), findsNothing);
     });
 
+    testWidgets('status animations stop when hidden or motion is reduced', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'animated-status',
+        projectPath: '/home/user/my-app',
+        status: 'running',
+        permissionMode: PermissionMode.plan.value,
+        createdAt: DateTime.now().toIso8601String(),
+        lastActivityAt: DateTime.now().toIso8601String(),
+      );
+
+      Widget build({
+        required bool tickerEnabled,
+        required bool disableAnimations,
+      }) {
+        return _wrap(
+          MediaQuery(
+            data: MediaQueryData(disableAnimations: disableAnimations),
+            child: TickerMode(
+              enabled: tickerEnabled,
+              child: RunningSessionCard(session: session, onTap: () {}),
+            ),
+          ),
+        );
+      }
+
+      final statusDot = find.byWidgetPredicate(
+        (widget) => widget.runtimeType.toString() == '_StatusDot',
+      );
+
+      await tester.pumpWidget(
+        build(tickerEnabled: true, disableAnimations: true),
+      );
+      dynamic status = tester.state(statusDot);
+      expect(status.debugPulseAnimating, isFalse);
+      expect(status.debugOrbitAnimating, isFalse);
+
+      await tester.pumpWidget(
+        build(tickerEnabled: true, disableAnimations: false),
+      );
+      await tester.pump();
+      status = tester.state(statusDot);
+      expect(status.debugPulseAnimating, isTrue);
+      expect(status.debugOrbitAnimating, isTrue);
+
+      await tester.pumpWidget(
+        build(tickerEnabled: false, disableAnimations: false),
+      );
+      status = tester.state(statusDot);
+      expect(status.debugPulseAnimating, isFalse);
+      expect(status.debugOrbitAnimating, isFalse);
+    });
+
     testWidgets('shows compact queue badge when queued input exists', (
       tester,
     ) async {

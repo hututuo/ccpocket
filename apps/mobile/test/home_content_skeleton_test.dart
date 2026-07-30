@@ -496,6 +496,41 @@ void main() {
       expect(prefs.getBool('session_list_group_recent_sessions'), isFalse);
     });
 
+    testWidgets('recent chats mode mounts long session lists lazily', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            for (var i = 1; i <= 80; i++) _session(id: 'lazy-$i'),
+          ],
+          exhaustedProjectPaths: const {'/home/user/project-a'},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.byKey(const ValueKey('recent_grouping_toggle')));
+      await tester.pump();
+
+      expect(find.text('test prompt for lazy-1'), findsOneWidget);
+      expect(find.text('test prompt for lazy-80'), findsNothing);
+
+      await tester.scrollUntilVisible(
+        find.text('test prompt for lazy-80'),
+        500,
+        scrollable: find.descendant(
+          of: find.byKey(const ValueKey('session_list')),
+          matching: find.byType(Scrollable),
+        ).first,
+      );
+      expect(find.text('test prompt for lazy-80'), findsOneWidget);
+    });
+
     testWidgets('recent chats mode mixes projects and keeps project tags', (
       tester,
     ) async {
