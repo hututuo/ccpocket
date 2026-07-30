@@ -85,7 +85,6 @@ class UnifiedSessionListItem {
 List<UnifiedSessionListItem> buildUnifiedSessionList({
   required Iterable<SessionInfo> runningSessions,
   required Iterable<RecentSession> recentSessions,
-  Set<String> pendingResumeSessionIds = const {},
   Set<String> pinnedSessionKeys = const {},
   Set<String> unseenSessionIds = const {},
   Map<String, ConversationSyncV2Status> conversationStatuses = const {},
@@ -94,7 +93,6 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
   final byIdentity = <String, UnifiedSessionListItem>{};
 
   for (final recent in recentSessions) {
-    if (pendingResumeSessionIds.contains(recent.sessionId)) continue;
     final identity = _recentIdentity(recent);
     byIdentity[identity] = UnifiedSessionListItem(
       identityKey: identity,

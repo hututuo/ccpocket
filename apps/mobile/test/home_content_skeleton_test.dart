@@ -112,6 +112,23 @@ SessionInfo _runningSession({
   });
 }
 
+ConversationSyncV2Status _conversationStatus(
+  String providerSessionId, {
+  String activity = 'idle',
+  String attention = 'none',
+  String result = 'none',
+}) => ConversationSyncV2Status(
+  provider: 'claude',
+  providerSessionId: providerSessionId,
+  activity: activity,
+  attention: attention,
+  result: result,
+  runtimeAttachment: 'notLoaded',
+  source: 'appServer',
+  confidence: 'authoritative',
+  observedAt: '2026-07-31T00:00:00Z',
+);
+
 Widget _buildHomeContent({
   List<SessionInfo> sessions = const [],
   List<OfflinePendingAction> offlinePendingActions = const [],
@@ -119,11 +136,14 @@ Widget _buildHomeContent({
   Set<String> exhaustedProjectPaths = const {},
   Map<String, int> projectSessionDisplayLimits = const {},
   Set<String> unseenSessionIds = const {},
+  Map<String, ConversationSyncV2Status> conversationStatuses = const {},
+  Set<String> unreadConversationKeys = const {},
   String? currentProjectFilter,
   bool hasMoreSessions = false,
   bool isInitialLoading = false,
   bool showMacOSNativeAppBanner = false,
   VoidCallback? onDismissMacOSNativeAppBanner,
+  ValueChanged<String>? onCancelOfflinePendingAction,
   _RunningSessionTap? onTapRunning,
   required SessionListCubit cubit,
   required DraftService draftService,
@@ -155,6 +175,8 @@ Widget _buildHomeContent({
             exhaustedProjectPaths: exhaustedProjectPaths,
             projectSessionDisplayLimits: projectSessionDisplayLimits,
             unseenSessionIds: unseenSessionIds,
+            conversationStatuses: conversationStatuses,
+            unreadConversationKeys: unreadConversationKeys,
             searchQuery: '',
             isLoadingMore: false,
             isInitialLoading: isInitialLoading,
@@ -176,6 +198,7 @@ Widget _buildHomeContent({
                   approvalsReviewer,
                 }) {},
             onStopSession: (_) {},
+            onCancelOfflinePendingAction: onCancelOfflinePendingAction,
             onResumeSession: (_) {},
             onLongPressRecentSession: (_, _) {},
             onArchiveSession: (_) {},
@@ -531,6 +554,101 @@ void main() {
       expect(find.text('test prompt for lazy-80'), findsOneWidget);
     });
 
+    testWidgets(
+      'preserves row state while Need You, Working, and unread reorder',
+      (tester) async {
+        final recentSessions = [
+          _session(id: 's1', modified: '2026-07-31T01:00:00Z'),
+          _session(id: 's2', modified: '2026-07-31T02:00:00Z'),
+          _session(id: 's3', modified: '2026-07-31T03:00:00Z'),
+        ];
+        Finder rowFor(String id) => find.byKey(
+          ValueKey('conversation_${providerSessionIdentityKey('claude', id)}'),
+        );
+        Finder slidableFor(String id) => find.byKey(
+          ValueKey(
+            'conversation_slidable_'
+            '${providerSessionIdentityKey('claude', id)}',
+          ),
+        );
+        Finder cardFor(String id) => find.byKey(
+          ValueKey(
+            'conversation_card_${providerSessionIdentityKey('claude', id)}',
+          ),
+        );
+        Object cardStateFor(String id) => tester.state(
+          find.descendant(
+            of: cardFor(id),
+            matching: find.byType(RunningSessionCard),
+          ),
+        );
+        double rowTop(String id) => tester.getTopLeft(rowFor(id)).dy;
+
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: recentSessions,
+            exhaustedProjectPaths: const {'/home/user/project-a'},
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('recent_grouping_toggle')));
+        await tester.pumpAndSettle();
+
+        expect(rowTop('s3'), lessThan(rowTop('s2')));
+        expect(rowTop('s2'), lessThan(rowTop('s1')));
+        final rowElementsBefore = {
+          for (final id in const ['s1', 's2', 's3'])
+            id: tester.element(rowFor(id)),
+        };
+        final slidableStatesBefore = {
+          for (final id in const ['s1', 's2', 's3'])
+            id: tester.state(slidableFor(id)),
+        };
+        final cardStatesBefore = {
+          for (final id in const ['s1', 's2', 's3']) id: cardStateFor(id),
+        };
+
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: recentSessions,
+            exhaustedProjectPaths: const {'/home/user/project-a'},
+            conversationStatuses: {
+              providerSessionIdentityKey('claude', 's1'): _conversationStatus(
+                's1',
+                attention: 'approval',
+              ),
+              providerSessionIdentityKey('claude', 's2'): _conversationStatus(
+                's2',
+                activity: 'working',
+              ),
+            },
+            unreadConversationKeys: {
+              providerSessionIdentityKey('claude', 's3'),
+            },
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pump();
+
+        expect(rowTop('s1'), lessThan(rowTop('s2')));
+        expect(rowTop('s2'), lessThan(rowTop('s3')));
+        for (final id in const ['s1', 's2', 's3']) {
+          expect(tester.element(rowFor(id)), same(rowElementsBefore[id]));
+          expect(tester.state(slidableFor(id)), same(slidableStatesBefore[id]));
+          expect(cardStateFor(id), same(cardStatesBefore[id]));
+        }
+      },
+    );
+
     testWidgets('recent chats mode mixes projects and keeps project tags', (
       tester,
     ) async {
@@ -768,42 +886,125 @@ void main() {
       },
     );
 
-    testWidgets(
-      'shows pending resume in the unified list and hides matching catalog row',
-      (tester) async {
-        await tester.pumpWidget(
-          _buildHomeContent(
-            offlinePendingActions: [
-              OfflinePendingAction(
-                id: 'pending-resume-s1',
-                kind: OfflinePendingActionKind.resume,
-                projectPath: '/home/user/project-a',
-                provider: 'claude',
-                sessionId: 's1',
-                createdAt: DateTime.utc(2026, 1, 1),
-              ),
-            ],
-            recentSessions: [
-              _session(id: 's1'),
-              _session(id: 's2'),
-            ],
-            isInitialLoading: false,
-            cubit: cubit,
-            draftService: draftService,
-            revenueCatService: revenueCatService,
-            supportBannerService: supportBannerService,
+    testWidgets('keeps a durable pending resume in its original card', (
+      tester,
+    ) async {
+      final identity = providerSessionIdentityKey('claude', 's1');
+      final stableKey = ValueKey('conversation_$identity');
+      final cardKey = ValueKey('conversation_card_$identity');
+      String? cancelledActionId;
+
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 's1'),
+            _session(id: 's2'),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pump();
+      final rowBefore = tester.element(find.byKey(stableKey));
+      final cardBefore = tester.element(find.byKey(cardKey));
+      final stateBefore = tester.state(
+        find.descendant(
+          of: find.byKey(cardKey),
+          matching: find.byType(RunningSessionCard),
+        ),
+      );
+
+      await tester.pumpWidget(
+        _buildHomeContent(
+          offlinePendingActions: [
+            OfflinePendingAction(
+              id: 'pending-resume-s1',
+              kind: OfflinePendingActionKind.resume,
+              projectPath: '/home/user/project-a',
+              provider: 'claude',
+              sessionId: 's1',
+              createdAt: DateTime.utc(2026, 1, 1),
+            ),
+          ],
+          onCancelOfflinePendingAction: (id) => cancelledActionId = id,
+          recentSessions: [
+            _session(id: 's1'),
+            _session(id: 's2'),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pump();
+
+      expect(tester.element(find.byKey(stableKey)), same(rowBefore));
+      expect(tester.element(find.byKey(cardKey)), same(cardBefore));
+      expect(
+        tester.state(
+          find.descendant(
+            of: find.byKey(cardKey),
+            matching: find.byType(RunningSessionCard),
           ),
-        );
-        await tester.pump();
+        ),
+        same(stateBefore),
+      );
+      expect(find.byType(OfflinePendingSessionCard), findsNothing);
+      expect(find.text('test prompt for s1'), findsOneWidget);
+      expect(find.text('test prompt for s2'), findsOneWidget);
+      expect(
+        find.byKey(
+          const ValueKey('session_card_pending_resume_pending-resume-s1'),
+        ),
+        findsOneWidget,
+      );
 
-        expect(find.text('Recent Sessions'), findsOneWidget);
-        expect(find.text('Resume pending'), findsOneWidget);
-        expect(find.text('test prompt for s1'), findsNothing);
-        expect(find.text('test prompt for s2'), findsOneWidget);
-      },
-    );
+      await tester.tap(
+        find.byKey(const ValueKey('session_card_pending_resume_cancel_button')),
+      );
+      expect(cancelledActionId, 'pending-resume-s1');
+    });
 
-    testWidgets('labels an accepted resume as restoring', (tester) async {
+    testWidgets('keeps a placeholder for a genuinely new pending session', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          offlinePendingActions: [
+            OfflinePendingAction(
+              id: 'pending-start',
+              kind: OfflinePendingActionKind.start,
+              projectPath: '/home/user/project-a',
+              provider: 'claude',
+              createdAt: DateTime.utc(2026, 1, 1),
+            ),
+          ],
+          recentSessions: [_session(id: 's1')],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byType(OfflinePendingSessionCard), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('pending_session_pending-start')),
+        findsOneWidget,
+      );
+      expect(find.text('test prompt for s1'), findsOneWidget);
+    });
+
+    testWidgets('labels an in-flight resume as being sent to Bridge', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         _buildHomeContent(
           offlinePendingActions: [
@@ -813,7 +1014,7 @@ void main() {
               state: OfflinePendingActionState.processing,
               canCancel: false,
               projectPath: '/home/user/project-a',
-              provider: 'codex',
+              provider: 'claude',
               sessionId: 's1',
               createdAt: DateTime.utc(2026, 1, 1),
             ),
@@ -828,15 +1029,17 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Restoring'), findsOneWidget);
+      expect(find.byType(OfflinePendingSessionCard), findsNothing);
+      expect(find.text('test prompt for s1'), findsOneWidget);
+      expect(find.text('Sending session request...'), findsOneWidget);
       expect(
-        find.text('Sessions with many images may take longer'),
+        find.byKey(
+          const ValueKey('session_card_pending_resume_processing-resume-s1'),
+        ),
         findsOneWidget,
       );
-      expect(find.text('Loading session history'), findsOneWidget);
-      expect(find.text('Processing on Bridge'), findsOneWidget);
       expect(
-        find.byKey(const ValueKey('pending_session_cancel_button')),
+        find.byKey(const ValueKey('session_card_pending_resume_cancel_button')),
         findsNothing,
       );
     });

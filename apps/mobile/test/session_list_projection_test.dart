@@ -452,19 +452,6 @@ void main() {
       expect(items.where((item) => item.recent != null), hasLength(1));
     });
 
-    test('hides recent representation while the same resume is queued', () {
-      final items = buildUnifiedSessionList(
-        runningSessions: const [],
-        recentSessions: [
-          _recent(id: 'queued', modified: '2026-07-25T01:00:00Z'),
-          _recent(id: 'visible', modified: '2026-07-25T02:00:00Z'),
-        ],
-        pendingResumeSessionIds: const {'queued'},
-      );
-
-      expect(items.map((item) => item.providerSessionId), ['visible']);
-    });
-
     test('uses a deterministic durable identity tie break', () {
       final items = buildUnifiedSessionList(
         runningSessions: const [],

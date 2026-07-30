@@ -50,6 +50,9 @@ class _ProjectSessionGroup {
   });
 }
 
+ValueKey<String> _conversationRowKey(String identityKey) =>
+    ValueKey('conversation_$identityKey');
+
 List<_ProjectSessionGroup> _groupSessionsByProject({
   required Iterable<String> projectPaths,
   required List<UnifiedSessionListItem> sessions,
@@ -597,7 +600,28 @@ class HomeContentState extends State<HomeContent> {
   Widget _buildContent(BuildContext context) {
     final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
-    final hasPendingActions = widget.offlinePendingActions.isNotEmpty;
+    final pendingStartActions = widget.offlinePendingActions
+        .where(
+          (action) =>
+              action.kind == OfflinePendingActionKind.start &&
+              (action.sessionId?.trim().isEmpty ?? true),
+        )
+        .toList(growable: false);
+    final pendingResumeActionsByIdentity =
+        <String, OfflinePendingAction>{};
+    for (final action in widget.offlinePendingActions) {
+      if (action.kind != OfflinePendingActionKind.resume) continue;
+      final durableId = action.sessionId?.trim();
+      if (durableId == null || durableId.isEmpty) continue;
+      final identity = providerSessionIdentityKey(action.provider, durableId);
+      final current = pendingResumeActionsByIdentity[identity];
+      if (current == null ||
+          (current.state != OfflinePendingActionState.processing &&
+              action.state == OfflinePendingActionState.processing)) {
+        pendingResumeActionsByIdentity[identity] = action;
+      }
+    }
+    final hasPendingActions = pendingStartActions.isNotEmpty;
     final mirrorService = context.watch<ConversationMirrorService?>();
     final mirrorBridgeId = mirrorService?.currentBridgeInstanceId;
     final hasKnownProjects = widget.accumulatedProjectPaths.isNotEmpty;
@@ -656,15 +680,9 @@ class HomeContentState extends State<HomeContent> {
         searchQuery: widget.searchQuery,
       ),
     );
-    final pendingResumeSessionIds = widget.offlinePendingActions
-        .where((action) => action.kind == OfflinePendingActionKind.resume)
-        .map((action) => action.sessionId)
-        .whereType<String>()
-        .toSet();
     final unifiedSessions = buildUnifiedSessionList(
       runningSessions: runningSessions,
       recentSessions: catalogSessions,
-      pendingResumeSessionIds: pendingResumeSessionIds,
       pinnedSessionKeys: widget.pinnedSessionKeys,
       unseenSessionIds: widget.unseenSessionIds,
       conversationStatuses: widget.conversationStatuses,
@@ -704,6 +722,8 @@ class HomeContentState extends State<HomeContent> {
       final running = item.running;
       final recent = item.recent;
       final cardSession = _sessionInfoForUnifiedCard(item, _displayMode);
+      final pendingResumeAction =
+          pendingResumeActionsByIdentity[item.identityKey];
       final isProcessing =
           recent != null &&
           widget.archivingSessionIds.contains(
@@ -712,7 +732,7 @@ class HomeContentState extends State<HomeContent> {
               recent.sessionId,
             ),
           );
-      final stableKey = ValueKey('conversation_${item.identityKey}');
+      final stableKey = _conversationRowKey(item.identityKey);
       final slidableKey = ValueKey('conversation_slidable_${item.identityKey}');
       final row = Slidable(
         key: slidableKey,
@@ -759,6 +779,15 @@ class HomeContentState extends State<HomeContent> {
             draftText: recent == null
                 ? null
                 : context.read<DraftService>().getDraft(recent.sessionId),
+            pendingResumeAction: pendingResumeAction,
+            onCancelPendingResume:
+                pendingResumeAction == null ||
+                    !pendingResumeAction.canCancel ||
+                    widget.onCancelOfflinePendingAction == null
+                ? null
+                : () => widget.onCancelOfflinePendingAction!(
+                    pendingResumeAction.id,
+                  ),
             isProcessing: isProcessing,
             isPinned:
                 item.pinKey != null &&
@@ -955,7 +984,7 @@ class HomeContentState extends State<HomeContent> {
             onToggleNamed: widget.onToggleNamed,
           ),
           const SizedBox(height: 8),
-          for (final action in widget.offlinePendingActions)
+          for (final action in pendingStartActions)
             OfflinePendingSessionCard(
               key: ValueKey('pending_session_${action.id}'),
               action: action,
@@ -1032,12 +1061,19 @@ class HomeContentState extends State<HomeContent> {
         ],
     ];
 
+    final childIndexByKey = <Key, int>{
+      for (var index = 0; index < contentEntries.length; index++)
+        if (contentEntries[index] case final UnifiedSessionListItem item)
+          _conversationRowKey(item.identityKey): index,
+    };
+
     return ListView.builder(
       key: const ValueKey('session_list'),
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(12),
       itemCount: contentEntries.length,
+      findChildIndexCallback: (key) => childIndexByKey[key],
       itemBuilder: (context, index) {
         final entry = contentEntries[index];
         if (entry is UnifiedSessionListItem) {
