@@ -242,6 +242,7 @@ describe("CodexConversationMirrorReader", () => {
           type: "tool_use" as const,
           name: "ReadSkill",
           input: { file_path: "/tmp/pdf/SKILL.md", skill: "pdf" },
+          timestamp: "2026-07-30T03:00:01.000Z",
         },
         {
           turnId: "turn-1",
@@ -251,6 +252,7 @@ describe("CodexConversationMirrorReader", () => {
           type: "tool_result" as const,
           name: "ReadSkill",
           content: "skill body",
+          timestamp: "2026-07-30T03:00:02.000Z",
         },
         {
           turnId: "turn-1",
@@ -260,6 +262,7 @@ describe("CodexConversationMirrorReader", () => {
           type: "tool_use" as const,
           name: "SpawnAgent",
           input: { task_name: "review" },
+          timestamp: "2026-07-30T03:00:04.000Z",
         },
         {
           turnId: "turn-1",
@@ -269,8 +272,25 @@ describe("CodexConversationMirrorReader", () => {
           type: "tool_result" as const,
           name: "SpawnAgent",
           content: "agent started",
+          timestamp: "2026-07-30T03:00:05.000Z",
         },
       ],
+      itemTimestamps: new Map([
+        [
+          "user-1",
+          {
+            startedAt: "2026-07-30T03:00:00.000Z",
+            completedAt: "2026-07-30T03:00:00.000Z",
+          },
+        ],
+        [
+          "assistant-1",
+          {
+            startedAt: "2026-07-30T03:00:03.000Z",
+            completedAt: "2026-07-30T03:00:03.000Z",
+          },
+        ],
+      ]),
     }));
 
     const result = await new CodexConversationMirrorReader({
@@ -294,6 +314,44 @@ describe("CodexConversationMirrorReader", () => {
         : [],
     );
     expect(toolNames).toEqual(["ReadSkill", "SpawnAgent"]);
+    expect(
+      result.entries.map((value) => ({
+        entryId: value.entryId,
+        sourceTimestamp: value.message.sourceTimestamp,
+        authoritative: value.message.sourceTimestampIsAuthoritative,
+      })),
+    ).toEqual([
+      {
+        entryId: "user-1",
+        sourceTimestamp: "2026-07-30T03:00:00.000Z",
+        authoritative: true,
+      },
+      {
+        entryId: "call-skill",
+        sourceTimestamp: "2026-07-30T03:00:01.000Z",
+        authoritative: true,
+      },
+      {
+        entryId: "call-skill:part-2",
+        sourceTimestamp: "2026-07-30T03:00:02.000Z",
+        authoritative: true,
+      },
+      {
+        entryId: "assistant-1",
+        sourceTimestamp: "2026-07-30T03:00:03.000Z",
+        authoritative: true,
+      },
+      {
+        entryId: "call-agent",
+        sourceTimestamp: "2026-07-30T03:00:04.000Z",
+        authoritative: true,
+      },
+      {
+        entryId: "call-agent:part-2",
+        sourceTimestamp: "2026-07-30T03:00:05.000Z",
+        authoritative: true,
+      },
+    ]);
   });
 
   it("preserves item-pagination turn identity when raw items have no id", async () => {
