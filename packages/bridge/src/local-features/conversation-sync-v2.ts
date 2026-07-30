@@ -13,6 +13,7 @@ import type { HistoryToolDetailPayload, ServerMessage } from "../parser.js";
 import {
   codexThreadToSessionHistory,
   getAllRecentSessions,
+  getCodexDesktopToolTimeline,
   resolveCodexSessionJsonlPath,
   type SessionIndexEntry,
 } from "../sessions-index.js";
@@ -26,6 +27,7 @@ import {
   type ConversationContentSnapshot,
   type ConversationContentSnapshotEntry,
 } from "./conversation-content-sync.js";
+import type { CodexDesktopToolTimeline } from "./codex-tool-history.js";
 import { sessionHistoryToServerMessages } from "./codex-thread-history.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
@@ -191,6 +193,7 @@ interface ConversationSyncV2Options {
   coldReconcileMs?: number;
   observeCodexThread?: ObserveCodexThread;
   inspectCodexThread?: InspectCodexThread;
+  desktopToolTimelineReader?: DesktopToolTimelineReader;
   initialExternalCodexMonitors?: number;
   maxExternalCodexMonitors?: number;
 }
@@ -290,6 +293,10 @@ type InspectCodexThread = (
   threadId: string,
 ) => Promise<ExternalCodexSnapshot | null>;
 
+type DesktopToolTimelineReader = (
+  threadId: string,
+) => Promise<CodexDesktopToolTimeline>;
+
 interface ExternalCodexMonitorRecord {
   observation: ExternalCodexObservation;
   generation: number;
@@ -326,6 +333,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private readonly coldReconcileMs: number;
   private readonly observeCodexThread: ObserveCodexThread;
   private readonly inspectCodexThread: InspectCodexThread;
+  private readonly desktopToolTimelineReader: DesktopToolTimelineReader;
   private readonly initialExternalCodexMonitors: number;
   private readonly maxExternalCodexMonitors: number;
 
@@ -432,6 +440,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       (options.observeCodexThread
         ? async () => null
         : inspectDurableCodexThread);
+    this.desktopToolTimelineReader =
+      options.desktopToolTimelineReader ?? getCodexDesktopToolTimeline;
     this.initialExternalCodexMonitors = nonNegativeInteger(
       options.initialExternalCodexMonitors,
       INITIAL_EXTERNAL_CODEX_MONITORS,
@@ -1632,7 +1642,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (request) throw boundedLegacyPageUnavailable(target.provider);
     try {
       return await this.withSharedCodexReadProcess((process) =>
-        readRecentCodexConversationHistory(process, target),
+        readRecentCodexConversationHistory(
+          process,
+          target,
+          this.desktopToolTimelineReader,
+        ),
       );
     } catch (error) {
       if (!isUnsupportedAppServerRead(error)) throw error;
@@ -2101,7 +2115,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     observedAt: string,
   ): void {
     const key = targetKey(target);
-    const bytes = Buffer.byteLength(stableJson(event.message), "utf8");
+    const providerTimestamp =
+      event.timestamp && validIso(event.timestamp) ? event.timestamp : undefined;
+    const message = withSourceTimestamp(
+      event.message,
+      providerTimestamp ?? observedAt,
+      providerTimestamp !== undefined,
+    );
+    const bytes = Buffer.byteLength(stableJson(message), "utf8");
     if (bytes > MAX_EXTERNAL_LIVE_BYTES_PER_THREAD) return;
     const messages =
       this.externalCodexLiveMessages.get(key) ??
@@ -2111,7 +2132,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
     messages.delete(event.itemKey);
     messages.set(event.itemKey, {
-      message: event.message,
+      message,
       observedAt,
       bytes,
     });
@@ -2517,6 +2538,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.historyReader,
         signal,
         (operation) => this.withSharedCodexReadProcess(operation),
+        this.desktopToolTimelineReader,
         (candidate) =>
           this.eventPayloadFits(subscription, responsePayload(candidate)),
       );
@@ -2583,6 +2605,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             this.historyReader,
             signal,
             (operation) => this.withSharedCodexReadProcess(operation),
+            this.desktopToolTimelineReader,
             pageFits,
           );
       if (!pageFits(page)) {
@@ -2985,24 +3008,54 @@ async function readCurrentStatuses(
   return statuses;
 }
 
+async function readOptionalDesktopToolTimeline(
+  reader: DesktopToolTimelineReader,
+  threadId: string,
+): Promise<CodexDesktopToolTimeline | undefined> {
+  try {
+    const timeline = await reader(threadId);
+    return timeline.events.length > 0 || timeline.itemTimestamps?.size
+      ? timeline
+      : undefined;
+  } catch (error) {
+    // Timeline enrichment is optional and must not make canonical app-server
+    // history unavailable. Keep diagnostics bounded and path-free because
+    // reader failures may include the local rollout path.
+    const kind = error instanceof Error ? error.name : typeof error;
+    console.warn(
+      `[conversation-sync-v2] Optional Desktop item timeline unavailable (${kind})`,
+    );
+    return undefined;
+  }
+}
+
 async function readRecentCodexConversationHistory(
   process: CodexProcess,
   target: ConversationSyncTarget,
+  desktopToolTimelineReader: DesktopToolTimelineReader,
 ): Promise<ConversationHistoryWindow> {
-  const page = await process.listThreadTurns({
-    threadId: target.providerSessionId,
-    limit: 5,
-    sortDirection: "desc",
-    // The current app-server summary view keeps only the user/final spine and
-    // omits tool ids/counts. Read one bounded full page at the Bridge, then
-    // compact the older two turns before crossing the wire.
-    itemsView: "full",
-  });
+  const timeline = readOptionalDesktopToolTimeline(
+    desktopToolTimelineReader,
+    target.providerSessionId,
+  );
+  const [page, desktopToolTimeline] = await Promise.all([
+    process.listThreadTurns({
+      threadId: target.providerSessionId,
+      limit: 5,
+      sortDirection: "desc",
+      // The current app-server summary view keeps only the user/final spine and
+      // omits tool ids/counts. Read one bounded full page at the Bridge, then
+      // compact the older two turns before crossing the wire.
+      itemsView: "full",
+    }),
+    timeline,
+  ]);
   const turns = [...page.data].reverse();
   const normalized = normalizeCodexTurns(
     turns,
     "full",
     target.providerSessionId,
+    desktopToolTimeline,
   );
   const fullStart = Math.max(0, normalized.turns.length - FULL_RECENT_TURNS);
   const latestTurn = normalized.turns.at(-1);
@@ -3071,11 +3124,16 @@ async function readTurnsPage(
   historyReader: ConversationHistoryReader,
   signal: AbortSignal,
   runCodexRead: CodexReadRunner,
+  desktopToolTimelineReader: DesktopToolTimelineReader,
   pageFits: (page: ConversationTurnsPage) => boolean,
 ): Promise<ConversationTurnsPage> {
   if (message.provider === "codex") {
     try {
       return await runCodexRead(async (process) => {
+        const timeline = readOptionalDesktopToolTimeline(
+          desktopToolTimelineReader,
+          message.providerSessionId,
+        );
         let lastPage: ConversationTurnsPage | undefined;
         for (const limit of decreasingPageLimits(message.limit ?? 5)) {
           signal.throwIfAborted();
@@ -3099,6 +3157,7 @@ async function readTurnsPage(
             chronologicalTurns,
             message.itemsView ?? "summary",
             message.providerSessionId,
+            await timeline,
           );
           const candidate: ConversationTurnsPage = {
             data: normalized.turns,
@@ -3197,11 +3256,16 @@ async function readItemsPage(
   historyReader: ConversationHistoryReader,
   signal: AbortSignal,
   runCodexRead: CodexReadRunner,
+  desktopToolTimelineReader: DesktopToolTimelineReader,
   pageFits: (page: ConversationItemsPage) => boolean,
 ): Promise<ConversationItemsPage> {
   if (message.provider === "codex") {
     try {
       return await runCodexRead(async (process) => {
+        const timeline = readOptionalDesktopToolTimeline(
+          desktopToolTimelineReader,
+          message.providerSessionId,
+        );
         const turnId = message.turnId ?? "paged-items";
         let lastPage: ConversationItemsPage | undefined;
         for (const limit of decreasingPageLimits(message.limit ?? 200)) {
@@ -3227,6 +3291,7 @@ async function readItemsPage(
             messages = codexTurnMessages(
               { id: turnId, items },
               message.providerSessionId,
+              await timeline,
             );
             nextCursor = page.nextCursor;
           } catch (error) {
@@ -3238,6 +3303,7 @@ async function readItemsPage(
               message.providerSessionId,
               message.turnId,
               signal,
+              await timeline,
             );
             usedTurnsFallback = true;
           }
@@ -3561,6 +3627,7 @@ function normalizeCodexTurns(
   rawTurns: readonly unknown[],
   itemsView: "summary" | "full",
   threadId: string,
+  desktopToolTimeline?: CodexDesktopToolTimeline,
 ): {
   turns: NormalizedConversationTurn[];
   turnDetails: ConversationTurnDetails[];
@@ -3585,7 +3652,7 @@ function normalizeCodexTurns(
     const items = rawItems;
     const bounded = boundCodexRawTurnForConversion(turn, turnId);
     const fullMessages = annotateTurnMessages(
-      codexTurnMessages(bounded.turn, threadId),
+      codexTurnMessages(bounded.turn, threadId, desktopToolTimeline),
       turnId,
     );
     if (itemsView === "full") {
@@ -3837,11 +3904,15 @@ function boundedCodexRawString(
 function codexTurnMessages(
   turn: Record<string, unknown>,
   threadId: string,
+  desktopToolTimeline?: CodexDesktopToolTimeline,
 ): ServerMessage[] {
-  const history = codexThreadToSessionHistory({
-    id: threadId,
-    turns: [turn],
-  });
+  const history = codexThreadToSessionHistory(
+    {
+      id: threadId,
+      turns: [turn],
+    },
+    desktopToolTimeline ? { desktopToolTimeline } : undefined,
+  );
   return sessionHistoryToServerMessages(history, {
     idPrefix: `conversation-sync-v2-page-${threadId}`,
   });
@@ -4012,6 +4083,7 @@ async function findCodexTurnMessages(
   threadId: string,
   turnId: string,
   signal: AbortSignal,
+  desktopToolTimeline?: CodexDesktopToolTimeline,
 ): Promise<ServerMessage[]> {
   let cursor: string | null = null;
   for (
@@ -4038,7 +4110,11 @@ async function findCodexTurnMessages(
     });
     if (found && typeof found === "object" && !Array.isArray(found)) {
       return annotateTurnMessages(
-        codexTurnMessages(found as Record<string, unknown>, threadId),
+        codexTurnMessages(
+          found as Record<string, unknown>,
+          threadId,
+          desktopToolTimeline,
+        ),
         turnId,
       );
     }
@@ -4592,6 +4668,21 @@ function secondsIso(value: number): string {
 
 function validIso(value: string): boolean {
   return Number.isFinite(Date.parse(value));
+}
+
+function withSourceTimestamp(
+  message: ServerMessage,
+  sourceTimestamp: string,
+  authoritative: boolean,
+): ServerMessage {
+  if (message.sourceTimestamp && validIso(message.sourceTimestamp)) {
+    return message;
+  }
+  return {
+    ...message,
+    sourceTimestamp,
+    ...(authoritative ? { sourceTimestampIsAuthoritative: true } : {}),
+  };
 }
 
 function laterIso(current: string, candidate: string): string {

@@ -3199,6 +3199,12 @@ function supplementCodexTurnItems(
         : use.imagePaths && use.imagePaths.length > 0
           ? { imagePaths: use.imagePaths }
           : {}),
+      ...(use.timestamp
+        ? { __ccPocketEventStartedAt: use.timestamp }
+        : {}),
+      ...(result?.timestamp
+        ? { __ccPocketEventCompletedAt: result.timestamp }
+        : {}),
       desktopHostTool: true,
     });
     byVisibleMessage.set(use.afterVisibleMessage, bucket);

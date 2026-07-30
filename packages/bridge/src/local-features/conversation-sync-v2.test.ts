@@ -2003,6 +2003,183 @@ describe("ConversationSyncV2FeatureHandler", () => {
     const serialized = JSON.stringify(latestTimeline);
     expect(serialized.match(/继续/g)).toHaveLength(1);
     expect(serialized.match(/same delta chunk/g)).toHaveLength(2);
+    const timestampedDeltas = latestTimeline
+      .flatMap((event) => event.entries)
+      .map((entry) => entry.message)
+      .filter((message) => message.type === "thinking_delta");
+    expect(timestampedDeltas).toHaveLength(2);
+    for (const message of timestampedDeltas) {
+      expect(message).toMatchObject({
+        sourceTimestamp: "2026-07-30T02:00:01.000Z",
+        sourceTimestampIsAuthoritative: true,
+      });
+    }
+    fixture.handler.close();
+  });
+
+  it("reads Desktop item timestamps only when v2 content is requested and marks them authoritative", async () => {
+    const sourceTimestamps = {
+      user: "2026-07-30T02:00:00.000Z",
+      toolStarted: "2026-07-30T02:00:02.000Z",
+      toolCompleted: "2026-07-30T02:00:04.000Z",
+      assistant: "2026-07-30T02:00:05.000Z",
+    };
+    const desktopToolTimelineReader = vi.fn(async () => ({
+      events: [],
+      callIds: new Set<string>(),
+      itemTimestamps: new Map([
+        [
+          "user-item",
+          {
+            startedAt: sourceTimestamps.user,
+            completedAt: sourceTimestamps.user,
+          },
+        ],
+        [
+          "tool-item",
+          {
+            startedAt: sourceTimestamps.toolStarted,
+            completedAt: sourceTimestamps.toolCompleted,
+          },
+        ],
+        [
+          "assistant-item",
+          {
+            startedAt: sourceTimestamps.assistant,
+            completedAt: sourceTimestamps.assistant,
+          },
+        ],
+      ]),
+    }));
+    const listThreadTurns = vi.fn(async () => ({
+      data: [timestampedCodexTurn()],
+      nextCursor: null,
+    }));
+    const codex = codexSeed(0, "thread-timestamps");
+    const fixture = createCodexPageFixture(
+      { listThreadTurns },
+      undefined,
+      {
+        catalogReader: async () => [codex],
+        desktopToolTimelineReader,
+        initialExternalCodexMonitors: 0,
+      },
+    );
+
+    const cachedClient = {};
+    await fixture.handler.handle(
+      subscribeMessage([
+        {
+          provider: "codex",
+          providerSessionId: codex.entry.providerSessionId,
+          revision: codex.entry.revision,
+        },
+      ]),
+      context(cachedClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, cachedClient, "sync_complete"),
+      ).toHaveLength(1),
+    );
+    expect(listThreadTurns).not.toHaveBeenCalled();
+    expect(desktopToolTimelineReader).not.toHaveBeenCalled();
+    fixture.handler.disconnect(cachedClient);
+
+    const freshClient = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(freshClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, freshClient, "sync_complete"),
+      ).toHaveLength(1),
+    );
+    expect(desktopToolTimelineReader).toHaveBeenCalledTimes(1);
+    expect(desktopToolTimelineReader).toHaveBeenCalledWith(
+      "thread-timestamps",
+    );
+    const messages = events(
+      fixture.sent,
+      freshClient,
+      "timeline_page",
+    ).flatMap((event) => event.entries.map((entry) => entry.message));
+    expect(
+      messages.map((message) => ({
+        type: message.type,
+        sourceTimestamp: message.sourceTimestamp,
+        authoritative: message.sourceTimestampIsAuthoritative,
+      })),
+    ).toEqual([
+      {
+        type: "user_input",
+        sourceTimestamp: sourceTimestamps.user,
+        authoritative: true,
+      },
+      {
+        type: "assistant",
+        sourceTimestamp: sourceTimestamps.toolStarted,
+        authoritative: true,
+      },
+      {
+        type: "tool_result",
+        sourceTimestamp: sourceTimestamps.toolCompleted,
+        authoritative: true,
+      },
+      {
+        type: "assistant",
+        sourceTimestamp: sourceTimestamps.assistant,
+        authoritative: true,
+      },
+    ]);
+    fixture.handler.close();
+  });
+
+  it("keeps turn-level timestamp fallback non-authoritative when no Desktop timeline exists", async () => {
+    const desktopToolTimelineReader = vi.fn(async () => ({
+      events: [],
+      callIds: new Set<string>(),
+    }));
+    const fixture = createCodexPageFixture(
+      {
+        listThreadTurns: async () => ({
+          data: [timestampedCodexTurn()],
+          nextCursor: null,
+        }),
+      },
+      undefined,
+      {
+        catalogReader: async () => [
+          codexSeed(0, "thread-fallback-timestamps"),
+        ],
+        desktopToolTimelineReader,
+        initialExternalCodexMonitors: 0,
+      },
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const messages = events(fixture.sent, client, "timeline_page").flatMap(
+      (event) => event.entries.map((entry) => entry.message),
+    );
+    expect(messages).not.toHaveLength(0);
+    const timestampedMessages = messages.filter(
+      (message) => message.sourceTimestamp != null,
+    );
+    expect(timestampedMessages).not.toHaveLength(0);
+    expect(
+      timestampedMessages.every(
+        (message) => message.sourceTimestampIsAuthoritative !== true,
+      ),
+    ).toBe(true);
     fixture.handler.close();
   });
 
@@ -3291,6 +3468,9 @@ function createCodexPageFixture(
     | ServerMessage[]
     | { messages: ServerMessage[]; nextTurnCursor: string | null }
   >,
+  handlerOptions: NonNullable<
+    ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
+  > = {},
 ) {
   const sent = new Map<object, ConversationSyncServerMessage[]>();
   const client = {};
@@ -3334,6 +3514,7 @@ function createCodexPageFixture(
       inspectCodexThread: async () => null,
       statusWatchdogMs: 60_000,
       coldReconcileMs: 60_000,
+      ...handlerOptions,
     }),
   };
 }
@@ -3439,6 +3620,34 @@ function workingStatus(index: number): ConversationSyncStatus {
     runtimeAttachment: "loaded",
     source: "bridgeRuntime",
     confidence: "authoritative",
+  };
+}
+
+function timestampedCodexTurn() {
+  return {
+    id: "turn-timestamps",
+    startedAt: 1_700_000_000,
+    completedAt: 1_700_000_100,
+    items: [
+      {
+        type: "userMessage",
+        id: "user-item",
+        content: [{ type: "text", text: "inspect this" }],
+      },
+      {
+        type: "dynamicToolCall",
+        id: "tool-item",
+        tool: "Read",
+        arguments: { path: "/tmp/example.txt" },
+        status: "completed",
+        contentItems: [{ type: "inputText", text: "contents" }],
+      },
+      {
+        type: "agentMessage",
+        id: "assistant-item",
+        text: "finished",
+      },
+    ],
   };
 }
 
