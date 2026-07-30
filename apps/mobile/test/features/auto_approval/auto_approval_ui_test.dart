@@ -51,6 +51,10 @@ class _Bridge extends BridgeService {
   Stream<LocalFeatureServerMessage> get localFeatureMessages =>
       _featureController.stream;
 
+  void emitFeature(LocalFeatureServerMessage message) {
+    _featureController.add(message);
+  }
+
   @override
   void send(ClientMessage message) {
     sent.add(message);
@@ -205,6 +209,69 @@ void main() {
     );
     expect(toggle.onChanged, isNull);
   });
+
+  testWidgets(
+    'enabled policy stays configured but loses its active chip on external ownership',
+    (tester) async {
+      final services = await _services();
+      addTearDown(services.service.dispose);
+      addTearDown(services.bridge.dispose);
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AutoApprovalService>.value(
+          value: services.service,
+          child: MaterialApp(
+            home: Scaffold(
+              body: Column(
+                children: [
+                  const Expanded(
+                    child: AutoApprovalPanel(sessionId: 'session-1'),
+                  ),
+                  AutoApprovalStatusChip(
+                    sessionId: 'session-1',
+                    onPressed: () {},
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await services.service.setEnabledForSession('session-1', true);
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('auto_approval_status_chip')),
+        findsOneWidget,
+      );
+
+      services.bridge.emitFeature(
+        const AutoApprovalStateMessage(
+          sessionId: 'session-1',
+          enabledConversationCount: 1,
+          supervisionAvailable: false,
+          unavailableReason: 'external_app_server',
+          reason: 'query',
+          error: 'independent server',
+          errorCode: 'external_app_server_approval_unsupported',
+        ),
+      );
+      await tester.pump();
+
+      expect(services.service.isEnabledForSession('session-1'), isTrue);
+      expect(services.service.isEffectiveForSession('session-1'), isFalse);
+      final toggle = tester.widget<SwitchListTile>(
+        find.byKey(const ValueKey('auto_approval_switch')),
+      );
+      expect(toggle.value, isTrue);
+      expect(toggle.onChanged, isNull);
+      expect(find.textContaining('remains configured'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('auto_approval_status_chip')),
+        findsNothing,
+      );
+    },
+  );
 
   testWidgets('host registers an isolated menu, status, and pane slot', (
     tester,
