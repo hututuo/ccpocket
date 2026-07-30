@@ -4331,6 +4331,56 @@ void main() {
     );
 
     test(
+      'pending client id binds the latest matching canonical user occurrence',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.claude);
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'Repeated prompt',
+                userMessageUuid: 'server-user-1',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        cubit.sendMessage(
+          'Repeated prompt',
+          clientMessageId: 'local-client-2',
+        );
+        await pumpEventQueue();
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'Repeated prompt',
+                userMessageUuid: 'server-user-1',
+              ),
+              UserInputMessage(
+                text: 'Repeated prompt',
+                userMessageUuid: 'server-user-2',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(2));
+        expect(users.first.messageUuid, 'server-user-1');
+        expect(users.first.clientMessageId, isNull);
+        expect(users.last.messageUuid, 'server-user-2');
+        expect(users.last.clientMessageId, 'local-client-2');
+      },
+    );
+
+    test(
       'same-text UUID-less history keeps local image provenance by occurrence',
       () async {
         final cubit = createCubit('s1', provider: Provider.claude);

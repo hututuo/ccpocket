@@ -3367,23 +3367,32 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (existing is UserChatEntry) {
       final weakKey = _entryWeakKey(existing);
       final stableKey = _entryStableKey(existing);
-      final candidateScope = stableKey == null
+      final candidateScopes = stableKey == null
           ? existing.status == MessageStatus.sent
-                ? 'user-pending'
-                : 'base'
+                ? const ['user-pending']
+                : const ['base']
           : existing.status == MessageStatus.sent
-          ? 'user-no-stable-pending'
-          : 'user-no-stable';
+          ? const ['user-no-stable-pending']
+          : const ['user-no-stable', 'user-stable'];
       final userFallback = _firstIndexedAliasMatch(
         aliasLookup.weakIndexes,
         weakKey == null
             ? const []
-            : [_scopedWeakAliasKey(candidateScope, weakKey)],
+            : candidateScopes.map(
+                (scope) => _scopedWeakAliasKey(scope, weakKey),
+              ),
         canonicalEntries,
         excludedIndexes,
         start: start,
         end: end,
-        predicate: (canonical) => _entriesEquivalent(canonical, existing),
+        predicate: (canonical) => _entriesEquivalent(
+          canonical,
+          existing,
+          // A pending local user has a client ID before provider history can
+          // assign its durable UUID. The turn-boundary search constrains this
+          // weak match to the corresponding canonical occurrence.
+          allowWeakMatch: existing.status != MessageStatus.sent,
+        ),
       );
       if (userFallback != -1) return userFallback;
       // A broad text-only match must never merge two sent user messages with
@@ -3491,6 +3500,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (entry is UserChatEntry) {
       final hasStableKey = _entryStableKey(entry) != null;
       final isPending = entry.status != MessageStatus.sent;
+      if (hasStableKey) {
+        yield _scopedWeakAliasKey('user-stable', weakKey);
+      }
       if (!hasStableKey) {
         yield _scopedWeakAliasKey('user-no-stable', weakKey);
         if (isPending) {
