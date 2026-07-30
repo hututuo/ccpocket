@@ -329,6 +329,16 @@ Need You，也不伪装为无待办。
 自动化和模拟器不能证明以下项目：
 
 - AltStore/AltServer 重签与物理安装；
+- 两阶段 Always Location 权限和后台系统指示；
+- iOS 实际分配的后台时间、force-quit 后行为和长任务功耗；
+- 锁屏本地通知、长按审批允许/拒绝；
+- APNs/FCM 远程送达；
+- Face ID 文件 mutation 的真实 Secure Enclave 路径；
+- 悬浮窗、八行工具面板、时间戳和状态动效的最终视觉手感；
+- 真实 LAN/Tailscale 路线切换后的缓存复用；
+- 两个独立 app-server 的 writer-owned-elsewhere 交互文案。
+
+这些门禁不降低源码候选的验证结论，也不得在未实际验收前宣称完成。
 
 ## 2026-07-30 build 207 recovery addendum
 
@@ -361,13 +371,3 @@ per-thread revision recovery、稳定 checkpoint 退避，以及 global reset �
 
 - `runs/20260730-101950_bridge-1.69.4-compat.7-4c5f875e-deploy/DEPLOYMENT.md`
 - `runs/20260730-104039_ccpocket-build207-ipa/README.md`
-- 两阶段 Always Location 权限和后台系统指示；
-- iOS 实际分配的后台时间、force-quit 后行为和长任务功耗；
-- 锁屏本地通知、长按审批允许/拒绝；
-- APNs/FCM 远程送达；
-- Face ID 文件 mutation 的真实 Secure Enclave 路径；
-- 悬浮窗、八行工具面板、时间戳和状态动效的最终视觉手感；
-- 真实 LAN/Tailscale 路线切换后的缓存复用；
-- 两个独立 app-server 的 writer-owned-elsewhere 交互文案。
-
-这些门禁不降低源码候选的验证结论，也不得在未实际验收前宣称完成。
