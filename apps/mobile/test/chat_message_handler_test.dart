@@ -2146,6 +2146,32 @@ void main() {
       expect(update.markUserMessagesSent, isTrue);
       expect(update.markUserMessagesQueued, isFalse);
     });
+
+    test('staged ack and provider receipt expose separate delivery states', () {
+      final bridgeUpdate = handler.handle(
+        const InputAckMessage(
+          sessionId: 's1',
+          clientMessageId: 'cm-1',
+          queued: true,
+          stage: InputAckStage.bridgeAccepted,
+        ),
+        isBackground: false,
+      );
+      final providerUpdate = handler.handle(
+        const InputDeliveryStatusMessage(
+          sessionId: 's1',
+          clientMessageId: 'cm-1',
+          stage: InputDeliveryStage.providerAccepted,
+          provider: 'codex',
+          method: 'turn/start',
+          occurredAt: '2026-07-31T00:00:00.000Z',
+        ),
+        isBackground: false,
+      );
+
+      expect(bridgeUpdate.userMessageStatus, MessageStatus.bridgeAccepted);
+      expect(providerUpdate.userMessageStatus, MessageStatus.providerAccepted);
+    });
   });
 
   group('Unsupported message handling', () {

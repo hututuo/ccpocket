@@ -3003,7 +3003,7 @@ class CodexQueuedInputPanel extends StatelessWidget {
 void _retryFailedMessages(BuildContext context) {
   final cubit = context.read<ChatSessionCubit>();
   for (final entry in cubit.state.entries) {
-    if (entry is UserChatEntry && entry.status == MessageStatus.failed) {
+    if (entry is UserChatEntry && entry.status.canRetry) {
       cubit.retryMessage(entry);
     }
   }

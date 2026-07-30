@@ -264,6 +264,7 @@ class ServerMessageWidget extends StatelessWidget {
       RewindResultMessage() => const SizedBox.shrink(),
       UserInputMessage() => const SizedBox.shrink(),
       InputAckMessage() => const SizedBox.shrink(),
+      InputDeliveryStatusMessage() => const SizedBox.shrink(),
       InputRejectedMessage() => const SizedBox.shrink(),
       ConversationQueueMessage() => const SizedBox.shrink(),
       GoalStateMessage() => const SizedBox.shrink(),

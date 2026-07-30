@@ -100,7 +100,18 @@ enum BridgeConnectionState { disconnected, connecting, connected, reconnecting }
 
 // ---- Message status (for user messages) ----
 
-enum MessageStatus { sending, sent, queued, failed }
+enum MessageStatus {
+  sending,
+  sent,
+  queued,
+  bridgeAccepted,
+  providerAccepted,
+  providerRejected,
+  failed;
+
+  bool get canRetry =>
+      this == MessageStatus.failed || this == MessageStatus.providerRejected;
+}
 
 // ---- Process status ----
 
@@ -1555,6 +1566,10 @@ sealed class ServerMessage {
         clientMessageId: json['clientMessageId'] as String?,
         acceptedSeq: json['acceptedSeq'] as int?,
         queued: json['queued'] as bool? ?? false,
+        stage: InputAckStage.fromWireValue(json['stage']),
+      ),
+      inputDeliveryStatusMessageType => InputDeliveryStatusMessage.fromJson(
+        json,
       ),
       'input_rejected' => InputRejectedMessage(
         sessionId: json['sessionId'] as String?,
@@ -3914,12 +3929,107 @@ class InputAckMessage implements ServerMessage {
   /// An automatic interrupt is triggered server-side so the agent picks it up
   /// promptly, but the client can show a brief "queued" indicator.
   final bool queued;
+  final InputAckStage? stage;
   const InputAckMessage({
     this.sessionId,
     this.clientMessageId,
     this.acceptedSeq,
     this.queued = false,
+    this.stage,
   });
+}
+
+enum InputAckStage {
+  bridgeAccepted('bridge_accepted');
+
+  const InputAckStage(this.wireValue);
+  final String wireValue;
+
+  static InputAckStage? fromWireValue(Object? value) => switch (value) {
+    'bridge_accepted' => InputAckStage.bridgeAccepted,
+    _ => null,
+  };
+}
+
+enum InputDeliveryStage {
+  providerAccepted('provider_accepted'),
+  providerRejected('provider_rejected');
+
+  const InputDeliveryStage(this.wireValue);
+  final String wireValue;
+
+  static InputDeliveryStage? fromWireValue(Object? value) => switch (value) {
+    'provider_accepted' => InputDeliveryStage.providerAccepted,
+    'provider_rejected' => InputDeliveryStage.providerRejected,
+    _ => null,
+  };
+}
+
+class InputDeliveryStatusMessage implements ServerMessage {
+  final String sessionId;
+  final String clientMessageId;
+  final InputDeliveryStage stage;
+  final String provider;
+  final String method;
+  final String occurredAt;
+  final int? acceptedSeq;
+  final bool queued;
+  final bool? clientUserMessageIdAccepted;
+  final String? error;
+
+  const InputDeliveryStatusMessage({
+    required this.sessionId,
+    required this.clientMessageId,
+    required this.stage,
+    required this.provider,
+    required this.method,
+    required this.occurredAt,
+    this.acceptedSeq,
+    this.queued = false,
+    this.clientUserMessageIdAccepted,
+    this.error,
+  });
+
+  factory InputDeliveryStatusMessage.fromJson(Map<String, dynamic> json) {
+    final sessionId = json['sessionId'];
+    final clientMessageId = json['clientMessageId'];
+    final stage = InputDeliveryStage.fromWireValue(json['stage']);
+    final provider = json['provider'];
+    final method = json['method'];
+    final occurredAt = json['occurredAt'];
+    final acceptedSeq = json['acceptedSeq'];
+    final queued = json['queued'];
+    final clientUserMessageIdAccepted = json['clientUserMessageIdAccepted'];
+    final error = json['error'];
+    if (sessionId is! String ||
+        sessionId.isEmpty ||
+        clientMessageId is! String ||
+        clientMessageId.isEmpty ||
+        stage == null ||
+        provider != Provider.codex.value ||
+        (method != 'turn/start' && method != 'turn/steer') ||
+        occurredAt is! String ||
+        DateTime.tryParse(occurredAt) == null ||
+        (acceptedSeq != null && acceptedSeq is! int) ||
+        (queued != null && queued is! bool) ||
+        (clientUserMessageIdAccepted != null &&
+            clientUserMessageIdAccepted is! bool) ||
+        (error != null && error is! String)) {
+      throw const FormatException('Invalid input delivery status payload.');
+    }
+    return InputDeliveryStatusMessage(
+      sessionId: sessionId,
+      clientMessageId: clientMessageId,
+      stage: stage,
+      provider: provider as String,
+      method: method as String,
+      occurredAt: occurredAt,
+      acceptedSeq: acceptedSeq as int?,
+      queued: queued as bool? ?? false,
+      clientUserMessageIdAccepted: clientUserMessageIdAccepted as bool?,
+      error: error as String?,
+    );
+  }
 }
 
 class ConversationQueueMessage implements ServerMessage {
@@ -5247,6 +5357,8 @@ const fileListRequestCorrelationCapability = 'file_list_request_correlation_v1';
 const gitDiffRequestCorrelationCapability = 'git_diff_request_correlation_v1';
 const gitProjectResultCorrelationCapability =
     'git_project_result_correlation_v1';
+const inputDeliveryAckBridgeCapability = 'input_delivery_ack_v1';
+const inputDeliveryStatusMessageType = 'input_delivery_status_v1';
 
 class ClientMessage {
   final Map<String, dynamic> _json;
@@ -5272,6 +5384,7 @@ class ClientMessage {
         supportedServerMessages ??
         <String>[
           'conversation_queue',
+          inputDeliveryStatusMessageType,
           'goal_state',
           'goal_state_raw_status',
           'guardian_approval',

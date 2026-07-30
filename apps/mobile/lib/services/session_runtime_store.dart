@@ -224,6 +224,7 @@ class SessionRuntimeStore {
         message is StreamDeltaMessage ||
         message is ThinkingDeltaMessage ||
         message is InputAckMessage ||
+        message is InputDeliveryStatusMessage ||
         message is InputRejectedMessage ||
         message is ArtifactResolvedMessage ||
         message is GoalStateMessage ||

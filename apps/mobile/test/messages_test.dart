@@ -862,6 +862,7 @@ void main() {
       expect(json['protocolVersion'], 1);
       expect(json['supportedServerMessages'], [
         'conversation_queue',
+        inputDeliveryStatusMessageType,
         'goal_state',
         'goal_state_raw_status',
         'guardian_approval',
@@ -1670,12 +1671,35 @@ void main() {
         'sessionId': 's1',
         'clientMessageId': 'cm-1',
         'acceptedSeq': 12,
+        'stage': 'bridge_accepted',
       });
 
       expect(msg, isA<InputAckMessage>());
       final ack = msg as InputAckMessage;
       expect(ack.clientMessageId, 'cm-1');
       expect(ack.acceptedSeq, 12);
+      expect(ack.stage, InputAckStage.bridgeAccepted);
+    });
+
+    test('parses authoritative provider delivery status', () {
+      final msg = ServerMessage.fromJson({
+        'type': 'input_delivery_status_v1',
+        'sessionId': 's1',
+        'clientMessageId': 'cm-1',
+        'stage': 'provider_accepted',
+        'provider': 'codex',
+        'method': 'turn/start',
+        'occurredAt': '2026-07-31T00:00:00.000Z',
+        'acceptedSeq': 12,
+        'queued': true,
+        'clientUserMessageIdAccepted': false,
+      });
+
+      expect(msg, isA<InputDeliveryStatusMessage>());
+      final status = msg as InputDeliveryStatusMessage;
+      expect(status.stage, InputDeliveryStage.providerAccepted);
+      expect(status.clientMessageId, 'cm-1');
+      expect(status.clientUserMessageIdAccepted, isFalse);
     });
   });
 
