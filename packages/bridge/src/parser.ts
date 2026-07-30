@@ -106,6 +106,22 @@ export type CodexPermissionsMode =
 
 export type Provider = "claude" | "codex";
 
+export type SessionLinkProgressOperation = "resolve" | "resume";
+
+export type SessionLinkProgressStage =
+  | "request_accepted"
+  | "runtime_checked"
+  | "catalog_scanning"
+  | "catalog_scanned"
+  | "resolution_ready"
+  | "resume_lock_waiting"
+  | "resume_lock_acquired"
+  | "history_reading"
+  | "history_read"
+  | "runtime_starting"
+  | "metadata_loading"
+  | "ready";
+
 export type GuardianReviewRisk =
   | "unknown"
   | "low"
@@ -357,6 +373,8 @@ export type ClientMessage =
       requestId: string;
       sessionId: string;
       provider?: Provider;
+      /** Additive request generation echoed by progress-aware Bridges. */
+      sessionLinkGeneration?: number;
     }
   | {
       type: "list_recent_sessions";
@@ -397,6 +415,8 @@ export type ClientMessage =
       additionalWritableRoots?: string[];
       resumeRequestId?: string;
       codexSourceId?: string;
+      /** Additive request generation echoed by progress-aware Bridges. */
+      sessionLinkGeneration?: number;
     }
   | { type: "list_gallery"; project?: string; sessionId?: string }
   | {
@@ -780,6 +800,19 @@ export type ServerMessage = (
       bridgeSessionId?: string;
       provider?: Provider;
       recentSession?: Record<string, unknown>;
+      sessionLinkGeneration?: number;
+    }
+  | {
+      type: "session_link_progress_v1";
+      requestId: string;
+      sourceSessionId: string;
+      generation: number;
+      operation: SessionLinkProgressOperation;
+      stage: SessionLinkProgressStage;
+      sequence: number;
+      observedAt: string;
+      completedUnits?: number;
+      totalUnits?: number;
     }
   | { type: "status"; status: ProcessStatus }
   | {
@@ -1957,7 +1990,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "resolve_session_link":
         if (
-          !hasOnlyKeys(["type", "requestId", "sessionId", "provider"])
+          !hasOnlyKeys([
+            "type",
+            "requestId",
+            "sessionId",
+            "provider",
+            "sessionLinkGeneration",
+          ])
         )
           return null;
         if (
@@ -1973,6 +2012,12 @@ export function parseClientMessage(data: string): ClientMessage | null {
           msg.provider !== undefined &&
           msg.provider !== "claude" &&
           msg.provider !== "codex"
+        )
+          return null;
+        if (
+          msg.sessionLinkGeneration !== undefined &&
+          (!Number.isSafeInteger(msg.sessionLinkGeneration) ||
+            Number(msg.sessionLinkGeneration) < 1)
         )
           return null;
         break;
@@ -2053,6 +2098,12 @@ export function parseClientMessage(data: string): ClientMessage | null {
           (typeof msg.resumeRequestId !== "string" ||
             msg.resumeRequestId.length === 0 ||
             msg.resumeRequestId.length > 128)
+        )
+          return null;
+        if (
+          msg.sessionLinkGeneration !== undefined &&
+          (!Number.isSafeInteger(msg.sessionLinkGeneration) ||
+            Number(msg.sessionLinkGeneration) < 1)
         )
           return null;
         if (

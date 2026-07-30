@@ -59,6 +59,8 @@ import {
   type ImageChange,
   type HistoryToolDetailPayload,
   type Provider,
+  type SessionLinkProgressOperation,
+  type SessionLinkProgressStage,
   type ServerMessage,
 } from "./parser.js";
 import {
@@ -305,6 +307,7 @@ const SESSION_CATALOG_WATCH_CAPABILITY = "session_catalog_watch_v1";
 const SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY =
   "session_catalog_request_correlation_v1";
 const SESSION_CATALOG_CHANGED_MESSAGE = "session_catalog_changed_v1";
+const SESSION_LINK_PROGRESS_CAPABILITY = "session_link_progress_v1";
 const FILE_LIST_REQUEST_CORRELATION_CAPABILITY =
   "file_list_request_correlation_v1";
 const GIT_DIFF_REQUEST_CORRELATION_CAPABILITY =
@@ -778,6 +781,7 @@ const OPT_IN_SERVER_MESSAGES = new Set<string>([
   BACKGROUND_NOTIFICATION_MESSAGE,
   BACKGROUND_ACTIVITY_STATE_MESSAGE,
   SESSION_CATALOG_CHANGED_MESSAGE,
+  SESSION_LINK_PROGRESS_CAPABILITY,
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -7163,6 +7167,22 @@ export class BridgeWebSocketServer {
 
       case "resolve_session_link": {
         const provider = msg.provider ?? "claude";
+        let progressSequence = 0;
+        const sendProgress = (
+          stage: SessionLinkProgressStage,
+          counts: { completedUnits?: number; totalUnits?: number } = {},
+        ): void => {
+          this.sendSessionLinkProgress(ws, {
+            requestId: msg.requestId,
+            sourceSessionId: msg.sessionId,
+            generation: msg.sessionLinkGeneration,
+            operation: "resolve",
+            stage,
+            sequence: ++progressSequence,
+            ...counts,
+          });
+        };
+        sendProgress("request_accepted");
         const activeSession = this.sessionManager
           .list()
           .find(
@@ -7171,7 +7191,12 @@ export class BridgeWebSocketServer {
               (session.id === msg.sessionId ||
                 session.claudeSessionId === msg.sessionId),
           );
+        sendProgress("runtime_checked", {
+          completedUnits: activeSession ? 1 : 0,
+          totalUnits: 1,
+        });
         if (activeSession) {
+          sendProgress("resolution_ready");
           this.send(ws, {
             type: "session_link_resolution",
             requestId: msg.requestId,
@@ -7179,11 +7204,16 @@ export class BridgeWebSocketServer {
             status: "live",
             bridgeSessionId: activeSession.id,
             provider,
+            ...(msg.sessionLinkGeneration !== undefined
+              ? { sessionLinkGeneration: msg.sessionLinkGeneration }
+              : {}),
           });
           break;
         }
 
         try {
+          sendProgress("catalog_scanning");
+          let lastCatalogProgressAt = 0;
           const { sessions } = await getAllRecentSessions({
             limit: 1,
             provider,
@@ -7192,8 +7222,27 @@ export class BridgeWebSocketServer {
               provider,
               provider === "codex" ? this.codexSourceId : undefined,
             ),
+            onProgress: ({ completedUnits, totalUnits }) => {
+              const now = Date.now();
+              if (
+                now - lastCatalogProgressAt < 500 &&
+                completedUnits !== totalUnits
+              ) {
+                return;
+              }
+              lastCatalogProgressAt = now;
+              sendProgress("catalog_scanning", {
+                completedUnits,
+                ...(totalUnits !== undefined ? { totalUnits } : {}),
+              });
+            },
           });
           const recentSession = sessions[0];
+          sendProgress("catalog_scanned", {
+            completedUnits: recentSession ? 1 : 0,
+            totalUnits: 1,
+          });
+          sendProgress("resolution_ready");
           this.send(ws, {
             type: "session_link_resolution",
             requestId: msg.requestId,
@@ -7201,6 +7250,9 @@ export class BridgeWebSocketServer {
             status: recentSession ? "recent" : "unavailable",
             provider,
             ...(recentSession ? { recentSession } : {}),
+            ...(msg.sessionLinkGeneration !== undefined
+              ? { sessionLinkGeneration: msg.sessionLinkGeneration }
+              : {}),
           } as Record<string, unknown>);
         } catch (err) {
           console.error("[ws] Failed to resolve session link:", err);
@@ -7210,6 +7262,9 @@ export class BridgeWebSocketServer {
             sourceSessionId: msg.sessionId,
             status: "unavailable",
             provider,
+            ...(msg.sessionLinkGeneration !== undefined
+              ? { sessionLinkGeneration: msg.sessionLinkGeneration }
+              : {}),
           });
         }
         break;
@@ -7605,6 +7660,22 @@ export class BridgeWebSocketServer {
           this.platform,
         );
         const provider = msg.provider ?? "claude";
+        let resumeProgressSequence = 0;
+        const sendResumeProgress = (
+          stage: SessionLinkProgressStage,
+          counts: { completedUnits?: number; totalUnits?: number } = {},
+        ): void => {
+          this.sendSessionLinkProgress(ws, {
+            requestId: msg.resumeRequestId,
+            sourceSessionId: msg.sessionId,
+            generation: msg.sessionLinkGeneration,
+            operation: "resume",
+            stage,
+            sequence: ++resumeProgressSequence,
+            ...counts,
+          });
+        };
+        sendResumeProgress("request_accepted");
         if (
           provider === "codex" &&
           msg.codexSourceId !== undefined &&
@@ -7735,8 +7806,10 @@ export class BridgeWebSocketServer {
           let sessionCreateMs = 0;
           let nameLoadMs = 0;
           try {
+            sendResumeProgress("resume_lock_waiting");
             releaseThreadOperation =
               await this.acquireCodexThreadOperation(sessionRefId);
+            sendResumeProgress("resume_lock_acquired");
 
             const runningSession = this.findRunningCodexSession(sessionRefId);
             if (runningSession) {
@@ -7745,6 +7818,7 @@ export class BridgeWebSocketServer {
                 sessionRefId,
                 msg.resumeRequestId,
               );
+              sendResumeProgress("ready");
               this.completeResumeOperation(
                 resumeOperation.key,
                 resumeOperation.operationId,
@@ -7813,6 +7887,7 @@ export class BridgeWebSocketServer {
                 )
               : undefined;
             historyStartedAt = Date.now();
+            sendResumeProgress("history_reading");
             const pastMessages = await this.getCodexThreadHistory(
               sessionRefId,
               effectiveProjectPath,
@@ -7820,6 +7895,9 @@ export class BridgeWebSocketServer {
             historyLoadMs = Date.now() - historyStartedAt;
             historyLoaded = true;
             historyMetrics = summarizeResumeHistory(pastMessages);
+            sendResumeProgress("history_read", {
+              completedUnits: pastMessages.length,
+            });
 
             const savedApprovalPolicy = indexedSettings?.approvalPolicy
               ? normalizeCodexApprovalPolicy(indexedSettings.approvalPolicy)
@@ -7834,6 +7912,7 @@ export class BridgeWebSocketServer {
               ? sandboxModeToInternal(indexedSettings.sandboxMode)
               : undefined;
             const createStartedAt = Date.now();
+            sendResumeProgress("runtime_starting");
             const sessionId = this.sessionManager.create(
               effectiveProjectPath,
               undefined,
@@ -7887,6 +7966,7 @@ export class BridgeWebSocketServer {
               indexedMetadata?.forkedFromThreadId;
 
             const nameStartedAt = Date.now();
+            sendResumeProgress("metadata_loading");
             await this.loadAndSetSessionName(
               createdSession,
               "codex",
@@ -7900,6 +7980,7 @@ export class BridgeWebSocketServer {
               sessionRefId,
               msg.resumeRequestId,
             );
+            sendResumeProgress("ready");
             if (
               !this.completeResumeOperation(
                 resumeOperation.key,
@@ -7995,17 +8076,31 @@ export class BridgeWebSocketServer {
         });
         if (!resumeOperation.isOwner) break;
 
+        sendResumeProgress("resume_lock_acquired");
         const historyStartedAt = Date.now();
         let historyMetrics = summarizeResumeHistory([]);
         let historyLoadMs = 0;
         let historyLoaded = false;
         let sessionCreateMs = 0;
-        getSessionHistory(claudeSessionId)
+        sendResumeProgress("history_reading");
+        let lastHistoryProgressAt = 0;
+        getSessionHistory(claudeSessionId, {
+          onProgress: ({ completedUnits }) => {
+            const now = Date.now();
+            if (now - lastHistoryProgressAt < 500) return;
+            lastHistoryProgressAt = now;
+            sendResumeProgress("history_reading", { completedUnits });
+          },
+        })
           .then((pastMessages) => {
             historyLoadMs = Date.now() - historyStartedAt;
             historyLoaded = true;
             historyMetrics = summarizeResumeHistory(pastMessages);
+            sendResumeProgress("history_read", {
+              completedUnits: pastMessages.length,
+            });
             const createStartedAt = Date.now();
+            sendResumeProgress("runtime_starting");
             const {
               sessionId,
               permissionMode: effectivePermissionMode,
@@ -8038,6 +8133,7 @@ export class BridgeWebSocketServer {
               createdSession?.worktreePath ?? resumeProjectPath,
             );
             const nameStartedAt = Date.now();
+            sendResumeProgress("metadata_loading");
             const finishResume = () => {
               const createdMessage = {
                 ...this.buildSessionCreatedMessage({
@@ -8070,6 +8166,7 @@ export class BridgeWebSocketServer {
                 }),
                 claudeSessionId,
               } as SystemServerMessage;
+              sendResumeProgress("ready");
               if (
                 !this.completeResumeOperation(
                   resumeOperation.key,
@@ -10246,6 +10343,46 @@ export class BridgeWebSocketServer {
     return this.sessionManager.get(sessions[sessions.length - 1].id);
   }
 
+  private sendSessionLinkProgress(
+    ws: WebSocket,
+    progress: {
+      requestId?: string;
+      sourceSessionId: string;
+      generation?: number;
+      operation: SessionLinkProgressOperation;
+      stage: SessionLinkProgressStage;
+      sequence: number;
+      completedUnits?: number;
+      totalUnits?: number;
+    },
+  ): void {
+    if (
+      !progress.requestId ||
+      progress.generation === undefined ||
+      this.clientSupportedServerMessages
+        .get(ws)
+        ?.has(SESSION_LINK_PROGRESS_CAPABILITY) !== true
+    ) {
+      return;
+    }
+    this.send(ws, {
+      type: SESSION_LINK_PROGRESS_CAPABILITY,
+      requestId: progress.requestId,
+      sourceSessionId: progress.sourceSessionId,
+      generation: progress.generation,
+      operation: progress.operation,
+      stage: progress.stage,
+      sequence: progress.sequence,
+      observedAt: new Date().toISOString(),
+      ...(progress.completedUnits !== undefined
+        ? { completedUnits: progress.completedUnits }
+        : {}),
+      ...(progress.totalUnits !== undefined
+        ? { totalUnits: progress.totalUnits }
+        : {}),
+    });
+  }
+
   private sendSessionList(ws: WebSocket): void {
     this.pruneDebugEvents();
     const sessions = this.sessionManager.list();
@@ -10283,6 +10420,7 @@ export class BridgeWebSocketServer {
         PROMPT_HISTORY_REQUEST_CORRELATION_CAPABILITY,
         SESSION_CATALOG_WATCH_CAPABILITY,
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
+        SESSION_LINK_PROGRESS_CAPABILITY,
         FILE_LIST_REQUEST_CORRELATION_CAPABILITY,
         CONVERSATION_CONTENT_EVENT_CAPABILITY,
         BRIDGE_IDENTITY_V2_CAPABILITY,
@@ -10361,6 +10499,7 @@ export class BridgeWebSocketServer {
         PROMPT_HISTORY_REQUEST_CORRELATION_CAPABILITY,
         SESSION_CATALOG_WATCH_CAPABILITY,
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
+        SESSION_LINK_PROGRESS_CAPABILITY,
         FILE_LIST_REQUEST_CORRELATION_CAPABILITY,
         CONVERSATION_CONTENT_EVENT_CAPABILITY,
         BRIDGE_IDENTITY_V2_CAPABILITY,

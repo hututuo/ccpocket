@@ -1989,6 +1989,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       readyState: OPEN_STATE,
       send: vi.fn(),
     } as any;
+    (bridge as any).clientSupportedServerMessages.set(
+      ws,
+      new Set(["session_link_progress_v1"]),
+    );
     const bridgeSessionId = (bridge as any).sessionManager.create(
       "/tmp/project",
       { sessionId: "claude-live-uuid" },
@@ -2000,6 +2004,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         requestId: "req-live",
         sessionId: "claude-live-uuid",
         provider: "claude",
+        sessionLinkGeneration: 7,
       },
       ws,
     );
@@ -2014,7 +2019,22 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       status: "live",
       bridgeSessionId,
       provider: "claude",
+      sessionLinkGeneration: 7,
     });
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .filter((message: any) => message.type === "session_link_progress_v1")
+        .map((message: any) => ({
+          stage: message.stage,
+          generation: message.generation,
+          sequence: message.sequence,
+        })),
+    ).toEqual([
+      { stage: "request_accepted", generation: 7, sequence: 1 },
+      { stage: "runtime_checked", generation: 7, sequence: 2 },
+      { stage: "resolution_ready", generation: 7, sequence: 3 },
+    ]);
     expect(getAllRecentSessionsMock).not.toHaveBeenCalled();
 
     bridge.close();
@@ -2102,6 +2122,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       status: "unavailable",
       provider: "claude",
     });
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some((message: any) => message.type === "session_link_progress_v1"),
+    ).toBe(false);
 
     bridge.close();
   });
@@ -4679,6 +4704,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       readyState: OPEN_STATE,
       send: vi.fn(),
     } as any;
+    (bridge as any).clientSupportedServerMessages.set(
+      ws,
+      new Set(["session_link_progress_v1"]),
+    );
 
     await (bridge as any).handleClientMessage(
       {
@@ -4687,6 +4716,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         projectPath: "/tmp/project-a",
         provider: "claude",
         resumeRequestId: "link-request-claude",
+        sessionLinkGeneration: 11,
       },
       ws,
     );
@@ -4705,6 +4735,27 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(created.provider).toBe("claude");
     expect(created.sourceSessionId).toBeUndefined();
     expect(created.resumeRequestId).toBe("link-request-claude");
+    const resumeProgress = resumeSends.filter(
+      (message: any) => message.type === "session_link_progress_v1",
+    );
+    expect(resumeProgress.map((message: any) => message.stage)).toEqual([
+      "request_accepted",
+      "resume_lock_acquired",
+      "history_reading",
+      "history_read",
+      "runtime_starting",
+      "metadata_loading",
+      "ready",
+    ]);
+    expect(
+      resumeProgress.every(
+        (message: any) =>
+          message.generation === 11 &&
+          message.requestId === "link-request-claude" &&
+          message.sourceSessionId === "claude-session-1" &&
+          message.projectPath === undefined,
+      ),
+    ).toBe(true);
     const newSessionId = created.sessionId as string;
 
     ws.send.mockClear();
