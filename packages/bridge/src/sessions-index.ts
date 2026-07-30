@@ -104,6 +104,15 @@ export interface GetRecentSessionsOptions {
    * durable identity and modified timestamp without optional JSONL enrichment.
    */
   metadataOnly?: boolean;
+  /**
+   * Optional bounded progress signal for interactive callers. A callback is
+   * emitted only when another catalog source (Claude project index/JSONL
+   * directory or the Codex catalog) has actually completed.
+   */
+  onProgress?: (progress: {
+    completedUnits: number;
+    totalUnits?: number;
+  }) => void;
 }
 
 export interface GetRecentSessionsResult {
@@ -983,6 +992,15 @@ export async function getAllRecentSessions(
   const shouldLoadClaude = options.provider !== "codex";
   const shouldLoadCodex = options.provider !== "claude";
   const includeOnlyNamedClaude = options.namedOnly === true;
+  let completedProgressUnits = 0;
+  let totalProgressUnits = shouldLoadCodex ? 1 : 0;
+  const reportProgress = (): void => {
+    completedProgressUnits += 1;
+    options.onProgress?.({
+      completedUnits: completedProgressUnits,
+      ...(totalProgressUnits > 0 ? { totalUnits: totalProgressUnits } : {}),
+    });
+  };
 
   const projectsDir = join(homedir(), ".claude", "projects");
   const entries: SessionIndexEntry[] = [];
@@ -1018,6 +1036,7 @@ export async function getAllRecentSessions(
       relevantDirs.push(dirName);
     }
     perfStats.claudeProjectDirs = relevantDirs.length;
+    totalProgressUnits += relevantDirs.length;
 
     // Process directories in parallel
     const dirResults = await parallelMap(
@@ -1051,6 +1070,10 @@ export async function getAllRecentSessions(
             entriesReturned: 0,
           },
         };
+        const finish = (): typeof result => {
+          reportProgress();
+          return result;
+        };
 
         if (raw !== null) {
           result.indexDirs = 1;
@@ -1060,10 +1083,10 @@ export async function getAllRecentSessions(
             index = JSON.parse(raw) as RawSessionIndexFile;
           } catch {
             console.error(`[sessions-index] Failed to parse ${indexPath}`);
-            return result;
+            return finish();
           }
 
-          if (!Array.isArray(index.entries)) return result;
+          if (!Array.isArray(index.entries)) return finish();
 
           const indexedIds = new Set<string>();
           for (const entry of index.entries) {
@@ -1094,7 +1117,7 @@ export async function getAllRecentSessions(
         } else {
           if (includeOnlyNamedClaude) {
             perfStats.claudeNamedOnlyFastPathUsed = true;
-            return result;
+            return finish();
           }
 
           result.jsonlOnlyDirs = 1;
@@ -1104,7 +1127,7 @@ export async function getAllRecentSessions(
           result.entries.push(...scanned);
         }
 
-        return result;
+        return finish();
       },
     );
 
@@ -1138,6 +1161,7 @@ export async function getAllRecentSessions(
     perfStats.codexFilesTotal = codexPerf.filesTotal;
     perfStats.codexFilesRead = codexPerf.filesRead;
     perfStats.codexEntries = codexPerf.entriesReturned;
+    reportProgress();
     return codexEntries;
   })();
 
@@ -4251,13 +4275,21 @@ async function codexJsonlThreadId(filePath: string): Promise<string | null> {
  */
 export async function getSessionHistory(
   sessionId: string,
+  options: {
+    onProgress?: (progress: { completedUnits: number }) => void;
+  } = {},
 ): Promise<SessionHistoryMessage[]> {
   const jsonlPath = await findSessionJsonlPath(sessionId);
   if (!jsonlPath) return [];
 
   const messages: SessionHistoryMessage[] = [];
+  let processedLines = 0;
   try {
     for await (const { line } of streamJsonlLines(jsonlPath)) {
+      processedLines += 1;
+      if (processedLines % 512 === 0) {
+        options.onProgress?.({ completedUnits: processedLines });
+      }
       if (!line.trim()) continue;
 
       let entry: Record<string, unknown>;

@@ -996,13 +996,14 @@ describe("parseClientMessage", () => {
 
   it("parses resolve_session_link message", () => {
     const msg = parseClientMessage(
-      '{"type":"resolve_session_link","requestId":"req-1","sessionId":"session-1","provider":"claude"}',
+      '{"type":"resolve_session_link","requestId":"req-1","sessionId":"session-1","provider":"claude","sessionLinkGeneration":7}',
     );
     expect(msg).toEqual({
       type: "resolve_session_link",
       requestId: "req-1",
       sessionId: "session-1",
       provider: "claude",
+      sessionLinkGeneration: 7,
     });
   });
 
@@ -1010,6 +1011,14 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage(
         '{"type":"resolve_session_link","sessionId":"session-1"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects an unsafe session link generation", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"resolve_session_link","requestId":"req-1","sessionId":"session-1","sessionLinkGeneration":0}',
       ),
     ).toBeNull();
   });
@@ -1192,7 +1201,7 @@ describe("parseClientMessage", () => {
 
   it("parses resume_session with provider", () => {
     const msg = parseClientMessage(
-      '{"type":"resume_session","sessionId":"s3","projectPath":"/p","provider":"codex","profile":"ccpocket","approvalsReviewer":"auto_review","additionalWritableRoots":["/tmp/extra"],"resumeRequestId":"link-request-1","codexSourceId":"codex-home-source-a"}',
+      '{"type":"resume_session","sessionId":"s3","projectPath":"/p","provider":"codex","profile":"ccpocket","approvalsReviewer":"auto_review","additionalWritableRoots":["/tmp/extra"],"resumeRequestId":"link-request-1","codexSourceId":"codex-home-source-a","sessionLinkGeneration":7}',
     );
     expect(msg).toEqual({
       type: "resume_session",
@@ -1204,6 +1213,7 @@ describe("parseClientMessage", () => {
       additionalWritableRoots: ["/tmp/extra"],
       resumeRequestId: "link-request-1",
       codexSourceId: "codex-home-source-a",
+      sessionLinkGeneration: 7,
     });
   });
 
