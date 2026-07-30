@@ -1417,8 +1417,8 @@
   "loadNextToolDetails": "加载接下来的 {count} 个工具详情",
   "codexApprovalUntrustedLabel": "仅受信任操作",
   "codexApprovalNeverAskLabel": "永不询问",
-  "planOnShort": "规划开启",
-  "planOffShort": "规划关闭",
+  "planOnShort": "Plan On",
+  "planOffShort": "Plan Off",
   "statusPlanning": "规划中",
   "systemMessageLabel": "系统：{subtype}"
 }

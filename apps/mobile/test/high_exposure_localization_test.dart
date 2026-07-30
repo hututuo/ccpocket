@@ -77,6 +77,31 @@ void main() {
     expect(find.text('自定义'), findsOneWidget);
   });
 
+  testWidgets('Plan toggle keeps its established English labels in Chinese', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _localizedApp(
+        Builder(
+          builder: (context) {
+            final localizations = AppLocalizations.of(context);
+            return Column(
+              children: [
+                Text(localizations.planOnShort),
+                Text(localizations.planOffShort),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('Plan On'), findsOneWidget);
+    expect(find.text('Plan Off'), findsOneWidget);
+    expect(find.text('规划开启'), findsNothing);
+    expect(find.text('规划关闭'), findsNothing);
+  });
+
   testWidgets('session cost tooltip follows the active locale', (tester) async {
     await tester.pumpWidget(
       _localizedApp(

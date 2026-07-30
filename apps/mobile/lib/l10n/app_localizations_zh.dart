@@ -3798,10 +3798,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get codexApprovalNeverAskLabel => '永不询问';
 
   @override
-  String get planOnShort => '规划开启';
+  String get planOnShort => 'Plan On';
 
   @override
-  String get planOffShort => '规划关闭';
+  String get planOffShort => 'Plan Off';
 
   @override
   String get statusPlanning => '规划中';
