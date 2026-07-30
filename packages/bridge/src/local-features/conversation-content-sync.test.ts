@@ -1114,6 +1114,107 @@ describe("ConversationContentSyncFeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("coalesces a burst of live runtime events before rereading history", async () => {
+    const fixture = createFixture(0);
+    const client = {};
+    fixture.runtime.getProviderSessionId = () => "thread-focused";
+    const session = {
+      id: "runtime-focused",
+      provider: "codex" as const,
+      process: {},
+      projectPath: "/project",
+    };
+
+    await fixture.handler.handle(
+      {
+        ...subscribe("subscription-1"),
+        focused: {
+          provider: "codex",
+          providerSessionId: "thread-focused",
+        },
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await vi.waitFor(() =>
+      expect(fixture.historyReader).toHaveBeenCalledTimes(1),
+    );
+
+    for (let index = 0; index < 100; index += 1) {
+      fixture.handler.sessionMessage(session, {
+        type: "assistant",
+        messageUuid: `assistant-${index}`,
+        message: {
+          id: `assistant-${index}`,
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: `delta-${index}` }],
+        },
+      });
+    }
+
+    await vi.waitFor(
+      () => expect(fixture.historyReader).toHaveBeenCalledTimes(2),
+      { timeout: 1_500 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(fixture.historyReader).toHaveBeenCalledTimes(2);
+    fixture.handler.close();
+  });
+
+  it("turns all changes during one provider read into one dirty follow-up", async () => {
+    const fixture = createFixture(0);
+    const client = {};
+    let releaseFirstRead!: () => void;
+    const firstReadRelease = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    fixture.historyReader.mockImplementation(async (target) => {
+      if (fixture.historyReader.mock.calls.length === 1) {
+        await firstReadRelease;
+      }
+      return history(target.providerSessionId, 1);
+    });
+
+    await fixture.handler.handle(
+      {
+        ...subscribe("subscription-1"),
+        focused: {
+          provider: "codex",
+          providerSessionId: "thread-focused",
+        },
+      },
+      {
+        client,
+        signal: new AbortController().signal,
+        runtime: fixture.runtime,
+      },
+    );
+    await vi.waitFor(() =>
+      expect(fixture.historyReader).toHaveBeenCalledTimes(1),
+    );
+
+    for (let revision = 1; revision <= 100; revision += 1) {
+      fixture.handler.sessionCatalogChanged({
+        revision,
+        provider: "codex",
+        providerSessionId: "thread-focused",
+      });
+    }
+    releaseFirstRead();
+
+    await vi.waitFor(
+      () => expect(fixture.historyReader).toHaveBeenCalledTimes(2),
+      { timeout: 1_500 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(fixture.historyReader).toHaveBeenCalledTimes(2);
+    fixture.handler.close();
+  });
+
   it("does not let sustained focused updates starve another conversation", async () => {
     const fixture = createFixture(0);
     const client = {};

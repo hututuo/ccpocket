@@ -44,6 +44,7 @@ const DEFAULT_MAX_CACHED_BYTES = 32 * 1024 * 1024;
 const MIN_MAX_MESSAGE_TEXT_BYTES = 64;
 const MIN_MAX_SNAPSHOT_BYTES = 1024;
 const DEFAULT_EVENT_BATCH_MS = 75;
+const DEFAULT_LIVE_RUNTIME_BATCH_MS = 250;
 const QUEUE_PRIORITY_AGING_INTERVAL = 3;
 const MAX_TOOL_RESULT_TEXT = 64 * 1024;
 const MAX_ASSISTANT_TEXT = 128 * 1024;
@@ -73,6 +74,12 @@ interface QueueTask extends ConversationContentTarget {
   priority: number;
   sequence: number;
   enqueuedAfterTask: number;
+  reason: string;
+}
+
+interface PendingQueueTask extends ConversationContentTarget {
+  key: ConversationKey;
+  priority: number;
   reason: string;
 }
 
@@ -170,6 +177,11 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   private readonly catalog = new Map<ConversationKey, CatalogRecord>();
   private readonly queue = new Map<ConversationKey, QueueTask>();
   private readonly inFlightKeys = new Set<ConversationKey>();
+  private readonly inFlightDirty = new Map<ConversationKey, PendingQueueTask>();
+  private readonly pendingLiveRuntime = new Map<
+    ConversationKey,
+    PendingQueueTask
+  >();
   private readonly snapshots = new Map<
     ConversationKey,
     ConversationContentSnapshot[]
@@ -179,6 +191,7 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   private cachedSnapshotBytes = 0;
   private draining = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
+  private liveRuntimeTimer?: ReturnType<typeof setTimeout>;
   private catalogFlight?: Promise<void>;
   private catalogDirty = false;
   private catalogInitialized = false;
@@ -303,7 +316,10 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     if (!subscription.interactive) {
       if (!this.hasInteractiveClients()) {
         this.queue.clear();
+        this.inFlightDirty.clear();
+        this.pendingLiveRuntime.clear();
         this.cancelDrainTimer();
+        this.cancelLiveRuntimeTimer();
         this.cancelColdScan();
       }
       return;
@@ -335,14 +351,21 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
         : undefined);
     if (!providerSessionId) return;
     const target: ConversationContentTarget = { provider, providerSessionId };
-    this.enqueue(target, this.focusPriority(target, 1), "live_runtime");
+    this.enqueueLiveRuntime(
+      target,
+      this.focusPriority(target, 1),
+      "live_runtime",
+    );
   }
 
   disconnect(client: object): void {
     this.clients.delete(client);
     if (!this.hasInteractiveClients()) {
       this.queue.clear();
+      this.inFlightDirty.clear();
+      this.pendingLiveRuntime.clear();
       this.cancelDrainTimer();
+      this.cancelLiveRuntimeTimer();
       this.cancelColdScan();
     }
   }
@@ -351,9 +374,12 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     this.closed = true;
     this.clients.clear();
     this.queue.clear();
+    this.inFlightDirty.clear();
+    this.pendingLiveRuntime.clear();
     this.snapshots.clear();
     this.cachedSnapshotBytes = 0;
     this.cancelDrainTimer();
+    this.cancelLiveRuntimeTimer();
     this.cancelColdScan();
   }
 
@@ -489,7 +515,10 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     });
     if (!this.hasInteractiveClients()) {
       this.queue.clear();
+      this.inFlightDirty.clear();
+      this.pendingLiveRuntime.clear();
       this.cancelDrainTimer();
+      this.cancelLiveRuntimeTimer();
       this.cancelColdScan();
     }
   }
@@ -591,6 +620,10 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
   ): void {
     if (this.closed || !this.hasInteractiveClients()) return;
     const key = targetKey(target);
+    if (this.inFlightKeys.has(key)) {
+      this.mergePendingTask(this.inFlightDirty, target, priority, reason);
+      return;
+    }
     const existing = this.queue.get(key);
     if (existing) {
       const previousPriority = existing.priority;
@@ -607,6 +640,42 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
       reason,
     });
     this.scheduleDrain();
+  }
+
+  private enqueueLiveRuntime(
+    target: ConversationContentTarget,
+    priority: number,
+    reason: string,
+  ): void {
+    if (this.closed || !this.hasInteractiveClients()) return;
+    this.mergePendingTask(this.pendingLiveRuntime, target, priority, reason);
+    if (this.liveRuntimeTimer) return;
+    this.liveRuntimeTimer = setTimeout(() => {
+      this.liveRuntimeTimer = undefined;
+      const pending = [...this.pendingLiveRuntime.values()];
+      this.pendingLiveRuntime.clear();
+      for (const task of pending) {
+        this.enqueue(task, task.priority, task.reason);
+      }
+    }, DEFAULT_LIVE_RUNTIME_BATCH_MS);
+    this.liveRuntimeTimer.unref?.();
+  }
+
+  private mergePendingTask(
+    pending: Map<ConversationKey, PendingQueueTask>,
+    target: ConversationContentTarget,
+    priority: number,
+    reason: string,
+  ): void {
+    const key = targetKey(target);
+    const existing = pending.get(key);
+    if (existing) {
+      const previousPriority = existing.priority;
+      existing.priority = Math.min(existing.priority, priority);
+      existing.reason = priority < previousPriority ? reason : existing.reason;
+      return;
+    }
+    pending.set(key, { ...target, key, priority, reason });
   }
 
   private scheduleDrain(): void {
@@ -635,6 +704,11 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     this.drainTimer = undefined;
   }
 
+  private cancelLiveRuntimeTimer(): void {
+    if (this.liveRuntimeTimer) clearTimeout(this.liveRuntimeTimer);
+    this.liveRuntimeTimer = undefined;
+  }
+
   private async drain(): Promise<void> {
     try {
       while (!this.closed && this.hasInteractiveClients()) {
@@ -660,6 +734,11 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
         } finally {
           this.inFlightKeys.delete(task.key);
           this.completedTaskCount += 1;
+          const dirty = this.inFlightDirty.get(task.key);
+          if (dirty) {
+            this.inFlightDirty.delete(task.key);
+            this.enqueue(dirty, dirty.priority, dirty.reason);
+          }
         }
       }
     } finally {
