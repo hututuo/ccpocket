@@ -46,6 +46,8 @@ export interface AutoApprovalStateMessage {
   enabled?: boolean;
   enabledConversationCount: number;
   approvedCount?: number;
+  supervisionAvailable?: boolean;
+  unavailableReason?: "external_app_server" | "unsupported_session";
   reason: AutoApprovalStateReason;
   error?: string;
   errorCode?: string;
