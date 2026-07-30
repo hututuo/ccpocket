@@ -102,7 +102,9 @@ const PAGE_PROJECTION_TEXT_BUDGETS = [
   256,
   128,
 ] as const;
-const LIVE_CONTENT_BATCH_MS = 32;
+const LIVE_CONTENT_SETTLE_MS = 100;
+const LIVE_CONTENT_MAX_WAIT_MS = 1_000;
+const CATALOG_CONNECTION_REUSE_MS = 5_000;
 // The one-shot discovery already finds every currently running rollout.
 // Idle recent threads are attached lazily on an exact catalog change or focus,
 // avoiding ten redundant 8 MiB seed parses on every cold phone connection.
@@ -181,6 +183,8 @@ interface SyncSubscription {
   commits: Map<number, FrameCommit>;
   syncing: boolean;
   dirty: boolean;
+  fullSyncRequested: boolean;
+  dirtyThreadKeys: Set<ConversationKey>;
 }
 
 interface ConversationSyncV2Options {
@@ -341,6 +345,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private catalog = new Map<ConversationKey, CatalogRecord>();
   private catalogState = hashState([]);
   private statusState = hashState([STATUS_STATE_SCHEMA_VERSION]);
+  private catalogProjection = new Map<
+    ConversationKey,
+    ConversationSyncCatalogEntry
+  >();
+  private statusProjection = new Map<
+    ConversationKey,
+    ConversationSyncStatus
+  >();
   private readonly catalogHistory = new Map<
     string,
     Map<ConversationKey, ConversationSyncCatalogEntry>
@@ -403,10 +415,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private turnDetailCacheBytes = 0;
   private catalogFlight?: Promise<void>;
   private catalogDirty = true;
+  private catalogRefreshedAt = 0;
   private statusFlight?: Promise<void>;
   private watchdogTimer?: ReturnType<typeof setTimeout>;
   private coldTimer?: ReturnType<typeof setTimeout>;
   private liveContentTimer?: ReturnType<typeof setTimeout>;
+  private liveContentBatchStartedAt?: number;
   private liveRevision = 0;
   private closed = false;
 
@@ -503,8 +517,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!subscription) return;
     subscription.interactive = mode === "interactive";
     if (subscription.interactive) {
-      this.catalogDirty = true;
-      this.scheduleSync(client, subscription);
+      this.markCatalogDirtyIfStale();
+      this.scheduleSync(client, subscription, { full: true });
       this.ensureTimers();
     } else {
       subscription.outbound.length = 0;
@@ -543,7 +557,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             .then(() => this.refreshCatalog())
         : this.refreshCatalog()
     )
-      .then(() => this.scheduleInteractiveClients())
+      .then(() => this.scheduleInteractiveClients({ full: true }))
       .catch((error) => {
         this.reportBackgroundError("catalog_refresh_failed", error);
       });
@@ -583,8 +597,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
 
     const previousStatusState = this.statusState;
-    this.applyRuntimeOverlay();
-    this.recomputeStates();
+    const changedKeys = new Set([key]);
+    this.applyRuntimeOverlay(changedKeys);
+    this.recomputeStates(changedKeys);
     if (this.statusState !== previousStatusState) {
       this.scheduleInteractiveClients();
     }
@@ -607,6 +622,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.turnDetailCache.clear();
     this.liveContentRevisions.clear();
     this.pendingLiveContent.clear();
+    this.catalogProjection.clear();
+    this.statusProjection.clear();
     this.clearExternalCodexMonitoring();
     this.externalCodexDiscoveredRunning.clear();
     this.pendingExternalCodexThreads.clear();
@@ -658,11 +675,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       commits: new Map(),
       syncing: false,
       dirty: false,
+      fullSyncRequested: true,
+      dirtyThreadKeys: new Set(),
     };
     this.subscriptions.set(client, subscription);
     if (subscription.interactive) {
-      this.catalogDirty = true;
-      this.scheduleSync(client, subscription);
+      this.markCatalogDirtyIfStale();
+      this.scheduleSync(client, subscription, { full: true });
       this.ensureTimers();
     }
   }
@@ -728,7 +747,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       return;
     }
     subscription.readWatermarks.set(key, nextReadAt);
-    this.scheduleSync(client, subscription);
+    this.scheduleSync(client, subscription, { full: true });
   }
 
   private focus(
@@ -759,10 +778,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         .catch((error) => {
           this.reportExternalObservationFailure(error);
         })
-        .finally(() => this.scheduleSync(client, subscription));
+        .finally(() =>
+          this.scheduleSync(client, subscription, {
+            dirtyKeys: [targetKey(message.focused!)],
+          }),
+        );
       return;
     }
-    this.scheduleSync(client, subscription);
+    this.scheduleSync(client, subscription, {
+      dirtyKeys: [targetKey(message.focused)],
+    });
   }
 
   private unsubscribe(
@@ -787,7 +812,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
   }
 
-  private scheduleSync(client: object, subscription: SyncSubscription): void {
+  private scheduleSync(
+    client: object,
+    subscription: SyncSubscription,
+    options: {
+      full?: boolean;
+      dirtyKeys?: Iterable<ConversationKey>;
+    } = {},
+  ): void {
+    if (options.full) subscription.fullSyncRequested = true;
+    for (const key of options.dirtyKeys ?? []) {
+      subscription.dirtyThreadKeys.add(key);
+    }
     if (this.closed || !subscription.interactive || !this.clientReady(client)) {
       return;
     }
@@ -796,6 +832,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       return;
     }
     subscription.syncing = true;
+    subscription.dirty = false;
     void this.runSync(client, subscription)
       .catch((error) => {
         this.sendError(
@@ -813,7 +850,6 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           subscription.outbound.length === 0 &&
           subscription.outstandingBytes < MAX_UNACKED_BYTES
         ) {
-          subscription.dirty = false;
           this.scheduleSync(client, subscription);
         }
       });
@@ -823,7 +859,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     client: object,
     subscription: SyncSubscription,
   ): Promise<void> {
+    const fullSyncRequested = subscription.fullSyncRequested;
+    subscription.fullSyncRequested = false;
+    const dirtyThreadKeys = new Set(subscription.dirtyThreadKeys);
+    subscription.dirtyThreadKeys.clear();
     await this.refreshCatalog();
+    await this.rewarmExternalCodexMonitoringIfNeeded();
     if (
       this.closed ||
       this.subscriptions.get(client) !== subscription ||
@@ -852,48 +893,79 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.sendCatalogChanges(client, subscription);
     this.sendStatusChanges(client, subscription);
 
-    const ordered = this.orderedRecords(subscription);
-    const priority = ordered.filter((record, index) =>
-      this.isPriorityRecord(record, index, subscription),
-    );
-    const priorityComplete = await this.sendTimelineRecords(
-      client,
-      subscription,
-      priority,
-      "priority",
-    );
-    this.sendEvent(client, subscription, {
-      event: "sync_checkpoint",
-      phase: "priority",
-      hasMore: !priorityComplete || ordered.length > priority.length,
-    });
-    if (!priorityComplete) {
-      subscription.dirty = true;
-      return;
-    }
+    if (fullSyncRequested) {
+      const ordered = this.orderedRecords(subscription);
+      const priority = ordered.filter((record, index) =>
+        this.isPriorityRecord(record, index, subscription),
+      );
+      const priorityComplete = await this.sendTimelineRecords(
+        client,
+        subscription,
+        priority,
+        "priority",
+      );
+      this.sendEvent(client, subscription, {
+        event: "sync_checkpoint",
+        phase: "priority",
+        hasMore: !priorityComplete || ordered.length > priority.length,
+      });
+      if (!priorityComplete) {
+        subscription.fullSyncRequested = true;
+        subscription.dirty = true;
+        return;
+      }
 
-    const priorityKeys = new Set(
-      priority.map((record) => targetKey(record.entry)),
-    );
-    const recent = ordered.filter(
-      (record, index) =>
-        !priorityKeys.has(targetKey(record.entry)) &&
-        this.isRecentRecord(record, index),
-    );
-    const recentComplete = await this.sendTimelineRecords(
-      client,
-      subscription,
-      recent,
-      "recent",
-    );
-    this.sendEvent(client, subscription, {
-      event: "sync_checkpoint",
-      phase: "recent",
-      hasMore: !recentComplete,
-    });
-    if (!recentComplete) {
-      subscription.dirty = true;
-      return;
+      const priorityKeys = new Set(
+        priority.map((record) => targetKey(record.entry)),
+      );
+      const recent = ordered.filter(
+        (record, index) =>
+          !priorityKeys.has(targetKey(record.entry)) &&
+          this.isRecentRecord(record, index),
+      );
+      const recentComplete = await this.sendTimelineRecords(
+        client,
+        subscription,
+        recent,
+        "recent",
+      );
+      this.sendEvent(client, subscription, {
+        event: "sync_checkpoint",
+        phase: "recent",
+        hasMore: !recentComplete,
+      });
+      if (!recentComplete) {
+        subscription.fullSyncRequested = true;
+        subscription.dirty = true;
+        return;
+      }
+    } else {
+      const dirtyRecords = [...dirtyThreadKeys]
+        .map((key) => this.catalog.get(key))
+        .filter((record): record is CatalogRecord => record !== undefined);
+      const dirtyComplete = await this.sendTimelineRecords(
+        client,
+        subscription,
+        dirtyRecords,
+        "priority",
+      );
+      this.sendEvent(client, subscription, {
+        event: "sync_checkpoint",
+        phase: "priority",
+        hasMore: !dirtyComplete,
+      });
+      this.sendEvent(client, subscription, {
+        event: "sync_checkpoint",
+        phase: "recent",
+        hasMore: false,
+      });
+      if (!dirtyComplete) {
+        for (const key of dirtyThreadKeys) {
+          subscription.dirtyThreadKeys.add(key);
+        }
+        subscription.dirty = true;
+        return;
+      }
     }
 
     const desiredThreadStates = new Map(subscription.threadStates);
@@ -941,7 +1013,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       subscription.threadStates.clear();
       subscription.pendingThreadStates.clear();
     }
-    const current = catalogEntries(this.catalog);
+    const current = this.catalogProjection;
     const changes: Array<
       | { kind: "created"; value: ConversationSyncCatalogEntry }
       | { kind: "updated"; value: ConversationSyncCatalogEntry }
@@ -1017,7 +1089,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       subscription.threadStates.clear();
       subscription.pendingThreadStates.clear();
     }
-    const current = statusEntries(this.catalog);
+    const current = this.statusProjection;
     const supportsAppServerStatusSemantics = this.runtime.supports(
       client,
       APP_SERVER_STATUS_CAPABILITY,
@@ -1076,7 +1148,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           const known =
             subscription.pendingThreadStates.get(key) ??
             subscription.threadStates.get(key);
-          if (known === record.entry.revision) return null;
+          if (known === this.timelineRevisionFor(record)) return null;
           return this.snapshotFor(record);
         }),
       );
@@ -1111,7 +1183,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     // can mutate the catalog record while this await is in flight; labelling
     // an older read with that newer revision would make every subscriber treat
     // missing content as committed and suppress the required follow-up read.
-    const requestedRevision = record.entry.revision;
+    const requestedRevision = this.timelineRevisionFor(record);
     const target: ConversationSyncTarget = {
       provider: record.entry.provider,
       providerSessionId: record.entry.providerSessionId,
@@ -1165,6 +1237,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       });
     this.snapshotFlights.set(key, flight);
     return flight;
+  }
+
+  private timelineRevisionFor(record: CatalogRecord): string {
+    return (
+      this.liveContentRevisions.get(targetKey(record.entry))?.revision ??
+      record.entry.revision
+    );
   }
 
   private sendTimeline(
@@ -1588,6 +1667,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           if (!this.catalog.has(key)) this.resultLedger.delete(key);
         }
         this.recomputeStates();
+        this.catalogRefreshedAt = Date.now();
       } while (this.catalogDirty && !this.closed);
     })()
       .catch((error) => {
@@ -1599,6 +1679,49 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       });
     this.catalogFlight = flight;
     return flight;
+  }
+
+  private markCatalogDirtyIfStale(): void {
+    if (
+      this.catalogRefreshedAt === 0 ||
+      Date.now() - this.catalogRefreshedAt >= CATALOG_CONNECTION_REUSE_MS
+    ) {
+      this.catalogDirty = true;
+    }
+  }
+
+  private async rewarmExternalCodexMonitoringIfNeeded(): Promise<void> {
+    if (
+      this.closed ||
+      !this.hasInteractiveClients() ||
+      this.externalCodexMonitors.size > 0 ||
+      this.externalCodexMonitorFlights.size > 0
+    ) {
+      return;
+    }
+    const codexRecords = [...this.catalog.values()].filter(
+      (record) => record.entry.provider === "codex",
+    );
+    const catalogThreadIds = new Set(
+      codexRecords.map((record) => record.entry.providerSessionId),
+    );
+    const threadIds = [
+      ...[...this.externalCodexDiscoveredRunning.keys()].filter((threadId) =>
+        catalogThreadIds.has(threadId),
+      ),
+      ...codexRecords
+        .slice(0, this.initialExternalCodexMonitors)
+        .map((record) => record.entry.providerSessionId),
+    ];
+    if (threadIds.length === 0) return;
+    await this.ensureExternalCodexMonitors(threadIds);
+    const changedKeys = new Set(
+      threadIds.map((threadId) =>
+        targetKey({ provider: "codex", providerSessionId: threadId }),
+      ),
+    );
+    this.applyRuntimeOverlay(changedKeys);
+    this.recomputeStates(changedKeys);
   }
 
   private refreshStatuses(): Promise<void> {
@@ -1995,6 +2118,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         false,
       );
       const key = targetKey(target);
+      let contentChanged = false;
       if (event.state === "running") {
         this.resultLedger.delete(key);
       } else if (event.outcome) {
@@ -2003,10 +2127,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           observedAt,
         });
         this.rememberLiveContent(target, observedAt);
+        contentChanged = true;
       }
-      this.applyRuntimeOverlay();
-      this.recomputeStates();
-      this.scheduleInteractiveClients();
+      const changedKeys = new Set([key]);
+      this.applyRuntimeOverlay(changedKeys);
+      this.recomputeStates(changedKeys);
+      this.scheduleInteractiveClients(
+        contentChanged ? { dirtyKeys: changedKeys } : undefined,
+      );
       return;
     }
 
@@ -2104,8 +2232,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     this.externalCodexStatuses.set(key, status);
     if (!publish || !this.catalog.has(key)) return;
-    this.applyRuntimeOverlay();
-    this.recomputeStates();
+    const changedKeys = new Set([key]);
+    this.applyRuntimeOverlay(changedKeys);
+    this.recomputeStates(changedKeys);
     this.scheduleInteractiveClients();
   }
 
@@ -2222,8 +2351,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.externalCodexLiveBytes.delete(key);
   }
 
-  private applyRuntimeOverlay(): void {
+  private applyRuntimeOverlay(onlyKeys?: ReadonlySet<ConversationKey>): void {
     for (const [key, status] of this.externalCodexStatuses) {
+      if (onlyKeys && !onlyKeys.has(key)) continue;
       const record = this.catalog.get(key);
       if (!record) continue;
       if (!externalStatusMayOverride(record.status, status)) continue;
@@ -2234,6 +2364,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       const target = targetFromRuntime(runtimeState);
       if (!target) continue;
       const key = targetKey(target);
+      if (onlyKeys && !onlyKeys.has(key)) continue;
       const activeLocalCodexRuntime =
         target.provider === "codex" &&
         (runtimeState.processStatus !== "idle" ||
@@ -2277,20 +2408,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       }
       record.status = runtimeStatus;
     }
-    for (const [key, live] of this.liveContentRevisions) {
-      const record = this.catalog.get(key);
-      if (!record) continue;
-      record.entry.modifiedAt = laterIso(
-        record.entry.modifiedAt,
-        live.observedAt,
-      );
-      record.entry.recencyAt = laterIso(
-        record.entry.recencyAt,
-        live.observedAt,
-      );
-      record.entry.revision = live.revision;
-    }
     for (const [key, result] of this.resultLedger) {
+      if (onlyKeys && !onlyKeys.has(key)) continue;
       const record = this.catalog.get(key);
       if (!record) continue;
       record.status = {
@@ -2304,16 +2423,97 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
   }
 
-  private recomputeStates(): void {
-    const catalog = catalogEntries(this.catalog);
-    const statuses = statusEntries(this.catalog);
-    this.catalogState = hashState([...catalog].sort(compareStateEntries));
-    this.statusState = hashState([
-      STATUS_STATE_SCHEMA_VERSION,
-      ...[...statuses].sort(compareStateEntries),
-    ]);
-    rememberState(this.catalogHistory, this.catalogState, catalog);
-    rememberState(this.statusHistory, this.statusState, statuses);
+  private recomputeStates(keys?: Iterable<ConversationKey>): void {
+    if (!keys) {
+      const catalog = catalogEntries(this.catalog);
+      const statuses = statusEntries(this.catalog);
+      const catalogState = hashState([...catalog].sort(compareStateEntries));
+      const statusState = hashState([
+        STATUS_STATE_SCHEMA_VERSION,
+        ...[...statuses].sort(compareStateEntries),
+      ]);
+      this.catalogProjection = catalog;
+      this.statusProjection = statuses;
+      if (
+        catalogState !== this.catalogState ||
+        !this.catalogHistory.has(catalogState)
+      ) {
+        this.catalogState = catalogState;
+        rememberState(this.catalogHistory, this.catalogState, catalog);
+      }
+      if (
+        statusState !== this.statusState ||
+        !this.statusHistory.has(statusState)
+      ) {
+        this.statusState = statusState;
+        rememberState(this.statusHistory, this.statusState, statuses);
+      }
+      return;
+    }
+
+    const catalogChanges: Array<
+      readonly [ConversationKey, ConversationSyncCatalogEntry | null]
+    > = [];
+    const statusChanges: Array<
+      readonly [ConversationKey, ConversationSyncStatus | null]
+    > = [];
+    for (const key of new Set(keys)) {
+      const record = this.catalog.get(key);
+      const nextCatalog = record?.entry;
+      const previousCatalog = this.catalogProjection.get(key);
+      if (
+        (nextCatalog === undefined) !== (previousCatalog === undefined) ||
+        (nextCatalog !== undefined &&
+          stableJson(nextCatalog) !== stableJson(previousCatalog))
+      ) {
+        if (nextCatalog) {
+          this.catalogProjection.set(key, nextCatalog);
+        } else {
+          this.catalogProjection.delete(key);
+        }
+        catalogChanges.push([key, nextCatalog ?? null]);
+      }
+
+      const nextStatus = record?.status;
+      const previousStatus = this.statusProjection.get(key);
+      if (
+        (nextStatus === undefined) !== (previousStatus === undefined) ||
+        (nextStatus !== undefined &&
+          stableJson(nextStatus) !== stableJson(previousStatus))
+      ) {
+        if (nextStatus) {
+          this.statusProjection.set(key, nextStatus);
+        } else {
+          this.statusProjection.delete(key);
+        }
+        statusChanges.push([key, nextStatus ?? null]);
+      }
+    }
+    if (catalogChanges.length > 0) {
+      this.catalogState = hashState([
+        "catalog-delta-v1",
+        this.catalogState,
+        ...catalogChanges.sort(compareStateEntries),
+      ]);
+      rememberState(
+        this.catalogHistory,
+        this.catalogState,
+        this.catalogProjection,
+      );
+    }
+    if (statusChanges.length > 0) {
+      this.statusState = hashState([
+        STATUS_STATE_SCHEMA_VERSION,
+        "status-delta-v1",
+        this.statusState,
+        ...statusChanges.sort(compareStateEntries),
+      ]);
+      rememberState(
+        this.statusHistory,
+        this.statusState,
+        this.statusProjection,
+      );
+    }
   }
 
   private rememberSnapshot(
@@ -2404,7 +2604,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.coldTimer = undefined;
         this.catalogDirty = true;
         void this.refreshCatalog()
-          .then(() => this.scheduleInteractiveClients())
+          .then(() => this.scheduleInteractiveClients({ full: true }))
           .catch((error) => {
             this.reportBackgroundError("catalog_refresh_failed", error);
           })
@@ -2421,6 +2621,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.watchdogTimer = undefined;
     this.coldTimer = undefined;
     this.liveContentTimer = undefined;
+    this.liveContentBatchStartedAt = undefined;
   }
 
   private queueLiveContent(
@@ -2428,11 +2629,19 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     observedAt: string,
   ): void {
     this.pendingLiveContent.set(targetKey(target), { target, observedAt });
-    if (this.liveContentTimer || this.closed) return;
+    if (this.closed) return;
+    const now = Date.now();
+    this.liveContentBatchStartedAt ??= now;
+    if (this.liveContentTimer) clearTimeout(this.liveContentTimer);
+    const elapsed = now - this.liveContentBatchStartedAt;
+    const delay = Math.max(
+      0,
+      Math.min(LIVE_CONTENT_SETTLE_MS, LIVE_CONTENT_MAX_WAIT_MS - elapsed),
+    );
     this.liveContentTimer = setTimeout(() => {
       this.liveContentTimer = undefined;
       this.flushPendingLiveContent();
-    }, LIVE_CONTENT_BATCH_MS);
+    }, delay);
     this.liveContentTimer.unref?.();
   }
 
@@ -2440,27 +2649,33 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     target: ConversationSyncTarget,
     observedAt: string,
   ): void {
-    this.pendingLiveContent.delete(targetKey(target));
-    if (this.pendingLiveContent.size === 0 && this.liveContentTimer) {
-      clearTimeout(this.liveContentTimer);
+    const key = targetKey(target);
+    this.pendingLiveContent.delete(key);
+    if (this.pendingLiveContent.size === 0) {
+      if (this.liveContentTimer) clearTimeout(this.liveContentTimer);
       this.liveContentTimer = undefined;
+      this.liveContentBatchStartedAt = undefined;
     }
     this.rememberLiveContent(target, observedAt);
-    this.applyRuntimeOverlay();
-    this.recomputeStates();
-    this.scheduleInteractiveClients();
+    const changedKeys = new Set([key]);
+    this.applyRuntimeOverlay(changedKeys);
+    this.recomputeStates(changedKeys);
+    this.scheduleInteractiveClients({ dirtyKeys: changedKeys });
   }
 
   private flushPendingLiveContent(): void {
     if (this.closed || this.pendingLiveContent.size === 0) return;
     const pending = [...this.pendingLiveContent.values()];
     this.pendingLiveContent.clear();
+    this.liveContentBatchStartedAt = undefined;
+    const changedKeys = new Set<ConversationKey>();
     for (const { target, observedAt } of pending) {
       this.rememberLiveContent(target, observedAt);
+      changedKeys.add(targetKey(target));
     }
-    this.applyRuntimeOverlay();
-    this.recomputeStates();
-    this.scheduleInteractiveClients();
+    this.applyRuntimeOverlay(changedKeys);
+    this.recomputeStates(changedKeys);
+    this.scheduleInteractiveClients({ dirtyKeys: changedKeys });
   }
 
   private rememberLiveContent(
@@ -2477,9 +2692,19 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     });
   }
 
-  private scheduleInteractiveClients(): void {
+  private scheduleInteractiveClients(
+    options: {
+      full?: boolean;
+      dirtyKeys?: Iterable<ConversationKey>;
+    } = {},
+  ): void {
+    const dirtyKeys = options.dirtyKeys ? [...options.dirtyKeys] : undefined;
     for (const [client, subscription] of this.subscriptions) {
-      if (subscription.interactive) this.scheduleSync(client, subscription);
+      if (!subscription.interactive) continue;
+      this.scheduleSync(client, subscription, {
+        full: options.full,
+        dirtyKeys,
+      });
     }
   }
 
@@ -4583,8 +4808,8 @@ function parseTargetKeyRequired(key: ConversationKey): ConversationSyncTarget {
 }
 
 function compareStateEntries(
-  left: [string, unknown],
-  right: [string, unknown],
+  left: readonly [string, unknown],
+  right: readonly [string, unknown],
 ): number {
   return left[0].localeCompare(right[0]);
 }
