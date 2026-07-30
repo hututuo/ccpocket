@@ -126,13 +126,21 @@ void main() {
 
   group('StreamDelta handling', () {
     test('first delta creates streaming entry', () {
+      final timestamp = DateTime.parse('2026-07-31T01:02:03.456Z');
       final update = handler.handle(
-        const StreamDeltaMessage(text: 'Hi'),
+        ServerMessage.fromJson({
+          'type': 'stream_delta',
+          'text': 'Hi',
+          'sourceTimestamp': timestamp.toIso8601String(),
+          'sourceTimestampIsAuthoritative': true,
+        }),
         isBackground: false,
       );
       expect(update.entriesToAdd, hasLength(1));
       expect(handler.currentStreaming, isNotNull);
       expect(handler.currentStreaming!.text, 'Hi');
+      expect(handler.currentStreaming!.timestamp, timestamp.toLocal());
+      expect(handler.currentStreaming!.timestampIsAuthoritative, isTrue);
     });
 
     test('subsequent deltas append to existing streaming', () {

@@ -78,6 +78,21 @@ List<TurnAwareServerMessageProjection> projectTurnAwareServerMessageWindow(
     retainedToolIds,
     ordinaryIndexes,
   );
+  for (final value in projected) {
+    final source = messages[value.sourceIndex];
+    if (identical(source, value.message) ||
+        serverMessageTimestamp(value.message) != null) {
+      continue;
+    }
+    final timestamp = serverMessageTimestamp(source);
+    if (timestamp != null) {
+      attachServerMessageTimestamp(
+        value.message,
+        value: timestamp.value,
+        isAuthoritative: timestamp.isAuthoritative,
+      );
+    }
+  }
   if (projected.length <= maxRetainedEntries) {
     return List.unmodifiable(projected);
   }

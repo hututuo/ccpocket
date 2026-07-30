@@ -42,6 +42,7 @@ void main() {
         'origin': 'desktop_rollout',
         'turnId': 'turn-1',
         'turnSteerable': true,
+        'timestamp': '2026-07-31T01:02:03.456Z',
         'itemKey': 'assistant:item-1',
         'message': {
           'type': 'assistant',
@@ -61,8 +62,71 @@ void main() {
       expect(event.sessionId, 'runtime-1');
       expect(event.itemKey, 'assistant:item-1');
       expect(event.turnSteerable, isTrue);
+      expect(
+        serverMessageTimestamp(event.payload!),
+        isA<ServerMessageTimestamp>()
+            .having(
+              (value) => value.value,
+              'value',
+              DateTime.parse('2026-07-31T01:02:03.456Z'),
+            )
+            .having(
+              (value) => value.isAuthoritative,
+              'isAuthoritative',
+              isTrue,
+            ),
+      );
     },
   );
+
+  test('projects the envelope timestamp onto every live payload kind', () {
+    final payloads = <Map<String, dynamic>>[
+      {
+        'type': 'assistant',
+        'message': {
+          'id': 'assistant-1',
+          'role': 'assistant',
+          'content': [
+            {'type': 'text', 'text': 'answer'},
+          ],
+          'model': 'codex',
+        },
+      },
+      {'type': 'tool_result', 'toolUseId': 'tool-1', 'content': 'done'},
+      {'type': 'thinking_delta', 'text': 'thinking'},
+      {'type': 'stream_delta', 'text': 'streaming'},
+    ];
+
+    for (var index = 0; index < payloads.length; index += 1) {
+      final timestamp = '2026-07-31T01:02:0$index.000Z';
+      final event =
+          ServerMessage.fromJson({
+                'type': 'codex_desktop_continuity_event_v1',
+                'event': 'message',
+                'requestId': 'watch-$index',
+                'bridgeInstanceId': 'bridge-1',
+                'sessionId': 'runtime-1',
+                'threadId': 'thread-1',
+                'origin': 'desktop_rollout',
+                'turnId': 'turn-1',
+                'timestamp': timestamp,
+                'itemKey': 'item-$index',
+                'message': payloads[index],
+              })
+              as CodexDesktopContinuityEventMessage;
+
+      expect(
+        serverMessageTimestamp(event.payload!),
+        isA<ServerMessageTimestamp>()
+            .having((value) => value.value, 'value', DateTime.parse(timestamp))
+            .having(
+              (value) => value.isAuthoritative,
+              'isAuthoritative',
+              isTrue,
+            ),
+      );
+    }
+  });
 
   test('old Bridge events default turn steerability to false', () {
     final decoded =

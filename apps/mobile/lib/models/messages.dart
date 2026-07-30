@@ -1179,6 +1179,17 @@ final Expando<ServerMessageTimestamp> _serverMessageTimestamps =
 ServerMessageTimestamp? serverMessageTimestamp(ServerMessage message) =>
     _serverMessageTimestamps[message];
 
+void attachServerMessageTimestamp(
+  ServerMessage message, {
+  required DateTime value,
+  required bool isAuthoritative,
+}) {
+  _serverMessageTimestamps[message] = ServerMessageTimestamp(
+    value: value,
+    isAuthoritative: isAuthoritative,
+  );
+}
+
 void _attachServerMessageTimestamp(
   ServerMessage message,
   Map<String, dynamic> json,
@@ -6567,7 +6578,10 @@ class StreamingChatEntry implements ChatEntry {
   @override
   final DateTime timestamp;
   @override
-  final bool timestampIsAuthoritative = false;
-  StreamingChatEntry({this.text = '', DateTime? timestamp})
-    : timestamp = timestamp ?? DateTime.now();
+  final bool timestampIsAuthoritative;
+  StreamingChatEntry({
+    this.text = '',
+    DateTime? timestamp,
+    this.timestampIsAuthoritative = false,
+  }) : timestamp = timestamp ?? DateTime.now();
 }
