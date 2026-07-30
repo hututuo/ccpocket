@@ -599,9 +599,10 @@ class HomeContentState extends State<HomeContent> {
 
     Widget buildUnifiedSessionRow(UnifiedSessionListItem item) {
       final running = item.running;
+      final stableKey = ValueKey('conversation_${item.identityKey}');
       if (running == null) {
         final recent = item.recent!;
-        return _RecentSessionSlidable(
+        final row = _RecentSessionSlidable(
           session: recent,
           isPinned:
               item.pinKey != null &&
@@ -617,9 +618,10 @@ class HomeContentState extends State<HomeContent> {
               : () => widget.onToggleRecentSessionPinned!(recent),
           onLongPressRecentSession: widget.onLongPressRecentSession,
         );
+        return KeyedSubtree(key: stableKey, child: row);
       }
 
-      return Slidable(
+      final row = Slidable(
         key: ValueKey('running_session_${running.id}'),
         endActionPane: ActionPane(
           motion: const BehindMotion(),
@@ -676,6 +678,7 @@ class HomeContentState extends State<HomeContent> {
               widget.onAnswerQuestion?.call(running.id, toolUseId, result),
         ),
       );
+      return KeyedSubtree(key: stableKey, child: row);
     }
 
     if (!hasPendingActions &&

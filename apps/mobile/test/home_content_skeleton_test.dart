@@ -678,6 +678,49 @@ void main() {
     });
 
     testWidgets(
+      'keeps one row element when a durable conversation gains a runtime',
+      (tester) async {
+        final stableKey = ValueKey(
+          'conversation_${providerSessionIdentityKey('claude', 's1')}',
+        );
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: [_session(id: 's1')],
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pump();
+        final before = tester.element(find.byKey(stableKey));
+
+        await tester.pumpWidget(
+          _buildHomeContent(
+            sessions: [
+              _runningSession(id: 'runtime-1', providerSessionId: 's1'),
+            ],
+            recentSessions: [_session(id: 's1')],
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pump();
+
+        expect(tester.element(find.byKey(stableKey)), same(before));
+        expect(
+          find.byKey(const ValueKey('running_session_runtime-1')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const ValueKey('recent_session_s1')), findsNothing);
+      },
+    );
+
+    testWidgets(
       'shows pending resume in the unified list and hides matching catalog row',
       (tester) async {
         await tester.pumpWidget(

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_database.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_repository.dart';
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
@@ -279,6 +280,27 @@ class FakeSessionCatalogCacheRepository extends SessionCatalogCacheRepository {
 
   @override
   Future<void> close() async {}
+}
+
+class FakeConversationContentSyncService
+    extends ConversationContentSyncService {
+  FakeConversationContentSyncService({
+    required super.bridge,
+    required super.cache,
+  });
+
+  final _updates = StreamController<ConversationSyncCacheUpdate>.broadcast();
+
+  @override
+  Stream<ConversationSyncCacheUpdate> get syncUpdates => _updates.stream;
+
+  void emit(ConversationSyncCacheUpdate update) => _updates.add(update);
+
+  @override
+  Future<void> dispose() async {
+    await _updates.close();
+    await super.dispose();
+  }
 }
 
 RecentSession _session({
@@ -685,6 +707,96 @@ void main() {
       expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
       expect(cubit.hasCachedCatalogForCurrentTarget, isTrue);
     });
+
+    test(
+      'v2 body updates do not reload the catalog or revoke readiness',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testSupportsConversationSyncV2 = true
+          ..testCacheBridgeInstanceIdHint = 'bridge-v2'
+          ..testCacheCodexSourceIdHint = 'source-v2'
+          ..testLogicalConnectionIdentity = 'machine:mac-v2'
+          ..testLastUrl = 'wss://mac-v2.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        final target = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-v2',
+          codexSourceId: 'source-v2',
+          logicalConnectionIdentity: 'machine:mac-v2',
+          websocketUrl: 'wss://mac-v2.example/socket',
+        );
+        cache.snapshots[target.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'bridge-v2-source-v2',
+          sessions: [_session(id: 'cached-v2')],
+          catalogRevision: null,
+          isComplete: false,
+          cachedAt: DateTime.utc(2026, 7, 30),
+        );
+        cache.syncStates[target.fingerprint] = ConversationSyncCacheState(
+          catalogState: 'catalog-1',
+          statusState: 'status-1',
+          priorityReady: true,
+          updatedAt: DateTime.utc(2026, 7, 30),
+        );
+        final sync = FakeConversationContentSyncService(
+          bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+          cache: cache,
+        );
+        addTearDown(sync.dispose);
+
+        cubit = SessionListCubit(
+          bridge: mockBridge,
+          catalogCache: cache,
+          conversationSync: sync,
+        );
+        await pumpEventQueue();
+        sync.emit(
+          const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.priorityReady,
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+        final loadsAfterPriority = cache.loadCalls;
+
+        sync
+          ..emit(
+            const ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.timeline,
+              provider: 'codex',
+              providerSessionId: 'cached-v2',
+              revision: 'timeline-2',
+            ),
+          )
+          ..emit(
+            const ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.completed,
+            ),
+          )
+          ..emit(
+            const ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.reset,
+              provider: 'codex',
+              providerSessionId: 'cached-v2',
+            ),
+          );
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, loadsAfterPriority);
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+
+        sync.emit(
+          const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.reset,
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, loadsAfterPriority + 1);
+        expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+      },
+    );
 
     test(
       'saved Bridge and Codex source hints prewarm canonical cache before identity frame',

@@ -166,6 +166,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   ConversationContentTarget? _focused;
   String? _pendingSubscriptionId;
   String? _activeSubscriptionId;
+  String? _activeSubscriptionRequestId;
   String? _subscriptionTargetFingerprint;
   String? _subscriptionBridgeInstanceId;
   bool _foreground = false;
@@ -481,6 +482,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _generation += 1;
     _pendingSubscriptionId = null;
     _activeSubscriptionId = null;
+    _activeSubscriptionRequestId = null;
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
@@ -682,9 +684,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         .padLeft(8, '0');
     final threadRevisionMismatch =
         error is _ConversationTimelineBaseRevisionMismatch;
-    var recovery = threadRevisionMismatch ? 'thread_reset' : 'retry';
+    final streamContinuityFailure =
+        error is _ConversationSyncSequenceGap ||
+        error is _ConversationSyncBeginMismatch;
+    var recovery = threadRevisionMismatch
+        ? 'thread_reset'
+        : streamContinuityFailure
+        ? 'stream_retry'
+        : 'retry';
 
     if (!threadRevisionMismatch &&
+        !streamContinuityFailure &&
         _v2RecoveryTargetFingerprint != target.fingerprint) {
       _v2RecoveryTargetFingerprint = target.fingerprint;
       try {
@@ -721,24 +731,32 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       return;
     }
     if (event.sequence != _highestV2CommittedSequence + 1) {
-      throw StateError(
-        'Conversation sync sequence gap: '
-        '${_highestV2CommittedSequence + 1} -> ${event.sequence}',
+      throw _ConversationSyncSequenceGap(
+        expected: _highestV2CommittedSequence + 1,
+        actual: event.sequence,
       );
     }
     ConversationSyncCacheUpdate? publish;
     switch (event.event) {
       case ConversationSyncV2EventKind.syncBegin:
-        if (event.requestId != _pendingSubscriptionId) return;
-        _activeSubscriptionId = event.subscriptionId;
-        _pendingSubscriptionId = null;
-        await cache.beginConversationSync(
-          target: target,
-          subscriptionId: event.subscriptionId,
-        );
-        publish = const ConversationSyncCacheUpdate(
-          kind: ConversationSyncCacheUpdateKind.started,
-        );
+        final pendingRequestId = _pendingSubscriptionId;
+        if (pendingRequestId != null) {
+          if (event.requestId != pendingRequestId) {
+            throw const _ConversationSyncBeginMismatch();
+          }
+          _activeSubscriptionId = event.subscriptionId;
+          _activeSubscriptionRequestId = pendingRequestId;
+          _pendingSubscriptionId = null;
+          await cache.beginConversationSync(
+            target: target,
+            subscriptionId: event.subscriptionId,
+          );
+          publish = const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.started,
+          );
+        } else if (event.requestId != _activeSubscriptionRequestId) {
+          throw const _ConversationSyncBeginMismatch();
+        }
       case ConversationSyncV2EventKind.catalogChanges:
         await cache.applyConversationCatalogPage(
           target: target,
@@ -1136,6 +1154,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _generation += 1;
     _activeSubscriptionId = null;
     _pendingSubscriptionId = null;
+    _activeSubscriptionRequestId = null;
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
@@ -1290,6 +1309,20 @@ class ConversationContentSyncService with WidgetsBindingObserver {
 
 class _ConversationTimelineBaseRevisionMismatch implements Exception {
   const _ConversationTimelineBaseRevisionMismatch();
+}
+
+class _ConversationSyncSequenceGap implements Exception {
+  const _ConversationSyncSequenceGap({
+    required this.expected,
+    required this.actual,
+  });
+
+  final int expected;
+  final int actual;
+}
+
+class _ConversationSyncBeginMismatch implements Exception {
+  const _ConversationSyncBeginMismatch();
 }
 
 class _SnapshotStage {

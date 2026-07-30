@@ -203,6 +203,194 @@ void main() {
   });
 
   test(
+    'accepts later batches on one v2 subscription without resetting readiness',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final updates = <ConversationSyncCacheUpdate>[];
+      final updatesSubscription = service.syncUpdates.listen(updates.add);
+      addTearDown(updatesSubscription.cancel);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-initial',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-1',
+          statusState: 'status-1',
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        1,
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncCheckpoint,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-initial',
+          sequence: 2,
+          phase: 'priority',
+          hasMore: true,
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        2,
+      );
+
+      await service.markConversationRead(
+        provider: 'codex',
+        providerSessionId: 'thread-active',
+        readAt: DateTime.utc(2026, 7, 30, 2),
+      );
+      await gateway.nextOutgoing('conversation_sync_read');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incremental',
+          sequence: 3,
+          requestId: subscriptionId,
+          catalogState: 'catalog-1',
+          statusState: 'status-2',
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        3,
+      );
+
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+      );
+      expect(
+        (await repository.loadConversationSyncState(target)).priorityReady,
+        isTrue,
+      );
+      expect(
+        updates
+            .where(
+              (update) =>
+                  update.kind == ConversationSyncCacheUpdateKind.started,
+            )
+            .length,
+        1,
+      );
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.statusChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incremental',
+          sequence: 4,
+          statusState: 'status-2',
+          pageIndex: 0,
+          pageCount: 1,
+          statusChanges: const [
+            ConversationSyncV2Status(
+              provider: 'codex',
+              providerSessionId: 'thread-active',
+              activity: 'working',
+              attention: 'none',
+              result: 'none',
+              runtimeAttachment: 'loaded',
+              source: 'appServer',
+              confidence: 'authoritative',
+              observedAt: '2026-07-30T02:00:01.000Z',
+            ),
+          ],
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        4,
+      );
+      expect(
+        (await repository.loadConversationStatuses(target)).single.activity,
+        'working',
+      );
+      expect(
+        gateway.sentTypes.where(
+          (type) => type == 'conversation_sync_unsubscribe',
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'sequence gaps restart without clearing committed target data',
+    () async {
+      await service.dispose();
+      await repository.close();
+      final trackingRepository = _FailingCatalogRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: path.join(temporaryDirectory.path, 'gap-cache.db'),
+          openDatabase: openFfi,
+        ),
+      );
+      repository = trackingRepository;
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+        retryBaseDelay: const Duration(milliseconds: 40),
+        retryMaxDelay: const Duration(milliseconds: 80),
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-gap',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-gap',
+          statusState: 'status-gap',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        _catalogRecoveryEvent(
+          subscriptionId: subscriptionId,
+          batchId: 'batch-gap',
+          sequence: 3,
+          catalogState: 'catalog-gap',
+        ),
+      );
+
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+      expect(trackingRepository.clearTargetCalls, 0);
+    },
+  );
+
+  test(
     'commits a status reset and replacement page without resubscribing',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(

@@ -129,6 +129,8 @@ class SessionListCubit extends Cubit<SessionListState> {
   String? _v2StateFingerprint;
   bool _v2CachedPriorityReady = false;
   bool _v2PriorityReady = false;
+  bool _syncCacheReloadRunning = false;
+  bool _syncCacheReloadPending = false;
   Map<String, ConversationSyncV2Status> _conversationStatuses = const {};
   Map<String, String> _conversationReadWatermarks = const {};
 
@@ -263,22 +265,55 @@ class SessionListCubit extends Cubit<SessionListState> {
   }
 
   void _onConversationSyncUpdate(ConversationSyncCacheUpdate update) {
+    var reloadCache = false;
     switch (update.kind) {
       case ConversationSyncCacheUpdateKind.started:
-      case ConversationSyncCacheUpdateKind.reset:
         _v2PriorityReady = false;
         _catalogSnapshotChanges.add(null);
+      case ConversationSyncCacheUpdateKind.reset:
+        final resetsGlobalState =
+            update.provider == null || update.providerSessionId == null;
+        if (resetsGlobalState) {
+          _v2PriorityReady = false;
+          _catalogSnapshotChanges.add(null);
+          reloadCache = true;
+        }
       case ConversationSyncCacheUpdateKind.priorityReady:
         _v2PriorityReady = true;
         _catalogSnapshotChanges.add(null);
+        reloadCache = true;
       case ConversationSyncCacheUpdateKind.catalog:
       case ConversationSyncCacheUpdateKind.status:
-      case ConversationSyncCacheUpdateKind.timeline:
       case ConversationSyncCacheUpdateKind.readWatermark:
+        reloadCache = true;
+      case ConversationSyncCacheUpdateKind.timeline:
       case ConversationSyncCacheUpdateKind.completed:
         break;
     }
-    unawaited(_loadCatalogCacheForCurrentTarget(force: true));
+    if (reloadCache) {
+      _queueSyncCacheReload();
+    }
+  }
+
+  void _queueSyncCacheReload() {
+    if (isClosed || _catalogCache == null) return;
+    if (_syncCacheReloadRunning) {
+      _syncCacheReloadPending = true;
+      return;
+    }
+    _syncCacheReloadRunning = true;
+    unawaited(_drainSyncCacheReloads());
+  }
+
+  Future<void> _drainSyncCacheReloads() async {
+    try {
+      do {
+        _syncCacheReloadPending = false;
+        await _loadCatalogCacheForCurrentTarget(force: true);
+      } while (_syncCacheReloadPending && !isClosed);
+    } finally {
+      _syncCacheReloadRunning = false;
+    }
   }
 
   void _onSessionsUpdate(RecentSessionsMessage response) {
@@ -1029,6 +1064,7 @@ class SessionListCubit extends Cubit<SessionListState> {
   @override
   Future<void> close() async {
     _cacheLoadGeneration++;
+    _syncCacheReloadPending = false;
     _searchDebounce?.cancel();
     await _recentSub?.cancel();
     await _projectHistorySub?.cancel();

@@ -134,6 +134,59 @@ describe("conversation_sync_v2 protocol", () => {
 });
 
 describe("ConversationSyncV2FeatureHandler", () => {
+  it("keeps one subscription across later sync batches", async () => {
+    const fixture = createFixture(
+      [seed(0)],
+      async (target) => history(target.providerSessionId),
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const firstComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    )[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: firstComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_read",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        provider: "claude",
+        providerSessionId: "session-0",
+        readAt: new Date().toISOString(),
+      },
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_begin")).toHaveLength(2),
+    );
+    const begins = events(fixture.sent, client, "sync_begin");
+    expect(begins[1]).toMatchObject({
+      requestId: subscription.requestId,
+      subscriptionId: subscription.requestId,
+    });
+    expect(begins[1]!.sequence).toBeGreaterThan(firstComplete.sequence);
+    fixture.handler.close();
+  });
+
   it("preserves an older-turn cursor and returns legacy pages chronologically", async () => {
     const historyReader = vi.fn(async (target) => ({
       messages: history(target.providerSessionId),
