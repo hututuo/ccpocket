@@ -66,7 +66,7 @@ from `1.110.1+207` to `1.110.1+208`.
 
 ## Transfer and installation gate
 
-The first CC Pocket transfer attempt returned
+Two CC Pocket transfer attempts returned
 `No compatible live phone is connected`, so the Bridge did not offer the IPA
 and phone-side saving is not claimed. The file is ready for a later transfer.
 AltStore/AltServer must still re-sign and install the package before build 208
@@ -83,3 +83,15 @@ is active on the physical iPhone.
 The Bridge production runtime was not changed by this repair. Only a Bridge
 protocol regression test was added, so no Bridge restart is required for build
 208.
+
+## Build and cache cleanup
+
+- Removed the verified, rebuildable Mobile `build/`, iOS `Pods/`, and Flutter
+  ephemeral directories: approximately `466,276,352` logical bytes.
+- Kept the active worktree's `.dart_tool`, the small Bridge `dist`, and the
+  audited build 208 IPA.
+- Kept build 207 as the direct rollback IPA.
+- Moved the superseded build 206 IPA to
+  `/Users/huyiyang/.Trash/CC-Pocket-1.110.1-build206-session-sync-v2-065cddc0-AltStore.ipa`;
+  it remains recoverable from Trash.
+- No simulator or XCTest clone was created by this release.
