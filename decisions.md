@@ -1030,3 +1030,28 @@
 - The complete implementation, performance, security, compatibility and
   historical-branch audit is recorded in
   `docs/mobile-session-sync-v2-final-audit-20260730.md`.
+
+## `notLoaded` is an attachment observation, not a conversation failure
+
+- Official app-server `notLoaded` means only that a durable thread is not
+  resident in that app-server process. It does not make the conversation
+  unavailable, does not require `thread/resume`, and must not render as
+  `Ready` or “status unavailable”.
+- Canonical v2 status keeps `activity=unknown`,
+  `runtimeAttachment=notLoaded`, and `confidence=unknown` until an
+  authoritative activity observation exists. A real unknown status returned
+  by a loaded app-server is distinguished with `runtimeAttachment=loaded`.
+- New Mobile advertises additive capability `app_server_status_v1` and
+  suppresses only the ordinary unknown/notLoaded badge. `systemError`,
+  `ownedElsewhere`, and loaded-but-unknown observations remain visible.
+- Bridge projects only ordinary unknown/notLoaded/no-attention states to
+  `activity=idle` for legacy Mobile that supports `conversation_sync_v2` but
+  not `app_server_status_v1`. It keeps attachment and confidence truthful, so
+  this compatibility projection cannot become a `Ready` claim.
+- Status state tokens include a schema version. A semantic projection change
+  increments that version and emits a scoped status reset, preventing an old
+  persisted snapshot from surviving a Bridge upgrade.
+- Switching a LaunchAgent runtime is a separate delivery gate. After
+  `bootout`, confirm both the job and listener are gone and allow launchd at
+  least two seconds before `bootstrap`; an immediate retry can return
+  `Input/output error` even with a valid plist.

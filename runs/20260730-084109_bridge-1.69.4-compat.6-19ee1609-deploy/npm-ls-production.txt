@@ -1,0 +1,265 @@
+ccpocket@ /Users/huyiyang/Library/Application Support/ccPocket Bridge/runtime/1.69.4-compat.6-19ee1609
+└─┬ @ccpocket/bridge@1.69.4-compat.6 -> ./packages/bridge
+  ├─┬ @anthropic-ai/claude-agent-sdk@0.3.148
+  │ ├── @anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.148
+  │ ├── UNMET OPTIONAL DEPENDENCY @anthropic-ai/claude-agent-sdk-darwin-x64@0.3.148
+  │ ├── UNMET OPTIONAL DEPENDENCY @anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.148
+  │ ├── UNMET OPTIONAL DEPENDENCY @anthropic-ai/claude-agent-sdk-linux-arm64@0.3.148
+  │ ├── UNMET OPTIONAL DEPENDENCY @anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.148
+  │ ├── UNMET OPTIONAL DEPENDENCY @anthropic-ai/claude-agent-sdk-linux-x64@0.3.148
+  │ ├── UNMET OPTIONAL DEPENDENCY @anthropic-ai/claude-agent-sdk-win32-arm64@0.3.148
+  │ ├── UNMET OPTIONAL DEPENDENCY @anthropic-ai/claude-agent-sdk-win32-x64@0.3.148
+  │ ├─┬ @anthropic-ai/sdk@0.98.0
+  │ │ ├─┬ json-schema-to-ts@3.1.1
+  │ │ │ ├── @babel/runtime@7.29.2
+  │ │ │ └── ts-algebra@2.0.0
+  │ │ ├─┬ standardwebhooks@1.0.0
+  │ │ │ ├── @stablelib/base64@1.0.1
+  │ │ │ └── fast-sha256@1.3.0
+  │ │ └── zod@4.3.6 deduped
+  │ ├── @modelcontextprotocol/sdk@1.30.0 deduped
+  │ └── zod@4.3.6
+  ├─┬ @hono/node-server@2.0.12 overridden
+  │ └── hono@4.12.32
+  ├─┬ @modelcontextprotocol/sdk@1.30.0
+  │ ├── UNMET OPTIONAL DEPENDENCY @cfworker/json-schema@^4.1.1
+  │ ├── @hono/node-server@2.0.12 deduped
+  │ ├─┬ ajv-formats@3.0.1
+  │ │ └── ajv@8.18.0 deduped
+  │ ├─┬ ajv@8.18.0
+  │ │ ├── fast-deep-equal@3.1.3 deduped
+  │ │ ├── fast-uri@3.1.4
+  │ │ ├── json-schema-traverse@1.0.0
+  │ │ └── require-from-string@2.0.2
+  │ ├── content-type@1.0.5
+  │ ├─┬ cors@2.8.6
+  │ │ ├── object-assign@4.1.1
+  │ │ └── vary@1.1.2
+  │ ├─┬ cross-spawn@7.0.6
+  │ │ ├── path-key@3.1.1
+  │ │ ├─┬ shebang-command@2.0.0
+  │ │ │ └── shebang-regex@3.0.0
+  │ │ └─┬ which@2.0.2
+  │ │   └── isexe@2.0.0
+  │ ├── eventsource-parser@3.0.6
+  │ ├─┬ eventsource@3.0.7
+  │ │ └── eventsource-parser@3.0.6 deduped
+  │ ├─┬ express-rate-limit@8.6.1
+  │ │ ├─┬ debug@4.4.3
+  │ │ │ └── ms@2.1.3
+  │ │ ├── express@5.2.1 deduped
+  │ │ └── ip-address@10.3.1 deduped
+  │ ├─┬ express@5.2.1
+  │ │ ├─┬ accepts@2.0.0
+  │ │ │ ├── mime-types@3.0.2 deduped
+  │ │ │ └── negotiator@1.0.0
+  │ │ ├─┬ body-parser@2.3.0
+  │ │ │ ├── bytes@3.1.2 deduped
+  │ │ │ ├── content-type@2.0.0
+  │ │ │ ├── debug@4.4.3 deduped
+  │ │ │ ├── http-errors@2.0.1 deduped
+  │ │ │ ├── iconv-lite@0.7.2 deduped
+  │ │ │ ├── on-finished@2.4.1 deduped
+  │ │ │ ├── qs@6.15.3 deduped
+  │ │ │ ├── raw-body@3.0.2 deduped
+  │ │ │ └── type-is@2.1.0 deduped
+  │ │ ├── content-disposition@1.0.1
+  │ │ ├── content-type@1.0.5 deduped
+  │ │ ├── cookie-signature@1.2.2
+  │ │ ├── cookie@0.7.2
+  │ │ ├── debug@4.4.3 deduped
+  │ │ ├── depd@2.0.0
+  │ │ ├── encodeurl@2.0.0
+  │ │ ├── escape-html@1.0.3
+  │ │ ├── etag@1.8.1
+  │ │ ├─┬ finalhandler@2.1.1
+  │ │ │ ├── debug@4.4.3 deduped
+  │ │ │ ├── encodeurl@2.0.0 deduped
+  │ │ │ ├── escape-html@1.0.3 deduped
+  │ │ │ ├── on-finished@2.4.1 deduped
+  │ │ │ ├── parseurl@1.3.3 deduped
+  │ │ │ └── statuses@2.0.2 deduped
+  │ │ ├── fresh@2.0.0
+  │ │ ├─┬ http-errors@2.0.1
+  │ │ │ ├── depd@2.0.0 deduped
+  │ │ │ ├── inherits@2.0.4 deduped
+  │ │ │ ├── setprototypeof@1.2.0
+  │ │ │ ├── statuses@2.0.2 deduped
+  │ │ │ └── toidentifier@1.0.1
+  │ │ ├── merge-descriptors@2.0.0
+  │ │ ├─┬ mime-types@3.0.2
+  │ │ │ └── mime-db@1.54.0
+  │ │ ├─┬ on-finished@2.4.1
+  │ │ │ └── ee-first@1.1.1
+  │ │ ├─┬ once@1.4.0
+  │ │ │ └── wrappy@1.0.2
+  │ │ ├── parseurl@1.3.3
+  │ │ ├─┬ proxy-addr@2.0.7
+  │ │ │ ├── forwarded@0.2.0
+  │ │ │ └── ipaddr.js@1.9.1
+  │ │ ├─┬ qs@6.15.3
+  │ │ │ ├── es-define-property@1.0.1
+  │ │ │ └─┬ side-channel@1.1.1
+  │ │ │   ├── es-errors@1.3.0
+  │ │ │   ├── object-inspect@1.13.4
+  │ │ │   ├─┬ side-channel-list@1.0.1
+  │ │ │   │ ├── es-errors@1.3.0 deduped
+  │ │ │   │ └── object-inspect@1.13.4 deduped
+  │ │ │   ├─┬ side-channel-map@1.0.1
+  │ │ │   │ ├─┬ call-bound@1.0.4
+  │ │ │   │ │ ├─┬ call-bind-apply-helpers@1.0.2
+  │ │ │   │ │ │ ├── es-errors@1.3.0 deduped
+  │ │ │   │ │ │ └── function-bind@1.1.2 deduped
+  │ │ │   │ │ └── get-intrinsic@1.3.0 deduped
+  │ │ │   │ ├── es-errors@1.3.0 deduped
+  │ │ │   │ ├─┬ get-intrinsic@1.3.0
+  │ │ │   │ │ ├── call-bind-apply-helpers@1.0.2 deduped
+  │ │ │   │ │ ├── es-define-property@1.0.1 deduped
+  │ │ │   │ │ ├── es-errors@1.3.0 deduped
+  │ │ │   │ │ ├─┬ es-object-atoms@1.1.2
+  │ │ │   │ │ │ └── es-errors@1.3.0 deduped
+  │ │ │   │ │ ├── function-bind@1.1.2
+  │ │ │   │ │ ├─┬ get-proto@1.0.1
+  │ │ │   │ │ │ ├─┬ dunder-proto@1.0.1
+  │ │ │   │ │ │ │ ├── call-bind-apply-helpers@1.0.2 deduped
+  │ │ │   │ │ │ │ ├── es-errors@1.3.0 deduped
+  │ │ │   │ │ │ │ └── gopd@1.2.0 deduped
+  │ │ │   │ │ │ └── es-object-atoms@1.1.2 deduped
+  │ │ │   │ │ ├── gopd@1.2.0
+  │ │ │   │ │ ├── has-symbols@1.1.0
+  │ │ │   │ │ ├─┬ hasown@2.0.4
+  │ │ │   │ │ │ └── function-bind@1.1.2 deduped
+  │ │ │   │ │ └── math-intrinsics@1.1.0
+  │ │ │   │ └── object-inspect@1.13.4 deduped
+  │ │ │   └─┬ side-channel-weakmap@1.0.2
+  │ │ │     ├── call-bound@1.0.4 deduped
+  │ │ │     ├── es-errors@1.3.0 deduped
+  │ │ │     ├── get-intrinsic@1.3.0 deduped
+  │ │ │     ├── object-inspect@1.13.4 deduped
+  │ │ │     └── side-channel-map@1.0.1 deduped
+  │ │ ├── range-parser@1.2.1
+  │ │ ├─┬ router@2.2.0
+  │ │ │ ├── debug@4.4.3 deduped
+  │ │ │ ├── depd@2.0.0 deduped
+  │ │ │ ├── is-promise@4.0.0
+  │ │ │ ├── parseurl@1.3.3 deduped
+  │ │ │ └── path-to-regexp@8.4.2
+  │ │ ├─┬ send@1.2.1
+  │ │ │ ├── debug@4.4.3 deduped
+  │ │ │ ├── encodeurl@2.0.0 deduped
+  │ │ │ ├── escape-html@1.0.3 deduped
+  │ │ │ ├── etag@1.8.1 deduped
+  │ │ │ ├── fresh@2.0.0 deduped
+  │ │ │ ├── http-errors@2.0.1 deduped
+  │ │ │ ├── mime-types@3.0.2 deduped
+  │ │ │ ├── ms@2.1.3 deduped
+  │ │ │ ├── on-finished@2.4.1 deduped
+  │ │ │ ├── range-parser@1.2.1 deduped
+  │ │ │ └── statuses@2.0.2 deduped
+  │ │ ├─┬ serve-static@2.2.1
+  │ │ │ ├── encodeurl@2.0.0 deduped
+  │ │ │ ├── escape-html@1.0.3 deduped
+  │ │ │ ├── parseurl@1.3.3 deduped
+  │ │ │ └── send@1.2.1 deduped
+  │ │ ├── statuses@2.0.2
+  │ │ ├─┬ type-is@2.1.0
+  │ │ │ ├── content-type@2.0.0
+  │ │ │ ├── media-typer@1.1.0
+  │ │ │ └── mime-types@3.0.2 deduped
+  │ │ └── vary@1.1.2 deduped
+  │ ├── hono@4.12.32 deduped
+  │ ├── jose@6.2.2
+  │ ├── json-schema-typed@8.0.2
+  │ ├── pkce-challenge@5.0.1
+  │ ├─┬ raw-body@3.0.2
+  │ │ ├── bytes@3.1.2
+  │ │ ├── http-errors@2.0.1 deduped
+  │ │ ├─┬ iconv-lite@0.7.2
+  │ │ │ └── safer-buffer@2.1.2
+  │ │ └── unpipe@1.0.0
+  │ ├─┬ zod-to-json-schema@3.25.2
+  │ │ └── zod@4.3.6 deduped
+  │ └── zod@4.3.6 deduped
+  ├─┬ @node-rs/argon2@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-android-arm-eabi@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-android-arm64@2.0.2
+  │ ├── @node-rs/argon2-darwin-arm64@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-darwin-x64@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-freebsd-x64@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-linux-arm-gnueabihf@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-linux-arm64-gnu@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-linux-arm64-musl@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-linux-x64-gnu@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-linux-x64-musl@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-wasm32-wasi@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-win32-arm64-msvc@2.0.2
+  │ ├── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-win32-ia32-msvc@2.0.2
+  │ └── UNMET OPTIONAL DEPENDENCY @node-rs/argon2-win32-x64-msvc@2.0.2
+  ├─┬ bonjour-service@1.3.0
+  │ ├── fast-deep-equal@3.1.3
+  │ └─┬ multicast-dns@7.2.5
+  │   ├─┬ dns-packet@5.6.1
+  │   │ └── @leichtgewicht/ip-codec@2.0.5
+  │   └── thunky@1.1.0
+  ├─┬ docx-preview@0.4.0
+  │ └── jszip@3.10.1 deduped
+  ├─┬ jszip@3.10.1
+  │ ├─┬ lie@3.3.0
+  │ │ └── immediate@3.0.6
+  │ ├── pako@1.0.11
+  │ ├─┬ readable-stream@2.3.8
+  │ │ ├── core-util-is@1.0.3
+  │ │ ├── inherits@2.0.4
+  │ │ ├── isarray@1.0.0
+  │ │ ├── process-nextick-args@2.0.1
+  │ │ ├── safe-buffer@5.1.2
+  │ │ ├─┬ string_decoder@1.1.1
+  │ │ │ └── safe-buffer@5.1.2 deduped
+  │ │ └── util-deprecate@1.0.2
+  │ └── setimmediate@1.0.5
+  ├── marked@15.0.12
+  ├─┬ proper-lockfile@4.1.2
+  │ ├── graceful-fs@4.2.11
+  │ ├── retry@0.12.0
+  │ └── signal-exit@3.0.7
+  ├─┬ qrcode@1.5.4
+  │ ├── dijkstrajs@1.0.3
+  │ ├── pngjs@5.0.0
+  │ └─┬ yargs@15.4.1
+  │   ├─┬ cliui@6.0.0
+  │   │ ├── string-width@4.2.3 deduped
+  │   │ ├─┬ strip-ansi@6.0.1
+  │   │ │ └── ansi-regex@5.0.1
+  │   │ └─┬ wrap-ansi@6.2.0
+  │   │   ├─┬ ansi-styles@4.3.0
+  │   │   │ └─┬ color-convert@2.0.1
+  │   │   │   └── color-name@1.1.4
+  │   │   ├── string-width@4.2.3 deduped
+  │   │   └── strip-ansi@6.0.1 deduped
+  │   ├── decamelize@1.2.0
+  │   ├─┬ find-up@4.1.0
+  │   │ ├─┬ locate-path@5.0.0
+  │   │ │ └─┬ p-locate@4.1.0
+  │   │ │   └─┬ p-limit@2.3.0
+  │   │ │     └── p-try@2.2.0
+  │   │ └── path-exists@4.0.0
+  │   ├── get-caller-file@2.0.5
+  │   ├── require-directory@2.1.1
+  │   ├── require-main-filename@2.0.0
+  │   ├── set-blocking@2.0.0
+  │   ├─┬ string-width@4.2.3
+  │   │ ├── emoji-regex@8.0.0
+  │   │ ├── is-fullwidth-code-point@3.0.0
+  │   │ └── strip-ansi@6.0.1 deduped
+  │   ├── which-module@2.0.1
+  │   ├── y18n@4.0.3
+  │   └─┬ yargs-parser@18.1.3
+  │     ├── camelcase@5.3.1
+  │     └── decamelize@1.2.0 deduped
+  ├─┬ socks@2.8.7
+  │ ├── ip-address@10.3.1
+  │ └── smart-buffer@4.2.0
+  ├── undici@7.29.0
+  └─┬ ws@8.21.1
+    ├── UNMET OPTIONAL DEPENDENCY bufferutil@^4.0.1
+    └── UNMET OPTIONAL DEPENDENCY utf-8-validate@>=5.0.2
