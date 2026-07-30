@@ -214,6 +214,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   StreamSubscription<ServerMessage>? _sandboxRestartSub;
   StreamSubscription<String>? _sessionStoppedSub;
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
+  StreamSubscription<List<SessionInfo>>? _identitySessionListSub;
+  StreamSubscription<List<RecentSession>>? _identityRecentSessionsSub;
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
@@ -221,7 +223,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   PendingSessionBinding? _retainedPendingBinding;
   final Object _sessionRouteOwner = Object();
   Object? _sessionRouteIdentity;
-  late final BridgeDataSourceIdentity _dataSourceIdentity;
+  late BridgeDataSourceIdentity _dataSourceIdentity;
 
   @override
   void initState() {
@@ -251,6 +253,50 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _startDurablePreview();
     _listenForSandboxRestart();
     _listenForSessionStopped();
+    _listenForAuthoritativeDataSourceIdentity(bridge);
+  }
+
+  void _listenForAuthoritativeDataSourceIdentity(BridgeService bridge) {
+    _identitySessionListSub = bridge.sessionList.listen((_) {
+      _reconcileAuthoritativeDataSourceIdentity(bridge);
+    });
+    _identityRecentSessionsSub = bridge.recentSessionsStream.listen((_) {
+      _reconcileAuthoritativeDataSourceIdentity(bridge);
+    });
+    _reconcileAuthoritativeDataSourceIdentity(bridge);
+  }
+
+  void _reconcileAuthoritativeDataSourceIdentity(BridgeService bridge) {
+    if (!mounted ||
+        !bridge.hasAuthoritativeSessionListForCurrentConnection) {
+      return;
+    }
+    final durableId = widget.durableProviderSessionId?.trim();
+    final providerSessionId = durableId == null || durableId.isEmpty
+        ? _sessionId
+        : durableId;
+    final runtimeConfirmsThread = bridge.sessions.any(
+      (session) =>
+          session.provider == Provider.codex.value &&
+          (session.id == _sessionId ||
+              session.claudeSessionId == providerSessionId),
+    );
+    final catalogConfirmsThread =
+        bridge.hasAuthoritativeRecentSessionsForCurrentConnection &&
+        bridge.recentSessions.any(
+          (session) =>
+              session.provider == Provider.codex.value &&
+              session.sessionId == providerSessionId,
+        );
+    if (!runtimeConfirmsThread && !catalogConfirmsThread) return;
+
+    final next = _dataSourceIdentity.reconciledWithAuthenticated(
+      bridge.dataSourceIdentity,
+      provider: Provider.codex.value,
+    );
+    if (next == _dataSourceIdentity) return;
+    setState(() => _dataSourceIdentity = next);
+    _syncSessionRouteIdentity();
   }
 
   void _startDurablePreview() {
@@ -646,6 +692,14 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   @override
   void didUpdateWidget(covariant CodexSessionScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final bridge = context.read<BridgeService>();
+    final identityCandidate =
+        widget.dataSourceIdentity ?? bridge.dataSourceIdentity;
+    final nextIdentity = _dataSourceIdentity.reconciledWithAuthenticated(
+      identityCandidate,
+      provider: Provider.codex.value,
+    );
+    final identityChanged = nextIdentity != _dataSourceIdentity;
     final pendingLifecycleChanged =
         oldWidget.pendingSessionCreated != widget.pendingSessionCreated ||
         oldWidget.isPending != widget.isPending;
@@ -660,17 +714,18 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         oldWidget.initialPermissionMode == widget.initialPermissionMode &&
         oldWidget.initialSandboxMode == widget.initialSandboxMode &&
         oldWidget.initialApprovalPolicy == widget.initialApprovalPolicy &&
-        oldWidget.initialApprovalsReviewer == widget.initialApprovalsReviewer) {
+        oldWidget.initialApprovalsReviewer ==
+            widget.initialApprovalsReviewer &&
+        !identityChanged) {
       return;
     }
 
     if (pendingLifecycleChanged) {
       _detachPendingBinding(oldWidget.pendingSessionCreated);
     }
-    final explorerHistory = context.read<BridgeService>().getExplorerHistory(
-      widget.sessionId,
-    );
+    final explorerHistory = bridge.getExplorerHistory(widget.sessionId);
     setState(() {
+      _dataSourceIdentity = nextIdentity;
       _sessionId = widget.sessionId;
       _projectPath = widget.projectPath;
       _worktreePath = widget.worktreePath;
@@ -707,6 +762,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _sandboxRestartSub?.cancel();
     _sessionStoppedSub?.cancel();
     _cachedPreviewSub?.cancel();
+    _identitySessionListSub?.cancel();
+    _identityRecentSessionsSub?.cancel();
     final durableId = widget.durableProviderSessionId;
     if (durableId != null) {
       try {
@@ -725,7 +782,10 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final cachedPreview = _cachedPreview;
     if (_isPending && durableId != null) {
       return _CodexProviders(
-        key: ValueKey('durable-codex-$durableId'),
+        key: ValueKey(
+          'durable-codex-$durableId-'
+          '${_dataSourceIdentity.notificationDiscriminatorForProvider('codex')}',
+        ),
         sessionId: durableId,
         sessionInsightsSessionId: durableId,
         projectPath: _projectPath,
@@ -801,7 +861,10 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     }
 
     return _CodexProviders(
-      key: ValueKey(_sessionId),
+      key: ValueKey(
+        'codex-$_sessionId-'
+        '${_dataSourceIdentity.notificationDiscriminatorForProvider('codex')}',
+      ),
       sessionId: _sessionId,
       sessionInsightsSessionId: widget.durableProviderSessionId,
       projectPath: _projectPath,

@@ -79,4 +79,73 @@ void main() {
       isTrue,
     );
   });
+
+  test('provisional identities adopt an authenticated identity safely', () {
+    const authenticated = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-source-a',
+      legacyRouteIdentity: 'logical:machine-1',
+    );
+
+    expect(
+      BridgeDataSourceIdentity.unscoped.reconciledWithAuthenticated(
+        authenticated,
+        provider: 'codex',
+      ),
+      authenticated,
+    );
+    expect(
+      const BridgeDataSourceIdentity(
+        legacyRouteIdentity: 'logical:machine-1',
+      ).reconciledWithAuthenticated(authenticated, provider: 'codex'),
+      authenticated,
+    );
+    expect(
+      const BridgeDataSourceIdentity(
+        bridgeInstanceId: 'bridge-1',
+      ).reconciledWithAuthenticated(authenticated, provider: 'codex'),
+      authenticated,
+    );
+  });
+
+  test('authenticated reconciliation never crosses a known source', () {
+    const authenticated = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-source-a',
+      legacyRouteIdentity: 'logical:machine-1',
+    );
+    const otherSource = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-source-b',
+    );
+    const otherBridge = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-2',
+      codexSourceId: 'codex-source-a',
+    );
+    const otherRoute = BridgeDataSourceIdentity(
+      legacyRouteIdentity: 'logical:machine-2',
+    );
+
+    expect(
+      otherSource.reconciledWithAuthenticated(
+        authenticated,
+        provider: 'codex',
+      ),
+      otherSource,
+    );
+    expect(
+      otherBridge.reconciledWithAuthenticated(
+        authenticated,
+        provider: 'codex',
+      ),
+      otherBridge,
+    );
+    expect(
+      otherRoute.reconciledWithAuthenticated(
+        authenticated,
+        provider: 'codex',
+      ),
+      otherRoute,
+    );
+  });
 }

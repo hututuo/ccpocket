@@ -112,6 +112,49 @@ class BridgeDataSourceIdentity {
     return current.matchesRequest(this, provider: provider);
   }
 
+  /// Replaces a provisional route/cache identity with an authenticated one
+  /// only when doing so cannot cross a known Bridge or Codex source boundary.
+  ///
+  /// The caller must still prove that the requested provider thread exists in
+  /// the authenticated catalog. This deliberately refuses to reconcile two
+  /// different non-empty Codex source IDs.
+  BridgeDataSourceIdentity reconciledWithAuthenticated(
+    BridgeDataSourceIdentity authenticated, {
+    required String provider,
+  }) {
+    final authenticatedBridgeId =
+        authenticated._normalizedBridgeInstanceId;
+    if (authenticatedBridgeId == null) return this;
+
+    final currentBridgeId = _normalizedBridgeInstanceId;
+    if (currentBridgeId != null && currentBridgeId != authenticatedBridgeId) {
+      return this;
+    }
+
+    if (currentBridgeId == null) {
+      final currentRoute = _normalizedLegacyRouteIdentity;
+      final authenticatedRoute = authenticated._normalizedLegacyRouteIdentity;
+      if (currentRoute != null && currentRoute != authenticatedRoute) {
+        return this;
+      }
+    }
+
+    if (provider == 'codex') {
+      final currentSourceId = _normalizedCodexSourceId;
+      final authenticatedSourceId = authenticated._normalizedCodexSourceId;
+      if (currentSourceId != null &&
+          authenticatedSourceId != null &&
+          currentSourceId != authenticatedSourceId) {
+        return this;
+      }
+      if (currentSourceId != null && authenticatedSourceId == null) {
+        return this;
+      }
+    }
+
+    return authenticated;
+  }
+
   Map<String, String> toNotificationFields() {
     final bridgeId = _normalizedBridgeInstanceId;
     if (bridgeId != null) {

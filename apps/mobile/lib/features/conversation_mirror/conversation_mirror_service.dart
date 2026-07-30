@@ -115,7 +115,7 @@ class ConversationMirrorService extends ChangeNotifier {
     provider: target.provider,
     providerSessionId: target.providerSessionId,
     codexSourceId: target.provider == Provider.codex.value
-        ? target.codexSourceId
+        ? (target.codexSourceId ?? currentCodexSourceId)
         : null,
   );
 
@@ -138,6 +138,7 @@ class ConversationMirrorService extends ChangeNotifier {
 
   bool _targetBelongsToCurrentSource(ConversationMirrorTarget target) =>
       target.provider != Provider.codex.value ||
+      target.codexSourceId == null ||
       target.codexSourceId == currentCodexSourceId;
 
   String? _wireCodexSourceId(ConversationMirrorKey? key) {
@@ -717,6 +718,9 @@ class ConversationMirrorService extends ChangeNotifier {
     }
     final existing = await metadataForTarget(target);
     final currentBridgeId = currentBridgeInstanceId;
+    final effectiveCodexSourceId = target.provider == Provider.codex.value
+        ? (target.codexSourceId ?? currentCodexSourceId)
+        : null;
     final pendingKey =
         existing?.key ??
         (currentBridgeId == null ? null : _targetKey(currentBridgeId, target));
@@ -724,14 +728,14 @@ class ConversationMirrorService extends ChangeNotifier {
     final logicalWatchKey = _logicalWatchKey(
       target.provider,
       target.providerSessionId,
-      target.codexSourceId,
+      effectiveCodexSourceId,
     );
     if (watch) {
       final existingWatch = _existingWatch(
         provider: target.provider,
         providerSessionId: target.providerSessionId,
         key: pendingKey,
-        codexSourceId: target.codexSourceId,
+        codexSourceId: effectiveCodexSourceId,
         entryCount: existing?.entryCount ?? 0,
       );
       if (existingWatch != null) return existingWatch;
@@ -740,7 +744,7 @@ class ConversationMirrorService extends ChangeNotifier {
       requestId: requestId,
       provider: target.provider,
       providerSessionId: target.providerSessionId,
-      codexSourceId: target.codexSourceId,
+      codexSourceId: effectiveCodexSourceId,
       projectPath: target.effectiveProjectPath,
       key: pendingKey,
       autoSync: watch || (existing?.autoSync ?? false),

@@ -267,6 +267,41 @@ void main() {
   );
 
   test(
+    'adopts the authenticated source for a legacy unscoped target',
+    () async {
+      bridge.capabilities = const {
+        'conversation_mirror_source_identity_v1',
+      };
+      bridge.emitSessionCatalogIdentity(
+        nextBridgeId: 'bridge-test',
+        nextSourceId: 'codex-home-source-a',
+      );
+      await _waitUntil(
+        () async => service.currentCodexSourceId == 'codex-home-source-a',
+      );
+      bridge.onSend = (request) {
+        scheduleMicrotask(() {
+          bridge.emit(
+            LocalFeatureRequestErrorMessage(
+              featureId: 'conversation_mirror',
+              ownerSessionId: request['providerSessionId'] as String,
+              requestType: request['type'] as String,
+              requestId: request['requestId'] as String,
+              message: 'unsupported',
+              errorCode: 'unsupported_message',
+            ),
+          );
+        });
+      };
+
+      final result = await service.syncNow(_recentSession);
+
+      expect(result.errorCode, 'unsupported_message');
+      expect(bridge.sent.single['codexSourceId'], 'codex-home-source-a');
+    },
+  );
+
+  test(
     'rejects a different Codex source before sending a mirror request',
     () async {
       bridge.emitSessionCatalogIdentity(
