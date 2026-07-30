@@ -867,7 +867,7 @@ class HomeContentState extends State<HomeContent> {
       );
     }
 
-    final contentChildren = <Widget>[
+    final contentEntries = <Object>[
         if (isReconnecting) const SessionReconnectBanner(),
         ?receivedFileBanner,
         ?connectedBridgeBanner,
@@ -969,7 +969,7 @@ class HomeContentState extends State<HomeContent> {
             for (final item in unifiedSessions.where(
               (item) => item.running != null,
             ))
-              buildUnifiedSessionRow(item),
+              item,
             const _SessionListSkeleton(),
           ] else ...[
             if ((!_groupByProject && unifiedSessions.isEmpty) ||
@@ -981,7 +981,7 @@ class HomeContentState extends State<HomeContent> {
                 subtitle: hasActiveFilter ? l.adjustFiltersAndSearch : null,
               )
             else if (!_groupByProject) ...[
-              for (final item in unifiedSessions) buildUnifiedSessionRow(item),
+              ...unifiedSessions,
               if (widget.hasMoreSessions) ...[
                 const SizedBox(height: 8),
                 _LoadMoreRecentSessionsButton(
@@ -1037,8 +1037,14 @@ class HomeContentState extends State<HomeContent> {
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(12),
-      itemCount: contentChildren.length,
-      itemBuilder: (context, index) => contentChildren[index],
+      itemCount: contentEntries.length,
+      itemBuilder: (context, index) {
+        final entry = contentEntries[index];
+        if (entry is UnifiedSessionListItem) {
+          return buildUnifiedSessionRow(entry);
+        }
+        return entry as Widget;
+      },
     );
   }
 }
