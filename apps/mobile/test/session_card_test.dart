@@ -244,6 +244,105 @@ void main() {
       );
     });
 
+    testWidgets(
+      'uses authoritative app-server status once for an idle runtime',
+      (tester) async {
+        final session = SessionInfo(
+          id: 'v2-desktop-running',
+          provider: Provider.codex.value,
+          projectPath: '/home/user/my-app',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+        );
+        const status = ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-v2-desktop',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-07-31T00:00:00Z',
+        );
+
+        await tester.pumpWidget(
+          _wrap(
+            RunningSessionCard(
+              session: session,
+              conversationStatus: status,
+              onTap: () {},
+            ),
+          ),
+        );
+
+        expect(find.text('Working'), findsOneWidget);
+        expect(
+          find.byKey(
+            const ValueKey('desktop_active_session_badge_v2-desktop-running'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(
+            const ValueKey('bridge_active_session_badge_v2-desktop-running'),
+          ),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'v2 Bridge ownership overrides a stale Desktop compatibility flag',
+      (tester) async {
+        final session = SessionInfo(
+          id: 'v2-bridge-running',
+          provider: Provider.codex.value,
+          projectPath: '/home/user/my-app',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+          externalDesktopTurnActive: true,
+        );
+        const status = ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-v2-bridge',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'bridgeRuntime',
+          confidence: 'authoritative',
+          observedAt: '2026-07-31T00:00:00Z',
+        );
+
+        await tester.pumpWidget(
+          _wrap(
+            RunningSessionCard(
+              session: session,
+              conversationStatus: status,
+              onTap: () {},
+            ),
+          ),
+        );
+
+        expect(find.text('Working'), findsOneWidget);
+        expect(
+          find.byKey(
+            const ValueKey('bridge_active_session_badge_v2-bridge-running'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(
+            const ValueKey('desktop_active_session_badge_v2-bridge-running'),
+          ),
+          findsNothing,
+        );
+      },
+    );
+
     testWidgets('shows fork lineage for a running child session', (
       tester,
     ) async {
@@ -341,6 +440,70 @@ void main() {
       expect(visual.primary, SessionPrimaryStatus.unknown);
       expect(visual.label, SessionVisualLabel.unavailable);
       expect(visual.animate, isFalse);
+    });
+
+    test('uses v2 status and source before legacy runtime fields', () {
+      final presentation = sessionCardPresentationFor(
+        syncStatus: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-v2',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-07-31T00:00:00Z',
+        ),
+        runtimeSession: SessionInfo(
+          id: 'runtime-v2',
+          provider: 'codex',
+          projectPath: '/repo',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      );
+
+      expect(presentation.visualStatus.primary, SessionPrimaryStatus.working);
+      expect(presentation.executionHost, SessionExecutionHost.desktopAppServer);
+    });
+
+    test('keeps ordinary app-server notLoaded status neutral', () {
+      final presentation = sessionCardPresentationFor(
+        syncStatus: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-not-loaded',
+          activity: 'unknown',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'notLoaded',
+          source: 'appServer',
+          confidence: 'unknown',
+          observedAt: '2026-07-31T00:00:00Z',
+        ),
+      );
+
+      expect(presentation.visualStatus.primary, SessionPrimaryStatus.idle);
+      expect(presentation.visualStatus.label, isNull);
+    });
+
+    test('treats legacy rollout activity as Desktop-hosted', () {
+      final presentation = sessionCardPresentationFor(
+        syncStatus: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-legacy-rollout',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'legacyRollout',
+          confidence: 'observed',
+          observedAt: '2026-07-31T00:00:00Z',
+        ),
+      );
+
+      expect(presentation.executionHost, SessionExecutionHost.desktopAppServer);
     });
 
     testWidgets('does not render Ready for an idle session', (tester) async {
@@ -1480,6 +1643,61 @@ void main() {
   });
 
   group('RecentSessionCard', () {
+    testWidgets(
+      'shows one app-server Working status away from Mirror actions',
+      (tester) async {
+        const session = RecentSession(
+          sessionId: 'recent-app-server-working',
+          provider: 'codex',
+          firstPrompt: 'prompt',
+          created: '2026-07-30T00:00:00Z',
+          modified: '2026-07-30T00:01:00Z',
+          gitBranch: 'main',
+          projectPath: '/repo',
+          isSidechain: false,
+        );
+        const status = ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'recent-app-server-working',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-07-30T00:01:00Z',
+        );
+
+        await tester.pumpWidget(
+          _wrap(
+            RecentSessionCard(
+              session: session,
+              conversationStatus: status,
+              onTap: () {},
+            ),
+          ),
+        );
+
+        expect(find.text('Working'), findsOneWidget);
+        expect(
+          find.byKey(
+            const ValueKey(
+              'desktop_active_session_badge_recent-app-server-working',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(
+            const ValueKey(
+              'conversation_sync_status_recent-app-server-working',
+            ),
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
     testWidgets('shows authoritative v2 attention without a Ready state', (
       tester,
     ) async {

@@ -600,29 +600,70 @@ class HomeContentState extends State<HomeContent> {
     Widget buildUnifiedSessionRow(UnifiedSessionListItem item) {
       final running = item.running;
       final stableKey = ValueKey('conversation_${item.identityKey}');
+      final slidableKey = ValueKey('conversation_slidable_${item.identityKey}');
       if (running == null) {
         final recent = item.recent!;
-        final row = _RecentSessionSlidable(
-          session: recent,
-          isPinned:
-              item.pinKey != null &&
-              widget.pinnedSessionKeys.contains(item.pinKey),
-          displayMode: _displayMode,
-          conversationStatus: item.syncStatus,
-          isUnseen: item.syncUnread,
-          archivingSessionIds: widget.archivingSessionIds,
-          onArchiveSession: widget.onArchiveSession,
-          onResumeSession: widget.onResumeSession,
-          onTogglePinned: widget.onToggleRecentSessionPinned == null
-              ? null
-              : () => widget.onToggleRecentSessionPinned!(recent),
-          onLongPressRecentSession: widget.onLongPressRecentSession,
+        final row = Slidable(
+          key: slidableKey,
+          endActionPane: ActionPane(
+            motion: const BehindMotion(),
+            extentRatio: 0.18,
+            children: [
+              CustomSlidableAction(
+                onPressed: (_) => widget.onArchiveSession(recent),
+                backgroundColor: Colors.transparent,
+                padding: EdgeInsets.zero,
+                child: Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.error,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.archive_outlined,
+                    color: Colors.white,
+                    size: 22,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          child: KeyedSubtree(
+            key: ValueKey('recent_session_${recent.sessionId}'),
+            child: RecentSessionCard(
+              session: recent,
+              isPinned:
+                  item.pinKey != null &&
+                  widget.pinnedSessionKeys.contains(item.pinKey),
+              displayMode: _displayMode,
+              conversationStatus: item.syncStatus,
+              isUnseen: item.syncUnread,
+              isSelected: false,
+              draftText: context.read<DraftService>().getDraft(
+                recent.sessionId,
+              ),
+              isProcessing: widget.archivingSessionIds.contains(
+                providerSessionIdentityKey(
+                  recent.provider ?? Provider.claude.value,
+                  recent.sessionId,
+                ),
+              ),
+              onTogglePinned: widget.onToggleRecentSessionPinned == null
+                  ? null
+                  : () => widget.onToggleRecentSessionPinned!(recent),
+              onTap: () => widget.onResumeSession(recent),
+              onLongPress: () => widget.onLongPressRecentSession(recent, null),
+              onShowActions: (position) =>
+                  widget.onLongPressRecentSession(recent, position),
+            ),
+          ),
         );
         return KeyedSubtree(key: stableKey, child: row);
       }
 
       final row = Slidable(
-        key: ValueKey('running_session_${running.id}'),
+        key: slidableKey,
         endActionPane: ActionPane(
           motion: const BehindMotion(),
           extentRatio: 0.18,
@@ -647,35 +688,42 @@ class HomeContentState extends State<HomeContent> {
             ),
           ],
         ),
-        child: RunningSessionCard(
-          session: running,
-          isPinned:
-              item.pinKey != null &&
-              widget.pinnedSessionKeys.contains(item.pinKey),
-          onTogglePinned:
-              item.pinKey == null || widget.onToggleRunningSessionPinned == null
-              ? null
-              : () => widget.onToggleRunningSessionPinned!(running),
-          isUnseen: widget.unseenSessionIds.contains(running.id),
-          isSelected:
-              selectedSessionId == running.id &&
-              selectedSessionProvider == running.provider,
-          onLongPress: () => widget.onLongPressRunningSession(running, null),
-          onShowActions: (position) =>
-              widget.onLongPressRunningSession(running, position),
-          onStop: showInlineStopButton
-              ? () => widget.onStopSession(running.id)
-              : null,
-          onTap: () => _openRunningSession(running),
-          onApprove: (toolUseId, {bool clearContext = false}) => widget
-              .onApprovePermission
-              ?.call(running.id, toolUseId, clearContext: clearContext),
-          onApproveAlways: (toolUseId) =>
-              widget.onApproveAlways?.call(running.id, toolUseId),
-          onReject: (toolUseId, {String? message}) => widget.onRejectPermission
-              ?.call(running.id, toolUseId, message: message),
-          onAnswer: (toolUseId, result) =>
-              widget.onAnswerQuestion?.call(running.id, toolUseId, result),
+        child: KeyedSubtree(
+          key: ValueKey('running_session_${running.id}'),
+          child: RunningSessionCard(
+            session: running,
+            conversationStatus: item.syncStatus,
+            isPinned:
+                item.pinKey != null &&
+                widget.pinnedSessionKeys.contains(item.pinKey),
+            onTogglePinned:
+                item.pinKey == null ||
+                    widget.onToggleRunningSessionPinned == null
+                ? null
+                : () => widget.onToggleRunningSessionPinned!(running),
+            isUnseen:
+                item.syncUnread || widget.unseenSessionIds.contains(running.id),
+            isSelected:
+                selectedSessionId == running.id &&
+                selectedSessionProvider == running.provider,
+            onLongPress: () => widget.onLongPressRunningSession(running, null),
+            onShowActions: (position) =>
+                widget.onLongPressRunningSession(running, position),
+            onStop: showInlineStopButton
+                ? () => widget.onStopSession(running.id)
+                : null,
+            onTap: () => _openRunningSession(running),
+            onApprove: (toolUseId, {bool clearContext = false}) => widget
+                .onApprovePermission
+                ?.call(running.id, toolUseId, clearContext: clearContext),
+            onApproveAlways: (toolUseId) =>
+                widget.onApproveAlways?.call(running.id, toolUseId),
+            onReject: (toolUseId, {String? message}) => widget
+                .onRejectPermission
+                ?.call(running.id, toolUseId, message: message),
+            onAnswer: (toolUseId, result) =>
+                widget.onAnswerQuestion?.call(running.id, toolUseId, result),
+          ),
         ),
       );
       return KeyedSubtree(key: stableKey, child: row);
@@ -927,84 +975,6 @@ class _LoadMoreRecentSessionsButton extends StatelessWidget {
               icon: const Icon(Icons.expand_more, size: 18),
               label: Text(l.loadMore),
             ),
-    );
-  }
-}
-
-class _RecentSessionSlidable extends StatelessWidget {
-  final RecentSession session;
-  final bool isPinned;
-  final SessionDisplayMode displayMode;
-  final ConversationSyncV2Status? conversationStatus;
-  final bool isUnseen;
-  final Set<String> archivingSessionIds;
-  final ValueChanged<RecentSession> onArchiveSession;
-  final ValueChanged<RecentSession> onResumeSession;
-  final VoidCallback? onTogglePinned;
-  final void Function(RecentSession session, Offset? position)
-  onLongPressRecentSession;
-
-  const _RecentSessionSlidable({
-    required this.session,
-    required this.isPinned,
-    required this.displayMode,
-    required this.conversationStatus,
-    required this.isUnseen,
-    required this.archivingSessionIds,
-    required this.onArchiveSession,
-    required this.onResumeSession,
-    required this.onTogglePinned,
-    required this.onLongPressRecentSession,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Slidable(
-      key: ValueKey('recent_session_${session.sessionId}'),
-      endActionPane: ActionPane(
-        motion: const BehindMotion(),
-        extentRatio: 0.18,
-        children: [
-          CustomSlidableAction(
-            onPressed: (_) => onArchiveSession(session),
-            backgroundColor: Colors.transparent,
-            padding: EdgeInsets.zero,
-            child: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.error,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.archive_outlined,
-                color: Colors.white,
-                size: 22,
-              ),
-            ),
-          ),
-        ],
-      ),
-      child: RecentSessionCard(
-        session: session,
-        isPinned: isPinned,
-        displayMode: displayMode,
-        conversationStatus: conversationStatus,
-        isUnseen: isUnseen,
-        isSelected: false,
-        draftText: context.read<DraftService>().getDraft(session.sessionId),
-        isProcessing: archivingSessionIds.contains(
-          providerSessionIdentityKey(
-            session.provider ?? Provider.claude.value,
-            session.sessionId,
-          ),
-        ),
-        onTogglePinned: onTogglePinned,
-        onTap: () => onResumeSession(session),
-        onLongPress: () => onLongPressRecentSession(session, null),
-        onShowActions: (position) =>
-            onLongPressRecentSession(session, position),
-      ),
     );
   }
 }

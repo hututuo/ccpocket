@@ -166,38 +166,22 @@ SessionListUrgency sessionListUrgencyFor(
   required Set<String> unseenSessionIds,
 }) {
   final running = item.running;
-  var urgency = _syncUrgency(item.syncStatus, unread: item.syncUnread);
-  if (running == null) return urgency;
-  final visualStatus = sessionVisualStatusFor(
-    rawStatus: running.externalDesktopTurnActive ? 'running' : running.status,
-    permissionMode: running.effectivePermissionMode,
-    planMode: running.resolvedPlanMode,
-    pendingPermission: running.pendingPermission,
+  final presentation = sessionCardPresentationFor(
+    syncStatus: item.syncStatus,
+    runtimeSession: running,
+    isUnseen:
+        item.syncUnread ||
+        (running != null && unseenSessionIds.contains(running.id)),
   );
-  final liveUrgency = switch (visualStatus.primary) {
+  return switch (presentation.visualStatus.primary) {
     SessionPrimaryStatus.needsYou => SessionListUrgency.needsYou,
     SessionPrimaryStatus.working => SessionListUrgency.working,
-    SessionPrimaryStatus.idle when unseenSessionIds.contains(running.id) =>
+    SessionPrimaryStatus.error => SessionListUrgency.error,
+    SessionPrimaryStatus.idle when presentation.isUnread =>
       SessionListUrgency.unread,
     SessionPrimaryStatus.idle ||
     SessionPrimaryStatus.unknown => SessionListUrgency.ordinary,
   };
-  if (liveUrgency.index < urgency.index) urgency = liveUrgency;
-  return urgency;
-}
-
-SessionListUrgency _syncUrgency(
-  ConversationSyncV2Status? status, {
-  required bool unread,
-}) {
-  if (status == null) return SessionListUrgency.ordinary;
-  if (status.attention != 'none') return SessionListUrgency.needsYou;
-  if (status.activity == 'working' || status.activity == 'compacting') {
-    return SessionListUrgency.working;
-  }
-  if (status.activity == 'systemError') return SessionListUrgency.error;
-  if (unread) return SessionListUrgency.unread;
-  return SessionListUrgency.ordinary;
 }
 
 bool sessionListItemBypassesDisplayLimit(

@@ -680,9 +680,9 @@ void main() {
     testWidgets(
       'keeps one row element when a durable conversation gains a runtime',
       (tester) async {
-        final stableKey = ValueKey(
-          'conversation_${providerSessionIdentityKey('claude', 's1')}',
-        );
+        final identity = providerSessionIdentityKey('claude', 's1');
+        final stableKey = ValueKey('conversation_$identity');
+        final slidableKey = ValueKey('conversation_slidable_$identity');
         await tester.pumpWidget(
           _buildHomeContent(
             recentSessions: [_session(id: 's1')],
@@ -695,6 +695,7 @@ void main() {
         );
         await tester.pump();
         final before = tester.element(find.byKey(stableKey));
+        final slidableBefore = tester.element(find.byKey(slidableKey));
 
         await tester.pumpWidget(
           _buildHomeContent(
@@ -712,6 +713,7 @@ void main() {
         await tester.pump();
 
         expect(tester.element(find.byKey(stableKey)), same(before));
+        expect(tester.element(find.byKey(slidableKey)), same(slidableBefore));
         expect(
           find.byKey(const ValueKey('running_session_runtime-1')),
           findsOneWidget,
