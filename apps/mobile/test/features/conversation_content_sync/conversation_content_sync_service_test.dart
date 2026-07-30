@@ -53,6 +53,9 @@ void main() {
     gateway.supportsConversationSyncV2 = true;
     service = ConversationContentSyncService(bridge: gateway, cache: repository)
       ..start(initialLifecycleState: AppLifecycleState.resumed);
+    final syncUpdates = <ConversationSyncCacheUpdate>[];
+    final syncUpdatesSubscription = service.syncUpdates.listen(syncUpdates.add);
+    addTearDown(syncUpdatesSubscription.cancel);
 
     final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
     final subscriptionId = subscribe['requestId']! as String;
@@ -104,6 +107,14 @@ void main() {
       (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
       2,
     );
+    await pumpEventQueue();
+    final catalogUpdate = syncUpdates.singleWhere(
+      (update) => update.kind == ConversationSyncCacheUpdateKind.catalog,
+    );
+    expect(catalogUpdate.targetFingerprint, isNotEmpty);
+    expect(catalogUpdate.codexSourceId, 'codex-home-a');
+    expect(catalogUpdate.catalogUpserts.single.providerSessionId, 'thread-v2');
+    expect(catalogUpdate.catalogDestroyed, isEmpty);
 
     gateway.addEvent(
       ConversationSyncV2EventMessage(

@@ -108,9 +108,15 @@ enum ConversationSyncCacheUpdateKind {
 class ConversationSyncCacheUpdate {
   const ConversationSyncCacheUpdate({
     required this.kind,
+    this.targetFingerprint,
+    this.codexSourceId,
     this.provider,
     this.providerSessionId,
     this.revision,
+    this.catalogUpserts = const [],
+    this.catalogDestroyed = const [],
+    this.statusChanges = const [],
+    this.readWatermark,
     this.sequence,
     this.pageIndex,
     this.pageCount,
@@ -120,9 +126,15 @@ class ConversationSyncCacheUpdate {
   });
 
   final ConversationSyncCacheUpdateKind kind;
+  final String? targetFingerprint;
+  final String? codexSourceId;
   final String? provider;
   final String? providerSessionId;
   final String? revision;
+  final List<ConversationSyncV2CatalogEntry> catalogUpserts;
+  final List<ConversationSyncV2Target> catalogDestroyed;
+  final List<ConversationSyncV2Status> statusChanges;
+  final ConversationSyncV2ReadWatermark? readWatermark;
   final int? sequence;
   final int? pageIndex;
   final int? pageCount;
@@ -326,8 +338,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _syncUpdatesController.add(
       ConversationSyncCacheUpdate(
         kind: ConversationSyncCacheUpdateKind.readWatermark,
+        targetFingerprint: target.fingerprint,
         provider: provider,
         providerSessionId: providerSessionId,
+        readWatermark: watermark,
       ),
     );
     final subscriptionId = _activeSubscriptionId;
@@ -1016,8 +1030,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             subscriptionId: event.subscriptionId,
           );
           _notifySubscriptionReady();
-          publish = const ConversationSyncCacheUpdate(
+          publish = ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.started,
+            targetFingerprint: target.fingerprint,
           );
         } else if (event.requestId != _activeSubscriptionRequestId) {
           throw const _ConversationSyncBeginMismatch();
@@ -1033,8 +1048,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           updated: event.updated,
           destroyed: event.destroyed,
         );
-        publish = const ConversationSyncCacheUpdate(
+        publish = ConversationSyncCacheUpdate(
           kind: ConversationSyncCacheUpdateKind.catalog,
+          targetFingerprint: target.fingerprint,
+          codexSourceId: event.codexSourceId,
+          catalogUpserts: List.unmodifiable([
+            ...event.created,
+            ...event.updated,
+          ]),
+          catalogDestroyed: event.destroyed,
         );
       case ConversationSyncV2EventKind.statusChanges:
         await cache.applyConversationStatusPage(
@@ -1044,8 +1066,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           pageCount: event.pageCount!,
           changes: event.statusChanges,
         );
-        publish = const ConversationSyncCacheUpdate(
+        publish = ConversationSyncCacheUpdate(
           kind: ConversationSyncCacheUpdateKind.status,
+          targetFingerprint: target.fingerprint,
+          statusChanges: event.statusChanges,
         );
       case ConversationSyncV2EventKind.timelinePage:
         final committed = await cache.stageConversationTimelinePage(
@@ -1084,6 +1108,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           );
           publish = ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.timeline,
+            targetFingerprint: target.fingerprint,
             provider: event.provider,
             providerSessionId: event.providerSessionId,
             revision: event.revision,
@@ -1092,8 +1117,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       case ConversationSyncV2EventKind.syncCheckpoint:
         if (event.phase == 'priority') {
           await cache.markConversationPriorityReady(target);
-          publish = const ConversationSyncCacheUpdate(
+          publish = ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.priorityReady,
+            targetFingerprint: target.fingerprint,
           );
         }
       case ConversationSyncV2EventKind.syncComplete:
@@ -1101,8 +1127,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           target: target,
           nextState: event.nextState!,
         );
-        publish = const ConversationSyncCacheUpdate(
+        publish = ConversationSyncCacheUpdate(
           kind: ConversationSyncCacheUpdateKind.completed,
+          targetFingerprint: target.fingerprint,
         );
       case ConversationSyncV2EventKind.syncReset:
         await cache.resetConversationSyncScope(
@@ -1112,6 +1139,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         );
         publish = ConversationSyncCacheUpdate(
           kind: ConversationSyncCacheUpdateKind.reset,
+          targetFingerprint: target.fingerprint,
           provider: event.target?.provider,
           providerSessionId: event.target?.providerSessionId,
         );
@@ -1182,6 +1210,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               );
               publish = ConversationSyncCacheUpdate(
                 kind: ConversationSyncCacheUpdateKind.timeline,
+                targetFingerprint: target.fingerprint,
                 provider: event.provider,
                 providerSessionId: event.providerSessionId,
                 revision: snapshot.revision,
@@ -1225,6 +1254,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               );
               publish = ConversationSyncCacheUpdate(
                 kind: ConversationSyncCacheUpdateKind.timeline,
+                targetFingerprint: target.fingerprint,
                 provider: event.provider,
                 providerSessionId: event.providerSessionId,
                 revision: snapshot.revision,
@@ -1299,6 +1329,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               );
               publish = ConversationSyncCacheUpdate(
                 kind: ConversationSyncCacheUpdateKind.timeline,
+                targetFingerprint: target.fingerprint,
                 provider: event.provider,
                 providerSessionId: event.providerSessionId,
                 revision: snapshot.revision,
@@ -1393,6 +1424,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         (event.event == ConversationSyncV2EventKind.timelinePage
             ? ConversationSyncCacheUpdate(
                 kind: ConversationSyncCacheUpdateKind.timeline,
+                targetFingerprint: target.fingerprint,
                 provider: event.provider,
                 providerSessionId: event.providerSessionId,
                 revision: event.revision,
@@ -1402,9 +1434,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _syncUpdatesController.add(
         ConversationSyncCacheUpdate(
           kind: progressUpdate.kind,
+          targetFingerprint: progressUpdate.targetFingerprint,
+          codexSourceId: progressUpdate.codexSourceId,
           provider: progressUpdate.provider,
           providerSessionId: progressUpdate.providerSessionId,
           revision: progressUpdate.revision,
+          catalogUpserts: progressUpdate.catalogUpserts,
+          catalogDestroyed: progressUpdate.catalogDestroyed,
+          statusChanges: progressUpdate.statusChanges,
+          readWatermark: progressUpdate.readWatermark,
           sequence: event.sequence,
           pageIndex: event.pageIndex,
           pageCount: event.pageCount,

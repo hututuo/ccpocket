@@ -307,9 +307,13 @@ RecentSession _session({
   required String id,
   String projectPath = '/home/user/project-a',
   String modified = '2025-01-01T00:00:00Z',
+  String? provider,
+  String? codexSourceId,
 }) {
   return RecentSession(
     sessionId: id,
+    provider: provider,
+    codexSourceId: codexSourceId,
     firstPrompt: 'test prompt',
     created: '2025-01-01T00:00:00Z',
     modified: modified,
@@ -760,6 +764,15 @@ void main() {
         expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
         final loadsAfterPriority = cache.loadCalls;
 
+        sync.emit(
+          const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.started,
+            targetFingerprint: 'another-data-source',
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+
         sync
           ..emit(
             const ConversationSyncCacheUpdate(
@@ -795,6 +808,172 @@ void main() {
 
         expect(cache.loadCalls, loadsAfterPriority + 1);
         expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+      },
+    );
+
+    test(
+      'v2 committed deltas update the in-memory projection without full cache reloads',
+      () async {
+        await cubit.close();
+        mockBridge.dispose();
+        mockBridge = MockBridgeService()
+          ..testSupportsConversationSyncV2 = true
+          ..testCacheBridgeInstanceIdHint = 'bridge-v2'
+          ..testCacheCodexSourceIdHint = 'source-v2'
+          ..testLogicalConnectionIdentity = 'machine:mac-v2'
+          ..testLastUrl = 'wss://mac-v2.example/socket';
+        final cache = FakeSessionCatalogCacheRepository();
+        final target = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-v2',
+          codexSourceId: 'source-v2',
+          logicalConnectionIdentity: 'machine:mac-v2',
+          websocketUrl: 'wss://mac-v2.example/socket',
+        );
+        cache.snapshots[target.fingerprint] = SessionCatalogCacheSnapshot(
+          partitionId: 'bridge-v2-source-v2',
+          sessions: [
+            _session(
+              id: 'thread-old',
+              provider: 'codex',
+              codexSourceId: 'source-v2',
+            ),
+            _session(
+              id: 'thread-destroyed',
+              provider: 'codex',
+              codexSourceId: 'source-v2',
+            ),
+          ],
+          catalogRevision: null,
+          isComplete: false,
+          cachedAt: DateTime.utc(2026, 7, 30),
+        );
+        cache.syncStates[target.fingerprint] = ConversationSyncCacheState(
+          catalogState: 'catalog-1',
+          statusState: 'status-1',
+          priorityReady: true,
+          updatedAt: DateTime.utc(2026, 7, 30),
+        );
+        final sync = FakeConversationContentSyncService(
+          bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+          cache: cache,
+        );
+        addTearDown(sync.dispose);
+        cubit = SessionListCubit(
+          bridge: mockBridge,
+          catalogCache: cache,
+          conversationSync: sync,
+        );
+        await pumpEventQueue();
+        final loadsBeforeDeltas = cache.loadCalls;
+
+        sync
+          ..emit(
+            ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.catalog,
+              targetFingerprint: target.fingerprint,
+              codexSourceId: 'source-v2',
+              catalogUpserts: const [
+                ConversationSyncV2CatalogEntry(
+                  provider: 'codex',
+                  providerSessionId: 'thread-old',
+                  revision: 'revision-2',
+                  projectPath: '/home/user/project-b',
+                  createdAt: '2026-07-30T00:00:00.000Z',
+                  modifiedAt: '2026-07-30T00:03:00.000Z',
+                  recencyAt: '2026-07-30T00:03:00.000Z',
+                  availability: 'durable',
+                  name: 'Updated thread',
+                ),
+                ConversationSyncV2CatalogEntry(
+                  provider: 'codex',
+                  providerSessionId: 'thread-new',
+                  revision: 'revision-1',
+                  projectPath: '/home/user/project-c',
+                  createdAt: '2026-07-30T00:01:00.000Z',
+                  modifiedAt: '2026-07-30T00:04:00.000Z',
+                  recencyAt: '2026-07-30T00:04:00.000Z',
+                  availability: 'durable',
+                  name: 'New thread',
+                ),
+              ],
+              catalogDestroyed: const [
+                ConversationSyncV2Target(
+                  provider: 'codex',
+                  providerSessionId: 'thread-destroyed',
+                ),
+              ],
+            ),
+          )
+          ..emit(
+            ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.status,
+              targetFingerprint: target.fingerprint,
+              statusChanges: const [
+                ConversationSyncV2Status(
+                  provider: 'codex',
+                  providerSessionId: 'thread-old',
+                  activity: 'working',
+                  attention: 'none',
+                  result: 'completed',
+                  runtimeAttachment: 'loaded',
+                  source: 'appServer',
+                  confidence: 'authoritative',
+                  observedAt: '2026-07-30T00:05:00.000Z',
+                ),
+              ],
+            ),
+          )
+          ..emit(
+            ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.status,
+              targetFingerprint: target.fingerprint,
+              statusChanges: const [
+                ConversationSyncV2Status(
+                  provider: 'codex',
+                  providerSessionId: 'thread-old',
+                  activity: 'idle',
+                  attention: 'none',
+                  result: 'none',
+                  runtimeAttachment: 'notLoaded',
+                  source: 'appServer',
+                  confidence: 'authoritative',
+                  observedAt: '2026-07-30T00:04:00.000Z',
+                ),
+              ],
+            ),
+          );
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, loadsBeforeDeltas);
+        expect(cubit.state.sessions.map((session) => session.sessionId), [
+          'thread-new',
+          'thread-old',
+        ]);
+        expect(cubit.state.sessions.last.name, 'Updated thread');
+        expect(
+          cubit.conversationStatusFor(cubit.state.sessions.last)?.activity,
+          'working',
+        );
+        expect(cubit.unreadConversationKeys, contains('codex\u0000thread-old'));
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.readWatermark,
+            targetFingerprint: target.fingerprint,
+            readWatermark: const ConversationSyncV2ReadWatermark(
+              provider: 'codex',
+              providerSessionId: 'thread-old',
+              readAt: '2026-07-30T00:06:00.000Z',
+            ),
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, loadsBeforeDeltas);
+        expect(
+          cubit.unreadConversationKeys,
+          isNot(contains('codex\u0000thread-old')),
+        );
       },
     );
 

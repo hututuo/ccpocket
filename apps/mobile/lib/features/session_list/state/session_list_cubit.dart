@@ -266,6 +266,15 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   void _onConversationSyncUpdate(ConversationSyncCacheUpdate update) {
     var reloadCache = false;
+    final target = _currentCacheTarget();
+    if (update.targetFingerprint != null &&
+        update.targetFingerprint != target?.fingerprint) {
+      return;
+    }
+    final canApplyCommittedDelta =
+        update.targetFingerprint != null &&
+        update.targetFingerprint == target?.fingerprint &&
+        _loadedCacheFingerprint == update.targetFingerprint;
     switch (update.kind) {
       case ConversationSyncCacheUpdateKind.started:
         _v2PriorityReady = false;
@@ -280,12 +289,32 @@ class SessionListCubit extends Cubit<SessionListState> {
         }
       case ConversationSyncCacheUpdateKind.priorityReady:
         _v2PriorityReady = true;
+        if (canApplyCommittedDelta) {
+          _v2StateFingerprint = update.targetFingerprint;
+          _v2CachedPriorityReady = true;
+          _loadedCacheComplete = true;
+        } else {
+          reloadCache = true;
+        }
         _catalogSnapshotChanges.add(null);
-        reloadCache = true;
       case ConversationSyncCacheUpdateKind.catalog:
+        if (canApplyCommittedDelta && update.codexSourceId != null) {
+          _applyCommittedCatalogDelta(update);
+        } else {
+          reloadCache = true;
+        }
       case ConversationSyncCacheUpdateKind.status:
+        if (canApplyCommittedDelta) {
+          _applyCommittedStatusDelta(update.statusChanges);
+        } else {
+          reloadCache = true;
+        }
       case ConversationSyncCacheUpdateKind.readWatermark:
-        reloadCache = true;
+        if (canApplyCommittedDelta && update.readWatermark != null) {
+          _applyCommittedReadWatermark(update.readWatermark!);
+        } else {
+          reloadCache = true;
+        }
       case ConversationSyncCacheUpdateKind.timeline:
       case ConversationSyncCacheUpdateKind.completed:
         break;
@@ -294,6 +323,92 @@ class SessionListCubit extends Cubit<SessionListState> {
       _queueSyncCacheReload();
     }
   }
+
+  void _applyCommittedCatalogDelta(ConversationSyncCacheUpdate update) {
+    final codexSourceId = update.codexSourceId!;
+    final replacedKeys = {for (final entry in update.catalogUpserts) entry.key};
+    final destroyedKeys = {
+      for (final entry in update.catalogDestroyed) entry.key,
+    };
+    final retained = _cachedSessions.where((session) {
+      final key = _conversationKey(
+        session.provider ?? Provider.claude.value,
+        session.sessionId,
+      );
+      return !replacedKeys.contains(key) && !destroyedKeys.contains(key);
+    });
+    final upserts = update.catalogUpserts.map(
+      (entry) => entry.toRecentSession(codexSourceId: codexSourceId),
+    );
+    _cachedSessions = _mergeCachedSessions(retained, upserts);
+    if (destroyedKeys.isNotEmpty) {
+      _conversationStatuses = Map.unmodifiable(
+        Map<String, ConversationSyncV2Status>.from(_conversationStatuses)
+          ..removeWhere((key, _) => destroyedKeys.contains(key)),
+      );
+      _conversationReadWatermarks = Map.unmodifiable(
+        Map<String, String>.from(_conversationReadWatermarks)
+          ..removeWhere((key, _) => destroyedKeys.contains(key)),
+      );
+    }
+    _emitCommittedCatalogProjection();
+  }
+
+  void _applyCommittedStatusDelta(List<ConversationSyncV2Status> changes) {
+    if (changes.isEmpty) return;
+    final next = Map<String, ConversationSyncV2Status>.from(
+      _conversationStatuses,
+    );
+    var changed = false;
+    for (final incoming in changes) {
+      final existing = next[incoming.key];
+      if (existing != null &&
+          _compareIsoTimestamps(incoming.observedAt, existing.observedAt) < 0) {
+        continue;
+      }
+      next[incoming.key] = incoming;
+      changed = true;
+    }
+    if (!changed) return;
+    _conversationStatuses = Map.unmodifiable(next);
+    _catalogSnapshotChanges.add(null);
+  }
+
+  void _applyCommittedReadWatermark(ConversationSyncV2ReadWatermark watermark) {
+    final existing = _conversationReadWatermarks[watermark.key];
+    if (existing != null &&
+        _compareIsoTimestamps(watermark.readAt, existing) <= 0) {
+      return;
+    }
+    _conversationReadWatermarks = Map.unmodifiable({
+      ..._conversationReadWatermarks,
+      watermark.key: watermark.readAt,
+    });
+    _catalogSnapshotChanges.add(null);
+  }
+
+  void _emitCommittedCatalogProjection() {
+    final visibleSessions = _filterCachedSessions(_cachedSessions);
+    emit(
+      state.copyWith(
+        sessions: visibleSessions,
+        hasMore: false,
+        isLoadingMore: false,
+        isInitialLoading: false,
+        accumulatedProjectPaths: {
+          ..._authoritativeProjectHistory,
+          ..._cachedSessions
+              .map((session) => session.projectPath)
+              .where((path) => path.isNotEmpty),
+        },
+        loadingProjectPaths: const {},
+      ),
+    );
+    _catalogSnapshotChanges.add(null);
+  }
+
+  static String _conversationKey(String provider, String providerSessionId) =>
+      '$provider\u0000$providerSessionId';
 
   void _queueSyncCacheReload() {
     if (isClosed || _catalogCache == null) return;
