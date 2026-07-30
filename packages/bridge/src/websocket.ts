@@ -7344,8 +7344,12 @@ export class BridgeWebSocketServer {
             },
           });
           const recentSession = sessions[0];
+          const scopedRecentSession =
+            recentSession && provider === "codex"
+              ? { ...recentSession, codexSourceId: this.codexSourceId }
+              : recentSession;
           sendProgress("catalog_scanned", {
-            completedUnits: recentSession ? 1 : 0,
+            completedUnits: scopedRecentSession ? 1 : 0,
             totalUnits: 1,
           });
           sendProgress("resolution_ready");
@@ -7353,9 +7357,11 @@ export class BridgeWebSocketServer {
             type: "session_link_resolution",
             requestId: msg.requestId,
             sourceSessionId: msg.sessionId,
-            status: recentSession ? "recent" : "unavailable",
+            status: scopedRecentSession ? "recent" : "unavailable",
             provider,
-            ...(recentSession ? { recentSession } : {}),
+            ...(scopedRecentSession
+              ? { recentSession: scopedRecentSession }
+              : {}),
             ...(msg.sessionLinkGeneration !== undefined
               ? { sessionLinkGeneration: msg.sessionLinkGeneration }
               : {}),
