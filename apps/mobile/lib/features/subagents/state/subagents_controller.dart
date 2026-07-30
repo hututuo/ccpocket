@@ -6,11 +6,17 @@ import 'package:uuid/uuid.dart';
 import '../../../models/messages.dart'
     show
         BridgeConnectionState,
+        DetachedSubagentHistoryMessage,
+        DetachedSubagentListMessage,
         LocalFeatureRequestErrorMessage,
         LocalFeatureServerMessage,
+        SessionInfo,
         SubagentHistoryMessage,
         SubagentInfo,
         SubagentListMessage,
+        detachedSubagentsReadCapability,
+        requestDetachedSubagentHistory,
+        requestDetachedSubagents,
         requestSubagentHistory,
         requestSubagents;
 import '../../../services/bridge_service.dart';
@@ -25,6 +31,8 @@ class SubagentsController extends ChangeNotifier {
   SubagentsController({
     required this.sessionId,
     required this.bridge,
+    this.detachedProviderThreadId,
+    this.detachedCodexSourceId,
     this.requestTimeout = const Duration(seconds: 12),
   }) {
     _subscription = bridge
@@ -33,13 +41,21 @@ class SubagentsController extends ChangeNotifier {
     _connectionSubscription = bridge.connectionStatus.listen(
       _onConnectionState,
     );
+    if (_isDetachedProviderRead) {
+      _sessionListSubscription = bridge.sessionList.listen(
+        (_) => _onAuthoritativeSessionList(),
+      );
+    }
   }
 
   final String sessionId;
   final BridgeService bridge;
+  final String? detachedProviderThreadId;
+  final String? detachedCodexSourceId;
   final Duration requestTimeout;
   StreamSubscription<LocalFeatureServerMessage>? _subscription;
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
+  StreamSubscription<List<SessionInfo>>? _sessionListSubscription;
   String? _listRequestId;
   final Map<String, String> _historyRequestIds = {};
   Timer? _listTimeout;
@@ -58,12 +74,25 @@ class SubagentsController extends ChangeNotifier {
 
   bool get _hasInFlight =>
       _listRequestId != null || _historyRequestIds.isNotEmpty;
+  bool get _isDetachedProviderRead => detachedProviderThreadId != null;
+  String? get _normalizedProviderThreadId =>
+      _normalizedBoundedIdentity(detachedProviderThreadId);
+  String? get _normalizedExpectedCodexSourceId =>
+      _normalizedBoundedIdentity(detachedCodexSourceId);
 
   void refresh() {
     if (_disposed) return;
     if (!bridge.isConnected) {
       listLoading = false;
       listError = 'bridge_disconnected';
+      notifyListeners();
+      return;
+    }
+    final detachedGate = _detachedReadGate();
+    if (detachedGate != null) {
+      _clearDetachedProviderData();
+      listLoading = false;
+      listError = detachedGate;
       notifyListeners();
       return;
     }
@@ -78,7 +107,16 @@ class SubagentsController extends ChangeNotifier {
     listError = null;
     notifyListeners();
     try {
-      bridge.send(requestSubagents(sessionId: sessionId, requestId: requestId));
+      bridge.send(
+        _isDetachedProviderRead
+            ? requestDetachedSubagents(
+                ownerSessionId: sessionId,
+                providerThreadId: _normalizedProviderThreadId!,
+                codexSourceId: _normalizedExpectedCodexSourceId!,
+                requestId: requestId,
+              )
+            : requestSubagents(sessionId: sessionId, requestId: requestId),
+      );
       _listTimeout = Timer(requestTimeout, () {
         if (_listRequestId != requestId) return;
         _listRequestId = null;
@@ -106,6 +144,14 @@ class SubagentsController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final detachedGate = _detachedReadGate();
+    if (detachedGate != null) {
+      _clearDetachedProviderData();
+      historyLoadingIds.remove(normalized);
+      historyErrors[normalized] = detachedGate;
+      notifyListeners();
+      return;
+    }
     if (_hasInFlight) {
       final previous = _pendingHistoryThreadId;
       if (previous != null && previous != normalized) {
@@ -124,11 +170,19 @@ class SubagentsController extends ChangeNotifier {
     notifyListeners();
     try {
       bridge.send(
-        requestSubagentHistory(
-          sessionId: sessionId,
-          threadId: normalized,
-          requestId: requestId,
-        ),
+        _isDetachedProviderRead
+            ? requestDetachedSubagentHistory(
+                ownerSessionId: sessionId,
+                providerThreadId: _normalizedProviderThreadId!,
+                codexSourceId: _normalizedExpectedCodexSourceId!,
+                threadId: normalized,
+                requestId: requestId,
+              )
+            : requestSubagentHistory(
+                sessionId: sessionId,
+                threadId: normalized,
+                requestId: requestId,
+              ),
       );
       _historyTimeouts[normalized] = Timer(requestTimeout, () {
         if (_historyRequestIds[normalized] != requestId) return;
@@ -154,18 +208,27 @@ class SubagentsController extends ChangeNotifier {
       case LocalFeatureRequestErrorMessage():
         if (message.featureId != 'subagents') return;
         final requestId = message.requestId;
-        if (message.requestType == 'get_subagents' &&
+        final expectedListRequestType = _isDetachedProviderRead
+            ? 'get_detached_subagents'
+            : 'get_subagents';
+        final expectedHistoryRequestType = _isDetachedProviderRead
+            ? 'get_detached_subagent_history'
+            : 'get_subagent_history';
+        if (message.requestType == expectedListRequestType &&
             requestId != null &&
             requestId == _listRequestId) {
           _listRequestId = null;
           _listTimeout?.cancel();
           listLoading = false;
           listError = 'unsupported';
+          if (_isDetachedProviderRead) {
+            _clearDetachedProviderData();
+          }
           notifyListeners();
           _drainPending();
           return;
         }
-        if (message.requestType == 'get_subagent_history' &&
+        if (message.requestType == expectedHistoryRequestType &&
             requestId != null) {
           String? threadId;
           for (final entry in _historyRequestIds.entries) {
@@ -182,7 +245,77 @@ class SubagentsController extends ChangeNotifier {
           notifyListeners();
           _drainPending();
         }
+      case DetachedSubagentListMessage():
+        if (!_isDetachedProviderRead ||
+            message.ownerSessionId != sessionId ||
+            message.providerThreadId != _normalizedProviderThreadId) {
+          return;
+        }
+        final expectedRequestId = _listRequestId;
+        if (expectedRequestId == null ||
+            message.requestId != expectedRequestId) {
+          return;
+        }
+        _listRequestId = null;
+        _listTimeout?.cancel();
+        listLoading = false;
+        if (message.error == null &&
+            message.codexSourceId != _normalizedExpectedCodexSourceId) {
+          _clearDetachedProviderData();
+          listError = 'codex_source_mismatch';
+        } else {
+          listError = _normalizedDetachedError(
+            message.errorCode,
+            message.error,
+          );
+          if (listError == 'codex_source_mismatch') {
+            _clearDetachedProviderData();
+          }
+          if (message.error == null) {
+            subagents = message.subagents;
+            listTruncated = message.truncated;
+          }
+        }
+        notifyListeners();
+        _drainPending();
+      case DetachedSubagentHistoryMessage():
+        if (!_isDetachedProviderRead ||
+            message.ownerSessionId != sessionId ||
+            message.providerThreadId != _normalizedProviderThreadId) {
+          return;
+        }
+        final threadId = message.threadId;
+        final expected = _historyRequestIds[threadId];
+        if (expected == null || message.requestId != expected) {
+          return;
+        }
+        _historyRequestIds.remove(threadId);
+        _historyTimeouts.remove(threadId)?.cancel();
+        historyLoadingIds.remove(threadId);
+        if (message.error == null &&
+            message.codexSourceId != _normalizedExpectedCodexSourceId) {
+          histories.remove(threadId);
+          historyErrors[threadId] = 'codex_source_mismatch';
+        } else if (message.error == null) {
+          histories[threadId] = message;
+          historyErrors.remove(threadId);
+        } else {
+          final normalizedError =
+              _normalizedDetachedError(message.errorCode, message.error) ??
+              'read_failed';
+          if (normalizedError == 'codex_source_mismatch') {
+            _clearDetachedProviderData();
+          }
+          historyErrors[threadId] = normalizedError;
+        }
+        final incoming = message.subagent;
+        if (message.error == null && incoming != null) {
+          _mergeSubagent(incoming);
+        }
+        notifyListeners();
+        _drainPending();
       case SubagentListMessage():
+        if (_isDetachedProviderRead) return;
         if (message.sessionId != sessionId) return;
         final expectedRequestId = _listRequestId;
         if (expectedRequestId == null ||
@@ -200,6 +333,7 @@ class SubagentsController extends ChangeNotifier {
         notifyListeners();
         _drainPending();
       case SubagentHistoryMessage():
+        if (_isDetachedProviderRead) return;
         if (message.sessionId != sessionId) return;
         final threadId = message.threadId;
         if (threadId.isEmpty) return;
@@ -218,22 +352,79 @@ class SubagentsController extends ChangeNotifier {
         }
         final incoming = message.subagent;
         if (incoming != null) {
-          final index = subagents.indexWhere(
-            (agent) => agent.threadId == incoming.threadId,
-          );
-          final next = List<SubagentInfo>.from(subagents);
-          if (index < 0) {
-            next.add(incoming);
-          } else {
-            next[index] = incoming;
-          }
-          subagents = List.unmodifiable(next);
+          _mergeSubagent(incoming);
         }
         notifyListeners();
         _drainPending();
       default:
         break;
     }
+  }
+
+  void _mergeSubagent(SubagentInfo incoming) {
+    final index = subagents.indexWhere(
+      (agent) => agent.threadId == incoming.threadId,
+    );
+    final next = List<SubagentInfo>.from(subagents);
+    if (index < 0) {
+      next.add(incoming);
+    } else {
+      next[index] = incoming;
+    }
+    subagents = List.unmodifiable(next);
+  }
+
+  void _clearDetachedProviderData() {
+    if (!_isDetachedProviderRead) return;
+    _listTimeout?.cancel();
+    _listRequestId = null;
+    listLoading = false;
+    for (final timer in _historyTimeouts.values) {
+      timer.cancel();
+    }
+    _historyTimeouts.clear();
+    _historyRequestIds.clear();
+    historyLoadingIds.clear();
+    historyErrors.clear();
+    _pendingRefresh = false;
+    _pendingHistoryThreadId = null;
+    subagents = const [];
+    listTruncated = false;
+    histories.clear();
+  }
+
+  String? _detachedReadGate() {
+    if (!_isDetachedProviderRead) return null;
+    if (!bridge.hasAuthoritativeSessionListForCurrentConnection) {
+      return 'source_unavailable';
+    }
+    if (!bridge.bridgeCapabilities.contains(detachedSubagentsReadCapability)) {
+      return 'unsupported';
+    }
+    if (_normalizedProviderThreadId == null) {
+      return 'invalid_provider_thread';
+    }
+    final expectedSourceId = _normalizedExpectedCodexSourceId;
+    final authoritativeSourceId = _normalizedBoundedIdentity(
+      bridge.codexSourceId,
+    );
+    if (expectedSourceId == null || authoritativeSourceId == null) {
+      return 'codex_source_unavailable';
+    }
+    if (expectedSourceId != authoritativeSourceId) {
+      return 'codex_source_mismatch';
+    }
+    return null;
+  }
+
+  void _onAuthoritativeSessionList() {
+    if (_disposed ||
+        !_isDetachedProviderRead ||
+        !bridge.hasAuthoritativeSessionListForCurrentConnection ||
+        _hasInFlight) {
+      return;
+    }
+    if (listError == 'source_unavailable') refresh();
   }
 
   void _onConnectionState(BridgeConnectionState state) {
@@ -280,6 +471,7 @@ class SubagentsController extends ChangeNotifier {
     _disposed = true;
     _subscription?.cancel();
     _connectionSubscription?.cancel();
+    _sessionListSubscription?.cancel();
     _listTimeout?.cancel();
     for (final timer in _historyTimeouts.values) {
       timer.cancel();
@@ -297,4 +489,24 @@ String? _normalizedError(String? error) {
     return 'unsupported';
   }
   return error;
+}
+
+String? _normalizedDetachedError(String? errorCode, String? error) {
+  if (error == null && errorCode == null) return null;
+  if (errorCode == 'capability_not_negotiated' ||
+      errorCode == 'unsupported_message') {
+    return 'unsupported';
+  }
+  if (errorCode == 'read_failed') {
+    return _normalizedError(error) ?? errorCode;
+  }
+  return errorCode ?? _normalizedError(error) ?? 'read_failed';
+}
+
+String? _normalizedBoundedIdentity(String? value) {
+  final normalized = value?.trim();
+  if (normalized == null || normalized.isEmpty || normalized.length > 256) {
+    return null;
+  }
+  return normalized;
 }

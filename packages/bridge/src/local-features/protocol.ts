@@ -121,6 +121,7 @@ export {
   EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY,
 } from "./slots/ephemeral-side-chat-protocol.js";
 export type { CodexSubagentInfo } from "./slots/subagents-protocol.js";
+export { DETACHED_SUBAGENTS_READ_CAPABILITY } from "./slots/subagents-protocol.js";
 export type {
   ConversationMirrorClientMessage,
   ConversationMirrorEntryChunkMessage,

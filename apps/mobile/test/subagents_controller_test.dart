@@ -10,14 +10,31 @@ class _Bridge extends BridgeService {
   final tagged =
       StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
   final connections = StreamController<BridgeConnectionState>.broadcast();
+  final sessionLists = StreamController<List<SessionInfo>>.broadcast();
   final sent = <ClientMessage>[];
   bool connected = true;
+  bool authoritative = false;
+  Set<String> capabilities = const {};
+  String? sourceId;
 
   @override
   bool get isConnected => connected;
 
   @override
   Stream<BridgeConnectionState> get connectionStatus => connections.stream;
+
+  @override
+  Stream<List<SessionInfo>> get sessionList => sessionLists.stream;
+
+  @override
+  bool get hasAuthoritativeSessionListForCurrentConnection =>
+      connected && authoritative;
+
+  @override
+  Set<String> get bridgeCapabilities => capabilities;
+
+  @override
+  String? get codexSourceId => sourceId;
 
   @override
   Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
@@ -34,10 +51,13 @@ class _Bridge extends BridgeService {
 
   void emitConnection(BridgeConnectionState state) => connections.add(state);
 
+  void emitSessionList() => sessionLists.add(const []);
+
   @override
   void dispose() {
     tagged.close();
     connections.close();
+    sessionLists.close();
     super.dispose();
   }
 }
@@ -229,6 +249,12 @@ void main() {
     addTearDown(bridge.dispose);
 
     controller.refresh();
+    final attachedListPayload =
+        jsonDecode(bridge.sent.single.toJson()) as Map<String, dynamic>;
+    expect(attachedListPayload['type'], 'get_subagents');
+    expect(attachedListPayload['sessionId'], 's1');
+    expect(attachedListPayload.containsKey('providerThreadId'), isFalse);
+    expect(attachedListPayload.containsKey('codexSourceId'), isFalse);
     final listRequest = _requestId(bridge.sent.single);
     controller.loadHistory('child');
     expect(bridge.sent, hasLength(1));
@@ -274,5 +300,153 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(controller.listLoading, isTrue);
     expect(bridge.sent, hasLength(2));
+  });
+
+  test(
+    'detached Desktop reads carry provider and authenticated source identities',
+    () async {
+      final bridge = _Bridge()
+        ..authoritative = true
+        ..capabilities = const {detachedSubagentsReadCapability}
+        ..sourceId = 'source-1';
+      final controller = SubagentsController(
+        sessionId: 'pane-1',
+        bridge: bridge,
+        detachedProviderThreadId: 'provider-parent',
+        detachedCodexSourceId: 'source-1',
+      );
+      addTearDown(controller.dispose);
+      addTearDown(bridge.dispose);
+
+      controller.refresh();
+      final listPayload =
+          jsonDecode(bridge.sent.single.toJson()) as Map<String, dynamic>;
+      expect(listPayload, {
+        'type': 'get_detached_subagents',
+        'ownerSessionId': 'pane-1',
+        'providerThreadId': 'provider-parent',
+        'codexSourceId': 'source-1',
+        'requestId': listPayload['requestId'],
+      });
+      expect(listPayload.containsKey('sessionId'), isFalse);
+
+      bridge.emit(
+        DetachedSubagentListMessage(
+          ownerSessionId: 'pane-1',
+          providerThreadId: 'provider-parent',
+          codexSourceId: 'source-1',
+          requestId: listPayload['requestId'] as String,
+          subagents: const [SubagentInfo(threadId: 'child', status: 'done')],
+        ),
+        tag: 'pane-1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.subagents.single.threadId, 'child');
+      expect(controller.listError, isNull);
+
+      controller.loadHistory('child');
+      final historyPayload =
+          jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
+      expect(historyPayload['type'], 'get_detached_subagent_history');
+      expect(historyPayload['ownerSessionId'], 'pane-1');
+      expect(historyPayload['providerThreadId'], 'provider-parent');
+      expect(historyPayload['codexSourceId'], 'source-1');
+      expect(historyPayload.containsKey('sessionId'), isFalse);
+    },
+  );
+
+  test('detached reads fail closed on source mismatch without sending', () {
+    final bridge = _Bridge()
+      ..authoritative = true
+      ..capabilities = const {detachedSubagentsReadCapability}
+      ..sourceId = 'authenticated-source';
+    final controller = SubagentsController(
+      sessionId: 'pane-1',
+      bridge: bridge,
+      detachedProviderThreadId: 'provider-parent',
+      detachedCodexSourceId: 'other-source',
+    );
+    addTearDown(controller.dispose);
+    addTearDown(bridge.dispose);
+
+    controller.refresh();
+    controller.loadHistory('child');
+
+    expect(bridge.sent, isEmpty);
+    expect(controller.listError, 'codex_source_mismatch');
+    expect(controller.historyErrors['child'], 'codex_source_mismatch');
+  });
+
+  test(
+    'source changes clear detached data and invalidate an older read',
+    () async {
+      final bridge = _Bridge()
+        ..authoritative = true
+        ..capabilities = const {detachedSubagentsReadCapability}
+        ..sourceId = 'source-1';
+      final controller = SubagentsController(
+        sessionId: 'pane-1',
+        bridge: bridge,
+        detachedProviderThreadId: 'provider-parent',
+        detachedCodexSourceId: 'source-1',
+      );
+      addTearDown(controller.dispose);
+      addTearDown(bridge.dispose);
+
+      controller.refresh();
+      var requestId = _requestId(bridge.sent.last);
+      bridge.emit(
+        DetachedSubagentListMessage(
+          ownerSessionId: 'pane-1',
+          providerThreadId: 'provider-parent',
+          codexSourceId: 'source-1',
+          requestId: requestId,
+          subagents: const [SubagentInfo(threadId: 'child', status: 'done')],
+        ),
+        tag: 'pane-1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.subagents, isNotEmpty);
+
+      controller.refresh();
+      requestId = _requestId(bridge.sent.last);
+      bridge.sourceId = 'source-2';
+      controller.refresh();
+      bridge.emit(
+        DetachedSubagentListMessage(
+          ownerSessionId: 'pane-1',
+          providerThreadId: 'provider-parent',
+          codexSourceId: 'source-1',
+          requestId: requestId,
+          subagents: const [SubagentInfo(threadId: 'stale', status: 'done')],
+        ),
+        tag: 'pane-1',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(bridge.sent, hasLength(2));
+      expect(controller.listError, 'codex_source_mismatch');
+      expect(controller.subagents, isEmpty);
+    },
+  );
+
+  test('new Mobile reports old Bridge as unsupported without fake data', () {
+    final bridge = _Bridge()
+      ..authoritative = true
+      ..sourceId = 'source-1';
+    final controller = SubagentsController(
+      sessionId: 'pane-1',
+      bridge: bridge,
+      detachedProviderThreadId: 'provider-parent',
+      detachedCodexSourceId: 'source-1',
+    );
+    addTearDown(controller.dispose);
+    addTearDown(bridge.dispose);
+
+    controller.refresh();
+
+    expect(bridge.sent, isEmpty);
+    expect(controller.listError, 'unsupported');
+    expect(controller.subagents, isEmpty);
   });
 }

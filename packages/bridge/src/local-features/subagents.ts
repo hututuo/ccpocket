@@ -56,6 +56,8 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
   readonly messageTypes = [
     "get_subagents",
     "get_subagent_history",
+    "get_detached_subagents",
+    "get_detached_subagent_history",
   ] as const;
   private readonly activeClients = new WeakSet<object>();
   private readonly service = new CodexSubagentService();
@@ -64,6 +66,13 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
     message: LocalFeatureClientMessage,
     context: LocalFeatureHandleContext,
   ): Promise<void> {
+    if (
+      message.type === "get_detached_subagents" ||
+      message.type === "get_detached_subagent_history"
+    ) {
+      await this.handleDetached(message, context);
+      return;
+    }
     if (
       message.type !== "get_subagents" &&
       message.type !== "get_subagent_history"
@@ -106,9 +115,13 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
     this.activeClients.add(context.client);
     try {
       if (message.type === "get_subagents") {
-        const result = await this.service.list(session.process, parentThreadId, {
-          signal: context.signal,
-        });
+        const result = await this.service.list(
+          session.process,
+          parentThreadId,
+          {
+            signal: context.signal,
+          },
+        );
         context.runtime.send(context.client, {
           type: "subagent_list",
           sessionId: message.sessionId,
@@ -147,6 +160,116 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
     }
   }
 
+  private async handleDetached(
+    message: Extract<
+      LocalFeatureClientMessage,
+      {
+        type: "get_detached_subagents" | "get_detached_subagent_history";
+      }
+    >,
+    context: LocalFeatureHandleContext,
+  ): Promise<void> {
+    const responseType =
+      message.type === "get_detached_subagents"
+        ? "detached_subagent_list"
+        : "detached_subagent_history";
+    if (!context.runtime.supports(context.client, responseType)) {
+      this.sendDetachedFailure(
+        message,
+        context,
+        "Subagent capability was not negotiated",
+        "capability_not_negotiated",
+      );
+      return;
+    }
+    if (context.runtime.codexSourceId !== message.codexSourceId) {
+      this.sendDetachedFailure(
+        message,
+        context,
+        "Codex source does not match the authenticated Bridge",
+        "codex_source_mismatch",
+      );
+      return;
+    }
+    if (this.activeClients.has(context.client)) {
+      this.sendDetachedFailure(
+        message,
+        context,
+        "Another subagent request is already in progress",
+        "request_in_progress",
+      );
+      return;
+    }
+
+    this.activeClients.add(context.client);
+    try {
+      await this.withDetachedReadProcess(context, async (process) => {
+        if (message.type === "get_detached_subagents") {
+          const result = await this.service.list(
+            process,
+            message.providerThreadId,
+            { signal: context.signal },
+          );
+          context.runtime.send(context.client, {
+            type: "detached_subagent_list",
+            ownerSessionId: message.ownerSessionId,
+            providerThreadId: message.providerThreadId,
+            codexSourceId: message.codexSourceId,
+            requestId: message.requestId,
+            subagents: result.subagents,
+            ...(result.truncated ? { truncated: true } : {}),
+          });
+          return;
+        }
+
+        const result = await this.service.readVerified(
+          process,
+          message.providerThreadId,
+          message.threadId,
+          { signal: context.signal },
+        );
+        context.runtime.send(context.client, {
+          type: "detached_subagent_history",
+          ownerSessionId: message.ownerSessionId,
+          providerThreadId: message.providerThreadId,
+          codexSourceId: message.codexSourceId,
+          requestId: message.requestId,
+          threadId: message.threadId,
+          subagent: result.subagent,
+          messages: result.messages,
+          ...(result.truncated ? { truncated: true } : {}),
+        });
+      });
+    } catch (error) {
+      if (!context.signal.aborted) {
+        this.sendDetachedFailure(
+          message,
+          context,
+          error instanceof Error ? error.message : String(error),
+          "read_failed",
+        );
+      }
+    } finally {
+      this.activeClients.delete(context.client);
+    }
+  }
+
+  private async withDetachedReadProcess<T>(
+    context: LocalFeatureHandleContext,
+    operation: (process: CodexProcess) => Promise<T>,
+  ): Promise<T> {
+    const active = context.runtime.getActiveCodexProcess();
+    const canShareActive = active !== null && active.isRunning !== false;
+    const process = canShareActive
+      ? active
+      : await context.runtime.createStandaloneCodexProcess(15_000);
+    try {
+      return await operation(process);
+    } finally {
+      if (!canShareActive) process.stop();
+    }
+  }
+
   disconnect(client: object): void {
     this.activeClients.delete(client);
   }
@@ -176,6 +299,44 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
       threadId: message.threadId,
       messages: [],
       error,
+    });
+  }
+
+  private sendDetachedFailure(
+    message: Extract<
+      LocalFeatureClientMessage,
+      {
+        type: "get_detached_subagents" | "get_detached_subagent_history";
+      }
+    >,
+    context: LocalFeatureHandleContext,
+    error: string,
+    errorCode: string,
+  ): void {
+    const codexSourceId = context.runtime.codexSourceId;
+    if (message.type === "get_detached_subagents") {
+      context.runtime.send(context.client, {
+        type: "detached_subagent_list",
+        ownerSessionId: message.ownerSessionId,
+        providerThreadId: message.providerThreadId,
+        ...(codexSourceId ? { codexSourceId } : {}),
+        requestId: message.requestId,
+        subagents: [],
+        error,
+        errorCode,
+      });
+      return;
+    }
+    context.runtime.send(context.client, {
+      type: "detached_subagent_history",
+      ownerSessionId: message.ownerSessionId,
+      providerThreadId: message.providerThreadId,
+      ...(codexSourceId ? { codexSourceId } : {}),
+      requestId: message.requestId,
+      threadId: message.threadId,
+      messages: [],
+      error,
+      errorCode,
     });
   }
 }
@@ -227,11 +388,7 @@ export class CodexSubagentService {
         );
       }
 
-      const history = await this.readHistory(
-        process,
-        childThreadId,
-        deadline,
-      );
+      const history = await this.readHistory(process, childThreadId, deadline);
       const converted = childThreadToServerMessages(history.thread);
       const limited = limitSubagentHistoryResponse(converted);
       return {
@@ -263,10 +420,7 @@ export class CodexSubagentService {
         rolloutPaths,
       );
       return {
-        subagents: await hydrateLatestPreviews(
-          collected.entries,
-          rolloutPaths,
-        ),
+        subagents: await hydrateLatestPreviews(collected.entries, rolloutPaths),
         truncated: collected.truncated,
       };
     } catch (error) {
@@ -340,9 +494,7 @@ export class CodexSubagentService {
     return {
       entries,
       truncated:
-        active.truncated ||
-        archived.truncated ||
-        merged.size > entries.length,
+        active.truncated || archived.truncated || merged.size > entries.length,
     };
   }
 
@@ -412,9 +564,7 @@ export class CodexSubagentService {
                 const entry = toCodexSubagentInfo(value);
                 if (!entry.id) return [];
                 const record = isRecord(value) ? value : null;
-                const rolloutPath = record
-                  ? stringOrNull(record.path)
-                  : null;
+                const rolloutPath = record ? stringOrNull(record.path) : null;
                 if (rolloutPath) rolloutPaths.set(entry.id, rolloutPath);
                 return [entry];
               })
@@ -866,21 +1016,25 @@ function compactMessageToBytes(
     }
     if (block.type === "tool_use") {
       const serialized = safeJsonStringify(block.input);
-      return binarySearchCompaction(serialized.length, (tailLength) => ({
-        ...message,
-        message: {
-          ...message.message,
-          content: [
-            {
-              ...block,
-              input: {
-                truncated: true,
-                tail: truncateTextTail(serialized, tailLength),
+      return binarySearchCompaction(
+        serialized.length,
+        (tailLength) => ({
+          ...message,
+          message: {
+            ...message.message,
+            content: [
+              {
+                ...block,
+                input: {
+                  truncated: true,
+                  tail: truncateTextTail(serialized, tailLength),
+                },
               },
-            },
-          ],
-        },
-      }), maxBytes);
+            ],
+          },
+        }),
+        maxBytes,
+      );
     }
   }
   return null;
@@ -1030,10 +1184,12 @@ function isUnsupportedHistoryPaginationError(
 }
 
 function unsupportedOrInvalidMessage(message: string): boolean {
-  return /\b(unknown|unsupported|unrecognized|unexpected)\b/.test(message) ||
+  return (
+    /\b(unknown|unsupported|unrecognized|unexpected)\b/.test(message) ||
     /\bnot supported\b/.test(message) ||
     /\bmethod not found\b/.test(message) ||
-    /\binvalid (?:param(?:eter)?s?|argument|field)\b/.test(message);
+    /\binvalid (?:param(?:eter)?s?|argument|field)\b/.test(message)
+  );
 }
 
 function errorMessage(error: unknown): string {

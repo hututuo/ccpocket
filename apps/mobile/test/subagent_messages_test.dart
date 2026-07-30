@@ -63,6 +63,107 @@ void main() {
       capabilities['supportedServerMessages'],
       contains('subagent_history'),
     );
+    expect(
+      capabilities['supportedServerMessages'],
+      contains('detached_subagent_list'),
+    );
+    expect(
+      capabilities['supportedServerMessages'],
+      contains('detached_subagent_history'),
+    );
+  });
+
+  test('detached provider reads never serialize a runtime session id', () {
+    final list =
+        ServerMessage.fromJson({
+              'type': 'detached_subagent_list',
+              'ownerSessionId': 'pane-1',
+              'providerThreadId': 'provider-parent',
+              'codexSourceId': 'source-1',
+              'requestId': 'r1',
+              'subagents': [
+                {'threadId': 'child-1', 'status': 'running'},
+              ],
+            })
+            as DetachedSubagentListMessage;
+    expect(list.ownerSessionId, 'pane-1');
+    expect(list.providerThreadId, 'provider-parent');
+    expect(list.codexSourceId, 'source-1');
+    expect(list.sessionId, 'pane-1');
+
+    final history =
+        ServerMessage.fromJson({
+              'type': 'detached_subagent_history',
+              'ownerSessionId': 'pane-1',
+              'providerThreadId': 'provider-parent',
+              'codexSourceId': 'source-1',
+              'requestId': 'r2',
+              'threadId': 'child-1',
+              'messages': [
+                {'type': 'user_input', 'text': 'Inspect this'},
+              ],
+            })
+            as DetachedSubagentHistoryMessage;
+    expect(history.messages.single, isA<UserInputMessage>());
+
+    final listRequest =
+        jsonDecode(
+              requestDetachedSubagents(
+                ownerSessionId: 'pane-1',
+                providerThreadId: 'provider-parent',
+                codexSourceId: 'source-1',
+                requestId: 'r1',
+              ).toJson(),
+            )
+            as Map<String, dynamic>;
+    expect(listRequest, {
+      'type': 'get_detached_subagents',
+      'ownerSessionId': 'pane-1',
+      'providerThreadId': 'provider-parent',
+      'codexSourceId': 'source-1',
+      'requestId': 'r1',
+    });
+    expect(listRequest, isNot(contains('sessionId')));
+    final detachedDescriptor = LocalFeatureProtocolHost.describeRequest(
+      requestDetachedSubagents(
+        ownerSessionId: 'pane-1',
+        providerThreadId: 'provider-parent',
+        codexSourceId: 'source-1',
+        requestId: 'r1',
+      ),
+    )!;
+    expect(detachedDescriptor.ownerSessionId, 'pane-1');
+    expect(
+      LocalFeatureProtocolHost.matchesTerminalResponse(
+        detachedDescriptor,
+        list,
+      ),
+      isTrue,
+    );
+    final attachedDescriptor = LocalFeatureProtocolHost.describeRequest(
+      requestSubagents(sessionId: 'pane-1', requestId: 'r1'),
+    )!;
+    expect(
+      LocalFeatureProtocolHost.matchesTerminalResponse(
+        attachedDescriptor,
+        list,
+      ),
+      isFalse,
+    );
+
+    final historyRequest =
+        jsonDecode(
+              requestDetachedSubagentHistory(
+                ownerSessionId: 'pane-1',
+                providerThreadId: 'provider-parent',
+                codexSourceId: 'source-1',
+                threadId: 'child-1',
+                requestId: 'r2',
+              ).toJson(),
+            )
+            as Map<String, dynamic>;
+    expect(historyRequest['type'], 'get_detached_subagent_history');
+    expect(historyRequest, isNot(contains('sessionId')));
   });
 
   test('structured active flags keep an idle-labelled subagent active', () {
