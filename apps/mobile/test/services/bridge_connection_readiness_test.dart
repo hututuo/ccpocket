@@ -150,10 +150,232 @@ void main() {
         _connectionDiagnostics().join('\n'),
         isNot(contains('event=session_list_timeout')),
       );
+      final diagnostics = _connectionDiagnostics().join('\n');
+      for (final phase in [
+        'openingTransport',
+        'transportReady',
+        'capabilitiesSent',
+        'sessionListRequested',
+        'sessionListFrameReceived',
+        'sessionListEnvelopeDecoded',
+        'sessionListModelValidated',
+        'sessionListAuthorityAccepted',
+        'identityResolved',
+        'sessionListPublished',
+      ]) {
+        expect(diagnostics, contains('state=$phase'));
+      }
     } finally {
       await _closeFixture(bridge, server, sockets);
     }
   });
+
+  test(
+    'malformed session_list reconnects immediately with a precise stage',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      server.transform(WebSocketTransformer()).listen((socket) {
+        sockets.add(socket);
+        final connectionNumber = sockets.length;
+        socket.listen((data) {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          if (message['type'] != 'list_sessions') return;
+          socket.add(
+            jsonEncode({
+              'type': 'session_list',
+              'sessions': connectionNumber == 1 ? 'invalid' : const [],
+            }),
+          );
+        });
+      });
+
+      final bridge = BridgeService(
+        authoritativeSessionListTimeout: const Duration(seconds: 5),
+      )..reconnectDelayForTest = (_) => Duration.zero;
+      try {
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        await _waitUntil(
+          () =>
+              sockets.length >= 2 &&
+              bridge.hasAuthoritativeSessionListForCurrentConnection,
+        );
+
+        final diagnostics = _connectionDiagnostics().join('\n');
+        expect(diagnostics, contains('state=sessionListFrameReceived'));
+        expect(diagnostics, contains('state=sessionListEnvelopeDecoded'));
+        expect(diagnostics, contains('event=session_list_parse_failed'));
+        expect(diagnostics, contains('reason=session_list_parse_failed'));
+        expect(diagnostics, isNot(contains('event=session_list_timeout')));
+        expect(diagnostics, isNot(contains(r'"sessions":"invalid"')));
+      } finally {
+        await _closeFixture(bridge, server, sockets);
+      }
+    },
+  );
+
+  test(
+    'keeps the lightweight prompt history revision across identity bind',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      server.transform(WebSocketTransformer()).listen((socket) {
+        sockets.add(socket);
+        socket.listen((data) {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          switch (message['type']) {
+            case 'client_capabilities':
+              socket.add(
+                jsonEncode({
+                  'type': 'prompt_history_status',
+                  'bridgeInstanceId': 'bridge-stable',
+                  'revision': 9,
+                  'entryCount': 4,
+                }),
+              );
+              break;
+            case 'list_sessions':
+              socket.add(
+                jsonEncode({
+                  'type': 'session_list',
+                  'sessions': const [],
+                  'bridgeInstanceId': 'bridge-stable',
+                  'codexSourceId': 'codex-home',
+                }),
+              );
+              break;
+          }
+        });
+      });
+
+      final bridge = BridgeService(
+        authoritativeSessionListTimeout: _testAuthorityTimeout,
+      );
+      try {
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        await _waitUntil(
+          () => bridge.hasAuthoritativeSessionListForCurrentConnection,
+        );
+
+        expect(bridge.bridgeInstanceId, 'bridge-stable');
+        expect(bridge.lastPromptHistoryStatus?.revision, 9);
+        expect(bridge.lastPromptHistoryStatus?.entryCount, 4);
+      } finally {
+        await _closeFixture(bridge, server, sockets);
+      }
+    },
+  );
+
+  test(
+    'old Bridge prompt error is surfaced without waiting for timeout',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      var legacyRequestIncludedCorrelation = false;
+      server.transform(WebSocketTransformer()).listen((socket) {
+        sockets.add(socket);
+        socket.listen((data) {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          switch (message['type']) {
+            case 'list_sessions':
+              socket.add(
+                jsonEncode({'type': 'session_list', 'sessions': const []}),
+              );
+            case 'sync_prompt_history':
+              legacyRequestIncludedCorrelation = message.containsKey(
+                'requestId',
+              );
+              socket.add(
+                jsonEncode({
+                  'type': 'error',
+                  'message': 'Invalid message format',
+                }),
+              );
+          }
+        });
+      });
+
+      final bridge = BridgeService(
+        authoritativeSessionListTimeout: _testAuthorityTimeout,
+      );
+      try {
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        await _waitUntil(
+          () => bridge.hasAuthoritativeSessionListForCurrentConnection,
+        );
+        final error = bridge.promptHistoryOperationErrors.first;
+        bridge.requestPromptHistorySync(
+          clientId: 'phone',
+          requestId: 'prompt-request-1',
+        );
+
+        final result = await error.timeout(const Duration(milliseconds: 250));
+        expect(result.message, 'sync_prompt_history');
+        expect(result.errorCode, 'unsupported_message');
+        expect(legacyRequestIncludedCorrelation, isFalse);
+      } finally {
+        await _closeFixture(bridge, server, sockets);
+      }
+    },
+  );
+
+  test(
+    'new Bridge prompt request carries and receives correlation id',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      server.transform(WebSocketTransformer()).listen((socket) {
+        sockets.add(socket);
+        socket.listen((data) {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          switch (message['type']) {
+            case 'list_sessions':
+              socket.add(
+                jsonEncode({
+                  'type': 'session_list',
+                  'sessions': const [],
+                  'bridgeCapabilities': const [
+                    promptHistoryRequestCorrelationCapability,
+                  ],
+                }),
+              );
+            case 'sync_prompt_history':
+              socket.add(
+                jsonEncode({
+                  'type': 'prompt_history_sync_result',
+                  'success': true,
+                  'requestId': message['requestId'],
+                  'entries': const [],
+                }),
+              );
+          }
+        });
+      });
+
+      final bridge = BridgeService(
+        authoritativeSessionListTimeout: _testAuthorityTimeout,
+      );
+      try {
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        await _waitUntil(
+          () => bridge.hasAuthoritativeSessionListForCurrentConnection,
+        );
+        expect(bridge.supportsPromptHistoryRequestCorrelation, isTrue);
+        final response = bridge.promptHistorySyncResults.first;
+        bridge.requestPromptHistorySync(
+          clientId: 'phone',
+          requestId: 'prompt-request-correlated',
+        );
+
+        expect(
+          (await response.timeout(const Duration(milliseconds: 250))).requestId,
+          'prompt-request-correlated',
+        );
+      } finally {
+        await _closeFixture(bridge, server, sockets);
+      }
+    },
+  );
 
   test(
     'malformed first frame is sanitized and recovered by the watchdog',

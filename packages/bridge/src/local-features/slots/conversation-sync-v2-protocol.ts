@@ -148,12 +148,15 @@ export type ConversationSyncServerMessage =
     })
   | (ConversationSyncEventBase &
       ConversationSyncTarget & {
-        event: "timeline_page";
-        revision: string;
-        baseRevision?: string;
-        mode: "snapshot" | "patch";
-        pageIndex: number;
-        pageCount: number;
+      event: "timeline_page";
+      revision: string;
+      baseRevision?: string;
+      mode: "snapshot" | "patch";
+      phase?: "priority" | "recent" | "cold";
+      timelineIndex?: number;
+      timelineCount?: number;
+      pageIndex: number;
+      pageCount: number;
         entries: ConversationContentEntry[];
         deletes: string[];
         hasEarlier: boolean;

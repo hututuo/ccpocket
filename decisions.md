@@ -1002,17 +1002,45 @@
 - Keep the structured connection and catalog diagnostics introduced by
   `6b701a39` as the single diagnostic source. Do not add a second logging
   pipeline merely to drive the loading screen.
-- The visible percentage is deterministic stage progress, not a time or byte
-  estimate: target preparation `0%`, WebSocket connection `25%`,
-  authoritative live-session status `60%`, and conversation catalog `85%`.
-  Successful application readiness replaces the picker with the conversation
-  list, which is the user-visible `100%` boundary.
+- The visible percentage is deterministic event progress, not a time or byte
+  estimate. The transport path records opening (`5%`), WebSocket ready
+  (`15%`), capabilities sent (`22%`), session-list request sent (`30%`), frame
+  received (`40%`), envelope decoded (`48%`), model validated (`58%`),
+  authority accepted (`68%`), identity resolved (`74%`) and list published
+  (`78%`). Conversation Sync v2 then records subscription/SQLite-committed
+  catalog, status, timeline and priority-checkpoint pages through `98%`;
+  projection reload and the complete application gate are `99%` and `100%`.
+  A legacy catalog keeps its correlated request/response milestones.
+- The activity ring is intentionally indeterminate and keeps rotating while
+  work is active. The separate percentage and linear bar remain determinate;
+  a stationary ring must never be used to represent a numeric checkpoint.
+- Conversation Sync progress advances only after the corresponding SQLite
+  transaction has committed and includes sequence, generation, phase, logical
+  timeline position and per-timeline page in sanitized logs. A timeline page's
+  `pageIndex/pageCount` is thread-scoped and must never be presented as global
+  bootstrap completion. New Bridge versions add optional
+  `timelineIndex/timelineCount`; legacy peers stay at the timeline-stage
+  checkpoint until the priority checkpoint. Once the application gate is
+  ready, ongoing timeline patches no longer rebuild the entire connection
+  screen merely to update startup progress.
+- Prompt History is excluded from the startup critical path. It starts once
+  per authenticated socket only after application readiness, prefers stable
+  Bridge identity across IP routes, skips unchanged revisions, serializes
+  legacy import with snapshot sync, and never queues a read-only snapshot for
+  replay after reconnect. New Bridge versions echo an additive request ID and
+  advertise `prompt_history_request_correlation_v1`; a legacy response lane is
+  quarantined until reconnect after any timeout so a late snapshot cannot
+  satisfy the next import or sync. The exact old-Bridge `Invalid message
+  format` reply is surfaced immediately as unsupported instead of waiting the
+  full timeout.
 - Machine/IP status refresh feedback is driven by
   `MachineManagerState.isLoading`. Its refresh arrow animates only while the
   real health check is active and stops immediately afterward, avoiding an
   always-running ticker.
-- This is a Mobile-only presentation change. It adds no Bridge message,
-  capability, database migration, native boundary or old-client requirement.
+- The Bridge additions are optional fields/capabilities only. Old Mobile
+  ignores them, while new Mobile retains a bounded stage-only fallback for old
+  Bridge versions. There is no database migration, native boundary or
+  old-client requirement.
 
 ## Important sessions bypass the automatic five-row project limit
 

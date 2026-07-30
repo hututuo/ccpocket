@@ -4,11 +4,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
 
 import 'package:ccpocket/features/session_list/widgets/connect_form.dart';
+import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/features/session_list/session_list_screen.dart';
 import 'package:ccpocket/features/settings/state/settings_state.dart';
 import 'package:ccpocket/router/app_router.dart';
+import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/widgets/new_session_sheet.dart';
 
 RecentSession _session({
@@ -247,29 +249,162 @@ void main() {
       bool hasSessionList = false,
       bool hasRecentSessions = false,
       bool autoConnecting = false,
+      BridgeConnectionBootstrapPhase bootstrapPhase =
+          BridgeConnectionBootstrapPhase.idle,
+      ConversationSyncCacheUpdate? conversationSyncUpdate,
     }) => bridgeConnectionEntryProgressFor(
       transportState: state,
       selectionPending: selectionPending,
       hasAuthoritativeSessionList: hasSessionList,
       hasAuthoritativeRecentSessions: hasRecentSessions,
       autoConnecting: autoConnecting,
+      bootstrapPhase: bootstrapPhase,
+      conversationSyncUpdate: conversationSyncUpdate,
     );
 
-    test('reports stable milestones instead of elapsed-time guesses', () {
+    test('reports fine event-backed milestones instead of time guesses', () {
       expect(
         progress(selectionPending: true)?.stage,
         BridgeConnectionEntryStage.preparingTarget,
       );
       expect(progress(selectionPending: true)?.percent, 0);
 
-      expect(progress(state: BridgeConnectionState.connecting)?.percent, 25);
-      expect(progress(state: BridgeConnectionState.connected)?.percent, 60);
+      expect(
+        progress(
+          state: BridgeConnectionState.connecting,
+          bootstrapPhase: BridgeConnectionBootstrapPhase.openingTransport,
+        )?.percent,
+        5,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListRequested,
+        )?.percent,
+        30,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          bootstrapPhase:
+              BridgeConnectionBootstrapPhase.sessionListFrameReceived,
+        )?.percent,
+        40,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          bootstrapPhase:
+              BridgeConnectionBootstrapPhase.sessionListEnvelopeDecoded,
+        )?.percent,
+        48,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          bootstrapPhase:
+              BridgeConnectionBootstrapPhase.sessionListModelValidated,
+        )?.percent,
+        58,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          bootstrapPhase:
+              BridgeConnectionBootstrapPhase.sessionListAuthorityAccepted,
+        )?.percent,
+        68,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          bootstrapPhase: BridgeConnectionBootstrapPhase.identityResolved,
+        )?.percent,
+        74,
+      );
       expect(
         progress(
           state: BridgeConnectionState.connected,
           hasSessionList: true,
+          bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListPublished,
+          conversationSyncUpdate: const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.status,
+            pageIndex: 0,
+            pageCount: 1,
+          ),
         )?.percent,
-        85,
+        90,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          hasSessionList: true,
+          bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListPublished,
+          conversationSyncUpdate: const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.timeline,
+            pageIndex: 3,
+            pageCount: 4,
+          ),
+        )?.percent,
+        90,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          hasSessionList: true,
+          bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListPublished,
+          conversationSyncUpdate: const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.timeline,
+            pageIndex: 0,
+            pageCount: 1,
+            timelineIndex: 0,
+            timelineCount: 4,
+            phase: 'priority',
+          ),
+        )?.percent,
+        92,
+      );
+      expect(
+        progress(
+          state: BridgeConnectionState.connected,
+          hasSessionList: true,
+          bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListPublished,
+          conversationSyncUpdate: const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.timeline,
+            pageIndex: 0,
+            pageCount: 1,
+            timelineIndex: 3,
+            timelineCount: 4,
+            phase: 'priority',
+          ),
+        )?.percent,
+        96,
+      );
+    });
+
+    test('keeps progress monotonic across repeated sync begin markers', () {
+      const current = ConversationSyncCacheUpdate(
+        kind: ConversationSyncCacheUpdateKind.timeline,
+        pageIndex: 0,
+        pageCount: 1,
+        timelineIndex: 3,
+        timelineCount: 4,
+        phase: 'priority',
+      );
+      const continued = ConversationSyncCacheUpdate(
+        kind: ConversationSyncCacheUpdateKind.started,
+      );
+      const reset = ConversationSyncCacheUpdate(
+        kind: ConversationSyncCacheUpdateKind.reset,
+      );
+
+      expect(
+        shouldAdvanceConversationCatalogBootstrapUpdate(current, continued),
+        isFalse,
+      );
+      expect(
+        shouldAdvanceConversationCatalogBootstrapUpdate(current, reset),
+        isTrue,
       );
     });
 
@@ -284,6 +419,30 @@ void main() {
       );
     });
   });
+
+  test(
+    'connection authority key changes only with socket or source identity',
+    () {
+      final first = bridgeConnectionAuthorityKey(
+        connectionEpoch: 7,
+        bridgeInstanceId: 'bridge-a',
+        codexSourceId: 'codex-home',
+      );
+      final repeatedSessionList = bridgeConnectionAuthorityKey(
+        connectionEpoch: 7,
+        bridgeInstanceId: 'bridge-a',
+        codexSourceId: 'codex-home',
+      );
+      final reconnected = bridgeConnectionAuthorityKey(
+        connectionEpoch: 8,
+        bridgeInstanceId: 'bridge-a',
+        codexSourceId: 'codex-home',
+      );
+
+      expect(repeatedSessionList, first);
+      expect(reconnected, isNot(first));
+    },
+  );
 
   group('SessionCatalogBootstrapGate', () {
     test('retries when session_list arrives before connected', () {
@@ -519,6 +678,14 @@ void main() {
           )
           .value,
       0.85,
+    );
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.byKey(const ValueKey('bridge_connection_activity_spinner')),
+          )
+          .value,
+      isNull,
     );
     expect(find.text('正在载入绘画目录…'), findsOne);
     expect(find.text('连接到 Bridge 服务'), findsOne);

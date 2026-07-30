@@ -340,16 +340,6 @@ void main() async {
   StoreScreenshotState.draftService = draftService;
   final dbService = DatabaseService();
   final promptHistoryService = PromptHistoryService(dbService);
-  final promptHistorySyncSub = bridge.connectionStatus.listen((state) {
-    if (state == BridgeConnectionState.connected) {
-      unawaited(
-        promptHistoryService.syncAll(
-          machineManager: machineManagerService,
-          bridgeService: bridge,
-        ),
-      );
-    }
-  });
   final appIconService = AppIconService();
   final revenueCatService = RevenueCatService();
   final settingsCubit = SettingsCubit(
@@ -390,10 +380,7 @@ void main() async {
         RepositoryProvider<BridgeService>(
           create: (_) => bridge,
           lazy: false,
-          dispose: (service) {
-            unawaited(promptHistorySyncSub.cancel());
-            service.dispose();
-          },
+          dispose: (service) => service.dispose(),
         ),
         ChangeNotifierProvider<AutoApprovalService>(
           create: (_) => autoApprovalService,

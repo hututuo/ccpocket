@@ -202,6 +202,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(events(fixture.sent, client, "timeline_page")[0]).toMatchObject({
       hasEarlier: true,
       turnsNextCursor: "older-turns-1",
+      phase: "priority",
+      timelineIndex: 0,
+      timelineCount: 1,
     });
 
     await fixture.handler.handle(

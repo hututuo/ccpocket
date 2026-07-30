@@ -149,6 +149,88 @@ void main() {
     expect(
       () => ServerMessage.fromJson({
         ..._baseFrame,
+        'event': 'timeline_page',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'revision': 'revision-1',
+        'mode': 'snapshot',
+        'phase': 'priority',
+        'timelineIndex': 1,
+        'pageIndex': 0,
+        'pageCount': 1,
+        'entries': const [],
+        'deletes': const [],
+        'hasEarlier': false,
+        'sourceEntryCount': 0,
+      }),
+      throwsFormatException,
+    );
+    final positioned =
+        ServerMessage.fromJson({
+              ..._baseFrame,
+              'event': 'timeline_page',
+              'provider': 'codex',
+              'providerSessionId': 'thread-1',
+              'revision': 'revision-1',
+              'mode': 'snapshot',
+              'phase': 'priority',
+              'timelineIndex': 1,
+              'timelineCount': 3,
+              'pageIndex': 0,
+              'pageCount': 1,
+              'entries': const [],
+              'deletes': const [],
+              'hasEarlier': false,
+              'sourceEntryCount': 0,
+            })
+            as ConversationSyncV2EventMessage;
+    expect(positioned.timelineIndex, 1);
+    expect(positioned.timelineCount, 3);
+    for (final timelineCount in const [4096, 4097, 10000]) {
+      final boundary =
+          ServerMessage.fromJson({
+                ..._baseFrame,
+                'event': 'timeline_page',
+                'provider': 'codex',
+                'providerSessionId': 'thread-1',
+                'revision': 'revision-1',
+                'mode': 'snapshot',
+                'phase': 'priority',
+                'timelineIndex': timelineCount - 1,
+                'timelineCount': timelineCount,
+                'pageIndex': 0,
+                'pageCount': 1,
+                'entries': const [],
+                'deletes': const [],
+                'hasEarlier': false,
+                'sourceEntryCount': 0,
+              })
+              as ConversationSyncV2EventMessage;
+      expect(boundary.timelineCount, timelineCount);
+    }
+    expect(
+      () => ServerMessage.fromJson({
+        ..._baseFrame,
+        'event': 'timeline_page',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'revision': 'revision-1',
+        'mode': 'snapshot',
+        'phase': 'priority',
+        'timelineIndex': 10000,
+        'timelineCount': 10001,
+        'pageIndex': 0,
+        'pageCount': 1,
+        'entries': const [],
+        'deletes': const [],
+        'hasEarlier': false,
+        'sourceEntryCount': 0,
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => ServerMessage.fromJson({
+        ..._baseFrame,
         'event': 'turns_page_response',
         'requestId': 'request-1',
         'provider': 'codex',

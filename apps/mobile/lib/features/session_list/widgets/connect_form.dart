@@ -151,8 +151,10 @@ class ConnectForm extends StatelessWidget {
                         SizedBox.square(
                           dimension: 18,
                           child: CircularProgressIndicator(
+                            key: const ValueKey(
+                              'bridge_connection_activity_spinner',
+                            ),
                             strokeWidth: 2,
-                            value: normalizedProgress,
                           ),
                         ),
                         const SizedBox(width: 12),

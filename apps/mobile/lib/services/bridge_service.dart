@@ -36,6 +36,43 @@ const backgroundNotificationDeliveryAckBridgeCapability =
     'background_notification_delivery_ack_v1';
 const pushRegistrationStatusBridgeCapability = 'push_registration_status_v1';
 
+/// Fine-grained, event-backed milestones for the interactive Bridge bootstrap.
+///
+/// Percentages are deliberately not time based. Each value means that the
+/// corresponding protocol or local publication step has actually completed.
+enum BridgeConnectionBootstrapPhase {
+  idle(0),
+  openingTransport(5),
+  transportReady(15),
+  capabilitiesSent(22),
+  sessionListRequested(30),
+  sessionListFrameReceived(40),
+  sessionListEnvelopeDecoded(48),
+  sessionListModelValidated(58),
+  sessionListAuthorityAccepted(68),
+  identityResolved(74),
+  sessionListPublished(78),
+  conversationCatalogRequested(80),
+  conversationCatalogReceived(94),
+  reconnectScheduled(3);
+
+  const BridgeConnectionBootstrapPhase(this.percent);
+
+  final int percent;
+}
+
+class BridgeConnectionBootstrapSnapshot {
+  const BridgeConnectionBootstrapSnapshot({
+    required this.phase,
+    required this.connectionEpoch,
+  });
+
+  final BridgeConnectionBootstrapPhase phase;
+  final int connectionEpoch;
+
+  double get fraction => phase.percent / 100;
+}
+
 @visibleForTesting
 Map<String, String> bridgePrivateHttpHeaders(String? websocketUrl) {
   final uri = websocketUrl == null ? null : Uri.tryParse(websocketUrl);
@@ -222,6 +259,8 @@ class BridgeService implements BridgeServiceBase {
       StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
   final _connectionController =
       StreamController<BridgeConnectionState>.broadcast();
+  final _connectionBootstrapController =
+      StreamController<BridgeConnectionBootstrapSnapshot>.broadcast();
   final _clientDeliveryModeStateController =
       StreamController<ClientDeliveryModeStateMessage>.broadcast();
   final _backgroundNotificationController =
@@ -280,6 +319,8 @@ class BridgeService implements BridgeServiceBase {
       StreamController<PromptHistoryBackupInfoMessage>.broadcast();
   final _promptHistorySyncController =
       StreamController<PromptHistorySyncResultMessage>.broadcast();
+  final _promptHistoryOperationErrorController =
+      StreamController<ErrorMessage>.broadcast();
   final _promptHistoryMutationController =
       StreamController<PromptHistoryMutationResultMessage>.broadcast();
   final _promptHistoryStatusController =
@@ -317,6 +358,11 @@ class BridgeService implements BridgeServiceBase {
       StreamController<GitRemoteStatusResultMessage>.broadcast();
   final Map<String, Object> _gitOperationLaneOwners = {};
   BridgeConnectionState _connectionState = BridgeConnectionState.disconnected;
+  BridgeConnectionBootstrapSnapshot _connectionBootstrap =
+      const BridgeConnectionBootstrapSnapshot(
+        phase: BridgeConnectionBootstrapPhase.idle,
+        connectionEpoch: 0,
+      );
   final List<ClientMessage> _messageQueue = [];
   final Map<ClientMessage, _OfflineMessageTarget?> _offlineMessageTargets =
       HashMap.identity();
@@ -363,6 +409,9 @@ class BridgeService implements BridgeServiceBase {
   final String? clientAppVersion;
   final Map<String, dynamic>? clientMobileRuntime;
   String? _promptHistoryBridgeId;
+  PromptHistoryStatusMessage? _lastPromptHistoryStatus;
+  String? _pendingPromptHistoryOperationType;
+  String? _pendingPromptHistoryOperationRequestId;
   UsageResultMessage? _lastUsageResult;
   final SessionRuntimeStore _runtimeStore = SessionRuntimeStore();
   final DesktopContinuityBacklog _desktopContinuityBacklog =
@@ -468,6 +517,9 @@ class BridgeService implements BridgeServiceBase {
   static final RegExp _diagnosticTokenPattern = RegExp(
     r'^[A-Za-z0-9_.-]{1,64}$',
   );
+  static final RegExp _sessionListFramePattern = RegExp(
+    r'^\s*\{\s*"type"\s*:\s*"session_list"',
+  );
 
   @visibleForTesting
   Duration Function(int attempt)? reconnectDelayForTest;
@@ -477,6 +529,10 @@ class BridgeService implements BridgeServiceBase {
   @override
   Stream<BridgeConnectionState> get connectionStatus =>
       _connectionController.stream;
+  Stream<BridgeConnectionBootstrapSnapshot> get connectionBootstrap =>
+      _connectionBootstrapController.stream;
+  BridgeConnectionBootstrapSnapshot get currentConnectionBootstrap =>
+      _connectionBootstrap;
   @override
   Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
   Stream<LocalSessionHistoryAvailabilityChange>
@@ -540,10 +596,14 @@ class BridgeService implements BridgeServiceBase {
       _backupInfoController.stream;
   Stream<PromptHistorySyncResultMessage> get promptHistorySyncResults =>
       _promptHistorySyncController.stream;
+  Stream<ErrorMessage> get promptHistoryOperationErrors =>
+      _promptHistoryOperationErrorController.stream;
   Stream<PromptHistoryMutationResultMessage> get promptHistoryMutationResults =>
       _promptHistoryMutationController.stream;
   Stream<PromptHistoryStatusMessage> get promptHistoryStatus =>
       _promptHistoryStatusController.stream;
+  PromptHistoryStatusMessage? get lastPromptHistoryStatus =>
+      _lastPromptHistoryStatus;
   Stream<LocalFeatureServerMessage> get localFeatureMessages =>
       _localFeatureMessageController.stream.map((pair) => pair.$1);
   Stream<ClientDeliveryModeStateMessage> get clientDeliveryModeStates =>
@@ -692,6 +752,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(appServerStatusV1Capability);
   bool get supportsBridgeIdentityV2 =>
       _bridgeCapabilities.contains(bridgeIdentityV2Capability);
+  bool get supportsPromptHistoryRequestCorrelation =>
+      _bridgeCapabilities.contains(promptHistoryRequestCorrelationCapability);
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>
       _desiredClientDeliveryMode;
   String? get promptHistoryBridgeId => _promptHistoryBridgeId;
@@ -1654,6 +1716,7 @@ class BridgeService implements BridgeServiceBase {
     _channel = null;
     _lastUsageResult = null;
     _promptHistoryBridgeId = null;
+    _lastPromptHistoryStatus = null;
     if (isBridgeSwitch) {
       // Preserve durable mutations across route changes. Each queued message
       // carries the Bridge/source identity of the socket it belonged to and
@@ -1669,6 +1732,10 @@ class BridgeService implements BridgeServiceBase {
     _cacheCodexSourceIdHint = nextCacheSourceHint;
     _publishOfflinePendingActions();
 
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.openingTransport,
+      epoch: epoch,
+    );
     _logConnectionDiagnostic('connect_started', epoch: epoch);
     _setBridgeConnectionState(BridgeConnectionState.connecting);
     try {
@@ -1678,9 +1745,31 @@ class BridgeService implements BridgeServiceBase {
         (data) {
           if (epoch != _connectionEpoch) return;
           int? frameBytes;
+          String? diagnosticType;
+          var sessionListModelValidated = false;
+          final isSessionListFrame =
+              data is String && _sessionListFramePattern.hasMatch(data);
+          if (isSessionListFrame) {
+            _setConnectionBootstrapPhase(
+              BridgeConnectionBootstrapPhase.sessionListFrameReceived,
+              epoch: epoch,
+            );
+          }
           try {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
-            final diagnosticType = _diagnosticToken(json['type']);
+            diagnosticType = _diagnosticToken(json['type']);
+            if (diagnosticType == 'session_list') {
+              if (!isSessionListFrame) {
+                _setConnectionBootstrapPhase(
+                  BridgeConnectionBootstrapPhase.sessionListFrameReceived,
+                  epoch: epoch,
+                );
+              }
+              _setConnectionBootstrapPhase(
+                BridgeConnectionBootstrapPhase.sessionListEnvelopeDecoded,
+                epoch: epoch,
+              );
+            }
             if (_desiredClientDeliveryMode !=
                     BridgeClientDeliveryMode.notificationsOnly &&
                 !_hasAuthoritativeSessionListForCurrentConnection &&
@@ -1698,6 +1787,13 @@ class BridgeService implements BridgeServiceBase {
             if (_shouldSuppressBackgroundWireMessage(json)) return;
             var sessionId = json['sessionId'] as String?;
             var msg = ServerMessage.fromJson(json);
+            if (msg is SessionListMessage) {
+              sessionListModelValidated = true;
+              _setConnectionBootstrapPhase(
+                BridgeConnectionBootstrapPhase.sessionListModelValidated,
+                epoch: epoch,
+              );
+            }
             if (msg is HistoryPageMessage) {
               _completeRemoteHistoryPage(msg);
               return;
@@ -1853,27 +1949,19 @@ class BridgeService implements BridgeServiceBase {
                     previousBridgeId != authoritativeBridgeId ||
                     (authoritativeBridgeId != null &&
                         previousSourceId != authoritativeSourceId);
+                final advertisedPromptHistoryStatus = _lastPromptHistoryStatus;
                 if (dataSourceChanged) {
                   _hasAuthoritativeSessionListForCurrentConnection = false;
                   _requeueInFlightInputMessages();
                   _requeueInFlightPendingMessages();
                   _clearBridgeScopedState(clearOfflineQueue: false);
                 }
-                _hasAuthoritativeSessionListForCurrentConnection = true;
-                _authoritativeSessionListGeneration++;
-                _logConnectionDiagnostic(
-                  'session_list_authoritative',
-                  epoch: epoch,
-                  type: 'session_list',
-                  elapsedMs: elapsedMs == null
-                      ? null
-                      : requestStartedAtMs == null
-                      ? elapsedMs
-                      : elapsedMs - requestStartedAtMs,
-                  count: sessions.length,
-                );
                 _bridgeInstanceId = authoritativeBridgeId;
                 _codexSourceId = authoritativeSourceId;
+                if (advertisedPromptHistoryStatus?.bridgeInstanceId ==
+                    authoritativeBridgeId) {
+                  _lastPromptHistoryStatus = advertisedPromptHistoryStatus;
+                }
                 // A Bridge that omits the additive identity is treated as a
                 // legacy peer. Do not continue trusting a remembered route
                 // hint after the authoritative handshake failed to prove it.
@@ -1929,7 +2017,36 @@ class BridgeService implements BridgeServiceBase {
                 _codexModelCatalogRevision++;
                 _codexModelCatalogController.add(_codexModelCatalogRevision);
                 _clearPendingStartActionsForSessions(_sessions);
+                // Only publish authority after every field in the snapshot has
+                // been applied. A model that parsed successfully but failed
+                // during application must not satisfy the startup gate or
+                // suppress recovery.
+                _hasAuthoritativeSessionListForCurrentConnection = true;
+                _authoritativeSessionListGeneration++;
+                _setConnectionBootstrapPhase(
+                  BridgeConnectionBootstrapPhase.sessionListAuthorityAccepted,
+                  epoch: epoch,
+                );
+                _logConnectionDiagnostic(
+                  'session_list_authoritative',
+                  epoch: epoch,
+                  type: 'session_list',
+                  elapsedMs: elapsedMs == null
+                      ? null
+                      : requestStartedAtMs == null
+                      ? elapsedMs
+                      : elapsedMs - requestStartedAtMs,
+                  count: sessions.length,
+                );
+                _setConnectionBootstrapPhase(
+                  BridgeConnectionBootstrapPhase.identityResolved,
+                  epoch: epoch,
+                );
                 _sessionListController.add(_sessions);
+                _setConnectionBootstrapPhase(
+                  BridgeConnectionBootstrapPhase.sessionListPublished,
+                  epoch: epoch,
+                );
                 // Persisted mutations are scoped to the authenticated Bridge
                 // and Codex Home. WebSocket readiness alone cannot prove that
                 // a saved route still reaches the same data source.
@@ -1991,6 +2108,12 @@ class BridgeService implements BridgeServiceBase {
                 );
                 _lastRecentSessionsMessage = response;
                 _lastRecentSessionsConnectionEpoch = _connectionEpoch;
+                if (!supportsConversationSyncV2) {
+                  _setConnectionBootstrapPhase(
+                    BridgeConnectionBootstrapPhase.conversationCatalogReceived,
+                    epoch: epoch,
+                  );
+                }
                 final revision = recentResponse.catalogRevision;
                 if (revision != null &&
                     revision > _lastSessionCatalogRevision) {
@@ -2045,11 +2168,16 @@ class BridgeService implements BridgeServiceBase {
               case PromptHistorySyncResultMessage():
                 _rememberPromptHistoryBridgeId(msg.bridgeInstanceId);
                 _promptHistorySyncController.add(msg);
+                if (msg.requestId == null ||
+                    msg.requestId == _pendingPromptHistoryOperationRequestId) {
+                  _clearPendingPromptHistoryOperation();
+                }
               case PromptHistoryMutationResultMessage():
                 _rememberPromptHistoryBridgeId(msg.bridgeInstanceId);
                 _promptHistoryMutationController.add(msg);
               case PromptHistoryStatusMessage():
                 _rememberPromptHistoryBridgeId(msg.bridgeInstanceId);
+                _lastPromptHistoryStatus = msg;
                 _promptHistoryStatusController.add(msg);
               // Git Operations
               case GitStageResultMessage():
@@ -2187,6 +2315,28 @@ class BridgeService implements BridgeServiceBase {
                 _messageController.add(msg);
               case ErrorMessage(:final message):
                 _consumeLegacyHistoryErrorReply(msg, sessionId);
+                if (sessionId == null) {
+                  final pendingPromptType = _pendingPromptHistoryOperationType;
+                  final promptUnsupported =
+                      msg.errorCode == 'unsupported_message' &&
+                      (message == 'sync_prompt_history' ||
+                          message == 'import_prompt_history_v1');
+                  final legacyPromptUnsupported =
+                      msg.errorCode == null &&
+                      message == 'Invalid message format' &&
+                      pendingPromptType != null;
+                  if (promptUnsupported || legacyPromptUnsupported) {
+                    _promptHistoryOperationErrorController.add(
+                      ErrorMessage(
+                        message: promptUnsupported
+                            ? message
+                            : pendingPromptType!,
+                        errorCode: 'unsupported_message',
+                      ),
+                    );
+                    _clearPendingPromptHistoryOperation();
+                  }
+                }
                 if (msg.errorCode == 'unsupported_message' &&
                     message == 'get_history_delta') {
                   _fallbackPendingHistoryDeltaRequests();
@@ -2221,7 +2371,9 @@ class BridgeService implements BridgeServiceBase {
             if (_claimFrameDiagnosticSlot()) {
               frameBytes ??= _diagnosticFrameBytes(data);
               _logConnectionDiagnostic(
-                'frame_parse_failed',
+                sessionListModelValidated
+                    ? 'frame_apply_failed'
+                    : 'frame_parse_failed',
                 epoch: epoch,
                 bytes: frameBytes,
                 errorKind: _diagnosticToken(e.runtimeType.toString()),
@@ -2233,6 +2385,20 @@ class BridgeService implements BridgeServiceBase {
             );
             _taggedMessageController.add((errorMsg, null));
             _messageController.add(errorMsg);
+            if (diagnosticType == 'session_list' || isSessionListFrame) {
+              final errorKind = _diagnosticToken(e.runtimeType.toString());
+              scheduleMicrotask(
+                () => sessionListModelValidated
+                    ? _handleAuthoritativeSessionListApplyFailure(
+                        epoch,
+                        errorKind: errorKind,
+                      )
+                    : _handleAuthoritativeSessionListParseFailure(
+                        epoch,
+                        errorKind: errorKind,
+                      ),
+              );
+            }
           }
         },
         onError: (error, stackTrace) {
@@ -2341,6 +2507,10 @@ class BridgeService implements BridgeServiceBase {
       epoch: epoch,
       elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
     );
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.transportReady,
+      epoch: epoch,
+    );
     _setBridgeConnectionState(BridgeConnectionState.connected);
     send(
       ClientMessage.clientCapabilities(
@@ -2348,6 +2518,10 @@ class BridgeService implements BridgeServiceBase {
         fileTransferSupported: fileTransferClientSupported,
         mobileRuntime: clientMobileRuntime,
       ),
+    );
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.capabilitiesSent,
+      epoch: epoch,
     );
     if (_desiredClientDeliveryMode ==
         BridgeClientDeliveryMode.notificationsOnly) {
@@ -2465,6 +2639,8 @@ class BridgeService implements BridgeServiceBase {
     _bridgeVersion = null;
     _bridgeCapabilities = const {};
     _promptHistoryBridgeId = null;
+    _lastPromptHistoryStatus = null;
+    _clearPendingPromptHistoryOperation();
     _lastUsageResult = null;
     _pendingHistoryDeltaSinceSeq.clear();
     _pendingHistoryDeltaAllowsFullFallback.clear();
@@ -2804,6 +2980,7 @@ class BridgeService implements BridgeServiceBase {
     int? count,
     int? attempt,
     int? delayMs,
+    int? progress,
     bool warning = false,
   }) {
     final fields = <String>[
@@ -2819,6 +2996,8 @@ class BridgeService implements BridgeServiceBase {
       if (count != null && count >= 0) 'count=$count',
       if (attempt != null && attempt >= 0) 'attempt=$attempt',
       if (delayMs != null && delayMs >= 0) 'delayMs=$delayMs',
+      if (progress != null && progress >= 0 && progress <= 100)
+        'progress=$progress',
     ];
     final line = fields.join(' ');
     if (warning) {
@@ -2826,6 +3005,39 @@ class BridgeService implements BridgeServiceBase {
     } else {
       logger.info(line);
     }
+  }
+
+  void _setConnectionBootstrapPhase(
+    BridgeConnectionBootstrapPhase phase, {
+    int? epoch,
+    String? reason,
+    String? errorKind,
+    bool warning = false,
+  }) {
+    final effectiveEpoch = epoch ?? _connectionEpoch;
+    if (effectiveEpoch != _connectionEpoch) return;
+    final previous = _connectionBootstrap;
+    if (previous.connectionEpoch == effectiveEpoch) {
+      if (previous.phase == phase) return;
+      final canRegress =
+          phase == BridgeConnectionBootstrapPhase.idle ||
+          phase == BridgeConnectionBootstrapPhase.reconnectScheduled;
+      if (!canRegress && phase.percent < previous.phase.percent) return;
+    }
+    _connectionBootstrap = BridgeConnectionBootstrapSnapshot(
+      phase: phase,
+      connectionEpoch: effectiveEpoch,
+    );
+    _connectionBootstrapController.add(_connectionBootstrap);
+    _logConnectionDiagnostic(
+      'bootstrap_phase',
+      epoch: effectiveEpoch,
+      state: phase.name,
+      reason: reason,
+      errorKind: errorKind,
+      progress: phase.percent,
+      warning: warning,
+    );
   }
 
   String _diagnosticToken(Object? value) {
@@ -2857,6 +3069,10 @@ class BridgeService implements BridgeServiceBase {
     final epoch = _connectionEpoch;
     final elapsedMs = _connectionDiagnosticStopwatch?.elapsedMilliseconds;
     _sessionListRequestStartedAtMs ??= elapsedMs;
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.sessionListRequested,
+      epoch: epoch,
+    );
     _logConnectionDiagnostic(
       'session_list_sent',
       epoch: epoch,
@@ -2893,7 +3109,91 @@ class BridgeService implements BridgeServiceBase {
       elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
       warning: true,
     );
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.reconnectScheduled,
+      epoch: epoch,
+      reason: 'session_list_timeout',
+      warning: true,
+    );
+    _restartConnectionAfterAuthorityFailure(
+      epoch,
+      reconnectReason: 'session_list_timeout',
+    );
+  }
 
+  void _handleAuthoritativeSessionListParseFailure(
+    int epoch, {
+    required String errorKind,
+  }) {
+    if (epoch != _connectionEpoch ||
+        _intentionalDisconnect ||
+        !isConnected ||
+        _desiredClientDeliveryMode ==
+            BridgeClientDeliveryMode.notificationsOnly ||
+        _hasAuthoritativeSessionListForCurrentConnection) {
+      return;
+    }
+    _cancelAuthoritativeSessionListWatchdog();
+    _logConnectionDiagnostic(
+      'session_list_parse_failed',
+      epoch: epoch,
+      reason: 'unreadable_authority',
+      errorKind: errorKind,
+      elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
+      warning: true,
+    );
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.reconnectScheduled,
+      epoch: epoch,
+      reason: 'session_list_parse_failed',
+      errorKind: errorKind,
+      warning: true,
+    );
+    _restartConnectionAfterAuthorityFailure(
+      epoch,
+      reconnectReason: 'session_list_parse_failed',
+    );
+  }
+
+  void _handleAuthoritativeSessionListApplyFailure(
+    int epoch, {
+    required String errorKind,
+  }) {
+    if (epoch != _connectionEpoch ||
+        _intentionalDisconnect ||
+        !isConnected ||
+        _desiredClientDeliveryMode ==
+            BridgeClientDeliveryMode.notificationsOnly) {
+      return;
+    }
+    _hasAuthoritativeSessionListForCurrentConnection = false;
+    _cancelAuthoritativeSessionListWatchdog();
+    _logConnectionDiagnostic(
+      'session_list_apply_failed',
+      epoch: epoch,
+      reason: 'authority_not_published',
+      errorKind: errorKind,
+      elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
+      warning: true,
+    );
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.reconnectScheduled,
+      epoch: epoch,
+      reason: 'session_list_apply_failed',
+      errorKind: errorKind,
+      warning: true,
+    );
+    _restartConnectionAfterAuthorityFailure(
+      epoch,
+      reconnectReason: 'session_list_apply_failed',
+    );
+  }
+
+  void _restartConnectionAfterAuthorityFailure(
+    int epoch, {
+    required String reconnectReason,
+  }) {
+    if (epoch != _connectionEpoch || _intentionalDisconnect) return;
     // Preserve exactly one read-only authority request for the replacement
     // socket. It is safe before identity proof and does not authorize a
     // mutation or expose cached data to a different Bridge.
@@ -2924,7 +3224,7 @@ class BridgeService implements BridgeServiceBase {
     _requeueInFlightInputMessages();
     _requeueInFlightPendingMessages();
     _setBridgeConnectionState(BridgeConnectionState.disconnected);
-    _scheduleReconnect(reason: 'session_list_timeout');
+    _scheduleReconnect(reason: reconnectReason);
   }
 
   void _scheduleReconnect({String reason = 'transport_lost'}) {
@@ -2941,6 +3241,11 @@ class BridgeService implements BridgeServiceBase {
     final configuredDelay =
         reconnectDelayForTest?.call(_reconnectAttempt) ?? defaultDelay;
     final delay = configuredDelay.isNegative ? Duration.zero : configuredDelay;
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.reconnectScheduled,
+      reason: reason,
+      warning: true,
+    );
     _logConnectionDiagnostic(
       'reconnect_scheduled',
       reason: reason,
@@ -4439,6 +4744,13 @@ class BridgeService implements BridgeServiceBase {
       namedOnly: _currentNamedOnly,
       searchQuery: _currentSearchQuery,
     );
+    if (!supportsConversationSyncV2 &&
+        _hasAuthoritativeSessionListForCurrentConnection &&
+        !hasAuthoritativeRecentSessionsForCurrentConnection) {
+      _setConnectionBootstrapPhase(
+        BridgeConnectionBootstrapPhase.conversationCatalogRequested,
+      );
+    }
     if (supportsSessionCatalogRequestCorrelation) {
       send(request.toClientMessage());
       return;
@@ -5485,16 +5797,61 @@ class BridgeService implements BridgeServiceBase {
 
   void requestPromptHistorySync({
     required String clientId,
+    required String requestId,
     String? clientName,
     int? sinceRevision,
   }) {
+    _beginPromptHistoryOperation(
+      type: 'sync_prompt_history',
+      requestId: requestId,
+    );
     send(
       ClientMessage.syncPromptHistory(
         clientId: clientId,
+        requestId: supportsPromptHistoryRequestCorrelation ? requestId : null,
         clientName: clientName,
         sinceRevision: sinceRevision,
       ),
     );
+  }
+
+  void requestPromptHistoryImport({
+    required String clientId,
+    required String requestId,
+    String? clientName,
+    required List<PromptHistoryServerEntry> entries,
+  }) {
+    _beginPromptHistoryOperation(
+      type: 'import_prompt_history_v1',
+      requestId: requestId,
+    );
+    send(
+      ClientMessage.importPromptHistoryV1(
+        clientId: clientId,
+        requestId: supportsPromptHistoryRequestCorrelation ? requestId : null,
+        clientName: clientName,
+        entries: entries,
+      ),
+    );
+  }
+
+  void finishPromptHistoryOperation(String requestId) {
+    if (_pendingPromptHistoryOperationRequestId == requestId) {
+      _clearPendingPromptHistoryOperation();
+    }
+  }
+
+  void _beginPromptHistoryOperation({
+    required String type,
+    required String requestId,
+  }) {
+    _pendingPromptHistoryOperationType = type;
+    _pendingPromptHistoryOperationRequestId = requestId;
+  }
+
+  void _clearPendingPromptHistoryOperation() {
+    _pendingPromptHistoryOperationType = null;
+    _pendingPromptHistoryOperationRequestId = null;
   }
 
   void removeProjectHistory(String path) {
@@ -6205,6 +6562,7 @@ class BridgeService implements BridgeServiceBase {
     _channelSub = null;
     _channel?.sink.close();
     _channel = null;
+    _setConnectionBootstrapPhase(BridgeConnectionBootstrapPhase.idle);
     _setBridgeConnectionState(BridgeConnectionState.disconnected);
     _clearBridgeScopedState(clearOfflineQueue: true);
     final disconnectCallback = onDisconnect;
@@ -6272,6 +6630,7 @@ class BridgeService implements BridgeServiceBase {
     _taggedMessageController.close();
     _localFeatureMessageController.close();
     _connectionController.close();
+    _connectionBootstrapController.close();
     _clientDeliveryModeStateController.close();
     _backgroundNotificationController.close();
     _backgroundActivityStateController.close();
@@ -6301,6 +6660,7 @@ class BridgeService implements BridgeServiceBase {
     _restoreResultController.close();
     _backupInfoController.close();
     _promptHistorySyncController.close();
+    _promptHistoryOperationErrorController.close();
     _promptHistoryMutationController.close();
     _promptHistoryStatusController.close();
     // Git Operations

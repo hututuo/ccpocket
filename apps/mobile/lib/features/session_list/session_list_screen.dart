@@ -25,8 +25,10 @@ import '../../router/app_router.dart';
 import '../../services/app_update_service.dart';
 import '../../services/bridge_service.dart';
 import '../../services/connection_url_parser.dart';
+import '../../services/machine_manager_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/platform_environment_service.dart';
+import '../../services/prompt_history_service.dart';
 import '../../services/server_discovery_service.dart';
 import '../../services/ssh_bridge_tunnel_service.dart';
 import '../../widgets/workspace_pane_chrome.dart';
@@ -68,6 +70,16 @@ const _sessionRequestUuid = Uuid();
 const _machineLogicalIdentityPrefix = 'machine:';
 
 // ---- Testable helpers (top-level) ----
+
+String bridgeConnectionAuthorityKey({
+  required int connectionEpoch,
+  String? bridgeInstanceId,
+  String? codexSourceId,
+}) {
+  return '$connectionEpoch\u0000'
+      '${bridgeInstanceId ?? 'legacy'}\u0000'
+      '${codexSourceId ?? 'legacy'}';
+}
 
 /// Keeps the connected home visible only after this exact Bridge target has
 /// produced authoritative active-session and recent-session snapshots.
@@ -276,6 +288,9 @@ BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
   required bool hasAuthoritativeSessionList,
   required bool hasAuthoritativeRecentSessions,
   required bool autoConnecting,
+  BridgeConnectionBootstrapPhase bootstrapPhase =
+      BridgeConnectionBootstrapPhase.idle,
+  ConversationSyncCacheUpdate? conversationSyncUpdate,
 }) {
   if (selectionPending) {
     return const BridgeConnectionEntryProgress(
@@ -283,21 +298,25 @@ BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
       fraction: 0,
     );
   }
+  final bootstrapFraction = bootstrapPhase.percent / 100;
   return switch (transportState) {
     BridgeConnectionState.connecting ||
-    BridgeConnectionState.reconnecting => const BridgeConnectionEntryProgress(
+    BridgeConnectionState.reconnecting => BridgeConnectionEntryProgress(
       stage: BridgeConnectionEntryStage.connectingTransport,
-      fraction: 0.25,
+      fraction: bootstrapFraction.clamp(0.05, 0.25).toDouble(),
     ),
     BridgeConnectionState.connected when !hasAuthoritativeSessionList =>
-      const BridgeConnectionEntryProgress(
+      BridgeConnectionEntryProgress(
         stage: BridgeConnectionEntryStage.loadingSessionStatus,
-        fraction: 0.60,
+        fraction: bootstrapFraction.clamp(0.25, 0.78).toDouble(),
       ),
     BridgeConnectionState.connected when !hasAuthoritativeRecentSessions =>
-      const BridgeConnectionEntryProgress(
+      BridgeConnectionEntryProgress(
         stage: BridgeConnectionEntryStage.loadingConversationCatalog,
-        fraction: 0.85,
+        fraction: _conversationCatalogBootstrapFraction(
+          bootstrapFraction,
+          conversationSyncUpdate,
+        ),
       ),
     _ when autoConnecting => const BridgeConnectionEntryProgress(
       stage: BridgeConnectionEntryStage.preparingTarget,
@@ -305,6 +324,61 @@ BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
     ),
     _ => null,
   };
+}
+
+double _conversationCatalogBootstrapFraction(
+  double bootstrapFraction,
+  ConversationSyncCacheUpdate? update,
+) {
+  double pageFraction(double start, double span) {
+    final pageIndex = update?.pageIndex;
+    final pageCount = update?.pageCount;
+    if (pageIndex == null || pageCount == null || pageCount <= 0) return start;
+    return start + span * ((pageIndex + 1) / pageCount).clamp(0, 1).toDouble();
+  }
+
+  double timelineFraction() {
+    final timelineIndex = update?.timelineIndex;
+    final timelineCount = update?.timelineCount;
+    if (update?.phase != 'priority' ||
+        timelineIndex == null ||
+        timelineCount == null ||
+        timelineCount <= 0) {
+      return 0.90;
+    }
+    final pageIndex = update?.pageIndex ?? 0;
+    final pageCount = update?.pageCount ?? 1;
+    final withinTimeline = ((pageIndex + 1) / pageCount).clamp(0, 1);
+    final completed = (timelineIndex + withinTimeline) / timelineCount;
+    return 0.90 + 0.06 * completed.clamp(0, 1);
+  }
+
+  final committedFraction = switch (update?.kind) {
+    ConversationSyncCacheUpdateKind.started => 0.82,
+    ConversationSyncCacheUpdateKind.catalog => pageFraction(0.82, 0.04),
+    ConversationSyncCacheUpdateKind.status => pageFraction(0.86, 0.04),
+    ConversationSyncCacheUpdateKind.timeline => timelineFraction(),
+    ConversationSyncCacheUpdateKind.priorityReady => 0.97,
+    ConversationSyncCacheUpdateKind.completed => 0.98,
+    ConversationSyncCacheUpdateKind.reset => 0.80,
+    ConversationSyncCacheUpdateKind.readWatermark || null => 0.78,
+  };
+  return [bootstrapFraction, committedFraction, 0.78]
+      .reduce((left, right) => left > right ? left : right)
+      .clamp(0.78, 0.98)
+      .toDouble();
+}
+
+@visibleForTesting
+bool shouldAdvanceConversationCatalogBootstrapUpdate(
+  ConversationSyncCacheUpdate? current,
+  ConversationSyncCacheUpdate next,
+) {
+  if (next.kind == ConversationSyncCacheUpdateKind.reset || current == null) {
+    return true;
+  }
+  return _conversationCatalogBootstrapFraction(0, next) >=
+      _conversationCatalogBootstrapFraction(0, current);
 }
 
 Future<bool> showExternalBridgeConnectionConfirmation({
@@ -532,8 +606,16 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<RecentSessionsMessage>? _catalogReadinessSub;
   StreamSubscription<List<SessionInfo>>? _sessionListReadinessSub;
   StreamSubscription<void>? _catalogCacheReadinessSub;
+  StreamSubscription<BridgeConnectionBootstrapSnapshot>?
+  _connectionBootstrapSub;
+  StreamSubscription<ConversationSyncCacheUpdate>? _contentSyncProgressSub;
+  ConversationSyncCacheUpdate? _contentSyncProgressUpdate;
   int _lastBoundBridgeIdentityGeneration = 0;
   Future<void> _bridgeIdentityBinding = Future<void>.value();
+  String? _lastPromptHistorySyncAuthorityKey;
+  String? _lastApplicationReadyLoggedAuthorityKey;
+  String? _lastProjectionReadyLoggedAuthorityKey;
+  Timer? _promptHistorySyncTimer;
   late final SessionArchivePendingRequests _archivePendingRequests;
   final _catalogBootstrapGate = SessionCatalogBootstrapGate();
   final _catalogRecoveryPolicy = SessionCatalogRecoveryPolicy();
@@ -584,16 +666,64 @@ class _SessionListScreenState extends State<SessionListScreen>
     _archiveConnectionSub = bridge.connectionStatus.listen((status) {
       if (status != BridgeConnectionState.connected) {
         _archivePendingRequests.connectionLost();
+        _promptHistorySyncTimer?.cancel();
+        _promptHistorySyncTimer = null;
+        if (mounted && _contentSyncProgressUpdate != null) {
+          setState(() => _contentSyncProgressUpdate = null);
+        }
       }
       _syncConnectionUiGate(bridge, status);
       _refreshCatalogAfterAuthoritativeSessionList(bridge);
     });
+    _connectionBootstrapSub = bridge.connectionBootstrap.listen((_) {
+      if (mounted) setState(() {});
+    });
+    _contentSyncProgressSub = context
+        .read<ConversationContentSyncService?>()
+        ?.syncUpdates
+        .listen((update) {
+          if (!mounted ||
+              bridge.currentBridgeConnectionState !=
+                  BridgeConnectionState.connected) {
+            return;
+          }
+          if (bridge.hasAuthoritativeSessionListForCurrentConnection &&
+              sessionListCubit.hasUsableCatalogForCurrentTarget) {
+            return;
+          }
+          final current = _contentSyncProgressUpdate;
+          // A Bridge may emit another sync_begin while continuing the same
+          // back-pressured subscription. The sync service suppresses that
+          // duplicate `started`, and this monotonic guard also prevents a
+          // delayed/replayed marker from moving the visible progress backward.
+          // A transport change clears the current update above; only an
+          // authoritative reset may rewind within one connected generation.
+          if (shouldAdvanceConversationCatalogBootstrapUpdate(
+            current,
+            update,
+          )) {
+            setState(() => _contentSyncProgressUpdate = update);
+          }
+          _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+        });
     _catalogReadinessSub = bridge.recentSessionResponses.listen((_) {
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
     });
     _catalogCacheReadinessSub = sessionListCubit.catalogSnapshotChanges.listen((
       _,
     ) {
+      final generation = bridge.authoritativeSessionListGeneration;
+      final authorityKey = _currentConnectionAuthorityKey(bridge);
+      if (sessionListCubit.hasUsableCatalogForCurrentTarget &&
+          generation > 0 &&
+          authorityKey != _lastProjectionReadyLoggedAuthorityKey) {
+        _lastProjectionReadyLoggedAuthorityKey = authorityKey;
+        logger.info(
+          '[session_catalog] event=projection_reloaded '
+          'epoch=${bridge.currentConnectionBootstrap.connectionEpoch} '
+          'generation=$generation progress=99',
+        );
+      }
       if (mounted) setState(() {});
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
     });
@@ -1228,6 +1358,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     _catalogReadinessSub?.cancel();
     _sessionListReadinessSub?.cancel();
     _catalogCacheReadinessSub?.cancel();
+    _connectionBootstrapSub?.cancel();
+    _contentSyncProgressSub?.cancel();
+    _promptHistorySyncTimer?.cancel();
     _archivePendingRequests.dispose();
     _activeSessionsSub?.cancel();
     _desktopContinuityTracker.close();
@@ -1284,6 +1417,21 @@ class _SessionListScreenState extends State<SessionListScreen>
         acceptsCurrentTransport &&
         bridge.hasAuthoritativeSessionListForCurrentConnection &&
         context.read<SessionListCubit>().hasUsableCatalogForCurrentTarget;
+    final generation = bridge.authoritativeSessionListGeneration;
+    final authorityKey = _currentConnectionAuthorityKey(bridge);
+    if (isApplicationReady &&
+        generation > 0 &&
+        authorityKey != _lastApplicationReadyLoggedAuthorityKey) {
+      _lastApplicationReadyLoggedAuthorityKey = authorityKey;
+      logger.info(
+        '[session_catalog] event=application_ready '
+        'epoch=${bridge.currentConnectionBootstrap.connectionEpoch} '
+        'generation=$generation progress=100',
+      );
+    }
+    if (isApplicationReady) {
+      _schedulePromptHistorySyncAfterApplicationReady(bridge);
+    }
     final readinessCompleted =
         isApplicationReady &&
         (_connectionAwaitingReadiness ||
@@ -1300,10 +1448,12 @@ class _SessionListScreenState extends State<SessionListScreen>
       _connectionReadinessTimer?.cancel();
       _connectionReadinessTimer = null;
       _catalogRecoveryPolicy.reset();
-      logger.info(
-        '[session_catalog] event=${readinessCompleted ? 'application_ready' : 'readiness_failed'} '
-        'generation=${bridge.authoritativeSessionListGeneration}',
-      );
+      if (readinessFailed) {
+        logger.warning(
+          '[session_catalog] event=readiness_failed '
+          'generation=${bridge.authoritativeSessionListGeneration}',
+        );
+      }
     }
     if (!mounted ||
         (!changed &&
@@ -1324,6 +1474,57 @@ class _SessionListScreenState extends State<SessionListScreen>
         _connectionTakingLonger = false;
         _connectionAttemptFailed = true;
       }
+    });
+  }
+
+  void _schedulePromptHistorySyncAfterApplicationReady(BridgeService bridge) {
+    final generation = bridge.authoritativeSessionListGeneration;
+    final authorityKey = _currentConnectionAuthorityKey(bridge);
+    if (!mounted ||
+        generation <= 0 ||
+        authorityKey == _lastPromptHistorySyncAuthorityKey ||
+        _promptHistorySyncTimer != null) {
+      return;
+    }
+    final promptHistory = context.read<PromptHistoryService?>();
+    if (promptHistory == null) return;
+    logger.info(
+      '[prompt_history] event=startup_sync_scheduled '
+      'epoch=${bridge.currentConnectionBootstrap.connectionEpoch} '
+      'generation=$generation',
+    );
+    _promptHistorySyncTimer = Timer(const Duration(seconds: 2), () {
+      _promptHistorySyncTimer = null;
+      if (!mounted ||
+          bridge.currentBridgeConnectionState !=
+              BridgeConnectionState.connected ||
+          !bridge.hasAuthoritativeSessionListForCurrentConnection ||
+          !context.read<SessionListCubit>().hasUsableCatalogForCurrentTarget ||
+          _currentConnectionAuthorityKey(bridge) != authorityKey) {
+        return;
+      }
+      _lastPromptHistorySyncAuthorityKey = authorityKey;
+      logger.info(
+        '[prompt_history] event=startup_sync_started '
+        'epoch=${bridge.currentConnectionBootstrap.connectionEpoch} '
+        'generation=${bridge.authoritativeSessionListGeneration}',
+      );
+      unawaited(
+        promptHistory
+            .syncAll(
+              machineManager: context.read<MachineManagerService?>(),
+              bridgeService: bridge,
+            )
+            .catchError((Object error, StackTrace stackTrace) {
+              logger.warning(
+                '[prompt_history] event=startup_sync_failed '
+                'epoch=${bridge.currentConnectionBootstrap.connectionEpoch} '
+                'generation=${bridge.authoritativeSessionListGeneration} '
+                'error=${error.runtimeType}',
+              );
+              return <PromptHistorySyncStatus>[];
+            }),
+      );
     });
   }
 
@@ -1393,6 +1594,15 @@ class _SessionListScreenState extends State<SessionListScreen>
           };
     return 'url:${uri.scheme.toLowerCase()}://'
         '${uri.host.toLowerCase()}:$port${uri.path}';
+  }
+
+  String _currentConnectionAuthorityKey(BridgeService bridge) {
+    final bootstrap = bridge.currentConnectionBootstrap;
+    return bridgeConnectionAuthorityKey(
+      connectionEpoch: bootstrap.connectionEpoch,
+      bridgeInstanceId: bridge.bridgeInstanceId,
+      codexSourceId: bridge.codexSourceId,
+    );
   }
 
   Future<void> _openSettings() async {
@@ -2744,6 +2954,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       hasAuthoritativeSessionList: hasAuthoritativeSessionList,
       hasAuthoritativeRecentSessions: hasAuthoritativeRecentSessions,
       autoConnecting: _isAutoConnecting,
+      bootstrapPhase: bridge.currentConnectionBootstrap.phase,
+      conversationSyncUpdate: _contentSyncProgressUpdate,
     );
     final connectionProgressLabel = switch (connectionProgress?.stage) {
       BridgeConnectionEntryStage.loadingSessionStatus => l.loadingSessionStatus,

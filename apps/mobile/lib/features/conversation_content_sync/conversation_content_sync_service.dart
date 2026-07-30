@@ -110,12 +110,24 @@ class ConversationSyncCacheUpdate {
     this.provider,
     this.providerSessionId,
     this.revision,
+    this.sequence,
+    this.pageIndex,
+    this.pageCount,
+    this.timelineIndex,
+    this.timelineCount,
+    this.phase,
   });
 
   final ConversationSyncCacheUpdateKind kind;
   final String? provider;
   final String? providerSessionId;
   final String? revision;
+  final int? sequence;
+  final int? pageIndex;
+  final int? pageCount;
+  final int? timelineIndex;
+  final int? timelineCount;
+  final String? phase;
 }
 
 class ConversationTurnsPageLoadResult {
@@ -176,6 +188,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   int _requestSequence = 0;
   int _retryAttempt = 0;
   int _highestV2CommittedSequence = 0;
+  bool _v2PriorityBootstrapComplete = false;
   String? _v2RecoveryTargetFingerprint;
   Future<void> _v2MutationTail = Future<void>.value();
 
@@ -486,6 +499,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
+    _v2PriorityBootstrapComplete = false;
     _failPendingTurnsPages(
       StateError('Conversation history paging was interrupted.'),
     );
@@ -521,6 +535,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _retryTimer?.cancel();
     _retryTimer = null;
     final generation = ++_generation;
+    _v2PriorityBootstrapComplete = false;
     final requestId = _nextRequestId('subscribe');
     _pendingSubscriptionId = requestId;
     _subscriptionTargetFingerprint = targetFingerprint;
@@ -612,7 +627,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 ),
         ),
       );
-    } catch (_) {
+      logger.info(
+        '[conversation_sync_v2] event=subscribe_sent '
+        'generation=$generation progress=80 '
+        'knownRevisions=${revisions.length} '
+        'readWatermarks=${watermarks.length}',
+      );
+    } catch (error) {
+      logger.warning(
+        '[conversation_sync_v2] event=subscribe_failed '
+        'generation=$generation error=${error.runtimeType}',
+      );
       if (generation == _generation) {
         _pendingSubscriptionId = null;
         _scheduleRetry();
@@ -937,17 +962,112 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (!_isV2Current(event, generation, target)) return;
     _highestV2CommittedSequence = event.sequence;
     _sendV2Ack(event.subscriptionId, event.sequence);
-    if (publish != null) {
-      _syncUpdatesController.add(publish);
+    final pageIndex = event.pageIndex;
+    final pageCount = event.pageCount;
+    final page = pageIndex == null || pageCount == null
+        ? ''
+        : ' page=${pageIndex + 1}/$pageCount';
+    final timeline = event.timelineIndex == null || event.timelineCount == null
+        ? ''
+        : ' timeline=${event.timelineIndex! + 1}/${event.timelineCount}';
+    final phase = event.phase == null ? '' : ' phase=${event.phase}';
+    final progress = _v2CommitProgress(event);
+    final scope = event.providerSessionId == null
+        ? ''
+        : ' scope=${Object.hash(event.provider, event.providerSessionId).toUnsigned(32).toRadixString(16).padLeft(8, '0')}';
+    final progressScope =
+        event.event == ConversationSyncV2EventKind.timelinePage
+        ? event.timelineCount == null
+              ? ' pageScope=thread progressScope=unavailable'
+              : ' pageScope=thread progressScope=${event.phase ?? 'timeline'}_batch'
+        : '';
+    logger.info(
+      '[conversation_sync_v2] event=commit '
+      'kind=${event.event.name} sequence=${event.sequence} '
+      'generation=$generation${progress == null ? '' : ' progress=$progress'}'
+      '$timeline$page$phase$scope$progressScope',
+    );
+    final progressUpdate =
+        publish ??
+        (event.event == ConversationSyncV2EventKind.timelinePage
+            ? ConversationSyncCacheUpdate(
+                kind: ConversationSyncCacheUpdateKind.timeline,
+                provider: event.provider,
+                providerSessionId: event.providerSessionId,
+                revision: event.revision,
+              )
+            : null);
+    if (progressUpdate != null) {
+      _syncUpdatesController.add(
+        ConversationSyncCacheUpdate(
+          kind: progressUpdate.kind,
+          provider: progressUpdate.provider,
+          providerSessionId: progressUpdate.providerSessionId,
+          revision: progressUpdate.revision,
+          sequence: event.sequence,
+          pageIndex: event.pageIndex,
+          pageCount: event.pageCount,
+          timelineIndex: event.timelineIndex,
+          timelineCount: event.timelineCount,
+          phase: event.phase,
+        ),
+      );
     }
     final reachedStableCheckpoint =
         (event.event == ConversationSyncV2EventKind.syncCheckpoint &&
             event.phase == 'priority') ||
         event.event == ConversationSyncV2EventKind.syncComplete;
     if (reachedStableCheckpoint) {
+      _v2PriorityBootstrapComplete = true;
       _retryAttempt = 0;
       _v2RecoveryTargetFingerprint = null;
     }
+  }
+
+  int? _v2CommitProgress(ConversationSyncV2EventMessage event) {
+    if (_v2PriorityBootstrapComplete) return null;
+    double pageProgress(double start, double span) {
+      final pageIndex = event.pageIndex;
+      final pageCount = event.pageCount;
+      if (pageIndex == null || pageCount == null || pageCount <= 0) {
+        return start;
+      }
+      return start + span * ((pageIndex + 1) / pageCount).clamp(0, 1);
+    }
+
+    double timelineProgress() {
+      final timelineIndex = event.timelineIndex;
+      final timelineCount = event.timelineCount;
+      if (event.phase != 'priority' ||
+          timelineIndex == null ||
+          timelineCount == null ||
+          timelineCount <= 0) {
+        return 90;
+      }
+      final pageIndex = event.pageIndex ?? 0;
+      final pageCount = event.pageCount ?? 1;
+      final withinTimeline = ((pageIndex + 1) / pageCount).clamp(0, 1);
+      final completed = (timelineIndex + withinTimeline) / timelineCount;
+      return 90 + 6 * completed.clamp(0, 1);
+    }
+
+    return switch (event.event) {
+      ConversationSyncV2EventKind.syncBegin => 82,
+      ConversationSyncV2EventKind.catalogChanges => pageProgress(82, 4).round(),
+      ConversationSyncV2EventKind.statusChanges => pageProgress(86, 4).round(),
+      ConversationSyncV2EventKind.timelinePage => timelineProgress().round(),
+      ConversationSyncV2EventKind.syncCheckpoint
+          when event.phase == 'priority' =>
+        97,
+      ConversationSyncV2EventKind.syncComplete => 98,
+      ConversationSyncV2EventKind.syncReset => 80,
+      ConversationSyncV2EventKind.turnsPageResponse ||
+      ConversationSyncV2EventKind.itemsPageResponse ||
+      ConversationSyncV2EventKind.focusApplied ||
+      ConversationSyncV2EventKind.unsubscribed ||
+      ConversationSyncV2EventKind.error ||
+      ConversationSyncV2EventKind.syncCheckpoint => null,
+    };
   }
 
   bool _isV2Current(
@@ -1158,6 +1278,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionTargetFingerprint = null;
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
+    _v2PriorityBootstrapComplete = false;
     _failPendingTurnsPages(
       StateError('Conversation history paging was interrupted.'),
     );

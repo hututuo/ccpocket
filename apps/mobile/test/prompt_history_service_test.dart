@@ -1,12 +1,33 @@
 import 'dart:async';
 
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/database_service.dart';
 import 'package:ccpocket/services/prompt_history_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 2),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Condition was not reached before $timeout');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   test('bridgeIdForUrl canonicalizes IPv6 and default ports', () {
     final service = PromptHistoryService(DatabaseService());
 
@@ -36,6 +57,336 @@ void main() {
     final next = service.syncBridge(target);
     expect(next, isNot(same(first)));
     expect(await next, isNull);
+  });
+
+  group('current Bridge startup sync', () {
+    late Database database;
+    late PromptHistoryService service;
+
+    setUpAll(sqfliteFfiInit);
+
+    setUp(() async {
+      database = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+      await database.execute('''
+        CREATE TABLE prompt_history_sync_status (
+          bridge_id TEXT PRIMARY KEY,
+          bridge_url TEXT NOT NULL,
+          bridge_name TEXT NOT NULL,
+          last_sync_at TEXT,
+          revision INTEGER NOT NULL DEFAULT 0,
+          entry_count INTEGER NOT NULL DEFAULT 0,
+          error TEXT
+        )
+      ''');
+      await database.execute('''
+        CREATE TABLE prompt_history_cache (
+          id TEXT NOT NULL,
+          bridge_id TEXT NOT NULL,
+          bridge_url TEXT NOT NULL,
+          bridge_name TEXT NOT NULL DEFAULT '',
+          text TEXT NOT NULL,
+          project_path TEXT NOT NULL DEFAULT '',
+          total_use_count INTEGER NOT NULL DEFAULT 0,
+          is_favorite INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          last_used_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          favorite_updated_at TEXT,
+          deleted_at TEXT,
+          command_kind TEXT NOT NULL DEFAULT 'none',
+          client_stats_json TEXT NOT NULL DEFAULT '{}',
+          session_stats_json TEXT NOT NULL DEFAULT '{}',
+          synced_revision INTEGER NOT NULL DEFAULT 0,
+          synced_at TEXT NOT NULL,
+          PRIMARY KEY (id, bridge_id)
+        )
+      ''');
+      await database.execute('''
+        CREATE TABLE prompt_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          text TEXT NOT NULL,
+          project_path TEXT NOT NULL DEFAULT '',
+          use_count INTEGER NOT NULL DEFAULT 1,
+          is_favorite INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          last_used_at INTEGER NOT NULL
+        )
+      ''');
+      service = PromptHistoryService(_StaticDatabaseService(database));
+    });
+
+    tearDown(() => database.close());
+
+    test('stable Bridge identity skips an unchanged full snapshot', () async {
+      await database.insert('prompt_history_sync_status', {
+        'bridge_id': 'bridge-stable',
+        'bridge_url': 'ws://10.0.0.2:8765',
+        'bridge_name': 'Mac',
+        'last_sync_at': '2026-07-30T00:00:00Z',
+        'revision': 7,
+        'entry_count': 3,
+        'error': null,
+      });
+      final bridge = _PromptHistoryBridgeService(
+        status: const PromptHistoryStatusMessage(
+          bridgeInstanceId: 'bridge-stable',
+          revision: 7,
+          entryCount: 3,
+        ),
+      );
+
+      final statuses = await service.syncAll(bridgeService: bridge);
+
+      expect(bridge.syncRequests, 0);
+      expect(statuses, hasLength(1));
+      expect(statuses.single.bridgeId, 'bridge-stable');
+      expect(statuses.single.revision, 7);
+    });
+
+    test(
+      'changed advertised revision requests the snapshot on main socket',
+      () async {
+        await database.insert('prompt_history_sync_status', {
+          'bridge_id': 'bridge-stable',
+          'bridge_url': 'ws://10.0.0.2:8765',
+          'bridge_name': 'Mac',
+          'last_sync_at': '2026-07-30T00:00:00Z',
+          'revision': 7,
+          'entry_count': 3,
+          'error': null,
+        });
+        final bridge = _PromptHistoryBridgeService(
+          status: const PromptHistoryStatusMessage(
+            bridgeInstanceId: 'bridge-stable',
+            revision: 8,
+            entryCount: 4,
+          ),
+          result: const PromptHistorySyncResultMessage(
+            success: false,
+            bridgeInstanceId: 'bridge-stable',
+            error: 'test rejection',
+          ),
+        );
+
+        await service.syncAll(bridgeService: bridge);
+
+        expect(bridge.syncRequests, 1);
+      },
+    );
+
+    test(
+      'legacy authority accepts and adopts stable id from sync result',
+      () async {
+        final bridge = _PromptHistoryBridgeService(
+          status: null,
+          bridgeInstanceIdValue: null,
+          promptHistoryBridgeIdValue: null,
+          result: PromptHistorySyncResultMessage(
+            success: true,
+            bridgeInstanceId: 'legacy-prompt-store',
+            revision: 3,
+            syncedAt: '2026-07-30T00:00:00Z',
+            entries: [
+              _serverEntry(
+                id: 'entry-1',
+                text: 'legacy prompt',
+                useCount: 1,
+                updatedAt: '2026-07-30T00:00:00Z',
+              ),
+            ],
+          ),
+        );
+
+        final statuses = await service.syncAll(bridgeService: bridge);
+
+        expect(bridge.syncRequests, 1);
+        expect(statuses.single.bridgeId, 'legacy-prompt-store');
+        expect(statuses.single.revision, 3);
+        final aliases = await service.getBridgeAliasMap();
+        expect(aliases['10.0.0.2:8765'], 'legacy-prompt-store');
+      },
+    );
+
+    test('all routes migrate to one stable Bridge cache identity', () async {
+      final bridge = _PromptHistoryBridgeService(
+        status: null,
+        result: const PromptHistorySyncResultMessage(
+          success: true,
+          bridgeInstanceId: 'bridge-stable',
+          revision: 1,
+          syncedAt: '2026-07-30T00:00:00Z',
+        ),
+      );
+      const target = PromptHistorySyncTarget(
+        bridgeId: 'bridge-stable',
+        bridgeUrl: 'ws://10.0.0.2:8765',
+        bridgeName: 'Mac',
+        bridgeAliases: ['10.0.0.2:8765', '100.64.0.2:8765'],
+      );
+
+      await service.syncCurrentBridge(target: target, bridgeService: bridge);
+
+      final aliases = await service.getBridgeAliasMap();
+      expect(aliases['10.0.0.2:8765'], 'bridge-stable');
+      expect(aliases['100.64.0.2:8765'], 'bridge-stable');
+    });
+
+    test('startup sync and manual import share one response lane', () async {
+      await database.insert('prompt_history', {
+        'text': 'legacy prompt to import',
+        'project_path': '/repo',
+        'use_count': 1,
+        'is_favorite': 0,
+        'created_at': 1,
+        'last_used_at': 2,
+      });
+      final bridge = _PromptHistoryBridgeService(
+        status: null,
+        autoRespond: false,
+      );
+
+      final startup = service.syncAll(bridgeService: bridge);
+      await _waitUntil(() => bridge.syncRequests == 1);
+      final import = service.importLegacyToCurrentBridge(bridgeService: bridge);
+      await Future<void>.delayed(Duration.zero);
+      expect(bridge.importRequests, 0);
+
+      bridge.emit(
+        const PromptHistorySyncResultMessage(
+          success: true,
+          bridgeInstanceId: 'bridge-stable',
+          revision: 1,
+          syncedAt: '2026-07-30T00:00:00Z',
+        ),
+      );
+      await _waitUntil(() => bridge.importRequests == 1);
+      bridge.emit(
+        const PromptHistorySyncResultMessage(
+          success: true,
+          bridgeInstanceId: 'bridge-stable',
+          revision: 2,
+          syncedAt: '2026-07-30T00:00:01Z',
+        ),
+      );
+
+      await startup;
+      expect(await import, isTrue);
+      expect(bridge.requestOrder, [
+        'sync_prompt_history',
+        'import_prompt_history_v1',
+      ]);
+    });
+
+    test(
+      'correlated main-socket response ignores a stale prior result',
+      () async {
+        await database.insert('prompt_history', {
+          'text': 'legacy prompt to import',
+          'project_path': '/repo',
+          'use_count': 1,
+          'is_favorite': 0,
+          'created_at': 1,
+          'last_used_at': 2,
+        });
+        final bridge = _PromptHistoryBridgeService(
+          status: null,
+          autoRespond: false,
+          supportsCorrelation: true,
+        );
+
+        final startup = service.syncAll(bridgeService: bridge);
+        await _waitUntil(() => bridge.lastSyncRequestId != null);
+        final firstRequestId = bridge.lastSyncRequestId!;
+        bridge.emit(
+          PromptHistorySyncResultMessage(
+            success: true,
+            requestId: firstRequestId,
+            bridgeInstanceId: 'bridge-stable',
+            revision: 1,
+            syncedAt: '2026-07-30T00:00:00Z',
+          ),
+        );
+        await startup;
+
+        var importCompleted = false;
+        final import = service
+            .importLegacyToCurrentBridge(bridgeService: bridge)
+            .whenComplete(() => importCompleted = true);
+        await _waitUntil(() => bridge.lastImportRequestId != null);
+        final secondRequestId = bridge.lastImportRequestId!;
+        expect(secondRequestId, isNot(firstRequestId));
+
+        bridge.emit(
+          PromptHistorySyncResultMessage(
+            success: true,
+            requestId: firstRequestId,
+            bridgeInstanceId: 'bridge-stable',
+            revision: 99,
+            syncedAt: '2026-07-30T00:00:01Z',
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(importCompleted, isFalse);
+
+        bridge.emit(
+          PromptHistorySyncResultMessage(
+            success: true,
+            requestId: secondRequestId,
+            bridgeInstanceId: 'bridge-stable',
+            revision: 2,
+            syncedAt: '2026-07-30T00:00:02Z',
+          ),
+        );
+        expect(await import, isTrue);
+      },
+    );
+
+    test('legacy response lane stays closed after a timeout', () async {
+      final shortTimeoutService = PromptHistoryService(
+        _StaticDatabaseService(database),
+        syncTimeout: const Duration(milliseconds: 25),
+      );
+      final bridge = _PromptHistoryBridgeService(
+        status: null,
+        autoRespond: false,
+      );
+
+      await shortTimeoutService.syncAll(bridgeService: bridge);
+      expect(bridge.syncRequests, 1);
+
+      await shortTimeoutService.syncAll(bridgeService: bridge);
+      expect(bridge.syncRequests, 1);
+    });
+
+    test('prompt history response operations are never queued for replay', () {
+      final sync = ClientMessage.syncPromptHistory(clientId: 'phone');
+      final import = ClientMessage.importPromptHistoryV1(
+        clientId: 'phone',
+        entries: const [],
+      );
+
+      expect(sync.delivery, ClientMessageDelivery.ephemeral);
+      expect(import.delivery, ClientMessageDelivery.ephemeral);
+    });
+
+    test('legacy unsupported sync fails immediately without timeout', () async {
+      final bridge = _PromptHistoryBridgeService(
+        status: null,
+        autoRespond: false,
+      );
+
+      final sync = service.syncAll(bridgeService: bridge);
+      await _waitUntil(() => bridge.syncRequests == 1);
+      bridge.emitError(
+        const ErrorMessage(
+          message: 'sync_prompt_history',
+          errorCode: 'unsupported_message',
+        ),
+      );
+
+      final statuses = await sync;
+      expect(statuses.single.error, 'sync_prompt_history');
+    });
   });
 
   group('optimistic cache reconciliation', () {
@@ -435,6 +786,96 @@ class _BlockingDatabaseService extends DatabaseService {
 
   void complete(Database? database) {
     _database.complete(database);
+  }
+}
+
+class _PromptHistoryBridgeService extends BridgeService {
+  _PromptHistoryBridgeService({
+    required this.status,
+    this.result,
+    this.bridgeInstanceIdValue = 'bridge-stable',
+    this.promptHistoryBridgeIdValue = 'bridge-stable',
+    this.autoRespond = true,
+    this.supportsCorrelation = false,
+  });
+
+  final PromptHistoryStatusMessage? status;
+  final PromptHistorySyncResultMessage? result;
+  final String? bridgeInstanceIdValue;
+  final String? promptHistoryBridgeIdValue;
+  final bool autoRespond;
+  final bool supportsCorrelation;
+  final _results = StreamController<PromptHistorySyncResultMessage>.broadcast();
+  final _errors = StreamController<ErrorMessage>.broadcast();
+  int syncRequests = 0;
+  int importRequests = 0;
+  final List<String> requestOrder = [];
+  String? lastSyncRequestId;
+  String? lastImportRequestId;
+
+  @override
+  bool get isConnected => true;
+
+  @override
+  String? get lastUrl => 'ws://10.0.0.2:8765';
+
+  @override
+  String? get bridgeInstanceId => bridgeInstanceIdValue;
+
+  @override
+  String? get promptHistoryBridgeId => promptHistoryBridgeIdValue;
+
+  @override
+  PromptHistoryStatusMessage? get lastPromptHistoryStatus => status;
+
+  @override
+  bool get supportsPromptHistoryRequestCorrelation => supportsCorrelation;
+
+  @override
+  Stream<PromptHistorySyncResultMessage> get promptHistorySyncResults =>
+      _results.stream;
+
+  @override
+  Stream<ErrorMessage> get promptHistoryOperationErrors => _errors.stream;
+
+  @override
+  void requestPromptHistorySync({
+    required String clientId,
+    required String requestId,
+    String? clientName,
+    int? sinceRevision,
+  }) {
+    syncRequests += 1;
+    lastSyncRequestId = requestId;
+    requestOrder.add('sync_prompt_history');
+    final response = result;
+    if (autoRespond && response != null) {
+      scheduleMicrotask(() => _results.add(response));
+    }
+  }
+
+  @override
+  void requestPromptHistoryImport({
+    required String clientId,
+    required String requestId,
+    String? clientName,
+    required List<PromptHistoryServerEntry> entries,
+  }) {
+    importRequests += 1;
+    lastImportRequestId = requestId;
+    requestOrder.add('import_prompt_history_v1');
+    final response = result;
+    if (autoRespond && response != null) {
+      scheduleMicrotask(() => _results.add(response));
+    }
+  }
+
+  void emit(PromptHistorySyncResultMessage response) {
+    _results.add(response);
+  }
+
+  void emitError(ErrorMessage error) {
+    _errors.add(error);
   }
 }
 

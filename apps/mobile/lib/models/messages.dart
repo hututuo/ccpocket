@@ -1601,6 +1601,7 @@ sealed class ServerMessage {
       ),
       'prompt_history_sync_result' => PromptHistorySyncResultMessage(
         success: json['success'] as bool? ?? false,
+        requestId: json['requestId'] as String?,
         bridgeInstanceId: json['bridgeInstanceId'] as String?,
         revision: json['revision'] as int?,
         syncedAt: json['syncedAt'] as String?,
@@ -4138,6 +4139,7 @@ class PromptHistorySessionStat {
 
 class PromptHistorySyncResultMessage implements ServerMessage {
   final bool success;
+  final String? requestId;
   final String? bridgeInstanceId;
   final int? revision;
   final String? syncedAt;
@@ -4147,6 +4149,7 @@ class PromptHistorySyncResultMessage implements ServerMessage {
 
   const PromptHistorySyncResultMessage({
     required this.success,
+    this.requestId,
     this.bridgeInstanceId,
     this.revision,
     this.syncedAt,
@@ -5100,6 +5103,8 @@ const historyToolDetailCapability = 'history_tool_detail_v1';
 const sessionActivityAtCapability = 'session_activity_at_v1';
 const sessionRequestCorrelationCapability = 'session_request_correlation_v1';
 const sessionCatalogWatchCapability = 'session_catalog_watch_v1';
+const promptHistoryRequestCorrelationCapability =
+    'prompt_history_request_correlation_v1';
 const sessionCatalogRequestCorrelationCapability =
     'session_catalog_request_correlation_v1';
 const sessionCatalogChangedMessageType = 'session_catalog_changed_v1';
@@ -5932,19 +5937,26 @@ class ClientMessage {
 
   factory ClientMessage.syncPromptHistory({
     required String clientId,
+    String? requestId,
     String? clientName,
     int? sinceRevision,
     bool includeDeleted = true,
     List<PromptHistoryServerEntry> entries = const [],
-  }) => ClientMessage._(<String, dynamic>{
-    'type': 'sync_prompt_history',
-    'clientId': clientId,
-    'clientName': ?clientName,
-    'sinceRevision': ?sinceRevision,
-    'includeDeleted': includeDeleted,
-    if (entries.isNotEmpty)
-      'entries': entries.map((entry) => entry.toJson()).toList(),
-  });
+  }) => ClientMessage._(
+    <String, dynamic>{
+      'type': 'sync_prompt_history',
+      'requestId': ?requestId,
+      'clientId': clientId,
+      'clientName': ?clientName,
+      'sinceRevision': ?sinceRevision,
+      'includeDeleted': includeDeleted,
+      if (entries.isNotEmpty)
+        'entries': entries.map((entry) => entry.toJson()).toList(),
+    },
+    // A read-only snapshot is meaningful only to the live listener that
+    // requested it. Never replay it after a reconnect with no waiter.
+    delivery: ClientMessageDelivery.ephemeral,
+  );
 
   factory ClientMessage.mutatePromptHistory({
     String? id,
@@ -5965,14 +5977,21 @@ class ClientMessage {
 
   factory ClientMessage.importPromptHistoryV1({
     required String clientId,
+    String? requestId,
     String? clientName,
     required List<PromptHistoryServerEntry> entries,
-  }) => ClientMessage._(<String, dynamic>{
-    'type': 'import_prompt_history_v1',
-    'clientId': clientId,
-    'clientName': ?clientName,
-    'entries': entries.map((entry) => entry.toJson()).toList(),
-  });
+  }) => ClientMessage._(
+    <String, dynamic>{
+      'type': 'import_prompt_history_v1',
+      'requestId': ?requestId,
+      'clientId': clientId,
+      'clientName': ?clientName,
+      'entries': entries.map((entry) => entry.toJson()).toList(),
+    },
+    // The operation is correlated by its live response lane. Replaying it on
+    // another socket could make a later snapshot consume the stale response.
+    delivery: ClientMessageDelivery.ephemeral,
+  );
 
   factory ClientMessage.archiveSession({
     required String sessionId,

@@ -490,6 +490,7 @@ export type ClientMessage =
     }
   | {
       type: "sync_prompt_history";
+      requestId?: string;
       clientId: string;
       clientName?: string;
       sinceRevision?: number;
@@ -507,6 +508,7 @@ export type ClientMessage =
     }
   | {
       type: "import_prompt_history_v1";
+      requestId?: string;
       clientId: string;
       clientName?: string;
       entries: PromptHistoryImportEntry[];
@@ -1004,6 +1006,7 @@ export type ServerMessage = (
   | {
       type: "prompt_history_sync_result";
       success: boolean;
+      requestId?: string;
       bridgeInstanceId?: string;
       revision?: number;
       syncedAt?: string;
@@ -2369,6 +2372,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "sync_prompt_history":
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.length === 0 ||
+            msg.requestId.length > 128)
+        )
+          return null;
         if (typeof msg.clientId !== "string") return null;
         if (msg.clientName !== undefined && typeof msg.clientName !== "string")
           return null;
@@ -2406,6 +2416,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "import_prompt_history_v1":
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.length === 0 ||
+            msg.requestId.length > 128)
+        )
+          return null;
         if (typeof msg.clientId !== "string") return null;
         if (msg.clientName !== undefined && typeof msg.clientName !== "string")
           return null;

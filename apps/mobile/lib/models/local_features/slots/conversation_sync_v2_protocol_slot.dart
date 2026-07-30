@@ -10,6 +10,7 @@ const _conversationSyncMaxStatuses = 512;
 const _conversationSyncMaxThreadStates = 512;
 const _conversationSyncMaxPageEntries = 64;
 const _conversationSyncMaxPageCount = 4096;
+const _conversationSyncMaxTimelineCount = 10000;
 const _conversationSyncMaxDataItems = 200;
 
 const LocalFeatureProtocolSlot conversationSyncV2ProtocolSlot =
@@ -360,6 +361,8 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     this.revision,
     this.baseRevision,
     this.mode,
+    this.timelineIndex,
+    this.timelineCount,
     this.entries = const [],
     this.deletes = const [],
     this.hasEarlier,
@@ -402,6 +405,8 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
   final String? revision;
   final String? baseRevision;
   final String? mode;
+  final int? timelineIndex;
+  final int? timelineCount;
   final List<ConversationContentWireEntry> entries;
   final List<String> deletes;
   final bool? hasEarlier;
@@ -569,6 +574,17 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         maximumLength: 128,
       ),
       mode: _conversationSyncOptionalString(json, 'mode', maximumLength: 16),
+      timelineIndex: _conversationSyncOptionalInt(
+        json,
+        'timelineIndex',
+        minimum: 0,
+      ),
+      timelineCount: _conversationSyncOptionalInt(
+        json,
+        'timelineCount',
+        minimum: 1,
+        maximum: _conversationSyncMaxTimelineCount,
+      ),
       entries: _conversationSyncMapList(
         rawEntries,
         ConversationContentWireEntry.fromJson,
@@ -772,14 +788,25 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
         throw const FormatException('Status changes are incomplete.');
       }
     case ConversationSyncV2EventKind.timelinePage:
+      final timelinePositionComplete =
+          (message.timelineIndex == null) == (message.timelineCount == null);
+      final timelinePositionValid =
+          (message.timelineIndex == null && message.timelineCount == null) ||
+          (message.timelineIndex != null &&
+              message.timelineCount != null &&
+              message.timelineIndex! < message.timelineCount!);
       if (!validPage ||
           message.provider == null ||
           message.providerSessionId == null ||
           message.revision == null ||
           (message.mode != 'snapshot' && message.mode != 'patch') ||
           (message.mode == 'patch' && message.baseRevision == null) ||
+          (message.phase != null &&
+              !const {'priority', 'recent', 'cold'}.contains(message.phase)) ||
           message.hasEarlier == null ||
-          message.sourceEntryCount == null) {
+          message.sourceEntryCount == null ||
+          !timelinePositionComplete ||
+          !timelinePositionValid) {
         throw const FormatException('Timeline page is incomplete.');
       }
     case ConversationSyncV2EventKind.syncCheckpoint:

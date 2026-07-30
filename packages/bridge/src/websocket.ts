@@ -298,6 +298,8 @@ const MAX_PENDING_BACKGROUND_PUSH_DELIVERIES = 128;
 const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
 const SESSION_ACTIVITY_AT_CAPABILITY = "session_activity_at_v1";
 const SESSION_REQUEST_CORRELATION_CAPABILITY = "session_request_correlation_v1";
+const PROMPT_HISTORY_REQUEST_CORRELATION_CAPABILITY =
+  "prompt_history_request_correlation_v1";
 const SESSION_CATALOG_WATCH_CAPABILITY = "session_catalog_watch_v1";
 const SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY =
   "session_catalog_request_correlation_v1";
@@ -9703,6 +9705,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "prompt_history_sync_result",
             success: false,
+            requestId: msg.requestId,
             error: "Prompt history store not available",
           });
           break;
@@ -9714,6 +9717,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "prompt_history_sync_result",
             success: true,
+            requestId: msg.requestId,
             bridgeInstanceId: this.promptHistoryStore.bridgeInstanceId,
             revision: this.promptHistoryStore.revision,
             syncedAt: new Date().toISOString(),
@@ -9725,6 +9729,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "prompt_history_sync_result",
             success: false,
+            requestId: msg.requestId,
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -9773,6 +9778,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "prompt_history_sync_result",
             success: false,
+            requestId: msg.requestId,
             error: "Prompt history store not available",
           });
           break;
@@ -9786,6 +9792,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "prompt_history_sync_result",
             success: true,
+            requestId: msg.requestId,
             bridgeInstanceId: this.promptHistoryStore.bridgeInstanceId,
             revision: this.promptHistoryStore.revision,
             syncedAt: new Date().toISOString(),
@@ -9797,6 +9804,7 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "prompt_history_sync_result",
             success: false,
+            requestId: msg.requestId,
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -10271,6 +10279,7 @@ export class BridgeWebSocketServer {
         HISTORY_TOOL_DETAIL_CAPABILITY,
         SESSION_ACTIVITY_AT_CAPABILITY,
         SESSION_REQUEST_CORRELATION_CAPABILITY,
+        PROMPT_HISTORY_REQUEST_CORRELATION_CAPABILITY,
         SESSION_CATALOG_WATCH_CAPABILITY,
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         FILE_LIST_REQUEST_CORRELATION_CAPABILITY,
@@ -10347,6 +10356,7 @@ export class BridgeWebSocketServer {
         HISTORY_TOOL_DETAIL_CAPABILITY,
         SESSION_ACTIVITY_AT_CAPABILITY,
         SESSION_REQUEST_CORRELATION_CAPABILITY,
+        PROMPT_HISTORY_REQUEST_CORRELATION_CAPABILITY,
         SESSION_CATALOG_WATCH_CAPABILITY,
         SESSION_CATALOG_REQUEST_CORRELATION_CAPABILITY,
         FILE_LIST_REQUEST_CORRELATION_CAPABILITY,

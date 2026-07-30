@@ -291,6 +291,7 @@ describe("parseClientMessage", () => {
     const msg = parseClientMessage(
       JSON.stringify({
         type: "sync_prompt_history",
+        requestId: "prompt-sync-1",
         clientId: "phone",
         clientName: "iPhone",
         sinceRevision: 3,
@@ -300,12 +301,37 @@ describe("parseClientMessage", () => {
     );
     expect(msg).toEqual({
       type: "sync_prompt_history",
+      requestId: "prompt-sync-1",
       clientId: "phone",
       clientName: "iPhone",
       sinceRevision: 3,
       includeDeleted: true,
       entries: [{ text: "/test", projectPath: "/repo", totalUseCount: 2 }],
     });
+  });
+
+  it("rejects malformed prompt history request correlation ids", () => {
+    for (const requestId of ["", "x".repeat(129), 42]) {
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type: "sync_prompt_history",
+            requestId,
+            clientId: "phone",
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        parseClientMessage(
+          JSON.stringify({
+            type: "import_prompt_history_v1",
+            requestId,
+            clientId: "phone",
+            entries: [],
+          }),
+        ),
+      ).toBeNull();
+    }
   });
 
   it("rejects prompt history entries without text", () => {

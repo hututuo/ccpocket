@@ -214,11 +214,13 @@ class PromptHistorySyncTarget {
   final String bridgeId;
   final String bridgeUrl;
   final String bridgeName;
+  final List<String> bridgeAliases;
 
   const PromptHistorySyncTarget({
     required this.bridgeId,
     required this.bridgeUrl,
     required this.bridgeName,
+    this.bridgeAliases = const [],
   });
 }
 
@@ -250,21 +252,38 @@ class PromptHistoryService {
   static const _filtersExpandedKey = 'prompt_history_filters_expanded_v2';
   static const _legacyMigrationDismissedKey =
       'prompt_history_legacy_migration_dismissed_v2';
-  static const _syncTimeout = Duration(seconds: 8);
+  static const _defaultSyncTimeout = Duration(seconds: 8);
   static const _uuid = Uuid();
 
   final DatabaseService _dbService;
+  final Duration syncTimeout;
   final Map<String, Future<String?>> _bridgeSyncsInFlight = {};
   Future<void>? _pendingLocalTableReady;
   Future<void> _cacheMutationTail = Future<void>.value();
+  Future<void> _mainSocketPromptOperationTail = Future<void>.value();
+  int? _legacyPromptResponsePoisonedConnectionEpoch;
 
-  PromptHistoryService(this._dbService);
+  PromptHistoryService(
+    this._dbService, {
+    this.syncTimeout = _defaultSyncTimeout,
+  });
 
   Future<Database?> get _db => _dbService.database;
 
   Future<T> _serializeCacheMutation<T>(Future<T> Function() operation) {
     final result = _cacheMutationTail.then((_) => operation());
     _cacheMutationTail = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
+  }
+
+  Future<T> _serializeMainSocketPromptOperation<T>(
+    Future<T> Function() operation,
+  ) {
+    final result = _mainSocketPromptOperationTail.then((_) => operation());
+    _mainSocketPromptOperationTail = result.then<void>(
       (_) {},
       onError: (Object _, StackTrace _) {},
     );
@@ -426,25 +445,52 @@ class PromptHistoryService {
     MachineManagerService? machineManager,
     BridgeService? bridgeService,
   }) async {
-    final targets = <PromptHistorySyncTarget>[];
-    final seen = <String>{};
+    final targetsByIdentity = <String, PromptHistorySyncTarget>{};
     void addTarget(PromptHistorySyncTarget target) {
       final key = target.bridgeId.isNotEmpty
           ? target.bridgeId
           : target.bridgeUrl;
-      if (seen.add(key)) {
-        targets.add(target);
+      final existing = targetsByIdentity[key];
+      if (existing == null) {
+        targetsByIdentity[key] = target;
+        return;
       }
+      final existingEndpointId = bridgeIdForUrl(existing.bridgeUrl);
+      final targetEndpointId = bridgeIdForUrl(target.bridgeUrl);
+      final aliases = <String>{
+        ...existing.bridgeAliases,
+        ...target.bridgeAliases,
+        ?existingEndpointId,
+        ?targetEndpointId,
+      }..removeWhere((id) => id.isEmpty || id == key);
+      // The current live route is inserted first and remains the route used
+      // for transport. Later routes only contribute aliases so every endpoint
+      // for the same stable Bridge converges on one cache identity.
+      targetsByIdentity[key] = PromptHistorySyncTarget(
+        bridgeId: existing.bridgeId,
+        bridgeUrl: existing.bridgeUrl,
+        bridgeName: existing.bridgeName,
+        bridgeAliases: aliases.toList(growable: false),
+      );
     }
 
     final currentUrl = bridgeService?.lastUrl;
-    final currentBridgeId = bridgeIdForUrl(currentUrl);
+    final currentEndpointId = bridgeIdForUrl(currentUrl);
+    final currentBridgeId =
+        bridgeService?.bridgeInstanceId ??
+        bridgeService?.promptHistoryBridgeId ??
+        currentEndpointId;
     if (currentUrl != null && currentBridgeId != null) {
       addTarget(
         PromptHistorySyncTarget(
           bridgeId: currentBridgeId,
           bridgeUrl: currentUrl,
           bridgeName: currentBridgeId,
+          bridgeAliases: [
+            if (currentEndpointId != null &&
+                currentEndpointId != currentBridgeId)
+              currentEndpointId,
+          ],
         ),
       );
     }
@@ -453,19 +499,37 @@ class PromptHistoryService {
       for (final item in machineManager.machinesWithStatus) {
         if (item.status != MachineStatus.online) continue;
         final bridgeUrl = await machineManager.buildWsUrl(item.machine.id);
+        final endpointId = bridgeIdForUrl(bridgeUrl);
+        final stableBridgeId =
+            item.machine.bridgeInstanceId ?? endpointId ?? item.machine.id;
         addTarget(
           PromptHistorySyncTarget(
-            bridgeId: bridgeIdForUrl(bridgeUrl) ?? item.machine.id,
+            bridgeId: stableBridgeId,
             bridgeUrl: bridgeUrl,
             bridgeName: item.machine.displayName,
+            bridgeAliases: [
+              if (endpointId != null && endpointId != stableBridgeId)
+                endpointId,
+            ],
           ),
         );
       }
     }
 
+    final targets = targetsByIdentity.values;
     final currentStatusIds = <String>{};
     for (final target in targets) {
-      final statusId = await syncBridge(target);
+      final usesCurrentConnection =
+          bridgeService != null &&
+          bridgeService.isConnected &&
+          currentBridgeId != null &&
+          target.bridgeId == currentBridgeId;
+      final statusId = usesCurrentConnection
+          ? await syncCurrentBridge(
+              target: target,
+              bridgeService: bridgeService,
+            )
+          : await syncBridge(target);
       if (statusId != null) currentStatusIds.add(statusId);
     }
     if (currentStatusIds.isNotEmpty) {
@@ -476,10 +540,30 @@ class PromptHistoryService {
 
   Future<String?> syncBridge(PromptHistorySyncTarget target) {
     final key = target.bridgeId.isNotEmpty ? target.bridgeId : target.bridgeUrl;
+    return _runBridgeSyncSingleFlight(key, () => _performSyncBridge(target));
+  }
+
+  Future<String?> syncCurrentBridge({
+    required PromptHistorySyncTarget target,
+    required BridgeService bridgeService,
+  }) {
+    final key = target.bridgeId.isNotEmpty ? target.bridgeId : target.bridgeUrl;
+    return _runBridgeSyncSingleFlight(
+      key,
+      () => _serializeMainSocketPromptOperation(
+        () => _performSyncOnCurrentBridge(target, bridgeService),
+      ),
+    );
+  }
+
+  Future<String?> _runBridgeSyncSingleFlight(
+    String key,
+    Future<String?> Function() operationFactory,
+  ) {
     final inFlight = _bridgeSyncsInFlight[key];
     if (inFlight != null) return inFlight;
 
-    final operation = _performSyncBridge(target);
+    final operation = operationFactory();
     _bridgeSyncsInFlight[key] = operation;
     void clearInFlight() {
       if (identical(_bridgeSyncsInFlight[key], operation)) {
@@ -494,6 +578,185 @@ class PromptHistoryService {
       ),
     );
     return operation;
+  }
+
+  Future<String?> _performSyncOnCurrentBridge(
+    PromptHistorySyncTarget target,
+    BridgeService bridgeService,
+  ) async {
+    final db = await _db;
+    if (db == null) return null;
+    final currentUrl = bridgeService.lastUrl;
+    if (!bridgeService.isConnected || currentUrl == null) return null;
+
+    final canonicalBridgeId =
+        bridgeService.bridgeInstanceId ??
+        bridgeService.promptHistoryBridgeId ??
+        target.bridgeId;
+    final currentEndpointId = bridgeIdForUrl(currentUrl);
+    final aliases = <String>{
+      target.bridgeId,
+      ...target.bridgeAliases,
+      ?currentEndpointId,
+    }..remove(canonicalBridgeId);
+    final advertisedStatus = bridgeService.lastPromptHistoryStatus;
+    final statusMatchesCurrentBridge =
+        advertisedStatus != null &&
+        advertisedStatus.bridgeInstanceId == canonicalBridgeId;
+    if (statusMatchesCurrentBridge) {
+      final aliasMap = await getBridgeAliasMap();
+      final trustedStatusIds = <String>{
+        canonicalBridgeId,
+        for (final alias in aliases)
+          if (aliasMap[alias] == canonicalBridgeId) alias,
+      };
+      final localStatus = await _findSyncStatus(trustedStatusIds);
+      if (localStatus != null &&
+          localStatus.error == null &&
+          localStatus.revision == advertisedStatus.revision &&
+          localStatus.entryCount == advertisedStatus.entryCount) {
+        for (final alias in aliases) {
+          await _rememberBridgeAlias(
+            aliasBridgeId: alias,
+            canonicalBridgeId: canonicalBridgeId,
+          );
+        }
+        logger.info(
+          '[prompt_history] event=snapshot_skipped '
+          'reason=revision_unchanged revision=${advertisedStatus.revision} '
+          'entries=${advertisedStatus.entryCount}',
+        );
+        return canonicalBridgeId;
+      }
+    }
+
+    try {
+      if (!_mainSocketPromptResponseLaneAvailable(bridgeService)) {
+        throw StateError(
+          'Legacy prompt-history response lane requires a reconnect after '
+          'a timed-out request.',
+        );
+      }
+      final acceptedBridgeIds = {canonicalBridgeId, ...aliases};
+      final hasAuthoritativeStableBridgeId =
+          bridgeService.bridgeInstanceId != null;
+      final requestId = _uuid.v4();
+      final resultFuture = _waitForMainSocketPromptHistoryResponse(
+        bridgeService: bridgeService,
+        requestType: 'sync_prompt_history',
+        requestId: requestId,
+        acceptedBridgeIds: acceptedBridgeIds,
+        allowUnknownBridgeId: !hasAuthoritativeStableBridgeId,
+      );
+      bridgeService.requestPromptHistorySync(
+        clientId: await clientDeviceId,
+        requestId: requestId,
+        clientName: await clientName,
+      );
+      logger.info('[prompt_history] event=snapshot_requested');
+      final response = await resultFuture;
+      if (response is ErrorMessage) {
+        await _upsertSyncStatus(
+          bridgeId: canonicalBridgeId,
+          aliasBridgeIds: aliases.toList(growable: false),
+          bridgeUrl: _redactBridgeUrl(currentUrl),
+          bridgeName: target.bridgeName,
+          error: response.message,
+        );
+        logger.warning(
+          '[prompt_history] event=snapshot_failed error=UnsupportedMessage',
+        );
+        return canonicalBridgeId;
+      }
+      final result = response as PromptHistorySyncResultMessage;
+      if (result.success) {
+        return _persistSuccessfulSync(
+          target: target,
+          result: result,
+          aliasBridgeIds: {canonicalBridgeId, ...aliases},
+        );
+      }
+      await _upsertSyncStatus(
+        bridgeId: canonicalBridgeId,
+        aliasBridgeIds: aliases.toList(growable: false),
+        bridgeUrl: _redactBridgeUrl(currentUrl),
+        bridgeName: target.bridgeName,
+        error: result.error ?? 'Sync failed',
+      );
+      logger.warning(
+        '[prompt_history] event=snapshot_failed error=BridgeRejected',
+      );
+      return canonicalBridgeId;
+    } catch (error) {
+      await _upsertSyncStatus(
+        bridgeId: canonicalBridgeId,
+        aliasBridgeIds: aliases.toList(growable: false),
+        bridgeUrl: _redactBridgeUrl(currentUrl),
+        bridgeName: target.bridgeName,
+        error: '$error',
+      );
+      logger.warning(
+        '[prompt_history] event=snapshot_failed '
+        'error=${error.runtimeType}',
+      );
+      return canonicalBridgeId;
+    }
+  }
+
+  Future<ServerMessage> _waitForMainSocketPromptHistoryResponse({
+    required BridgeService bridgeService,
+    required String requestType,
+    required String requestId,
+    required Set<String> acceptedBridgeIds,
+    required bool allowUnknownBridgeId,
+  }) async {
+    final connectionEpoch =
+        bridgeService.currentConnectionBootstrap.connectionEpoch;
+    final completer = Completer<ServerMessage>();
+    late final StreamSubscription<PromptHistorySyncResultMessage> resultSub;
+    late final StreamSubscription<ErrorMessage> errorSub;
+    resultSub = bridgeService.promptHistorySyncResults.listen((result) {
+      if (result.requestId != null && result.requestId != requestId) {
+        return;
+      }
+      if (result.requestId == null &&
+          bridgeService.supportsPromptHistoryRequestCorrelation) {
+        return;
+      }
+      if (result.bridgeInstanceId != null &&
+          !allowUnknownBridgeId &&
+          !acceptedBridgeIds.contains(result.bridgeInstanceId)) {
+        return;
+      }
+      if (!completer.isCompleted) completer.complete(result);
+    });
+    errorSub = bridgeService.promptHistoryOperationErrors
+        .where(
+          (error) =>
+              error.errorCode == 'unsupported_message' &&
+              error.message == requestType,
+        )
+        .listen((error) {
+          if (!completer.isCompleted) completer.complete(error);
+        });
+    try {
+      return await completer.future.timeout(syncTimeout);
+    } on TimeoutException {
+      if (!bridgeService.supportsPromptHistoryRequestCorrelation) {
+        _legacyPromptResponsePoisonedConnectionEpoch = connectionEpoch;
+      }
+      rethrow;
+    } finally {
+      bridgeService.finishPromptHistoryOperation(requestId);
+      await resultSub.cancel();
+      await errorSub.cancel();
+    }
+  }
+
+  bool _mainSocketPromptResponseLaneAvailable(BridgeService bridgeService) {
+    return bridgeService.supportsPromptHistoryRequestCorrelation ||
+        _legacyPromptResponsePoisonedConnectionEpoch !=
+            bridgeService.currentConnectionBootstrap.connectionEpoch;
   }
 
   Future<String?> _performSyncBridge(PromptHistorySyncTarget target) async {
@@ -521,37 +784,14 @@ class PromptHistoryService {
                 msg is PromptHistorySyncResultMessage || msg is ErrorMessage,
           )
           .first
-          .timeout(_syncTimeout);
+          .timeout(syncTimeout);
 
       if (result is PromptHistorySyncResultMessage && result.success) {
-        final syncedAt =
-            result.syncedAt ?? DateTime.now().toUtc().toIso8601String();
-        final canonicalBridgeId = result.bridgeInstanceId ?? target.bridgeId;
-        await _rememberBridgeAlias(
-          aliasBridgeId: target.bridgeId,
-          canonicalBridgeId: canonicalBridgeId,
+        return _persistSuccessfulSync(
+          target: target,
+          result: result,
+          aliasBridgeIds: {target.bridgeId, ...target.bridgeAliases},
         );
-        await _upsertCacheEntries(
-          bridgeId: canonicalBridgeId,
-          aliasBridgeIds: [target.bridgeId],
-          bridgeUrl: _redactBridgeUrl(target.bridgeUrl),
-          bridgeName: target.bridgeName,
-          revision: result.revision ?? 0,
-          syncedAt: syncedAt,
-          entries: result.entries,
-        );
-        await _upsertSyncStatus(
-          bridgeId: canonicalBridgeId,
-          aliasBridgeIds: [target.bridgeId],
-          bridgeUrl: _redactBridgeUrl(target.bridgeUrl),
-          bridgeName: target.bridgeName,
-          lastSyncAt: syncedAt,
-          revision: result.revision ?? 0,
-          entryCount: result.entries
-              .where((entry) => entry.deletedAt == null)
-              .length,
-        );
-        return canonicalBridgeId;
       } else {
         final error = result is ErrorMessage
             ? result.message
@@ -585,6 +825,72 @@ class PromptHistoryService {
       orderBy: 'last_sync_at DESC',
     );
     return rows.map(_statusFromRow).toList();
+  }
+
+  Future<PromptHistorySyncStatus?> _findSyncStatus(
+    Set<String> bridgeIds,
+  ) async {
+    final db = await _db;
+    if (db == null || bridgeIds.isEmpty) return null;
+    final placeholders = List.filled(bridgeIds.length, '?').join(',');
+    final rows = await db.query(
+      'prompt_history_sync_status',
+      where: 'bridge_id IN ($placeholders)',
+      whereArgs: bridgeIds.toList(growable: false),
+      orderBy: 'last_sync_at DESC',
+      limit: 1,
+    );
+    return rows.isEmpty ? null : _statusFromRow(rows.single);
+  }
+
+  Future<String> _persistSuccessfulSync({
+    required PromptHistorySyncTarget target,
+    required PromptHistorySyncResultMessage result,
+    required Iterable<String> aliasBridgeIds,
+  }) async {
+    final syncedAt =
+        result.syncedAt ?? DateTime.now().toUtc().toIso8601String();
+    final canonicalBridgeId = result.bridgeInstanceId ?? target.bridgeId;
+    final aliases = aliasBridgeIds
+        .where((id) => id.isNotEmpty && id != canonicalBridgeId)
+        .toSet()
+        .toList(growable: false);
+    for (final alias in aliases) {
+      await _rememberBridgeAlias(
+        aliasBridgeId: alias,
+        canonicalBridgeId: canonicalBridgeId,
+      );
+    }
+    await _rememberBridgeAlias(
+      aliasBridgeId: canonicalBridgeId,
+      canonicalBridgeId: canonicalBridgeId,
+    );
+    await _upsertCacheEntries(
+      bridgeId: canonicalBridgeId,
+      aliasBridgeIds: aliases,
+      bridgeUrl: _redactBridgeUrl(target.bridgeUrl),
+      bridgeName: target.bridgeName,
+      revision: result.revision ?? 0,
+      syncedAt: syncedAt,
+      entries: result.entries,
+    );
+    final activeEntryCount = result.entries
+        .where((entry) => entry.deletedAt == null)
+        .length;
+    await _upsertSyncStatus(
+      bridgeId: canonicalBridgeId,
+      aliasBridgeIds: aliases,
+      bridgeUrl: _redactBridgeUrl(target.bridgeUrl),
+      bridgeName: target.bridgeName,
+      lastSyncAt: syncedAt,
+      revision: result.revision ?? 0,
+      entryCount: activeEntryCount,
+    );
+    logger.info(
+      '[prompt_history] event=snapshot_committed '
+      'revision=${result.revision ?? 0} entries=$activeEntryCount',
+    );
+    return canonicalBridgeId;
   }
 
   // ---------------------------------------------------------------------------
@@ -842,24 +1148,44 @@ class PromptHistoryService {
 
   Future<bool> importLegacyToCurrentBridge({
     required BridgeService bridgeService,
-  }) async {
+  }) {
+    return _serializeMainSocketPromptOperation(
+      () => _performLegacyImportOnCurrentBridge(bridgeService),
+    );
+  }
+
+  Future<bool> _performLegacyImportOnCurrentBridge(
+    BridgeService bridgeService,
+  ) async {
     final entries = await legacyEntriesForImport();
     if (entries.isEmpty || !bridgeService.isConnected) return false;
     final bridgeUrl = bridgeService.lastUrl;
     final bridgeId =
         bridgeService.promptHistoryBridgeId ?? bridgeIdForUrl(bridgeUrl);
-    final resultFuture = bridgeService.promptHistorySyncResults.first.timeout(
-      _syncTimeout,
+    if (!_mainSocketPromptResponseLaneAvailable(bridgeService)) return false;
+    final requestId = _uuid.v4();
+    final resultFuture = _waitForMainSocketPromptHistoryResponse(
+      bridgeService: bridgeService,
+      requestType: 'import_prompt_history_v1',
+      requestId: requestId,
+      acceptedBridgeIds: {?bridgeId},
+      allowUnknownBridgeId: bridgeService.bridgeInstanceId == null,
     );
-    bridgeService.send(
-      ClientMessage.importPromptHistoryV1(
-        clientId: await clientDeviceId,
-        clientName: await clientName,
-        entries: entries,
-      ),
+    bridgeService.requestPromptHistoryImport(
+      clientId: await clientDeviceId,
+      requestId: requestId,
+      clientName: await clientName,
+      entries: entries,
     );
     try {
-      final result = await resultFuture;
+      final response = await resultFuture;
+      if (response is ErrorMessage) {
+        logger.warning(
+          '[PromptHistory] import unavailable (${response.errorCode})',
+        );
+        return false;
+      }
+      final result = response as PromptHistorySyncResultMessage;
       if (result.success && bridgeUrl != null && bridgeId != null) {
         final syncedAt =
             result.syncedAt ?? DateTime.now().toUtc().toIso8601String();

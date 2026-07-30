@@ -799,6 +799,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       client,
       subscription,
       priority,
+      "priority",
     );
     this.sendEvent(client, subscription, {
       event: "sync_checkpoint",
@@ -822,6 +823,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       client,
       subscription,
       recent,
+      "recent",
     );
     this.sendEvent(client, subscription, {
       event: "sync_checkpoint",
@@ -990,6 +992,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     client: object,
     subscription: SyncSubscription,
     records: CatalogRecord[],
+    phase: "priority" | "recent" | "cold",
   ): Promise<boolean> {
     for (
       let offset = 0;
@@ -1019,7 +1022,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       for (let index = 0; index < batch.length; index += 1) {
         const snapshot = snapshots[index];
         if (!snapshot) continue;
-        this.sendTimeline(client, subscription, batch[index]!, snapshot);
+        this.sendTimeline(
+          client,
+          subscription,
+          batch[index]!,
+          snapshot,
+          phase,
+          offset + index,
+          records.length,
+        );
       }
       if (
         subscription.queuedBytes + subscription.outstandingBytes >=
@@ -1091,6 +1102,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     subscription: SyncSubscription,
     record: CatalogRecord,
     snapshot: ConversationContentSnapshot,
+    phase: "priority" | "recent" | "cold",
+    timelineIndex: number,
+    timelineCount: number,
   ): void {
     const key = targetKey(record.entry);
     const known = subscription.threadStates.get(key);
@@ -1100,9 +1114,26 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           ?.find((candidate) => candidate.revision === known)
       : undefined;
     const sent = base
-      ? this.sendTimelinePatch(client, subscription, base, snapshot)
+      ? this.sendTimelinePatch(
+          client,
+          subscription,
+          base,
+          snapshot,
+          phase,
+          timelineIndex,
+          timelineCount,
+        )
       : false;
-    if (!sent) this.sendTimelineSnapshot(client, subscription, snapshot);
+    if (!sent) {
+      this.sendTimelineSnapshot(
+        client,
+        subscription,
+        snapshot,
+        phase,
+        timelineIndex,
+        timelineCount,
+      );
+    }
     subscription.pendingThreadStates.set(key, snapshot.revision);
   }
 
@@ -1111,6 +1142,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     subscription: SyncSubscription,
     base: ConversationContentSnapshot,
     snapshot: ConversationContentSnapshot,
+    phase: "priority" | "recent" | "cold",
+    timelineIndex: number,
+    timelineCount: number,
   ): boolean {
     const baseById = new Map(
       base.entries.map((entry) => [entry.entryId, entry]),
@@ -1139,6 +1173,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         revision: snapshot.revision,
         baseRevision: base.revision,
         mode: "patch",
+        phase,
+        timelineIndex,
+        timelineCount,
         pageIndex,
         pageCount,
         entries: (pages[pageIndex] ?? []).map(toWireConversationContentEntry),
@@ -1162,6 +1199,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     client: object,
     subscription: SyncSubscription,
     snapshot: ConversationContentSnapshot,
+    phase: "priority" | "recent" | "cold",
+    timelineIndex: number,
+    timelineCount: number,
   ): void {
     const pages = this.timelinePages(snapshot, snapshot.entries);
     const effectivePages = pages.length > 0 ? pages : [[]];
@@ -1173,6 +1213,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         providerSessionId: snapshot.providerSessionId,
         revision: snapshot.revision,
         mode: "snapshot",
+        phase,
+        timelineIndex,
+        timelineCount,
         pageIndex,
         pageCount: effectivePages.length,
         entries: page.map(toWireConversationContentEntry),
@@ -1207,6 +1250,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         providerSessionId: snapshot.providerSessionId,
         revision: snapshot.revision,
         mode: "snapshot",
+        phase: "priority",
+        timelineIndex: Number.MAX_SAFE_INTEGER,
+        timelineCount: Number.MAX_SAFE_INTEGER,
         pageIndex: Number.MAX_SAFE_INTEGER,
         pageCount: Number.MAX_SAFE_INTEGER,
         entries: [],
