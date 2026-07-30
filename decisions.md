@@ -1107,3 +1107,24 @@
 - Launch/recovery shell code must avoid shell-reserved names such as zsh
   `status`. A failed recovery trap is itself a deployment fault and must be
   recorded rather than described as a seamless switch.
+
+## Build 208 establishes the real Shorebird base for sync-list stability
+
+- Live Shorebird inspection confirmed that the locally delivered build 207
+  had no cloud base release and therefore could not receive an OTA patch.
+  Build 208 advances the version monotonically and is the first
+  `1.110.1` base uploaded for the owner's Shorebird app.
+- The build 208 source includes the stable long-lived v2 sync subscription,
+  scoped list-cache reloads, stable durable-row identity, and exact pending
+  runtime binding fixes. Production Bridge code and native Swift/plugin/asset
+  sources are unchanged by those repairs.
+- Shorebird release `1.110.1+208` is active and has no patch immediately after
+  creation. No existing patch was promoted to or removed from `owner` or
+  `stable`.
+- The unsigned arm64 IPA is an AltStore/AltServer input package. Its cloud
+  release, local archive audit, transfer to CC Pocket, AltStore installation,
+  and physical-device behavior remain separate gates. A failed transfer
+  because no compatible phone is connected is not an installation.
+- The package retains the repository's `dummy-project` Firebase configuration.
+  Local/Bridge notification behavior may be tested, but APNs/FCM delivery is
+  not established by this build.
