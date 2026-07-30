@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +20,8 @@ import type {
 } from "./runtime.js";
 
 const temporaryRoots: string[] = [];
+const CODEX_SOURCE_A = "codex-source-a";
+const CODEX_SOURCE_B = "codex-source-b";
 
 afterEach(async () => {
   await Promise.all(
@@ -106,45 +108,109 @@ describe("Bridge-owned auto approval policy", () => {
 });
 
 describe("AutoApprovalStore", () => {
-  it("persists stable Codex thread IDs and disables every thread atomically", async () => {
+  it("persists source-scoped grants and only disables the authenticated source", async () => {
     const store = await storeFixture();
-    await store.setEnabled("thread-1", true);
-    await store.setEnabled("thread-2", true);
-    expect(await store.isActive("thread-1")).toBe(true);
-    expect(await store.visibleState("thread-2")).toEqual({
+    await store.setEnabled(CODEX_SOURCE_A, "thread-1", true);
+    await store.setEnabled(CODEX_SOURCE_A, "thread-2", true);
+    await store.setEnabled(CODEX_SOURCE_B, "thread-1", true);
+    expect(await store.isActive(CODEX_SOURCE_A, "thread-1")).toBe(true);
+    expect(await store.visibleState(CODEX_SOURCE_A, "thread-2")).toEqual({
       enabled: true,
       enabledConversationCount: 2,
     });
+    expect(await store.visibleState(CODEX_SOURCE_B, "thread-1")).toEqual({
+      enabled: true,
+      enabledConversationCount: 1,
+    });
 
     const reopened = new AutoApprovalStore({ filePath: store.filePath });
-    expect(await reopened.isActive("thread-1")).toBe(true);
-    await reopened.disableAll();
-    expect(await reopened.visibleState("thread-1")).toEqual({
+    expect(await reopened.isActive(CODEX_SOURCE_A, "thread-1")).toBe(true);
+    expect(await reopened.isActive(CODEX_SOURCE_B, "thread-1")).toBe(true);
+    await reopened.disableAll(CODEX_SOURCE_A);
+    expect(await reopened.visibleState(CODEX_SOURCE_A, "thread-1")).toEqual({
       enabled: false,
       enabledConversationCount: 0,
     });
+    expect(await reopened.isActive(CODEX_SOURCE_B, "thread-1")).toBe(true);
     expect(JSON.parse(await readFile(store.filePath, "utf8"))).toEqual({
-      version: 1,
-      enabledThreadIds: [],
+      version: 2,
+      enabledConversations: [
+        {
+          codexSourceId: CODEX_SOURCE_B,
+          threadId: "thread-1",
+        },
+      ],
     });
   });
 
   it("fails closed when persisted state is malformed", async () => {
     const store = await storeFixture();
-    await store.setEnabled("thread-1", true);
+    await store.setEnabled(CODEX_SOURCE_A, "thread-1", true);
     const invalid = new AutoApprovalStore({ filePath: store.filePath });
-    await import("node:fs/promises").then(({ writeFile }) =>
-      writeFile(store.filePath, '{"version":99}', "utf8"),
-    );
-    expect(await invalid.isActive("thread-1")).toBe(false);
+    await writeFile(store.filePath, '{"version":99}', "utf8");
+    expect(await invalid.isActive(CODEX_SOURCE_A, "thread-1")).toBe(false);
   });
 
-  it("imports legacy state only before Bridge has authoritative settings", async () => {
+  it("quarantines a v1 thread-only file until one source is explicitly confirmed", async () => {
     const store = await storeFixture();
-    expect(await store.importLegacy(["thread-legacy"])).toBe(true);
-    expect(await store.isActive("thread-legacy")).toBe(true);
-    expect(await store.importLegacy(["thread-stale"])).toBe(false);
-    expect(await store.isActive("thread-stale")).toBe(false);
+    await writeFile(
+      store.filePath,
+      JSON.stringify({
+        version: 1,
+        enabledThreadIds: ["thread-legacy"],
+      }),
+      "utf8",
+    );
+
+    expect(
+      await store.isActive(CODEX_SOURCE_A, "thread-legacy"),
+    ).toBe(false);
+    expect(
+      await store.isActive(CODEX_SOURCE_B, "thread-legacy"),
+    ).toBe(false);
+
+    await store.setEnabled(CODEX_SOURCE_A, "thread-legacy", true);
+    expect(
+      JSON.parse(await readFile(store.filePath, "utf8")),
+    ).toEqual({
+      version: 2,
+      enabledConversations: [
+        {
+          codexSourceId: CODEX_SOURCE_A,
+          threadId: "thread-legacy",
+        },
+      ],
+      quarantinedLegacyThreadIds: ["thread-legacy"],
+    });
+
+    const reopened = new AutoApprovalStore({ filePath: store.filePath });
+    expect(
+      await reopened.isActive(CODEX_SOURCE_A, "thread-legacy"),
+    ).toBe(true);
+    expect(
+      await reopened.isActive(CODEX_SOURCE_B, "thread-legacy"),
+    ).toBe(false);
+  });
+
+  it("accepts an old Mobile import without turning unscoped IDs into grants", async () => {
+    const store = await storeFixture();
+    expect(
+      await store.importLegacy(CODEX_SOURCE_A, ["thread-legacy"]),
+    ).toBe(true);
+    expect(
+      await store.isActive(CODEX_SOURCE_A, "thread-legacy"),
+    ).toBe(false);
+    expect(
+      await store.isActive(CODEX_SOURCE_B, "thread-legacy"),
+    ).toBe(false);
+    expect(
+      await store.importLegacy(CODEX_SOURCE_A, ["thread-stale"]),
+    ).toBe(false);
+    expect(JSON.parse(await readFile(store.filePath, "utf8"))).toEqual({
+      version: 2,
+      enabledConversations: [],
+      quarantinedLegacyThreadIds: ["thread-legacy"],
+    });
   });
 });
 
@@ -164,7 +230,7 @@ describe("AutoApprovalFeatureHandler", () => {
       fixture.context,
     );
 
-    expect(await store.isActive("thread-1")).toBe(true);
+    expect(await store.isActive(CODEX_SOURCE_A, "thread-1")).toBe(true);
     expect(fixture.sent).toContainEqual({
       type: "auto_approval_state_v1",
       requestId: "request-1",
@@ -175,6 +241,48 @@ describe("AutoApprovalFeatureHandler", () => {
       approvedCount: 0,
       supervisionAvailable: true,
       reason: "updated",
+    });
+  });
+
+  it("queries the same thread ID independently for each Codex source", async () => {
+    const store = await storeFixture();
+    const sourceA = handlerFixture(store, {
+      codexSourceId: CODEX_SOURCE_A,
+    });
+    const sourceB = handlerFixture(store, {
+      codexSourceId: CODEX_SOURCE_B,
+    });
+    sourceA.handler.capabilitiesChanged(sourceA.client);
+    sourceB.handler.capabilitiesChanged(sourceB.client);
+
+    await sourceA.handler.handle(
+      {
+        type: "set_auto_approval",
+        sessionId: sourceA.session.id,
+        requestId: "source-a-enable",
+        enabled: true,
+      },
+      sourceA.context,
+    );
+    await sourceB.handler.handle(
+      {
+        type: "get_auto_approval_state",
+        sessionId: sourceB.session.id,
+        requestId: "source-b-query",
+      },
+      sourceB.context,
+    );
+
+    expect(sourceB.sent).toContainEqual({
+      type: "auto_approval_state_v1",
+      requestId: "source-b-query",
+      sessionId: "session-1",
+      providerSessionId: "thread-1",
+      enabled: false,
+      enabledConversationCount: 0,
+      approvedCount: 0,
+      supervisionAvailable: true,
+      reason: "query",
     });
   });
 
@@ -239,9 +347,38 @@ describe("AutoApprovalFeatureHandler", () => {
     );
   });
 
+  it("fails closed when the Bridge cannot authenticate a Codex source", async () => {
+    const store = await storeFixture();
+    const fixture = handlerFixture(store, { codexSourceId: null });
+    fixture.handler.capabilitiesChanged(fixture.client);
+
+    await fixture.handler.handle(
+      {
+        type: "set_auto_approval",
+        sessionId: fixture.session.id,
+        requestId: "missing-source-request",
+        enabled: true,
+      },
+      fixture.context,
+    );
+
+    expect(await store.isActive(CODEX_SOURCE_A, "thread-1")).toBe(false);
+    expect(fixture.sent).toContainEqual({
+      type: "auto_approval_state_v1",
+      requestId: "missing-source-request",
+      sessionId: "session-1",
+      enabledConversationCount: 0,
+      supervisionAvailable: false,
+      unavailableReason: "unsupported_session",
+      reason: "updated",
+      errorCode: "codex_source_unavailable",
+      error: "Auto approval requires an authenticated Codex source",
+    });
+  });
+
   it("approves a safe request without any connected phone", async () => {
     const store = await storeFixture();
-    await store.setEnabled("thread-1", true);
+    await store.setEnabled(CODEX_SOURCE_A, "thread-1", true);
     const fixture = handlerFixture(store);
     const pending = permission("Bash", { command: "curl https://example.test" });
     let current: ServerMessage | undefined = pending;
@@ -266,9 +403,33 @@ describe("AutoApprovalFeatureHandler", () => {
     expect(fixture.sent).toEqual([]);
   });
 
+  it("does not supervise the same thread ID under another Codex source", async () => {
+    const store = await storeFixture();
+    await store.setEnabled(CODEX_SOURCE_A, "thread-1", true);
+    const fixture = handlerFixture(store, {
+      codexSourceId: CODEX_SOURCE_B,
+    });
+    const pending = permission("Bash", {
+      command: "curl https://example.test",
+    });
+    vi.spyOn(fixture.process, "getPendingPermission").mockReturnValue({
+      toolUseId: pending.toolUseId,
+      toolName: pending.toolName,
+      input: pending.input,
+    });
+    const approve = vi.spyOn(fixture.process, "approve");
+
+    fixture.handler.sessionMessage(fixture.session, pending);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(approve).not.toHaveBeenCalled();
+    expect(await store.isActive(CODEX_SOURCE_A, "thread-1")).toBe(true);
+    expect(await store.isActive(CODEX_SOURCE_B, "thread-1")).toBe(false);
+  });
+
   it("never approves rm and does not depend on Mobile eligibility", async () => {
     const store = await storeFixture();
-    await store.setEnabled("thread-1", true);
+    await store.setEnabled(CODEX_SOURCE_A, "thread-1", true);
     const fixture = handlerFixture(store);
     const approve = vi.spyOn(fixture.process, "approve");
 
@@ -295,7 +456,7 @@ describe("AutoApprovalFeatureHandler", () => {
       fixture.context,
     );
 
-    expect(await store.isActive("thread-1")).toBe(false);
+    expect(await store.isActive(CODEX_SOURCE_A, "thread-1")).toBe(false);
     expect(fixture.sent).toEqual([
       {
         type: "error",
@@ -320,7 +481,11 @@ function permission(
 
 function handlerFixture(
   store: AutoApprovalStore,
-  options: { supports?: boolean; capabilities?: Set<string> } = {},
+  options: {
+    supports?: boolean;
+    capabilities?: Set<string>;
+    codexSourceId?: string | null;
+  } = {},
 ): {
   handler: AutoApprovalFeatureHandler;
   runtime: LocalFeatureRuntime;
@@ -342,6 +507,9 @@ function handlerFixture(
   };
   const sent: unknown[] = [];
   const runtime: LocalFeatureRuntime = {
+    ...(options.codexSourceId === null
+      ? {}
+      : { codexSourceId: options.codexSourceId ?? CODEX_SOURCE_A }),
     getSession: (sessionId) => (sessionId === session.id ? session : undefined),
     getCodexThreadId: (candidate) =>
       candidate === session ? "thread-1" : undefined,

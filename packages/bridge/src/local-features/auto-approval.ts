@@ -19,13 +19,22 @@ import type {
   LocalFeatureSession,
 } from "./runtime.js";
 
-const AUTO_APPROVAL_STORE_VERSION = 1;
+const AUTO_APPROVAL_STORE_VERSION = 2;
+const LEGACY_AUTO_APPROVAL_STORE_VERSION = 1;
 const MAX_ENABLED_THREADS = 4096;
 const MAX_THREAD_ID_LENGTH = 256;
+const MAX_CODEX_SOURCE_ID_LENGTH = 128;
 
 interface AutoApprovalStoreFile {
   version: typeof AUTO_APPROVAL_STORE_VERSION;
-  enabledThreadIds: string[];
+  enabledConversations: AutoApprovalConversationIdentity[];
+  /** Audit-only: unscoped legacy IDs never participate in authorization. */
+  quarantinedLegacyThreadIds?: string[];
+}
+
+interface AutoApprovalConversationIdentity {
+  codexSourceId: string;
+  threadId: string;
 }
 
 interface AutoApprovalStoreOptions {
@@ -35,85 +44,116 @@ interface AutoApprovalStoreOptions {
 export class AutoApprovalStore {
   readonly filePath: string;
 
-  private readonly enabledThreadIds = new Set<string>();
+  private readonly enabledConversations = new Map<
+    string,
+    AutoApprovalConversationIdentity
+  >();
+  private readonly quarantinedLegacyThreadIds = new Set<string>();
   private readonly settingIntents = new Map<
     string,
-    { enabled: boolean; generation: number }
+    AutoApprovalConversationIdentity & {
+      enabled: boolean;
+      generation: number;
+    }
   >();
   private mutationTail: Promise<void> = Promise.resolve();
   private loadPromise: Promise<void> | undefined;
   private settingGeneration = 0;
   private disableAllGeneration = 0;
-  private disableAllPending = false;
+  private readonly disableAllPending = new Map<string, number>();
   private configured = false;
 
   constructor(options: AutoApprovalStoreOptions = {}) {
     this.filePath = options.filePath ?? defaultAutoApprovalStatePath();
   }
 
-  async isActive(threadId: string): Promise<boolean> {
+  async isActive(codexSourceId: string, threadId: string): Promise<boolean> {
+    requireCodexSourceId(codexSourceId);
+    requireThreadId(threadId);
     await this.ensureLoaded();
-    return (
-      !this.disableAllPending &&
-      this.enabledThreadIds.has(threadId) &&
-      this.settingIntents.get(threadId)?.enabled !== false
-    );
+    return this.visibleEnabledThreadIds(codexSourceId).has(threadId);
   }
 
   async visibleState(
+    codexSourceId: string,
     threadId?: string,
   ): Promise<{ enabled?: boolean; enabledConversationCount: number }> {
+    requireCodexSourceId(codexSourceId);
+    if (threadId !== undefined) requireThreadId(threadId);
     await this.ensureLoaded();
-    const visible = this.visibleEnabledThreadIds();
+    const visible = this.visibleEnabledThreadIds(codexSourceId);
     return {
       ...(threadId ? { enabled: visible.has(threadId) } : {}),
       enabledConversationCount: visible.size,
     };
   }
 
-  setEnabled(threadId: string, enabled: boolean): Promise<void> {
+  setEnabled(
+    codexSourceId: string,
+    threadId: string,
+    enabled: boolean,
+  ): Promise<void> {
+    requireCodexSourceId(codexSourceId);
     requireThreadId(threadId);
+    const identity = { codexSourceId, threadId };
+    const identityKey = autoApprovalIdentityKey(identity);
     const generation = ++this.settingGeneration;
-    this.settingIntents.set(threadId, { enabled, generation });
+    this.settingIntents.set(identityKey, {
+      ...identity,
+      enabled,
+      generation,
+    });
     const operation = this.serializeMutation(async () => {
       await this.ensureLoaded();
-      const next = new Set(this.enabledThreadIds);
+      const next = new Map(this.enabledConversations);
       if (enabled) {
-        if (next.size >= MAX_ENABLED_THREADS && !next.has(threadId)) {
+        if (next.size >= MAX_ENABLED_THREADS && !next.has(identityKey)) {
           throw new Error("Auto-approval conversation limit reached");
         }
-        next.add(threadId);
+        next.set(identityKey, identity);
       } else {
-        next.delete(threadId);
+        next.delete(identityKey);
       }
-      await this.persist(next);
-      this.enabledThreadIds.clear();
-      for (const value of next) this.enabledThreadIds.add(value);
+      await this.persist(next, this.quarantinedLegacyThreadIds);
+      this.replaceEnabledConversations(next);
     });
     return operation.finally(() => {
-      if (this.settingIntents.get(threadId)?.generation === generation) {
-        this.settingIntents.delete(threadId);
+      if (this.settingIntents.get(identityKey)?.generation === generation) {
+        this.settingIntents.delete(identityKey);
       }
     });
   }
 
-  disableAll(): Promise<void> {
+  disableAll(codexSourceId: string): Promise<void> {
+    requireCodexSourceId(codexSourceId);
     const generation = ++this.disableAllGeneration;
-    this.disableAllPending = true;
-    this.settingIntents.clear();
+    this.disableAllPending.set(codexSourceId, generation);
+    for (const [key, intent] of this.settingIntents) {
+      if (intent.codexSourceId === codexSourceId) {
+        this.settingIntents.delete(key);
+      }
+    }
     const operation = this.serializeMutation(async () => {
       await this.ensureLoaded();
-      await this.persist(new Set());
-      this.enabledThreadIds.clear();
+      const next = new Map(this.enabledConversations);
+      for (const [key, identity] of next) {
+        if (identity.codexSourceId === codexSourceId) next.delete(key);
+      }
+      await this.persist(next, this.quarantinedLegacyThreadIds);
+      this.replaceEnabledConversations(next);
     });
     return operation.finally(() => {
-      if (this.disableAllGeneration === generation) {
-        this.disableAllPending = false;
+      if (this.disableAllPending.get(codexSourceId) === generation) {
+        this.disableAllPending.delete(codexSourceId);
       }
     });
   }
 
-  importLegacy(threadIds: readonly string[]): Promise<boolean> {
+  importLegacy(
+    codexSourceId: string,
+    threadIds: readonly string[],
+  ): Promise<boolean> {
+    requireCodexSourceId(codexSourceId);
     for (const threadId of threadIds) requireThreadId(threadId);
     if (threadIds.length > 512) {
       return Promise.reject(new Error("Legacy auto-approval import is too large"));
@@ -121,21 +161,27 @@ export class AutoApprovalStore {
     return this.serializeMutation(async () => {
       await this.ensureLoaded();
       if (this.configured) return false;
-      const next = new Set(threadIds);
-      await this.persist(next);
-      this.enabledThreadIds.clear();
-      for (const value of next) this.enabledThreadIds.add(value);
+      const quarantined = new Set(threadIds);
+      await this.persist(new Map(), quarantined);
+      this.replaceEnabledConversations(new Map());
+      this.replaceQuarantinedLegacyThreadIds(quarantined);
       return true;
     });
   }
 
-  private visibleEnabledThreadIds(): Set<string> {
-    const visible = this.disableAllPending
-      ? new Set<string>()
-      : new Set(this.enabledThreadIds);
-    for (const [threadId, intent] of this.settingIntents) {
-      if (intent.enabled) visible.add(threadId);
-      else visible.delete(threadId);
+  private visibleEnabledThreadIds(codexSourceId: string): Set<string> {
+    const visible = new Set<string>();
+    if (!this.disableAllPending.has(codexSourceId)) {
+      for (const identity of this.enabledConversations.values()) {
+        if (identity.codexSourceId === codexSourceId) {
+          visible.add(identity.threadId);
+        }
+      }
+    }
+    for (const intent of this.settingIntents.values()) {
+      if (intent.codexSourceId !== codexSourceId) continue;
+      if (intent.enabled) visible.add(intent.threadId);
+      else visible.delete(intent.threadId);
     }
     return visible;
   }
@@ -149,18 +195,61 @@ export class AutoApprovalStore {
     try {
       const decoded = JSON.parse(await readFile(this.filePath, "utf8")) as {
         version?: unknown;
+        enabledConversations?: unknown;
         enabledThreadIds?: unknown;
+        quarantinedLegacyThreadIds?: unknown;
       };
+      if (decoded.version === LEGACY_AUTO_APPROVAL_STORE_VERSION) {
+        if (
+          !Array.isArray(decoded.enabledThreadIds) ||
+          decoded.enabledThreadIds.length > MAX_ENABLED_THREADS
+        ) {
+          throw new Error("Unsupported auto-approval state file");
+        }
+        for (const value of decoded.enabledThreadIds) {
+          requireThreadId(value);
+          // A v1 thread ID cannot prove which Codex Home authorized it.
+          // Preserve it for audit/migration, but deliberately grant nothing.
+          this.quarantinedLegacyThreadIds.add(value);
+        }
+        this.configured = true;
+        return;
+      }
+      if (decoded.version !== AUTO_APPROVAL_STORE_VERSION) {
+        throw new Error("Unsupported auto-approval state file");
+      }
       if (
-        decoded.version !== AUTO_APPROVAL_STORE_VERSION ||
-        !Array.isArray(decoded.enabledThreadIds) ||
-        decoded.enabledThreadIds.length > MAX_ENABLED_THREADS
+        !Array.isArray(decoded.enabledConversations) ||
+        decoded.enabledConversations.length > MAX_ENABLED_THREADS
       ) {
         throw new Error("Unsupported auto-approval state file");
       }
-      for (const value of decoded.enabledThreadIds) {
+      const quarantined = decoded.quarantinedLegacyThreadIds ?? [];
+      if (
+        !Array.isArray(quarantined) ||
+        quarantined.length > MAX_ENABLED_THREADS
+      ) {
+        throw new Error("Unsupported auto-approval state file");
+      }
+      for (const raw of decoded.enabledConversations) {
+        if (!raw || typeof raw !== "object") {
+          throw new Error("Unsupported auto-approval state file");
+        }
+        const identity = raw as {
+          codexSourceId?: unknown;
+          threadId?: unknown;
+        };
+        requireCodexSourceId(identity.codexSourceId);
+        requireThreadId(identity.threadId);
+        const value = {
+          codexSourceId: identity.codexSourceId,
+          threadId: identity.threadId,
+        };
+        this.enabledConversations.set(autoApprovalIdentityKey(value), value);
+      }
+      for (const value of quarantined) {
         requireThreadId(value);
-        this.enabledThreadIds.add(value);
+        this.quarantinedLegacyThreadIds.add(value);
       }
       this.configured = true;
     } catch (error) {
@@ -170,7 +259,8 @@ export class AutoApprovalStore {
         );
         this.configured = true;
       }
-      this.enabledThreadIds.clear();
+      this.enabledConversations.clear();
+      this.quarantinedLegacyThreadIds.clear();
     }
   }
 
@@ -183,10 +273,25 @@ export class AutoApprovalStore {
     return current;
   }
 
-  private async persist(enabledThreadIds: Set<string>): Promise<void> {
+  private async persist(
+    enabledConversations: ReadonlyMap<
+      string,
+      AutoApprovalConversationIdentity
+    >,
+    quarantinedLegacyThreadIds: ReadonlySet<string>,
+  ): Promise<void> {
     const data: AutoApprovalStoreFile = {
       version: AUTO_APPROVAL_STORE_VERSION,
-      enabledThreadIds: [...enabledThreadIds].sort(),
+      enabledConversations: [...enabledConversations.values()].sort(
+        compareAutoApprovalIdentities,
+      ),
+      ...(quarantinedLegacyThreadIds.size > 0
+        ? {
+            quarantinedLegacyThreadIds: [
+              ...quarantinedLegacyThreadIds,
+            ].sort(),
+          }
+        : {}),
     };
     const directory = dirname(this.filePath);
     const temporaryPath = `${this.filePath}.tmp-${process.pid}-${randomUUID()}`;
@@ -201,6 +306,24 @@ export class AutoApprovalStore {
       this.configured = true;
     } finally {
       await rm(temporaryPath, { force: true }).catch(() => {});
+    }
+  }
+
+  private replaceEnabledConversations(
+    next: ReadonlyMap<string, AutoApprovalConversationIdentity>,
+  ): void {
+    this.enabledConversations.clear();
+    for (const [key, value] of next) {
+      this.enabledConversations.set(key, value);
+    }
+  }
+
+  private replaceQuarantinedLegacyThreadIds(
+    next: ReadonlySet<string>,
+  ): void {
+    this.quarantinedLegacyThreadIds.clear();
+    for (const value of next) {
+      this.quarantinedLegacyThreadIds.add(value);
     }
   }
 }
@@ -242,17 +365,33 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
       return;
     }
 
+    const codexSourceId = validCodexSourceId(this.runtime.codexSourceId);
+    if (!codexSourceId) {
+      await this.sendFailure(
+        message,
+        context,
+        new Error("Auto approval requires an authenticated Codex source"),
+        "codex_source_unavailable",
+        "unsupported_session",
+      );
+      return;
+    }
+
     if (message.type === "disable_all_auto_approvals") {
       try {
-        await this.store.disableAll();
-        const state = await this.buildState({
-          requestId: message.requestId,
-          sessionId: message.sessionId,
-          reason: "disabled_all",
-        });
+        await this.store.disableAll(codexSourceId);
+        const state = await this.buildState(
+          {
+            requestId: message.requestId,
+            sessionId: message.sessionId,
+            reason: "disabled_all",
+          },
+          codexSourceId,
+        );
         this.sendState(context.client, state);
         await this.broadcastState(
           { sessionId: message.sessionId, reason: "disabled_all" },
+          codexSourceId,
           context.client,
         );
       } catch (error) {
@@ -263,15 +402,22 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
 
     if (message.type === "import_legacy_auto_approvals") {
       try {
-        await this.store.importLegacy(message.providerSessionIds);
-        const state = await this.buildState({
-          requestId: message.requestId,
-          sessionId: message.sessionId,
-          reason: "legacy_imported",
-        });
+        await this.store.importLegacy(
+          codexSourceId,
+          message.providerSessionIds,
+        );
+        const state = await this.buildState(
+          {
+            requestId: message.requestId,
+            sessionId: message.sessionId,
+            reason: "legacy_imported",
+          },
+          codexSourceId,
+        );
         this.sendState(context.client, state);
         await this.broadcastState(
           { sessionId: message.sessionId, reason: "legacy_imported" },
+          codexSourceId,
           context.client,
         );
       } catch (error) {
@@ -303,14 +449,21 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
 
     try {
       if (message.type === "set_auto_approval") {
-        await this.store.setEnabled(target.threadId, message.enabled);
+        await this.store.setEnabled(
+          codexSourceId,
+          target.threadId,
+          message.enabled,
+        );
       }
-      const state = await this.buildState({
-        requestId: message.requestId,
-        sessionId: target.session.id,
-        providerSessionId: target.threadId,
-        reason: message.type === "set_auto_approval" ? "updated" : "query",
-      });
+      const state = await this.buildState(
+        {
+          requestId: message.requestId,
+          sessionId: target.session.id,
+          providerSessionId: target.threadId,
+          reason: message.type === "set_auto_approval" ? "updated" : "query",
+        },
+        codexSourceId,
+      );
       this.sendState(context.client, state);
       if (message.type === "set_auto_approval") {
         await this.broadcastState(
@@ -319,6 +472,7 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
             providerSessionId: target.threadId,
             reason: "updated",
           },
+          codexSourceId,
           context.client,
         );
       }
@@ -342,13 +496,19 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
       return;
     }
     const threadId = this.runtime.getCodexThreadId(session);
-    if (!threadId) return;
+    const codexSourceId = validCodexSourceId(this.runtime.codexSourceId);
+    if (!threadId || !codexSourceId) return;
     const handled = this.handledRequests.get(session.process) ?? new Set();
     if (handled.has(message.toolUseId)) return;
     handled.add(message.toolUseId);
     this.handledRequests.set(session.process, handled);
     queueMicrotask(() => {
-      void this.autoApprove(session, threadId, message).catch((error) => {
+      void this.autoApprove(
+        session,
+        codexSourceId,
+        threadId,
+        message,
+      ).catch((error) => {
         handled.delete(message.toolUseId);
         console.warn(
           `[auto-approval] Failed to supervise ${message.toolUseId}: ${errorMessage(error)}`,
@@ -368,16 +528,18 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
 
   private async autoApprove(
     session: LocalFeatureSession,
+    codexSourceId: string,
     threadId: string,
     message: Extract<ServerMessage, { type: "permission_request" }>,
   ): Promise<void> {
     const originalProcess = session.process as CodexProcess;
     try {
-      if (!(await this.store.isActive(threadId))) return;
+      if (!(await this.store.isActive(codexSourceId, threadId))) return;
       const current = this.runtime.getSession(session.id);
       if (
         current !== session ||
         current.process !== originalProcess ||
+        this.runtime.codexSourceId !== codexSourceId ||
         this.runtime.getCodexThreadId(current) !== threadId ||
         !(current.process instanceof CodexProcess)
       ) {
@@ -393,22 +555,29 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
           toolName: pending.toolName,
           input: pending.input,
         }) ||
-        !(await this.store.isActive(threadId))
+        !(await this.store.isActive(codexSourceId, threadId))
       ) {
         return;
       }
 
       current.process.approve(message.toolUseId);
       if (current.process.getPendingPermission(message.toolUseId)) return;
-      this.approvedCounts.set(
+      const identityKey = autoApprovalIdentityKey({
+        codexSourceId,
         threadId,
-        (this.approvedCounts.get(threadId) ?? 0) + 1,
-      );
-      await this.broadcastState({
-        sessionId: session.id,
-        providerSessionId: threadId,
-        reason: "auto_approved",
       });
+      this.approvedCounts.set(
+        identityKey,
+        (this.approvedCounts.get(identityKey) ?? 0) + 1,
+      );
+      await this.broadcastState(
+        {
+          sessionId: session.id,
+          providerSessionId: threadId,
+          reason: "auto_approved",
+        },
+        codexSourceId,
+      );
     } finally {
       this.handledRequests.get(originalProcess)?.delete(message.toolUseId);
     }
@@ -465,15 +634,25 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
           "requestId" | "sessionId" | "providerSessionId"
         >
       >,
+    codexSourceId: string,
   ): Promise<AutoApprovalStateMessage> {
-    const visible = await this.store.visibleState(fields.providerSessionId);
+    const visible = await this.store.visibleState(
+      codexSourceId,
+      fields.providerSessionId,
+    );
+    const identityKey = fields.providerSessionId
+      ? autoApprovalIdentityKey({
+          codexSourceId,
+          threadId: fields.providerSessionId,
+        })
+      : undefined;
     return {
       type: AUTO_APPROVAL_STATE_CAPABILITY,
       ...fields,
       ...visible,
       supervisionAvailable: true,
-      ...(fields.providerSessionId
-        ? { approvedCount: this.approvedCounts.get(fields.providerSessionId) ?? 0 }
+      ...(identityKey
+        ? { approvedCount: this.approvedCounts.get(identityKey) ?? 0 }
         : {}),
     };
   }
@@ -483,9 +662,10 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
       Partial<
         Pick<AutoApprovalStateMessage, "sessionId" | "providerSessionId">
       >,
+    codexSourceId: string,
     excludedClient?: object,
   ): Promise<void> {
-    const state = await this.buildState(fields);
+    const state = await this.buildState(fields, codexSourceId);
     for (const client of this.capableClients) {
       if (client === excludedClient || this.runtime.isClientOpen?.(client) === false) {
         continue;
@@ -501,7 +681,10 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
     errorCode = "state_update_failed",
     unavailableReason?: "external_app_server" | "unsupported_session",
   ): Promise<void> {
-    const visible = await this.store.visibleState();
+    const codexSourceId = validCodexSourceId(this.runtime.codexSourceId);
+    const visible = codexSourceId
+      ? await this.store.visibleState(codexSourceId)
+      : { enabledConversationCount: 0 };
     this.sendState(context.client, {
       type: AUTO_APPROVAL_STATE_CAPABILITY,
       requestId: message.requestId,
@@ -857,6 +1040,40 @@ function isCanonicalMcpApproval(input: Record<string, unknown>): boolean {
   );
 }
 
+function autoApprovalIdentityKey(
+  identity: AutoApprovalConversationIdentity,
+): string {
+  return JSON.stringify([identity.codexSourceId, identity.threadId]);
+}
+
+function compareAutoApprovalIdentities(
+  left: AutoApprovalConversationIdentity,
+  right: AutoApprovalConversationIdentity,
+): number {
+  return (
+    left.codexSourceId.localeCompare(right.codexSourceId) ||
+    left.threadId.localeCompare(right.threadId)
+  );
+}
+
+function validCodexSourceId(value: unknown): string | undefined {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.trim() !== value ||
+    value.length > MAX_CODEX_SOURCE_ID_LENGTH
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+function requireCodexSourceId(value: unknown): asserts value is string {
+  if (!validCodexSourceId(value)) {
+    throw new Error("Invalid Codex source ID in auto-approval state");
+  }
+}
+
 function requireThreadId(value: unknown): asserts value is string {
   if (
     typeof value !== "string" ||
@@ -880,5 +1097,6 @@ function defaultAutoApprovalStatePath(): string {
       `ccpocket-auto-approval-${process.pid}-${randomUUID()}.json`,
     );
   }
+  // Keep the historical filename so existing installs are migrated in place.
   return join(homedir(), ".ccpocket", "auto-approval-v1.json");
 }
