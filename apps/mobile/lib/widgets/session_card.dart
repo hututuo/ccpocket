@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../features/conversation_mirror/conversation_mirror_badge.dart';
 import '../models/messages.dart';
+import '../models/offline_pending_action.dart';
 import '../theme/app_theme.dart';
 import '../theme/provider_style.dart';
 import '../utils/command_parser.dart';
@@ -39,6 +40,8 @@ class RunningSessionCard extends StatefulWidget {
   final ConversationSyncV2Status? conversationStatus;
   final SessionDisplayMode displayMode;
   final String? draftText;
+  final OfflinePendingAction? pendingResumeAction;
+  final VoidCallback? onCancelPendingResume;
   final bool isProcessing;
 
   const RunningSessionCard({
@@ -61,6 +64,8 @@ class RunningSessionCard extends StatefulWidget {
     this.conversationStatus,
     this.displayMode = SessionDisplayMode.first,
     this.draftText,
+    this.pendingResumeAction,
+    this.onCancelPendingResume,
     this.isProcessing = false,
   });
 
@@ -217,6 +222,17 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                 ],
               ),
             ),
+            if (widget.pendingResumeAction case final pendingAction?)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: _PendingResumeBadge(
+                    action: pendingAction,
+                    onCancel: widget.onCancelPendingResume,
+                  ),
+                ),
+              ),
             // Approval area (shown when waiting for permission)
             if (hasPermission)
               isCodexSession
@@ -564,6 +580,90 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
     } catch (_) {
       return '';
     }
+  }
+}
+
+class _PendingResumeBadge extends StatelessWidget {
+  const _PendingResumeBadge({required this.action, this.onCancel});
+
+  final OfflinePendingAction action;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    final isProcessing = action.state == OfflinePendingActionState.processing;
+    final label = isProcessing
+        ? l.sessionLinkProgressStage('request_sent')
+        : l.pendingActionStatus;
+    final description = isProcessing
+        ? l.pendingActionProcessingResumeDescription
+        : l.pendingActionWillResumeOnReconnect;
+
+    return Semantics(
+      label: '$label. $description',
+      child: Tooltip(
+        message: description,
+        child: Container(
+          key: ValueKey('session_card_pending_resume_${action.id}'),
+          padding: EdgeInsets.only(
+            left: 8,
+            right: onCancel == null ? 8 : 2,
+            top: 3,
+            bottom: 3,
+          ),
+          decoration: BoxDecoration(
+            color: colorScheme.secondaryContainer.withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: colorScheme.secondary.withValues(alpha: 0.3),
+              width: 0.6,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isProcessing
+                    ? Icons.cloud_upload_outlined
+                    : Icons.schedule_outlined,
+                size: 12,
+                color: colorScheme.onSecondaryContainer,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  color: colorScheme.onSecondaryContainer,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (onCancel != null) ...[
+                const SizedBox(width: 2),
+                IconButton(
+                  key: const ValueKey(
+                    'session_card_pending_resume_cancel_button',
+                  ),
+                  onPressed: onCancel,
+                  tooltip: l.cancel,
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 24,
+                    height: 24,
+                  ),
+                  icon: const Icon(Icons.close, size: 14),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
