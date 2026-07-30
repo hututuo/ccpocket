@@ -1,5 +1,25 @@
 # ccPocket Compatibility Decisions
 
+## 2026-07-30 durable Codex threads use external rollout activity
+
+- 所有 durable Codex 会话都可直接读取本地缓存；`thread/loaded/list`、
+  Bridge-owned runtime attachment 和用户是否点开页面都不是可用性门禁。
+- 独立 Codex Desktop/Cockpit 进程的运行态由现有 `CodexRolloutMonitor` 和
+  rollout 尾部活动发现补充到 `conversation_sync_v2`。首次连接只做一次有界
+  64 KiB 尾部检查；事件监听负责后续增量，禁止每五秒逐会话重读历史。
+- “已发现状态集合”和“实时内容 watcher 集合”必须分离。所有已发现的
+  Working 都保留在状态快照中；实时内容 watcher 仍有 32 个上限，超限不得把
+  Working 静默改成 idle。
+- 默认不为普通近期 idle 会话常驻 rollout watcher。用户聚焦或会话进入
+  Working 后再附着；当前 turn 的实时回放只进入 v2 路径，旧 continuity 协议
+  行为保持不变。
+- 目录、状态和 live delta 使用 source generation、`observedAt` 与稳定
+  provider thread ID 拒绝迟到结果。标题、项目路径和同名显示文本永远不能作为
+  会话身份，也不能把两个同名会话绑定到同一份历史。
+- 独立 Desktop app-server 的 Need You 仍没有可从 rollout 权威恢复的完整请求
+  台账。Bridge-owned/shared app-server 的请求生命周期保持权威；外部实例能力
+  不足时标为 unknown/degraded，不能根据正文或旧 Working 伪造 Need You。
+
 ## 2026-07-30 conversation sync batches keep one subscription
 
 - `conversation_sync_v2` 的 `sync_begin` 标记一次逻辑批次，不代表创建新订阅。

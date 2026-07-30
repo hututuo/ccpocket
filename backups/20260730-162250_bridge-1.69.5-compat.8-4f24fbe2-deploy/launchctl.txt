@@ -1,0 +1,81 @@
+gui/501/com.ccpocket.bridge = {
+	active count = 1
+	path = /Users/huyiyang/Library/LaunchAgents/com.ccpocket.bridge.plist
+	type = LaunchAgent
+	state = running
+
+	program = /bin/zsh
+	arguments = {
+		/bin/zsh
+		-li
+		-c
+		exec node "$BRIDGE_CLI_ENTRY"
+	}
+
+	stdout path = /tmp/ccpocket-bridge.log
+	stderr path = /tmp/ccpocket-bridge.err
+	inherited environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.4Qoj6nUiFn/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		BRIDGE_PORT => 8765
+		BRIDGE_ALLOWED_DIRS => /Users/huyiyang,/private/tmp/ccpocket-upstream-1.108-ota-integration
+		BRIDGE_HOST => 127.0.0.1
+		BRIDGE_DISABLE_MDNS => 1
+		BRIDGE_ARTIFACT_BASE_URL => http://100.94.144.77:8765
+		BRIDGE_PUBLIC_WS_URL => ws://100.94.144.77:8765
+		BRIDGE_CLI_ENTRY => /Users/huyiyang/Library/Application Support/ccPocket Bridge/runtime/1.69.5-compat.8-4f24fbe2/packages/bridge/dist/cli.js
+		XPC_SERVICE_NAME => com.ccpocket.bridge
+	}
+
+	domain = gui/501 [100022]
+	asid = 100022
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	pid = 55743
+	immediate reason = speculative
+	forks = 27
+	execs = 2
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)
+	checked allocations reason = no host
+	checked allocations flags = 0x0
+	last exit code = (never exited)
+
+	resource coalition = {
+		ID = 231628
+		type = resource
+		state = active
+		active count = 1
+		name = com.ccpocket.bridge
+	}
+
+	jetsam coalition = {
+		ID = 231629
+		type = jetsam
+		state = active
+		active count = 1
+		name = com.ccpocket.bridge
+	}
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	submitted job. ignore execute allowed
+	jetsam thread limit = 32
+	cpumon = default
+
+	properties = keepalive | runatload | inferred program | system service | tle system
+}
