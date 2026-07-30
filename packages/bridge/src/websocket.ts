@@ -214,14 +214,25 @@ type FileContentServerMessage = Extract<
   { type: "file_content" }
 >;
 type ResumeClientMessage = Extract<ClientMessage, { type: "resume_session" }>;
+type ResumeOperationWaiter = {
+  ws: WebSocket;
+  resumeRequestId?: string;
+  sessionLinkGeneration?: number;
+  progressSequence: number;
+};
+type ResumeOperationProgress = {
+  stage: SessionLinkProgressStage;
+  completedUnits?: number;
+  totalUnits?: number;
+};
 type ResumeOperation = {
   id: string;
   provider: Provider;
   sourceSessionId: string;
   projectPath: string;
-  resumeRequestId?: string;
   fingerprint: string;
-  waiters: Set<WebSocket>;
+  waiters: ResumeOperationWaiter[];
+  latestProgress?: ResumeOperationProgress;
   timeout?: ReturnType<typeof setTimeout>;
   completed?: {
     sessionId: string;
@@ -7756,10 +7767,22 @@ export class BridgeWebSocketServer {
         );
         const provider = msg.provider ?? "claude";
         let resumeProgressSequence = 0;
+        let sharedResumeOperation:
+          | { key: string; operationId: string }
+          | undefined;
         const sendResumeProgress = (
           stage: SessionLinkProgressStage,
           counts: { completedUnits?: number; totalUnits?: number } = {},
         ): void => {
+          if (sharedResumeOperation) {
+            this.sendResumeOperationProgress(
+              sharedResumeOperation.key,
+              sharedResumeOperation.operationId,
+              stage,
+              counts,
+            );
+            return;
+          }
           this.sendSessionLinkProgress(ws, {
             requestId: msg.resumeRequestId,
             sourceSessionId: msg.sessionId,
@@ -7890,8 +7913,10 @@ export class BridgeWebSocketServer {
             sourceSessionId: sessionRefId,
             projectPath: effectiveProjectPath,
             request: msg,
+            initialProgressSequence: resumeProgressSequence,
           });
           if (!resumeOperation.isOwner) break;
+          sharedResumeOperation = resumeOperation;
 
           let releaseThreadOperation: (() => void) | undefined;
           let historyMetrics = summarizeResumeHistory([]);
@@ -8168,8 +8193,10 @@ export class BridgeWebSocketServer {
           sourceSessionId: claudeSessionId,
           projectPath: resumeProjectPath,
           request: msg,
+          initialProgressSequence: resumeProgressSequence,
         });
         if (!resumeOperation.isOwner) break;
+        sharedResumeOperation = resumeOperation;
 
         sendResumeProgress("resume_lock_acquired");
         const historyStartedAt = Date.now();
@@ -10016,7 +10043,9 @@ export class BridgeWebSocketServer {
     this.pendingClaudeResumeInputs.get(ws)?.clear();
     this.pendingClaudeResumeInputs.delete(ws);
     for (const operation of this.resumeOperations.values()) {
-      operation.waiters.delete(ws);
+      operation.waiters = operation.waiters.filter(
+        (waiter) => waiter.ws !== ws,
+      );
     }
   }
 
@@ -10052,7 +10081,6 @@ export class BridgeWebSocketServer {
       networkAccessEnabled: msg.networkAccessEnabled,
       webSearchMode: msg.webSearchMode,
       additionalWritableRoots: [...(msg.additionalWritableRoots ?? [])].sort(),
-      resumeRequestId: msg.resumeRequestId,
     });
   }
 
@@ -10083,8 +10111,16 @@ export class BridgeWebSocketServer {
     sourceSessionId: string;
     projectPath: string;
     request: ResumeClientMessage;
+    initialProgressSequence: number;
   }): { key: string; operationId: string; isOwner: boolean } {
-    const { ws, provider, sourceSessionId, projectPath, request } = params;
+    const {
+      ws,
+      provider,
+      sourceSessionId,
+      projectPath,
+      request,
+      initialProgressSequence,
+    } = params;
     const key = this.resumeOperationKey(provider, sourceSessionId);
     const fingerprint = this.resumeRequestFingerprint(request);
     let operation = this.resumeOperations.get(key);
@@ -10144,14 +10180,32 @@ export class BridgeWebSocketServer {
 
     if (operation) {
       if (operation.completed) {
-        this.send(ws, operation.completed.message);
+        this.sendResumeCompletion(
+          {
+            ws,
+            resumeRequestId: request.resumeRequestId,
+            sessionLinkGeneration: request.sessionLinkGeneration,
+            progressSequence: initialProgressSequence,
+          },
+          operation.completed.message,
+        );
         this.flushPendingClaudeResumeInputs(
           ws,
           sourceSessionId,
           operation.completed.sessionId,
         );
       } else {
-        operation.waiters.add(ws);
+        const waiter = this.addResumeOperationWaiter(
+          operation,
+          ws,
+          request,
+          initialProgressSequence,
+        );
+        if (operation.latestProgress) {
+          this.sendResumeProgressToWaiter(waiter, operation, {
+            ...operation.latestProgress,
+          });
+        }
       }
       return { key, operationId: operation.id, isOwner: false };
     }
@@ -10162,9 +10216,15 @@ export class BridgeWebSocketServer {
       provider,
       sourceSessionId,
       projectPath,
-      resumeRequestId: request.resumeRequestId,
       fingerprint,
-      waiters: new Set([ws]),
+      waiters: [
+        {
+          ws,
+          resumeRequestId: request.resumeRequestId,
+          sessionLinkGeneration: request.sessionLinkGeneration,
+          progressSequence: initialProgressSequence,
+        },
+      ],
     };
     const timeout = setTimeout(() => {
       this.failResumeOperation(
@@ -10194,14 +10254,14 @@ export class BridgeWebSocketServer {
       completedAt: Date.now(),
     };
     for (const waiter of operation.waiters) {
-      this.send(waiter, message);
+      this.sendResumeCompletion(waiter, message);
       this.flushPendingClaudeResumeInputs(
-        waiter,
+        waiter.ws,
         operation.sourceSessionId,
         sessionId,
       );
     }
-    operation.waiters.clear();
+    operation.waiters = [];
     const timeout = setTimeout(() => {
       this.clearResumeOperation(key, operation);
     }, RESUME_COMPLETED_TTL_MS);
@@ -10220,10 +10280,103 @@ export class BridgeWebSocketServer {
     if (!operation || operation.id !== operationId) return;
     this.clearResumeOperation(key, operation);
     for (const waiter of operation.waiters) {
-      this.rejectPendingClaudeResumeInputs(waiter, operation.sourceSessionId);
-      this.sendResumeFailed(waiter, operation);
-      this.send(waiter, { type: "error", message });
+      this.rejectPendingClaudeResumeInputs(
+        waiter.ws,
+        operation.sourceSessionId,
+      );
+      this.sendResumeFailed(waiter.ws, {
+        ...operation,
+        resumeRequestId: waiter.resumeRequestId,
+        sessionLinkGeneration: waiter.sessionLinkGeneration,
+      });
+      this.send(waiter.ws, { type: "error", message });
     }
+  }
+
+  private addResumeOperationWaiter(
+    operation: ResumeOperation,
+    ws: WebSocket,
+    request: ResumeClientMessage,
+    initialProgressSequence: number,
+  ): ResumeOperationWaiter {
+    const existing = operation.waiters.find(
+      (waiter) =>
+        waiter.ws === ws &&
+        waiter.resumeRequestId === request.resumeRequestId &&
+        waiter.sessionLinkGeneration === request.sessionLinkGeneration,
+    );
+    if (existing) return existing;
+    const waiter: ResumeOperationWaiter = {
+      ws,
+      resumeRequestId: request.resumeRequestId,
+      sessionLinkGeneration: request.sessionLinkGeneration,
+      progressSequence: initialProgressSequence,
+    };
+    operation.waiters.push(waiter);
+    return waiter;
+  }
+
+  private sendResumeOperationProgress(
+    key: string,
+    operationId: string,
+    stage: SessionLinkProgressStage,
+    counts: { completedUnits?: number; totalUnits?: number } = {},
+  ): void {
+    const operation = this.resumeOperations.get(key);
+    if (!operation || operation.id !== operationId || operation.completed) {
+      return;
+    }
+    operation.latestProgress = { stage, ...counts };
+    for (const waiter of operation.waiters) {
+      this.sendResumeProgressToWaiter(waiter, operation, {
+        stage,
+        ...counts,
+      });
+    }
+  }
+
+  private sendResumeProgressToWaiter(
+    waiter: ResumeOperationWaiter,
+    operation: ResumeOperation,
+    progress: ResumeOperationProgress,
+  ): void {
+    this.sendSessionLinkProgress(waiter.ws, {
+      requestId: waiter.resumeRequestId,
+      sourceSessionId: operation.sourceSessionId,
+      generation: waiter.sessionLinkGeneration,
+      operation: "resume",
+      stage: progress.stage,
+      sequence: ++waiter.progressSequence,
+      ...(progress.completedUnits !== undefined
+        ? { completedUnits: progress.completedUnits }
+        : {}),
+      ...(progress.totalUnits !== undefined
+        ? { totalUnits: progress.totalUnits }
+        : {}),
+    });
+  }
+
+  private sendResumeCompletion(
+    waiter: ResumeOperationWaiter,
+    message: SystemServerMessage,
+  ): void {
+    const response = {
+      ...message,
+    } as SystemServerMessage & {
+      resumeRequestId?: string;
+      sessionLinkGeneration?: number;
+    };
+    if (waiter.resumeRequestId) {
+      response.resumeRequestId = waiter.resumeRequestId;
+    } else {
+      delete response.resumeRequestId;
+    }
+    if (waiter.sessionLinkGeneration !== undefined) {
+      response.sessionLinkGeneration = waiter.sessionLinkGeneration;
+    } else {
+      delete response.sessionLinkGeneration;
+    }
+    this.send(waiter.ws, response);
   }
 
   private sendResumeFailed(
@@ -10233,6 +10386,7 @@ export class BridgeWebSocketServer {
       sourceSessionId: string;
       projectPath: string;
       resumeRequestId?: string;
+      sessionLinkGeneration?: number;
     },
   ): void {
     this.send(ws, {
@@ -10243,6 +10397,9 @@ export class BridgeWebSocketServer {
       projectPath: resume.projectPath,
       ...(resume.resumeRequestId
         ? { resumeRequestId: resume.resumeRequestId }
+        : {}),
+      ...(resume.sessionLinkGeneration !== undefined
+        ? { sessionLinkGeneration: resume.sessionLinkGeneration }
         : {}),
     });
   }

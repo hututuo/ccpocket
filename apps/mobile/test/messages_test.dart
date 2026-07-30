@@ -724,10 +724,12 @@ void main() {
                 'subtype': 'session_created',
                 'sessionId': 'bridge-1',
                 'resumeRequestId': 'link-request-1',
+                'sessionLinkGeneration': 7,
               })
               as SystemMessage;
 
       expect(message.resumeRequestId, 'link-request-1');
+      expect(message.sessionLinkGeneration, 7);
     });
 
     test('parses start request correlation failure', () {

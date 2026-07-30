@@ -214,7 +214,11 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
       return;
     }
     if (message is! SystemMessage) return;
-    if (message.resumeRequestId != _resumeRequestId) return;
+    if (message.resumeRequestId != _resumeRequestId ||
+        (message.sessionLinkGeneration != null &&
+            message.sessionLinkGeneration != _linkGeneration)) {
+      return;
+    }
     if (message.subtype == 'session_created' && message.sessionId != null) {
       unawaited(_cancelResumeSubscription());
       emit(

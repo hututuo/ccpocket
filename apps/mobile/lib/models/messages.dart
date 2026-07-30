@@ -1225,6 +1225,7 @@ sealed class ServerMessage {
         forkedFromThreadId: json['forkedFromThreadId'] as String?,
         startRequestId: json['startRequestId'] as String?,
         resumeRequestId: json['resumeRequestId'] as String?,
+        sessionLinkGeneration: (json['sessionLinkGeneration'] as num?)?.toInt(),
         errorMessage: json['errorMessage'] as String?,
         tipCode: json['tipCode'] as String?,
         permissionChangeId: json['permissionChangeId'] as String?,
@@ -2087,6 +2088,7 @@ class SystemMessage implements ServerMessage {
   final String? forkedFromThreadId;
   final String? startRequestId;
   final String? resumeRequestId;
+  final int? sessionLinkGeneration;
   final String? errorMessage;
   final String? tipCode;
   final String? permissionChangeId;
@@ -2124,6 +2126,7 @@ class SystemMessage implements ServerMessage {
     this.forkedFromThreadId,
     this.startRequestId,
     this.resumeRequestId,
+    this.sessionLinkGeneration,
     this.errorMessage,
     this.tipCode,
     this.permissionChangeId,
