@@ -161,7 +161,7 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
     await _resumeSubscription?.cancel();
     if (!_canResumeFromCurrentSource(session)) {
       if (!isClosed) {
-        emit(const SessionLinkState.unavailable());
+        _showUnavailable('data_source_changed');
       }
       return;
     }

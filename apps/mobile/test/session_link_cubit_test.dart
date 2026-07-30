@@ -257,6 +257,7 @@ void main() {
     await cubit.resolve();
 
     expect(cubit.state, const SessionLinkState.unavailable());
+    expect(cubit.lastFailureCode, 'data_source_changed');
     expect(coordinator.resumedSession, isNull);
   });
 
