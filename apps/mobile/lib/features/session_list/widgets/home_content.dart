@@ -72,6 +72,109 @@ List<_ProjectSessionGroup> _groupSessionsByProject({
   ];
 }
 
+String _recentSessionCardText(
+  RecentSession session,
+  SessionDisplayMode displayMode,
+) {
+  return switch (displayMode) {
+    SessionDisplayMode.first =>
+      session.firstPrompt.isNotEmpty
+          ? session.firstPrompt
+          : session.displayText,
+    SessionDisplayMode.last =>
+      (session.lastPrompt ?? session.firstPrompt).isNotEmpty
+          ? (session.lastPrompt ?? session.firstPrompt)
+          : session.displayText,
+    SessionDisplayMode.summary =>
+      (session.summary ?? session.firstPrompt).isNotEmpty
+          ? (session.summary ?? session.firstPrompt)
+          : session.displayText,
+  };
+}
+
+SessionInfo _sessionInfoForUnifiedCard(
+  UnifiedSessionListItem item,
+  SessionDisplayMode displayMode,
+) {
+  final runtime = item.running;
+  final catalog = item.recent;
+  if (catalog == null) return runtime!;
+
+  String preferRuntime(String? runtimeValue, String catalogValue) {
+    final value = runtimeValue?.trim();
+    return value == null || value.isEmpty ? catalogValue : runtimeValue!;
+  }
+
+  String? preferOptional(String? runtimeValue, String? catalogValue) {
+    final value = runtimeValue?.trim();
+    return value == null || value.isEmpty ? catalogValue : runtimeValue;
+  }
+
+  return SessionInfo(
+    id: runtime?.id ?? catalog.sessionId,
+    provider: preferOptional(runtime?.provider, catalog.provider),
+    projectPath: preferRuntime(runtime?.projectPath, catalog.projectPath),
+    claudeSessionId: preferOptional(
+      runtime?.claudeSessionId,
+      catalog.sessionId,
+    ),
+    forkedFromSessionId: runtime?.forkedFromSessionId,
+    forkedFromThreadId:
+        runtime?.forkedFromThreadId ?? catalog.forkedFromThreadId,
+    name: preferOptional(runtime?.name, catalog.name),
+    agentNickname: preferOptional(
+      runtime?.agentNickname,
+      catalog.agentNickname,
+    ),
+    agentRole: preferOptional(runtime?.agentRole, catalog.agentRole),
+    status: runtime?.status ?? 'idle',
+    createdAt: preferRuntime(runtime?.createdAt, catalog.created),
+    // The durable catalog timestamp is the stable list/card timestamp. Runtime
+    // attachment is transient and must not make a row jump or show a different
+    // clock merely because an app-server watcher attached.
+    lastActivityAt: catalog.modified.isNotEmpty
+        ? catalog.modified
+        : (runtime?.lastActivityAt ?? catalog.created),
+    gitBranch: preferRuntime(runtime?.gitBranch, catalog.gitBranch),
+    lastMessage: preferRuntime(
+      runtime?.lastMessage,
+      _recentSessionCardText(catalog, displayMode),
+    ),
+    worktreePath: runtime?.worktreePath,
+    worktreeBranch: runtime?.worktreeBranch,
+    permissionMode: runtime?.permissionMode ?? catalog.rawPermissionMode,
+    executionMode: runtime?.executionMode ?? catalog.executionMode,
+    planMode: runtime?.planMode ?? catalog.planMode,
+    model: runtime?.model,
+    codexApprovalPolicy:
+        runtime?.codexApprovalPolicy ?? catalog.codexApprovalPolicy,
+    codexApprovalsReviewer:
+        runtime?.codexApprovalsReviewer ?? catalog.codexApprovalsReviewer,
+    codexPermissionsMode:
+        runtime?.codexPermissionsMode ?? catalog.codexPermissionsMode,
+    codexSandboxMode: runtime?.codexSandboxMode ?? catalog.codexSandboxMode,
+    codexModel: runtime?.codexModel ?? catalog.codexModel,
+    codexProfile: runtime?.codexProfile ?? catalog.codexProfile,
+    codexModelReasoningEffort:
+        runtime?.codexModelReasoningEffort ?? catalog.codexModelReasoningEffort,
+    codexServiceTier: runtime?.codexServiceTier ?? catalog.codexServiceTier,
+    codexNetworkAccessEnabled:
+        runtime?.codexNetworkAccessEnabled ?? catalog.codexNetworkAccessEnabled,
+    codexWebSearchMode:
+        runtime?.codexWebSearchMode ?? catalog.codexWebSearchMode,
+    codexAdditionalWritableRoots:
+        runtime?.codexAdditionalWritableRoots ??
+        catalog.codexAdditionalWritableRoots,
+    codexPermissionApplyStrategySupported:
+        runtime?.codexPermissionApplyStrategySupported ?? false,
+    externalDesktopTurnActive: runtime?.externalDesktopTurnActive ?? false,
+    codexNativePlanModeSupported: runtime?.codexNativePlanModeSupported,
+    codexGoalControlSupported: runtime?.codexGoalControlSupported,
+    pendingPermission: runtime?.pendingPermission,
+    queuedInput: runtime?.queuedInput,
+  );
+}
+
 class HomeContent extends StatefulWidget {
   final BridgeConnectionState connectionState;
   final String? bridgeVersion;
@@ -599,69 +702,18 @@ class HomeContentState extends State<HomeContent> {
 
     Widget buildUnifiedSessionRow(UnifiedSessionListItem item) {
       final running = item.running;
+      final recent = item.recent;
+      final cardSession = _sessionInfoForUnifiedCard(item, _displayMode);
+      final isProcessing =
+          recent != null &&
+          widget.archivingSessionIds.contains(
+            providerSessionIdentityKey(
+              recent.provider ?? Provider.claude.value,
+              recent.sessionId,
+            ),
+          );
       final stableKey = ValueKey('conversation_${item.identityKey}');
       final slidableKey = ValueKey('conversation_slidable_${item.identityKey}');
-      if (running == null) {
-        final recent = item.recent!;
-        final row = Slidable(
-          key: slidableKey,
-          endActionPane: ActionPane(
-            motion: const BehindMotion(),
-            extentRatio: 0.18,
-            children: [
-              CustomSlidableAction(
-                onPressed: (_) => widget.onArchiveSession(recent),
-                backgroundColor: Colors.transparent,
-                padding: EdgeInsets.zero,
-                child: Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.error,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.archive_outlined,
-                    color: Colors.white,
-                    size: 22,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          child: KeyedSubtree(
-            key: ValueKey('recent_session_${recent.sessionId}'),
-            child: RecentSessionCard(
-              session: recent,
-              isPinned:
-                  item.pinKey != null &&
-                  widget.pinnedSessionKeys.contains(item.pinKey),
-              displayMode: _displayMode,
-              conversationStatus: item.syncStatus,
-              isUnseen: item.syncUnread,
-              isSelected: false,
-              draftText: context.read<DraftService>().getDraft(
-                recent.sessionId,
-              ),
-              isProcessing: widget.archivingSessionIds.contains(
-                providerSessionIdentityKey(
-                  recent.provider ?? Provider.claude.value,
-                  recent.sessionId,
-                ),
-              ),
-              onTogglePinned: widget.onToggleRecentSessionPinned == null
-                  ? null
-                  : () => widget.onToggleRecentSessionPinned!(recent),
-              onTap: () => widget.onResumeSession(recent),
-              onLongPress: () => widget.onLongPressRecentSession(recent, null),
-              onShowActions: (position) =>
-                  widget.onLongPressRecentSession(recent, position),
-            ),
-          ),
-        );
-        return KeyedSubtree(key: stableKey, child: row);
-      }
-
       final row = Slidable(
         key: slidableKey,
         endActionPane: ActionPane(
@@ -669,7 +721,13 @@ class HomeContentState extends State<HomeContent> {
           extentRatio: 0.18,
           children: [
             CustomSlidableAction(
-              onPressed: (_) => widget.onStopSession(running.id),
+              onPressed: (_) {
+                if (running != null) {
+                  widget.onStopSession(running.id);
+                } else if (recent != null) {
+                  widget.onArchiveSession(recent);
+                }
+              },
               backgroundColor: Colors.transparent,
               padding: EdgeInsets.zero,
               child: Container(
@@ -679,8 +737,10 @@ class HomeContentState extends State<HomeContent> {
                   color: Theme.of(context).colorScheme.error,
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(
-                  Icons.stop_circle_outlined,
+                child: Icon(
+                  running != null
+                      ? Icons.stop_circle_outlined
+                      : Icons.archive_outlined,
                   color: Colors.white,
                   size: 22,
                 ),
@@ -689,40 +749,73 @@ class HomeContentState extends State<HomeContent> {
           ],
         ),
         child: KeyedSubtree(
-          key: ValueKey('running_session_${running.id}'),
+          key: ValueKey('conversation_card_${item.identityKey}'),
           child: RunningSessionCard(
-            session: running,
+            session: cardSession,
+            catalogSession: recent,
+            stableIdentity: item.identityKey,
             conversationStatus: item.syncStatus,
+            displayMode: _displayMode,
+            draftText: recent == null
+                ? null
+                : context.read<DraftService>().getDraft(recent.sessionId),
+            isProcessing: isProcessing,
             isPinned:
                 item.pinKey != null &&
                 widget.pinnedSessionKeys.contains(item.pinKey),
-            onTogglePinned:
-                item.pinKey == null ||
-                    widget.onToggleRunningSessionPinned == null
+            onTogglePinned: item.pinKey == null
                 ? null
-                : () => widget.onToggleRunningSessionPinned!(running),
+                : running != null && widget.onToggleRunningSessionPinned != null
+                ? () => widget.onToggleRunningSessionPinned!(running)
+                : recent != null && widget.onToggleRecentSessionPinned != null
+                ? () => widget.onToggleRecentSessionPinned!(recent)
+                : null,
             isUnseen:
-                item.syncUnread || widget.unseenSessionIds.contains(running.id),
+                item.syncUnread ||
+                (running != null &&
+                    widget.unseenSessionIds.contains(running.id)),
             isSelected:
+                running != null &&
                 selectedSessionId == running.id &&
                 selectedSessionProvider == running.provider,
-            onLongPress: () => widget.onLongPressRunningSession(running, null),
-            onShowActions: (position) =>
-                widget.onLongPressRunningSession(running, position),
-            onStop: showInlineStopButton
+            onLongPress: running != null
+                ? () => widget.onLongPressRunningSession(running, null)
+                : recent != null
+                ? () => widget.onLongPressRecentSession(recent, null)
+                : null,
+            onShowActions: running != null
+                ? (position) =>
+                      widget.onLongPressRunningSession(running, position)
+                : recent != null
+                ? (position) =>
+                      widget.onLongPressRecentSession(recent, position)
+                : null,
+            onStop: running != null && showInlineStopButton
                 ? () => widget.onStopSession(running.id)
                 : null,
-            onTap: () => _openRunningSession(running),
-            onApprove: (toolUseId, {bool clearContext = false}) => widget
-                .onApprovePermission
-                ?.call(running.id, toolUseId, clearContext: clearContext),
-            onApproveAlways: (toolUseId) =>
-                widget.onApproveAlways?.call(running.id, toolUseId),
-            onReject: (toolUseId, {String? message}) => widget
-                .onRejectPermission
-                ?.call(running.id, toolUseId, message: message),
-            onAnswer: (toolUseId, result) =>
-                widget.onAnswerQuestion?.call(running.id, toolUseId, result),
+            onTap: running != null
+                ? () => _openRunningSession(running)
+                : () => widget.onResumeSession(recent!),
+            onApprove: running == null
+                ? null
+                : (toolUseId, {bool clearContext = false}) => widget
+                      .onApprovePermission
+                      ?.call(running.id, toolUseId, clearContext: clearContext),
+            onApproveAlways: running == null
+                ? null
+                : (toolUseId) =>
+                      widget.onApproveAlways?.call(running.id, toolUseId),
+            onReject: running == null
+                ? null
+                : (toolUseId, {String? message}) => widget.onRejectPermission
+                      ?.call(running.id, toolUseId, message: message),
+            onAnswer: running == null
+                ? null
+                : (toolUseId, result) => widget.onAnswerQuestion?.call(
+                    running.id,
+                    toolUseId,
+                    result,
+                  ),
           ),
         ),
       );

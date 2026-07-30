@@ -12,6 +12,7 @@ import 'package:ccpocket/services/in_app_review_service.dart';
 import 'package:ccpocket/services/revenuecat_service.dart';
 import 'package:ccpocket/services/support_banner_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
+import 'package:ccpocket/widgets/session_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -263,7 +264,7 @@ void main() {
         await tester.pump();
 
         await tester.tap(
-          find.byKey(const ValueKey('running_session_runtime-1')),
+          find.byKey(const ValueKey('conversation_card_claude\u0000thread-1')),
         );
         await tester.pump();
 
@@ -416,7 +417,12 @@ void main() {
           'running-4',
           'unread',
         ]) {
-          expect(find.byKey(ValueKey('running_session_$id')), findsOneWidget);
+          expect(
+            find.byKey(
+              ValueKey('conversation_card_runtime\u0000claude\u0000$id'),
+            ),
+            findsOneWidget,
+          );
         }
         expect(find.text('test prompt for ordinary'), findsNothing);
         expect(
@@ -627,7 +633,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.byKey(const ValueKey('running_session_r1')), findsOneWidget);
+      expect(find.byType(RunningSessionCard), findsOneWidget);
       expect(find.byType(SkeletonizerScope), findsOneWidget);
       expect(find.text('Recent Sessions'), findsOneWidget);
     });
@@ -647,7 +653,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.byKey(const ValueKey('running_session_r1')), findsOneWidget);
+      expect(find.byType(RunningSessionCard), findsNWidgets(2));
       expect(find.byType(SkeletonizerScope), findsNothing);
       expect(find.text('test prompt for s1'), findsOneWidget);
       expect(find.text('Recent Sessions'), findsOneWidget);
@@ -672,9 +678,15 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.byKey(const ValueKey('running_session_r1')), findsOneWidget);
-      expect(find.byKey(const ValueKey('recent_session_s1')), findsNothing);
-      expect(find.byKey(const ValueKey('recent_session_s2')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('conversation_card_claude\u0000s1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('conversation_card_claude\u0000s2')),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsNWidgets(2));
     });
 
     testWidgets(
@@ -683,6 +695,7 @@ void main() {
         final identity = providerSessionIdentityKey('claude', 's1');
         final stableKey = ValueKey('conversation_$identity');
         final slidableKey = ValueKey('conversation_slidable_$identity');
+        final cardKey = ValueKey('conversation_card_$identity');
         await tester.pumpWidget(
           _buildHomeContent(
             recentSessions: [_session(id: 's1')],
@@ -696,6 +709,7 @@ void main() {
         await tester.pump();
         final before = tester.element(find.byKey(stableKey));
         final slidableBefore = tester.element(find.byKey(slidableKey));
+        final cardBefore = tester.element(find.byKey(cardKey));
 
         await tester.pumpWidget(
           _buildHomeContent(
@@ -714,11 +728,8 @@ void main() {
 
         expect(tester.element(find.byKey(stableKey)), same(before));
         expect(tester.element(find.byKey(slidableKey)), same(slidableBefore));
-        expect(
-          find.byKey(const ValueKey('running_session_runtime-1')),
-          findsOneWidget,
-        );
-        expect(find.byKey(const ValueKey('recent_session_s1')), findsNothing);
+        expect(tester.element(find.byKey(cardKey)), same(cardBefore));
+        expect(find.byType(RunningSessionCard), findsOneWidget);
       },
     );
 

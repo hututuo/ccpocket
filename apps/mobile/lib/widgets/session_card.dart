@@ -22,6 +22,8 @@ const _buttonHeight = 44.0;
 /// Card for a currently running session
 class RunningSessionCard extends StatefulWidget {
   final SessionInfo session;
+  final RecentSession? catalogSession;
+  final String? stableIdentity;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
   final ValueChanged<Offset?>? onShowActions;
@@ -35,10 +37,15 @@ class RunningSessionCard extends StatefulWidget {
   final bool isPinned;
   final VoidCallback? onTogglePinned;
   final ConversationSyncV2Status? conversationStatus;
+  final SessionDisplayMode displayMode;
+  final String? draftText;
+  final bool isProcessing;
 
   const RunningSessionCard({
     super.key,
     required this.session,
+    this.catalogSession,
+    this.stableIdentity,
     required this.onTap,
     this.onLongPress,
     this.onShowActions,
@@ -52,6 +59,9 @@ class RunningSessionCard extends StatefulWidget {
     this.isPinned = false,
     this.onTogglePinned,
     this.conversationStatus,
+    this.displayMode = SessionDisplayMode.first,
+    this.draftText,
+    this.isProcessing = false,
   });
 
   @override
@@ -98,6 +108,8 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
   @override
   Widget build(BuildContext context) {
     final session = widget.session;
+    final stableIdentity =
+        widget.stableIdentity ?? widget.catalogSession?.sessionId ?? session.id;
     final appColors = Theme.of(context).extension<AppColors>()!;
     final presentation = sessionCardPresentationFor(
       syncStatus: widget.conversationStatus,
@@ -158,21 +170,30 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: widget.onTap,
-        onLongPress: widget.onShowActions == null ? widget.onLongPress : null,
+        onTap: widget.isProcessing ? null : widget.onTap,
+        onLongPress: widget.isProcessing || widget.onShowActions != null
+            ? null
+            : widget.onLongPress,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _SessionStatusHeader(
               presentation: presentation,
-              identity: session.id,
+              identity: stableIdentity,
               showUnreadLabel: true,
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  ConversationMirrorRunningBadge(session: session),
+                  if (widget.catalogSession != null)
+                    ConversationMirrorBadge(session: widget.catalogSession!)
+                  else
+                    ConversationMirrorRunningBadge(session: session),
                   PinToggleButton(
-                    key: ValueKey('running_session_pin_${session.id}_button'),
+                    key: widget.stableIdentity == null
+                        ? ValueKey('running_session_pin_${session.id}_button')
+                        : ValueKey(
+                            'conversation_session_pin_${stableIdentity}_button',
+                          ),
                     isPinned: widget.isPinned,
                     onPressed: widget.onTogglePinned,
                     pinTooltip: AppLocalizations.of(context).pin,
@@ -331,7 +352,7 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                               const SizedBox(width: 8),
                             ],
                             Hero(
-                              tag: 'project_name_${session.id}',
+                              tag: 'project_name_$stableIdentity',
                               child: Material(
                                 color: Colors.transparent,
                                 child: Container(
@@ -368,7 +389,11 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                       session.forkedFromThreadId != null) ...[
                     const SizedBox(height: 6),
                     _ForkLineageBadge(
-                      key: ValueKey('running_session_fork_${session.id}'),
+                      key: widget.stableIdentity == null
+                          ? ValueKey('running_session_fork_${session.id}')
+                          : ValueKey(
+                              'conversation_session_fork_$stableIdentity',
+                            ),
                       parentId:
                           session.forkedFromThreadId ??
                           session.forkedFromSessionId!,
@@ -379,7 +404,34 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                     _AgentLabel(label: agentLabel),
                   ],
                   // Last message
-                  if (displayMessage.isNotEmpty) ...[
+                  if (widget.draftText?.isNotEmpty == true) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 1, right: 6),
+                          child: Icon(
+                            Icons.edit_note,
+                            size: 16,
+                            color: appColors.subtleText,
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            widget.draftText!,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontStyle: FontStyle.italic,
+                              color: appColors.subtleText,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ] else if (displayMessage.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Text(
                       displayMessage,
@@ -478,13 +530,18 @@ class _RunningSessionCardState extends State<RunningSessionCard> {
                 ],
               ),
             ),
+            if (widget.isProcessing)
+              const LinearProgressIndicator(
+                key: ValueKey('conversation_session_processing'),
+                minHeight: 2,
+              ),
           ],
         ),
       ),
     );
 
     final onShowActions = widget.onShowActions;
-    if (onShowActions == null) return card;
+    if (widget.isProcessing || onShowActions == null) return card;
     return AdaptiveContextMenuRegion(onOpen: onShowActions, child: card);
   }
 
