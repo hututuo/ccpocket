@@ -47,9 +47,11 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
 EphemeralSideChatEntry _entry({
   String childSessionId = 'child-1',
   String parentSessionId = 'parent-1',
+  String? parentProviderSessionId,
 }) => EphemeralSideChatEntry(
   childSessionId: childSessionId,
   parentSessionId: parentSessionId,
+  parentProviderSessionId: parentProviderSessionId,
   projectPath: '/tmp/project',
   status: 'running',
   createdAt: DateTime.utc(2026, 7, 25),
@@ -82,6 +84,7 @@ void main() {
     addTearDown(gateway.dispose);
     addTearDown(bridge.dispose);
     String? openedParent;
+    String? openedProviderParent;
     String? openedChild;
 
     await tester.pumpWidget(
@@ -91,10 +94,12 @@ void main() {
             sessionId: 'parent-1',
             bridgeService: bridge,
             registryService: registry,
-            onOpenSideChat: (parentSessionId, entry) async {
-              openedParent = parentSessionId;
-              openedChild = entry?.childSessionId;
-            },
+            onOpenSideChat:
+                (parentSessionId, parentProviderSessionId, entry) async {
+                  openedParent = parentSessionId;
+                  openedProviderParent = parentProviderSessionId;
+                  openedChild = entry?.childSessionId;
+                },
           ),
         ),
       ),
@@ -119,8 +124,83 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('auxiliary_side_chat_child-1')));
     await tester.pumpAndSettle();
     expect(openedParent, 'parent-1');
+    expect(openedProviderParent, 'parent-1');
     expect(openedChild, 'child-1');
   });
+
+  testWidgets(
+    'filters detached and attached runtimes by the canonical provider parent',
+    (tester) async {
+      final bridge = _Bridge();
+      final gateway = _Gateway();
+      final registry = EphemeralSideChatRegistryService(bridge: gateway);
+      gateway.isConnected = true;
+      gateway.messagesController.add(
+        EphemeralSideChatRegistryMessage(
+          entries: [
+            _entry(
+              childSessionId: 'child-current',
+              parentSessionId: 'runtime-parent',
+              parentProviderSessionId: 'durable-thread',
+            ),
+            _entry(
+              childSessionId: 'child-legacy',
+              parentSessionId: 'runtime-parent',
+            ),
+            _entry(
+              childSessionId: 'child-other',
+              parentSessionId: 'runtime-other',
+              parentProviderSessionId: 'durable-other',
+            ),
+          ],
+        ),
+      );
+      addTearDown(registry.dispose);
+      addTearDown(gateway.dispose);
+      addTearDown(bridge.dispose);
+      String? openedRuntimeParent;
+      String? openedProviderParent;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AuxiliaryFloatingDock(
+              sessionId: 'runtime-parent',
+              parentProviderSessionId: 'durable-thread',
+              bridgeService: bridge,
+              registryService: registry,
+              onOpenSideChat: (runtimeParent, providerParent, entry) async {
+                openedRuntimeParent = runtimeParent;
+                openedProviderParent = providerParent;
+              },
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('2'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('auxiliary_floating_dock_tap')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('auxiliary_side_chat_child-current')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('auxiliary_side_chat_child-legacy')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('auxiliary_side_chat_child-other')),
+        findsNothing,
+      );
+      await tester.tap(find.byKey(const ValueKey('auxiliary_new_side_chat')));
+      await tester.pump();
+      expect(openedRuntimeParent, 'runtime-parent');
+      expect(openedProviderParent, 'durable-thread');
+    },
+  );
 
   testWidgets(
     'keeps free placement across collapse and docks only past the threshold',
@@ -140,7 +220,7 @@ void main() {
               sessionId: 'parent-1',
               bridgeService: bridge,
               registryService: registry,
-              onOpenSideChat: (_, _) async {},
+              onOpenSideChat: (_, _, _) async {},
             ),
           ),
         ),
@@ -239,7 +319,7 @@ void main() {
           sessionId: 'parent-1',
           bridgeService: bridge,
           registryService: registry,
-          onOpenSideChat: (_, _) async {},
+          onOpenSideChat: (_, _, _) async {},
         ),
       ),
     );
@@ -280,7 +360,7 @@ void main() {
           sessionId: 'parent-1',
           bridgeService: bridge,
           registryService: registry,
-          onOpenSideChat: (_, _) async {},
+          onOpenSideChat: (_, _, _) async {},
         ),
       ),
     );
@@ -334,7 +414,7 @@ void main() {
                   sessionId: 'parent-1',
                   bridgeService: bridge,
                   registryService: registry,
-                  onOpenSideChat: (_, _) async {},
+                  onOpenSideChat: (_, _, _) async {},
                 ),
               ),
             ],

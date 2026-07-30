@@ -13,6 +13,7 @@ import '../state/ephemeral_side_chat_registry_service.dart';
 typedef OpenAuxiliarySideChat =
     Future<void> Function(
       String parentSessionId,
+      String parentProviderSessionId,
       EphemeralSideChatEntry? entry,
     );
 
@@ -28,12 +29,14 @@ class AuxiliaryFloatingDock extends StatefulWidget {
   const AuxiliaryFloatingDock({
     super.key,
     required this.sessionId,
+    this.parentProviderSessionId,
     required this.bridgeService,
     required this.registryService,
     required this.onOpenSideChat,
   });
 
   final String sessionId;
+  final String? parentProviderSessionId;
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
   final OpenAuxiliarySideChat onOpenSideChat;
@@ -438,10 +441,15 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
 
   Future<void> _openSideChat(
     String parentSessionId,
+    String parentProviderSessionId,
     EphemeralSideChatEntry? entry,
   ) async {
     _collapse();
-    await widget.onOpenSideChat(parentSessionId, entry);
+    await widget.onOpenSideChat(
+      parentSessionId,
+      parentProviderSessionId,
+      entry,
+    );
   }
 
   @override
@@ -450,13 +458,17 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _normalizePosition(size);
-        final parentSessionId =
-            widget.registryService
-                .entryForChild(widget.sessionId)
-                ?.parentSessionId ??
-            widget.sessionId;
+        final childEntry = widget.registryService.entryForChild(
+          widget.sessionId,
+        );
+        final parentSessionId = childEntry?.parentSessionId ?? widget.sessionId;
+        final parentProviderSessionId =
+            childEntry?.canonicalParentSessionId ??
+            widget.parentProviderSessionId ??
+            parentSessionId;
         final entries = widget.registryService.entriesForParent(
-          parentSessionId,
+          parentProviderSessionId,
+          legacyParentSessionId: parentSessionId,
         );
         final activeCount = entries
             .where(
@@ -493,6 +505,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
                   child: _AuxiliaryRegistryPanel(
                     currentSessionId: widget.sessionId,
                     parentSessionId: parentSessionId,
+                    parentProviderSessionId: parentProviderSessionId,
                     bridgeService: widget.bridgeService,
                     registryService: widget.registryService,
                     onOpenSideChat: _openSideChat,
@@ -587,6 +600,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
   const _AuxiliaryRegistryPanel({
     required this.currentSessionId,
     required this.parentSessionId,
+    required this.parentProviderSessionId,
     required this.bridgeService,
     required this.registryService,
     required this.onOpenSideChat,
@@ -597,6 +611,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
 
   final String currentSessionId;
   final String parentSessionId;
+  final String parentProviderSessionId;
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
   final OpenAuxiliarySideChat onOpenSideChat;
@@ -653,6 +668,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
                 children: [
                   _EphemeralSideChatList(
                     parentSessionId: parentSessionId,
+                    parentProviderSessionId: parentProviderSessionId,
                     registryService: registryService,
                     onOpen: onOpenSideChat,
                   ),
@@ -673,11 +689,13 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
 class _EphemeralSideChatList extends StatefulWidget {
   const _EphemeralSideChatList({
     required this.parentSessionId,
+    required this.parentProviderSessionId,
     required this.registryService,
     required this.onOpen,
   });
 
   final String parentSessionId;
+  final String parentProviderSessionId;
   final EphemeralSideChatRegistryService registryService;
   final OpenAuxiliarySideChat onOpen;
 
@@ -736,7 +754,8 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
   @override
   Widget build(BuildContext context) {
     final entries = widget.registryService.entriesForParent(
-      widget.parentSessionId,
+      widget.parentProviderSessionId,
+      legacyParentSessionId: widget.parentSessionId,
     );
     return Column(
       children: [
@@ -747,7 +766,11 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
             child: FilledButton.icon(
               key: const ValueKey('auxiliary_new_side_chat'),
               onPressed: widget.registryService.isSupported
-                  ? () => widget.onOpen(widget.parentSessionId, null)
+                  ? () => widget.onOpen(
+                      widget.parentSessionId,
+                      widget.parentProviderSessionId,
+                      null,
+                    )
                   : null,
               icon: const Icon(Icons.add_comment_outlined),
               label: Text(
@@ -810,8 +833,11 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
                           ),
                           onTap: closing
                               ? null
-                              : () =>
-                                    widget.onOpen(entry.parentSessionId, entry),
+                              : () => widget.onOpen(
+                                  entry.parentSessionId,
+                                  entry.canonicalParentSessionId,
+                                  entry,
+                                ),
                           trailing: IconButton(
                             tooltip: SideChatStrings.of(context).end,
                             onPressed: closing ? null : () => _close(entry),

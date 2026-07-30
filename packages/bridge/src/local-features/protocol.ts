@@ -52,6 +52,7 @@ import {
 } from "./slots/persisted-side-chat-protocol.js";
 import {
   EPHEMERAL_SIDE_CHAT_CAPABILITY,
+  EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY,
   ephemeralSideChatProtocolContribution,
   type EphemeralSideChatClientMessage,
   type EphemeralSideChatServerMessage,
@@ -112,7 +113,10 @@ export type {
   EphemeralSideChatEntry,
   EphemeralSideChatServerMessage,
 } from "./slots/ephemeral-side-chat-protocol.js";
-export { EPHEMERAL_SIDE_CHAT_CAPABILITY } from "./slots/ephemeral-side-chat-protocol.js";
+export {
+  EPHEMERAL_SIDE_CHAT_CAPABILITY,
+  EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY,
+} from "./slots/ephemeral-side-chat-protocol.js";
 export type { CodexSubagentInfo } from "./slots/subagents-protocol.js";
 export type {
   ConversationMirrorClientMessage,

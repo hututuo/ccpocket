@@ -1223,7 +1223,14 @@ class _CodexChatBody extends HookWidget {
             context,
             featureId: featureId,
             sessionId: sessionId,
-            arguments: arguments,
+            arguments:
+                featureId == 'side_chat' &&
+                    sessionInsightsSessionId?.isNotEmpty == true
+                ? {
+                    ...arguments,
+                    'parentProviderSessionId': sessionInsightsSessionId,
+                  }
+                : arguments,
           ),
     );
     final effectiveProjectPath = _firstNonEmptyProjectPath(
@@ -2342,24 +2349,39 @@ class _CodexChatBody extends HookWidget {
                     ],
                   ),
                 ),
-                if (!detachedPreview &&
-                    !hideAuxiliaryDock &&
+                if (!hideAuxiliaryDock &&
                     ephemeralSideChatRegistry != null)
                   Positioned.fill(
                     child: AuxiliaryFloatingDock(
-                      key: ValueKey('auxiliary_dock_$sessionId'),
+                      key: ValueKey(
+                        'auxiliary_dock_'
+                        '${sessionInsightsSessionId ?? sessionId}',
+                      ),
                       sessionId: sessionId,
+                      parentProviderSessionId:
+                          sessionInsightsSessionId ?? sessionId,
                       bridgeService: bridge,
                       registryService: ephemeralSideChatRegistry,
-                      onOpenSideChat: (parentSessionId, entry) =>
+                      onOpenSideChat:
+                          (
+                            parentSessionId,
+                            parentProviderSessionId,
+                            entry,
+                          ) =>
                           _openLocalFeaturePaneOrSheet(
                             context,
                             featureId: 'side_chat',
                             sessionId: parentSessionId,
                             arguments: entry == null
-                                ? const {'forceNew': true}
+                                ? {
+                                    'forceNew': true,
+                                    'parentProviderSessionId':
+                                        parentProviderSessionId,
+                                  }
                                 : {
                                     'childSessionId': entry.childSessionId,
+                                    'parentProviderSessionId':
+                                        parentProviderSessionId,
                                   },
                           ),
                     ),

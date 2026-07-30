@@ -19,6 +19,7 @@ class EphemeralSideChatPane extends StatefulWidget {
   const EphemeralSideChatPane({
     super.key,
     required this.parentSessionId,
+    this.parentProviderSessionId,
     required this.bridgeService,
     required this.registryService,
     required this.draftService,
@@ -31,6 +32,7 @@ class EphemeralSideChatPane extends StatefulWidget {
   });
 
   final String parentSessionId;
+  final String? parentProviderSessionId;
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
   final DraftService draftService;
@@ -54,6 +56,14 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
   late bool _forceNew;
   int _openGeneration = 0;
 
+  String get _canonicalParentSessionId =>
+      widget.parentProviderSessionId ?? widget.parentSessionId;
+
+  bool _belongsToParent(EphemeralSideChatEntry entry) =>
+      entry.canonicalParentSessionId == _canonicalParentSessionId ||
+      (entry.parentProviderSessionId == null &&
+          entry.parentSessionId == widget.parentSessionId);
+
   @override
   void initState() {
     super.initState();
@@ -71,6 +81,7 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
       widget.registryService.addListener(_registryChanged);
     }
     if (oldWidget.parentSessionId != widget.parentSessionId ||
+        oldWidget.parentProviderSessionId != widget.parentProviderSessionId ||
         oldWidget.bridgeService != widget.bridgeService ||
         oldWidget.registryService != widget.registryService ||
         oldWidget.childSessionId != widget.childSessionId ||
@@ -101,8 +112,7 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
     final existingId = _requestedChildSessionId;
     if (existingId != null) {
       final existing = widget.registryService.entryForChild(existingId);
-      if (existing != null &&
-          existing.parentSessionId == widget.parentSessionId) {
+      if (existing != null && _belongsToParent(existing)) {
         _entry = existing;
         _prepareInitialDraft(existing.childSessionId);
         if (mounted) setState(() {});
@@ -111,7 +121,8 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
     }
     if (existingId == null && !_forceNew) {
       final existingEntries = widget.registryService.entriesForParent(
-        widget.parentSessionId,
+        _canonicalParentSessionId,
+        legacyParentSessionId: widget.parentSessionId,
       );
       if (existingEntries.isNotEmpty) {
         final existing = existingEntries.first;
@@ -143,8 +154,7 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
         final existing = widget.registryService.entryForChild(
           requestedChildSessionId,
         );
-        if (existing == null ||
-            existing.parentSessionId != widget.parentSessionId) {
+        if (existing == null || !_belongsToParent(existing)) {
           setState(() {
             _opening = false;
             _error = SideChatStrings.of(context).failed;
@@ -160,7 +170,8 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
       }
 
       final existingEntries = widget.registryService.entriesForParent(
-        widget.parentSessionId,
+        _canonicalParentSessionId,
+        legacyParentSessionId: widget.parentSessionId,
       );
       if (existingEntries.isNotEmpty) {
         final existing = existingEntries.first;
@@ -183,8 +194,14 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
 
   Future<void> _open(int generation) async {
     try {
-      final entry = await widget.registryService.open(widget.parentSessionId);
+      final entry = await widget.registryService.open(
+        widget.parentSessionId,
+        parentProviderSessionId: _canonicalParentSessionId,
+      );
       if (!mounted || generation != _openGeneration) return;
+      if (!_belongsToParent(entry)) {
+        throw StateError('Ephemeral side chat parent identity mismatch.');
+      }
       _prepareInitialDraft(entry.childSessionId);
       setState(() {
         _entry = entry;
@@ -211,7 +228,7 @@ class _EphemeralSideChatPaneState extends State<EphemeralSideChatPane> {
     final currentId = _entry?.childSessionId ?? _requestedChildSessionId;
     if (currentId == null) return;
     final next = widget.registryService.entryForChild(currentId);
-    if (next != null && next.parentSessionId == widget.parentSessionId) {
+    if (next != null && _belongsToParent(next)) {
       if (!identical(_entry, next)) setState(() => _entry = next);
       return;
     }

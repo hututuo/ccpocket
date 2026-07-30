@@ -14883,6 +14883,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(child.auxiliary).toEqual({
       kind: "ephemeral_side_chat",
       parentSessionId,
+      parentProviderSessionId: "thread-side-parent",
     });
     expect(child.codexOptions).toMatchObject({
       ephemeralForkFromThreadId: "thread-side-parent",
@@ -14982,6 +14983,114 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
             message.requestId === "request-close",
         ),
     ).toMatchObject({ entries: [] });
+
+    bridge.close();
+  });
+
+  it("forks an ephemeral child from a detached durable Codex thread on demand", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    getCodexSessionIndexMetadataMock.mockResolvedValueOnce(
+      new Map([
+        [
+          "thread-side-detached",
+          {
+            resumeCwd: "/tmp/project-codex-detached",
+            codexSettings: {
+              model: "gpt-5.6-sol",
+              modelReasoningEffort: "high",
+              approvalPolicy: "never",
+              sandboxMode: "danger-full-access",
+            },
+          },
+        ],
+      ]),
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "ephemeral_side_chat_opened",
+          "ephemeral_side_chat_registry",
+        ],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "open_ephemeral_side_chat",
+        parentSessionId: "detached-thread-route",
+        parentProviderSessionId: "thread-side-detached",
+        requestId: "request-open-detached",
+      },
+      ws,
+    );
+
+    expect(getCodexSessionIndexMetadataMock).toHaveBeenCalledWith(
+      ["thread-side-detached"],
+      { authoritativeCodexSettings: true },
+    );
+    const openMessage = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "ephemeral_side_chat_opened");
+    expect(openMessage).toMatchObject({
+      parentSessionId: "detached-thread-route",
+      requestId: "request-open-detached",
+      entry: {
+        parentSessionId: "detached-thread-route",
+        parentProviderSessionId: "thread-side-detached",
+        projectPath: "/tmp/project-codex-detached",
+      },
+    });
+    const child = (bridge as any).sessionManager.get(
+      openMessage.entry.childSessionId,
+    );
+    expect(child.codexOptions).toMatchObject({
+      ephemeralForkFromThreadId: "thread-side-detached",
+      excludeTurnsOnOpen: true,
+      threadSource: "ccpocket_side_chat",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "high",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
+    expect(child.auxiliary).toEqual({
+      kind: "ephemeral_side_chat",
+      parentSessionId: "detached-thread-route",
+      parentProviderSessionId: "thread-side-detached",
+    });
+
+    bridge.close();
+  });
+
+  it("fails closed when a runtime parent claims a different durable thread", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const parentSessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-codex",
+      undefined,
+      [],
+      undefined,
+      "codex",
+      { threadId: "thread-side-parent" },
+    );
+    const parent = (bridge as any).sessionManager.get(parentSessionId);
+    Object.setPrototypeOf(parent.process, CodexProcess.prototype);
+
+    await expect(
+      (bridge as any).createEphemeralCodexChildSession(parentSessionId, {
+        threadSource: "ccpocket_side_chat",
+        excludeTurnsOnOpen: true,
+        parentProviderSessionId: "different-thread",
+      }),
+    ).rejects.toThrow(
+      "The parent runtime does not match the requested Codex thread",
+    );
+    expect((bridge as any).sessionManager.listEphemeralSideChats()).toEqual([]);
 
     bridge.close();
   });

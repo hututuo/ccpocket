@@ -10,11 +10,13 @@ describe("ephemeral side chat local protocol", () => {
       parseLocalFeatureClientMessage({
         type: "open_ephemeral_side_chat",
         parentSessionId: "parent-session",
+        parentProviderSessionId: "provider-thread",
         requestId: "request-open",
       }),
     ).toEqual({
       type: "open_ephemeral_side_chat",
       parentSessionId: "parent-session",
+      parentProviderSessionId: "provider-thread",
       requestId: "request-open",
     });
     expect(
@@ -44,6 +46,14 @@ describe("ephemeral side chat local protocol", () => {
       parseLocalFeatureClientMessage({
         type: "open_ephemeral_side_chat",
         parentSessionId: "",
+        requestId: "request-open",
+      }),
+    ).toBeNull();
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "open_ephemeral_side_chat",
+        parentSessionId: "parent-session",
+        parentProviderSessionId: "",
         requestId: "request-open",
       }),
     ).toBeNull();

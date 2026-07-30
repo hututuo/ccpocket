@@ -41,6 +41,7 @@ describe("EphemeralSideChatFeatureHandler", () => {
       {
         type: "open_ephemeral_side_chat",
         parentSessionId: "parent-session",
+        parentProviderSessionId: "provider-thread",
         requestId: "request-open",
       },
       {
@@ -53,6 +54,7 @@ describe("EphemeralSideChatFeatureHandler", () => {
     expect(create).toHaveBeenCalledWith("parent-session", {
       threadSource: "ccpocket_side_chat",
       excludeTurnsOnOpen: true,
+      parentProviderSessionId: "provider-thread",
     });
     expect(state.sent).toEqual([
       {
