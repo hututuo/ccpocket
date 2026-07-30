@@ -6227,9 +6227,13 @@ void main() {
 
       expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
       expect(mockBridge.sentMessages.last.type, 'input');
+      final inputPayload =
+          jsonDecode(mockBridge.sentMessages.last.toJson())
+              as Map<String, dynamic>;
+      final clientMessageId = inputPayload['clientMessageId'] as String;
 
       mockBridge.emitMessage(
-        const ConversationQueueMessage(
+        ConversationQueueMessage(
           sessionId: 's1',
           limit: 1,
           items: [
@@ -6237,6 +6241,7 @@ void main() {
               itemId: 'q1',
               text: 'Follow up',
               createdAt: '2026-04-25T00:00:00.000Z',
+              clientMessageId: clientMessageId,
             ),
           ],
         ),
@@ -6246,6 +6251,62 @@ void main() {
 
       expect(cubit.state.queuedInput?.itemId, 'q1');
       expect(cubit.state.queuedInput?.text, 'Follow up');
+
+      mockBridge.emitMessage(
+        InputAckMessage(
+          sessionId: 's1',
+          clientMessageId: clientMessageId,
+          queued: true,
+          stage: InputAckStage.bridgeAccepted,
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      expect(
+        cubit.state.queuedInput?.deliveryStage,
+        QueuedInputDeliveryStage.bridgeAccepted,
+      );
+
+      mockBridge.emitMessage(
+        InputDeliveryStatusMessage(
+          sessionId: 's1',
+          clientMessageId: clientMessageId,
+          stage: InputDeliveryStage.providerAccepted,
+          provider: 'codex',
+          method: 'turn/start',
+          occurredAt: '2026-07-31T00:00:00.000Z',
+          queued: true,
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      expect(
+        cubit.state.queuedInput?.deliveryStage,
+        QueuedInputDeliveryStage.providerAccepted,
+      );
+
+      // A stage-less legacy/reconnect queue snapshot cannot erase the
+      // terminal provider fact already observed for the same client input.
+      mockBridge.emitMessage(
+        ConversationQueueMessage(
+          sessionId: 's1',
+          limit: 1,
+          items: [
+            QueuedInputItem(
+              itemId: 'q1',
+              text: 'Follow up',
+              createdAt: '2026-04-25T00:00:00.000Z',
+              clientMessageId: clientMessageId,
+            ),
+          ],
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      expect(
+        cubit.state.queuedInput?.deliveryStage,
+        QueuedInputDeliveryStage.providerAccepted,
+      );
     });
 
     test(

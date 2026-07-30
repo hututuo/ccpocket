@@ -22,6 +22,7 @@ import {
 } from "./session-catalog-monitor.js";
 import {
   artifactCandidateRootsForSession,
+  publicQueuedInput,
   SessionManager,
   MAX_HISTORY_PER_SESSION,
   type HistoryEntry,
@@ -12657,22 +12658,21 @@ export class BridgeWebSocketServer {
     sessionId: string,
     session: SessionInfo,
   ): void {
-    const item = session.codexQueuedInput;
+    const item = publicQueuedInput(
+      session.codexQueuedInput,
+      session.codexQueuedInput?.clientMessageId
+        ? session.inputDeliveryReceipts?.get(
+            session.codexQueuedInput.clientMessageId,
+          )
+        : undefined,
+    );
     this.sendConversationQueue(ws, {
       type: "conversation_queue",
       sessionId,
       limit: 1,
       items: item
         ? [
-            {
-              itemId: item.itemId,
-              text: item.text,
-              createdAt: item.createdAt,
-              ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
-              ...(item.imageCount ? { imageCount: item.imageCount } : {}),
-              ...(item.skills?.length ? { skills: item.skills } : {}),
-              ...(item.mentions?.length ? { mentions: item.mentions } : {}),
-            },
+            item,
           ]
         : [],
     } as Record<string, unknown>);

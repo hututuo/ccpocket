@@ -1621,6 +1621,14 @@ describe("SessionManager codex path", () => {
       undefined,
       "codex",
     );
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-receipt-1",
+        text: "queued receipt",
+        createdAt: "2026-07-31T00:00:00.000Z",
+        clientMessageId: "mobile-receipt-1",
+      }),
+    ).toBe(true);
 
     expect(
       manager.recordInputBridgeAcceptance(
@@ -1669,6 +1677,16 @@ describe("SessionManager codex path", () => {
         (entry) => entry.msg.type === "input_delivery_status_v1",
       ),
     ).toHaveLength(1);
+    const queueUpdates = forwarded
+      .filter((entry) => entry.msg.type === "conversation_queue")
+      .map((entry) => entry.msg as Extract<
+        ServerMessage,
+        { type: "conversation_queue" }
+      >);
+    expect(queueUpdates.at(-1)?.items[0]).toMatchObject({
+      clientMessageId: "mobile-receipt-1",
+      deliveryStage: "provider_accepted",
+    });
   });
 
   it("guards both input_ready and explicit Codex queue drains", () => {

@@ -2932,6 +2932,32 @@ class CodexQueuedInputPanel extends StatelessWidget {
         : isDeliveryPending
         ? '${l.queuedInputPendingDelivery}$imageLabel'
         : '${l.queuedInputForNextTurn}$imageLabel';
+    final deliveryIcon = switch (item.deliveryStage) {
+      QueuedInputDeliveryStage.bridgeAccepted => Icon(
+        Icons.check,
+        key: const ValueKey('codex_queue_bridge_accepted'),
+        size: 18,
+        color: cs.primary,
+      ),
+      QueuedInputDeliveryStage.providerAccepted => Icon(
+        Icons.done_all,
+        key: const ValueKey('codex_queue_provider_accepted'),
+        size: 18,
+        color: cs.primary,
+      ),
+      QueuedInputDeliveryStage.providerRejected => Icon(
+        Icons.error_outline,
+        key: const ValueKey('codex_queue_provider_rejected'),
+        size: 18,
+        color: cs.error,
+      ),
+      null => Icon(
+        Icons.schedule,
+        key: const ValueKey('codex_queue_waiting'),
+        size: 18,
+        color: cs.primary,
+      ),
+    };
 
     return Material(
       key: const ValueKey('codex_queue_panel'),
@@ -2946,7 +2972,7 @@ class CodexQueuedInputPanel extends StatelessWidget {
             children: [
               Padding(
                 padding: const EdgeInsets.only(top: 2),
-                child: Icon(Icons.schedule, size: 18, color: cs.primary),
+                child: deliveryIcon,
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -2970,6 +2996,18 @@ class CodexQueuedInputPanel extends StatelessWidget {
                         color: cs.onSurface,
                       ),
                     ),
+                    if (item.deliveryStage ==
+                            QueuedInputDeliveryStage.providerRejected &&
+                        item.deliveryError?.trim().isNotEmpty == true) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        item.deliveryError!,
+                        key: const ValueKey('codex_queue_delivery_error'),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.bodySmall?.copyWith(color: cs.error),
+                      ),
+                    ],
                   ],
                 ),
               ),

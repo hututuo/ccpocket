@@ -733,11 +733,33 @@ class GalleryImage {
   }
 }
 
+enum QueuedInputDeliveryStage {
+  bridgeAccepted('bridge_accepted', 1),
+  providerAccepted('provider_accepted', 2),
+  providerRejected('provider_rejected', 2);
+
+  const QueuedInputDeliveryStage(this.wireValue, this.rank);
+
+  final String wireValue;
+  final int rank;
+
+  static QueuedInputDeliveryStage? fromWireValue(Object? value) =>
+      switch (value) {
+        'bridge_accepted' => QueuedInputDeliveryStage.bridgeAccepted,
+        'provider_accepted' => QueuedInputDeliveryStage.providerAccepted,
+        'provider_rejected' => QueuedInputDeliveryStage.providerRejected,
+        _ => null,
+      };
+}
+
 class QueuedInputItem {
   final String itemId;
   final String text;
   final String createdAt;
   final String? updatedAt;
+  final String? clientMessageId;
+  final QueuedInputDeliveryStage? deliveryStage;
+  final String? deliveryError;
   final int imageCount;
   final List<Map<String, String>> skills;
   final List<Map<String, String>> mentions;
@@ -747,6 +769,9 @@ class QueuedInputItem {
     required this.text,
     required this.createdAt,
     this.updatedAt,
+    this.clientMessageId,
+    this.deliveryStage,
+    this.deliveryError,
     this.imageCount = 0,
     this.skills = const [],
     this.mentions = const [],
@@ -758,11 +783,68 @@ class QueuedInputItem {
       text: json['text'] as String? ?? '',
       createdAt: json['createdAt'] as String? ?? '',
       updatedAt: json['updatedAt'] as String?,
+      clientMessageId: json['clientMessageId'] as String?,
+      deliveryStage: QueuedInputDeliveryStage.fromWireValue(
+        json['deliveryStage'],
+      ),
+      deliveryError: json['deliveryError'] as String?,
       imageCount: json['imageCount'] as int? ?? 0,
       skills: _stringMapList(json['skills']),
       mentions: _stringMapList(json['mentions']),
     );
   }
+
+  QueuedInputItem withDeliveryStage(
+    QueuedInputDeliveryStage incoming, {
+    String? error,
+  }) {
+    final current = deliveryStage;
+    if (current != null && current.rank >= incoming.rank) return this;
+    return QueuedInputItem(
+      itemId: itemId,
+      text: text,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      clientMessageId: clientMessageId,
+      deliveryStage: incoming,
+      deliveryError: error,
+      imageCount: imageCount,
+      skills: skills,
+      mentions: mentions,
+    );
+  }
+
+  QueuedInputItem mergeDeliveryStateFrom(QueuedInputItem previous) {
+    final previousStage = previous.deliveryStage;
+    final currentStage = deliveryStage;
+    final keepPrevious =
+        previousStage != null &&
+        (currentStage == null || previousStage.rank >= currentStage.rank);
+    return QueuedInputItem(
+      itemId: itemId,
+      text: text,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      clientMessageId: clientMessageId ?? previous.clientMessageId,
+      deliveryStage: keepPrevious ? previousStage : currentStage,
+      deliveryError: keepPrevious ? previous.deliveryError : deliveryError,
+      imageCount: imageCount,
+      skills: skills,
+      mentions: mentions,
+    );
+  }
+}
+
+bool queuedInputItemsShareIdentity(
+  QueuedInputItem left,
+  QueuedInputItem right,
+) {
+  if (left.itemId == right.itemId) return true;
+  final leftClientId = left.clientMessageId?.trim();
+  final rightClientId = right.clientMessageId?.trim();
+  return leftClientId != null &&
+      leftClientId.isNotEmpty &&
+      leftClientId == rightClientId;
 }
 
 // ---- Usage info ----

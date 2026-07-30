@@ -108,6 +108,23 @@ vi.mock("./session.js", async () => {
         .filter((root: string) => root.length > 0),
     ),
   ];
+  const publicQueuedInput = (item?: any, receipt?: any) =>
+    item
+      ? {
+          itemId: item.itemId,
+          text: item.text,
+          createdAt: item.createdAt,
+          ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
+          ...(item.clientMessageId
+            ? { clientMessageId: item.clientMessageId }
+            : {}),
+          ...(receipt?.stage ? { deliveryStage: receipt.stage } : {}),
+          ...(receipt?.error ? { deliveryError: receipt.error } : {}),
+          ...(item.imageCount ? { imageCount: item.imageCount } : {}),
+          ...(item.skills?.length ? { skills: item.skills } : {}),
+          ...(item.mentions?.length ? { mentions: item.mentions } : {}),
+        }
+      : undefined;
 
   class MockSessionManager {
     private sessions = new Map<string, any>();
@@ -405,6 +422,37 @@ vi.mock("./session.js", async () => {
       return true;
     }
 
+    recordInputBridgeAcceptance(
+      id: string,
+      clientMessageId: string,
+      acceptedSeq: number,
+      queued: boolean,
+    ) {
+      const session = this.sessions.get(id);
+      if (!session) return null;
+      session.inputDeliveryReceipts ??= new Map();
+      const existing = session.inputDeliveryReceipts.get(clientMessageId);
+      if (existing && existing.stage !== "bridge_accepted") {
+        return existing;
+      }
+      const receipt = {
+        clientMessageId,
+        stage: "bridge_accepted",
+        acceptedSeq,
+        queued,
+        occurredAt: new Date().toISOString(),
+      };
+      session.inputDeliveryReceipts.set(clientMessageId, receipt);
+      return receipt;
+    }
+
+    getInputDeliveryReceipt(id: string, clientMessageId: string) {
+      return (
+        this.sessions.get(id)?.inputDeliveryReceipts?.get(clientMessageId) ??
+        null
+      );
+    }
+
     updateCodexQueuedInput(
       id: string,
       itemId: string,
@@ -596,7 +644,14 @@ vi.mock("./session.js", async () => {
           ...(s.codexGoalControlSupported !== undefined
             ? { codexGoalControlSupported: s.codexGoalControlSupported }
             : {}),
-          queuedInput: s.codexQueuedInput,
+          queuedInput: publicQueuedInput(
+            s.codexQueuedInput,
+            s.codexQueuedInput?.clientMessageId
+              ? s.inputDeliveryReceipts?.get(
+                  s.codexQueuedInput.clientMessageId,
+                )
+              : undefined,
+          ),
         }));
     }
 
@@ -710,6 +765,7 @@ vi.mock("./session.js", async () => {
   return {
     MAX_HISTORY_PER_SESSION: 100,
     artifactCandidateRootsForSession,
+    publicQueuedInput,
     SessionManager: MockSessionManager,
   };
 });
@@ -14294,6 +14350,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       readyState: OPEN_STATE,
       send: vi.fn(),
     } as any;
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["conversation_queue"],
+      },
+      ws,
+    );
 
     (bridge as any).handleClientMessage(
       {
@@ -14323,6 +14386,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         type: "input",
         sessionId,
         text: "while busy",
+        clientMessageId: "mobile-queued-state-1",
       },
       ws,
     );
@@ -14342,6 +14406,17 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const sessionList = sent.find((m: any) => m.type === "session_list");
     expect(sessionList.sessions[0].queuedInput).toMatchObject({
       text: "while busy",
+      clientMessageId: "mobile-queued-state-1",
+      deliveryStage: "bridge_accepted",
+    });
+    ws.send.mockClear();
+    (bridge as any).sendCodexQueueState(ws, sessionId, session);
+    const queueState = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "conversation_queue");
+    expect(queueState.items[0]).toMatchObject({
+      clientMessageId: "mobile-queued-state-1",
+      deliveryStage: "bridge_accepted",
     });
 
     bridge.close();

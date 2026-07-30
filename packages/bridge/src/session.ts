@@ -376,15 +376,30 @@ function sanitizeCodexModel(model: unknown): string | undefined {
   return normalized;
 }
 
-function publicQueuedInput(
+export function publicQueuedInput(
   item?: QueuedCodexInput,
+  receipt?: InputDeliveryReceipt,
 ): QueuedInputItem | undefined {
   if (!item) return undefined;
+  const matchingReceipt =
+    item.clientMessageId &&
+    receipt?.clientMessageId === item.clientMessageId
+      ? receipt
+      : undefined;
   return {
     itemId: item.itemId,
     text: item.text,
     createdAt: item.createdAt,
     ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
+    ...(item.clientMessageId
+      ? { clientMessageId: item.clientMessageId }
+      : {}),
+    ...(matchingReceipt
+      ? { deliveryStage: matchingReceipt.stage }
+      : {}),
+    ...(matchingReceipt?.error
+      ? { deliveryError: matchingReceipt.error }
+      : {}),
     ...(item.imageCount ? { imageCount: item.imageCount } : {}),
     ...(item.skills?.length ? { skills: item.skills } : {}),
     ...(item.mentions?.length ? { mentions: item.mentions } : {}),
@@ -1593,7 +1608,14 @@ export class SessionManager {
         pendingPermission,
         queuedInput:
           s.provider === "codex"
-            ? publicQueuedInput(s.codexQueuedInput)
+            ? publicQueuedInput(
+                s.codexQueuedInput,
+                s.codexQueuedInput?.clientMessageId
+                  ? s.inputDeliveryReceipts?.get(
+                      s.codexQueuedInput.clientMessageId,
+                    )
+                  : undefined,
+              )
             : undefined,
       };
     });
@@ -2074,6 +2096,9 @@ export class SessionManager {
       occurredAt: existing?.occurredAt ?? new Date().toISOString(),
     };
     this.storeInputDeliveryReceipt(session, receipt);
+    if (queued && session.codexQueuedInput?.clientMessageId === clientMessageId) {
+      this.broadcastCodexQueue(session);
+    }
     return receipt;
   }
 
@@ -2197,7 +2222,14 @@ export class SessionManager {
   }
 
   private broadcastCodexQueue(session: SessionInfo): void {
-    const item = publicQueuedInput(session.codexQueuedInput);
+    const item = publicQueuedInput(
+      session.codexQueuedInput,
+      session.codexQueuedInput?.clientMessageId
+        ? session.inputDeliveryReceipts?.get(
+            session.codexQueuedInput.clientMessageId,
+          )
+        : undefined,
+    );
     this.onMessage(session.id, {
       type: "conversation_queue",
       sessionId: session.id,
@@ -2301,6 +2333,11 @@ export class SessionManager {
       ...(event.error ? { error: event.error } : {}),
     };
     this.storeInputDeliveryReceipt(session, receipt);
+    if (
+      session.codexQueuedInput?.clientMessageId === event.clientMessageId
+    ) {
+      this.broadcastCodexQueue(session);
+    }
     return receipt;
   }
 
