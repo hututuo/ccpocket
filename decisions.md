@@ -1055,3 +1055,35 @@
   `bootout`, confirm both the job and listener are gone and allow launchd at
   least two seconds before `bootstrap`; an immediate retry can return
   `Input/output error` even with a valid plist.
+
+## Detached durable previews must not impersonate provider attachment
+
+- Opening a durable conversation renders its local SQLite replica and remains
+  intentionally detached from the provider. It must not display a generic
+  runtime-loading banner merely because `detachedPreview` is true.
+- The attachment banner is valid only after an interactive operation has
+  queued a submission and `deferredSubmissionPending` is true. It disappears
+  after the authoritative `session_created` attachment event.
+- Read-only opening, scrolling and local history rendering never acquire
+  app-server writer ownership. A persistent loading label for a state that is
+  not being requested is a product bug, not harmless progress wording.
+
+## Conversation sync retries reset only at a stable checkpoint
+
+- ACKing an individual v2 frame proves only that one SQLite commit succeeded.
+  It must not reset retry backoff after a previous batch failure. Retry state
+  resets only after a priority checkpoint or `sync_complete`.
+- The first non-thread commit failure for one authenticated
+  `(bridgeInstanceId, codexSourceId)` may clear that target's rebuildable
+  catalog/status/timeline/sync-state cache once. Read watermarks, credentials,
+  drafts, settings, mutation authorization and Mac authority remain intact.
+- A thread base-revision mismatch clears only that thread window. Repeated
+  failures back off and emit privacy-safe diagnostics; they do not repeatedly
+  clear the target or log URLs, tokens, titles, paths, message bodies or raw
+  payloads.
+- When Bridge emits a global catalog/status reset, stale client thread revision
+  hints are invalid for that subscription and must be discarded so one bounded
+  hot-window rebuild can occur. Read watermarks remain valid.
+- Launch/recovery shell code must avoid shell-reserved names such as zsh
+  `status`. A failed recovery trap is itself a deployment fault and must be
+  recorded rather than described as a seamless switch.

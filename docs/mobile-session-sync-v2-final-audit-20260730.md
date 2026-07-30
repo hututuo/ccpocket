@@ -329,6 +329,38 @@ Need You，也不伪装为无待办。
 自动化和模拟器不能证明以下项目：
 
 - AltStore/AltServer 重签与物理安装；
+
+## 2026-07-30 build 207 recovery addendum
+
+物理 build 206 继续出现“会话内已连接、正在载入会话运行状态”以及 v2
+subscribe/ACK/unsubscribe 循环后，重新沿
+`provider → Bridge → protocol → SQLite → reducer → UI` 复核，确认：
+
+- durable detached preview 并未等待 provider attachment，原 banner 是 UI
+  假加载；
+- 当前协议帧可以在干净数据库完整重放，真实问题不是 320 项目录或 2 MB 批次
+  本身不可解析；
+- Mobile commit failure 恢复会在每个 ACK 后重置退避，导致重复失败固定两秒
+  重订阅；
+- global state reset 仍保留旧 thread revisions，旧客户端可能收不到重建热窗口。
+
+build 207 和 Bridge compat.7 分别加入真实 pending gate、一次性可重建缓存自愈、
+per-thread revision recovery、稳定 checkpoint 退避，以及 global reset 后的有界
+热窗口重建。验证结果：
+
+- Mobile full：2,641 passed、4 expected skips；
+- Bridge serial full：96 files、1,859 passed；
+- iOS Simulator build、RunnerTests 27/27、device Release build 和 Shorebird
+  no-codesign dry-run 全部通过；
+- compat.7 在正式 8765 对真实 320 项目录/status 返回 102 个 timeline pages，
+  最大 frame 65,139 bytes；
+- build 207 AltStore 输入 IPA 的结构、arm64/iPhoneOS、无签名和原生能力审计
+  通过。
+
+完整 runtime、回滚、IPA 哈希和物理设备门禁分别记录在：
+
+- `runs/20260730-101950_bridge-1.69.4-compat.7-4c5f875e-deploy/DEPLOYMENT.md`
+- `runs/20260730-104039_ccpocket-build207-ipa/README.md`
 - 两阶段 Always Location 权限和后台系统指示；
 - iOS 实际分配的后台时间、force-quit 后行为和长任务功耗；
 - 锁屏本地通知、长按审批允许/拒绝；
