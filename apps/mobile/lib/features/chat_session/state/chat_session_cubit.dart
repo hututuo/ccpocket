@@ -113,6 +113,16 @@ class HistoryToolDetailLoadState {
   );
 }
 
+class _CanonicalAliasLookup {
+  const _CanonicalAliasLookup({
+    required this.exactIndexes,
+    required this.weakIndexes,
+  });
+
+  final Map<String, List<int>> exactIndexes;
+  final Map<String, List<int>> weakIndexes;
+}
+
 /// Manages the state of a single chat session.
 ///
 /// Subscribes to [BridgeService.messagesForSession] and delegates message
@@ -3103,6 +3113,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> mirrorEntries,
   }) {
     if (mergedEntries.isEmpty || mirrorEntries.isEmpty) return 0;
+    final aliasLookup = _buildCanonicalAliasLookup(mergedEntries);
     final consumedMergedIndexes = <int>{};
     var lastMirrorIndex = -1;
     for (final mirrorEntry in mirrorEntries) {
@@ -3110,6 +3121,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         mergedEntries,
         mirrorEntry,
         consumedMergedIndexes,
+        aliasLookup: aliasLookup,
         start: lastMirrorIndex + 1,
         end: mergedEntries.length,
         allowBroadLegacyAliases: true,
@@ -3156,6 +3168,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       (_) => <ChatEntry>[],
       growable: false,
     );
+    final aliasLookup = _buildCanonicalAliasLookup(canonical);
     final consumedCanonicalIndexes = <int>{};
     final leadingUnanchored = <ChatEntry>[];
     var lastAnchor = minimum - 1;
@@ -3167,6 +3180,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         canonical,
         existing,
         consumedCanonicalIndexes,
+        aliasLookup: aliasLookup,
         start: forwardStart,
         end: canonical.length,
         allowBroadLegacyAliases: allowBroadLegacyAliases,
@@ -3179,6 +3193,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           canonical,
           existing,
           consumedCanonicalIndexes,
+          aliasLookup: aliasLookup,
           start: minimum,
           end: lastAnchor + 1 > canonical.length
               ? canonical.length
@@ -3236,22 +3251,53 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     List<ChatEntry> canonicalEntries,
     ChatEntry existing,
     Set<int> excludedIndexes, {
+    required _CanonicalAliasLookup aliasLookup,
     required int start,
     required int end,
     required bool allowBroadLegacyAliases,
   }) {
-    for (var index = start; index < end; index++) {
-      if (excludedIndexes.contains(index)) continue;
-      if (_entriesEquivalent(canonicalEntries[index], existing)) return index;
+    final exactMatch = _firstIndexedAliasMatch(
+      aliasLookup.exactIndexes,
+      _entryExactAliasKeys(existing),
+      canonicalEntries,
+      excludedIndexes,
+      start: start,
+      end: end,
+      predicate: (canonical) => _entriesEquivalent(canonical, existing),
+    );
+    if (exactMatch != -1) return exactMatch;
+
+    // Older history can omit one side of a pending user message's stable
+    // correlation. Restrict that fallback to the same text/image signature
+    // before applying the original equivalence predicate.
+    if (existing is UserChatEntry) {
+      final weakKey = _entryWeakKey(existing);
+      final userFallback = _firstIndexedAliasMatch(
+        aliasLookup.weakIndexes,
+        weakKey == null ? const [] : [weakKey],
+        canonicalEntries,
+        excludedIndexes,
+        start: start,
+        end: end,
+        predicate: (canonical) => _entriesEquivalent(canonical, existing),
+      );
+      if (userFallback != -1) return userFallback;
     }
+
     if (existing is ServerChatEntry &&
         existing.message is AssistantServerMessage) {
-      for (var index = start; index < end; index++) {
-        if (excludedIndexes.contains(index)) continue;
-        if (_isProvisionalAssistantAlias(existing, canonicalEntries[index])) {
-          return index;
-        }
-      }
+      final weakKey = _entryWeakKey(existing);
+      final provisionalMatch = _firstIndexedAliasMatch(
+        aliasLookup.weakIndexes,
+        weakKey == null ? const [] : [weakKey],
+        canonicalEntries,
+        excludedIndexes,
+        start: start,
+        end: end,
+        predicate: (canonical) =>
+            _isProvisionalAssistantAlias(existing, canonical),
+      );
+      if (provisionalMatch != -1) return provisionalMatch;
       // Two stable assistant ids with the same text remain distinct.
       return -1;
     }
@@ -3259,17 +3305,92 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         !_canWeakMatchAppendedEntry(existing)) {
       return -1;
     }
-    for (var index = start; index < end; index++) {
-      if (excludedIndexes.contains(index)) continue;
-      if (_entriesEquivalent(
-        canonicalEntries[index],
-        existing,
-        allowWeakMatch: true,
-      )) {
-        return index;
+    final weakKey = _entryWeakKey(existing);
+    return _firstIndexedAliasMatch(
+      aliasLookup.weakIndexes,
+      weakKey == null ? const [] : [weakKey],
+      canonicalEntries,
+      excludedIndexes,
+      start: start,
+      end: end,
+      predicate: (canonical) =>
+          _entriesEquivalent(canonical, existing, allowWeakMatch: true),
+    );
+  }
+
+  _CanonicalAliasLookup _buildCanonicalAliasLookup(List<ChatEntry> entries) {
+    final exactIndexes = <String, List<int>>{};
+    final weakIndexes = <String, List<int>>{};
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      for (final key in _entryExactAliasKeys(entry)) {
+        (exactIndexes[key] ??= <int>[]).add(index);
+      }
+      final weakKey = _entryWeakKey(entry);
+      if (weakKey != null) {
+        (weakIndexes[weakKey] ??= <int>[]).add(index);
       }
     }
-    return -1;
+    return _CanonicalAliasLookup(
+      exactIndexes: exactIndexes,
+      weakIndexes: weakIndexes,
+    );
+  }
+
+  Iterable<String> _entryExactAliasKeys(ChatEntry entry) sync* {
+    if (entry case ServerChatEntry(
+      message: AssistantServerMessage(:final messageUuid, :final message),
+    )) {
+      if (message.id.isNotEmpty) yield 'assistant:id:${message.id}';
+      if (messageUuid?.isNotEmpty == true) {
+        yield 'assistant:uuid:$messageUuid';
+      }
+      return;
+    }
+    final stableKey = _entryStableKey(entry);
+    if (stableKey != null) yield stableKey;
+  }
+
+  int _firstIndexedAliasMatch(
+    Map<String, List<int>> indexByKey,
+    Iterable<String> keys,
+    List<ChatEntry> canonicalEntries,
+    Set<int> excludedIndexes, {
+    required int start,
+    required int end,
+    required bool Function(ChatEntry canonical) predicate,
+  }) {
+    var earliest = -1;
+    for (final key in keys) {
+      final indexes = indexByKey[key];
+      if (indexes == null) continue;
+      var offset = _lowerBoundIndex(indexes, start);
+      while (offset < indexes.length) {
+        final index = indexes[offset];
+        if (index >= end || (earliest != -1 && index >= earliest)) break;
+        if (!excludedIndexes.contains(index) &&
+            predicate(canonicalEntries[index])) {
+          earliest = index;
+          break;
+        }
+        offset += 1;
+      }
+    }
+    return earliest;
+  }
+
+  int _lowerBoundIndex(List<int> sortedIndexes, int target) {
+    var low = 0;
+    var high = sortedIndexes.length;
+    while (low < high) {
+      final middle = low + ((high - low) >> 1);
+      if (sortedIndexes[middle] < target) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    return low;
   }
 
   ChatEntry _mergeCanonicalMirrorEntry(
