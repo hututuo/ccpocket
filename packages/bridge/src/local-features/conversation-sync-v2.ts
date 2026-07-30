@@ -22,6 +22,7 @@ import {
   paginateConversationContentEntries,
   readDurableConversationHistory,
   toWireConversationContentEntry,
+  type ConversationContentLatestTurnGap,
   type ConversationContentSnapshot,
   type ConversationContentSnapshotEntry,
 } from "./conversation-content-sync.js";
@@ -80,6 +81,25 @@ const MAX_TOOL_DETAIL_COMPONENT_BYTES = 3 * 1024;
 const MAX_TOOL_DETAIL_ATTACHMENTS = 4;
 const MAX_CODEX_TURN_SCAN_PAGES = 50;
 const CODEX_TURN_SCAN_PAGE_SIZE = 20;
+const LEGACY_WINDOW_CURSOR_PREFIX = "ccp-legacy-window-v1:";
+const MAX_CODEX_RAW_TURN_ITEMS = 256;
+const MAX_CODEX_RAW_TURN_BYTES = 192 * 1024;
+const MAX_CODEX_RAW_ITEM_BYTES = 32 * 1024;
+const MAX_CODEX_RAW_STRING_BYTES = 24 * 1024;
+const MAX_CODEX_RAW_ARRAY_ITEMS = 64;
+const MAX_CODEX_RAW_OBJECT_KEYS = 64;
+const MAX_CODEX_RAW_DEPTH = 5;
+const PAGE_PROJECTION_TEXT_BUDGETS = [
+  32 * 1024,
+  16 * 1024,
+  8 * 1024,
+  4 * 1024,
+  2 * 1024,
+  1024,
+  512,
+  256,
+  128,
+] as const;
 const LIVE_CONTENT_BATCH_MS = 32;
 // The one-shot discovery already finds every currently running rollout.
 // Idle recent threads are attached lazily on an exact catalog change or focus,
@@ -166,9 +186,7 @@ interface ConversationSyncV2Options {
   statusReader?: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
-  historyReader?: (
-    target: ConversationSyncTarget,
-  ) => Promise<ServerMessage[] | ConversationHistoryWindow>;
+  historyReader?: ConversationHistoryReader;
   statusWatchdogMs?: number;
   coldReconcileMs?: number;
   observeCodexThread?: ObserveCodexThread;
@@ -177,17 +195,40 @@ interface ConversationSyncV2Options {
   maxExternalCodexMonitors?: number;
 }
 
+interface ConversationHistoryReadRequest {
+  kind: "turns" | "items";
+  cursor: string | null;
+  limit: number;
+  sortDirection: "asc" | "desc";
+  turnId?: string;
+}
+
 interface ConversationHistoryWindow {
   messages: ServerMessage[];
   nextTurnCursor: string | null;
   turnDetails?: ConversationTurnDetails[];
+  latestTurnComplete?: boolean;
+  latestTurnGap?: ConversationContentLatestTurnGap;
+  /**
+   * Cursor this bounded window actually consumed. A reader must echo an
+   * opaque non-null request cursor here; otherwise the fallback cannot prove
+   * it advanced and must fail instead of replaying the first window.
+   */
+  sourceCursor?: string | null;
 }
+
+type ConversationHistoryReader = (
+  target: ConversationSyncTarget,
+  request?: ConversationHistoryReadRequest,
+) => Promise<ServerMessage[] | ConversationHistoryWindow>;
 
 interface NormalizedConversationTurn {
   turnId: string;
   messages: ServerMessage[];
   itemCount: number;
   itemsView: "summary" | "full";
+  latestTurnComplete?: boolean;
+  latestTurnGap?: ConversationContentLatestTurnGap;
 }
 
 interface ConversationTurnDetails {
@@ -205,6 +246,11 @@ interface ConversationItemsPage {
   data: unknown[];
   nextCursor: string | null;
   turnDetails?: ConversationTurnDetails;
+}
+
+interface TimelinePatchPage {
+  entries: ConversationContentSnapshotEntry[];
+  deletes: string[];
 }
 
 type CodexReadRunner = <T>(
@@ -275,9 +321,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private readonly statusReader: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
-  private readonly historyReader: (
-    target: ConversationSyncTarget,
-  ) => Promise<ServerMessage[] | ConversationHistoryWindow>;
+  private readonly historyReader: ConversationHistoryReader;
   private readonly statusWatchdogMs: number;
   private readonly coldReconcileMs: number;
   private readonly observeCodexThread: ObserveCodexThread;
@@ -369,7 +413,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       ((current) => readCurrentStatuses(this.runtime, current));
     this.historyReader =
       options.historyReader ??
-      ((target) => this.readRecentConversationHistory(target));
+      ((target, request) =>
+        this.readRecentConversationHistory(target, request));
     this.statusWatchdogMs = positiveInterval(
       options.statusWatchdogMs,
       STATUS_WATCHDOG_MS,
@@ -1085,11 +1130,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           maxSnapshotBytes: MAX_TIMELINE_BYTES,
           preserveLatestRootTurnTools,
         });
+        const latestTurnGap = mergeLatestTurnGaps(
+          window.latestTurnGap,
+          built.latestTurnGap,
+        );
         const snapshot = {
           ...built,
           revision: requestedRevision,
           hasEarlier: built.hasEarlier || window.nextTurnCursor != null,
           turnsNextCursor: window.nextTurnCursor,
+          latestTurnComplete:
+            window.latestTurnComplete !== false &&
+            built.latestTurnComplete &&
+            latestTurnGap === undefined,
+          ...(latestTurnGap ? { latestTurnGap } : {}),
         };
         this.rememberSnapshot(key, snapshot);
         return snapshot;
@@ -1167,11 +1221,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const deletes = base.entries
       .filter((entry) => !nextIds.has(entry.entryId))
       .map((entry) => entry.entryId);
-    const pages = this.timelinePages(snapshot, upserts);
-    const deletePages = chunkByJsonBytes(deletes, FRAME_CONTENT_BUDGET);
-    const pageCount = Math.max(pages.length, deletePages.length, 1);
+    const pages = this.timelinePatchPages(
+      subscription,
+      base.revision,
+      snapshot,
+      upserts,
+      deletes,
+      phase,
+      timelineIndex,
+      timelineCount,
+    );
+    const pageCount = pages.length;
     let finalSequence = -1;
     for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      const page = pages[pageIndex]!;
       finalSequence = this.sendEvent(client, subscription, {
         event: "timeline_page",
         provider: snapshot.provider,
@@ -1184,8 +1247,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         timelineCount,
         pageIndex,
         pageCount,
-        entries: (pages[pageIndex] ?? []).map(toWireConversationContentEntry),
-        deletes: deletePages[pageIndex] ?? [],
+        entries: page.entries.map(toWireConversationContentEntry),
+        deletes: page.deletes,
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
         latestTurnComplete: snapshot.latestTurnComplete,
@@ -1201,6 +1264,80 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       },
     });
     return true;
+  }
+
+  private timelinePatchPages(
+    subscription: SyncSubscription,
+    baseRevision: string,
+    snapshot: ConversationContentSnapshot,
+    entries: readonly ConversationContentSnapshotEntry[],
+    deletes: readonly string[],
+    phase: "priority" | "recent" | "cold",
+    timelineIndex: number,
+    timelineCount: number,
+  ): TimelinePatchPage[] {
+    const envelopeBytes = this.eventPayloadBytes(subscription, {
+      event: "timeline_page",
+      provider: snapshot.provider,
+      providerSessionId: snapshot.providerSessionId,
+      revision: snapshot.revision,
+      baseRevision,
+      mode: "patch",
+      phase,
+      timelineIndex,
+      timelineCount,
+      pageIndex: Number.MAX_SAFE_INTEGER,
+      pageCount: Number.MAX_SAFE_INTEGER,
+      entries: [],
+      deletes: [],
+      hasEarlier: snapshot.hasEarlier,
+      turnsNextCursor: snapshot.turnsNextCursor,
+      latestTurnComplete: snapshot.latestTurnComplete,
+      latestTurnGap: snapshot.latestTurnGap,
+      sourceEntryCount: snapshot.sourceEntryCount,
+    });
+    const entryBytes = entries.map((entry) =>
+      Buffer.byteLength(
+        JSON.stringify(toWireConversationContentEntry(entry)),
+        "utf8",
+      ),
+    );
+    const deleteBytes = deletes.map((entryId) =>
+      Buffer.byteLength(JSON.stringify(entryId), "utf8"),
+    );
+    const pages: TimelinePatchPage[] = [];
+    let entryIndex = 0;
+    let deleteIndex = 0;
+    while (entryIndex < entries.length || deleteIndex < deletes.length) {
+      const page: TimelinePatchPage = { entries: [], deletes: [] };
+      let bytes = envelopeBytes;
+      while (
+        entryIndex < entries.length &&
+        page.entries.length < MAX_TIMELINE_PAGE_ENTRIES
+      ) {
+        const addition =
+          (page.entries.length === 0 ? 0 : 1) + entryBytes[entryIndex]!;
+        if (bytes + addition > MAX_FRAME_BYTES) break;
+        page.entries.push(entries[entryIndex]!);
+        bytes += addition;
+        entryIndex += 1;
+      }
+      while (deleteIndex < deletes.length) {
+        const addition =
+          (page.deletes.length === 0 ? 0 : 1) + deleteBytes[deleteIndex]!;
+        if (bytes + addition > MAX_FRAME_BYTES) break;
+        page.deletes.push(deletes[deleteIndex]!);
+        bytes += addition;
+        deleteIndex += 1;
+      }
+      if (page.entries.length === 0 && page.deletes.length === 0) {
+        throw new Error(
+          "conversation_sync_v2 timeline patch item exceeds frame budget",
+        );
+      }
+      pages.push(page);
+    }
+    return pages.length > 0 ? pages : [{ entries: [], deletes: [] }];
   }
 
   private sendTimelineSnapshot(
@@ -1486,17 +1623,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   private async readRecentConversationHistory(
     target: ConversationSyncTarget,
+    request?: ConversationHistoryReadRequest,
   ): Promise<ConversationHistoryWindow> {
     if (target.provider !== "codex") {
-      return readLegacyHistoryWindow(target);
+      if (request) throw boundedLegacyPageUnavailable(target.provider);
+      return readLegacyInitialHistoryWindow(target);
     }
+    if (request) throw boundedLegacyPageUnavailable(target.provider);
     try {
       return await this.withSharedCodexReadProcess((process) =>
         readRecentCodexConversationHistory(process, target),
       );
     } catch (error) {
       if (!isUnsupportedAppServerRead(error)) throw error;
-      return readLegacyHistoryWindow(target);
+      throw boundedLegacyPageUnavailable(target.provider);
     }
   }
 
@@ -2358,33 +2498,50 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ): Promise<void> {
     const subscription = this.validSubscription(client, message.subscriptionId);
     if (!subscription) return;
+    const responsePayload = (
+      page: ConversationTurnsPage,
+    ): ConversationSyncEventPayload => ({
+      event: "turns_page_response",
+      requestId: message.requestId,
+      provider: message.provider,
+      providerSessionId: message.providerSessionId,
+      data: page.data,
+      nextCursor: page.nextCursor,
+    });
+    let page: ConversationTurnsPage;
     try {
-      const page = await readTurnsPage(
+      page = await readTurnsPage(
         message,
         this.historyReader,
         signal,
         (operation) => this.withSharedCodexReadProcess(operation),
+        (candidate) =>
+          this.eventPayloadFits(subscription, responsePayload(candidate)),
       );
       for (const turn of page.turnDetails ?? []) {
         this.rememberTurnDetails(message, turn);
       }
-      this.sendEvent(client, subscription, {
-        event: "turns_page_response",
-        requestId: message.requestId,
-        provider: message.provider,
-        providerSessionId: message.providerSessionId,
-        data: page.data,
-        nextCursor: page.nextCursor,
-      });
     } catch (error) {
-      this.sendError(
-        client,
-        subscription,
-        message.requestId,
-        "turns_page_failed",
-        errorMessage(error),
-        message,
-      );
+      try {
+        this.sendError(
+          client,
+          subscription,
+          message.requestId,
+          "turns_page_failed",
+          errorMessage(error),
+          message,
+        );
+      } catch {
+        subscription.dirty = true;
+      }
+      return;
+    }
+    try {
+      this.sendEvent(client, subscription, responsePayload(page));
+    } catch {
+      // The response is already queued when a synchronous socket write fails.
+      // Do not append a false provider/read failure for the same request.
+      subscription.dirty = true;
     }
   }
 
@@ -2398,40 +2555,60 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ): Promise<void> {
     const subscription = this.validSubscription(client, message.subscriptionId);
     if (!subscription) return;
+    const responsePayload = (
+      page: ConversationItemsPage,
+    ): ConversationSyncEventPayload => ({
+      event: "items_page_response",
+      requestId: message.requestId,
+      provider: message.provider,
+      providerSessionId: message.providerSessionId,
+      ...(message.turnId ? { turnId: message.turnId } : {}),
+      data: page.data,
+      nextCursor: page.nextCursor,
+    });
+    let page: ConversationItemsPage;
     try {
+      const pageFits = (candidate: ConversationItemsPage) =>
+        this.eventPayloadFits(subscription, responsePayload(candidate));
       const cached =
         message.turnId && message.toolUseIds
           ? this.cachedTurnDetails(message, message.turnId, message.toolUseIds)
           : null;
-      const page = cached
+      page = cached
         ? historyToolDetailsPage(message, cached)
         : await readItemsPage(
             message,
             this.historyReader,
             signal,
             (operation) => this.withSharedCodexReadProcess(operation),
+            pageFits,
           );
+      if (!pageFits(page)) {
+        throw oversizedItemsPageError();
+      }
       if (page.turnDetails) {
         this.rememberTurnDetails(message, page.turnDetails);
       }
-      this.sendEvent(client, subscription, {
-        event: "items_page_response",
-        requestId: message.requestId,
-        provider: message.provider,
-        providerSessionId: message.providerSessionId,
-        ...(message.turnId ? { turnId: message.turnId } : {}),
-        data: page.data,
-        nextCursor: page.nextCursor,
-      });
     } catch (error) {
-      this.sendError(
-        client,
-        subscription,
-        message.requestId,
-        "items_page_failed",
-        errorMessage(error),
-        message,
-      );
+      try {
+        this.sendError(
+          client,
+          subscription,
+          message.requestId,
+          "items_page_failed",
+          errorMessage(error),
+          message,
+        );
+      } catch {
+        subscription.dirty = true;
+      }
+      return;
+    }
+    try {
+      this.sendEvent(client, subscription, responsePayload(page));
+    } catch {
+      // Preserve the valid queued response; transport recovery will flush it.
+      subscription.dirty = true;
     }
   }
 
@@ -2488,16 +2665,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     subscription: SyncSubscription,
     payload: ConversationSyncEventPayload,
   ): number {
-    const sequence = ++subscription.nextSequence;
-    const message = {
-      type: CONVERSATION_SYNC_V2_CAPABILITY,
-      subscriptionId: subscription.id,
-      bridgeInstanceId: this.runtime.bridgeInstanceId ?? "unavailable",
-      codexSourceId: this.runtime.codexSourceId ?? "legacy",
-      batchId: subscription.batchId,
-      sequence,
-      ...payload,
-    } as ConversationSyncServerMessage;
+    const sequence = subscription.nextSequence + 1;
+    const message = this.eventMessage(subscription, sequence, payload);
     const bytes = Buffer.byteLength(JSON.stringify(message), "utf8");
     if (bytes > MAX_FRAME_BYTES) {
       throw new Error(
@@ -2509,10 +2678,46 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         "conversation_sync_v2 outbound queue exceeded byte budget",
       );
     }
+    subscription.nextSequence = sequence;
     subscription.outbound.push({ sequence, bytes, message });
     subscription.queuedBytes += bytes;
     this.flush(client, subscription);
     return sequence;
+  }
+
+  private eventPayloadFits(
+    subscription: SyncSubscription,
+    payload: ConversationSyncEventPayload,
+  ): boolean {
+    return this.eventPayloadBytes(subscription, payload) <= MAX_FRAME_BYTES;
+  }
+
+  private eventPayloadBytes(
+    subscription: SyncSubscription,
+    payload: ConversationSyncEventPayload,
+  ): number {
+    return Buffer.byteLength(
+      JSON.stringify(
+        this.eventMessage(subscription, Number.MAX_SAFE_INTEGER, payload),
+      ),
+      "utf8",
+    );
+  }
+
+  private eventMessage(
+    subscription: SyncSubscription,
+    sequence: number,
+    payload: ConversationSyncEventPayload,
+  ): ConversationSyncServerMessage {
+    return {
+      type: CONVERSATION_SYNC_V2_CAPABILITY,
+      subscriptionId: subscription.id,
+      bridgeInstanceId: this.runtime.bridgeInstanceId ?? "unavailable",
+      codexSourceId: this.runtime.codexSourceId ?? "legacy",
+      batchId: subscription.batchId,
+      sequence,
+      ...payload,
+    } as ConversationSyncServerMessage;
   }
 
   private flush(client: object, subscription: SyncSubscription): void {
@@ -2525,12 +2730,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       ) {
         break;
       }
+      // The queue is the retry source of truth. Keep the frame and its byte
+      // accounting intact until the runtime confirms the socket write.
+      this.runtime.send(client, frame.message);
       subscription.outbound.shift();
       subscription.queuedBytes = Math.max(
         0,
         subscription.queuedBytes - frame.bytes,
       );
-      this.runtime.send(client, frame.message);
       subscription.outstanding.set(frame.sequence, frame.bytes);
       subscription.outstandingBytes += frame.bytes;
     }
@@ -2796,6 +3003,7 @@ async function readRecentCodexConversationHistory(
     target.providerSessionId,
   );
   const fullStart = Math.max(0, normalized.turns.length - FULL_RECENT_TURNS);
+  const latestTurn = normalized.turns.at(-1);
   return {
     messages: normalized.turns.flatMap((turn, index) =>
       index < fullStart
@@ -2804,25 +3012,34 @@ async function readRecentCodexConversationHistory(
     ),
     nextTurnCursor: page.nextCursor,
     turnDetails: normalized.turnDetails,
+    latestTurnComplete: latestTurn?.latestTurnComplete ?? true,
+    ...(latestTurn?.latestTurnGap
+      ? { latestTurnGap: latestTurn.latestTurnGap }
+      : {}),
   };
 }
 
-async function readLegacyHistoryWindow(
+async function readLegacyInitialHistoryWindow(
   target: ConversationSyncTarget,
 ): Promise<ConversationHistoryWindow> {
   const messages = await readDurableConversationHistory(target);
   const turns = groupLegacyTurns(messages);
-  const recentStart = Math.max(0, turns.length - PRIORITY_RECENT_COUNT);
-  const fullStart = Math.max(recentStart, turns.length - FULL_RECENT_TURNS);
-  const normalizedMessages = turns.flatMap((turn, index) => {
+  const rawPage = paginateArray(
+    turns,
+    undefined,
+    PRIORITY_RECENT_COUNT,
+    "desc",
+  );
+  const pageTurns = [...rawPage.data].reverse();
+  const fullStart = Math.max(0, pageTurns.length - FULL_RECENT_TURNS);
+  const normalizedMessages = pageTurns.flatMap((turn, index) => {
     const annotated = annotateTurnMessages(turn.items, turn.id);
-    if (index >= recentStart && index < fullStart) {
+    if (index < fullStart) {
       return compactTurnMessages(annotated, turn.id);
     }
     return annotated;
   });
-  const turnDetails = turns
-    .slice(recentStart)
+  const turnDetails = pageTurns
     .map((turn) => ({
       turnId: turn.id,
       details: historyToolDetailPayloads(
@@ -2832,12 +3049,16 @@ async function readLegacyHistoryWindow(
     .filter((turn) => turn.details.length > 0);
   return {
     messages: normalizedMessages,
-    nextTurnCursor:
-      turns.length > PRIORITY_RECENT_COUNT
-        ? String(PRIORITY_RECENT_COUNT)
-        : null,
+    nextTurnCursor: rawPage.nextCursor,
     turnDetails,
+    sourceCursor: null,
   };
+}
+
+function boundedLegacyPageUnavailable(provider: string): Error {
+  return new Error(
+    `Bounded legacy history paging is unavailable for ${provider}; refusing an unbounded durable-history scan`,
+  );
 }
 
 async function readTurnsPage(
@@ -2845,78 +3066,125 @@ async function readTurnsPage(
     ConversationSyncClientMessage,
     { type: "conversation_turns_page" }
   >,
-  historyReader: (
-    target: ConversationSyncTarget,
-  ) => Promise<ServerMessage[] | ConversationHistoryWindow>,
+  historyReader: ConversationHistoryReader,
   signal: AbortSignal,
   runCodexRead: CodexReadRunner,
+  pageFits: (page: ConversationTurnsPage) => boolean,
 ): Promise<ConversationTurnsPage> {
   if (message.provider === "codex") {
-    return runCodexRead(async (process) => {
-      const page = await process.listThreadTurns(
-        {
-          threadId: message.providerSessionId,
-          cursor: message.cursor,
-          limit: message.limit ?? 5,
-          sortDirection: message.sortDirection ?? "desc",
-          // `summary` currently omits all tool ids. A bounded full provider
-          // page is compacted at the Bridge so Mobile still receives a useful
-          // process shell without the heavy details.
-          itemsView: "full",
-        },
-        { signal },
-      );
-      const chronologicalTurns =
-        (message.sortDirection ?? "desc") === "desc"
-          ? [...page.data].reverse()
-          : page.data;
-      const normalized = normalizeCodexTurns(
-        chronologicalTurns,
-        message.itemsView ?? "summary",
-        message.providerSessionId,
-      );
-      return {
-        data: normalized.turns,
-        nextCursor: page.nextCursor,
-        turnDetails: normalized.turnDetails,
-      };
-    });
+    try {
+      return await runCodexRead(async (process) => {
+        let lastPage: ConversationTurnsPage | undefined;
+        for (const limit of decreasingPageLimits(message.limit ?? 5)) {
+          signal.throwIfAborted();
+          const page = await process.listThreadTurns(
+            {
+              threadId: message.providerSessionId,
+              cursor: message.cursor,
+              limit,
+              sortDirection: message.sortDirection ?? "desc",
+              // Summary pages stay summary at the provider boundary. Full
+              // item details are fetched by the explicit items endpoint.
+              itemsView: message.itemsView ?? "summary",
+            },
+            { signal },
+          );
+          const chronologicalTurns =
+            (message.sortDirection ?? "desc") === "desc"
+              ? [...page.data].reverse()
+              : page.data;
+          const normalized = normalizeCodexTurns(
+            chronologicalTurns,
+            message.itemsView ?? "summary",
+            message.providerSessionId,
+          );
+          const candidate: ConversationTurnsPage = {
+            data: normalized.turns,
+            nextCursor: page.nextCursor,
+            turnDetails: normalized.turnDetails,
+          };
+          if (pageFits(candidate)) return candidate;
+          lastPage = candidate;
+        }
+        if (!lastPage) {
+          throw new Error("Codex turns page did not return a bounded result");
+        }
+        return projectOversizedTurnsPage(message, lastPage, pageFits);
+      });
+    } catch (error) {
+      if (!isUnsupportedAppServerRead(error)) throw error;
+    }
   }
-  const history = normalizeHistoryWindow(await historyReader(message));
+  return readLegacyTurnsPage(message, historyReader, pageFits);
+}
+
+async function readLegacyTurnsPage(
+  message: Extract<
+    ConversationSyncClientMessage,
+    { type: "conversation_turns_page" }
+  >,
+  historyReader: ConversationHistoryReader,
+  pageFits: (page: ConversationTurnsPage) => boolean,
+): Promise<ConversationTurnsPage> {
+  const cursor = decodeLegacyWindowCursor(message.cursor);
+  const history = normalizeHistoryWindow(
+    await historyReader(message, {
+      kind: "turns",
+      cursor: cursor.sourceCursor,
+      limit: message.limit ?? 5,
+      sortDirection: message.sortDirection ?? "desc",
+    }),
+  );
+  assertLegacySourceCursorConsumed(history, cursor.sourceCursor);
   const cachedDetailsByTurn = new Map(
     (history.turnDetails ?? []).map((turn) => [turn.turnId, turn.details]),
   );
-  const turns = groupLegacyTurns(history.messages).map((turn) => {
-    const annotated = annotateTurnMessages(turn.items, turn.id);
-    return {
-      turnId: turn.id,
-      messages:
-        (message.itemsView ?? "summary") === "summary"
-          ? compactTurnMessages(annotated, turn.id)
-          : annotated,
-      itemCount: turn.items.length,
-      itemsView: message.itemsView ?? "summary",
-      details:
-        cachedDetailsByTurn.get(turn.id) ??
-        historyToolDetailPayloads(annotated),
-    };
-  });
-  const page = paginateArray(
-    turns,
-    message.cursor,
-    message.limit ?? 5,
-    message.sortDirection ?? "desc",
-  );
-  return {
-    data:
+  const turns = groupLegacyTurns(history.messages);
+  let lastPage: ConversationTurnsPage | undefined;
+  for (const limit of decreasingPageLimits(message.limit ?? 5)) {
+    const rawPage = paginateArray(
+      turns,
+      String(cursor.offset),
+      limit,
+      message.sortDirection ?? "desc",
+    );
+    const pageTurns = rawPage.data.map((turn) => {
+      const annotated = annotateTurnMessages(turn.items, turn.id);
+      return {
+        turnId: turn.id,
+        messages:
+          (message.itemsView ?? "summary") === "summary"
+            ? compactTurnMessages(annotated, turn.id)
+            : annotated,
+        itemCount: turn.items.length,
+        itemsView: message.itemsView ?? "summary",
+        details:
+          cachedDetailsByTurn.get(turn.id) ??
+          historyToolDetailPayloads(annotated),
+      };
+    });
+    const wireTurns =
       (message.sortDirection ?? "desc") === "desc"
-        ? [...page.data].reverse().map(({ details: _, ...turn }) => turn)
-        : page.data.map(({ details: _, ...turn }) => turn),
-    nextCursor: page.nextCursor,
-    turnDetails: page.data
-      .filter((turn) => turn.details.length > 0)
-      .map((turn) => ({ turnId: turn.turnId, details: turn.details })),
-  };
+        ? [...pageTurns].reverse()
+        : pageTurns;
+    const candidate: ConversationTurnsPage = {
+      data: wireTurns.map(({ details: _, ...turn }) => turn),
+      nextCursor: nextLegacyWindowCursor(
+        cursor,
+        rawPage.nextCursor,
+        history.nextTurnCursor,
+      ),
+      turnDetails: pageTurns
+        .filter((turn) => turn.details.length > 0)
+        .map((turn) => ({ turnId: turn.turnId, details: turn.details })),
+    };
+    if (pageFits(candidate)) return candidate;
+    lastPage = candidate;
+  }
+  if (!lastPage) {
+    throw new Error("Legacy turns page did not return a bounded result");
+  }
+  return projectOversizedTurnsPage(message, lastPage, pageFits);
 }
 
 async function readItemsPage(
@@ -2924,63 +3192,110 @@ async function readItemsPage(
     ConversationSyncClientMessage,
     { type: "conversation_items_page" }
   >,
-  historyReader: (
-    target: ConversationSyncTarget,
-  ) => Promise<ServerMessage[] | ConversationHistoryWindow>,
+  historyReader: ConversationHistoryReader,
   signal: AbortSignal,
   runCodexRead: CodexReadRunner,
+  pageFits: (page: ConversationItemsPage) => boolean,
 ): Promise<ConversationItemsPage> {
   if (message.provider === "codex") {
-    return runCodexRead(async (process) => {
-      const turnId = message.turnId ?? "paged-items";
-      let messages: ServerMessage[];
-      let nextCursor: string | null = null;
-      try {
-        const page = await process.listThreadItems(
-          {
-            threadId: message.providerSessionId,
-            turnId: message.turnId,
-            cursor: message.cursor,
-            limit: message.limit ?? 200,
-            sortDirection: message.sortDirection ?? "asc",
-          },
-          { signal },
-        );
-        // The official response is ThreadItemEntry { turnId, item }, not a
-        // bare ThreadItem. Accept the bare form as a forward-compatible
-        // fallback for older experimental app-server builds.
-        const items = page.data.map(unwrapCodexThreadItem);
-        messages = codexTurnMessages(
-          { id: turnId, items },
-          message.providerSessionId,
-        );
-        nextCursor = page.nextCursor;
-      } catch (error) {
-        if (!message.turnId || !isUnsupportedAppServerRead(error)) throw error;
-        messages = await findCodexTurnMessages(
-          process,
-          message.providerSessionId,
-          message.turnId,
-          signal,
-        );
-      }
-      const details = historyToolDetailPayloads(messages, message.toolUseIds);
-      const turnDetails = {
-        turnId,
-        details: historyToolDetailPayloads(messages),
-      };
-      if (message.toolUseIds) {
-        return {
-          ...historyToolDetailsPage(message, details),
-          turnDetails,
-        };
-      }
-      return {
-        data: messages,
-        nextCursor,
-        turnDetails,
-      };
-    });
+    try {
+      return await runCodexRead(async (process) => {
+        const turnId = message.turnId ?? "paged-items";
+        let lastPage: ConversationItemsPage | undefined;
+        for (const limit of decreasingPageLimits(message.limit ?? 200)) {
+          signal.throwIfAborted();
+          let messages: ServerMessage[];
+          let nextCursor: string | null = null;
+          let usedTurnsFallback = false;
+          try {
+            const page = await process.listThreadItems(
+              {
+                threadId: message.providerSessionId,
+                turnId: message.turnId,
+                cursor: message.cursor,
+                limit,
+                sortDirection: message.sortDirection ?? "asc",
+              },
+              { signal },
+            );
+            // The official response is ThreadItemEntry { turnId, item }, not a
+            // bare ThreadItem. Accept the bare form as a forward-compatible
+            // fallback for older experimental app-server builds.
+            const items = page.data.map(unwrapCodexThreadItem);
+            messages = codexTurnMessages(
+              { id: turnId, items },
+              message.providerSessionId,
+            );
+            nextCursor = page.nextCursor;
+          } catch (error) {
+            if (!message.turnId || !isUnsupportedAppServerRead(error)) {
+              throw error;
+            }
+            messages = await findCodexTurnMessages(
+              process,
+              message.providerSessionId,
+              message.turnId,
+              signal,
+            );
+            usedTurnsFallback = true;
+          }
+          const details = historyToolDetailPayloads(
+            messages,
+            message.toolUseIds,
+          );
+          const turnDetails = {
+            turnId,
+            details: historyToolDetailPayloads(messages),
+          };
+          const candidate: ConversationItemsPage = message.toolUseIds
+            ? {
+                ...historyToolDetailsPage(message, details),
+                turnDetails,
+              }
+            : {
+                data: messages,
+                nextCursor,
+                turnDetails,
+              };
+          if (pageFits(candidate)) return candidate;
+          if (usedTurnsFallback || message.toolUseIds) {
+            throw oversizedItemsPageError();
+          }
+          lastPage = candidate;
+        }
+        if (!lastPage) {
+          throw new Error("Codex items page did not return a bounded result");
+        }
+        throw oversizedItemsPageError();
+      });
+    } catch (error) {
+      if (!isUnsupportedAppServerRead(error)) throw error;
+    }
+  }
+  return readLegacyItemsPage(message, historyReader, pageFits);
+}
+
+async function readLegacyItemsPage(
+  message: Extract<
+    ConversationSyncClientMessage,
+    { type: "conversation_items_page" }
+  >,
+  historyReader: ConversationHistoryReader,
+  pageFits: (page: ConversationItemsPage) => boolean,
+): Promise<ConversationItemsPage> {
+  let localCursor = message.cursor;
+  if (message.cursor?.startsWith(LEGACY_WINDOW_CURSOR_PREFIX)) {
+    const decoded = decodeLegacyWindowCursor(message.cursor);
+    if (decoded.sourceCursor !== null) {
+      throw new Error(
+        "Legacy item history cannot consume the opaque item cursor",
+      );
+    }
+    localCursor = String(decoded.offset);
+  } else if (message.cursor && !/^\d+$/.test(message.cursor)) {
+    throw new Error(
+      "Legacy item history cannot consume the opaque item cursor",
+    );
   }
   const history = normalizeHistoryWindow(await historyReader(message));
   const turns = groupLegacyTurns(history.messages);
@@ -3008,7 +3323,7 @@ async function readItemsPage(
                 detail !== undefined,
             )
         : historyToolDetailPayloads(annotated, message.toolUseIds);
-    return {
+    const candidate = {
       ...historyToolDetailsPage(message, details),
       ...(message.turnId
         ? {
@@ -3019,13 +3334,217 @@ async function readItemsPage(
           }
         : {}),
     };
+    if (!pageFits(candidate)) throw oversizedItemsPageError();
+    return candidate;
   }
-  return paginateArray(
-    annotated,
-    message.cursor,
-    message.limit ?? 50,
-    message.sortDirection ?? "asc",
+  let lastPage: ConversationItemsPage | undefined;
+  for (const limit of decreasingPageLimits(message.limit ?? 50)) {
+    const candidate = paginateArray(
+      annotated,
+      localCursor,
+      limit,
+      message.sortDirection ?? "asc",
+    );
+    if (pageFits(candidate)) return candidate;
+    lastPage = candidate;
+  }
+  if (!lastPage) {
+    throw new Error("Legacy items page did not return a bounded result");
+  }
+  throw oversizedItemsPageError();
+}
+
+function decreasingPageLimits(requestedLimit: number): number[] {
+  const limits: number[] = [];
+  let current = Math.min(200, Math.max(1, Math.floor(requestedLimit)));
+  for (;;) {
+    limits.push(current);
+    if (current === 1) return limits;
+    current = Math.max(1, Math.floor(current / 2));
+  }
+}
+
+interface LegacyWindowCursor {
+  sourceCursor: string | null;
+  offset: number;
+}
+
+function decodeLegacyWindowCursor(
+  cursor: string | undefined,
+): LegacyWindowCursor {
+  if (!cursor) return { sourceCursor: null, offset: 0 };
+  if (!cursor.startsWith(LEGACY_WINDOW_CURSOR_PREFIX)) {
+    return { sourceCursor: cursor, offset: 0 };
+  }
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(
+        cursor.slice(LEGACY_WINDOW_CURSOR_PREFIX.length),
+        "base64url",
+      ).toString("utf8"),
+    ) as { sourceCursor?: unknown; offset?: unknown };
+    if (
+      (decoded.sourceCursor === null ||
+        typeof decoded.sourceCursor === "string") &&
+      typeof decoded.offset === "number" &&
+      Number.isSafeInteger(decoded.offset) &&
+      decoded.offset >= 0
+    ) {
+      return {
+        sourceCursor: decoded.sourceCursor,
+        offset: decoded.offset,
+      };
+    }
+  } catch {
+    // Invalid bridge cursor is rejected below rather than replayed as offset 0.
+  }
+  throw new Error("Invalid legacy history cursor");
+}
+
+function encodeLegacyWindowCursor(cursor: LegacyWindowCursor): string {
+  return `${LEGACY_WINDOW_CURSOR_PREFIX}${Buffer.from(
+    JSON.stringify(cursor),
+    "utf8",
+  ).toString("base64url")}`;
+}
+
+function assertLegacySourceCursorConsumed(
+  history: ConversationHistoryWindow,
+  sourceCursor: string | null,
+): void {
+  if (sourceCursor === null) return;
+  if (history.sourceCursor !== sourceCursor) {
+    throw new Error(
+      "Legacy history reader did not consume the requested opaque cursor",
+    );
+  }
+}
+
+function nextLegacyWindowCursor(
+  current: LegacyWindowCursor,
+  localNextCursor: string | null,
+  sourceNextCursor: string | null,
+): string | null {
+  if (localNextCursor != null) {
+    return encodeLegacyWindowCursor({
+      sourceCursor: current.sourceCursor,
+      offset: Number.parseInt(localNextCursor, 10),
+    });
+  }
+  if (sourceNextCursor == null) return null;
+  if (sourceNextCursor === current.sourceCursor) {
+    throw new Error("Legacy history reader returned a non-advancing cursor");
+  }
+  return encodeLegacyWindowCursor({
+    sourceCursor: sourceNextCursor,
+    offset: 0,
+  });
+}
+
+function mergeLatestTurnGaps(
+  first: ConversationContentLatestTurnGap | undefined,
+  second: ConversationContentLatestTurnGap | undefined,
+): ConversationContentLatestTurnGap | undefined {
+  if (!first) return second;
+  if (!second) return first;
+  const missingIndices = [
+    first.firstMissingSourceIndex,
+    second.firstMissingSourceIndex,
+  ].filter((value): value is number => value !== undefined);
+  return {
+    ...((first.turnId ?? second.turnId)
+      ? { turnId: first.turnId ?? second.turnId }
+      : {}),
+    missingEntryCount: first.missingEntryCount + second.missingEntryCount,
+    payloadOmitted: first.payloadOmitted || second.payloadOmitted,
+    ...(missingIndices.length > 0
+      ? { firstMissingSourceIndex: Math.min(...missingIndices) }
+      : {}),
+    repair:
+      first.repair === "items_page" || second.repair === "items_page"
+        ? "items_page"
+        : "turns_page",
+  };
+}
+
+function projectOversizedTurnsPage(
+  message: Extract<
+    ConversationSyncClientMessage,
+    { type: "conversation_turns_page" }
+  >,
+  page: ConversationTurnsPage,
+  pageFits: (candidate: ConversationTurnsPage) => boolean,
+): ConversationTurnsPage {
+  if (page.data.length !== 1) {
+    throw new Error("Conversation turns page exceeds the frame byte budget");
+  }
+  const rawTurn = page.data[0];
+  if (!rawTurn || typeof rawTurn !== "object" || Array.isArray(rawTurn)) {
+    throw new Error(
+      "Conversation turn cannot be projected into a bounded page",
+    );
+  }
+  const turn = rawTurn as Record<string, unknown>;
+  if (!Array.isArray(turn.messages)) {
+    throw new Error("Conversation turn does not contain projectable messages");
+  }
+  for (const textBudget of PAGE_PROJECTION_TEXT_BUDGETS) {
+    let snapshot: ReturnType<typeof buildConversationContentSnapshot>;
+    try {
+      snapshot = buildConversationContentSnapshot(
+        {
+          provider: message.provider,
+          providerSessionId: message.providerSessionId,
+        },
+        turn.messages as ServerMessage[],
+        {
+          maxMessageTextBytes: textBudget,
+          maxSnapshotBytes: projectedSnapshotBudget(textBudget),
+          preserveLatestRootTurnTools: false,
+        },
+      );
+    } catch {
+      // Retry with the next smaller deterministic projection budget.
+      continue;
+    }
+    const existingGap =
+      turn.latestTurnGap &&
+      typeof turn.latestTurnGap === "object" &&
+      !Array.isArray(turn.latestTurnGap)
+        ? (turn.latestTurnGap as ConversationContentLatestTurnGap)
+        : undefined;
+    const latestTurnGap = mergeLatestTurnGaps(
+      existingGap,
+      snapshot.latestTurnGap,
+    );
+    const candidate: ConversationTurnsPage = {
+      ...page,
+      data: [
+        {
+          ...turn,
+          messages: snapshot.entries.map((entry) => entry.message),
+          itemsView: "summary",
+          latestTurnComplete:
+            turn.latestTurnComplete !== false &&
+            snapshot.latestTurnComplete &&
+            latestTurnGap === undefined,
+          ...(latestTurnGap ? { latestTurnGap } : {}),
+        },
+      ],
+    };
+    if (pageFits(candidate)) return candidate;
+  }
+  throw new Error("Conversation turn exceeds the frame byte budget");
+}
+
+function oversizedItemsPageError(): Error {
+  return new Error(
+    "Conversation item exceeds the frame byte budget; retry with the same cursor",
   );
+}
+
+function projectedSnapshotBudget(textBudget: number): number {
+  return Math.max(8 * 1024, Math.min(48 * 1024, textBudget + 16 * 1024));
 }
 
 function normalizeHistoryWindow(
@@ -3050,17 +3569,27 @@ function normalizeCodexTurns(
     if (!rawTurn || typeof rawTurn !== "object") return;
     const turn = rawTurn as Record<string, unknown>;
     const rawId = turn.id;
+    const rawItems = Array.isArray(turn.items) ? turn.items : [];
+    const firstItem =
+      rawItems[0] && typeof rawItems[0] === "object"
+        ? (rawItems[0] as Record<string, unknown>)
+        : undefined;
+    const firstItemId =
+      typeof firstItem?.id === "string" ? firstItem.id : "anonymous";
     const turnId =
       typeof rawId === "string" && rawId.trim()
         ? rawId.trim()
-        : `turn:${hashState([threadId, index, turn]).slice(0, 24)}`;
-    const items = Array.isArray(turn.items) ? turn.items : [];
+        : `turn:${hashState([threadId, index, firstItemId]).slice(0, 24)}`;
+    const items = rawItems;
+    const bounded = boundCodexRawTurnForConversion(turn, turnId);
     const fullMessages = annotateTurnMessages(
-      codexTurnMessages({ ...turn, id: turnId }, threadId),
+      codexTurnMessages(bounded.turn, threadId),
       turnId,
     );
-    const details = historyToolDetailPayloads(fullMessages);
-    if (details.length > 0) turnDetails.push({ turnId, details });
+    if (itemsView === "full") {
+      const details = historyToolDetailPayloads(fullMessages);
+      if (details.length > 0) turnDetails.push({ turnId, details });
+    }
     turns.push({
       turnId,
       messages:
@@ -3068,10 +3597,239 @@ function normalizeCodexTurns(
           ? compactTurnMessages(fullMessages, turnId)
           : fullMessages,
       itemCount: items.length,
-      itemsView,
+      itemsView: bounded.payloadOmitted ? "summary" : itemsView,
+      ...(bounded.payloadOmitted
+        ? {
+            latestTurnComplete: false,
+            latestTurnGap: {
+              turnId,
+              missingEntryCount: Math.max(1, bounded.missingItemCount),
+              payloadOmitted: true,
+              repair: "items_page" as const,
+            },
+          }
+        : {}),
     });
   });
   return { turns, turnDetails };
+}
+
+interface BoundedCodexRawTurn {
+  turn: Record<string, unknown>;
+  missingItemCount: number;
+  payloadOmitted: boolean;
+}
+
+interface CodexRawProjectionBudget {
+  remaining: number;
+  omitted: boolean;
+}
+
+const CODEX_RAW_PRIORITY_KEYS = [
+  "type",
+  "id",
+  "status",
+  "role",
+  "text",
+  "summary",
+  "content",
+  "command",
+  "cwd",
+  "exitCode",
+  "aggregatedOutput",
+  "tool",
+  "server",
+  "arguments",
+  "contentItems",
+  "changes",
+  "result",
+  "error",
+] as const;
+
+function boundCodexRawTurnForConversion(
+  turn: Record<string, unknown>,
+  turnId: string,
+): BoundedCodexRawTurn {
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  const projectedItems: unknown[] = [];
+  let remaining = MAX_CODEX_RAW_TURN_BYTES;
+  let payloadOmitted = false;
+  let projectedPayloadOmissions = 0;
+
+  for (let index = 0; index < items.length; index += 1) {
+    if (projectedItems.length >= MAX_CODEX_RAW_TURN_ITEMS || remaining < 128) {
+      payloadOmitted = true;
+      break;
+    }
+    const budget: CodexRawProjectionBudget = {
+      remaining: Math.min(remaining, MAX_CODEX_RAW_ITEM_BYTES),
+      omitted: false,
+    };
+    const projected = projectCodexRawValue(items[index], budget, 0);
+    if (
+      !projected ||
+      typeof projected !== "object" ||
+      Array.isArray(projected)
+    ) {
+      payloadOmitted = true;
+      projectedPayloadOmissions += 1;
+      continue;
+    }
+    const itemBytes = Buffer.byteLength(JSON.stringify(projected), "utf8");
+    if (itemBytes > remaining) {
+      payloadOmitted = true;
+      break;
+    }
+    projectedItems.push(projected);
+    remaining -= itemBytes;
+    if (budget.omitted) {
+      payloadOmitted = true;
+      projectedPayloadOmissions += 1;
+    }
+  }
+
+  const missingWholeItems = Math.max(0, items.length - projectedItems.length);
+  return {
+    turn: {
+      id: turnId,
+      ...(typeof turn.startedAt === "number"
+        ? { startedAt: turn.startedAt }
+        : {}),
+      ...(typeof turn.completedAt === "number"
+        ? { completedAt: turn.completedAt }
+        : {}),
+      items: projectedItems,
+    },
+    missingItemCount: missingWholeItems + projectedPayloadOmissions,
+    payloadOmitted: payloadOmitted || missingWholeItems > 0,
+  };
+}
+
+function projectCodexRawValue(
+  value: unknown,
+  budget: CodexRawProjectionBudget,
+  depth: number,
+  key?: string,
+): unknown {
+  if (budget.remaining <= 0) {
+    budget.omitted = true;
+    return undefined;
+  }
+  if (
+    value == null ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    budget.remaining -= 8;
+    return value;
+  }
+  if (typeof value === "string") {
+    if (isBinaryCodexRawKey(key)) {
+      budget.omitted = true;
+      return undefined;
+    }
+    const projected = boundedCodexRawString(
+      value,
+      Math.min(MAX_CODEX_RAW_STRING_BYTES, budget.remaining),
+    );
+    budget.remaining -= Buffer.byteLength(projected.value, "utf8") + 2;
+    budget.omitted ||= projected.truncated;
+    return projected.value;
+  }
+  if (depth >= MAX_CODEX_RAW_DEPTH) {
+    budget.omitted = true;
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    const projected: unknown[] = [];
+    const limit = Math.min(value.length, MAX_CODEX_RAW_ARRAY_ITEMS);
+    let visited = 0;
+    for (let index = 0; index < limit && budget.remaining > 0; index += 1) {
+      visited += 1;
+      const item = projectCodexRawValue(value[index], budget, depth + 1, key);
+      if (item !== undefined) projected.push(item);
+    }
+    if (visited < value.length) budget.omitted = true;
+    return projected;
+  }
+  if (typeof value !== "object") {
+    budget.omitted = true;
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const availableKeys = Object.keys(source);
+  const orderedKeys = [
+    ...CODEX_RAW_PRIORITY_KEYS.filter((candidate) =>
+      Object.prototype.hasOwnProperty.call(source, candidate),
+    ),
+    ...availableKeys.filter(
+      (candidate) =>
+        !(CODEX_RAW_PRIORITY_KEYS as readonly string[]).includes(candidate),
+    ),
+  ];
+  const projected: Record<string, unknown> = {};
+  let visited = 0;
+  for (const candidate of orderedKeys) {
+    if (visited >= MAX_CODEX_RAW_OBJECT_KEYS || budget.remaining <= 0) {
+      budget.omitted = true;
+      break;
+    }
+    visited += 1;
+    if (isBinaryCodexRawKey(candidate)) {
+      budget.omitted = true;
+      continue;
+    }
+    const keyBytes = Buffer.byteLength(candidate, "utf8") + 4;
+    if (keyBytes >= budget.remaining) {
+      budget.omitted = true;
+      break;
+    }
+    budget.remaining -= keyBytes;
+    const child = projectCodexRawValue(
+      source[candidate],
+      budget,
+      depth + 1,
+      candidate,
+    );
+    if (child !== undefined) projected[candidate] = child;
+  }
+  if (visited < availableKeys.length) budget.omitted = true;
+  return projected;
+}
+
+function isBinaryCodexRawKey(key: string | undefined): boolean {
+  if (!key) return false;
+  const normalized = key.toLowerCase();
+  return (
+    normalized.includes("base64") ||
+    normalized === "image" ||
+    normalized === "images" ||
+    normalized === "imagedata"
+  );
+}
+
+function boundedCodexRawString(
+  value: string,
+  maxBytes: number,
+): { value: string; truncated: boolean } {
+  if (maxBytes <= 0) return { value: "", truncated: value.length > 0 };
+  const suffix = "\n… [truncated]";
+  const suffixBytes = Buffer.byteLength(suffix, "utf8");
+  const contentLimit = Math.max(0, maxBytes - suffixBytes);
+  let result = "";
+  let bytes = 0;
+  let codeUnits = 0;
+  for (const codePoint of value) {
+    const width = Buffer.byteLength(codePoint, "utf8");
+    if (bytes + width > contentLimit) {
+      return { value: `${result}${suffix}`, truncated: true };
+    }
+    result += codePoint;
+    bytes += width;
+    codeUnits += codePoint.length;
+  }
+  return { value: result, truncated: codeUnits < value.length };
 }
 
 function codexTurnMessages(

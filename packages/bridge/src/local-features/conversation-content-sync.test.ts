@@ -155,6 +155,75 @@ describe("ConversationContentSyncFeatureHandler", () => {
     expect(snapshot.latestTurnGap).not.toHaveProperty("turnId");
   });
 
+  it("stops serializing an oversized latest turn before compacting its tail", () => {
+    let poisonPayloadReads = 0;
+    const poison = {
+      type: "tool_result" as const,
+      toolUseId: "tool-poison",
+      toolName: "Read",
+      get content(): string {
+        poisonPayloadReads += 1;
+        throw new Error("late payload should not be materialized");
+      },
+    } as ServerMessage;
+    const messages: ServerMessage[] = [
+      {
+        type: "user_input",
+        text: "large working turn",
+        userMessageUuid: "large-working-user",
+      },
+      ...Array.from({ length: 96 }, (_, index) => ({
+        type: "assistant" as const,
+        messageUuid: `large-call-${index}`,
+        historyTurnId: "turn-large-working",
+        message: {
+          id: `large-call-${index}`,
+          role: "assistant" as const,
+          model: "test",
+          content: [
+            {
+              type: "tool_use" as const,
+              id: `tool-${index}`,
+              name: "Read",
+              input: { payload: "x".repeat(8 * 1024) },
+            },
+          ],
+        },
+      })),
+      poison,
+      {
+        type: "assistant",
+        messageUuid: "large-working-final",
+        historyTurnId: "turn-large-working",
+        message: {
+          id: "large-working-final",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "still responsive" }],
+        },
+      },
+    ];
+
+    const snapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "thread-large-working" },
+      messages,
+      {
+        maxMessageTextBytes: 40 * 1024,
+        maxSnapshotBytes: 512 * 1024,
+        preserveLatestRootTurnTools: true,
+      },
+    );
+
+    expect(poisonPayloadReads).toBe(0);
+    expect(snapshot.cacheBytes).toBeLessThanOrEqual(512 * 1024);
+    expect(snapshot.latestTurnComplete).toBe(false);
+    expect(snapshot.latestTurnGap).toMatchObject({
+      turnId: "turn-large-working",
+      payloadOmitted: true,
+      repair: "items_page",
+    });
+  });
+
   it("bounds aggregate text per message without changing the wire envelope", async () => {
     const fixture = createFixture(1, {
       maxMessageTextBytes: 64,
@@ -335,7 +404,8 @@ describe("ConversationContentSyncFeatureHandler", () => {
       },
     );
     await vi.waitFor(
-      () => expect(events(fixture.sent, client, "error").length).toBeGreaterThan(0),
+      () =>
+        expect(events(fixture.sent, client, "error").length).toBeGreaterThan(0),
       { timeout: 3_000 },
     );
     expect(events(fixture.sent, client, "snapshot_begin")).toHaveLength(0);
@@ -817,9 +887,7 @@ describe("ConversationContentSyncFeatureHandler", () => {
       providerSessionId: "thread-0",
     });
     const inspectable = fixture.handler as unknown as {
-      latestSnapshot: (
-        key: string,
-      ) => { revision: string } | undefined;
+      latestSnapshot: (key: string) => { revision: string } | undefined;
     };
     await vi.waitFor(
       () =>
@@ -917,9 +985,7 @@ describe("ConversationContentSyncFeatureHandler", () => {
     versions.set("thread-0", 3);
     fixture.handler.sessionCatalogChanged({ revision: 3, ...focused });
     const inspectable = fixture.handler as unknown as {
-      latestSnapshot: (
-        key: string,
-      ) => { revision: string } | undefined;
+      latestSnapshot: (key: string) => { revision: string } | undefined;
     };
     await vi.waitFor(
       () =>

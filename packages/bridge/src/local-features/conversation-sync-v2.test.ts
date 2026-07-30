@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { CodexProcess } from "../codex-process.js";
 import type { ServerMessage } from "../parser.js";
+import { buildConversationContentSnapshot } from "./conversation-content-sync.js";
 import { ConversationSyncV2FeatureHandler } from "./conversation-sync-v2.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
@@ -234,6 +235,839 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("re-reads oversized Codex turn pages with an exact bounded cursor", async () => {
+    const turns = Array.from({ length: 4 }, (_, index) => ({
+      id: `turn-${index}`,
+      items: [
+        {
+          type: "agentMessage",
+          id: `assistant-${index}`,
+          text: `${index}:${"x".repeat(30 * 1024)}`,
+        },
+      ],
+    }));
+    const listThreadTurns = vi.fn(
+      async ({ limit }: { limit?: number | null }) => {
+        const pageLimit = limit ?? turns.length;
+        return {
+          data: turns.slice(0, pageLimit),
+          nextCursor: pageLimit < turns.length ? `after-${pageLimit}` : null,
+        };
+      },
+    );
+    const fixture = createCodexPageFixture({ listThreadTurns });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "bounded-turns",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-bounded",
+        limit: 4,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    const response = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "bounded-turns")!;
+    const finalLimit = listThreadTurns.mock.calls.at(-1)![0].limit!;
+    expect(
+      listThreadTurns.mock.calls.map(([request]) => request.limit),
+    ).toEqual(expect.arrayContaining([4, finalLimit]));
+    expect(listThreadTurns).toHaveBeenCalledTimes(
+      decreasingLimitCallCount(4, finalLimit),
+    );
+    expect(response.data).toHaveLength(finalLimit);
+    expect(response.nextCursor).toBe(`after-${finalLimit}`);
+    expect(
+      Buffer.byteLength(JSON.stringify(response), "utf8"),
+    ).toBeLessThanOrEqual(64 * 1024);
+    fixture.handler.close();
+  });
+
+  it("projects one oversized Codex turn with stable identity and an explicit gap", async () => {
+    const listThreadTurns = vi.fn(async () => ({
+      data: [
+        {
+          id: "turn-oversized",
+          items: [
+            {
+              type: "agentMessage",
+              id: "assistant-oversized",
+              text: "z".repeat(100 * 1024),
+            },
+          ],
+        },
+      ],
+      nextCursor: "after-oversized",
+    }));
+    const fixture = createCodexPageFixture({ listThreadTurns });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "projected-turn",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-oversized",
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    const response = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "projected-turn")!;
+    expect(response.nextCursor).toBe("after-oversized");
+    expect(response.data[0]).toMatchObject({
+      turnId: "turn-oversized",
+      itemsView: "summary",
+      latestTurnComplete: false,
+      latestTurnGap: {
+        turnId: "turn-oversized",
+        payloadOmitted: true,
+      },
+    });
+    expect(JSON.stringify(response.data[0])).toContain("assistant-oversized");
+    expect(JSON.stringify(response.data[0])).toContain("truncated");
+    expect(
+      Buffer.byteLength(JSON.stringify(response), "utf8"),
+    ).toBeLessThanOrEqual(64 * 1024);
+    fixture.handler.close();
+  });
+
+  it("re-reads oversized Codex item pages without skipping provider items", async () => {
+    const items = Array.from({ length: 4 }, (_, index) => ({
+      turnId: "turn-items",
+      item: {
+        type: "agentMessage",
+        id: `item-${index}`,
+        text: `${index}:${"y".repeat(30 * 1024)}`,
+      },
+    }));
+    const listThreadItems = vi.fn(
+      async ({ limit }: { limit?: number | null }) => {
+        const pageLimit = limit ?? items.length;
+        return {
+          data: items.slice(0, pageLimit),
+          nextCursor:
+            pageLimit < items.length ? `items-after-${pageLimit}` : null,
+        };
+      },
+    );
+    const fixture = createCodexPageFixture({ listThreadItems });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "bounded-items",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-items",
+        turnId: "turn-items",
+        limit: 4,
+        sortDirection: "asc",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    const response = events(
+      fixture.sent,
+      fixture.client,
+      "items_page_response",
+    ).find((event) => event.requestId === "bounded-items")!;
+    const finalLimit = listThreadItems.mock.calls.at(-1)![0].limit!;
+    expect(listThreadItems).toHaveBeenCalledTimes(
+      decreasingLimitCallCount(4, finalLimit),
+    );
+    expect(response.nextCursor).toBe(`items-after-${finalLimit}`);
+    expect(
+      Buffer.byteLength(JSON.stringify(response), "utf8"),
+    ).toBeLessThanOrEqual(64 * 1024);
+    fixture.handler.close();
+  });
+
+  it("fails one oversized Codex item without advancing its provider cursor", async () => {
+    const listThreadItems = vi.fn(async () => ({
+      data: [
+        {
+          turnId: "turn-one-large-item",
+          item: {
+            type: "agentMessage",
+            id: "item-one-large",
+            text: "x".repeat(100 * 1024),
+          },
+        },
+      ],
+      nextCursor: "after-one-large-item",
+    }));
+    const fixture = createCodexPageFixture({ listThreadItems });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "one-large-item",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-one-large-item",
+        turnId: "turn-one-large-item",
+        cursor: "before-one-large-item",
+        limit: 1,
+        sortDirection: "asc",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    expect(
+      events(fixture.sent, fixture.client, "items_page_response").find(
+        (event) => event.requestId === "one-large-item",
+      ),
+    ).toBeUndefined();
+    expect(
+      events(fixture.sent, fixture.client, "error").find(
+        (event) => event.requestId === "one-large-item",
+      ),
+    ).toMatchObject({
+      errorCode: "items_page_failed",
+      error: expect.stringContaining("retry with the same cursor"),
+    });
+    expect(listThreadItems).toHaveBeenCalledTimes(1);
+    expect(listThreadItems.mock.calls[0]![0]).toMatchObject({
+      cursor: "before-one-large-item",
+      limit: 1,
+    });
+    fixture.handler.close();
+  });
+
+  it("bounds raw Codex turns before the real conversion and detail path", async () => {
+    let latePayloadReads = 0;
+    const items: Array<Record<string, unknown>> = Array.from(
+      { length: 12 },
+      (_, index) => ({
+        type: "agentMessage",
+        id: `bounded-raw-${index}`,
+        text: `${index}:${"r".repeat(30 * 1024)}`,
+      }),
+    );
+    items.push({
+      type: "agentMessage",
+      id: "late-unread-item",
+      get text() {
+        latePayloadReads += 1;
+        throw new Error("late raw payload must not be materialized");
+      },
+    });
+    const listThreadTurns = vi.fn(async () => ({
+      data: [{ id: "turn-bounded-raw", items }],
+      nextCursor: "after-bounded-raw",
+    }));
+    const fixture = createCodexPageFixture({ listThreadTurns });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "bounded-raw-turn",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-bounded-raw",
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    const response = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "bounded-raw-turn")!;
+    expect(latePayloadReads).toBe(0);
+    expect(response.data[0]).toMatchObject({
+      turnId: "turn-bounded-raw",
+      itemsView: "summary",
+      latestTurnComplete: false,
+      latestTurnGap: {
+        turnId: "turn-bounded-raw",
+        payloadOmitted: true,
+        repair: "items_page",
+      },
+    });
+    expect(
+      Buffer.byteLength(JSON.stringify(response), "utf8"),
+    ).toBeLessThanOrEqual(64 * 1024);
+    fixture.handler.close();
+  });
+
+  it("keeps a valid turns response queued without a false page error when send throws", async () => {
+    const listThreadTurns = vi.fn(async () => ({
+      data: [
+        {
+          id: "turn-send-retry",
+          items: [
+            {
+              type: "agentMessage",
+              id: "answer-send-retry",
+              text: "answer",
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    }));
+    const fixture = createCodexPageFixture({ listThreadTurns });
+    const subscriptionMessage = subscribeMessage();
+    await fixture.handler.handle(
+      subscriptionMessage,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<
+        object,
+        {
+          nextSequence: number;
+          outbound: Array<{ message: ConversationSyncServerMessage }>;
+        }
+      >;
+      flush(client: object, subscription: object): void;
+    };
+    const state = internal.subscriptions.get(fixture.client)!;
+    const sequenceBefore = state.nextSequence;
+    const originalSend = fixture.runtime.send;
+    let failed = false;
+    fixture.runtime.send = (client, message) => {
+      if (
+        !failed &&
+        (message as ConversationSyncServerMessage).event ===
+          "turns_page_response"
+      ) {
+        failed = true;
+        throw new Error("socket write failed once");
+      }
+      originalSend(client, message);
+    };
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "turns-send-retry",
+        subscriptionId: subscriptionMessage.requestId,
+        provider: "codex",
+        providerSessionId: "thread-send-retry",
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    expect(state.outbound).toHaveLength(1);
+    expect(state.outbound[0]!.message).toMatchObject({
+      event: "turns_page_response",
+      requestId: "turns-send-retry",
+      sequence: sequenceBefore + 1,
+    });
+    expect(
+      events(fixture.sent, fixture.client, "error").find(
+        (event) => event.requestId === "turns-send-retry",
+      ),
+    ).toBeUndefined();
+
+    internal.flush(fixture.client, state);
+    const delivered = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "turns-send-retry")!;
+    expect(delivered.sequence).toBe(sequenceBefore + 1);
+    expect(state.outbound).toHaveLength(0);
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "turns-after-retry",
+        subscriptionId: subscriptionMessage.requestId,
+        provider: "codex",
+        providerSessionId: "thread-send-retry",
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+    expect(
+      events(fixture.sent, fixture.client, "turns_page_response").find(
+        (event) => event.requestId === "turns-after-retry",
+      )?.sequence,
+    ).toBe(sequenceBefore + 2);
+    fixture.handler.close();
+  });
+
+  it("keeps a valid items response queued without a false page error when send throws", async () => {
+    const listThreadItems = vi.fn(async () => ({
+      data: [
+        {
+          turnId: "turn-items-send-retry",
+          item: {
+            type: "agentMessage",
+            id: "item-send-retry",
+            text: "answer",
+          },
+        },
+      ],
+      nextCursor: null,
+    }));
+    const fixture = createCodexPageFixture({ listThreadItems });
+    const subscriptionMessage = subscribeMessage();
+    await fixture.handler.handle(
+      subscriptionMessage,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<
+        object,
+        {
+          nextSequence: number;
+          outbound: Array<{ message: ConversationSyncServerMessage }>;
+        }
+      >;
+      flush(client: object, subscription: object): void;
+    };
+    const state = internal.subscriptions.get(fixture.client)!;
+    const sequenceBefore = state.nextSequence;
+    const originalSend = fixture.runtime.send;
+    let failed = false;
+    fixture.runtime.send = (client, message) => {
+      if (
+        !failed &&
+        (message as ConversationSyncServerMessage).event ===
+          "items_page_response"
+      ) {
+        failed = true;
+        throw new Error("socket write failed once");
+      }
+      originalSend(client, message);
+    };
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "items-send-retry",
+        subscriptionId: subscriptionMessage.requestId,
+        provider: "codex",
+        providerSessionId: "thread-items-send-retry",
+        turnId: "turn-items-send-retry",
+        limit: 1,
+        sortDirection: "asc",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    expect(state.outbound).toHaveLength(1);
+    expect(state.outbound[0]!.message).toMatchObject({
+      event: "items_page_response",
+      requestId: "items-send-retry",
+      sequence: sequenceBefore + 1,
+    });
+    expect(
+      events(fixture.sent, fixture.client, "error").find(
+        (event) => event.requestId === "items-send-retry",
+      ),
+    ).toBeUndefined();
+
+    internal.flush(fixture.client, state);
+    const delivered = events(
+      fixture.sent,
+      fixture.client,
+      "items_page_response",
+    ).find((event) => event.requestId === "items-send-retry")!;
+    expect(delivered.sequence).toBe(sequenceBefore + 1);
+    expect(state.outbound).toHaveLength(0);
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "items-after-retry",
+        subscriptionId: subscriptionMessage.requestId,
+        provider: "codex",
+        providerSessionId: "thread-items-send-retry",
+        turnId: "turn-items-send-retry",
+        limit: 1,
+        sortDirection: "asc",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+    expect(
+      events(fixture.sent, fixture.client, "items_page_response").find(
+        (event) => event.requestId === "items-after-retry",
+      )?.sequence,
+    ).toBe(sequenceBefore + 2);
+    fixture.handler.close();
+  });
+
+  it("falls back to legacy paging only for unsupported Codex reads", async () => {
+    const listThreadTurns = vi.fn(async () => {
+      throw new Error("Method not found");
+    });
+    const listThreadItems = vi.fn(async () => {
+      throw new Error("unknown method thread/items/list");
+    });
+    const historyReader = vi.fn(async () => [
+      {
+        type: "user_input" as const,
+        text: "legacy prompt",
+        userMessageUuid: "user-fallback",
+      },
+      {
+        type: "assistant" as const,
+        historyTurnId: "legacy-turn:user-fallback",
+        messageUuid: "legacy-answer",
+        message: {
+          id: "legacy-answer",
+          role: "assistant" as const,
+          model: "test",
+          content: [{ type: "text" as const, text: "legacy answer" }],
+        },
+      },
+    ]);
+    const fixture = createCodexPageFixture(
+      { listThreadTurns, listThreadItems },
+      historyReader,
+    );
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "legacy-turns",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-legacy",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "legacy-items",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-legacy",
+        turnId: "legacy-turn:user-fallback",
+        limit: 50,
+        sortDirection: "asc",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    expect(
+      events(fixture.sent, fixture.client, "turns_page_response").find(
+        (event) => event.requestId === "legacy-turns",
+      ),
+    ).toMatchObject({
+      nextCursor: null,
+      data: [{ turnId: expect.any(String) }],
+    });
+    expect(
+      events(fixture.sent, fixture.client, "items_page_response").find(
+        (event) => event.requestId === "legacy-items",
+      ),
+    ).toMatchObject({
+      nextCursor: null,
+      data: [
+        { type: "user_input" },
+        { type: "assistant", messageUuid: "legacy-answer" },
+      ],
+    });
+    expect(listThreadItems).toHaveBeenCalledTimes(1);
+    expect(listThreadTurns).toHaveBeenCalledTimes(2);
+    expect(historyReader).toHaveBeenCalledTimes(2);
+    fixture.handler.close();
+  });
+
+  it("preserves consumable opaque legacy cursors and rejects unproven ones", async () => {
+    const listThreadTurns = vi.fn(async () => {
+      throw new Error("Method not found");
+    });
+    const historyReader = vi.fn(
+      async (
+        _target: unknown,
+        request?: { cursor: string | null },
+      ): Promise<{
+        messages: ServerMessage[];
+        nextTurnCursor: string | null;
+        sourceCursor?: string | null;
+      }> => {
+        if (request?.cursor === "opaque-unhandled") {
+          return {
+            messages: history("unhandled-window"),
+            nextTurnCursor: null,
+          };
+        }
+        const sourceCursor = request?.cursor ?? null;
+        return {
+          messages: history(
+            sourceCursor === "opaque-page-2"
+              ? "opaque-window-2"
+              : "opaque-window-1",
+          ),
+          nextTurnCursor:
+            sourceCursor === "opaque-page-1" ? "opaque-page-2" : null,
+          sourceCursor,
+        };
+      },
+    );
+    const fixture = createCodexPageFixture({ listThreadTurns }, historyReader);
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    const requestPage = async (requestId: string, cursor: string) => {
+      await fixture.handler.handle(
+        {
+          type: "conversation_turns_page",
+          protocolVersion: 2,
+          requestId,
+          subscriptionId: subscription.requestId,
+          provider: "codex",
+          providerSessionId: "thread-opaque-legacy",
+          cursor,
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "summary",
+        },
+        context(fixture.client, fixture.runtime),
+      );
+    };
+
+    await requestPage("opaque-1", "opaque-page-1");
+    const first = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "opaque-1")!;
+    expect(first.nextCursor).toMatch(/^ccp-legacy-window-v1:/);
+    expect(JSON.stringify(first.data[0])).toContain("opaque-window-1");
+
+    await requestPage("opaque-2", first.nextCursor!);
+    const second = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "opaque-2")!;
+    expect(second.nextCursor).toBeNull();
+    expect(JSON.stringify(second.data[0])).toContain("opaque-window-2");
+
+    await requestPage("opaque-unhandled", "opaque-unhandled");
+    expect(
+      events(fixture.sent, fixture.client, "turns_page_response").find(
+        (event) => event.requestId === "opaque-unhandled",
+      ),
+    ).toBeUndefined();
+    expect(
+      events(fixture.sent, fixture.client, "error").find(
+        (event) => event.requestId === "opaque-unhandled",
+      ),
+    ).toMatchObject({
+      errorCode: "turns_page_failed",
+      error: expect.stringContaining("did not consume"),
+    });
+    fixture.handler.close();
+  });
+
+  it("refuses an unsupported Codex page instead of scanning full durable history", async () => {
+    const listThreadTurns = vi.fn(async () => {
+      throw new Error("Method not found");
+    });
+    const fixture = createCodexPageFixture({ listThreadTurns });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "no-unbounded-fallback",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-no-unbounded-fallback",
+        cursor: "opaque-old-server-cursor",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    expect(
+      events(fixture.sent, fixture.client, "turns_page_response").find(
+        (event) => event.requestId === "no-unbounded-fallback",
+      ),
+    ).toBeUndefined();
+    expect(
+      events(fixture.sent, fixture.client, "error").find(
+        (event) => event.requestId === "no-unbounded-fallback",
+      ),
+    ).toMatchObject({
+      errorCode: "turns_page_failed",
+      error: expect.stringContaining("refusing an unbounded"),
+    });
+    expect(listThreadTurns).toHaveBeenCalledTimes(1);
+    fixture.handler.close();
+  });
+
+  it("does not hide non-capability Codex page failures behind legacy history", async () => {
+    const listThreadTurns = vi.fn(async () => {
+      throw new Error("app-server exited");
+    });
+    const historyReader = vi.fn(async () => history("should-not-be-read"));
+    const fixture = createCodexPageFixture({ listThreadTurns }, historyReader);
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "real-failure",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-failure",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    expect(historyReader).not.toHaveBeenCalled();
+    expect(
+      events(fixture.sent, fixture.client, "error").find(
+        (event) => event.requestId === "real-failure",
+      ),
+    ).toMatchObject({
+      errorCode: "turns_page_failed",
+      error: "app-server exited",
+    });
+    fixture.handler.close();
+  });
+
   it("keeps the latest turn spine intact when one turn exceeds 512 KiB", async () => {
     const turnId = "turn-current";
     const largeTurn: ServerMessage[] = [
@@ -371,9 +1205,177 @@ describe("ConversationSyncV2FeatureHandler", () => {
     });
     expect(timeline[0]!.latestTurnGap?.missingEntryCount).toBeGreaterThan(0);
     for (const message of fixture.sent.get(client) ?? []) {
-      expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
-        64 * 1024,
-      );
+      expect(
+        Buffer.byteLength(JSON.stringify(message), "utf8"),
+      ).toBeLessThanOrEqual(64 * 1024);
+    }
+    fixture.handler.close();
+  });
+
+  it("budgets timeline patch entries and deletes in the same final envelope", async () => {
+    const target = {
+      provider: "codex" as const,
+      providerSessionId: "thread-joint-patch",
+    };
+    const baseMessages: ServerMessage[] = [
+      {
+        type: "user_input",
+        text: "base prompt",
+        userMessageUuid: "base-user",
+      },
+      ...Array.from({ length: 300 }, (_, index) => {
+        const toolUseId = `t${index}`;
+        return [
+          {
+            type: "assistant" as const,
+            messageUuid: `c${index}`,
+            historyTurnId: "base-turn",
+            message: {
+              id: `c${index}`,
+              role: "assistant" as const,
+              model: "test",
+              content: [
+                {
+                  type: "tool_use" as const,
+                  id: toolUseId,
+                  name: "Read",
+                  input: { index },
+                },
+              ],
+            },
+          },
+          {
+            type: "tool_result" as const,
+            toolUseId,
+            toolName: "Read",
+            historyTurnId: "base-turn",
+            content: "ok",
+          },
+        ];
+      }).flat(),
+    ];
+    const base = buildConversationContentSnapshot(target, baseMessages, {
+      maxMessageTextBytes: 40 * 1024,
+      maxSnapshotBytes: 512 * 1024,
+      preserveLatestRootTurnTools: true,
+    });
+    const next = buildConversationContentSnapshot(
+      target,
+      [
+        {
+          type: "user_input",
+          text: "replacement prompt",
+          userMessageUuid: "replacement-user",
+        },
+        {
+          type: "assistant",
+          messageUuid: "replacement-answer",
+          historyTurnId: "replacement-turn",
+          message: {
+            id: "replacement-answer",
+            role: "assistant",
+            model: "test",
+            content: [{ type: "text", text: "n".repeat(38 * 1024) }],
+          },
+        },
+      ],
+      {
+        maxMessageTextBytes: 40 * 1024,
+        maxSnapshotBytes: 512 * 1024,
+        preserveLatestRootTurnTools: true,
+      },
+    );
+    expect(base.entries.length).toBeGreaterThan(500);
+    const patchBase = {
+      ...base,
+      entries: base.entries.map((entry, index) => ({
+        ...entry,
+        entryId: `${entry.entryId}:${"d".repeat(96)}:${index}`,
+      })),
+    };
+    const fixture = createFixture([], async () => []);
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const complete = events(fixture.sent, client, "sync_complete")[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: complete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<object, object>;
+      timelinePatchPages(
+        subscriptionState: object,
+        baseRevision: string,
+        nextSnapshot: typeof next,
+        entries: typeof next.entries,
+        deletes: string[],
+        phase: "priority" | "recent" | "cold",
+        timelineIndex: number,
+        timelineCount: number,
+      ): Array<{ entries: typeof next.entries; deletes: string[] }>;
+      sendTimelinePatch(
+        targetClient: object,
+        subscriptionState: object,
+        baseSnapshot: typeof base,
+        nextSnapshot: typeof next,
+        phase: "priority" | "recent" | "cold",
+        timelineIndex: number,
+        timelineCount: number,
+      ): boolean;
+    };
+    const subscriptionState = internal.subscriptions.get(client)!;
+    const rawPages = internal.timelinePatchPages(
+      subscriptionState,
+      patchBase.revision,
+      next,
+      next.entries,
+      patchBase.entries.map((entry) => entry.entryId),
+      "priority",
+      0,
+      1,
+    );
+    expect(rawPages.length).toBeGreaterThan(1);
+
+    expect(
+      internal.sendTimelinePatch(
+        client,
+        subscriptionState,
+        patchBase,
+        next,
+        "priority",
+        0,
+        1,
+      ),
+    ).toBe(true);
+
+    const patchPages = events(fixture.sent, client, "timeline_page").filter(
+      (event) => event.mode === "patch",
+    );
+    expect(patchPages.length).toBeGreaterThan(1);
+    expect(
+      patchPages.some(
+        (page) => page.entries.length > 0 && page.deletes.length > 0,
+      ),
+    ).toBe(true);
+    expect(patchPages.flatMap((page) => page.deletes)).toHaveLength(
+      patchBase.entries.length,
+    );
+    for (const page of patchPages) {
+      expect(
+        Buffer.byteLength(JSON.stringify(page), "utf8"),
+      ).toBeLessThanOrEqual(64 * 1024);
     }
     fixture.handler.close();
   });
@@ -571,6 +1573,84 @@ describe("ConversationSyncV2FeatureHandler", () => {
         Buffer.byteLength(JSON.stringify(message), "utf8"),
       ).toBeLessThanOrEqual(64 * 1024);
     }
+    fixture.handler.close();
+  });
+
+  it("retains an outbound frame until runtime.send succeeds", async () => {
+    const fixture = createFixture([], async () => []);
+    const client = {};
+    const subscriptionMessage = subscribeMessage();
+    await fixture.handler.handle(
+      subscriptionMessage,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<
+        object,
+        {
+          nextSequence: number;
+          queuedBytes: number;
+          outbound: Array<{
+            sequence: number;
+            bytes: number;
+            message: ConversationSyncServerMessage;
+          }>;
+          outstanding: Map<number, number>;
+        }
+      >;
+      sendEvent(
+        client: object,
+        subscription: object,
+        payload: Record<string, unknown>,
+      ): number;
+      flush(client: object, subscription: object): void;
+    };
+    const state = internal.subscriptions.get(client)!;
+    const sequenceBeforeFailure = state.nextSequence;
+    const originalSend = fixture.runtime.send;
+    let shouldThrow = true;
+    fixture.runtime.send = (target, message) => {
+      if (shouldThrow) {
+        shouldThrow = false;
+        throw new Error("socket write failed");
+      }
+      originalSend(target, message);
+    };
+
+    expect(() =>
+      internal.sendEvent(client, state, {
+        event: "error",
+        requestId: "retry-frame",
+        errorCode: "test",
+        error: "retry me",
+      }),
+    ).toThrow("socket write failed");
+    expect(state.outbound).toHaveLength(1);
+    expect(state.outbound[0]!.sequence).toBe(sequenceBeforeFailure + 1);
+    expect(state.queuedBytes).toBe(state.outbound[0]!.bytes);
+    expect(state.outstanding.has(sequenceBeforeFailure + 1)).toBe(false);
+
+    internal.flush(client, state);
+    expect(state.outbound).toHaveLength(0);
+    expect(state.queuedBytes).toBe(0);
+    expect(state.outstanding.has(sequenceBeforeFailure + 1)).toBe(true);
+    expect(
+      events(fixture.sent, client, "error").find(
+        (event) => event.requestId === "retry-frame",
+      )?.sequence,
+    ).toBe(sequenceBeforeFailure + 1);
+
+    const nextSequence = internal.sendEvent(client, state, {
+      event: "error",
+      requestId: "next-frame",
+      errorCode: "test",
+      error: "next",
+    });
+    expect(nextSequence).toBe(sequenceBeforeFailure + 2);
     fixture.handler.close();
   });
 
@@ -2150,6 +3230,74 @@ function createFixture(
       ...handlerOptions,
     }),
   };
+}
+
+function createCodexPageFixture(
+  processMethods: Partial<
+    Pick<CodexProcess, "listThreadTurns" | "listThreadItems">
+  >,
+  historyReader?: (target: {
+    provider: "claude" | "codex";
+    providerSessionId: string;
+  }) => Promise<
+    | ServerMessage[]
+    | { messages: ServerMessage[]; nextTurnCursor: string | null }
+  >,
+) {
+  const sent = new Map<object, ConversationSyncServerMessage[]>();
+  const client = {};
+  const process = {
+    isRunning: true,
+    listThreadTurns:
+      processMethods.listThreadTurns ??
+      (async () => ({ data: [], nextCursor: null })),
+    listThreadItems:
+      processMethods.listThreadItems ??
+      (async () => ({ data: [], nextCursor: null })),
+    stop: vi.fn(),
+  } as unknown as CodexProcess;
+  const runtime: LocalFeatureRuntime = {
+    bridgeInstanceId: "bridge-1",
+    codexSourceId: "source-1",
+    getSession: () => undefined,
+    getCodexThreadId: () => undefined,
+    getProviderSessionId: () => undefined,
+    getActiveCodexProcess: () => process,
+    createStandaloneCodexProcess: async () => {
+      throw new Error("active reader should be reused");
+    },
+    send(targetClient: object, message: ConversationSyncServerMessage) {
+      const messages = sent.get(targetClient) ?? [];
+      messages.push(message);
+      sent.set(targetClient, messages);
+    },
+    isClientOpen: () => true,
+    supports: (_client: object, type: string) =>
+      type === CONVERSATION_SYNC_V2_CAPABILITY,
+  };
+  return {
+    client,
+    runtime,
+    sent,
+    handler: new ConversationSyncV2FeatureHandler(runtime, {
+      catalogReader: async () => [],
+      statusReader: async () => new Map(),
+      ...(historyReader ? { historyReader } : {}),
+      inspectCodexThread: async () => null,
+      statusWatchdogMs: 60_000,
+      coldReconcileMs: 60_000,
+    }),
+  };
+}
+
+function decreasingLimitCallCount(initial: number, final: number): number {
+  let count = 1;
+  let current = initial;
+  while (current > final) {
+    current = Math.max(1, Math.floor(current / 2));
+    count += 1;
+  }
+  return count;
 }
 
 function context(client: object, runtime: LocalFeatureRuntime) {

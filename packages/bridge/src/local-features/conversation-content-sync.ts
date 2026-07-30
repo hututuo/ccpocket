@@ -1089,60 +1089,86 @@ export function buildConversationContentSnapshot(
   // into stable historyToolDetailGaps. This keeps the current user/final/
   // thinking/process spine together rather than cutting into the newest turn
   // from the front.
-  if (
+  const initialSnapshotTooLarge =
+    candidates === undefined ||
     materializeCandidateSnapshot(
       target,
       candidates,
       rawMessages,
       latestTurnStart,
       latestTurnId,
-    ).cacheBytes > limits.maxSnapshotBytes
-  ) {
-    const compactionStages = [
-      { envelopeEntries: 300, messageBytes: limits.maxMessageTextBytes },
-      { envelopeEntries: 128, messageBytes: 8 * 1024 },
-      { envelopeEntries: 64, messageBytes: 4 * 1024 },
-      { envelopeEntries: 32, messageBytes: 2 * 1024 },
-      { envelopeEntries: 16, messageBytes: 1024 },
-      { envelopeEntries: 8, messageBytes: 512 },
-      { envelopeEntries: 4, messageBytes: 256 },
-      { envelopeEntries: 2, messageBytes: 128 },
-      { envelopeEntries: 0, messageBytes: MIN_MAX_MESSAGE_TEXT_BYTES },
-    ] as const;
-    let compacted: PreparedSnapshotEntry[] | undefined;
-    for (const stage of compactionStages) {
-      const projected = selectTurnAwareHistoryWindow(source, {
-        preserveLatestRootTurnTools: false,
-        toolCalls: 0,
-        envelopeEntries: stage.envelopeEntries,
-      });
-      const prepared = prepareSnapshotEntries(
-        projected,
-        Math.min(limits.maxMessageTextBytes, stage.messageBytes),
-        limits.maxSnapshotBytes,
-      );
-      const latest = prepared.filter(
-        (entry) => entry.sourceIndex >= latestTurnStart,
-      );
-      if (
-        materializeCandidateSnapshot(
-          target,
-          latest,
-          rawMessages,
-          latestTurnStart,
-          latestTurnId,
-        ).cacheBytes <= limits.maxSnapshotBytes
-      ) {
-        compacted = prepared;
-        break;
+    ).cacheBytes > limits.maxSnapshotBytes;
+  if (initialSnapshotTooLarge) {
+    const latestSelected = selected.filter(
+      (entry) => entry.sourceIndex >= latestTurnStart,
+    );
+    const preparedLatest = prepareSnapshotEntries(
+      latestSelected,
+      limits.maxMessageTextBytes,
+      limits.maxSnapshotBytes,
+    );
+    if (
+      preparedLatest &&
+      materializeCandidateSnapshot(
+        target,
+        preparedLatest,
+        rawMessages,
+        latestTurnStart,
+        latestTurnId,
+      ).cacheBytes <= limits.maxSnapshotBytes
+    ) {
+      candidates = preparedLatest;
+    } else {
+      const compactionStages = [
+        { envelopeEntries: 300, messageBytes: limits.maxMessageTextBytes },
+        { envelopeEntries: 128, messageBytes: 8 * 1024 },
+        { envelopeEntries: 64, messageBytes: 4 * 1024 },
+        { envelopeEntries: 32, messageBytes: 2 * 1024 },
+        { envelopeEntries: 16, messageBytes: 1024 },
+        { envelopeEntries: 8, messageBytes: 512 },
+        { envelopeEntries: 4, messageBytes: 256 },
+        { envelopeEntries: 2, messageBytes: 128 },
+        { envelopeEntries: 0, messageBytes: MIN_MAX_MESSAGE_TEXT_BYTES },
+      ] as const;
+      let compacted: PreparedSnapshotEntry[] | undefined;
+      for (const stage of compactionStages) {
+        const projected = selectTurnAwareHistoryWindow(source, {
+          preserveLatestRootTurnTools: false,
+          toolCalls: 0,
+          envelopeEntries: stage.envelopeEntries,
+        });
+        const projectedLatest = projected.filter(
+          (entry) => entry.sourceIndex >= latestTurnStart,
+        );
+        const prepared = prepareSnapshotEntries(
+          projectedLatest,
+          Math.min(limits.maxMessageTextBytes, stage.messageBytes),
+          limits.maxSnapshotBytes,
+        );
+        if (!prepared) continue;
+        if (
+          materializeCandidateSnapshot(
+            target,
+            prepared,
+            rawMessages,
+            latestTurnStart,
+            latestTurnId,
+          ).cacheBytes <= limits.maxSnapshotBytes
+        ) {
+          compacted = prepared;
+          break;
+        }
       }
+      if (!compacted) {
+        throw new Error(
+          "Latest conversation turn structure exceeds safe snapshot byte budget",
+        );
+      }
+      candidates = compacted;
     }
-    if (!compacted) {
-      throw new Error(
-        "Latest conversation turn structure exceeds safe snapshot byte budget",
-      );
-    }
-    candidates = compacted;
+  }
+  if (!candidates) {
+    throw new Error("Conversation snapshot projection did not produce entries");
   }
 
   const latestCandidates = candidates.filter(
@@ -1209,9 +1235,11 @@ function prepareSnapshotEntries(
   values: readonly { sourceIndex: number; message: ServerMessage }[],
   maxMessageTextBytes: number,
   maxSnapshotBytes: number,
-): PreparedSnapshotEntry[] {
+): PreparedSnapshotEntry[] | undefined {
   const usedIds = new Map<string, number>();
-  return values.map((value) => {
+  const entries: PreparedSnapshotEntry[] = [];
+  let serializedEntriesBytes = 2;
+  for (const value of values) {
     const bounded = boundHistoryMessage(value.message, maxMessageTextBytes);
     const message = bounded.message;
     const serialized = safeJsonSerialize(message, maxSnapshotBytes);
@@ -1235,13 +1263,21 @@ function prepareSnapshotEntries(
       contentHash: sha256(serialized.value),
       message,
     };
-    return {
+    const prepared = {
       ...entry,
       payloadOmitted:
         bounded.payloadOmitted || messageContainsHistoryGap(message),
       serializedEntryBytes: Buffer.byteLength(JSON.stringify(entry), "utf8"),
     };
-  });
+    const addition =
+      (entries.length === 0 ? 0 : 1) + prepared.serializedEntryBytes;
+    if (serializedEntriesBytes + addition > maxSnapshotBytes) {
+      return undefined;
+    }
+    entries.push(prepared);
+    serializedEntriesBytes += addition;
+  }
+  return entries;
 }
 
 function materializeCandidateSnapshot(
@@ -1392,11 +1428,7 @@ function boundHistoryMessage(
 ): BoundedHistoryMessage {
   const budget = { remaining: maxMessageTextBytes };
   if (message.type === "user_input") {
-    const text = takeBoundedText(
-      message.text,
-      budget,
-      maxMessageTextBytes,
-    );
+    const text = takeBoundedText(message.text, budget, maxMessageTextBytes);
     return {
       message: { ...message, text },
       payloadOmitted: text !== message.text,
