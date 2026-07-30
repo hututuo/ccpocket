@@ -2256,7 +2256,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
     }
   });
 
-  it("keeps observing Desktop activity when an old Bridge runtime is idle", async () => {
+  it("keeps trusted Desktop activity when a newer Bridge runtime observation is idle", async () => {
     const codex = codexSeed(0, "thread-0");
     codex.status = {
       ...codex.status,
@@ -2285,7 +2285,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
         providerSessionId: "thread-0",
         projectPath: "/project/0",
         processStatus: "idle",
-        observedAt: "2026-07-30T00:00:01.000Z",
+        observedAt: "2026-07-30T00:00:03.000Z",
       },
     ];
     const client = {};
@@ -2305,6 +2305,54 @@ describe("ConversationSyncV2FeatureHandler", () => {
       }),
     );
     expect(observeCodexThread).toHaveBeenCalledTimes(1);
+    fixture.handler.close();
+  });
+
+  it("keeps app-server Need You over a newer passive Bridge runtime", async () => {
+    const codex = codexSeed(0, "thread-0");
+    codex.status = {
+      ...codex.status,
+      activity: "working",
+      attention: "question",
+      runtimeAttachment: "loaded",
+      source: "appServer",
+      confidence: "authoritative",
+      observedAt: "2026-07-30T00:00:01.000Z",
+    };
+    const fixture = createFixture([codex], async () => history("thread-0"), {
+      initialExternalCodexMonitors: 0,
+      inspectCodexThread: async () => null,
+    });
+    fixture.runtime.listRuntimeConversationStates = () => [
+      {
+        bridgeSessionId: "runtime-idle",
+        provider: "codex",
+        providerSessionId: "thread-0",
+        projectPath: "/project/0",
+        processStatus: "idle",
+        observedAt: "2026-07-30T00:00:02.000Z",
+      },
+    ];
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "status_changes")
+          .flatMap((event) => event.changes)
+          .find((status) => status.providerSessionId === "thread-0"),
+      ).toMatchObject({
+        activity: "working",
+        attention: "question",
+        runtimeAttachment: "loaded",
+        source: "appServer",
+        confidence: "authoritative",
+      }),
+    );
     fixture.handler.close();
   });
 

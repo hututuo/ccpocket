@@ -2240,19 +2240,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.catalog.set(key, record);
       }
       const runtimeStatus = statusFromRuntime(runtimeState, record.status);
-      const externalStatus =
-        target.provider === "codex"
-          ? this.externalCodexStatuses.get(key)
-          : undefined;
       if (
         !activeLocalCodexRuntime &&
-        externalStatus?.activity === "working" &&
-        statusObservedAfter(externalStatus, runtimeStatus)
+        trustedProviderActivitySurvivesPassiveRuntime(
+          record.status,
+          runtimeStatus,
+        )
       ) {
-        record.status = externalStatus;
-      } else {
-        record.status = runtimeStatus;
+        // A passive Bridge attachment is not evidence that a different
+        // app-server or Desktop-owned turn stopped. Preserve the stronger
+        // provider observation until that provider emits its own terminal
+        // state. Structurally active Bridge runtimes still take precedence
+        // through activeLocalCodexRuntime above.
+        continue;
       }
+      record.status = runtimeStatus;
     }
     for (const [key, live] of this.liveContentRevisions) {
       const record = this.catalog.get(key);
@@ -4398,6 +4400,30 @@ function externalStatusMayOverride(
   if (current.activity === "unknown") return true;
   return (
     external.activity === "working" && statusObservedAfter(external, current)
+  );
+}
+
+function trustedProviderActivitySurvivesPassiveRuntime(
+  providerStatus: ConversationSyncStatus,
+  runtimeStatus: ConversationSyncStatus,
+): boolean {
+  if (
+    runtimeStatus.source !== "bridgeRuntime" ||
+    runtimeStatus.activity !== "idle" ||
+    runtimeStatus.attention !== "none"
+  ) {
+    return false;
+  }
+  const providerIsTrusted =
+    (providerStatus.source === "appServer" &&
+      providerStatus.confidence === "authoritative") ||
+    (providerStatus.source === "legacyRollout" &&
+      providerStatus.confidence === "observed");
+  return (
+    providerIsTrusted &&
+    (providerStatus.activity === "working" ||
+      providerStatus.activity === "compacting" ||
+      providerStatus.attention !== "none")
   );
 }
 
