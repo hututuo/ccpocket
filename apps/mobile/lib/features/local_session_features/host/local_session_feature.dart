@@ -10,6 +10,7 @@ typedef OpenLocalFeaturePane =
 class CodexSessionFeatureContext {
   final BuildContext context;
   final String sessionId;
+  final String? sessionInsightsSessionId;
   final BridgeService bridge;
   final TextEditingController inputController;
   final DraftService draftService;
@@ -20,6 +21,7 @@ class CodexSessionFeatureContext {
   const CodexSessionFeatureContext({
     required this.context,
     required this.sessionId,
+    this.sessionInsightsSessionId,
     required this.bridge,
     required this.inputController,
     required this.draftService,

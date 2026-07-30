@@ -11,9 +11,17 @@ class _Bridge extends BridgeService {
       StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
   final sent = <ClientMessage>[];
   bool connected = true;
+  String? stableBridgeInstanceId = 'bridge-1';
+  String? stableCodexSourceId = 'source-1';
 
   @override
   bool get isConnected => connected;
+
+  @override
+  String? get bridgeInstanceId => stableBridgeInstanceId;
+
+  @override
+  String? get codexSourceId => stableCodexSourceId;
 
   @override
   Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
@@ -290,6 +298,231 @@ void main() {
       expect(controller.quotaLoading, isFalse);
       expect(controller.usage?.error, 'account unavailable');
       expect(controller.codexUsage, isNull);
+    },
+  );
+
+  test(
+    'successful durable insights survive a controller rebuild for one source',
+    () async {
+      final bridge = _Bridge();
+      addTearDown(bridge.dispose);
+      final first = SessionInsightsController(
+        sessionId: 'durable-thread',
+        bridge: bridge,
+      )..start();
+
+      final firstRequestId = first.debugPendingQuotaRequestId!;
+      bridge.emit(
+        const ContextUsageResultMessage(
+          sessionId: 'durable-thread',
+          usage: ContextUsage(
+            sessionId: 'durable-thread',
+            last: ContextTokenUsage(totalTokens: 61),
+            total: ContextTokenUsage(totalTokens: 61),
+            modelContextWindow: 100,
+          ),
+        ),
+        tag: 'durable-thread',
+      );
+      bridge.emit(
+        SessionUsageResultMessage(
+          sessionId: 'durable-thread',
+          requestId: firstRequestId,
+          providers: const [
+            SessionUsageInfo(
+              provider: 'codex',
+              fiveHour: SessionUsageWindow(utilization: 21),
+            ),
+          ],
+        ),
+        tag: 'durable-thread',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(first.contextUsage?.last.totalTokens, 61);
+      expect(first.codexUsage?.fiveHour?.utilization, 21);
+      first.dispose();
+
+      final rebuilt = SessionInsightsController(
+        sessionId: 'durable-thread',
+        bridge: bridge,
+      );
+      addTearDown(rebuilt.dispose);
+      expect(rebuilt.contextUsage?.last.totalTokens, 61);
+      expect(rebuilt.codexUsage?.fiveHour?.utilization, 21);
+
+      rebuilt.start();
+      final currentRequestId = rebuilt.debugPendingQuotaRequestId!;
+      expect(currentRequestId, isNot(firstRequestId));
+      bridge.emit(
+        SessionUsageResultMessage(
+          sessionId: 'durable-thread',
+          requestId: firstRequestId,
+          providers: const [
+            SessionUsageInfo(
+              provider: 'codex',
+              fiveHour: SessionUsageWindow(utilization: 99),
+            ),
+          ],
+        ),
+        tag: 'durable-thread',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(rebuilt.codexUsage?.fiveHour?.utilization, 21);
+
+      bridge.emit(
+        SessionUsageResultMessage(
+          sessionId: 'durable-thread',
+          requestId: currentRequestId,
+          providers: const [
+            SessionUsageInfo(
+              provider: 'codex',
+              fiveHour: SessionUsageWindow(utilization: 44),
+            ),
+          ],
+        ),
+        tag: 'durable-thread',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(rebuilt.codexUsage?.fiveHour?.utilization, 44);
+    },
+  );
+
+  test('stable source changes isolate snapshots and old responses', () async {
+    final bridge = _Bridge();
+    addTearDown(bridge.dispose);
+    final first = SessionInsightsController(
+      sessionId: 'same-thread-id',
+      bridge: bridge,
+    )..start();
+
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'same-thread-id',
+        requestId: first.debugPendingQuotaRequestId!,
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            fiveHour: SessionUsageWindow(utilization: 18),
+          ),
+        ],
+      ),
+      tag: 'same-thread-id',
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(first.codexUsage?.fiveHour?.utilization, 18);
+    final oldSourceRequestId = first.debugPendingQuotaRequestId;
+    first.refresh(force: true);
+    final inFlightOldSourceRequestId = first.debugPendingQuotaRequestId!;
+    expect(inFlightOldSourceRequestId, isNot(oldSourceRequestId));
+
+    bridge.stableCodexSourceId = 'source-2';
+    bridge.emit(
+      const ContextUsageResultMessage(
+        sessionId: 'same-thread-id',
+        usage: ContextUsage(
+          sessionId: 'same-thread-id',
+          last: ContextTokenUsage(totalTokens: 88),
+          total: ContextTokenUsage(totalTokens: 88),
+          modelContextWindow: 100,
+        ),
+      ),
+      tag: 'same-thread-id',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(first.contextUsage, isNull);
+    expect(first.codexUsage, isNull);
+    final freshSourceRequestId = first.debugPendingQuotaRequestId!;
+    expect(freshSourceRequestId, isNot(inFlightOldSourceRequestId));
+
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'same-thread-id',
+        requestId: inFlightOldSourceRequestId,
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            fiveHour: SessionUsageWindow(utilization: 88),
+          ),
+        ],
+      ),
+      tag: 'same-thread-id',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(first.codexUsage, isNull);
+    expect(first.debugPendingQuotaRequestId, freshSourceRequestId);
+    bridge.emit(
+      const ContextUsageResultMessage(
+        sessionId: 'same-thread-id',
+        usage: ContextUsage(
+          sessionId: 'same-thread-id',
+          last: ContextTokenUsage(totalTokens: 42),
+          total: ContextTokenUsage(totalTokens: 42),
+          modelContextWindow: 100,
+        ),
+      ),
+      tag: 'same-thread-id',
+    );
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'same-thread-id',
+        requestId: freshSourceRequestId,
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            fiveHour: SessionUsageWindow(utilization: 24),
+          ),
+        ],
+      ),
+      tag: 'same-thread-id',
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(first.contextUsage?.last.totalTokens, 42);
+    expect(first.codexUsage?.fiveHour?.utilization, 24);
+    first.dispose();
+
+    final secondSource = SessionInsightsController(
+      sessionId: 'same-thread-id',
+      bridge: bridge,
+    );
+    addTearDown(secondSource.dispose);
+    expect(secondSource.contextUsage?.last.totalTokens, 42);
+    expect(secondSource.codexUsage?.fiveHour?.utilization, 24);
+  });
+
+  test(
+    'missing source identity does not retain snapshots across controllers',
+    () async {
+      final bridge = _Bridge()..stableCodexSourceId = null;
+      addTearDown(bridge.dispose);
+      final first = SessionInsightsController(
+        sessionId: 'legacy-thread',
+        bridge: bridge,
+      )..start();
+      bridge.emit(
+        const ContextUsageResultMessage(
+          sessionId: 'legacy-thread',
+          usage: ContextUsage(
+            sessionId: 'legacy-thread',
+            last: ContextTokenUsage(totalTokens: 37),
+            total: ContextTokenUsage(totalTokens: 37),
+            modelContextWindow: 100,
+          ),
+        ),
+        tag: 'legacy-thread',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(first.contextUsage?.last.totalTokens, 37);
+      first.dispose();
+
+      final rebuilt = SessionInsightsController(
+        sessionId: 'legacy-thread',
+        bridge: bridge,
+      );
+      addTearDown(rebuilt.dispose);
+      expect(rebuilt.contextUsage, isNull);
+      expect(rebuilt.codexUsage, isNull);
     },
   );
 }

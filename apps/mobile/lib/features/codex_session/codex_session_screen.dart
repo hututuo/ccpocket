@@ -727,6 +727,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       return _CodexProviders(
         key: ValueKey('durable-codex-$durableId'),
         sessionId: durableId,
+        sessionInsightsSessionId: durableId,
         projectPath: _projectPath,
         gitBranch: _gitBranch,
         worktreePath: _worktreePath,
@@ -802,6 +803,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     return _CodexProviders(
       key: ValueKey(_sessionId),
       sessionId: _sessionId,
+      sessionInsightsSessionId: widget.durableProviderSessionId,
       projectPath: _projectPath,
       gitBranch: _gitBranch,
       worktreePath: _worktreePath,
@@ -829,6 +831,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
 class _CodexProviders extends StatelessWidget {
   final String sessionId;
+  final String? sessionInsightsSessionId;
   final String? projectPath;
   final String? gitBranch;
   final String? worktreePath;
@@ -857,6 +860,7 @@ class _CodexProviders extends StatelessWidget {
   const _CodexProviders({
     super.key,
     required this.sessionId,
+    this.sessionInsightsSessionId,
     this.projectPath,
     this.gitBranch,
     this.worktreePath,
@@ -943,6 +947,7 @@ class _CodexProviders extends StatelessWidget {
         hasEarlier: initialHistoryHasEarlier,
         child: _CodexChatBody(
           sessionId: sessionId,
+          sessionInsightsSessionId: sessionInsightsSessionId,
           projectPath: projectPath,
           gitBranch: gitBranch,
           worktreePath: worktreePath,
@@ -966,6 +971,7 @@ class _CodexProviders extends StatelessWidget {
 
 class _CodexChatBody extends HookWidget {
   final String sessionId;
+  final String? sessionInsightsSessionId;
   final String? projectPath;
   final String? gitBranch;
   final String? worktreePath;
@@ -980,6 +986,7 @@ class _CodexChatBody extends HookWidget {
 
   const _CodexChatBody({
     required this.sessionId,
+    this.sessionInsightsSessionId,
     this.projectPath,
     this.gitBranch,
     this.worktreePath,
@@ -1139,6 +1146,7 @@ class _CodexChatBody extends HookWidget {
     final localFeatureContext = CodexSessionFeatureContext(
       context: context,
       sessionId: sessionId,
+      sessionInsightsSessionId: sessionInsightsSessionId,
       bridge: bridge,
       inputController: chatInputController,
       draftService: draftService,
@@ -1310,7 +1318,15 @@ class _CodexChatBody extends HookWidget {
           case CodexSessionUiIntent.model:
             showCodexModelMenu(context, chatSessionCubit);
           case CodexSessionUiIntent.context:
-            unawaited(localFeatureContext.openPane('session_insights'));
+            unawaited(
+              localFeatureContext.openPane(
+                'session_insights',
+                arguments: {
+                  'sessionInsightsSessionId':
+                      sessionInsightsSessionId ?? sessionId,
+                },
+              ),
+            );
         }
       });
       return sub.cancel;

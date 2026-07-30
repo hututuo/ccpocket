@@ -34,7 +34,8 @@ void main() {
             builder: (context) {
               featureContext = CodexSessionFeatureContext(
                 context: context,
-                sessionId: 'session-1',
+                sessionId: 'runtime-before-attach',
+                sessionInsightsSessionId: 'durable-thread',
                 bridge: bridge,
                 inputController: input,
                 draftService: drafts,
@@ -65,6 +66,23 @@ void main() {
       expect(modeBars.single.compact, isTrue);
       expect(modeBars.single.showLeadingDivider, isTrue);
       expect(modeBars.single.onCompact, isNotNull);
+      expect(modeBars.single.sessionId, 'durable-thread');
+
+      final attachedContext = CodexSessionFeatureContext(
+        context: featureContext.context,
+        sessionId: 'runtime-after-attach',
+        sessionInsightsSessionId: 'durable-thread',
+        bridge: bridge,
+        inputController: input,
+        draftService: drafts,
+        requestCompact: () => compactRequests += 1,
+        openPane: (featureId, {arguments = const {}}) async {},
+      );
+      final attachedBar = LocalSessionFeatureHost.modeBarWidgets(
+        attachedContext,
+      ).whereType<SessionInsightsBar>().single;
+      expect(attachedBar.sessionId, 'durable-thread');
+      expect(attachedBar.key, modeBars.single.key);
 
       modeBars.single.onCompact!();
       expect(compactRequests, 1);

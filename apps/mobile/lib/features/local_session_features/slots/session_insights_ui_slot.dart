@@ -11,17 +11,21 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
   String get featureId => 'session_insights';
 
   @override
-  List<Widget> modeBarWidgets(CodexSessionFeatureContext context) => [
-    SessionInsightsBar(
-      key: ValueKey('session_insights_${context.sessionId}'),
-      sessionId: context.sessionId,
-      bridgeService: context.bridge,
-      selectedModel: context.codexModel,
-      compact: true,
-      showLeadingDivider: true,
-      onCompact: context.requestCompact,
-    ),
-  ];
+  List<Widget> modeBarWidgets(CodexSessionFeatureContext context) {
+    final insightsSessionId =
+        context.sessionInsightsSessionId ?? context.sessionId;
+    return [
+      SessionInsightsBar(
+        key: ValueKey('session_insights_$insightsSessionId'),
+        sessionId: insightsSessionId,
+        bridgeService: context.bridge,
+        selectedModel: context.codexModel,
+        compact: true,
+        showLeadingDivider: true,
+        onCompact: context.requestCompact,
+      ),
+    ];
+  }
 
   @override
   WorkspaceFeaturePaneDescriptor get paneDescriptor =>
@@ -29,9 +33,15 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
         featureId: featureId,
         title: (context) => SessionInsightsStrings.of(context).title,
         builder: (context) => SessionInsightsPanel(
-          sessionId: context.sessionId,
+          sessionId: _sessionInsightsPaneSessionId(context),
           bridgeService: context.bridge,
         ),
         rememberPerSession: false,
       );
+}
+
+String _sessionInsightsPaneSessionId(WorkspaceFeaturePaneContext context) {
+  final value = context.arguments['sessionInsightsSessionId'];
+  if (value is String && value.trim().isNotEmpty) return value;
+  return context.sessionId;
 }

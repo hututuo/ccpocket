@@ -15,9 +15,17 @@ class _Bridge extends BridgeService {
   final sent = <ClientMessage>[];
   List<SessionUsageInfo> quotaProviders = const [];
   bool connected = true;
+  String? stableBridgeInstanceId = 'bridge-1';
+  String? stableCodexSourceId = 'source-1';
 
   @override
   bool get isConnected => connected;
+
+  @override
+  String? get bridgeInstanceId => stableBridgeInstanceId;
+
+  @override
+  String? get codexSourceId => stableCodexSourceId;
 
   @override
   Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
@@ -256,6 +264,70 @@ void main() {
     expect(find.textContaining('5h'), findsOneWidget);
     expect(find.textContaining('33%'), findsOneWidget);
   });
+
+  testWidgets(
+    'successful insights remain visible across same-thread widget replacement',
+    (tester) async {
+      final bridge = _Bridge();
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(_app(const SizedBox(key: ValueKey('host'))));
+      await tester.pumpWidget(
+        _app(
+          SessionInsightsBar(
+            key: const ValueKey('durable-insights'),
+            sessionId: 'durable-thread',
+            bridgeService: bridge,
+          ),
+        ),
+      );
+      bridge.emit(
+        SessionUsageResultMessage(
+          sessionId: 'durable-thread',
+          requestId: _latestUsageRequestId(bridge),
+          providers: const [
+            SessionUsageInfo(
+              provider: 'codex',
+              fiveHour: SessionUsageWindow(utilization: 39),
+            ),
+          ],
+        ),
+        'durable-thread',
+      );
+      bridge.emit(
+        const ContextUsageResultMessage(
+          sessionId: 'durable-thread',
+          usage: ContextUsage(
+            sessionId: 'durable-thread',
+            last: ContextTokenUsage(totalTokens: 57),
+            total: ContextTokenUsage(totalTokens: 57),
+            modelContextWindow: 100,
+          ),
+        ),
+        'durable-thread',
+      );
+      await tester.pump();
+      expect(find.textContaining('57%'), findsOneWidget);
+
+      await tester.pumpWidget(_app(const SizedBox.shrink()));
+      await tester.pumpWidget(
+        _app(
+          SessionInsightsBar(
+            key: const ValueKey('durable-insights'),
+            sessionId: 'durable-thread',
+            bridgeService: bridge,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.textContaining('57%'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('session_insights_bar')),
+        findsOneWidget,
+      );
+    },
+  );
 
   testWidgets('compact context ring fits the session mode toolbar', (
     tester,
