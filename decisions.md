@@ -1,5 +1,25 @@
 # ccPocket Compatibility Decisions
 
+## 2026-07-30 conversation sync batches keep one subscription
+
+- `conversation_sync_v2` 的 `sync_begin` 标记一次逻辑批次，不代表创建新订阅。
+  同一订阅在 read watermark、focus、状态或目录变化后会继续产生新批次，并沿用
+  原始 `requestId` 和单调递增的 sequence。Mobile 只有第一次 `sync_begin`
+  建立 staging/readiness；后续 `sync_begin` 必须正常提交和 ACK，不能忽略后再把
+  下一帧误判为 sequence gap。
+- sequence gap 或批次身份不连续只证明流需要重新订阅，不证明已提交的 SQLite
+  目录、状态或时间线损坏。此类恢复不得清空 target cache；只有实际 SQLite
+  commit/结构校验失败才允许执行既有的一次性可重建缓存清理。
+- `SessionListCubit` 只在 catalog、status、read watermark、priority checkpoint
+  或全局 reset 后重读目录投影，并把同一时段的事件合并为有界 reload。timeline、
+  completed 和单会话 reset 不得撤销整页 readiness 或触发全目录 decode。
+- 列表行身份固定使用 durable conversation identity。working/Need You 可以改变
+  排序层级，但 recent/runtime 表示切换不能改变 Widget key；这样真实状态更新仍可
+  置顶，同时避免无关 subtree 被销毁重建。
+- pending durable view 只能通过 `PendingSessionBinding` 的 exact request/durable
+  identity 绑定 runtime。项目路径和标题不是会话身份；不得监听同项目任意
+  `session_created` 作为兜底，否则同名或同项目线程会串入同一份历史。
+
 ## 2026-07-30 conversation sync catalog display bounds
 
 - `conversation_sync_v2` 的 catalog 是有限展示摘要，不是权威历史。Bridge 必须
