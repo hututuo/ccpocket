@@ -747,7 +747,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       return;
     }
     subscription.readWatermarks.set(key, nextReadAt);
-    this.scheduleSync(client, subscription, { full: true });
+    this.scheduleSync(client, subscription);
   }
 
   private focus(
@@ -1582,7 +1582,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         const changedCodexThreads: string[] = [];
         for (const seed of seeds.slice(0, MAX_CATALOG_ENTRIES)) {
           if (seed.entry.availability === "ephemeral") continue;
-          const entry = normalizeCatalogEntry(seed.entry);
+          let entry = normalizeCatalogEntry(seed.entry);
           const key = targetKey(entry);
           const previousRecord = previousCatalog.get(key);
           if (
@@ -1599,6 +1599,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           ) {
             this.liveContentRevisions.delete(key);
             this.deleteExternalCodexLiveMessages(key);
+          } else if (live) {
+            entry = withLiveCatalogMetadata(entry, live.observedAt);
           }
           const previous = previousStatuses.get(key);
           next.set(key, {
@@ -2682,7 +2684,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     target: ConversationSyncTarget,
     observedAt: string,
   ): void {
-    this.liveContentRevisions.set(targetKey(target), {
+    const key = targetKey(target);
+    const record = this.catalog.get(key);
+    if (record) {
+      record.entry = withLiveCatalogMetadata(record.entry, observedAt);
+    }
+    this.liveContentRevisions.set(key, {
       target,
       observedAt,
       revision: providerRevision(
@@ -4918,6 +4925,25 @@ function laterIso(current: string, candidate: string): string {
     return candidate;
   }
   return current;
+}
+
+function withLiveCatalogMetadata(
+  entry: ConversationSyncCatalogEntry,
+  observedAt: string,
+): ConversationSyncCatalogEntry {
+  const modifiedAt = laterIso(entry.modifiedAt, observedAt);
+  const recencyAt = laterIso(entry.recencyAt, observedAt);
+  if (
+    modifiedAt === entry.modifiedAt &&
+    recencyAt === entry.recencyAt
+  ) {
+    return entry;
+  }
+  return {
+    ...entry,
+    modifiedAt,
+    recencyAt,
+  };
 }
 
 function positiveInterval(value: number | undefined, fallback: number): number {
