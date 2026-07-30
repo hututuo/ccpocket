@@ -308,10 +308,16 @@ void main() {
     ) async {
       final bridge = _RecordingBridgeService();
       addTearDown(bridge.dispose);
+      final pendingSessionCreated = ValueNotifier<SystemMessage?>(null);
+      addTearDown(pendingSessionCreated.dispose);
 
       await tester.pumpWidget(
         await _wrap(
-          const ClaudeSessionScreen(sessionId: 'pending', isPending: true),
+          ClaudeSessionScreen(
+            sessionId: 'pending',
+            isPending: true,
+            pendingSessionCreated: pendingSessionCreated,
+          ),
           bridge,
         ),
       );
@@ -319,12 +325,10 @@ void main() {
 
       expect(bridge.requestedFileLists, isEmpty);
 
-      bridge.emitMessage(
-        const SystemMessage(
-          subtype: 'session_created',
-          sessionId: 'real-session',
-          projectPath: '/tmp/project',
-        ),
+      pendingSessionCreated.value = const SystemMessage(
+        subtype: 'session_created',
+        sessionId: 'real-session',
+        projectPath: '/tmp/project',
       );
       await tester.pump();
 

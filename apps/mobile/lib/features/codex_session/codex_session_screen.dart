@@ -211,7 +211,6 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   CodexApprovalPolicy? _codexApprovalPolicy;
   String? _codexApprovalsReviewer;
   CodexPermissionsMode? _codexPermissionsMode;
-  StreamSubscription<ServerMessage>? _pendingSub;
   StreamSubscription<ServerMessage>? _sandboxRestartSub;
   StreamSubscription<String>? _sessionStoppedSub;
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
@@ -452,28 +451,15 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       return;
     }
 
-    // Check if session_list_screen already captured the message (race fix).
+    // Legacy notifier hosts may still buffer the correlated result. They must
+    // not fall back to listening to every project-wide session_created event:
+    // two same-project durable threads could otherwise claim one runtime.
     final buffered = widget.pendingSessionCreated?.value;
     if (buffered != null && buffered.sessionId != null) {
       _resolveSession(buffered);
       return;
     }
-    // Also listen for future notification via the ValueNotifier.
     widget.pendingSessionCreated?.addListener(_onPendingSessionCreated);
-
-    final bridge = context.read<BridgeService>();
-    _pendingSub = bridge.messages.listen((msg) {
-      if (msg is SystemMessage && msg.subtype == 'session_created') {
-        if (widget.projectPath != null &&
-            msg.projectPath != null &&
-            msg.projectPath != widget.projectPath) {
-          return;
-        }
-        if (msg.sessionId != null && mounted) {
-          _resolveSession(msg);
-        }
-      }
-    });
   }
 
   void _retainPendingBinding(PendingSessionBinding binding) {
@@ -529,8 +515,6 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     }
     binding.removeListener(_onPendingSessionCreated);
     binding.failure.removeListener(_onPendingSessionFailed);
-    _pendingSub?.cancel();
-    _pendingSub = null;
     _preserveDeferredSubmissionAsDraft();
     final messenger = ScaffoldMessenger.of(context);
     final text =
@@ -631,8 +615,6 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       _isPending = false;
     });
     _syncSessionRouteIdentity();
-    _pendingSub?.cancel();
-    _pendingSub = null;
   }
 
   void _listenForSessionStopped() {
@@ -684,8 +666,6 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
     if (pendingLifecycleChanged) {
       _detachPendingBinding(oldWidget.pendingSessionCreated);
-      _pendingSub?.cancel();
-      _pendingSub = null;
     }
     final explorerHistory = context.read<BridgeService>().getExplorerHistory(
       widget.sessionId,
@@ -724,7 +704,6 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       _preserveDeferredSubmissionAsDraft();
     }
     _detachPendingBinding(widget.pendingSessionCreated);
-    _pendingSub?.cancel();
     _sandboxRestartSub?.cancel();
     _sessionStoppedSub?.cancel();
     _cachedPreviewSub?.cancel();

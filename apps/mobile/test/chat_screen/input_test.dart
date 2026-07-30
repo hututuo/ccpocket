@@ -176,6 +176,91 @@ void main() {
       },
     );
 
+    patrolWidgetTest(
+      'H2c2: same-project session_created cannot claim another Codex preview',
+      ($) async {
+        final notifier = ValueNotifier<SystemMessage?>(null);
+        addTearDown(notifier.dispose);
+        await $.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-codex-a',
+            projectPath: '/tmp/shared-project',
+            isPending: true,
+            durableProviderSessionId: 'durable-codex-a',
+            pendingSessionCreated: notifier,
+          ),
+        );
+        await pumpN($.tester);
+
+        expect(
+          find.byKey(const ValueKey('durable-codex-durable-codex-a')),
+          findsOneWidget,
+        );
+        bridge.emitMessage(
+          const SystemMessage(
+            subtype: 'session_created',
+            sessionId: 'runtime-for-thread-b',
+            provider: 'codex',
+            projectPath: '/tmp/shared-project',
+            sourceSessionId: 'durable-codex-b',
+            resumeRequestId: 'resume-b',
+          ),
+        );
+        await pumpN($.tester);
+
+        expect(
+          find.byKey(const ValueKey('durable-codex-durable-codex-a')),
+          findsOneWidget,
+        );
+        expect(bridge.lastRequestedSessionId, isNot('runtime-for-thread-b'));
+      },
+    );
+
+    patrolWidgetTest(
+      'H2c3: same-project session_created cannot claim another Claude preview',
+      ($) async {
+        final notifier = ValueNotifier<SystemMessage?>(null);
+        addTearDown(notifier.dispose);
+        await $.pumpWidget(
+          await buildTestClaudeSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-claude-a',
+            projectPath: '/tmp/shared-project',
+            isPending: true,
+            durableProviderSessionId: 'durable-claude-a',
+            pendingSessionCreated: notifier,
+          ),
+        );
+        await pumpN($.tester);
+
+        expect(
+          find.byKey(const ValueKey('durable-claude-durable-claude-a')),
+          findsOneWidget,
+        );
+        bridge.emitMessage(
+          const SystemMessage(
+            subtype: 'session_created',
+            sessionId: 'runtime-for-claude-thread-b',
+            provider: 'claude',
+            projectPath: '/tmp/shared-project',
+            sourceSessionId: 'durable-claude-b',
+            resumeRequestId: 'resume-claude-b',
+          ),
+        );
+        await pumpN($.tester);
+
+        expect(
+          find.byKey(const ValueKey('durable-claude-durable-claude-a')),
+          findsOneWidget,
+        );
+        expect(
+          bridge.lastRequestedSessionId,
+          isNot('runtime-for-claude-thread-b'),
+        );
+      },
+    );
+
     patrolWidgetTest('H2d: Codex compact command sends the direct request', (
       $,
     ) async {

@@ -179,7 +179,6 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   List<String> _recentPeekedFiles = const [];
   PermissionMode? _permissionMode;
   SandboxMode? _sandboxMode;
-  StreamSubscription<ServerMessage>? _pendingSub;
   StreamSubscription<ServerMessage>? _sessionSwitchSub;
   StreamSubscription<String>? _sessionStoppedSub;
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
@@ -416,39 +415,15 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       return;
     }
 
-    // Check if session_list_screen already captured the message (race fix).
+    // Legacy notifier hosts may still buffer the correlated result. They must
+    // not fall back to listening to every project-wide session_created event:
+    // two same-project durable threads could otherwise claim one runtime.
     final buffered = widget.pendingSessionCreated?.value;
     if (buffered != null && buffered.sessionId != null) {
       _resolveSession(buffered);
       return;
     }
-    // Also listen for future notification via the ValueNotifier.
     widget.pendingSessionCreated?.addListener(_onPendingSessionCreated);
-
-    final bridge = context.read<BridgeService>();
-    _pendingSub = bridge.messages.listen((msg) {
-      if (msg is SystemMessage && msg.subtype == 'session_created') {
-        // Filter by projectPath to avoid picking up another session's event
-        if (widget.projectPath != null &&
-            msg.projectPath != null &&
-            msg.projectPath != widget.projectPath) {
-          return;
-        }
-        if (msg.sessionId != null && mounted) {
-          _resolveSession(msg);
-        }
-      } else if (msg is ErrorMessage && _isPending && mounted) {
-        _pendingSub?.cancel();
-        _pendingSub = null;
-        widget.pendingSessionCreated?.removeListener(_onPendingSessionCreated);
-        _preserveDeferredSubmissionAsDraft();
-        final errorText = msg.message;
-        context.router.maybePop();
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(errorText)));
-      }
-    });
   }
 
   void _retainPendingBinding(PendingSessionBinding binding) {
@@ -504,8 +479,6 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     }
     binding.removeListener(_onPendingSessionCreated);
     binding.failure.removeListener(_onPendingSessionFailed);
-    _pendingSub?.cancel();
-    _pendingSub = null;
     _preserveDeferredSubmissionAsDraft();
     final messenger = ScaffoldMessenger.of(context);
     final text =
@@ -566,8 +539,6 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _isPending = false;
     });
     _syncSessionRouteIdentity();
-    _pendingSub?.cancel();
-    _pendingSub = null;
   }
 
   void _listenForSessionStopped() {
@@ -641,8 +612,6 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
     if (pendingLifecycleChanged) {
       _detachPendingBinding(oldWidget.pendingSessionCreated);
-      _pendingSub?.cancel();
-      _pendingSub = null;
     }
     final explorerHistory = context.read<BridgeService>().getExplorerHistory(
       widget.sessionId,
@@ -677,7 +646,6 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _preserveDeferredSubmissionAsDraft();
     }
     _detachPendingBinding(widget.pendingSessionCreated);
-    _pendingSub?.cancel();
     _sessionSwitchSub?.cancel();
     _sessionStoppedSub?.cancel();
     _cachedPreviewSub?.cancel();
