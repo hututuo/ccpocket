@@ -1176,3 +1176,58 @@
 - The package retains the repository's `dummy-project` Firebase configuration.
   Local/Bridge notification behavior may be tested, but APNs/FCM delivery is
   not established by this build.
+
+## The newest turn is a separately repairable sync boundary
+
+- Selecting the newest five turns and then cutting the serialized payload by a
+  byte budget is invalid: it can cut through the newest active turn while an
+  older-turn cursor remains unable to repair that missing prefix. Bridge must
+  preserve the newest turn's user/thinking/process/result spine, replace
+  oversized details with stable gaps, and publish
+  `latestTurnComplete/latestTurnGap` explicitly.
+- Mobile persists the newest-turn gap separately from the older-history cursor.
+  Opening or retrying a durable conversation first repairs that current gap,
+  commits each page atomically to SQLite, and ACKs only after commit. A
+  subscription generation change is retryable; a local database or page-budget
+  failure preserves the gap and must not clear the whole source cache.
+- Explicit turns/items responses, including their final JSON envelope, remain
+  within the protocol frame ceiling. A single item that cannot fit fails
+  explicitly; it is never truncated while advancing the cursor. A failed
+  socket write retains the valid queued response and sequence rather than
+  emitting a second, false page error.
+- Current app-server paging uses one shared read-only process. On an older
+  app-server without bounded turns/items RPCs, Bridge fails the explicit page
+  request safely instead of falling back to an unbounded whole-rollout scan.
+  Restoring that legacy capability requires a real file-offset window reader
+  with stable file identity, snapshot bounds, rollback handling, and
+  cross-page stable item IDs; whole-history parsing is not an acceptable
+  compatibility shortcut.
+
+## Durable session insights keep one stable cache identity
+
+- Quota and context are keyed by authenticated Bridge/source plus durable
+  thread ID. Runtime session IDs are aliases used only when an old Bridge
+  requires the legacy request shape; attaching a runtime must not replace the
+  durable cache identity or discard a valid response.
+- New Bridge context requests are correlated by request ID. The legacy
+  uncorrelated lane is single-flight and quarantines late responses after a
+  timeout until reconnect, preventing one delayed response from satisfying a
+  later request.
+- The insights widget recreates its owned controller when durable/runtime
+  identity or Bridge ownership changes. A public refresh waits for the
+  authoritative capability/session-list decision and cannot guess the legacy
+  path before negotiation completes.
+
+## Background guards observe lifecycle events synchronously
+
+- A `paused`, `hidden`, or `detached` transition can disable Flutter frames
+  before a HookWidget rebuilds. Any guard used by an already-running stream
+  listener must therefore update from `WidgetsBindingObserver` lifecycle
+  callbacks, not only by assigning a ref during `build`.
+- Genuine resume callbacks use the same observer path and remember whether a
+  real background state occurred. An `inactive → resumed` transition alone
+  remains a no-op.
+- Widget tests that validate UI produced by an asynchronous broadcast and a
+  following Bloc rebuild must pump the delivery and render frames explicitly.
+  They must not rely on an unrelated child controller to schedule an
+  incidental extra frame.

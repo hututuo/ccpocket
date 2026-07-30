@@ -134,10 +134,13 @@ Codex `0.146.0-alpha.3.1` 的实际 schema/runtime 探测显示该方法不受�
 3. 最近三轮保留完整 items，较旧轮次保留 shell/gap/cursor；
 4. Bridge 维护按 turn 的 detail cache；
 5. 展开时通过 v2 detail request 返回最多八个 item；
-6. legacy provider 使用有界分页，最多 50 页 × 20 项。
+6. legacy provider 只在其适配器能够证明 cursor 被消费且读取有界时分页；
+   不具备 bounded turns/items RPC 的旧 app-server 明确返回不支持，不做整份
+   rollout 扫描。
 
 该实现仍满足“按需渐进披露、不 resume、不全量扫描、不静默截断”的产品
-约束。能力名为 `conversation_items_by_id_v1`。
+约束。当前 app-server 的能力名为 `conversation_items_by_id_v1`；旧
+app-server 的文件窗口兼容缺口见本文末 newest-turn addendum。
 
 ### 4.2 身份未确认时的旧缓存
 
@@ -371,3 +374,71 @@ per-thread revision recovery、稳定 checkpoint 退避，以及 global reset �
 
 - `runs/20260730-101950_bridge-1.69.4-compat.7-4c5f875e-deploy/DEPLOYMENT.md`
 - `runs/20260730-104039_ccpocket-build207-ipa/README.md`
+
+## 2026-07-30 newest-turn and insights remediation addendum
+
+物理设备随后暴露出两个相互独立的问题：长的最新活动轮次只能看到尾部少量
+消息，重试仍无法补齐；durable detached preview 的额度和上下文栏无法稳定取得
+数据。沿 `provider → Bridge → protocol → SQLite → controller → UI` 复核确认：
+
+1. Bridge 虽先选最近五轮，但随后按序列化字节裁剪，可能直接切进最新活动轮次；
+   较旧历史 cursor 无法修复这个“当前轮次前缀”。
+2. 显式分页在部分路径重复启停 app-server，64 KiB 预算只约束内部 payload，
+   没有约束最终 JSON envelope；传输失败还可能错误推进 sequence 或追加伪失败。
+3. Mobile 没有把当前轮次缺口与向上翻页 cursor 分开，订阅换代和本地提交失败
+   后的恢复边界也不完整。
+4. durable thread ID 与 runtime session ID 被混作同一个 Insights identity；新版
+   Bridge、旧版 Bridge 和延迟返回之间会互相丢弃或误接收数据。
+
+提交 `183cf9bc` 至 `66fc104f` 将修复拆成八个可回滚单元：
+
+- Bridge 保留最新轮次的 user/thinking/process/result spine，把超预算详情变成
+  带稳定 ID 的显式 gap，并通过
+  `latestTurnComplete/latestTurnGap` 发布可修复边界；
+- turns/items page 使用共享只读 reader，最终 wire envelope 不超过帧预算；
+  单个不可容纳的详情明确失败，不截断后推进 cursor；
+- socket 写失败保留原响应和 sequence，不同时生成虚假 page failure；
+- Mobile SQLite schema v5 加法保存当前轮次 gap，先修复当前 gap，再使用独立
+  cursor 向上翻历史；每页 commit 后才 ACK；
+- generation replacement 可重试；数据库、页数、字节或时间预算失败只保留
+  单会话 gap，不清空整个机器/数据源缓存；
+- durable Insights 使用稳定的 Bridge/source/thread cache key；runtime ID 仅作为
+  旧 Bridge 请求别名；新版请求使用 request ID，legacy lane 采用 single-flight
+  和超时隔离。
+
+兼容边界：当前 app-server 的 bounded turns/items RPC 已完整覆盖。旧 app-server
+若不提供任何有界 turns/items RPC，Bridge 现在明确拒绝显式分页，不再为了兼容
+而扫描整个 rollout。要恢复这一条旧版本能力，必须实现带文件身份、固定
+snapshot、offset cursor、rollback 处理和跨页稳定 ID 的 rollout window reader；
+不得退回无界 `thread/read(includeTurns:true)` 或整文件解析。该限制不影响当前
+app-server、目录同步、本地已有缓存或旧客户端既有 v1 路径。
+
+定向回归在最终源码上覆盖了大于 512 KiB 的两页当前轮次修复、v4→v5 数据库
+升级、重开数据库、损坏 gap 元数据、订阅换代、SQLite 失败、8 MiB 预算失败、
+最大帧、cursor、发送失败 sequence、legacy lane、延迟响应和 controller
+identity。Bridge 独立终审和 Mobile/Insights 独立终审均为 `NO BLOCKER`。
+全量测试、静态检查、构建和实际发布仍是分立门禁；源码终审不代表 Bridge
+已经重启、OTA 已发布或新 IPA 已安装。
+
+最终全量 Mobile 回归还暴露了一个被旧 Insights 偶发额外帧遮蔽的生命周期
+缺陷：`paused/hidden` 会先禁用渲染帧，Codex 页面原先却只在下一次 widget
+rebuild 时更新 background ref，因而后台收到 Write 结果仍可能请求文件列表。
+修复后，后台 guard 和 genuine-resume 记忆均由同步 lifecycle observer 更新，
+不依赖被禁用的 frame；`inactive → resumed` 仍不会触发历史/文件重载。相邻
+Codex history/join widget 测试也改为明确等待事件交付和下一渲染帧，不再依赖
+Insights 子组件制造额外 frame。新增定向生命周期与 File Peek 回归共 10 项
+通过，四个改动文件 targeted analyze 为 `No issues found`。
+
+最终源码门禁：
+
+- Mobile full：2,686 passed、4 expected skips、0 failed；
+- Mobile full analyze：0 error、0 warning、52 个仓库既有 info
+  （49 `prefer_initializing_formals`、3 `deprecated_member_use`）；
+- Bridge full：96/96 files、1,914/1,914 tests；TypeScript build 与
+  darwin arm64 native file-browser helper build 通过；
+- 最终差异与文档 `git diff --check` 通过；三组独立终审均为
+  `NO BLOCKER`。
+
+这些门禁对应源码候选，不代表运行中的 Bridge、Shorebird owner channel 或
+物理 iPhone 已切换到该 HEAD。发布继续由固定发布会话按独立交接和回滚门禁
+执行。
