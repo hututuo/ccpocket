@@ -99,6 +99,9 @@ class ConversationHotWindowSnapshot {
     required this.entries,
     required this.hasEarlier,
     required this.turnsNextCursor,
+    required this.latestTurnComplete,
+    required this.latestTurnGap,
+    required this.latestTurnGapCursor,
     required this.sourceEntryCount,
     required this.cachedAt,
   });
@@ -109,7 +112,14 @@ class ConversationHotWindowSnapshot {
   final String revision;
   final List<ConversationContentWireEntry> entries;
   final bool hasEarlier;
+
+  /// Opaque cursor for the next older turn page.
   final String? turnsNextCursor;
+  final bool latestTurnComplete;
+  final ConversationSyncV2LatestTurnGap? latestTurnGap;
+
+  /// Opaque cursor for continuing repair of the incomplete newest turn.
+  final String? latestTurnGapCursor;
   final int sourceEntryCount;
   final DateTime cachedAt;
 }
@@ -1104,6 +1114,8 @@ class SessionCatalogCacheRepository {
     required List<String> deletes,
     required bool hasEarlier,
     String? turnsNextCursor,
+    bool latestTurnComplete = true,
+    ConversationSyncV2LatestTurnGap? latestTurnGap,
     required int sourceEntryCount,
   }) {
     if (!target.isValid) {
@@ -1118,6 +1130,10 @@ class SessionCatalogCacheRepository {
     return _enqueueMutationResult(() async {
       final db = await database.database;
       return db.transaction((transaction) async {
+        final latestTurnGapJson = _encodeLatestTurnGap(
+          latestTurnComplete: latestTurnComplete,
+          gap: latestTurnGap,
+        );
         final partitionId = await _ensureWritablePartition(transaction, target);
         final keyWhere =
             'partition_id = ? AND subscription_id = ? AND provider = ? '
@@ -1143,6 +1159,9 @@ class SessionCatalogCacheRepository {
             'page_count': pageCount,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'latest_turn_complete': latestTurnComplete ? 1 : 0,
+            'latest_turn_gap_json': latestTurnGapJson,
+            'latest_turn_gap_cursor': null,
             'source_entry_count': sourceEntryCount,
             'created_at': now,
           },
@@ -1163,6 +1182,9 @@ class SessionCatalogCacheRepository {
             stage['page_count'] != pageCount ||
             stage['has_earlier'] != (hasEarlier ? 1 : 0) ||
             stage['turns_next_cursor'] != turnsNextCursor ||
+            stage['latest_turn_complete'] != (latestTurnComplete ? 1 : 0) ||
+            stage['latest_turn_gap_json'] != latestTurnGapJson ||
+            stage['latest_turn_gap_cursor'] != null ||
             stage['source_entry_count'] != sourceEntryCount) {
           throw StateError('Conversation timeline stage metadata changed.');
         }
@@ -1290,6 +1312,9 @@ class SessionCatalogCacheRepository {
               'entry_count': 0,
               'has_earlier': hasEarlier ? 1 : 0,
               'turns_next_cursor': turnsNextCursor,
+              'latest_turn_complete': latestTurnComplete ? 1 : 0,
+              'latest_turn_gap_json': latestTurnGapJson,
+              'latest_turn_gap_cursor': null,
               'source_entry_count': sourceEntryCount,
               'updated_at': now,
             },
@@ -1341,6 +1366,9 @@ class SessionCatalogCacheRepository {
             'revision': revision,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'latest_turn_complete': latestTurnComplete ? 1 : 0,
+            'latest_turn_gap_json': latestTurnGapJson,
+            'latest_turn_gap_cursor': null,
             'source_entry_count': sourceEntryCount,
             'updated_at': now,
           },
@@ -1431,6 +1459,12 @@ class SessionCatalogCacheRepository {
       }
     }
     if (entries.length != window['entry_count']) return null;
+    final latestTurnComplete =
+        (window['latest_turn_complete'] as int? ?? 1) != 0;
+    final latestTurnGap = _decodeLatestTurnGap(
+      latestTurnComplete: latestTurnComplete,
+      encoded: window['latest_turn_gap_json'] as String?,
+    );
     return ConversationHotWindowSnapshot(
       partitionId: partitionId,
       provider: provider,
@@ -1439,6 +1473,11 @@ class SessionCatalogCacheRepository {
       entries: List<ConversationContentWireEntry>.unmodifiable(entries),
       hasEarlier: (window['has_earlier']! as int) != 0,
       turnsNextCursor: window['turns_next_cursor'] as String?,
+      latestTurnComplete: latestTurnComplete,
+      latestTurnGap: latestTurnGap,
+      latestTurnGapCursor: latestTurnComplete
+          ? null
+          : window['latest_turn_gap_cursor'] as String?,
       sourceEntryCount: window['source_entry_count']! as int,
       cachedAt: DateTime.fromMillisecondsSinceEpoch(
         window['updated_at']! as int,
@@ -1455,6 +1494,9 @@ class SessionCatalogCacheRepository {
     required List<ConversationContentWireEntry> entries,
     required bool hasEarlier,
     String? turnsNextCursor,
+    bool latestTurnComplete = true,
+    ConversationSyncV2LatestTurnGap? latestTurnGap,
+    String? latestTurnGapCursor,
     required int sourceEntryCount,
   }) {
     if (!target.isValid) return Future<void>.value();
@@ -1466,6 +1508,10 @@ class SessionCatalogCacheRepository {
     return _enqueueMutation(() async {
       final db = await database.database;
       await db.transaction((transaction) async {
+        final latestTurnGapJson = _encodeLatestTurnGap(
+          latestTurnComplete: latestTurnComplete,
+          gap: latestTurnGap,
+        );
         final partitionId = await _ensureWritablePartition(transaction, target);
         final now = DateTime.now().toUtc().millisecondsSinceEpoch;
         await transaction.insert(
@@ -1478,6 +1524,11 @@ class SessionCatalogCacheRepository {
             'entry_count': entries.length,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'latest_turn_complete': latestTurnComplete ? 1 : 0,
+            'latest_turn_gap_json': latestTurnGapJson,
+            'latest_turn_gap_cursor': latestTurnComplete
+                ? null
+                : latestTurnGapCursor,
             'source_entry_count': sourceEntryCount,
             'updated_at': now,
           },
@@ -1636,6 +1687,234 @@ class SessionCatalogCacheRepository {
     );
   }
 
+  /// Atomically merges one ascending item page into an incomplete newest turn.
+  ///
+  /// [nextCursor] is deliberately stored separately from [turnsNextCursor]:
+  /// the former continues repair of the current turn while the latter points
+  /// to an older turn page.
+  Future<ConversationHotWindowSnapshot?> mergeConversationLatestTurnItemsPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required String expectedTurnId,
+    required List<Map<String, dynamic>> rawMessages,
+    required String? nextCursor,
+  }) async {
+    if (!target.isValid) return null;
+    final candidates = _historyPageEntries(rawMessages);
+    final applied = await _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return false;
+        final windows = await transaction.query(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          columns: [
+            'revision',
+            'entry_count',
+            'latest_turn_complete',
+            'latest_turn_gap_json',
+          ],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        if (windows.isEmpty) return false;
+        final window = windows.single;
+        final complete = (window['latest_turn_complete'] as int? ?? 1) != 0;
+        final gap = _decodeLatestTurnGap(
+          latestTurnComplete: complete,
+          encoded: window['latest_turn_gap_json'] as String?,
+        );
+        if (complete ||
+            window['revision'] != expectedRevision ||
+            gap?.repair != 'items_page' ||
+            gap?.turnId != expectedTurnId) {
+          return false;
+        }
+
+        final existingRows = await transaction.query(
+          SessionCatalogCacheDatabase.hotEntriesTable,
+          columns: ['entry_id', 'entry_index'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        final existingIndexes = <String, int>{
+          for (final row in existingRows)
+            row['entry_id']! as String: row['entry_index']! as int,
+        };
+        var nextIndex = existingRows.fold<int>(
+          -1,
+          (maximum, row) => (row['entry_index']! as int) > maximum
+              ? row['entry_index']! as int
+              : maximum,
+        );
+        final newEntryCount = candidates
+            .where((entry) => !existingIndexes.containsKey(entry.entryId))
+            .length;
+        if (existingRows.length + newEntryCount > maxHotWindowEntries) {
+          throw StateError(
+            'Conversation latest turn repair exceeds the local safety bound.',
+          );
+        }
+        for (final candidate in candidates) {
+          final existingIndex = existingIndexes[candidate.entryId];
+          final entryIndex = existingIndex ?? ++nextIndex;
+          await _insertHotEntry(
+            transaction,
+            partitionId: partitionId,
+            provider: provider,
+            providerSessionId: providerSessionId,
+            entry: ConversationContentWireEntry(
+              entryId: candidate.entryId,
+              index: entryIndex,
+              contentHash: candidate.contentHash,
+              rawMessage: candidate.rawMessage,
+            ),
+          );
+        }
+        final completed = nextCursor == null;
+        await transaction.update(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          {
+            'entry_count': existingRows.length + newEntryCount,
+            'latest_turn_complete': completed ? 1 : 0,
+            'latest_turn_gap_json': completed
+                ? null
+                : window['latest_turn_gap_json'],
+            'latest_turn_gap_cursor': completed ? null : nextCursor,
+            'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+          },
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        return true;
+      });
+    });
+    if (!applied) return null;
+    return loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+  }
+
+  /// Atomically replaces the bounded recent window with a fresh latest-turn
+  /// page when the provider cannot expose an authoritative turn id.
+  Future<ConversationHotWindowSnapshot?>
+  replaceConversationLatestTurnsRepairPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required List<Map<String, dynamic>> rawMessages,
+    required String? turnsNextCursor,
+  }) async {
+    if (!target.isValid) return null;
+    final entries = _historyPageEntries(rawMessages);
+    if (entries.isEmpty) return null;
+    if (entries.length > maxHotWindowEntries) {
+      throw StateError(
+        'Conversation latest turns repair exceeds the local safety bound.',
+      );
+    }
+    final applied = await _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return false;
+        final windows = await transaction.query(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          columns: [
+            'revision',
+            'source_entry_count',
+            'latest_turn_complete',
+            'latest_turn_gap_json',
+          ],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        if (windows.isEmpty) return false;
+        final window = windows.single;
+        final complete = (window['latest_turn_complete'] as int? ?? 1) != 0;
+        final gap = _decodeLatestTurnGap(
+          latestTurnComplete: complete,
+          encoded: window['latest_turn_gap_json'] as String?,
+        );
+        if (window['revision'] != expectedRevision ||
+            complete ||
+            gap?.repair != 'turns_page') {
+          return false;
+        }
+        await transaction.delete(
+          SessionCatalogCacheDatabase.hotEntriesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        for (var index = 0; index < entries.length; index++) {
+          final entry = entries[index];
+          await _insertHotEntry(
+            transaction,
+            partitionId: partitionId,
+            provider: provider,
+            providerSessionId: providerSessionId,
+            entry: ConversationContentWireEntry(
+              entryId: entry.entryId,
+              index: index,
+              contentHash: entry.contentHash,
+              rawMessage: entry.rawMessage,
+            ),
+          );
+        }
+        final sourceEntryCount = window['source_entry_count']! as int;
+        await transaction.update(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          {
+            'entry_count': entries.length,
+            'has_earlier': turnsNextCursor == null ? 0 : 1,
+            'turns_next_cursor': turnsNextCursor,
+            'latest_turn_complete': 1,
+            'latest_turn_gap_json': null,
+            'latest_turn_gap_cursor': null,
+            'source_entry_count': sourceEntryCount > entries.length
+                ? sourceEntryCount
+                : entries.length,
+            'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+          },
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        return true;
+      });
+    });
+    if (!applied) return null;
+    return loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+  }
+
   Future<bool> applyConversationPatch({
     required SessionCatalogCacheTarget target,
     required String provider,
@@ -1646,12 +1925,18 @@ class SessionCatalogCacheRepository {
     required List<String> deletes,
     required bool hasEarlier,
     String? turnsNextCursor,
+    bool latestTurnComplete = true,
+    ConversationSyncV2LatestTurnGap? latestTurnGap,
     required int sourceEntryCount,
   }) {
     if (!target.isValid) return Future<bool>.value(false);
     return _enqueueMutationResult(() async {
       final db = await database.database;
       return db.transaction((transaction) async {
+        final latestTurnGapJson = _encodeLatestTurnGap(
+          latestTurnComplete: latestTurnComplete,
+          gap: latestTurnGap,
+        );
         final partitionId = await _resolveReadablePartition(
           transaction,
           target,
@@ -1715,6 +2000,9 @@ class SessionCatalogCacheRepository {
             'entry_count': count,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'latest_turn_complete': latestTurnComplete ? 1 : 0,
+            'latest_turn_gap_json': latestTurnGapJson,
+            'latest_turn_gap_cursor': null,
             'source_entry_count': sourceEntryCount,
             'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
           },
@@ -1871,6 +2159,66 @@ class SessionCatalogCacheRepository {
       );
     } catch (_) {
       return null;
+    }
+  }
+
+  static List<ConversationContentWireEntry> _historyPageEntries(
+    List<Map<String, dynamic>> rawMessages,
+  ) {
+    final entries = <ConversationContentWireEntry>[];
+    final seen = <String>{};
+    for (var index = 0; index < rawMessages.length; index++) {
+      final candidate = _historyPageEntry(rawMessages[index], index);
+      if (candidate == null) continue;
+      var entryId = candidate.entryId;
+      if (!seen.add(entryId)) {
+        entryId = '$entryId:${candidate.contentHash.substring(0, 16)}';
+        if (!seen.add(entryId)) continue;
+      }
+      entries.add(
+        ConversationContentWireEntry(
+          entryId: entryId,
+          index: index,
+          contentHash: candidate.contentHash,
+          rawMessage: candidate.rawMessage,
+        ),
+      );
+    }
+    return List.unmodifiable(entries);
+  }
+
+  static String? _encodeLatestTurnGap({
+    required bool latestTurnComplete,
+    required ConversationSyncV2LatestTurnGap? gap,
+  }) {
+    if (latestTurnComplete) return null;
+    if (gap == null) {
+      throw StateError(
+        'An incomplete latest turn must include a repair directive.',
+      );
+    }
+    return jsonEncode(gap.toJson());
+  }
+
+  static ConversationSyncV2LatestTurnGap? _decodeLatestTurnGap({
+    required bool latestTurnComplete,
+    required String? encoded,
+  }) {
+    if (latestTurnComplete) return null;
+    try {
+      final decoded = jsonDecode(encoded ?? '');
+      if (decoded is! Map) throw const FormatException();
+      return ConversationSyncV2LatestTurnGap.fromJson(
+        Map<String, dynamic>.from(decoded),
+      );
+    } catch (_) {
+      // This cache is rebuildable. Preserve the incomplete marker and use the
+      // safest read-only repair when an old or damaged row lacks metadata.
+      return const ConversationSyncV2LatestTurnGap(
+        missingEntryCount: 0,
+        payloadOmitted: true,
+        repair: 'turns_page',
+      );
     }
   }
 

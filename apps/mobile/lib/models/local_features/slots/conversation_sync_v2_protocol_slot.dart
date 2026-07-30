@@ -367,6 +367,8 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     this.deletes = const [],
     this.hasEarlier,
     this.turnsNextCursor,
+    this.latestTurnComplete,
+    this.latestTurnGap,
     this.sourceEntryCount,
     this.phase,
     this.hasMore,
@@ -411,6 +413,8 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
   final List<String> deletes;
   final bool? hasEarlier;
   final String? turnsNextCursor;
+  final bool? latestTurnComplete;
+  final ConversationSyncV2LatestTurnGap? latestTurnGap;
   final int? sourceEntryCount;
   final String? phase;
   final bool? hasMore;
@@ -605,6 +609,13 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         'turnsNextCursor',
         maximumLength: 512,
       ),
+      latestTurnComplete: _conversationSyncOptionalBool(
+        json,
+        'latestTurnComplete',
+      ),
+      latestTurnGap: _conversationSyncOptionalLatestTurnGap(
+        json['latestTurnGap'],
+      ),
       sourceEntryCount: _conversationSyncOptionalInt(
         json,
         'sourceEntryCount',
@@ -645,6 +656,59 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     );
     _validateConversationSyncEvent(message);
     return message;
+  }
+}
+
+class ConversationSyncV2LatestTurnGap {
+  const ConversationSyncV2LatestTurnGap({
+    required this.missingEntryCount,
+    required this.payloadOmitted,
+    required this.repair,
+    this.turnId,
+    this.firstMissingSourceIndex,
+  });
+
+  final String? turnId;
+  final int missingEntryCount;
+  final bool payloadOmitted;
+  final int? firstMissingSourceIndex;
+  final String repair;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'turnId': ?turnId,
+    'missingEntryCount': missingEntryCount,
+    'payloadOmitted': payloadOmitted,
+    'firstMissingSourceIndex': ?firstMissingSourceIndex,
+    'repair': repair,
+  };
+
+  factory ConversationSyncV2LatestTurnGap.fromJson(Map<String, dynamic> json) {
+    final gap = ConversationSyncV2LatestTurnGap(
+      turnId: _conversationSyncOptionalString(
+        json,
+        'turnId',
+        maximumLength: 256,
+      ),
+      missingEntryCount: _conversationSyncInt(
+        json,
+        'missingEntryCount',
+        minimum: 0,
+      ),
+      payloadOmitted: _conversationSyncBool(json, 'payloadOmitted'),
+      firstMissingSourceIndex: _conversationSyncOptionalInt(
+        json,
+        'firstMissingSourceIndex',
+        minimum: 0,
+      ),
+      repair: _conversationSyncString(json, 'repair', maximumLength: 16),
+    );
+    if (!const {'items_page', 'turns_page'}.contains(gap.repair) ||
+        (gap.repair == 'items_page' && gap.turnId == null)) {
+      throw const FormatException(
+        'Conversation sync latest turn repair is invalid.',
+      );
+    }
+    return gap;
   }
 }
 
@@ -795,6 +859,13 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
           (message.timelineIndex != null &&
               message.timelineCount != null &&
               message.timelineIndex! < message.timelineCount!);
+      final latestTurnMetadataValid =
+          (message.latestTurnComplete == null &&
+              message.latestTurnGap == null) ||
+          (message.latestTurnComplete == true &&
+              message.latestTurnGap == null) ||
+          (message.latestTurnComplete == false &&
+              message.latestTurnGap != null);
       if (!validPage ||
           message.provider == null ||
           message.providerSessionId == null ||
@@ -805,6 +876,7 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
               !const {'priority', 'recent', 'cold'}.contains(message.phase)) ||
           message.hasEarlier == null ||
           message.sourceEntryCount == null ||
+          !latestTurnMetadataValid ||
           !timelinePositionComplete ||
           !timelinePositionValid) {
         throw const FormatException('Timeline page is incomplete.');
@@ -893,6 +965,20 @@ ConversationSyncV2Target? _conversationSyncOptionalTarget(Object? raw) {
     throw const FormatException('Conversation sync target must be a map.');
   }
   return ConversationSyncV2Target.fromJson(Map<String, dynamic>.from(raw));
+}
+
+ConversationSyncV2LatestTurnGap? _conversationSyncOptionalLatestTurnGap(
+  Object? raw,
+) {
+  if (raw == null) return null;
+  if (raw is! Map) {
+    throw const FormatException(
+      'Conversation sync latest turn gap must be a map.',
+    );
+  }
+  return ConversationSyncV2LatestTurnGap.fromJson(
+    Map<String, dynamic>.from(raw),
+  );
 }
 
 List<Object?> _conversationSyncList(Object? raw, {required int maximumLength}) {
@@ -997,6 +1083,19 @@ int? _conversationSyncOptionalInt(
 }) {
   if (json[key] == null) return null;
   return _conversationSyncInt(json, key, minimum: minimum, maximum: maximum);
+}
+
+bool _conversationSyncBool(Map<String, dynamic> json, String key) {
+  final value = json[key];
+  if (value is! bool) {
+    throw FormatException('Conversation sync $key is invalid.');
+  }
+  return value;
+}
+
+bool? _conversationSyncOptionalBool(Map<String, dynamic> json, String key) {
+  if (json[key] == null) return null;
+  return _conversationSyncBool(json, key);
 }
 
 String _conversationSyncIsoDate(Map<String, dynamic> json, String key) {

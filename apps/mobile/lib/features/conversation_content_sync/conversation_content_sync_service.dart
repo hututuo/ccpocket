@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 
@@ -168,6 +169,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, _SnapshotStage> _stages = {};
   final Map<String, _PendingTurnsPage> _pendingTurnsPages = {};
   final Map<String, _PendingItemsPage> _pendingItemsPages = {};
+  final Map<String, _PendingLatestTurnRepairPage>
+  _pendingLatestTurnRepairPages = {};
+  final Map<String, Future<ConversationTurnsPageLoadResult>>
+  _historyPageFlights = {};
   final Set<Completer<void>> _subscriptionReadyWaiters = {};
 
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
@@ -343,6 +348,29 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String provider,
     required String providerSessionId,
     int limit = 5,
+  }) {
+    final flightKey = '$provider\u0000$providerSessionId';
+    final existing = _historyPageFlights[flightKey];
+    if (existing != null) return existing;
+    late final Future<ConversationTurnsPageLoadResult> flight;
+    flight =
+        _loadOlderTurnsWithRetry(
+          provider: provider,
+          providerSessionId: providerSessionId,
+          limit: limit,
+        ).whenComplete(() {
+          if (identical(_historyPageFlights[flightKey], flight)) {
+            _historyPageFlights.remove(flightKey);
+          }
+        });
+    _historyPageFlights[flightKey] = flight;
+    return flight;
+  }
+
+  Future<ConversationTurnsPageLoadResult> _loadOlderTurnsWithRetry({
+    required String provider,
+    required String providerSessionId,
+    required int limit,
   }) async {
     for (var attempt = 0; attempt < 2; attempt++) {
       try {
@@ -384,7 +412,21 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       provider: provider,
       providerSessionId: providerSessionId,
     );
-    if (snapshot == null || !snapshot.hasEarlier) {
+    if (snapshot == null) {
+      return const ConversationTurnsPageLoadResult(
+        loaded: false,
+        hasMore: false,
+      );
+    }
+    if (!snapshot.latestTurnComplete) {
+      return _repairLatestTurnGap(
+        target: target,
+        snapshot: snapshot,
+        provider: provider,
+        providerSessionId: providerSessionId,
+      );
+    }
+    if (!snapshot.hasEarlier) {
       return const ConversationTurnsPageLoadResult(
         loaded: false,
         hasMore: false,
@@ -427,6 +469,134 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     } finally {
       if (identical(_pendingTurnsPages[requestId], pending)) {
         _pendingTurnsPages.remove(requestId);
+      }
+    }
+  }
+
+  Future<ConversationTurnsPageLoadResult> _repairLatestTurnGap({
+    required SessionCatalogCacheTarget target,
+    required ConversationHotWindowSnapshot snapshot,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    const maximumPages = 32;
+    const maximumBytes = 8 * 1024 * 1024;
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    var current = snapshot;
+    var transferredBytes = 0;
+    for (var page = 0; page < maximumPages; page++) {
+      if (current.latestTurnComplete) {
+        return ConversationTurnsPageLoadResult(
+          loaded: true,
+          hasMore: current.hasEarlier,
+        );
+      }
+      final gap = current.latestTurnGap;
+      if (gap == null) {
+        throw StateError(
+          'Incomplete latest conversation turn has no repair directive.',
+        );
+      }
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) {
+        throw TimeoutException(
+          'Conversation latest turn repair exceeded its total deadline.',
+          const Duration(seconds: 30),
+        );
+      }
+      final useItemsPage = gap.repair == 'items_page' && gap.turnId != null;
+      final repaired = await _requestLatestTurnRepairPage(
+        target: target,
+        snapshot: current,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        repair: useItemsPage ? 'items_page' : 'turns_page',
+        timeout: remaining < const Duration(seconds: 15)
+            ? remaining
+            : const Duration(seconds: 15),
+        maximumBytes: maximumBytes - transferredBytes,
+      );
+      transferredBytes += repaired.pageBytes;
+      current = repaired.snapshot;
+      if (!useItemsPage || current.latestTurnComplete) {
+        return ConversationTurnsPageLoadResult(
+          loaded: true,
+          hasMore: current.hasEarlier,
+        );
+      }
+      if (transferredBytes >= maximumBytes) {
+        throw StateError(
+          'Conversation latest turn repair exceeded its byte budget.',
+        );
+      }
+    }
+    throw StateError(
+      'Conversation latest turn repair exceeded its page bound.',
+    );
+  }
+
+  Future<_LatestTurnRepairPageResult> _requestLatestTurnRepairPage({
+    required SessionCatalogCacheTarget target,
+    required ConversationHotWindowSnapshot snapshot,
+    required String provider,
+    required String providerSessionId,
+    required String repair,
+    required Duration timeout,
+    required int maximumBytes,
+  }) async {
+    final subscriptionId = _activeSubscriptionId;
+    if (subscriptionId == null ||
+        target.fingerprint != _cacheTarget.fingerprint ||
+        !_canProcessContent) {
+      throw const _ConversationPagingInterrupted();
+    }
+    final gap = snapshot.latestTurnGap!;
+    final requestId = _nextRequestId('latest-turn');
+    final completer = Completer<_LatestTurnRepairPageResult>();
+    final pending = _PendingLatestTurnRepairPage(
+      generation: _generation,
+      targetFingerprint: target.fingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      revision: snapshot.revision,
+      repair: repair,
+      turnId: repair == 'items_page' ? gap.turnId : null,
+      maximumBytes: maximumBytes,
+      completer: completer,
+    );
+    _pendingLatestTurnRepairPages[requestId] = pending;
+    try {
+      final targetMessage = ConversationSyncV2Target(
+        provider: provider,
+        providerSessionId: providerSessionId,
+      );
+      bridge.send(
+        repair == 'items_page'
+            ? conversationSyncV2ItemsPage(
+                requestId: requestId,
+                subscriptionId: subscriptionId,
+                target: targetMessage,
+                turnId: gap.turnId,
+                cursor: snapshot.latestTurnGapCursor,
+                limit: 200,
+                sortDirection: 'asc',
+              )
+            : conversationSyncV2TurnsPage(
+                requestId: requestId,
+                subscriptionId: subscriptionId,
+                target: targetMessage,
+                // A current-turn repair must never consume the older-turn
+                // cursor. A null cursor asks the provider for its newest page.
+                cursor: null,
+                limit: 5,
+                sortDirection: 'desc',
+                itemsView: 'full',
+              ),
+      );
+      return await completer.future.timeout(timeout);
+    } finally {
+      if (identical(_pendingLatestTurnRepairPages[requestId], pending)) {
+        _pendingLatestTurnRepairPages.remove(requestId);
       }
     }
   }
@@ -573,6 +743,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _failPendingItemsPages(
       StateError('Conversation item paging was interrupted.'),
     );
+    _failPendingLatestTurnRepairPages(const _ConversationPagingInterrupted());
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -891,6 +1062,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           deletes: event.deletes,
           hasEarlier: event.hasEarlier!,
           turnsNextCursor: event.turnsNextCursor,
+          latestTurnComplete: event.latestTurnComplete ?? true,
+          latestTurnGap: event.latestTurnGap,
           sourceEntryCount: event.sourceEntryCount!,
         );
         if (!committed.baseRevisionMatched) {
@@ -943,64 +1116,212 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           providerSessionId: event.target?.providerSessionId,
         );
       case ConversationSyncV2EventKind.turnsPageResponse:
-        final request = event.requestId == null
+        final latestTurnRequest = event.requestId == null
             ? null
-            : _pendingTurnsPages[event.requestId!];
-        if (request != null &&
-            request.generation == generation &&
-            request.targetFingerprint == target.fingerprint &&
-            request.provider == event.provider &&
-            request.providerSessionId == event.providerSessionId) {
-          final snapshot = await cache.prependConversationTurnsPage(
-            target: target,
-            provider: event.provider!,
-            providerSessionId: event.providerSessionId!,
-            rawMessages: event.pageRawMessages(),
-            nextCursor: event.nextCursor,
-          );
-          if (!request.completer.isCompleted) {
-            request.completer.complete(
-              ConversationTurnsPageLoadResult(
-                loaded: snapshot != null,
-                hasMore: event.nextCursor != null,
-              ),
-            );
-          }
-          if (snapshot != null) {
-            _updatesController.add(
-              ConversationContentCacheUpdate(
+            : _pendingLatestTurnRepairPages[event.requestId!];
+        if (latestTurnRequest != null &&
+            latestTurnRequest.repair == 'turns_page' &&
+            latestTurnRequest.generation == generation &&
+            latestTurnRequest.targetFingerprint == target.fingerprint &&
+            latestTurnRequest.provider == event.provider &&
+            latestTurnRequest.providerSessionId == event.providerSessionId) {
+          final rawMessages = event.pageRawMessages();
+          final pageBytes = utf8.encode(jsonEncode(rawMessages)).length;
+          if (pageBytes > latestTurnRequest.maximumBytes) {
+            if (!latestTurnRequest.completer.isCompleted) {
+              latestTurnRequest.completer.completeError(
+                StateError(
+                  'Conversation latest turn repair exceeded its byte budget.',
+                ),
+              );
+            }
+          } else {
+            ConversationHotWindowSnapshot? snapshot;
+            try {
+              snapshot = await cache.replaceConversationLatestTurnsRepairPage(
+                target: target,
                 provider: event.provider!,
                 providerSessionId: event.providerSessionId!,
-                revision:
-                    '${snapshot.revision}:'
-                    '${snapshot.entries.length}:'
-                    '${snapshot.cachedAt.microsecondsSinceEpoch}',
-              ),
+                expectedRevision: latestTurnRequest.revision,
+                rawMessages: rawMessages,
+                turnsNextCursor: event.nextCursor,
+              );
+            } catch (error, stackTrace) {
+              // A local repair budget/database failure must leave the existing
+              // incomplete window intact. It is scoped to this explicit
+              // request and must not reach the generic v2 recovery path, which
+              // clears the whole rebuildable target.
+              if (!latestTurnRequest.completer.isCompleted) {
+                latestTurnRequest.completer.completeError(error, stackTrace);
+              }
+            }
+            if (snapshot == null || !snapshot.latestTurnComplete) {
+              if (!latestTurnRequest.completer.isCompleted) {
+                latestTurnRequest.completer.completeError(
+                  const _ConversationPagingInterrupted(),
+                );
+              }
+            } else {
+              if (!latestTurnRequest.completer.isCompleted) {
+                latestTurnRequest.completer.complete(
+                  _LatestTurnRepairPageResult(
+                    snapshot: snapshot,
+                    pageBytes: pageBytes,
+                  ),
+                );
+              }
+              _updatesController.add(
+                ConversationContentCacheUpdate(
+                  provider: event.provider!,
+                  providerSessionId: event.providerSessionId!,
+                  revision:
+                      '${snapshot.revision}:'
+                      '${snapshot.entries.length}:'
+                      '${snapshot.cachedAt.microsecondsSinceEpoch}',
+                ),
+              );
+              publish = ConversationSyncCacheUpdate(
+                kind: ConversationSyncCacheUpdateKind.timeline,
+                provider: event.provider,
+                providerSessionId: event.providerSessionId,
+                revision: snapshot.revision,
+              );
+            }
+          }
+        } else {
+          final request = event.requestId == null
+              ? null
+              : _pendingTurnsPages[event.requestId!];
+          if (request != null &&
+              request.generation == generation &&
+              request.targetFingerprint == target.fingerprint &&
+              request.provider == event.provider &&
+              request.providerSessionId == event.providerSessionId) {
+            final snapshot = await cache.prependConversationTurnsPage(
+              target: target,
+              provider: event.provider!,
+              providerSessionId: event.providerSessionId!,
+              rawMessages: event.pageRawMessages(),
+              nextCursor: event.nextCursor,
             );
-            publish = ConversationSyncCacheUpdate(
-              kind: ConversationSyncCacheUpdateKind.timeline,
-              provider: event.provider,
-              providerSessionId: event.providerSessionId,
-              revision: snapshot.revision,
-            );
+            if (!request.completer.isCompleted) {
+              request.completer.complete(
+                ConversationTurnsPageLoadResult(
+                  loaded: snapshot != null,
+                  hasMore: event.nextCursor != null,
+                ),
+              );
+            }
+            if (snapshot != null) {
+              _updatesController.add(
+                ConversationContentCacheUpdate(
+                  provider: event.provider!,
+                  providerSessionId: event.providerSessionId!,
+                  revision:
+                      '${snapshot.revision}:'
+                      '${snapshot.entries.length}:'
+                      '${snapshot.cachedAt.microsecondsSinceEpoch}',
+                ),
+              );
+              publish = ConversationSyncCacheUpdate(
+                kind: ConversationSyncCacheUpdateKind.timeline,
+                provider: event.provider,
+                providerSessionId: event.providerSessionId,
+                revision: snapshot.revision,
+              );
+            }
           }
         }
       case ConversationSyncV2EventKind.itemsPageResponse:
-        final request = event.requestId == null
+        final latestTurnRequest = event.requestId == null
             ? null
-            : _pendingItemsPages[event.requestId!];
-        if (request != null &&
-            request.generation == generation &&
-            request.targetFingerprint == target.fingerprint &&
-            request.provider == event.provider &&
-            request.providerSessionId == event.providerSessionId &&
-            request.turnId == event.turnId) {
-          final details = _historyToolDetailsFromPage(
-            event.pageRawMessages(),
-            request.toolUseIds,
-          );
-          if (!request.completer.isCompleted) {
-            request.completer.complete(details);
+            : _pendingLatestTurnRepairPages[event.requestId!];
+        if (latestTurnRequest != null &&
+            latestTurnRequest.repair == 'items_page' &&
+            latestTurnRequest.generation == generation &&
+            latestTurnRequest.targetFingerprint == target.fingerprint &&
+            latestTurnRequest.provider == event.provider &&
+            latestTurnRequest.providerSessionId == event.providerSessionId &&
+            latestTurnRequest.turnId == event.turnId) {
+          final rawMessages = event.pageRawMessages();
+          final pageBytes = utf8.encode(jsonEncode(rawMessages)).length;
+          if (pageBytes > latestTurnRequest.maximumBytes) {
+            if (!latestTurnRequest.completer.isCompleted) {
+              latestTurnRequest.completer.completeError(
+                StateError(
+                  'Conversation latest turn repair exceeded its byte budget.',
+                ),
+              );
+            }
+          } else {
+            ConversationHotWindowSnapshot? snapshot;
+            try {
+              snapshot = await cache.mergeConversationLatestTurnItemsPage(
+                target: target,
+                provider: event.provider!,
+                providerSessionId: event.providerSessionId!,
+                expectedRevision: latestTurnRequest.revision,
+                expectedTurnId: latestTurnRequest.turnId!,
+                rawMessages: rawMessages,
+                nextCursor: event.nextCursor,
+              );
+            } catch (error, stackTrace) {
+              // Keep the previous gap/cursor committed. This is an explicit
+              // page failure, not corruption of the subscription state.
+              if (!latestTurnRequest.completer.isCompleted) {
+                latestTurnRequest.completer.completeError(error, stackTrace);
+              }
+            }
+            if (snapshot == null) {
+              if (!latestTurnRequest.completer.isCompleted) {
+                latestTurnRequest.completer.completeError(
+                  const _ConversationPagingInterrupted(),
+                );
+              }
+            } else {
+              if (!latestTurnRequest.completer.isCompleted) {
+                latestTurnRequest.completer.complete(
+                  _LatestTurnRepairPageResult(
+                    snapshot: snapshot,
+                    pageBytes: pageBytes,
+                  ),
+                );
+              }
+              _updatesController.add(
+                ConversationContentCacheUpdate(
+                  provider: event.provider!,
+                  providerSessionId: event.providerSessionId!,
+                  revision:
+                      '${snapshot.revision}:'
+                      '${snapshot.entries.length}:'
+                      '${snapshot.cachedAt.microsecondsSinceEpoch}',
+                ),
+              );
+              publish = ConversationSyncCacheUpdate(
+                kind: ConversationSyncCacheUpdateKind.timeline,
+                provider: event.provider,
+                providerSessionId: event.providerSessionId,
+                revision: snapshot.revision,
+              );
+            }
+          }
+        } else {
+          final request = event.requestId == null
+              ? null
+              : _pendingItemsPages[event.requestId!];
+          if (request != null &&
+              request.generation == generation &&
+              request.targetFingerprint == target.fingerprint &&
+              request.provider == event.provider &&
+              request.providerSessionId == event.providerSessionId &&
+              request.turnId == event.turnId) {
+            final details = _historyToolDetailsFromPage(
+              event.pageRawMessages(),
+              request.toolUseIds,
+            );
+            if (!request.completer.isCompleted) {
+              request.completer.complete(details);
+            }
           }
         }
       case ConversationSyncV2EventKind.focusApplied:
@@ -1022,6 +1343,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         if (itemRequest != null && !itemRequest.completer.isCompleted) {
           itemRequest.completer.completeError(
             StateError(event.error ?? 'Conversation item page failed.'),
+          );
+        }
+        final latestTurnRequest = event.requestId == null
+            ? null
+            : _pendingLatestTurnRepairPages[event.requestId!];
+        if (latestTurnRequest != null &&
+            !latestTurnRequest.completer.isCompleted) {
+          latestTurnRequest.completer.completeError(
+            StateError(
+              event.error ?? 'Conversation latest turn repair failed.',
+            ),
           );
         }
         if (event.requestId == _pendingSubscriptionId) {
@@ -1260,6 +1592,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         upserts: event.entries,
         deletes: event.deletes,
         hasEarlier: event.hasEarlier!,
+        latestTurnComplete: true,
         sourceEntryCount: event.sourceEntryCount!,
       );
     } catch (error) {
@@ -1352,6 +1685,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _failPendingItemsPages(
       StateError('Conversation item paging was interrupted.'),
     );
+    _failPendingLatestTurnRepairPages(const _ConversationPagingInterrupted());
     _stages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -1478,6 +1812,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _pendingItemsPages.clear();
   }
 
+  void _failPendingLatestTurnRepairPages(Object error) {
+    for (final request in _pendingLatestTurnRepairPages.values) {
+      if (!request.completer.isCompleted) {
+        request.completer.completeError(error);
+      }
+    }
+    _pendingLatestTurnRepairPages.clear();
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
@@ -1578,4 +1921,38 @@ class _PendingItemsPage {
   final String turnId;
   final List<String> toolUseIds;
   final Completer<List<HistoryToolDetail>?> completer;
+}
+
+class _PendingLatestTurnRepairPage {
+  const _PendingLatestTurnRepairPage({
+    required this.generation,
+    required this.targetFingerprint,
+    required this.provider,
+    required this.providerSessionId,
+    required this.revision,
+    required this.repair,
+    required this.turnId,
+    required this.maximumBytes,
+    required this.completer,
+  });
+
+  final int generation;
+  final String targetFingerprint;
+  final String provider;
+  final String providerSessionId;
+  final String revision;
+  final String repair;
+  final String? turnId;
+  final int maximumBytes;
+  final Completer<_LatestTurnRepairPageResult> completer;
+}
+
+class _LatestTurnRepairPageResult {
+  const _LatestTurnRepairPageResult({
+    required this.snapshot,
+    required this.pageBytes,
+  });
+
+  final ConversationHotWindowSnapshot snapshot;
+  final int pageBytes;
 }

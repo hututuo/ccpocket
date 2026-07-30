@@ -242,6 +242,63 @@ void main() {
     );
   });
 
+  test('decodes latest-turn repair metadata without reusing older cursor', () {
+    final message =
+        ServerMessage.fromJson({
+              ..._baseFrame,
+              'event': 'timeline_page',
+              'provider': 'codex',
+              'providerSessionId': 'thread-1',
+              'revision': 'revision-1',
+              'mode': 'snapshot',
+              'pageIndex': 0,
+              'pageCount': 1,
+              'entries': const [],
+              'deletes': const [],
+              'hasEarlier': true,
+              'turnsNextCursor': 'older-turns',
+              'latestTurnComplete': false,
+              'latestTurnGap': const {
+                'turnId': 'turn-current',
+                'missingEntryCount': 3,
+                'payloadOmitted': true,
+                'firstMissingSourceIndex': 41,
+                'repair': 'items_page',
+              },
+              'sourceEntryCount': 44,
+            })
+            as ConversationSyncV2EventMessage;
+
+    expect(message.turnsNextCursor, 'older-turns');
+    expect(message.latestTurnComplete, isFalse);
+    expect(message.latestTurnGap?.turnId, 'turn-current');
+    expect(message.latestTurnGap?.repair, 'items_page');
+    expect(message.latestTurnGap?.firstMissingSourceIndex, 41);
+    expect(
+      () => ServerMessage.fromJson({
+        ..._baseFrame,
+        'event': 'timeline_page',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'revision': 'revision-1',
+        'mode': 'snapshot',
+        'pageIndex': 0,
+        'pageCount': 1,
+        'entries': const [],
+        'deletes': const [],
+        'hasEarlier': true,
+        'latestTurnComplete': false,
+        'latestTurnGap': const {
+          'missingEntryCount': 1,
+          'payloadOmitted': false,
+          'repair': 'items_page',
+        },
+        'sourceEntryCount': 1,
+      }),
+      throwsFormatException,
+    );
+  });
+
   test('validates normalized messages inside turn page responses', () {
     final message =
         ServerMessage.fromJson({

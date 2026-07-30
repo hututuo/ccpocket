@@ -843,17 +843,19 @@ void main() {
     },
   );
 
-  test('migrates v3 timeline cursors without rebuilding cached rows', () async {
-    await repository.close();
-    if (await File(databasePath).exists()) {
-      await File(databasePath).delete();
-    }
-    final legacy = await databaseFactoryFfi.openDatabase(
-      databasePath,
-      options: OpenDatabaseOptions(
-        version: 3,
-        onCreate: (db, _) async {
-          await db.execute('''
+  test(
+    'migrates v4 latest-turn metadata without rebuilding cached rows',
+    () async {
+      await repository.close();
+      if (await File(databasePath).exists()) {
+        await File(databasePath).delete();
+      }
+      final legacy = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(
+          version: 4,
+          onCreate: (db, _) async {
+            await db.execute('''
             CREATE TABLE ${SessionCatalogCacheDatabase.hotWindowsTable} (
               partition_id TEXT NOT NULL,
               provider TEXT NOT NULL,
@@ -861,11 +863,12 @@ void main() {
               revision TEXT NOT NULL,
               entry_count INTEGER NOT NULL,
               has_earlier INTEGER NOT NULL,
+              turns_next_cursor TEXT,
               source_entry_count INTEGER NOT NULL,
               updated_at INTEGER NOT NULL
             )
           ''');
-          await db.execute('''
+            await db.execute('''
             CREATE TABLE ${SessionCatalogCacheDatabase.timelineStagesTable} (
               partition_id TEXT NOT NULL,
               subscription_id TEXT NOT NULL,
@@ -876,37 +879,191 @@ void main() {
               mode TEXT NOT NULL,
               page_count INTEGER NOT NULL,
               has_earlier INTEGER NOT NULL,
+              turns_next_cursor TEXT,
               source_entry_count INTEGER NOT NULL,
               created_at INTEGER NOT NULL
             )
           ''');
-        },
-      ),
-    );
-    await legacy.close();
+          },
+        ),
+      );
+      await legacy.close();
 
-    database = SessionCatalogCacheDatabase(
-      databasePath: databasePath,
-      openDatabase: openFfi,
-    );
-    repository = SessionCatalogCacheRepository(database);
-    final upgraded = await database.database;
-    final hotColumns = await upgraded.rawQuery(
-      'PRAGMA table_info(${SessionCatalogCacheDatabase.hotWindowsTable})',
-    );
-    final stageColumns = await upgraded.rawQuery(
-      'PRAGMA table_info(${SessionCatalogCacheDatabase.timelineStagesTable})',
-    );
+      database = SessionCatalogCacheDatabase(
+        databasePath: databasePath,
+        openDatabase: openFfi,
+      );
+      repository = SessionCatalogCacheRepository(database);
+      final upgraded = await database.database;
+      final hotColumns = await upgraded.rawQuery(
+        'PRAGMA table_info(${SessionCatalogCacheDatabase.hotWindowsTable})',
+      );
+      final stageColumns = await upgraded.rawQuery(
+        'PRAGMA table_info(${SessionCatalogCacheDatabase.timelineStagesTable})',
+      );
 
-    expect(
-      hotColumns.map((column) => column['name']),
-      contains('turns_next_cursor'),
-    );
-    expect(
-      stageColumns.map((column) => column['name']),
-      contains('turns_next_cursor'),
-    );
-  });
+      expect(
+        hotColumns.map((column) => column['name']),
+        contains('turns_next_cursor'),
+      );
+      expect(
+        stageColumns.map((column) => column['name']),
+        contains('turns_next_cursor'),
+      );
+      for (final columns in [hotColumns, stageColumns]) {
+        final names = columns.map((column) => column['name']);
+        expect(names, contains('latest_turn_complete'));
+        expect(names, contains('latest_turn_gap_json'));
+        expect(names, contains('latest_turn_gap_cursor'));
+      }
+    },
+  );
+
+  test(
+    'rebuilds an incomplete latest turn with a separate resumable cursor',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-latest-turn',
+        codexSourceId: 'source-latest-turn',
+      );
+      const gap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-current',
+        missingEntryCount: 2,
+        payloadOmitted: true,
+        firstMissingSourceIndex: 10,
+        repair: 'items_page',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn',
+        revision: 'revision-latest-turn',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('current-entry', 0, 'running')],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'older-turns-cursor',
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 3,
+      );
+
+      final first = await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn',
+        expectedRevision: 'revision-latest-turn',
+        expectedTurnId: 'turn-current',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'Current prompt',
+            'userMessageUuid': 'user-current',
+          },
+        ],
+        nextCursor: 'current-turn-page-2',
+      );
+      expect(first?.latestTurnComplete, isFalse);
+      expect(first?.latestTurnGapCursor, 'current-turn-page-2');
+      expect(first?.turnsNextCursor, 'older-turns-cursor');
+
+      await repository.close();
+      database = SessionCatalogCacheDatabase(
+        databasePath: databasePath,
+        openDatabase: openFfi,
+      );
+      repository = SessionCatalogCacheRepository(database);
+      final rebuilt = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn',
+      );
+      expect(rebuilt?.latestTurnGap?.turnId, 'turn-current');
+      expect(rebuilt?.latestTurnGapCursor, 'current-turn-page-2');
+      expect(rebuilt?.turnsNextCursor, 'older-turns-cursor');
+
+      final complete = await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn',
+        expectedRevision: 'revision-latest-turn',
+        expectedTurnId: 'turn-current',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'message': {
+              'id': 'assistant-current',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Current answer'},
+              ],
+            },
+          },
+        ],
+        nextCursor: null,
+      );
+      expect(complete?.latestTurnComplete, isTrue);
+      expect(complete?.latestTurnGap, isNull);
+      expect(complete?.latestTurnGapCursor, isNull);
+      expect(complete?.turnsNextCursor, 'older-turns-cursor');
+      expect(
+        complete?.entries.map((entry) => entry.entryId),
+        containsAll([
+          'current-entry',
+          'user:user-current',
+          'assistant:assistant-current',
+        ]),
+      );
+    },
+  );
+
+  test(
+    'falls back to safe latest-turn repair for damaged cache metadata',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-damaged-gap',
+        codexSourceId: 'source-damaged-gap',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-damaged-gap',
+        provider: 'codex',
+        providerSessionId: 'thread-damaged-gap',
+        revision: 'revision-damaged-gap',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('entry-damaged-gap', 0, 'idle')],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: const ConversationSyncV2LatestTurnGap(
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: 'turns_page',
+        ),
+        sourceEntryCount: 2,
+      );
+      final db = await database.database;
+      await db.update(SessionCatalogCacheDatabase.hotWindowsTable, {
+        'latest_turn_gap_json': '{damaged',
+      });
+
+      final rebuilt = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-damaged-gap',
+      );
+      expect(rebuilt?.latestTurnComplete, isFalse);
+      expect(rebuilt?.latestTurnGap?.repair, 'turns_page');
+      expect(rebuilt?.latestTurnGap?.turnId, isNull);
+    },
+  );
 
   test(
     'prepends turn pages idempotently and advances the stored cursor',
