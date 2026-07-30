@@ -2153,6 +2153,69 @@ void main() {
     );
 
     test(
+      'resolveSessionLink gives connection identity and legacy response independent budgets',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen(socketReady.complete);
+        final bridge = BridgeService();
+        const phaseBudget = Duration(milliseconds: 400);
+        const phaseDelay = Duration(milliseconds: 250);
+
+        final resolution = bridge.resolveSessionLink(
+          'shared-thread',
+          provider: 'codex',
+          timeout: phaseBudget,
+          expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+            bridgeInstanceId: 'bridge-delayed',
+            codexSourceId: 'source-delayed',
+          ),
+        );
+
+        await Future<void>.delayed(phaseDelay);
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        final requestFuture = socket
+            .where((event) {
+              final json = jsonDecode(event as String) as Map<String, dynamic>;
+              return json['type'] == 'resolve_session_link';
+            })
+            .map((event) => jsonDecode(event as String) as Map<String, dynamic>)
+            .first;
+
+        await Future<void>.delayed(phaseDelay);
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-delayed',
+          codexSourceId: 'source-delayed',
+        );
+        final request = await requestFuture.timeout(phaseBudget);
+
+        await Future<void>.delayed(phaseDelay);
+        socket.add(
+          jsonEncode({
+            'type': 'session_link_resolution',
+            'requestId': request['requestId'],
+            'sourceSessionId': 'shared-thread',
+            'status': 'live',
+            'bridgeSessionId': 'bridge-session',
+            'provider': 'codex',
+          }),
+        );
+
+        final result = await resolution.timeout(const Duration(seconds: 2));
+        expect(result.support, SessionLinkResolveSupport.resolved);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'resolveSessionLink fails closed when the connection stream closes',
       () async {
         final bridge = BridgeService();

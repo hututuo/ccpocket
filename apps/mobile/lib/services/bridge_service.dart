@@ -4715,9 +4715,9 @@ class BridgeService implements BridgeServiceBase {
     BridgeDataSourceIdentity expectedDataSourceIdentity =
         BridgeDataSourceIdentity.unscoped,
   }) async {
-    final startedAt = DateTime.now();
-    final legacyDeadline = startedAt.add(timeout);
-    final progressHardDeadline = startedAt.add(progressHardTimeout);
+    if (timeout <= Duration.zero) {
+      return const SessionLinkResolveResult.unavailable();
+    }
     final requestNumber = ++_nextSessionLinkRequestId;
     final requestId = 'session-link-$requestNumber';
     final generation = requestNumber;
@@ -4754,14 +4754,10 @@ class BridgeService implements BridgeServiceBase {
     if (expectedDataSourceIdentity.isScoped &&
         !_hasAuthoritativeSessionListForCurrentConnection) {
       publishLocalProgress(SessionLinkProgressStage.waitingForIdentity);
-      final remaining = legacyDeadline.difference(DateTime.now());
-      if (remaining <= Duration.zero) {
-        return const SessionLinkResolveResult.unavailable();
-      }
       try {
         await sessionList
             .firstWhere((_) => _hasAuthoritativeSessionListForCurrentConnection)
-            .timeout(remaining);
+            .timeout(timeout);
       } on TimeoutException {
         return const SessionLinkResolveResult.unavailable();
       } on StateError {
@@ -4777,13 +4773,9 @@ class BridgeService implements BridgeServiceBase {
     }
 
     final progressCapable = supportsSessionLinkProgress;
-    final requestDeadline = progressCapable
-        ? progressHardDeadline
-        : legacyDeadline;
-    final remaining = requestDeadline.difference(DateTime.now());
-    if (remaining <= Duration.zero ||
-        progressIdleTimeout <= Duration.zero ||
-        progressHardTimeout <= Duration.zero) {
+    final requestTimeout = progressCapable ? progressHardTimeout : timeout;
+    if (requestTimeout <= Duration.zero ||
+        (progressCapable && progressIdleTimeout <= Duration.zero)) {
       return const SessionLinkResolveResult.unavailable();
     }
     final requestEpoch = _connectionEpoch;
@@ -4810,7 +4802,11 @@ class BridgeService implements BridgeServiceBase {
     if (progressCapable) {
       _armSessionLinkIdleTimer(pending);
     }
-    pending.hardTimer = Timer(remaining, completeUnavailable);
+    // Connection and source-identity preflight have their own bounded waits.
+    // Start the provider response budget only when the request is actually
+    // ready to leave the phone, so a slow-but-progressing catalog bootstrap
+    // cannot consume the entire legacy response window before send.
+    pending.hardTimer = Timer(requestTimeout, completeUnavailable);
     publishLocalProgress(SessionLinkProgressStage.requestSent);
     send(
       ClientMessage.resolveSessionLink(
