@@ -1842,6 +1842,106 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("settles a paced live stream before rereading one dirty conversation", async () => {
+    const historyReader = vi.fn(async (target) =>
+      history(target.providerSessionId),
+    );
+    const fixture = createFixture([seed(0)], historyReader);
+    const client = {};
+    fixture.runtime.getProviderSessionId = () => "session-0";
+    const session: LocalFeatureSession = {
+      id: "runtime-0",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialHistoryReads = historyReader.mock.calls.length;
+
+    for (let index = 0; index < 20; index += 1) {
+      fixture.handler.sessionMessage(session, {
+        type: index % 2 === 0 ? "stream_delta" : "thinking_delta",
+        text: `paced-delta-${index}`,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+
+    await vi.waitFor(
+      () =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+      { timeout: 3_000 },
+    );
+    expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads + 1);
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
+    fixture.handler.close();
+  });
+
+  it("shares one dirty snapshot read across two subscribed clients", async () => {
+    const historyReader = vi.fn(async (target) => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return history(target.providerSessionId);
+    });
+    const fixture = createFixture([seed(0)], historyReader);
+    const firstClient = {};
+    const secondClient = {};
+    fixture.runtime.getProviderSessionId = () => "session-0";
+    const session: LocalFeatureSession = {
+      id: "runtime-0",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(firstClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, firstClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(secondClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, secondClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    const initialHistoryReads = historyReader.mock.calls.length;
+
+    for (let index = 0; index < 100; index += 1) {
+      fixture.handler.sessionMessage(session, {
+        type: "stream_delta",
+        text: `shared-delta-${index}`,
+      });
+    }
+
+    await vi.waitFor(
+      () => {
+        expect(
+          events(fixture.sent, firstClient, "sync_complete"),
+        ).toHaveLength(2);
+        expect(
+          events(fixture.sent, secondClient, "sync_complete"),
+        ).toHaveLength(2);
+      },
+      { timeout: 3_000 },
+    );
+    expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads + 1);
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
+    fixture.handler.close();
+  });
+
   it("projects Desktop-owned rollout state and live messages without a Bridge runtime", async () => {
     const codex = codexSeed(0, "thread-0");
     type HandlerOptions = NonNullable<
@@ -3307,16 +3407,18 @@ describe("ConversationSyncV2FeatureHandler", () => {
     );
     await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(1));
 
-    fixture.handler.sessionMessage(session, {
-      type: "assistant",
-      messageUuid: "assistant-live",
-      message: {
-        id: "assistant-live",
-        role: "assistant",
-        model: "test",
-        content: [{ type: "text", text: "new live content" }],
-      },
-    });
+    for (let index = 0; index < 100; index += 1) {
+      fixture.handler.sessionMessage(session, {
+        type: "assistant",
+        messageUuid: `assistant-live-${index}`,
+        message: {
+          id: `assistant-live-${index}`,
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: `new live content ${index}` }],
+        },
+      });
+    }
     resolveFirstRead!(history("session-0-old"));
 
     await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(2), {
@@ -3335,6 +3437,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
       ),
     );
     expect(revisions.size).toBeGreaterThanOrEqual(2);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(historyReader).toHaveBeenCalledTimes(2);
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
     fixture.handler.close();
   });
 
