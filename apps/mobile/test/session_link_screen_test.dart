@@ -22,6 +22,9 @@ void main() {
         SessionLinkStatusView(
           unavailable: true,
           resuming: false,
+          diagnosticCode: 'progress_idle_timeout',
+          onRetry: () {},
+          onBack: () {},
           onOpenRecentSessions: () => openedRecentSessions = true,
         ),
       ),
@@ -32,6 +35,15 @@ void main() {
       find.byKey(const ValueKey('open_recent_sessions_button')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(const ValueKey('retry_session_link_button')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('session_link_back_button')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('progress_idle_timeout'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('open_recent_sessions_button')));
     expect(openedRecentSessions, isTrue);
@@ -86,5 +98,37 @@ void main() {
       find.byKey(const ValueKey('session_link_progress_indicator')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('shows bounded work progress without replacing its real stage', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionLinkStatusView(
+          unavailable: false,
+          resuming: true,
+          progress: const SessionLinkProgressMessage(
+            requestId: 'link-counted',
+            sourceSessionId: 'thread-counted',
+            generation: 2,
+            operation: SessionLinkProgressOperation.resume,
+            stage: SessionLinkProgressStage.historyReading,
+            sequence: 5,
+            observedAt: '2026-07-31T00:00:00Z',
+            completedUnits: 3,
+            totalUnits: 8,
+          ),
+          onOpenRecentSessions: () {},
+        ),
+      ),
+    );
+
+    expect(find.textContaining('Loading recent history...'), findsOneWidget);
+    expect(find.textContaining('3 / 8'), findsOneWidget);
+    final indicator = tester.widget<LinearProgressIndicator>(
+      find.byKey(const ValueKey('session_link_progress_indicator')),
+    );
+    expect(indicator.value, 3 / 8);
   });
 }

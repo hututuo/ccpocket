@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -122,12 +124,24 @@ class _SessionLinkScreenBody extends StatelessWidget {
         final isUnavailable = state is SessionLinkUnavailable;
         final cubit = context.read<SessionLinkCubit>();
         return StreamBuilder<SessionLinkProgressMessage>(
+          key: ValueKey('session_link_progress_attempt_${cubit.attempt}'),
           stream: cubit.progress,
           initialData: cubit.currentProgress,
           builder: (context, progress) => SessionLinkStatusView(
             unavailable: isUnavailable,
             resuming: state is SessionLinkResuming,
             progress: progress.data,
+            diagnosticCode: cubit.lastFailureCode,
+            onRetry: isUnavailable ? () => unawaited(cubit.retry()) : null,
+            onBack: () {
+              unawaited(
+                context.router.maybePop().then((didPop) {
+                  if (!didPop && context.mounted) {
+                    context.router.replaceAll([AdaptiveHomeRoute()]);
+                  }
+                }),
+              );
+            },
             onOpenRecentSessions: () {
               context.router.replaceAll([AdaptiveHomeRoute()]);
             },
@@ -222,46 +236,99 @@ class SessionLinkStatusView extends StatelessWidget {
     required this.unavailable,
     required this.resuming,
     this.progress,
+    this.diagnosticCode,
+    this.onRetry,
+    this.onBack,
     required this.onOpenRecentSessions,
   });
 
   final bool unavailable;
   final bool resuming;
   final SessionLinkProgressMessage? progress;
+  final String? diagnosticCode;
+  final VoidCallback? onRetry;
+  final VoidCallback? onBack;
   final VoidCallback onOpenRecentSessions;
 
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
+    final completedUnits = progress?.completedUnits;
+    final totalUnits = progress?.totalUnits;
+    final hasBoundedProgress =
+        completedUnits != null &&
+        totalUnits != null &&
+        totalUnits > 0 &&
+        completedUnits >= 0;
+    final progressValue = hasBoundedProgress
+        ? (completedUnits / totalUnits).clamp(0.0, 1.0)
+        : null;
+    final stageText = progress == null
+        ? (resuming ? l.resumingLinkedSession : l.resolvingLinkedSession)
+        : l.sessionLinkProgressStage(progress!.stage.wireValue);
+    final detailedStageText = hasBoundedProgress
+        ? '$stageText · $completedUnits / $totalUnits'
+        : stageText;
     return Scaffold(
       body: SafeArea(
-        child: unavailable
-            ? SessionUnavailableView(onOpenRecentSessions: onOpenRecentSessions)
-            : Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(32),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const CircularProgressIndicator.adaptive(
-                        key: ValueKey('session_link_progress_indicator'),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        progress == null
-                            ? (resuming
-                                  ? l.resumingLinkedSession
-                                  : l.resolvingLinkedSession)
-                            : l.sessionLinkProgressStage(
-                                progress!.stage.wireValue,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: unavailable
+                  ? SessionUnavailableView(
+                      onOpenRecentSessions: onOpenRecentSessions,
+                      onRetry: onRetry,
+                      diagnosticText: [
+                        if (progress != null) detailedStageText,
+                        if (diagnosticCode != null) 'Code: $diagnosticCode',
+                      ].join('\n'),
+                    )
+                  : Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (progressValue == null)
+                              const CircularProgressIndicator.adaptive(
+                                key: ValueKey(
+                                  'session_link_progress_indicator',
+                                ),
+                              )
+                            else
+                              SizedBox(
+                                width: 220,
+                                child: LinearProgressIndicator(
+                                  key: const ValueKey(
+                                    'session_link_progress_indicator',
+                                  ),
+                                  value: progressValue,
+                                ),
                               ),
-                        key: const ValueKey('session_link_progress_stage'),
-                        textAlign: TextAlign.center,
+                            const SizedBox(height: 16),
+                            Text(
+                              detailedStageText,
+                              key: const ValueKey(
+                                'session_link_progress_stage',
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
                       ),
-                    ],
-                  ),
+                    ),
+            ),
+            if (onBack != null)
+              Positioned(
+                left: 4,
+                top: 4,
+                child: BackButton(
+                  key: const ValueKey('session_link_back_button'),
+                  onPressed: onBack,
                 ),
               ),
+          ],
+        ),
       ),
     );
   }

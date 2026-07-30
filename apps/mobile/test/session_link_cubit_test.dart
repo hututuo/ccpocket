@@ -344,6 +344,44 @@ void main() {
       await cubit.resolve();
 
       expect(cubit.state, const SessionLinkState.unavailable());
+      expect(cubit.lastFailureCode, 'resolve_error');
     },
   );
+
+  test('retry uses a fresh correlation and can recover in place', () async {
+    bridge.resolveError = StateError('connection stream closed');
+    final cubit = SessionLinkCubit(
+      bridge: bridge,
+      sourceSessionId: 'recoverable',
+      provider: 'codex',
+      resumeRequestId: 'first-attempt',
+    );
+    addTearDown(cubit.close);
+
+    await cubit.resolve();
+    expect(cubit.state, const SessionLinkState.unavailable());
+    expect(cubit.attempt, 0);
+
+    bridge.resolveError = null;
+    bridge.result = const SessionLinkResolveResult.resolved(
+      SessionLinkResolutionMessage(
+        requestId: 'request-2',
+        sourceSessionId: 'recoverable',
+        status: SessionLinkResolutionStatus.live,
+        bridgeSessionId: 'bridge-recovered',
+        provider: 'codex',
+      ),
+    );
+    await cubit.retry();
+
+    expect(cubit.attempt, 1);
+    expect(cubit.lastFailureCode, isNull);
+    expect(
+      cubit.state,
+      const SessionLinkState.openLive(
+        bridgeSessionId: 'bridge-recovered',
+        provider: 'codex',
+      ),
+    );
+  });
 }

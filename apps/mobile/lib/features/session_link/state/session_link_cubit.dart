@@ -42,7 +42,7 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
   final String _sourceSessionId;
   final String _provider;
   final BridgeDataSourceIdentity _expectedDataSourceIdentity;
-  final String _resumeRequestId;
+  String _resumeRequestId;
   final SessionResumeCoordinator _resumeCoordinator;
   final Duration _progressIdleTimeout;
   final Duration _progressHardTimeout;
@@ -53,25 +53,55 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
   Timer? _resumeIdleTimer;
   Timer? _resumeHardTimer;
   bool _started = false;
+  bool _attemptActive = false;
+  int _attempt = 0;
   String? _resumeGitBranch;
   String? _resumeSourceSessionId;
   int? _linkGeneration;
   SessionLinkProgressMessage? _currentProgress;
   SessionLinkProgressMessage? _lastResumeProgress;
+  String? _lastFailureCode;
 
   Stream<SessionLinkProgressMessage> get progress => _progressController.stream;
   SessionLinkProgressMessage? get currentProgress => _currentProgress;
+  String? get lastFailureCode => _lastFailureCode;
+  int get attempt => _attempt;
 
   Future<void> resolve() async {
     if (_started) return;
     _started = true;
+    await _runResolveAttempt();
+  }
+
+  Future<void> retry() async {
+    if (isClosed || _attemptActive || state is! SessionLinkUnavailable) return;
+    await _cancelResumeSubscription();
+    if (isClosed) return;
+    _attempt += 1;
+    _resumeRequestId =
+        'session-link-${DateTime.now().microsecondsSinceEpoch}-retry-$_attempt';
+    _linkGeneration = null;
+    _resumeGitBranch = null;
+    _resumeSourceSessionId = null;
+    _lastResumeProgress = null;
+    _currentProgress = null;
+    _lastFailureCode = null;
+    emit(const SessionLinkState.resolving());
+    await _runResolveAttempt();
+  }
+
+  Future<void> _runResolveAttempt() async {
+    if (_attemptActive || isClosed) return;
+    _attemptActive = true;
     try {
       await _resolveOnce();
     } catch (_) {
       await _cancelResumeSubscription();
       if (!isClosed) {
-        emit(const SessionLinkState.unavailable());
+        _showUnavailable('resolve_error');
       }
+    } finally {
+      _attemptActive = false;
     }
   }
 
@@ -90,13 +120,13 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
       return;
     }
     if (result.support == SessionLinkResolveSupport.unavailable) {
-      emit(const SessionLinkState.unavailable());
+      _showUnavailable('source_unavailable');
       return;
     }
 
     final resolution = result.resolution;
     if (resolution == null) {
-      emit(const SessionLinkState.unavailable());
+      _showUnavailable('missing_resolution');
       return;
     }
     _linkGeneration = result.generation;
@@ -104,7 +134,7 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
       case SessionLinkResolutionStatus.live:
         final bridgeSessionId = resolution.bridgeSessionId;
         if (bridgeSessionId == null || bridgeSessionId.isEmpty) {
-          emit(const SessionLinkState.unavailable());
+          _showUnavailable('missing_live_session');
           return;
         }
         emit(
@@ -116,12 +146,12 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
       case SessionLinkResolutionStatus.recent:
         final recentSession = resolution.recentSession;
         if (recentSession == null) {
-          emit(const SessionLinkState.unavailable());
+          _showUnavailable('missing_recent_session');
           return;
         }
         await _resume(recentSession);
       case SessionLinkResolutionStatus.unavailable:
-        emit(const SessionLinkState.unavailable());
+        _showUnavailable('session_unavailable');
     }
   }
 
@@ -154,14 +184,17 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
     _resumeGitBranch = dispatch.gitBranch;
     if (dispatch.disposition == SessionResumeDisposition.alreadyQueued) {
       await _cancelResumeSubscription();
-      emit(const SessionLinkState.unavailable());
+      _showUnavailable('resume_already_queued');
       return;
     }
     if (_bridge.supportsSessionLinkProgress && _linkGeneration != null) {
       _armResumeIdleTimer();
     } else {
       _resumeHardTimer?.cancel();
-      _resumeHardTimer = Timer(_legacyResumeTimeout, _onResumeTimeout);
+      _resumeHardTimer = Timer(
+        _legacyResumeTimeout,
+        () => _onResumeTimeout('legacy_resume_timeout'),
+      );
     }
   }
 
@@ -194,7 +227,7 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
     }
     if (message.subtype == 'session_resume_failed') {
       unawaited(_cancelResumeSubscription());
-      emit(const SessionLinkState.unavailable());
+      _showUnavailable('resume_failed');
     }
   }
 
@@ -218,17 +251,29 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
 
   void _armResumeIdleTimer() {
     _resumeIdleTimer?.cancel();
-    _resumeIdleTimer = Timer(_progressIdleTimeout, _onResumeTimeout);
+    _resumeIdleTimer = Timer(
+      _progressIdleTimeout,
+      () => _onResumeTimeout('progress_idle_timeout'),
+    );
   }
 
   void _armResumeHardTimer() {
     _resumeHardTimer?.cancel();
-    _resumeHardTimer = Timer(_progressHardTimeout, _onResumeTimeout);
+    _resumeHardTimer = Timer(
+      _progressHardTimeout,
+      () => _onResumeTimeout('progress_hard_timeout'),
+    );
   }
 
-  void _onResumeTimeout() {
+  void _onResumeTimeout(String code) {
     if (isClosed || state is! SessionLinkResuming) return;
     unawaited(_cancelResumeSubscription());
+    _showUnavailable(code);
+  }
+
+  void _showUnavailable(String code) {
+    if (isClosed) return;
+    _lastFailureCode = code;
     emit(const SessionLinkState.unavailable());
   }
 
