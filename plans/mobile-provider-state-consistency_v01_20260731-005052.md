@@ -1,6 +1,6 @@
 # CC Pocket 托管来源、会话状态与消息一致性修复方案 v01
 
-> 状态：**active**
+> 状态：**accepted**
 >
 > 创建时间：2026-07-31 00:50:52 +0800
 >
@@ -246,18 +246,32 @@ localDraft
 
 | 原始问题 | 当前状态 | 主要核对链 | 完成门禁 |
 |---|---|---|---|
-| 三套“处理中” | 根因已确认，待实现 | v2 status、runtime status、双卡片切换 | 只保留一个主状态和一个来源标识 |
-| Codex 托管打开失败 | 已定位身份陈旧风险，继续核对 | catalog identity → history/read/resume → Mobile binding | 新旧 app-server、缓存/在线打开测试 |
-| Codex 托管状态错误 | 根因已确认，待实现 | app-server status event → Bridge overlay → 单一卡片投影 | working/idle/unknown/ownedElsewhere 测试 |
-| Codex 托管 guide 失败 | 所有权边界已确认，待实现 | private/shared app-server → steer/start → structured result | 正在运行与空闲两种路径测试 |
-| Codex 托管时间戳错误 | 根因已确认，待实现 | JSONL item timeline → v2/Mirror → SQLite → ChatEntry | 两托管来源一致的真实时间测试 |
-| Codex 托管悬浮窗消失 | UI 条件已确认，创建能力待实现 | canonical parent ID → lazy attach/capability → registry | 两托管来源及增量重建后保持 |
-| 增量排序错乱 | 根因已确认，待实现 | canonical/live 单写入投影与结构顺序 | 迟到、重复、分页交错、重进一致 |
-| 固定超时 | 根因已确认，待实现 | request-correlated progress、idle timer、hard cap | 进度持续不误超时，无进展可恢复 |
-| 自动批准离开手机失效 | 部分已有 | Bridge policy/supervisor/ownership | Bridge 断开手机后测试及边界文案 |
-| different Codex source | 已定位 stale screen identity 风险，待实现 | machine/source/thread identity and migration | 同源多路线通过、真异源拒绝 |
-| unreadable response | 根因已确认，待实现 | frame parse 与 frame apply 分层、session scope | 所有 send/steer/queue 响应结构化 |
-| 排队消息双勾 | 协议缺口已确认，待实现 | Bridge admission/provider RPC ACK/Mobile UI | 重连幂等与两阶段状态测试 |
+| 三套“处理中” | 已完成并验证 | v2 status、runtime status、单一卡片投影 | 一个主状态；Mirror 只显示同步动作 |
+| Codex 托管打开失败 | 已完成并验证 | catalog identity → read-only history → Mobile binding | 同源迁移、真异源拒绝、旧协议回退测试 |
+| Codex 托管状态错误 | 已完成并验证 | app-server status event → Bridge overlay → 单一卡片投影 | working/idle/unknown/ownedElsewhere 测试 |
+| Codex 托管 guide 失败 | 所有权内完成；外部 owner 有明确边界 | private/shared app-server → steer/start → structured result | Bridge owner 可 steer；外部 owner 安全排队到下一轮 |
+| Codex 托管时间戳错误 | 已完成并验证 | JSONL item timeline → v2/Mirror → SQLite → ChatEntry | 两托管来源保留权威源时间 |
+| Codex 托管悬浮窗消失 | 已完成并验证 | canonical parent ID → detached read capability → registry | 两托管来源保持；未附着子 Agent 只读可查 |
+| 增量排序错乱 | 已完成并验证 | canonical/live 单写入投影与结构顺序 | 迟到、重复、分页交错、重进一致 |
+| 固定超时 | 已完成并验证 | request-correlated progress、idle timer、hard cap | 有效进展续期；重复 heartbeat 不续期 |
+| 自动批准离开手机失效 | Bridge 所有权范围完成 | source-scoped policy/supervisor/ownership | 手机断开后仍由 Bridge 处理；外部 owner 不伪批准 |
+| different Codex source | 已完成并验证 | machine/source/thread identity and migration | 同源多路线通过、真异源 fail-closed |
+| unreadable response | 已完成并验证 | frame parse/apply 分层、session scope | 无归属错误只进全局诊断；目标错误按会话隔离 |
+| 排队消息双勾 | 已完成并验证 | Bridge admission/provider RPC ACK/Mobile UI | 重连幂等与两阶段状态测试 |
+
+### 实施结果
+
+- 代码终验候选：`583222be2bc77741896c416e7c82644052cb23c1`。
+- 最终独立复审：`0 P0 / 0 P1 / 0 P2 / 1 P3`，批准合并。
+- 唯一 P3 是本任务基线前一个发布备份 README 的尾随空白；本任务
+  `c5b55b73..583222be` 通过 `git diff --check`，不篡改历史备份证据。
+- Bridge 全量 `96` 文件、`1946` 项通过；Mobile 全量 `2750` 项通过、`4` 项按
+  既有条件跳过；Flutter analyze 为 `0 error / 0 warning`，另有 `52` 条仓库既有
+  info。
+- iOS Simulator Debug 与 device Release no-codesign 均构建成功；本任务没有
+  iOS/plugin/pubspec diff，源码合并不等于 IPA、OTA 或真机验收。
+- 性能、兼容矩阵、两轮审计和历史分支映射见
+  `notes/mobile-provider-state-consistency-audit_v01_20260731-060222.md`。
 
 ## 五、提交顺序
 

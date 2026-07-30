@@ -1,23 +1,32 @@
 # CC Pocket Compatibility Fork Context
 
-## Active implementation after repository convergence
+## Verified provider-state implementation after repository convergence
 
-The repository-convergence baseline below is now being used by one isolated
-task worktree:
+The post-convergence provider-state task has passed its source, compatibility,
+performance, build, and independent audit gates:
 
 - Worktree:
   `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-provider-state-consistency-20260731`
 - Branch: `fix/mobile-provider-state-consistency-20260731`
 - Base: `c5b55b73ec479345a17bfd88f87cda4099db70dc`
-- Active plan:
+- Accepted plan:
   `plans/mobile-provider-state-consistency_v01_20260731-005052.md`
+- Verified code candidate:
+  `583222be2bc77741896c416e7c82644052cb23c1`
+- Final audit:
+  `notes/mobile-provider-state-consistency-audit_v01_20260731-060222.md`
+- Independent review: `0 P0 / 0 P1 / 0 P2 / 1 P3`, approved for integration.
 
-This task unifies the visible activity state and execution-host semantics for
-Bridge-hosted and Codex Desktop/app-server-hosted conversations, then fixes the
-related history ordering, source identity, loading-progress, auto-approval, and
-queued-message acknowledgement paths. The integration branch remains the
-verified fallback until this task has passed its own compatibility, performance,
-and audit gates.
+This task unifies visible activity and execution-host semantics for
+Bridge-hosted and Codex Desktop/app-server-hosted conversations. It also fixes
+history ordering, source identity, meaningful-progress loading, Bridge-owned
+auto approval, two-stage queued-message acknowledgement, per-session protocol
+errors, and read-only subagent discovery for detached Desktop conversations.
+
+The authoritative development branch becomes
+`integration/mobile-session-sync-v2-20260730` after a fast-forward of this
+accepted task. Source acceptance still does not imply production Bridge
+replacement, OTA, IPA delivery, or physical-device acceptance.
 
 ## Authoritative source baseline
 
@@ -26,17 +35,17 @@ The authoritative source and future multi-Agent baseline is:
 - Worktree:
   `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-tiered-session-sync-20260730`
 - Branch: `integration/mobile-session-sync-v2-20260730`
-- Verified product commit:
+- Previous verified fallback:
   `fbfc528b81d998bf97cf8dd649c75b58d219af29`
 
-Commit `fbfc528b` restores the established Chinese-locale UI labels
+Commit `fbfc528b` remains the pre-task fallback and restores the established Chinese-locale UI labels
 `Plan On` / `Plan Off`. Its stable patch-id is identical to archived commit
 `89e38f41`, and its focused localization tests and analyzer gate passed.
 
 The primary repository checkout at
-`/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat` is a clean,
-detached checkout of the same verified product commit. Do not develop directly
-there. Create a new absolute-path linked worktree from the integration branch.
+`/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat` remains a
+non-development checkout. Create future work from the integration branch in an
+absolute-path linked worktree.
 
 ## Repository convergence on 2026-07-31
 

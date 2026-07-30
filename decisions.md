@@ -1231,3 +1231,38 @@
   following Bloc rebuild must pump the delivery and render frames explicitly.
   They must not rely on an unrelated child controller to schedule an
   incidental extra frame.
+
+## Provider state, errors, and detached reads use one source-scoped contract
+
+- A conversation has one composite activity/attention projection and one
+  execution host. `desktopAppServer` and `bridge` explain who currently owns
+  execution; they do not create separate Working states. Mirror download and
+  sync activity is an action indicator, never a third conversation state.
+- Ordinary idle conversations show no Ready badge. `unknown`, `notLoaded`, and
+  `ownedElsewhere` remain distinct internal facts and must not be silently
+  rewritten as Ready.
+- Conversation-entry timeout is based on time since the last meaningful,
+  request-correlated progress: a real stage transition, accepted chunk,
+  committed page, revision advance, or increase in visible content. Repeated
+  heartbeat frames do not renew the deadline. A larger hard cap remains only
+  as a safety diagnostic.
+- Bridge-owned auto approval is persisted and keyed by
+  `codexSourceId + threadId`. Legacy policy without a proven source fails
+  closed. A Bridge must not approve a request owned by another private
+  app-server.
+- A malformed frame without a proven `sessionId` goes only to global
+  diagnostics. History and delta failures include a target `sessionId` and
+  stable sanitized `errorCode`; an unscoped error must never become a chat
+  message in every open conversation.
+- Reading subagents for a detached durable Desktop conversation uses the
+  additive capability `detached_subagents_read_v1` and the identity
+  `providerThreadId + codexSourceId`. Bridge validates the source before
+  opening a reader, uses only bounded read/list RPCs, and never resumes,
+  starts, forks, creates a runtime session, or acquires writer ownership merely
+  to populate the floating dock.
+- If another independent app-server owns an active turn, CC Pocket does not
+  steal or kill that owner. Input is durably acknowledged by Bridge, queued,
+  and delivered to the next turn after ownership becomes available. True
+  cross-client live steer requires a shared app-server or a future official,
+  verifiable owner-control API; UI and the second ACK must not claim that
+  capability before it exists.
