@@ -666,6 +666,7 @@
   "creatingSession": "세션 생성 중...",
   "resolvingLinkedSession": "세션을 찾는 중...",
   "resumingLinkedSession": "세션을 재개하는 중...",
+  "sessionLinkProgressStage": "{stage, select, waiting_for_connection{Bridge에 연결하는 중...} waiting_for_identity{데이터 소스를 확인하는 중...} request_sent{세션 요청을 보내는 중...} request_accepted{Bridge가 요청을 받았습니다...} runtime_checked{실행 중인 세션을 확인하는 중...} catalog_scanning{세션 목록을 검색하는 중...} catalog_scanned{세션 목록을 확인했습니다...} resolution_ready{세션을 찾았습니다...} resume_lock_waiting{세션 접근을 기다리는 중...} resume_lock_acquired{세션 접근 권한을 얻었습니다...} history_reading{최근 기록을 불러오는 중...} history_read{최근 기록을 불러왔습니다...} runtime_starting{세션 런타임을 시작하는 중...} metadata_loading{세션 정보를 불러오는 중...} ready{세션을 여는 중...} other{세션을 불러오는 중...}}",
   "sessionUnavailableTitle": "세션을 사용할 수 없음",
   "sessionUnavailableDescription": "현재 Bridge에서 이 세션을 사용할 수 없습니다. 최근 세션에서 다른 세션을 선택해 주세요.",
   "openRecentSessions": "최근 세션 열기",

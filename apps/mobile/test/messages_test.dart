@@ -162,6 +162,7 @@ void main() {
           requestId: 'link-1',
           sessionId: 'claude-uuid',
           provider: 'claude',
+          sessionLinkGeneration: 7,
         ).toJson(),
       ),
       {
@@ -169,6 +170,7 @@ void main() {
         'requestId': 'link-1',
         'sessionId': 'claude-uuid',
         'provider': 'claude',
+        'sessionLinkGeneration': 7,
       },
     );
 
@@ -179,6 +181,7 @@ void main() {
               'sourceSessionId': 'claude-uuid',
               'status': 'recent',
               'provider': 'claude',
+              'sessionLinkGeneration': 7,
               'recentSession': {
                 'sessionId': 'claude-uuid',
                 'provider': 'claude',
@@ -194,8 +197,60 @@ void main() {
 
     expect(message.requestId, 'link-1');
     expect(message.status, SessionLinkResolutionStatus.recent);
+    expect(message.generation, 7);
     expect(message.recentSession?.sessionId, 'claude-uuid');
     expect(message.recentSession?.projectPath, '/workspace/app');
+  });
+
+  test('parses session link progress and rejects ineffective heartbeats', () {
+    SessionLinkProgressMessage progress({
+      required int sequence,
+      required SessionLinkProgressStage stage,
+      int? completedUnits,
+      int generation = 7,
+    }) {
+      return ServerMessage.fromJson({
+            'type': sessionLinkProgressCapability,
+            'requestId': 'link-1',
+            'sourceSessionId': 'claude-uuid',
+            'generation': generation,
+            'operation': 'resolve',
+            'stage': stage.wireValue,
+            'sequence': sequence,
+            'observedAt': '2026-07-31T00:00:00Z',
+            'completedUnits': ?completedUnits,
+          })
+          as SessionLinkProgressMessage;
+    }
+
+    final accepted = progress(
+      sequence: 1,
+      stage: SessionLinkProgressStage.requestAccepted,
+    );
+    final heartbeat = progress(
+      sequence: 2,
+      stage: SessionLinkProgressStage.requestAccepted,
+    );
+    final counted = progress(
+      sequence: 3,
+      stage: SessionLinkProgressStage.requestAccepted,
+      completedUnits: 1,
+    );
+    final regressed = progress(
+      sequence: 4,
+      stage: SessionLinkProgressStage.requestSent,
+    );
+    final wrongGeneration = progress(
+      sequence: 5,
+      stage: SessionLinkProgressStage.runtimeChecked,
+      generation: 8,
+    );
+
+    expect(accepted.isEffectiveAfter(null), isTrue);
+    expect(heartbeat.isEffectiveAfter(accepted), isFalse);
+    expect(counted.isEffectiveAfter(accepted), isTrue);
+    expect(regressed.isEffectiveAfter(counted), isFalse);
+    expect(wrongGeneration.isEffectiveAfter(counted), isFalse);
   });
 
   test('parses a scoped session-not-found error', () {
@@ -819,6 +874,7 @@ void main() {
         sessionActivityAtCapability,
         sessionRequestCorrelationCapability,
         sessionCatalogChangedMessageType,
+        sessionLinkProgressCapability,
         'git_status_result',
         'prompt_history_status',
         'artifact_resolved',

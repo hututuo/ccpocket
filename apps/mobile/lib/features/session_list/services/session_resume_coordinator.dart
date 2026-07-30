@@ -189,6 +189,7 @@ class SessionResumeCoordinator {
   Future<SessionResumeDispatch> resume(
     RecentSession session, {
     String? resumeRequestId,
+    int? sessionLinkGeneration,
   }) async {
     final provider = session.provider ?? Provider.claude.value;
     final projectPath = session.resumeCwd?.isNotEmpty == true
@@ -288,6 +289,7 @@ class SessionResumeCoordinator {
           : null,
       resumeRequestId: resumeRequestId,
       codexSourceId: isCodex ? session.codexSourceId : null,
+      sessionLinkGeneration: sessionLinkGeneration,
     );
 
     if (isCodex) {

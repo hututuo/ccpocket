@@ -230,18 +230,80 @@ enum SessionLinkResolveSupport { resolved, unsupported, unavailable }
 class SessionLinkResolveResult {
   final SessionLinkResolveSupport support;
   final SessionLinkResolutionMessage? resolution;
+  final int? generation;
 
-  const SessionLinkResolveResult._(this.support, this.resolution);
+  const SessionLinkResolveResult._(
+    this.support,
+    this.resolution,
+    this.generation,
+  );
 
   const SessionLinkResolveResult.resolved(
-    SessionLinkResolutionMessage resolution,
-  ) : this._(SessionLinkResolveSupport.resolved, resolution);
+    SessionLinkResolutionMessage resolution, {
+    int? generation,
+  }) : this._(SessionLinkResolveSupport.resolved, resolution, generation);
 
   const SessionLinkResolveResult.unsupported()
-    : this._(SessionLinkResolveSupport.unsupported, null);
+    : this._(SessionLinkResolveSupport.unsupported, null, null);
 
   const SessionLinkResolveResult.unavailable()
-    : this._(SessionLinkResolveSupport.unavailable, null);
+    : this._(SessionLinkResolveSupport.unavailable, null, null);
+}
+
+typedef SessionLinkProgressCallback =
+    void Function(SessionLinkProgressMessage progress);
+
+class _PendingSessionLinkResolution {
+  _PendingSessionLinkResolution({
+    required this.completer,
+    required this.requestId,
+    required this.sourceSessionId,
+    required this.generation,
+    required this.connectionEpoch,
+    required this.progressCapable,
+    required this.progressIdleTimeout,
+    this.onProgress,
+  });
+
+  final Completer<SessionLinkResolveResult> completer;
+  final String requestId;
+  final String sourceSessionId;
+  final int generation;
+  final int connectionEpoch;
+  final bool progressCapable;
+  final Duration progressIdleTimeout;
+  final SessionLinkProgressCallback? onProgress;
+  SessionLinkProgressMessage? lastEffectiveProgress;
+  Timer? idleTimer;
+  Timer? hardTimer;
+
+  bool acceptProgress(SessionLinkProgressMessage progress) {
+    if (!progressCapable ||
+        progress.requestId != requestId ||
+        progress.sourceSessionId != sourceSessionId ||
+        progress.generation != generation ||
+        progress.operation != SessionLinkProgressOperation.resolve ||
+        !progress.isEffectiveAfter(lastEffectiveProgress)) {
+      return false;
+    }
+    lastEffectiveProgress = progress;
+    return true;
+  }
+
+  bool acceptsResolution(SessionLinkResolutionMessage resolution) {
+    if (resolution.requestId != requestId ||
+        resolution.sourceSessionId != sourceSessionId) {
+      return false;
+    }
+    return !progressCapable || resolution.generation == generation;
+  }
+
+  void cancelTimers() {
+    idleTimer?.cancel();
+    hardTimer?.cancel();
+    idleTimer = null;
+    hardTimer = null;
+  }
 }
 
 class BridgeService implements BridgeServiceBase {
@@ -456,7 +518,7 @@ class BridgeService implements BridgeServiceBase {
   final Set<String> _visibleInFlightPendingKeys = {};
   final Map<String, _DeliveryPendingInputState> _deliveryPendingInputs = {};
   final Map<String, Timer> _deliveryPendingVisibilityTimers = {};
-  final Map<String, Completer<SessionLinkResolveResult>>
+  final Map<String, _PendingSessionLinkResolution>
   _pendingSessionLinkResolutions = {};
   int _nextSessionLinkRequestId = 0;
   final Map<String, Set<String>> _respondedToolUseIds = {};
@@ -789,6 +851,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(sessionCatalogWatchCapability);
   bool get supportsSessionCatalogRequestCorrelation =>
       _bridgeCapabilities.contains(sessionCatalogRequestCorrelationCapability);
+  bool get supportsSessionLinkProgress =>
+      _bridgeCapabilities.contains(sessionLinkProgressCapability);
   bool get supportsFileListRequestCorrelation =>
       bridgeCapabilities.contains(fileListRequestCorrelationCapability);
   bool get supportsConversationContentEvents =>
@@ -2413,12 +2477,40 @@ class BridgeService implements BridgeServiceBase {
                   }
                   _messageController.add(msg);
                 }
+              case SessionLinkProgressMessage(:final requestId):
+                final pending = _pendingSessionLinkResolutions[requestId];
+                if (pending != null &&
+                    pending.connectionEpoch == epoch &&
+                    pending.acceptProgress(msg)) {
+                  _armSessionLinkIdleTimer(pending);
+                  logger.info(
+                    'Session link progress: '
+                    'request=$requestId '
+                    'operation=${msg.operation.wireValue} '
+                    'stage=${msg.stage.wireValue} '
+                    'sequence=${msg.sequence} '
+                    'completed=${msg.completedUnits ?? '-'} '
+                    'total=${msg.totalUnits ?? '-'}',
+                  );
+                  pending.onProgress?.call(msg);
+                } else if (pending == null) {
+                  _taggedMessageController.add((msg, sessionId));
+                  _messageController.add(msg);
+                }
               case SessionLinkResolutionMessage(:final requestId):
-                final completer = _pendingSessionLinkResolutions.remove(
-                  requestId,
-                );
-                if (completer != null && !completer.isCompleted) {
-                  completer.complete(SessionLinkResolveResult.resolved(msg));
+                final pending = _pendingSessionLinkResolutions[requestId];
+                if (pending != null &&
+                    pending.connectionEpoch == epoch &&
+                    pending.acceptsResolution(msg) &&
+                    !pending.completer.isCompleted) {
+                  _pendingSessionLinkResolutions.remove(requestId);
+                  pending.cancelTimers();
+                  pending.completer.complete(
+                    SessionLinkResolveResult.resolved(
+                      msg,
+                      generation: pending.generation,
+                    ),
+                  );
                 }
               default:
                 _taggedMessageController.add((msg, sessionId));
@@ -4596,11 +4688,34 @@ class BridgeService implements BridgeServiceBase {
     String sessionId, {
     String provider = 'claude',
     Duration timeout = const Duration(seconds: 10),
+    Duration progressIdleTimeout = const Duration(seconds: 15),
+    Duration progressHardTimeout = const Duration(minutes: 2),
+    SessionLinkProgressCallback? onProgress,
     BridgeDataSourceIdentity expectedDataSourceIdentity =
         BridgeDataSourceIdentity.unscoped,
   }) async {
-    final deadline = DateTime.now().add(timeout);
+    final startedAt = DateTime.now();
+    final legacyDeadline = startedAt.add(timeout);
+    final progressHardDeadline = startedAt.add(progressHardTimeout);
+    final requestNumber = ++_nextSessionLinkRequestId;
+    final requestId = 'session-link-$requestNumber';
+    final generation = requestNumber;
+    void publishLocalProgress(SessionLinkProgressStage stage) {
+      onProgress?.call(
+        SessionLinkProgressMessage(
+          requestId: requestId,
+          sourceSessionId: sessionId,
+          generation: generation,
+          operation: SessionLinkProgressOperation.resolve,
+          stage: stage,
+          sequence: 0,
+          observedAt: DateTime.now().toUtc().toIso8601String(),
+        ),
+      );
+    }
+
     if (!isConnected) {
+      publishLocalProgress(SessionLinkProgressStage.waitingForConnection);
       try {
         await connectionStatus
             .firstWhere((state) => state == BridgeConnectionState.connected)
@@ -4617,7 +4732,8 @@ class BridgeService implements BridgeServiceBase {
 
     if (expectedDataSourceIdentity.isScoped &&
         !_hasAuthoritativeSessionListForCurrentConnection) {
-      final remaining = deadline.difference(DateTime.now());
+      publishLocalProgress(SessionLinkProgressStage.waitingForIdentity);
+      final remaining = legacyDeadline.difference(DateTime.now());
       if (remaining <= Duration.zero) {
         return const SessionLinkResolveResult.unavailable();
       }
@@ -4639,26 +4755,52 @@ class BridgeService implements BridgeServiceBase {
       return const SessionLinkResolveResult.unavailable();
     }
 
-    final remaining = deadline.difference(DateTime.now());
-    if (remaining <= Duration.zero) {
+    final progressCapable = supportsSessionLinkProgress;
+    final requestDeadline = progressCapable
+        ? progressHardDeadline
+        : legacyDeadline;
+    final remaining = requestDeadline.difference(DateTime.now());
+    if (remaining <= Duration.zero ||
+        progressIdleTimeout <= Duration.zero ||
+        progressHardTimeout <= Duration.zero) {
       return const SessionLinkResolveResult.unavailable();
     }
     final requestEpoch = _connectionEpoch;
-    final requestId = 'session-link-${++_nextSessionLinkRequestId}';
     final completer = Completer<SessionLinkResolveResult>();
-    _pendingSessionLinkResolutions[requestId] = completer;
+    final pending = _PendingSessionLinkResolution(
+      completer: completer,
+      requestId: requestId,
+      sourceSessionId: sessionId,
+      generation: generation,
+      connectionEpoch: requestEpoch,
+      progressCapable: progressCapable,
+      progressIdleTimeout: progressIdleTimeout,
+      onProgress: onProgress,
+    );
+    _pendingSessionLinkResolutions[requestId] = pending;
+    void completeUnavailable() {
+      if (_pendingSessionLinkResolutions[requestId] != pending ||
+          pending.completer.isCompleted) {
+        return;
+      }
+      pending.completer.complete(const SessionLinkResolveResult.unavailable());
+    }
+
+    if (progressCapable) {
+      _armSessionLinkIdleTimer(pending);
+    }
+    pending.hardTimer = Timer(remaining, completeUnavailable);
+    publishLocalProgress(SessionLinkProgressStage.requestSent);
     send(
       ClientMessage.resolveSessionLink(
         requestId: requestId,
         sessionId: sessionId,
         provider: provider,
+        sessionLinkGeneration: progressCapable ? generation : null,
       ),
     );
     try {
-      final result = await completer.future.timeout(
-        remaining,
-        onTimeout: () => const SessionLinkResolveResult.unavailable(),
-      );
+      final result = await completer.future;
       if (_connectionEpoch != requestEpoch ||
           !requestIdentity.matchesRequest(
             dataSourceIdentity,
@@ -4668,13 +4810,28 @@ class BridgeService implements BridgeServiceBase {
       }
       return result;
     } finally {
-      _pendingSessionLinkResolutions.remove(requestId);
+      if (_pendingSessionLinkResolutions[requestId] == pending) {
+        _pendingSessionLinkResolutions.remove(requestId);
+      }
+      pending.cancelTimers();
       _messageQueue.removeWhere((message) {
         final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
         return json['type'] == 'resolve_session_link' &&
             json['requestId'] == requestId;
       });
     }
+  }
+
+  void _armSessionLinkIdleTimer(_PendingSessionLinkResolution pending) {
+    if (!pending.progressCapable || pending.completer.isCompleted) return;
+    pending.idleTimer?.cancel();
+    pending.idleTimer = Timer(pending.progressIdleTimeout, () {
+      if (_pendingSessionLinkResolutions[pending.requestId] != pending ||
+          pending.completer.isCompleted) {
+        return;
+      }
+      pending.completer.complete(const SessionLinkResolveResult.unavailable());
+    });
   }
 
   void _completePendingSessionLinkResolutionsAsUnsupported() {
@@ -4692,9 +4849,10 @@ class BridgeService implements BridgeServiceBase {
   void _completePendingSessionLinkResolutions(SessionLinkResolveResult result) {
     final pending = _pendingSessionLinkResolutions.values.toList();
     _pendingSessionLinkResolutions.clear();
-    for (final completer in pending) {
-      if (!completer.isCompleted) {
-        completer.complete(result);
+    for (final request in pending) {
+      request.cancelTimers();
+      if (!request.completer.isCompleted) {
+        request.completer.complete(result);
       }
     }
   }
@@ -5156,6 +5314,7 @@ class BridgeService implements BridgeServiceBase {
     List<String>? additionalWritableRoots,
     String? resumeRequestId,
     String? codexSourceId,
+    int? sessionLinkGeneration,
   }) {
     send(
       ClientMessage.resumeSession(
@@ -5184,6 +5343,7 @@ class BridgeService implements BridgeServiceBase {
         additionalWritableRoots: additionalWritableRoots,
         resumeRequestId: resumeRequestId,
         codexSourceId: codexSourceId,
+        sessionLinkGeneration: sessionLinkGeneration,
       ),
     );
   }
