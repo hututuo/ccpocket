@@ -574,6 +574,7 @@ void main() {
   test(
     'late canonical item is inserted between existing mirror anchors',
     () async {
+      var hasMore = true;
       bridge.sessionSnapshot = const [
         SessionInfo(
           id: 's1',
@@ -616,9 +617,19 @@ void main() {
         return true;
       });
       bridge.configureSessionHistoryPaging(
-        hasMore: (_) => true,
-        loader: ({required runtimeSessionId, required limit}) async =>
-            const LocalSessionHistoryPage(messages: [], hasMore: true),
+        hasMore: (_) => hasMore,
+        loader: ({required runtimeSessionId, required limit}) async {
+          hasMore = false;
+          return const LocalSessionHistoryPage(
+            messages: [
+              UserInputMessage(
+                text: 'Older downloaded turn',
+                userMessageUuid: 'older-downloaded-user',
+              ),
+            ],
+            hasMore: false,
+          );
+        },
       );
 
       final cubit = createCubit();
@@ -649,6 +660,32 @@ void main() {
             )
             .whereType<String>(),
         ['user', 'tool', 'assistant'],
+      );
+
+      expect(await cubit.loadOlderLocalHistory(), isTrue);
+      expect(
+        cubit.state.entries
+            .map(
+              (entry) => switch (entry) {
+                UserChatEntry(:final messageUuid)
+                    when messageUuid == 'older-downloaded-user' =>
+                  'older',
+                UserChatEntry(:final messageUuid)
+                    when messageUuid == 'shared-user' =>
+                  'user',
+                ServerChatEntry(message: ToolResultMessage(:final toolUseId))
+                    when toolUseId == 'late-tool' =>
+                  'tool',
+                ServerChatEntry(
+                  message: AssistantServerMessage(:final message),
+                )
+                    when message.id == 'shared-assistant' =>
+                  'assistant',
+                _ => null,
+              },
+            )
+            .whereType<String>(),
+        ['older', 'user', 'tool', 'assistant'],
       );
     },
   );

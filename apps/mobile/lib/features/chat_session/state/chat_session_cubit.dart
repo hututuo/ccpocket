@@ -2487,6 +2487,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           canonicalEntries: canonicalTail,
         );
         entries = [...pastEntries, ...merged];
+        _localMirrorEntryCount = _mirrorPrefixExtent(
+          mergedEntries: merged,
+          mirrorEntries: existingMirrorEntries,
+        );
         didModifyEntries = true;
       } else {
         final existingNonPast =
@@ -2506,7 +2510,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
         entries = [...pastEntries, ...reconciledHistoryEntries];
         if (isLocalMirrorSnapshot) {
-          _localMirrorEntryCount = reconciledHistoryEntries.length;
+          _localMirrorEntryCount = _mirrorPrefixExtent(
+            mergedEntries: reconciledHistoryEntries,
+            mirrorEntries: mergedHistoryEntries,
+          );
         } else if (discardLocalMirrorEntries) {
           _localMirrorEntryCount = 0;
         }
@@ -2980,6 +2987,33 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       unanchoredExistingBeforeCanonical: true,
       allowBroadLegacyAliases: false,
     );
+  }
+
+  int _mirrorPrefixExtent({
+    required List<ChatEntry> mergedEntries,
+    required List<ChatEntry> mirrorEntries,
+  }) {
+    if (mergedEntries.isEmpty || mirrorEntries.isEmpty) return 0;
+    final consumedMergedIndexes = <int>{};
+    var lastMirrorIndex = -1;
+    for (final mirrorEntry in mirrorEntries) {
+      final index = _indexOfCanonicalAliasInRange(
+        mergedEntries,
+        mirrorEntry,
+        consumedMergedIndexes,
+        start: lastMirrorIndex + 1,
+        end: mergedEntries.length,
+        allowBroadLegacyAliases: true,
+      );
+      if (index == -1) continue;
+      consumedMergedIndexes.add(index);
+      lastMirrorIndex = index;
+    }
+    // Canonical items inserted between two mirror anchors belong to the same
+    // locally available window. Extending the prefix through the final mirror
+    // anchor keeps later paging contiguous without classifying a live tail
+    // after that anchor as downloaded history.
+    return lastMirrorIndex + 1;
   }
 
   /// Reconciles a canonical ordered snapshot with live/cache-only entries
@@ -5659,7 +5693,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       existingEntries: mirrorEntries,
       canonicalEntries: canonicalTail,
     );
-    _localMirrorEntryCount = mirrorEntries.length;
+    _localMirrorEntryCount = _mirrorPrefixExtent(
+      mergedEntries: merged,
+      mirrorEntries: mirrorEntries,
+    );
     var nextEntries = <ChatEntry>[...pastEntries, ...merged];
     if (_dismissedCodexWarningKeys.isNotEmpty) {
       nextEntries = nextEntries
