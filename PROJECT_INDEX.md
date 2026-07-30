@@ -4,9 +4,9 @@
 |---|---|---|---|---|
 | `plans/mobile-provider-state-consistency_v01_20260731-005052.md` | Accepted implementation plan | Unify Bridge/Codex-hosted state, source identity, ordering, loading progress, auto approval, and queued-message acknowledgements | No | `accepted`; code candidate `583222be`; independent audit approved |
 | `notes/mobile-provider-state-consistency-audit_v01_20260731-060222.md` | Final audit | Original-requirement ledger, two audit rounds, compatibility, performance, builds, branch mapping, and remaining release/device gates | No | `accepted`; `0 P0 / 0 P1 / 0 P2 / 1 P3` |
-| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-provider-state-consistency-20260731` | Isolated task worktree | Post-convergence implementation and final verification line | Yes after fast-forward and archive refs | branch `fix/mobile-provider-state-consistency-20260731`; code candidate `583222be` |
-| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-tiered-session-sync-20260730` | Authoritative source worktree | Baseline for all future CC Pocket code tasks | No | branch `integration/mobile-session-sync-v2-20260730`; receives the accepted provider-state task by fast-forward |
-| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat` | Primary repository checkout | Shared Git object store and archive-ref access | No | `clean / detached` at `fbfc528b`; not a development worktree |
+| `refs/archive/ccpocket/provider-state-consistency-20260731/*` | Exact task branch-tip archive | Preserve all 16 deleted provider-state, performance, compatibility, and worker branch tips | No until later archive-retention audit | `16 refs`; ordinary branches deleted only after ancestry registration |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-tiered-session-sync-20260730` | Authoritative source worktree | Baseline for all future CC Pocket code tasks | No | branch `integration/mobile-session-sync-v2-20260730`; accepted source `a69f70d2`, tree-unchanged convergence `856a0d6e` |
+| `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat` | Primary repository checkout | Shared Git object store and archive-ref access | No | non-development checkout; aligned to the final verified integration tag at closeout |
 | `refs/archive/ccpocket/pre-multi-agent-20260730/*` | Exact historical branch-tip archive | Restore deleted ordinary local branches without keeping them active | No until a later archive-retention audit | `82 refs`; includes the newly archived old root, comprehensive, and list-mode tips |
 | `refs/archive/ccpocket/dirty-worktrees-20260731/feature-mobile-session-tools-wip` | Stash-format WIP archive | Preserve the old root tracked changes and Side Chat source/tests | No | commit `f63daba604ef6b5cdfb1df0b2c068860b93ced44`; reviewed as superseded, not merged |
 | `refs/archive/ccpocket/dirty-worktrees-20260731/fix-mobile-comprehensive-v02-20260726-wip` | Stash-format WIP archive | Preserve the old comprehensive-remediation tracked source sketch | No | commit `d6c2d8447846bd0ebaf5ed3f9d578c7bec908233`; reviewed as superseded, not merged |
@@ -36,12 +36,24 @@
 
 | Branch | Disposition |
 |---|---|
-| `integration/mobile-session-sync-v2-20260730` | Authoritative |
+| `integration/mobile-session-sync-v2-20260730` | Authoritative provider-state integration line |
 | `main` | Long-lived default; not the current integration target |
 | `compat/artifact-download` | Historical compatibility anchor |
 | `backup/pre-upstream-1.67.4-20260719` | Historical rollback anchor |
-| `fix/mobile-session-continuity-hardening` | Retain pending dedicated evidence extraction |
 | `fix/remote-altserver-signing` | Retain as independent deployed helper line |
+
+## Provider-state convergence disposition
+
+- Source and audit fast-forward: `a69f70d2`.
+- Tree-unchanged ancestry merge: `856a0d6e`; before/after tree
+  `a55955d4a6662361f6730995b07ea6e67c8d46e7`.
+- Exact archived task refs: `16`.
+- Normally removed task worktrees: `9`.
+- Normally deleted ordinary task branches: `16`.
+- Reproducible worktree material removed: `4,645,120 KiB`, about `4.43 GiB`.
+- Remaining ordinary branches: `5`.
+- Production Bridge, OTA, IPA, phone data, VPN state, and Tailnet forwarding
+  were not changed by the convergence.
 
 ## Verification boundary
 

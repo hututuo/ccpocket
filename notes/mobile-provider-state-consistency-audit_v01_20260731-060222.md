@@ -159,7 +159,27 @@ Mobile 缓存回归。
 `git branch -d` 删除。脏工作树、独立 AltServer 线、`main`、兼容锚和历史回滚锚
 不在删除范围。
 
-## 7. 独立复审与完成边界
+## 7. 分支与工作树收束
+
+- `integration/mobile-session-sync-v2-20260730` 已从 `c5b55b73` fast-forward
+  到验收与文档提交 `a69f70d2`。
+- `856a0d6e` 以 `ours` 策略登记 15 条已吸收/替代支线的真实祖先关系；合并前后
+  tree 均为 `a55955d4a6662361f6730995b07ea6e67c8d46e7`，源码树没有变化。
+- 16 个被清理普通分支的原 tip 均保存到
+  `refs/archive/ccpocket/provider-state-consistency-20260731/*`。
+- 16 个普通任务分支全部在集成分支视角确认可达后，使用普通
+  `git branch -d` 删除；未使用 `-D`。
+- 9 个完成的任务 worktree 在确认无 tracked 修改后使用非强制
+  `git worktree remove` 移除。主任务树中两个未跟踪项均是指向权威集成 worktree
+  依赖目录的符号链接，核对目标后只解除链接。
+- 精确清理约 `4,645,120 KiB`（约 `4.43 GiB`）可重建 worktree/构建/依赖材料；
+  磁盘可用空间从约 `61 GiB` 增至约 `64 GiB`。
+- 最终保留普通分支仅为：
+  `integration/mobile-session-sync-v2-20260730`、`main`、
+  `compat/artifact-download`、`backup/pre-upstream-1.67.4-20260719` 和独立
+  `fix/remote-altserver-signing`。
+
+## 8. 独立复审与完成边界
 
 最终独立复审结论为：
 

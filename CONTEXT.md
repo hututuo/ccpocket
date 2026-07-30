@@ -3,16 +3,20 @@
 ## Verified provider-state implementation after repository convergence
 
 The post-convergence provider-state task has passed its source, compatibility,
-performance, build, and independent audit gates:
+performance, build, independent audit, and branch-convergence gates:
 
 - Worktree:
-  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-provider-state-consistency-20260731`
-- Branch: `fix/mobile-provider-state-consistency-20260731`
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-tiered-session-sync-20260730`
+- Branch: `integration/mobile-session-sync-v2-20260730`
 - Base: `c5b55b73ec479345a17bfd88f87cda4099db70dc`
 - Accepted plan:
   `plans/mobile-provider-state-consistency_v01_20260731-005052.md`
 - Verified code candidate:
   `583222be2bc77741896c416e7c82644052cb23c1`
+- Accepted source/documentation commit:
+  `a69f70d2b4e54b80ecb511d9f6af7ec771229a45`
+- Tree-unchanged ancestry convergence:
+  `856a0d6e0341c389ed64ebf812b861eb7527e1fe`
 - Final audit:
   `notes/mobile-provider-state-consistency-audit_v01_20260731-060222.md`
 - Independent review: `0 P0 / 0 P1 / 0 P2 / 1 P3`, approved for integration.
@@ -23,10 +27,10 @@ history ordering, source identity, meaningful-progress loading, Bridge-owned
 auto approval, two-stage queued-message acknowledgement, per-session protocol
 errors, and read-only subagent discovery for detached Desktop conversations.
 
-The authoritative development branch becomes
-`integration/mobile-session-sync-v2-20260730` after a fast-forward of this
-accepted task. Source acceptance still does not imply production Bridge
-replacement, OTA, IPA delivery, or physical-device acceptance.
+The authoritative development branch is now
+`integration/mobile-session-sync-v2-20260730`. Source acceptance still does not
+imply production Bridge replacement, OTA, IPA delivery, or physical-device
+acceptance.
 
 ## Authoritative source baseline
 
@@ -99,12 +103,32 @@ matched the clean old root HEAD, and all five commits remain reachable from:
   target.
 - `compat/artifact-download`: earlier explicit compatibility anchor.
 - `backup/pre-upstream-1.67.4-20260719`: recorded historical rollback anchor.
-- `fix/mobile-session-continuity-hardening`: retained because its mixed,
-  unique continuity evidence still requires a dedicated extraction decision.
 - `fix/remote-altserver-signing`: independent deployed AltServer helper line.
 
-Do not delete the last two task branches without a separate audit of their
-remaining unique operational evidence.
+The former `fix/mobile-session-continuity-hardening` line was audited
+semantically before convergence. Its effective continuity/configuration/retry
+behaviors were already present in the integration tree, while its persisted
+modal Side Chat was explicitly superseded. Its exact tip remains at
+`refs/archive/ccpocket/provider-state-consistency-20260731/fix/mobile-session-continuity-hardening`.
+Do not fold or delete `fix/remote-altserver-signing` without a separate audit of
+its independent deployed-helper evidence.
+
+## Provider-state branch convergence on 2026-07-31
+
+- The accepted task fast-forwarded the integration branch through
+  `a69f70d2`.
+- Commit `856a0d6e` records 15 secondary branch tips as ancestry only. The tree
+  hash before and after the merge is exactly
+  `a55955d4a6662361f6730995b07ea6e67c8d46e7`; no old transport or superseded
+  Side Chat tree was reintroduced.
+- All 16 deleted ordinary task branches have exact refs under
+  `refs/archive/ccpocket/provider-state-consistency-20260731/`.
+- Nine completed task worktrees were removed normally, without force, after
+  verifying clean tracked state. Their reproducible build/dependency/index
+  material accounted for about `4.43 GiB`.
+- The repository now has two registered worktrees and five ordinary branch
+  heads. Future tasks start from the integration branch, not from an archived
+  task ref.
 
 ## Runtime and release boundary
 
