@@ -2,7 +2,39 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it, expect, vi } from "vitest";
+import sharp from "sharp";
 import { ImageStore } from "./image-store.js";
+
+interface ImageResponse {
+  statusCode: number;
+  headers: Record<string, string | number>;
+  body: Buffer;
+}
+
+function requestImage(store: ImageStore, url: string): Promise<ImageResponse> {
+  return new Promise((resolve) => {
+    let statusCode = 0;
+    let headers: Record<string, string | number> = {};
+    const response = {
+      writeHead(
+        nextStatusCode: number,
+        nextHeaders: Record<string, string | number>,
+      ) {
+        statusCode = nextStatusCode;
+        headers = nextHeaders;
+      },
+      end(body: Buffer | string = "") {
+        resolve({
+          statusCode,
+          headers,
+          body: Buffer.isBuffer(body) ? body : Buffer.from(body),
+        });
+      },
+    };
+    const handled = store.handleRequest({ url } as any, response as any);
+    expect(handled).toBe(true);
+  });
+}
 
 describe("ImageStore.extractImagePaths", () => {
   let store: ImageStore;
@@ -16,7 +48,9 @@ describe("ImageStore.extractImagePaths", () => {
   // ---- Absolute path extraction ----
 
   it("extracts single absolute path", () => {
-    expect(extract("File at /tmp/screenshot.png")).toEqual(["/tmp/screenshot.png"]);
+    expect(extract("File at /tmp/screenshot.png")).toEqual([
+      "/tmp/screenshot.png",
+    ]);
   });
 
   it("extracts multiple absolute paths", () => {
@@ -68,7 +102,8 @@ describe("ImageStore.extractImagePaths", () => {
   });
 
   it("extracts local path but not URL from mixed content", () => {
-    const text = "Local: /tmp/local.png, Remote: https://example.com/remote.jpg";
+    const text =
+      "Local: /tmp/local.png, Remote: https://example.com/remote.jpg";
     const result = extract(text);
     expect(result).toContain("/tmp/local.png");
     // URL paths that look like absolute paths (e.g., /remote.jpg from URL) may be extracted
@@ -130,7 +165,10 @@ describe("ImageStore.registerImages", () => {
       await writeFile(imagePath, Buffer.from("89504e470d0a1a0a", "hex"));
 
       const store = new ImageStore();
-      const refs = await store.registerImages(["/images/screenshots.png"], root);
+      const refs = await store.registerImages(
+        ["/images/screenshots.png"],
+        root,
+      );
 
       expect(refs).toHaveLength(1);
       expect(refs[0]).toMatchObject({ mimeType: "image/png" });
@@ -219,5 +257,67 @@ describe("ImageStore.registerFromBase64", () => {
     }
 
     expect((store as any).base64Ids.size).toBe(100);
+  });
+});
+
+describe("ImageStore.handleRequest", () => {
+  it("serves a cached WebP thumbnail without changing the original URL", async () => {
+    const source = await sharp({
+      create: {
+        width: 1600,
+        height: 900,
+        channels: 4,
+        background: { r: 30, g: 120, b: 220, alpha: 1 },
+      },
+    })
+      .png()
+      .toBuffer();
+    const store = new ImageStore();
+    const ref = store.registerFromBase64(
+      source.toString("base64"),
+      "image/png",
+    );
+    expect(ref).not.toBeNull();
+
+    const original = await requestImage(store, ref!.url);
+    expect(ref!.thumbnailUrl).toBe(`${ref!.url}?variant=thumbnail`);
+    const [thumbnail, concurrentThumbnail] = await Promise.all([
+      requestImage(store, ref!.thumbnailUrl!),
+      requestImage(store, ref!.thumbnailUrl!),
+    ]);
+    const cachedThumbnail = await requestImage(store, ref!.thumbnailUrl!);
+    const metadata = await sharp(thumbnail.body).metadata();
+
+    expect(original.statusCode).toBe(200);
+    expect(original.headers["Content-Type"]).toBe("image/png");
+    expect(original.body).toEqual(source);
+    expect(thumbnail.statusCode).toBe(200);
+    expect(thumbnail.headers["Content-Type"]).toBe("image/webp");
+    expect(thumbnail.body.length).toBeLessThan(original.body.length);
+    expect(metadata.width).toBe(768);
+    expect(metadata.height).toBe(432);
+    expect(concurrentThumbnail.body).toBe(thumbnail.body);
+    expect(cachedThumbnail.body).toEqual(thumbnail.body);
+  });
+
+  it("falls back to the original when thumbnail conversion fails", async () => {
+    const source = Buffer.from("not actually a png");
+    const store = new ImageStore();
+    const ref = store.registerFromBase64(
+      source.toString("base64"),
+      "image/png",
+    );
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = await requestImage(store, ref!.thumbnailUrl!);
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["Content-Type"]).toBe("image/png");
+      expect(response.body).toEqual(source);
+      expect(warning).toHaveBeenCalledOnce();
+    } finally {
+      warning.mockRestore();
+    }
   });
 });

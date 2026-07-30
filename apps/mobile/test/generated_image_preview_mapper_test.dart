@@ -59,6 +59,7 @@ void main() {
           id: 'bridge-image-1',
           url: '/images/random-1',
           mimeType: 'image/png',
+          thumbnailUrl: '/images/random-1?variant=thumbnail',
         ),
       ],
     );
@@ -71,6 +72,7 @@ void main() {
           id: 'bridge-image-2',
           url: '/images/random-2',
           mimeType: 'image/png',
+          thumbnailUrl: '/images/random-2?variant=thumbnail',
         ),
       ],
     );
@@ -85,6 +87,60 @@ void main() {
     expect(first.url, isNot(restored.url));
     expect(first.cacheKey, isNotNull);
     expect(first.cacheKey, restored.cacheKey);
+    expect(
+      first.chatImageUrl,
+      'http://localhost:8765/images/random-1?variant=thumbnail',
+    );
+    expect(first.thumbnailCacheKey, '${first.cacheKey}-thumbnail-v1');
+  });
+
+  test('uses the original URL when an older Bridge omits thumbnailUrl', () {
+    const legacyMessage = ToolResultMessage(
+      toolUseId: 'image-generation-legacy',
+      toolName: 'ImageGeneration',
+      content: 'Generated 1 image',
+      images: [
+        ImageRef(
+          id: 'legacy-image',
+          url: '/images/legacy-image',
+          mimeType: 'image/png',
+        ),
+      ],
+    );
+
+    final item = generatedImageItemsFromToolResults([
+      legacyMessage,
+    ], httpBaseUrl: 'http://localhost:8765').single;
+
+    expect(item.thumbnailUrl, isNull);
+    expect(item.chatImageUrl, item.url);
+    expect(item.thumbnailCacheKey, item.cacheKey);
+  });
+
+  test('does not modify external image URLs without thumbnailUrl', () {
+    const remoteMessage = ToolResultMessage(
+      toolUseId: 'image-generation-remote',
+      toolName: 'ImageGeneration',
+      content: 'Generated 1 image',
+      images: [
+        ImageRef(
+          id: 'remote-image',
+          url: 'https://cdn.example.com/images/generated.png?signature=a%2Fb',
+          mimeType: 'image/png',
+        ),
+      ],
+    );
+
+    final item = generatedImageItemsFromToolResults([
+      remoteMessage,
+    ], httpBaseUrl: null).single;
+
+    expect(item.thumbnailUrl, isNull);
+    expect(
+      item.chatImageUrl,
+      'https://cdn.example.com/images/generated.png?signature=a%2Fb',
+    );
+    expect(item.thumbnailCacheKey, item.cacheKey);
   });
 
   test('changes the disk cache key when content-addressed image id changes', () {

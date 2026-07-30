@@ -641,14 +641,21 @@ class ImageRef {
   final String id;
   final String url;
   final String mimeType;
+  final String? thumbnailUrl;
 
-  const ImageRef({required this.id, required this.url, required this.mimeType});
+  const ImageRef({
+    required this.id,
+    required this.url,
+    required this.mimeType,
+    this.thumbnailUrl,
+  });
 
   factory ImageRef.fromJson(Map<String, dynamic> json) {
     return ImageRef(
       id: json['id'] as String,
       url: json['url'] as String,
       mimeType: json['mimeType'] as String,
+      thumbnailUrl: json['thumbnailUrl'] as String?,
     );
   }
 }

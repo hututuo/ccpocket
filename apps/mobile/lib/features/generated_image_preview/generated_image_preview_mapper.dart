@@ -10,6 +10,7 @@ typedef GeneratedImageItemCacheKey = ({
   String toolUseId,
   String imageId,
   String resolvedUrl,
+  String? resolvedThumbnailUrl,
   String mimeType,
   String content,
 });
@@ -25,10 +26,14 @@ List<GeneratedImagePreviewItem> generatedImageItemsFromToolResults(
       final image = message.images[imageIndex];
       final resolvedUrl = _resolveImageUrl(image.url, httpBaseUrl);
       if (resolvedUrl == null) continue;
+      final resolvedThumbnailUrl = image.thumbnailUrl == null
+          ? null
+          : _resolveImageUrl(image.thumbnailUrl!, httpBaseUrl);
       final cacheKey = (
         toolUseId: message.toolUseId,
         imageId: image.id,
         resolvedUrl: resolvedUrl,
+        resolvedThumbnailUrl: resolvedThumbnailUrl,
         mimeType: image.mimeType,
         content: message.content,
       );
@@ -42,6 +47,7 @@ List<GeneratedImagePreviewItem> generatedImageItemsFromToolResults(
         image: image,
         imageIndex: imageIndex,
         resolvedUrl: resolvedUrl,
+        resolvedThumbnailUrl: resolvedThumbnailUrl,
       );
       items.add(item);
       if (itemCache != null) {
@@ -60,12 +66,14 @@ GeneratedImagePreviewItem _itemFromImageRef({
   required ImageRef image,
   required int imageIndex,
   required String resolvedUrl,
+  required String? resolvedThumbnailUrl,
 }) {
   final dataUrl = isDataImageUrl(resolvedUrl) ? resolvedUrl : null;
   return GeneratedImagePreviewItem(
     id: '${message.toolUseId}:${image.id}',
     url: dataUrl == null ? resolvedUrl : null,
     dataUrl: dataUrl,
+    thumbnailUrl: dataUrl == null ? resolvedThumbnailUrl : null,
     cacheKey: dataUrl == null
         ? _generatedImageCacheKey(message, imageIndex, image.mimeType)
         : null,

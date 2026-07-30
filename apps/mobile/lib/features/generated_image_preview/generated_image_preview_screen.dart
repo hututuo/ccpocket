@@ -1,5 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:share_plus/share_plus.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../widgets/workspace_pane_chrome.dart';
@@ -10,11 +13,14 @@ import 'widgets/generated_image_preview_page.dart';
 class GeneratedImagePreviewScreen extends StatefulWidget {
   final List<GeneratedImagePreviewItem> items;
   final int initialIndex;
+  @visibleForTesting
+  final Future<void> Function(ShareParams params)? shareImage;
 
   const GeneratedImagePreviewScreen({
     super.key,
     required this.items,
     this.initialIndex = 0,
+    this.shareImage,
   }) : assert(items.length > 0);
 
   @override
@@ -24,10 +30,12 @@ class GeneratedImagePreviewScreen extends StatefulWidget {
 
 class _GeneratedImagePreviewScreenState
     extends State<GeneratedImagePreviewScreen> {
+  final _shareButtonAnchorKey = GlobalKey();
   late final PageController _pageController;
   late int _currentIndex;
   bool _chromeVisible = true;
   bool _detailsExpanded = false;
+  bool _sharing = false;
 
   @override
   void initState() {
@@ -87,6 +95,44 @@ class _GeneratedImagePreviewScreenState
     );
   }
 
+  Future<void> _shareCurrentImage() async {
+    if (_sharing) return;
+
+    final item = widget.items[_currentIndex];
+    setState(() => _sharing = true);
+    try {
+      final shareButtonBox =
+          _shareButtonAnchorKey.currentContext?.findRenderObject()
+              as RenderBox?;
+      if (shareButtonBox == null || !shareButtonBox.hasSize) {
+        throw StateError('Share button position is unavailable');
+      }
+      await _shareGeneratedImage(
+        item,
+        index: _currentIndex,
+        sharePositionOrigin:
+            shareButtonBox.localToGlobal(Offset.zero) & shareButtonBox.size,
+        share: widget.shareImage,
+      );
+    } on _GeneratedImageDownloadException {
+      if (mounted) {
+        _showShareFailure(AppLocalizations.of(context).failedToDownloadImage);
+      }
+    } catch (_) {
+      if (mounted) {
+        _showShareFailure(AppLocalizations.of(context).failedToShareImage);
+      }
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
+  void _showShareFailure(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   KeyEventResult _handleKeyEvent(FocusNode _, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
@@ -125,6 +171,27 @@ class _GeneratedImagePreviewScreenState
                       fontWeight: FontWeight.w600,
                     ),
                   ),
+                  actions: [
+                    if (_supportsGeneratedImageSharing)
+                      SizedBox(
+                        key: _shareButtonAnchorKey,
+                        child: IconButton(
+                          key: const ValueKey('generated_image_share_button'),
+                          onPressed: _sharing ? null : _shareCurrentImage,
+                          tooltip: AppLocalizations.of(context).share,
+                          icon: _sharing
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.share),
+                        ),
+                      ),
+                  ],
                 ),
               )
             : null,
@@ -186,6 +253,59 @@ class _GeneratedImagePreviewScreenState
       ),
     );
   }
+}
+
+Future<void> _shareGeneratedImage(
+  GeneratedImagePreviewItem item, {
+  required int index,
+  required Rect sharePositionOrigin,
+  Future<void> Function(ShareParams params)? share,
+}) async {
+  final bytes = item.bytes ?? await _downloadGeneratedImage(item.url!);
+  final extension = _extensionFromMime(item.mimeType);
+  final params = ShareParams(
+    files: [XFile.fromData(bytes, mimeType: item.mimeType)],
+    fileNameOverrides: ['generated-image-${index + 1}$extension'],
+    sharePositionOrigin: sharePositionOrigin,
+  );
+  if (share != null) {
+    await share(params);
+  } else {
+    await SharePlus.instance.share(params);
+  }
+}
+
+Future<Uint8List> _downloadGeneratedImage(String url) async {
+  try {
+    final response = await http
+        .get(Uri.parse(url))
+        .timeout(const Duration(seconds: 30));
+    if (response.statusCode != 200) {
+      throw const _GeneratedImageDownloadException();
+    }
+    return response.bodyBytes;
+  } on _GeneratedImageDownloadException {
+    rethrow;
+  } catch (_) {
+    throw const _GeneratedImageDownloadException();
+  }
+}
+
+bool get _supportsGeneratedImageSharing =>
+    kIsWeb || defaultTargetPlatform != TargetPlatform.linux;
+
+String _extensionFromMime(String mimeType) {
+  return switch (mimeType) {
+    'image/png' => '.png',
+    'image/jpeg' || 'image/jpg' => '.jpg',
+    'image/gif' => '.gif',
+    'image/webp' => '.webp',
+    _ => '.png',
+  };
+}
+
+class _GeneratedImageDownloadException implements Exception {
+  const _GeneratedImageDownloadException();
 }
 
 class _PreviewNavigationButton extends StatelessWidget {

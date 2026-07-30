@@ -67,15 +67,22 @@ function execQuiet(cmd: string): string {
 
 export async function checkNodeVersion(): Promise<CheckResult> {
   const version = process.version; // e.g. "v22.5.0"
-  const major = parseInt(version.slice(1), 10);
-  if (major >= 18) {
+  const [major, minor, patch] = version
+    .slice(1)
+    .split(".")
+    .map((part) => parseInt(part, 10));
+  const supported =
+    major > 20 ||
+    (major === 20 &&
+      (minor > 18 || (minor === 18 && patch >= 1)));
+  if (supported) {
     return { name: "Node.js", status: "pass", message: version };
   }
   return {
     name: "Node.js",
     status: "fail",
-    message: `${version} (requires >=18.0.0)`,
-    remediation: "Install Node.js >=18.0.0: https://nodejs.org/",
+    message: `${version} (requires >=20.18.1)`,
+    remediation: "Install Node.js >=20.18.1: https://nodejs.org/",
   };
 }
 

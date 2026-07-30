@@ -1,10 +1,10 @@
-import 'dart:typed_data';
-
 import 'package:ccpocket/features/generated_image_preview/generated_image_preview_item.dart';
 import 'package:ccpocket/features/generated_image_preview/generated_image_preview_screen.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() {
   group('GeneratedImagePreviewScreen', () {
@@ -17,6 +17,56 @@ void main() {
       expect(find.text('2 / 3'), findsOneWidget);
       expect(find.text('Second generated prompt'), findsOneWidget);
       expect(find.text('First generated prompt'), findsNothing);
+    });
+
+    testWidgets('shares the currently selected image from the app bar', (
+      tester,
+    ) async {
+      ShareParams? shareParams;
+      await tester.pumpWidget(
+        _wrap(
+          initialIndex: 1,
+          shareImage: (params) async {
+            shareParams = params;
+          },
+        ),
+      );
+      await tester.pump();
+
+      final shareButton = find.byKey(
+        const ValueKey('generated_image_share_button'),
+      );
+      expect(shareButton, findsOneWidget);
+      expect(find.byTooltip('Share'), findsOneWidget);
+
+      await tester.tap(shareButton);
+      await tester.pumpAndSettle();
+
+      final params = shareParams;
+      expect(params, isNotNull);
+      expect(params!.fileNameOverrides, ['generated-image-2.png']);
+      expect(params.sharePositionOrigin, isNotNull);
+      expect(params.sharePositionOrigin!.isEmpty, isFalse);
+      expect(params.files, hasLength(1));
+      expect(params.files!.single.mimeType, 'image/png');
+      expect(await params.files!.single.readAsBytes(), _transparentPng);
+    });
+
+    testWidgets('hides file sharing on unsupported Linux builds', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      try {
+        await tester.pumpWidget(_wrap());
+        await tester.pump();
+
+        expect(
+          find.byKey(const ValueKey('generated_image_share_button')),
+          findsNothing,
+        );
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
     });
 
     testWidgets('moves to the next image with the navigation button', (
@@ -126,19 +176,27 @@ void main() {
   });
 }
 
-Widget _wrap({int initialIndex = 0}) {
-  return _wrapItems(_items, initialIndex: initialIndex);
+Widget _wrap({
+  int initialIndex = 0,
+  Future<void> Function(ShareParams params)? shareImage,
+}) {
+  return _wrapItems(_items, initialIndex: initialIndex, shareImage: shareImage);
 }
 
 Widget _wrapItems(
   List<GeneratedImagePreviewItem> items, {
   int initialIndex = 0,
+  Future<void> Function(ShareParams params)? shareImage,
 }) {
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
     locale: const Locale('en'),
-    home: GeneratedImagePreviewScreen(items: items, initialIndex: initialIndex),
+    home: GeneratedImagePreviewScreen(
+      items: items,
+      initialIndex: initialIndex,
+      shareImage: shareImage,
+    ),
   );
 }
 

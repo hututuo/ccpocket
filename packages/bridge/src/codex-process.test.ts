@@ -176,6 +176,54 @@ describe("CodexProcess (app-server)", () => {
     warning.mockRestore();
   });
 
+  it("frames app-server JSONL split across many transport chunks", () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    const handleEnvelope = vi
+      .spyOn(internal, "handleRpcEnvelope")
+      .mockImplementation(() => {});
+    const envelope = {
+      jsonrpc: "2.0",
+      method: "test/large-response",
+      params: { image: "x".repeat(1024 * 1024) },
+    };
+    const line = `${JSON.stringify(envelope)}\n`;
+
+    for (let offset = 0; offset < line.length; offset += 16 * 1024) {
+      internal.handleStdoutChunk(line.slice(offset, offset + 16 * 1024));
+    }
+
+    expect(handleEnvelope).toHaveBeenCalledOnce();
+    expect(handleEnvelope).toHaveBeenCalledWith(envelope);
+    expect(internal.stdoutLineChunks).toEqual([]);
+  });
+
+  it("frames multiple JSONL records while retaining a trailing partial line", () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    const handleEnvelope = vi
+      .spyOn(internal, "handleRpcEnvelope")
+      .mockImplementation(() => {});
+    const first = { jsonrpc: "2.0", id: 1, result: { ok: true } };
+    const second = { jsonrpc: "2.0", id: 2, result: { ok: false } };
+    const third = { jsonrpc: "2.0", id: 3, result: { ok: true } };
+    const thirdLine = JSON.stringify(third);
+
+    internal.handleStdoutChunk(
+      `${JSON.stringify(first)}\n${JSON.stringify(second)}\n${thirdLine.slice(0, 8)}`,
+    );
+
+    expect(handleEnvelope).toHaveBeenCalledTimes(2);
+    expect(handleEnvelope).toHaveBeenNthCalledWith(1, first);
+    expect(handleEnvelope).toHaveBeenNthCalledWith(2, second);
+
+    internal.handleStdoutChunk(`${thirdLine.slice(8)}\n`);
+
+    expect(handleEnvelope).toHaveBeenCalledTimes(3);
+    expect(handleEnvelope).toHaveBeenNthCalledWith(3, third);
+    expect(internal.stdoutLineChunks).toEqual([]);
+  });
+
   it("maps goal get, set, and clear to app-server RPCs", async () => {
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-1";
@@ -2557,9 +2605,8 @@ describe("CodexProcess (app-server)", () => {
 
     internal.maxAppServerJsonLineBytes = 64;
     internal.handleStdoutChunk("x".repeat(65));
-    expect(
-      Buffer.byteLength(internal.stdoutBuffer, "utf8"),
-    ).toBeLessThanOrEqual(64);
+    expect(internal.stdoutLineBytes).toBeLessThanOrEqual(64);
+    expect(internal.stdoutLineChunks).toEqual([]);
 
     internal.handleStdoutChunk(
       `\n${JSON.stringify({

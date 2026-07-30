@@ -630,7 +630,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     boolean
   >();
 
-  private stdoutBuffer = "";
+  /**
+   * App-server responses can contain tens of MiB of inline image data.
+   * Keep incomplete JSONL records as chunks so every transport chunk is
+   * copied at most once instead of repeatedly rebuilding one growing string.
+   */
+  private stdoutLineChunks: string[] = [];
+  private stdoutLineBytes = 0;
   private discardingOversizedStdoutLine = false;
   private readonly maxAppServerJsonLineBytes = MAX_APP_SERVER_JSON_LINE_BYTES;
 
@@ -2087,7 +2093,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.pendingUserInputs.clear();
     this.clearPendingGuardianReviewWarnings();
     this.cleanupSteerTempPaths();
-    this.stdoutBuffer = "";
+    this.stdoutLineChunks = [];
+    this.stdoutLineBytes = 0;
     this.discardingOversizedStdoutLine = false;
     this.rejectAllPending(error);
 
@@ -2171,6 +2178,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._pendingPlanInput = null;
     this._idleWhenInteractionsClear = false;
     this._projectPath = projectPath;
+    this.stdoutLineChunks = [];
+    this.stdoutLineBytes = 0;
+    this.discardingOversizedStdoutLine = false;
   }
 
   private launchAppServer(
@@ -3876,35 +3886,31 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   private handleStdoutChunk(chunk: string): void {
-    let remaining = chunk;
+    let lineStart = 0;
     if (this.discardingOversizedStdoutLine) {
-      const newlineIndex = remaining.indexOf("\n");
+      const newlineIndex = chunk.indexOf("\n");
       if (newlineIndex < 0) return;
-      remaining = remaining.slice(newlineIndex + 1);
+      lineStart = newlineIndex + 1;
       this.discardingOversizedStdoutLine = false;
     }
 
-    this.stdoutBuffer += remaining;
-    while (true) {
-      const newlineIndex = this.stdoutBuffer.indexOf("\n");
+    while (lineStart < chunk.length) {
+      const newlineIndex = chunk.indexOf("\n", lineStart);
       if (newlineIndex < 0) {
-        if (
-          Buffer.byteLength(this.stdoutBuffer, "utf8") >
-          this.maxAppServerJsonLineBytes
-        ) {
-          this.stdoutBuffer = "";
+        if (!this.appendStdoutLineChunk(chunk.slice(lineStart))) {
           this.discardingOversizedStdoutLine = true;
-          this.reportOversizedStdoutLine();
         }
-        break;
+        return;
       }
-      const rawLine = this.stdoutBuffer.slice(0, newlineIndex);
-      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
-      if (Buffer.byteLength(rawLine, "utf8") > this.maxAppServerJsonLineBytes) {
-        this.reportOversizedStdoutLine();
+
+      const lineFragment = chunk.slice(lineStart, newlineIndex);
+      lineStart = newlineIndex + 1;
+      if (!this.appendStdoutLineChunk(lineFragment)) {
+        // This oversized record already ended at the newline, so the next
+        // record in the same transport chunk can still be parsed.
         continue;
       }
-      const line = rawLine.trim();
+      const line = this.completeStdoutLine();
       if (!line) continue;
 
       try {
@@ -3922,6 +3928,27 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         }
       }
     }
+  }
+
+  private appendStdoutLineChunk(fragment: string): boolean {
+    const nextBytes =
+      this.stdoutLineBytes + Buffer.byteLength(fragment, "utf8");
+    if (nextBytes > this.maxAppServerJsonLineBytes) {
+      this.stdoutLineChunks = [];
+      this.stdoutLineBytes = 0;
+      this.reportOversizedStdoutLine();
+      return false;
+    }
+    this.stdoutLineChunks.push(fragment);
+    this.stdoutLineBytes = nextBytes;
+    return true;
+  }
+
+  private completeStdoutLine(): string {
+    const line = this.stdoutLineChunks.join("").trim();
+    this.stdoutLineChunks = [];
+    this.stdoutLineBytes = 0;
+    return line;
   }
 
   private reportOversizedStdoutLine(): void {

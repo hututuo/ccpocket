@@ -40,7 +40,7 @@ describe("doctor checks", () => {
   });
 
   describe("checkNodeVersion", () => {
-    it("passes on current Node.js version (>=18)", async () => {
+    it("passes on current Node.js version (>=20.18.1)", async () => {
       const result = await checkNodeVersion();
       expect(result.status).toBe("pass");
       expect(result.message).toMatch(/^v\d+/);

@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.111.1] - 2026-07-30
+
+### Changed
+- Reduce the time and mobile data needed to reopen image-heavy Codex sessions by using Bridge 1.69.5 restore optimizations and compact generated-image thumbnails in chat.
+- Keep original generated images available in the full-screen preview while caching thumbnail and original variants separately.
+- Require Bridge 1.69.5 for optimized image-heavy session restore and thumbnail delivery.
+
+### Fixed
+- Preserve generated image display with older Bridge versions and signed external image URLs by using thumbnails only when the Bridge explicitly advertises them.
+
+## [1.111.0] - 2026-07-30
+
+### Added
+- Share the currently displayed generated image directly from the full-screen preview.
+
 ## [1.110.1] - 2026-07-29
 
 ### Fixed

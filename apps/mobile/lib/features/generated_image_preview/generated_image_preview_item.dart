@@ -5,6 +5,7 @@ class GeneratedImagePreviewItem {
   final String id;
   final String? url;
   final String? dataUrl;
+  final String? thumbnailUrl;
   final Uint8List? bytes;
   final String? cacheKey;
   final String mimeType;
@@ -17,6 +18,7 @@ class GeneratedImagePreviewItem {
     required this.id,
     this.url,
     this.dataUrl,
+    this.thumbnailUrl,
     this.bytes,
     this.cacheKey,
     required this.mimeType,
@@ -34,4 +36,13 @@ class GeneratedImagePreviewItem {
       status?.isNotEmpty == true ||
       savedPath?.isNotEmpty == true ||
       details?.isNotEmpty == true;
+
+  /// Uses Bridge's compact variant when advertised, otherwise the original.
+  String? get chatImageUrl => thumbnailUrl ?? url;
+
+  String? get thumbnailCacheKey {
+    final value = cacheKey;
+    if (value == null || thumbnailUrl == null) return value;
+    return '$value-thumbnail-v1';
+  }
 }
