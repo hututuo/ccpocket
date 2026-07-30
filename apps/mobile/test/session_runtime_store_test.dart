@@ -281,6 +281,50 @@ void main() {
       expect(store.cachedHistorySeq('s1'), 4);
     });
 
+    test('inserts out-of-order live sequences before the legacy tail', () {
+      final store = SessionRuntimeStore();
+      store.applyServerMessage(
+        's1',
+        const UserInputMessage(text: 'legacy-one'),
+      );
+      store.applyServerMessage(
+        's1',
+        const UserInputMessage(text: 'legacy-two'),
+      );
+
+      store.applyServerMessage(
+        's1',
+        const UserInputMessage(text: 'sequence-three'),
+        historySeq: 3,
+      );
+      store.applyServerMessage(
+        's1',
+        const UserInputMessage(text: 'sequence-one'),
+        historySeq: 1,
+      );
+      store.applyServerMessage(
+        's1',
+        const UserInputMessage(text: 'sequence-two'),
+        historySeq: 2,
+      );
+
+      expect(
+        store
+            .messages('s1')
+            .whereType<UserInputMessage>()
+            .map((message) => message.text),
+        [
+          'sequence-one',
+          'sequence-two',
+          'sequence-three',
+          'legacy-one',
+          'legacy-two',
+        ],
+      );
+      expect(store.latestHistorySeq('s1'), 3);
+      expect(store.cachedHistorySeq('s1'), 3);
+    });
+
     test('ignores transient stream deltas', () {
       final store = SessionRuntimeStore();
 
