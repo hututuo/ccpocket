@@ -737,12 +737,14 @@ void main() {
             origin: 'desktop_rollout',
             state: CodexDesktopContinuityState.running,
             turnId: 'turn-desktop',
+            turnSteerable: true,
           ),
           sessionId: 's1',
         );
         await Future.microtask(() {});
         expect(cubit.state.status, ProcessStatus.running);
         expect(cubit.state.externalDesktopTurnActive, isTrue);
+        expect(cubit.externalDesktopTurnSteerable.value, isTrue);
 
         cubit.sendMessage('follow up');
         expect(mockBridge.sentMessages.last.type, 'input');
@@ -801,6 +803,7 @@ void main() {
           sessionId: 's1',
         );
         await Future.microtask(() {});
+        expect(cubit.externalDesktopTurnSteerable.value, isFalse);
         final messageCountBeforeAmbiguousSteer =
             mockBridge.sentMessages.length;
         cubit.steerQueuedInput(queued);
@@ -823,6 +826,14 @@ void main() {
           sessionId: 's1',
         );
         await Future.microtask(() {});
+        expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+        final messageCountBeforeUnownedSteer =
+            mockBridge.sentMessages.length;
+        cubit.steerQueuedInput(queued);
+        expect(
+          mockBridge.sentMessages.length,
+          messageCountBeforeUnownedSteer,
+        );
 
         mockBridge.emitLocalFeature(
           CodexDesktopContinuityEventMessage(

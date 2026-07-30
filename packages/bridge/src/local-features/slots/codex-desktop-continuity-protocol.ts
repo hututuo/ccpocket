@@ -40,6 +40,8 @@ export type CodexDesktopContinuityEventMessage =
       event: "watching";
       state: CodexDesktopContinuityState;
       turnId?: string;
+      /** True only when the bound Bridge runtime owns this exact turn. */
+      turnSteerable?: boolean;
       /** Queue state used when reconnecting after an external turn ended. */
       handoffQueued?: boolean;
     })
@@ -47,6 +49,8 @@ export type CodexDesktopContinuityEventMessage =
       event: "state";
       state: "idle" | "running";
       turnId?: string;
+      /** True only when the bound Bridge runtime owns this exact turn. */
+      turnSteerable?: boolean;
       outcome?: "completed" | "interrupted";
       /** Canonical runtime history now includes the completed Desktop turn. */
       historyReady?: boolean;
@@ -58,6 +62,8 @@ export type CodexDesktopContinuityEventMessage =
       event: "message";
       itemKey: string;
       turnId?: string;
+      /** True only when the bound Bridge runtime owns this exact turn. */
+      turnSteerable?: boolean;
       timestamp?: string;
       /** A normal ccPocket message, rendered through the existing chat path. */
       message: ServerMessage;

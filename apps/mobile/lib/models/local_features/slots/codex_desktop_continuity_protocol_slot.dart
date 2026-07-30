@@ -131,6 +131,7 @@ class CodexDesktopContinuityEventMessage
   final String origin;
   final CodexDesktopContinuityState? state;
   final String? turnId;
+  final bool turnSteerable;
   final String? outcome;
   final bool historyReady;
   final bool handoffQueued;
@@ -159,6 +160,7 @@ class CodexDesktopContinuityEventMessage
     required this.origin,
     this.state,
     this.turnId,
+    this.turnSteerable = false,
     this.outcome,
     this.historyReady = false,
     this.handoffQueued = false,
@@ -224,6 +226,7 @@ class CodexDesktopContinuityEventMessage
           ? null
           : CodexDesktopContinuityState.parse(json['state']),
       turnId: optionalString('turnId'),
+      turnSteerable: json['turnSteerable'] == true,
       outcome: optionalString('outcome'),
       historyReady: json['historyReady'] as bool? ?? false,
       handoffQueued: json['handoffQueued'] as bool? ?? false,

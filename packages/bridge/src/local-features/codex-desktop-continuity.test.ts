@@ -2533,6 +2533,8 @@ describe("CodexDesktopContinuityHandler", () => {
         throw new Error("not used");
       },
       isProjectPathAllowed: () => true,
+      getSessionCodexActiveTurnId: (sessionId) =>
+        sessionId === session.id ? "turn-1" : undefined,
       rehydrateCodexSessionAfterExternalTurn: rehydrate,
       hasCodexQueuedInput: () => true,
       drainCodexQueuedInputIfReady: drainQueuedInput,
@@ -2559,6 +2561,7 @@ describe("CodexDesktopContinuityHandler", () => {
       type: "codex_desktop_continuity_event_v1",
       event: "watching",
       state: "unknown",
+      turnSteerable: false,
     });
 
     await appendEntries(path, [
@@ -2580,9 +2583,14 @@ describe("CodexDesktopContinuityHandler", () => {
     });
     expect(sent).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ event: "state", state: "running" }),
+        expect.objectContaining({
+          event: "state",
+          state: "running",
+          turnSteerable: true,
+        }),
         expect.objectContaining({
           event: "message",
+          turnSteerable: true,
           message: expect.objectContaining({ type: "user_input" }),
         }),
       ]),
@@ -2612,6 +2620,7 @@ describe("CodexDesktopContinuityHandler", () => {
           event: "state",
           state: "idle",
           outcome: "completed",
+          turnSteerable: false,
           handoffQueued: true,
         }),
         expect.objectContaining({

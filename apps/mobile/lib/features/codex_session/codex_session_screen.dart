@@ -2289,36 +2289,45 @@ class _CodexChatBody extends HookWidget {
                     ),
                 if (approval is ApprovalNone)
                   if (queuedInput != null)
-                    CodexQueuedInputPanel(
-                      item: queuedInput,
-                      isOfflinePending: ChatSessionCubit.isOfflineQueuedInput(
-                        queuedInput,
-                      ),
-                      isDeliveryPending:
-                          ChatSessionCubit.isDeliveryPendingQueuedInput(
-                            queuedInput,
-                          ),
-                      onSteer:
-                          ChatSessionCubit.isOfflineQueuedInput(queuedInput) ||
-                              ChatSessionCubit.isDeliveryPendingQueuedInput(
-                                queuedInput,
-                              ) ||
-                              (sessionState.externalDesktopTurnActive &&
-                                  sessionState.externalDesktopTurnId == null)
-                          ? null
-                          : () => context
-                                .read<ChatSessionCubit>()
-                                .steerQueuedInput(queuedInput),
-                      onEdit: () => moveQueuedInputToComposer(
-                        inputController: chatInputController,
-                        item: queuedInput,
-                        cancelQueuedInput: () => context
-                            .read<ChatSessionCubit>()
-                            .cancelQueuedInput(queuedInput),
-                      ),
-                      onCancel: () => context
+                    ValueListenableBuilder<bool>(
+                      valueListenable: context
                           .read<ChatSessionCubit>()
-                          .cancelQueuedInput(queuedInput),
+                          .externalDesktopTurnSteerable,
+                      builder: (context, turnSteerable, _) =>
+                          CodexQueuedInputPanel(
+                            item: queuedInput,
+                            isOfflinePending:
+                                ChatSessionCubit.isOfflineQueuedInput(
+                                  queuedInput,
+                                ),
+                            isDeliveryPending:
+                                ChatSessionCubit.isDeliveryPendingQueuedInput(
+                                  queuedInput,
+                                ),
+                            onSteer:
+                                ChatSessionCubit.isOfflineQueuedInput(
+                                      queuedInput,
+                                    ) ||
+                                    ChatSessionCubit.isDeliveryPendingQueuedInput(
+                                      queuedInput,
+                                    ) ||
+                                    (sessionState.externalDesktopTurnActive &&
+                                        !turnSteerable)
+                                ? null
+                                : () => context
+                                      .read<ChatSessionCubit>()
+                                      .steerQueuedInput(queuedInput),
+                            onEdit: () => moveQueuedInputToComposer(
+                              inputController: chatInputController,
+                              item: queuedInput,
+                              cancelQueuedInput: () => context
+                                  .read<ChatSessionCubit>()
+                                  .cancelQueuedInput(queuedInput),
+                            ),
+                            onCancel: () => context
+                                .read<ChatSessionCubit>()
+                                .cancelQueuedInput(queuedInput),
+                          ),
                     ),
                 if (approval is ApprovalNone)
                   ChatInputWithOverlays(

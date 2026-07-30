@@ -300,6 +300,7 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
         event: "watching",
         state: snapshot.state,
         ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+        turnSteerable: this.turnSteerable(session.id, snapshot.turnId),
         ...(handoffQueued ? { handoffQueued: true } : {}),
       });
       if (
@@ -774,6 +775,10 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
           event: "message",
           itemKey: event.itemKey,
           ...(event.turnId ? { turnId: event.turnId } : {}),
+          turnSteerable: this.turnSteerable(
+            registration.sessionId,
+            event.turnId,
+          ),
           ...(event.timestamp ? { timestamp: event.timestamp } : {}),
           message: message ?? event.message,
         });
@@ -788,6 +793,9 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
           event: "state",
           state: event.state,
           ...(event.turnId ? { turnId: event.turnId } : {}),
+          turnSteerable:
+            event.state === "running" &&
+            this.turnSteerable(registration.sessionId, event.turnId),
           ...(event.outcome ? { outcome: event.outcome } : {}),
           ...(event.timestamp ? { timestamp: event.timestamp } : {}),
           ...(handoffQueued ? { handoffQueued: true } : {}),
@@ -1031,6 +1039,7 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
           event: "watching";
           state: CodexDesktopContinuityState;
           turnId?: string;
+          turnSteerable?: boolean;
           handoffQueued?: boolean;
         }
       | { event: "unwatched" }
@@ -1056,6 +1065,13 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       threadId: registration.threadId,
       origin: "desktop_rollout" as const,
     };
+  }
+
+  private turnSteerable(sessionId: string, turnId?: string): boolean {
+    return (
+      turnId !== undefined &&
+      this.runtime.getSessionCodexActiveTurnId?.(sessionId) === turnId
+    );
   }
 }
 

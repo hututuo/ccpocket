@@ -19,6 +19,7 @@ class DesktopContinuityBacklogSnapshot {
     required this.bridgeInstanceId,
     required this.state,
     required this.turnId,
+    required this.turnSteerable,
     required this.handoffQueued,
     required this.itemKeys,
     required this.transientPayloads,
@@ -30,6 +31,7 @@ class DesktopContinuityBacklogSnapshot {
   final String bridgeInstanceId;
   final CodexDesktopContinuityState? state;
   final String? turnId;
+  final bool turnSteerable;
   final bool handoffQueued;
   final Set<String> itemKeys;
   final List<DesktopContinuityTransientPayload> transientPayloads;
@@ -66,6 +68,7 @@ class DesktopContinuityBacklog {
     pending
       ..bridgeInstanceId = message.bridgeInstanceId
       ..turnId = message.turnId ?? pending.turnId
+      ..turnSteerable = message.turnSteerable && message.turnId != null
       ..handoffQueued = message.handoffQueued;
 
     switch (message.event) {
@@ -228,6 +231,7 @@ class _PendingSession {
   String bridgeInstanceId;
   CodexDesktopContinuityState? state;
   String? turnId;
+  bool turnSteerable = false;
   bool handoffQueued = false;
   bool truncated = false;
   int transientCharacters = 0;
@@ -296,6 +300,7 @@ class _PendingSession {
       bridgeInstanceId: bridgeInstanceId,
       state: state,
       turnId: turnId,
+      turnSteerable: turnSteerable,
       handoffQueued: handoffQueued,
       itemKeys: itemKeys,
       transientPayloads: List.unmodifiable(payloads),

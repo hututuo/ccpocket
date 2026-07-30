@@ -41,6 +41,7 @@ void main() {
         'threadId': 'thread-1',
         'origin': 'desktop_rollout',
         'turnId': 'turn-1',
+        'turnSteerable': true,
         'itemKey': 'assistant:item-1',
         'message': {
           'type': 'assistant',
@@ -59,8 +60,27 @@ void main() {
       expect(event.payload, isA<AssistantServerMessage>());
       expect(event.sessionId, 'runtime-1');
       expect(event.itemKey, 'assistant:item-1');
+      expect(event.turnSteerable, isTrue);
     },
   );
+
+  test('old Bridge events default turn steerability to false', () {
+    final decoded =
+        ServerMessage.fromJson({
+              'type': 'codex_desktop_continuity_event_v1',
+              'event': 'state',
+              'requestId': 'watch-1',
+              'bridgeInstanceId': 'bridge-1',
+              'sessionId': 'runtime-1',
+              'threadId': 'thread-1',
+              'origin': 'desktop_rollout',
+              'state': 'running',
+              'turnId': 'turn-1',
+            })
+            as CodexDesktopContinuityEventMessage;
+
+    expect(decoded.turnSteerable, isFalse);
+  });
 
   test('decodes the additive canonical-history readiness marker', () {
     final decoded =

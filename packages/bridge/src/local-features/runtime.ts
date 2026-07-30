@@ -126,6 +126,15 @@ export interface LocalFeatureRuntime {
   isCodexThreadLocallyActive?(threadId: string): boolean;
   /** Exact turn owned by this Bridge, when ownership can be proven. */
   getLocallyActiveCodexTurnId?(threadId: string): string | undefined;
+  /**
+   * Exact turn owned by one runtime session.
+   *
+   * Thread-level ownership is insufficient for user actions: two Bridge
+   * runtime sessions can point at the same durable Codex thread. Actions such
+   * as turn/steer must only be offered when the session bound to the Mobile
+   * screen owns that exact turn.
+   */
+  getSessionCodexActiveTurnId?(sessionId: string): string | undefined;
   /** Recreate a stale Codex runtime from durable history after Desktop work. */
   rehydrateCodexSessionAfterExternalTurn?(
     sessionId: string,

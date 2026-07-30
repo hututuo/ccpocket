@@ -9,6 +9,7 @@ CodexDesktopContinuityEventMessage _event({
   ServerMessage? payload,
   String? turnId = 'turn-1',
   String bridgeInstanceId = 'bridge-1',
+  bool turnSteerable = false,
 }) {
   return CodexDesktopContinuityEventMessage(
     event: event,
@@ -19,6 +20,7 @@ CodexDesktopContinuityEventMessage _event({
     origin: 'desktop_rollout',
     state: state,
     turnId: turnId,
+    turnSteerable: turnSteerable,
     itemKey: itemKey,
     payload: payload,
   );
@@ -106,6 +108,27 @@ void main() {
 
     expect(snapshot!.state, CodexDesktopContinuityState.idle);
     expect(snapshot.transientPayloads, isEmpty);
+  });
+
+  test('preserves exact turn steerability and clears it fail closed', () {
+    final backlog = DesktopContinuityBacklog();
+    backlog.record(
+      _event(
+        event: CodexDesktopContinuityEventKind.watching,
+        state: CodexDesktopContinuityState.running,
+        turnSteerable: true,
+      ),
+    );
+
+    expect(backlog.take('session-1')!.turnSteerable, isTrue);
+
+    backlog.record(
+      _event(
+        event: CodexDesktopContinuityEventKind.watching,
+        state: CodexDesktopContinuityState.running,
+      ),
+    );
+    expect(backlog.take('session-1')!.turnSteerable, isFalse);
   });
 
   test('transient storage and item-key ledgers stay bounded', () {

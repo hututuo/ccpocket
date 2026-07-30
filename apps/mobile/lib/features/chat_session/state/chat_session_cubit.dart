@@ -274,6 +274,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// bounded UI behavior (`standard`, `fast`, or `unknown`).
   final ValueNotifier<String?> codexServiceTierRaw = ValueNotifier(null);
 
+  /// Whether the current Desktop-continuity turn is owned by the runtime
+  /// session bound to this screen and can therefore accept turn/steer.
+  ///
+  /// Old Bridge versions omit this additive proof, so the safe default is
+  /// false even when a unique external turn ID is visible.
+  final ValueNotifier<bool> externalDesktopTurnSteerable = ValueNotifier(false);
+
   /// Number of entries prepended from past_history, so that [replaceEntries]
   /// can preserve them while replacing in-memory history entries.
   int _pastEntryCount = 0;
@@ -882,6 +889,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityItemKeys.clear();
     _desktopContinuityHandlers.clear();
     _desktopContinuityStreamingTurnKey = null;
+    externalDesktopTurnSteerable.value = false;
   }
 
   void _acknowledgeDesktopContinuityWatch() {
@@ -950,7 +958,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       case CodexDesktopContinuityEventKind.watching:
         if (rawMessage.state == CodexDesktopContinuityState.running) {
           _desktopContinuityWasExternalBeforeDisconnect = false;
-          _setExternalDesktopRunning(rawMessage.turnId);
+          _setExternalDesktopRunning(
+            rawMessage.turnId,
+            turnSteerable: rawMessage.turnSteerable,
+          );
         } else if (rawMessage.state == CodexDesktopContinuityState.idle) {
           final shouldSettleBaseline =
               _desktopContinuityWasExternalBeforeDisconnect ||
@@ -965,13 +976,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       case CodexDesktopContinuityEventKind.state:
         if (rawMessage.state == CodexDesktopContinuityState.running) {
           _desktopContinuityWasExternalBeforeDisconnect = false;
-          _setExternalDesktopRunning(rawMessage.turnId);
+          _setExternalDesktopRunning(
+            rawMessage.turnId,
+            turnSteerable: rawMessage.turnSteerable,
+          );
         } else if (rawMessage.state == CodexDesktopContinuityState.idle) {
           _desktopContinuityWasExternalBeforeDisconnect = false;
           _finishExternalDesktopTurn(rawMessage);
         }
         return;
       case CodexDesktopContinuityEventKind.message:
+        if (state.externalDesktopTurnActive &&
+            state.externalDesktopTurnId != null &&
+            state.externalDesktopTurnId == rawMessage.turnId) {
+          externalDesktopTurnSteerable.value = rawMessage.turnSteerable;
+        }
         final itemKey = rawMessage.itemKey;
         final payload = rawMessage.payload;
         if (itemKey == null ||
@@ -1027,11 +1046,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
   }
 
-  void _setExternalDesktopRunning(String? turnId) {
+  void _setExternalDesktopRunning(
+    String? turnId, {
+    required bool turnSteerable,
+  }) {
     _desktopContinuityReconcileTimer?.cancel();
     _desktopContinuityReconcileTimer = null;
     _statusFromHistoryFallback = false;
     _statusFromSessionSnapshot = false;
+    externalDesktopTurnSteerable.value =
+        turnId != null && turnSteerable;
     if (state.externalDesktopTurnActive &&
         state.externalDesktopTurnId == turnId &&
         state.status == ProcessStatus.running) {
@@ -1049,6 +1073,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void _finishExternalDesktopTurn(CodexDesktopContinuityEventMessage message) {
     _statusFromHistoryFallback = false;
     _statusFromSessionSnapshot = false;
+    externalDesktopTurnSteerable.value = false;
     emit(
       state.copyWith(
         status: message.handoffQueued
@@ -1897,10 +1922,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityItemKeys.addAll(snapshot.itemKeys);
 
     if (snapshot.state == CodexDesktopContinuityState.running) {
-      _setExternalDesktopRunning(snapshot.turnId);
+      _setExternalDesktopRunning(
+        snapshot.turnId,
+        turnSteerable: snapshot.turnSteerable,
+      );
     } else if (snapshot.state == CodexDesktopContinuityState.idle) {
       _statusFromHistoryFallback = false;
       _statusFromSessionSnapshot = false;
+      externalDesktopTurnSteerable.value = false;
       emit(
         state.copyWith(
           status: snapshot.handoffQueued
@@ -4889,9 +4918,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     if (state.externalDesktopTurnActive &&
-        state.externalDesktopTurnId == null) {
-      // Multiple/unclassified Desktop turns have no safe turn/steer target.
-      // Keep the item queued until one authoritative turn remains.
+        (state.externalDesktopTurnId == null ||
+            !externalDesktopTurnSteerable.value)) {
+      // A visible Desktop turn is not necessarily owned by this Bridge
+      // runtime. Keep the item queued until exact session ownership is proven.
       return;
     }
     _bridge.send(
@@ -6285,6 +6315,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _statusRefreshConnectionSubscription?.cancel();
     codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
+    externalDesktopTurnSteerable.dispose();
     _desktopContinuitySubscription?.cancel();
     _desktopContinuityConnectionSubscription?.cancel();
     for (final timer in _deliveryPendingTimers.values) {

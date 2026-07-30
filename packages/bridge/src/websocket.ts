@@ -1747,6 +1747,17 @@ export class BridgeWebSocketServer {
         }
         return turnIds.size === 1 ? turnIds.values().next().value : undefined;
       },
+      getSessionCodexActiveTurnId: (sessionId) => {
+        const session = this.sessionManager.get(sessionId);
+        if (
+          !session ||
+          session.provider !== "codex" ||
+          !(session.process instanceof CodexProcess)
+        ) {
+          return undefined;
+        }
+        return session.process.activeTurnId;
+      },
       rehydrateCodexSessionAfterExternalTurn: (
         sessionId,
         threadId,
