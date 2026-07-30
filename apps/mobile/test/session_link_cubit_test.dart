@@ -265,8 +265,21 @@ void main() {
       bridge.controller.add(
         const SystemMessage(
           subtype: 'session_created',
+          sessionId: 'bridge-stale-progress',
+          resumeRequestId: 'link-request-progress',
+          sessionLinkGeneration: 8,
+          provider: 'claude',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(cubit.state, const SessionLinkState.resuming());
+
+      bridge.controller.add(
+        const SystemMessage(
+          subtype: 'session_created',
           sessionId: 'bridge-progress',
           resumeRequestId: 'link-request-progress',
+          sessionLinkGeneration: 9,
           provider: 'claude',
         ),
       );

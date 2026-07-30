@@ -4920,14 +4920,30 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       readyState: OPEN_STATE,
       send: vi.fn(),
     } as any;
-    const request = {
+    (bridge as any).clientSupportedServerMessages.set(
+      firstWs,
+      new Set(["session_link_progress_v1"]),
+    );
+    (bridge as any).clientSupportedServerMessages.set(
+      reconnectWs,
+      new Set(["session_link_progress_v1"]),
+    );
+    const firstRequest = {
       type: "resume_session",
       sessionId: "claude-session-idempotent",
       projectPath: "/tmp/project-a",
       provider: "claude",
+      resumeRequestId: "resume-before-reconnect",
+      sessionLinkGeneration: 31,
     };
-    await (bridge as any).handleClientMessage(request, firstWs);
-    await (bridge as any).handleClientMessage(request, reconnectWs);
+    const reconnectRequest = {
+      ...firstRequest,
+      resumeRequestId: "resume-after-reconnect",
+      sessionLinkGeneration: 32,
+    };
+    await (bridge as any).handleClientMessage(firstRequest, firstWs);
+    (bridge as any).clearPendingClaudeResumeInputs(firstWs);
+    await (bridge as any).handleClientMessage(reconnectRequest, reconnectWs);
 
     expect(getSessionHistoryMock).toHaveBeenCalledTimes(1);
     resolveHistory([]);
@@ -4939,15 +4955,123 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
             message.type === "system" && message.subtype === "session_created",
         );
       expect(reconnectCreated?.sessionId).toBe("s-1");
+      expect(reconnectCreated?.resumeRequestId).toBe(
+        "resume-after-reconnect",
+      );
+      expect(reconnectCreated?.sessionLinkGeneration).toBe(32);
     });
 
     const firstCreated = firstWs.send.mock.calls
       .map((call: unknown[]) => JSON.parse(call[0] as string))
       .find(
-        (message: any) =>
-          message.type === "system" && message.subtype === "session_created",
+          (message: any) =>
+            message.type === "system" && message.subtype === "session_created",
+        );
+    expect(firstCreated).toBeUndefined();
+    const reconnectProgress = reconnectWs.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter(
+        (message: any) => message.type === "session_link_progress_v1",
       );
-    expect(firstCreated?.sessionId).toBe("s-1");
+    expect(reconnectProgress.length).toBeGreaterThan(1);
+    expect(
+      reconnectProgress.every(
+        (message: any) =>
+          message.requestId === "resume-after-reconnect" &&
+          message.generation === 32,
+      ),
+    ).toBe(true);
+    expect(getSessionHistoryMock).toHaveBeenCalledTimes(1);
+
+    bridge.close();
+  });
+
+  it("coalesces correlation-only resume variants but replies to each request", async () => {
+    let resolveHistory!: (messages: unknown[]) => void;
+    getSessionHistoryMock.mockReturnValue(
+      new Promise<unknown[]>((resolve) => {
+        resolveHistory = resolve;
+      }),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const wsA = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const wsB = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    for (const ws of [wsA, wsB]) {
+      (bridge as any).clientSupportedServerMessages.set(
+        ws,
+        new Set(["session_link_progress_v1"]),
+      );
+    }
+
+    const common = {
+      type: "resume_session",
+      sessionId: "claude-session-correlated",
+      projectPath: "/tmp/project-a",
+      provider: "claude",
+      model: "claude-sonnet",
+    };
+    await (bridge as any).handleClientMessage(
+      {
+        ...common,
+        resumeRequestId: "resume-a",
+        sessionLinkGeneration: 41,
+      },
+      wsA,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        ...common,
+        resumeRequestId: "resume-b",
+        sessionLinkGeneration: 42,
+      },
+      wsB,
+    );
+
+    expect(getSessionHistoryMock).toHaveBeenCalledTimes(1);
+    resolveHistory([]);
+    await vi.waitFor(() => {
+      for (const [ws, requestId] of [
+        [wsA, "resume-a"],
+        [wsB, "resume-b"],
+      ] as const) {
+        const created = ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .find(
+            (message: any) =>
+              message.type === "system" &&
+              message.subtype === "session_created",
+          );
+        expect(created?.resumeRequestId).toBe(requestId);
+        expect(created?.sessionLinkGeneration).toBe(
+          requestId === "resume-a" ? 41 : 42,
+        );
+      }
+    });
+
+    for (const [ws, requestId, generation] of [
+      [wsA, "resume-a", 41],
+      [wsB, "resume-b", 42],
+    ] as const) {
+      const progress = ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .filter(
+          (message: any) => message.type === "session_link_progress_v1",
+        );
+      expect(progress.length).toBeGreaterThan(1);
+      expect(
+        progress.every(
+          (message: any) =>
+            message.requestId === requestId &&
+            message.generation === generation,
+        ),
+      ).toBe(true);
+    }
     expect(getSessionHistoryMock).toHaveBeenCalledTimes(1);
 
     bridge.close();
@@ -5227,7 +5351,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
     (bridge as any).clearPendingClaudeResumeInputs(ws);
     expect(
-      [...(bridge as any).resumeOperations.values()][0].waiters.has(ws),
+      [...(bridge as any).resumeOperations.values()][0].waiters.some(
+        (waiter: any) => waiter.ws === ws,
+      ),
     ).toBe(false);
     resolveHistory([]);
     await vi.waitFor(() => {

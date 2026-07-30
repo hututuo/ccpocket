@@ -716,6 +716,7 @@ export type ServerMessage = (
       forkedFromThreadId?: string;
       startRequestId?: string;
       resumeRequestId?: string;
+      sessionLinkGeneration?: number;
       errorMessage?: string;
       tipCode?: string;
       permissionChangeId?: string;
