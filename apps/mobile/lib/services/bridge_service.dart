@@ -4773,9 +4773,7 @@ class BridgeService implements BridgeServiceBase {
     }
 
     final progressCapable = supportsSessionLinkProgress;
-    final requestTimeout = progressCapable ? progressHardTimeout : timeout;
-    if (requestTimeout <= Duration.zero ||
-        (progressCapable && progressIdleTimeout <= Duration.zero)) {
+    if (progressCapable && progressIdleTimeout <= Duration.zero) {
       return const SessionLinkResolveResult.unavailable();
     }
     final requestEpoch = _connectionEpoch;
@@ -4801,12 +4799,30 @@ class BridgeService implements BridgeServiceBase {
 
     if (progressCapable) {
       _armSessionLinkIdleTimer(pending);
+      // Keep the former total-duration budget as diagnostics only. A large
+      // source can legitimately continue beyond it while effective progress
+      // keeps renewing the idle watchdog.
+      if (progressHardTimeout > Duration.zero) {
+        pending.hardTimer = Timer(progressHardTimeout, () {
+          if (_pendingSessionLinkResolutions[requestId] != pending ||
+              pending.completer.isCompleted) {
+            return;
+          }
+          _logConnectionDiagnostic(
+            'session_link_long_running',
+            type: 'resolve_session_link',
+            reason: 'diagnostic_threshold_reached',
+            warning: true,
+          );
+        });
+      }
+    } else {
+      // Legacy peers cannot prove forward progress, so they retain the
+      // original bounded response window.
+      pending.hardTimer = Timer(timeout, completeUnavailable);
     }
-    // Connection and source-identity preflight have their own bounded waits.
-    // Start the provider response budget only when the request is actually
-    // ready to leave the phone, so a slow-but-progressing catalog bootstrap
-    // cannot consume the entire legacy response window before send.
-    pending.hardTimer = Timer(requestTimeout, completeUnavailable);
+    // Connection and source-identity preflight have their own bounded waits,
+    // so neither watchdog starts until the request is ready to leave.
     publishLocalProgress(SessionLinkProgressStage.requestSent);
     send(
       ClientMessage.resolveSessionLink(
