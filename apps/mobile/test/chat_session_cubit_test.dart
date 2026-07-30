@@ -3693,6 +3693,121 @@ void main() {
     );
 
     test(
+      'large same-text live tails reconcile without quadratic alias scans',
+      () async {
+        const count = 3000;
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        final previous = List<ServerMessage>.generate(
+          count,
+          (index) => UserInputMessage(
+            text: 'Repeated prompt',
+            userMessageUuid: 'previous-user-$index',
+          ),
+          growable: false,
+        );
+        final canonical = List<ServerMessage>.generate(
+          count,
+          (index) => UserInputMessage(
+            text: 'Repeated prompt',
+            userMessageUuid: 'canonical-user-$index',
+          ),
+          growable: false,
+        );
+
+        for (final message in previous) {
+          mockBridge.emitMessage(message, sessionId: 's1');
+        }
+        await pumpEventQueue();
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>(),
+          hasLength(count),
+        );
+        final stopwatch = Stopwatch()..start();
+        mockBridge.emitMessage(
+          HistoryMessage(messages: canonical),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        stopwatch.stop();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(count + 1));
+        expect(
+          users
+              .map((entry) => entry.messageUuid)
+              .whereType<String>()
+              .where((uuid) => uuid.startsWith('canonical-user-'))
+              .toSet(),
+          hasLength(count),
+        );
+        expect(
+          stopwatch.elapsed,
+          lessThan(const Duration(seconds: 10)),
+          reason:
+              'A weak-key collision bucket must not rescan every stable user.',
+        );
+      },
+    );
+
+    test(
+      'repeated provisional assistants and results consume weak aliases once',
+      () async {
+        const count = 300;
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        final previous = <ServerMessage>[
+          for (var index = 0; index < count; index++)
+            AssistantServerMessage(
+              message: AssistantMessage(
+                id: 'provisional-$index',
+                role: 'assistant',
+                content: const [TextContent(text: 'Shared response')],
+                model: 'codex',
+              ),
+            ),
+          for (var index = 0; index < count; index++)
+            const ResultMessage(subtype: 'success'),
+        ];
+        final canonical = <ServerMessage>[
+          for (var index = 0; index < count; index++)
+            AssistantServerMessage(
+              messageUuid: 'canonical-assistant-$index',
+              message: AssistantMessage(
+                id: 'canonical-$index',
+                role: 'assistant',
+                content: const [TextContent(text: 'Shared response')],
+                model: 'codex',
+              ),
+            ),
+          for (var index = 0; index < count; index++)
+            const ResultMessage(subtype: 'success'),
+        ];
+
+        mockBridge.emitMessage(
+          HistoryMessage(messages: previous),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        mockBridge.emitMessage(
+          HistoryMessage(messages: canonical),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final serverMessages = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .toList(growable: false);
+        expect(
+          serverMessages.whereType<AssistantServerMessage>(),
+          hasLength(count),
+        );
+        expect(serverMessages.whereType<ResultMessage>(), hasLength(count));
+      },
+    );
+
+    test(
       'history replace keeps completed live assistant missing from snapshot',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);

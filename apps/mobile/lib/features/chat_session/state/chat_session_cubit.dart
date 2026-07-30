@@ -119,8 +119,58 @@ class _CanonicalAliasLookup {
     required this.weakIndexes,
   });
 
-  final Map<String, List<int>> exactIndexes;
-  final Map<String, List<int>> weakIndexes;
+  final Map<String, _CanonicalAliasBucket> exactIndexes;
+  final Map<String, _CanonicalAliasBucket> weakIndexes;
+}
+
+class _CanonicalAliasBucket {
+  _CanonicalAliasBucket(this.indexes)
+    : _nextOffsets = List<int>.generate(
+        indexes.length + 1,
+        (index) => index,
+        growable: false,
+      );
+
+  final List<int> indexes;
+  final List<int> _nextOffsets;
+
+  int firstAvailableOffset(int canonicalStart) =>
+      nextAvailableOffset(_lowerBound(canonicalStart));
+
+  int nextAvailableOffset(int offset) => _find(offset);
+
+  void consumeCanonicalIndex(int canonicalIndex) {
+    final offset = _lowerBound(canonicalIndex);
+    if (offset >= indexes.length || indexes[offset] != canonicalIndex) return;
+    _nextOffsets[offset] = _find(offset + 1);
+  }
+
+  int _find(int offset) {
+    var root = offset;
+    while (_nextOffsets[root] != root) {
+      root = _nextOffsets[root];
+    }
+    while (_nextOffsets[offset] != offset) {
+      final next = _nextOffsets[offset];
+      _nextOffsets[offset] = root;
+      offset = next;
+    }
+    return root;
+  }
+
+  int _lowerBound(int target) {
+    var low = 0;
+    var high = indexes.length;
+    while (low < high) {
+      final middle = low + ((high - low) >> 1);
+      if (indexes[middle] < target) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    return low;
+  }
 }
 
 /// Manages the state of a single chat session.
@@ -3127,7 +3177,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         allowBroadLegacyAliases: true,
       );
       if (index == -1) continue;
-      consumedMergedIndexes.add(index);
+      _consumeCanonicalAlias(
+        aliasLookup,
+        consumedMergedIndexes,
+        index,
+        mergedEntries[index],
+      );
       lastMirrorIndex = index;
     }
     // Canonical items inserted between two mirror anchors belong to the same
@@ -3201,7 +3256,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           allowBroadLegacyAliases: allowBroadLegacyAliases,
         );
         if (matchIndex != -1) {
-          consumedCanonicalIndexes.add(matchIndex);
+          _consumeCanonicalAlias(
+            aliasLookup,
+            consumedCanonicalIndexes,
+            matchIndex,
+            canonical[matchIndex],
+          );
           canonical[matchIndex] = _mergeCanonicalMirrorEntry(
             existing,
             canonical[matchIndex],
@@ -3210,7 +3270,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         }
       }
       if (matchIndex != -1) {
-        consumedCanonicalIndexes.add(matchIndex);
+        _consumeCanonicalAlias(
+          aliasLookup,
+          consumedCanonicalIndexes,
+          matchIndex,
+          canonical[matchIndex],
+        );
         canonical[matchIndex] = _mergeCanonicalMirrorEntry(
           existing,
           canonical[matchIndex],
@@ -3272,9 +3337,19 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // before applying the original equivalence predicate.
     if (existing is UserChatEntry) {
       final weakKey = _entryWeakKey(existing);
+      final stableKey = _entryStableKey(existing);
+      final candidateScope = stableKey == null
+          ? existing.status == MessageStatus.sent
+                ? 'user-pending'
+                : 'base'
+          : existing.status == MessageStatus.sent
+          ? 'user-no-stable-pending'
+          : 'user-no-stable';
       final userFallback = _firstIndexedAliasMatch(
         aliasLookup.weakIndexes,
-        weakKey == null ? const [] : [weakKey],
+        weakKey == null
+            ? const []
+            : [_scopedWeakAliasKey(candidateScope, weakKey)],
         canonicalEntries,
         excludedIndexes,
         start: start,
@@ -3282,6 +3357,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         predicate: (canonical) => _entriesEquivalent(canonical, existing),
       );
       if (userFallback != -1) return userFallback;
+      // A broad text-only match must never merge two sent user messages with
+      // different stable identities. The scoped fallback above already
+      // covers the only compatible legacy case: one side lacks correlation
+      // and at least one side is still pending.
+      return -1;
     }
 
     if (existing is ServerChatEntry &&
@@ -3289,7 +3369,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       final weakKey = _entryWeakKey(existing);
       final provisionalMatch = _firstIndexedAliasMatch(
         aliasLookup.weakIndexes,
-        weakKey == null ? const [] : [weakKey],
+        weakKey == null
+            ? const []
+            : [_scopedWeakAliasKey('assistant-with-uuid', weakKey)],
         canonicalEntries,
         excludedIndexes,
         start: start,
@@ -3308,7 +3390,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final weakKey = _entryWeakKey(existing);
     return _firstIndexedAliasMatch(
       aliasLookup.weakIndexes,
-      weakKey == null ? const [] : [weakKey],
+      weakKey == null
+          ? const []
+          : [_scopedWeakAliasKey('base', weakKey)],
       canonicalEntries,
       excludedIndexes,
       start: start,
@@ -3319,22 +3403,42 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   _CanonicalAliasLookup _buildCanonicalAliasLookup(List<ChatEntry> entries) {
-    final exactIndexes = <String, List<int>>{};
-    final weakIndexes = <String, List<int>>{};
+    final exactIndexLists = <String, List<int>>{};
+    final weakIndexLists = <String, List<int>>{};
     for (var index = 0; index < entries.length; index++) {
       final entry = entries[index];
       for (final key in _entryExactAliasKeys(entry)) {
-        (exactIndexes[key] ??= <int>[]).add(index);
+        (exactIndexLists[key] ??= <int>[]).add(index);
       }
-      final weakKey = _entryWeakKey(entry);
-      if (weakKey != null) {
-        (weakIndexes[weakKey] ??= <int>[]).add(index);
+      for (final key in _entryWeakAliasLookupKeys(entry)) {
+        (weakIndexLists[key] ??= <int>[]).add(index);
       }
     }
     return _CanonicalAliasLookup(
-      exactIndexes: exactIndexes,
-      weakIndexes: weakIndexes,
+      exactIndexes: {
+        for (final entry in exactIndexLists.entries)
+          entry.key: _CanonicalAliasBucket(entry.value),
+      },
+      weakIndexes: {
+        for (final entry in weakIndexLists.entries)
+          entry.key: _CanonicalAliasBucket(entry.value),
+      },
     );
+  }
+
+  void _consumeCanonicalAlias(
+    _CanonicalAliasLookup lookup,
+    Set<int> consumedIndexes,
+    int index,
+    ChatEntry canonicalEntry,
+  ) {
+    if (!consumedIndexes.add(index)) return;
+    for (final key in _entryExactAliasKeys(canonicalEntry)) {
+      lookup.exactIndexes[key]?.consumeCanonicalIndex(index);
+    }
+    for (final key in _entryWeakAliasLookupKeys(canonicalEntry)) {
+      lookup.weakIndexes[key]?.consumeCanonicalIndex(index);
+    }
   }
 
   Iterable<String> _entryExactAliasKeys(ChatEntry entry) sync* {
@@ -3351,8 +3455,36 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (stableKey != null) yield stableKey;
   }
 
+  Iterable<String> _entryWeakAliasLookupKeys(ChatEntry entry) sync* {
+    final weakKey = _entryWeakKey(entry);
+    if (weakKey == null) return;
+    yield _scopedWeakAliasKey('base', weakKey);
+    if (entry is UserChatEntry) {
+      final hasStableKey = _entryStableKey(entry) != null;
+      final isPending = entry.status != MessageStatus.sent;
+      if (!hasStableKey) {
+        yield _scopedWeakAliasKey('user-no-stable', weakKey);
+        if (isPending) {
+          yield _scopedWeakAliasKey('user-no-stable-pending', weakKey);
+        }
+      }
+      if (isPending) {
+        yield _scopedWeakAliasKey('user-pending', weakKey);
+      }
+    } else if (entry case ServerChatEntry(
+      message: AssistantServerMessage(:final messageUuid),
+    )) {
+      if (messageUuid?.isNotEmpty == true) {
+        yield _scopedWeakAliasKey('assistant-with-uuid', weakKey);
+      }
+    }
+  }
+
+  String _scopedWeakAliasKey(String scope, String weakKey) =>
+      '$scope\u0000$weakKey';
+
   int _firstIndexedAliasMatch(
-    Map<String, List<int>> indexByKey,
+    Map<String, _CanonicalAliasBucket> indexByKey,
     Iterable<String> keys,
     List<ChatEntry> canonicalEntries,
     Set<int> excludedIndexes, {
@@ -3362,35 +3494,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }) {
     var earliest = -1;
     for (final key in keys) {
-      final indexes = indexByKey[key];
-      if (indexes == null) continue;
-      var offset = _lowerBoundIndex(indexes, start);
-      while (offset < indexes.length) {
-        final index = indexes[offset];
+      final bucket = indexByKey[key];
+      if (bucket == null) continue;
+      var offset = bucket.firstAvailableOffset(start);
+      while (offset < bucket.indexes.length) {
+        final index = bucket.indexes[offset];
         if (index >= end || (earliest != -1 && index >= earliest)) break;
         if (!excludedIndexes.contains(index) &&
             predicate(canonicalEntries[index])) {
           earliest = index;
           break;
         }
-        offset += 1;
+        offset = bucket.nextAvailableOffset(offset + 1);
       }
     }
     return earliest;
-  }
-
-  int _lowerBoundIndex(List<int> sortedIndexes, int target) {
-    var low = 0;
-    var high = sortedIndexes.length;
-    while (low < high) {
-      final middle = low + ((high - low) >> 1);
-      if (sortedIndexes[middle] < target) {
-        low = middle + 1;
-      } else {
-        high = middle;
-      }
-    }
-    return low;
   }
 
   ChatEntry _mergeCanonicalMirrorEntry(
