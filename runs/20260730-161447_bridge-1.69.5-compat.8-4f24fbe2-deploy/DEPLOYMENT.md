@@ -4,8 +4,9 @@ Status: deployed; physical-iPhone confirmation pending.
 
 ## 源码与候选
 
-- 分支：`fix/mobile-sync-list-stability-20260730`
-- 源码 HEAD：`4f24fbe2250fcd97ffe600534aa1db6db425f353`
+- 最终集成分支：`integration/mobile-session-sync-v2-20260730`
+- runtime 源码：`4f24fbe2250fcd97ffe600534aa1db6db425f353`
+- 部署记录提交：`93aade0ca4516d8e246fc64345160a2203e65a49`
 - 功能提交：`33ab6f1edb7aae5f688cd5ce4f2fdbbb0403a487`
 - 官方合并：`4f24fbe2250fcd97ffe600534aa1db6db425f353`
 - Bridge 版本：`1.69.5-compat.8`
