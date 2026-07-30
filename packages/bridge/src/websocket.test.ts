@@ -2235,28 +2235,35 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("scopes get_history not-found errors to the requested session", async () => {
+  it("scopes history not-found errors to the requested session", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
     } as any;
 
-    await (bridge as any).handleClientMessage(
+    for (const request of [
       { type: "get_history", sessionId: "missing-session" },
-      ws,
-    );
+      {
+        type: "get_history_delta",
+        sessionId: "missing-session",
+        sinceSeq: 0,
+      },
+    ]) {
+      ws.send.mockClear();
+      await (bridge as any).handleClientMessage(request, ws);
 
-    expect(
-      ws.send.mock.calls
-        .map((call: unknown[]) => JSON.parse(call[0] as string))
-        .find((message: any) => message.type === "error"),
-    ).toEqual({
-      type: "error",
-      message: "Session missing-session not found",
-      errorCode: "session_not_found",
-      sessionId: "missing-session",
-    });
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .find((message: any) => message.type === "error"),
+      ).toEqual({
+        type: "error",
+        message: "Session missing-session not found",
+        errorCode: "session_not_found",
+        sessionId: "missing-session",
+      });
+    }
 
     bridge.close();
   });
@@ -8554,7 +8561,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("reports codex canonical history read failures without JSONL fallback", async () => {
+  it("scopes codex canonical history read failures without JSONL fallback", async () => {
     codexThreadToSessionHistoryMock.mockReturnValue([]);
 
     const bridge = new BridgeWebSocketServer({ server: httpServer });
@@ -8582,25 +8589,26 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     session.claudeSessionId = "thr_codex_error";
     session.process.readThread.mockRejectedValue(new Error("rpc unavailable"));
 
-    ws.send.mockClear();
-    await (bridge as any).handleClientMessage(
-      {
-        type: "get_history",
-        sessionId,
-      },
-      ws,
-    );
+    for (const request of [
+      { type: "get_history", sessionId },
+      { type: "get_history_delta", sessionId, sinceSeq: 0 },
+    ]) {
+      ws.send.mockClear();
+      await (bridge as any).handleClientMessage(request, ws);
 
-    const sends = ws.send.mock.calls.map((c: unknown[]) =>
-      JSON.parse(c[0] as string),
-    );
+      const sends = ws.send.mock.calls.map((c: unknown[]) =>
+        JSON.parse(c[0] as string),
+      );
+      expect(sends).toEqual([
+        {
+          type: "error",
+          message: "Failed to read Codex thread history",
+          errorCode: "history_read_failed",
+          sessionId,
+        },
+      ]);
+    }
     expect(getCodexSessionHistoryMock).not.toHaveBeenCalled();
-    expect(sends).toEqual([
-      {
-        type: "error",
-        message: "Failed to read Codex thread history: rpc unavailable",
-      },
-    ]);
 
     bridge.close();
   });

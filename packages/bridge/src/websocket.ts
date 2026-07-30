@@ -3438,12 +3438,12 @@ export class BridgeWebSocketServer {
         this.sendCachedCommands(ws, sessionId, session);
       }
       return true;
-    } catch (err) {
+    } catch {
       this.send(ws, {
         type: "error",
-        message: `Failed to read Codex thread history: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        message: "Failed to read Codex thread history",
+        errorCode: "history_read_failed",
+        sessionId,
       });
       return true;
     }
@@ -3481,12 +3481,12 @@ export class BridgeWebSocketServer {
       this.sendCodexGoalState(ws, sessionId, session);
       this.sendCachedCommands(ws, sessionId, session);
       return true;
-    } catch (err) {
+    } catch {
       this.send(ws, {
         type: "error",
-        message: `Failed to read Codex thread history: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        message: "Failed to read Codex thread history",
+        errorCode: "history_read_failed",
+        sessionId,
       });
       return true;
     }
@@ -7419,6 +7419,8 @@ export class BridgeWebSocketServer {
             this.send(ws, {
               type: "error",
               message: `Session ${msg.sessionId} not found`,
+              errorCode: "session_not_found",
+              sessionId: msg.sessionId,
             });
             break;
           }
@@ -7463,6 +7465,8 @@ export class BridgeWebSocketServer {
             this.send(ws, {
               type: "error",
               message: `Session ${msg.sessionId} not found`,
+              errorCode: "session_not_found",
+              sessionId: msg.sessionId,
             });
             break;
           }
@@ -7492,6 +7496,8 @@ export class BridgeWebSocketServer {
           this.send(ws, {
             type: "error",
             message: `Session ${msg.sessionId} not found`,
+            errorCode: "session_not_found",
+            sessionId: msg.sessionId,
           });
         }
         break;
