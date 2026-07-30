@@ -6,6 +6,7 @@ import type { ServerMessage } from "../parser.js";
 import {
   CodexDesktopContinuityHandler,
   CodexRolloutMonitor,
+  inspectCodexRolloutSnapshot,
   type CodexDesktopContinuityMonitorEvent,
 } from "./slots/codex-desktop-continuity.js";
 import type { LocalFeatureRuntime } from "./runtime.js";
@@ -75,6 +76,141 @@ describe("CodexRolloutMonitor", () => {
     expect(monitor.hasExternalTurn).toBe(true);
     expect(events).toEqual([]);
     monitor.close();
+  });
+
+  it("optionally replays only the active seed turn for v2 catch-up", async () => {
+    const path = await rollout([
+      event("event_msg", {
+        type: "task_started",
+        turn_id: "turn-complete",
+      }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "desktop-complete",
+        message: "old completed request",
+      }),
+      event("response_item", {
+        type: "message",
+        id: "old-completed-answer",
+        role: "assistant",
+        content: [{ type: "output_text", text: "old completed answer" }],
+      }),
+      event("event_msg", {
+        type: "task_complete",
+        turn_id: "turn-complete",
+      }),
+      event(
+        "event_msg",
+        { type: "task_started", turn_id: "turn-active" },
+        "2026-07-19T12:01:00Z",
+      ),
+      event(
+        "event_msg",
+        {
+          type: "user_message",
+          client_id: "desktop-active",
+          message: "current request",
+        },
+        "2026-07-19T12:01:01Z",
+      ),
+      event(
+        "event_msg",
+        { type: "agent_reasoning", text: "current reasoning" },
+        "2026-07-19T12:01:02Z",
+      ),
+      event(
+        "response_item",
+        {
+          type: "function_call",
+          call_id: "active-call",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "git status" }),
+        },
+        "2026-07-19T12:01:03Z",
+      ),
+      event(
+        "response_item",
+        {
+          type: "function_call_output",
+          call_id: "active-call",
+          output: "clean",
+        },
+        "2026-07-19T12:01:04Z",
+      ),
+      event(
+        "response_item",
+        {
+          type: "message",
+          id: "active-answer",
+          role: "assistant",
+          content: [{ type: "output_text", text: "current answer" }],
+        },
+        "2026-07-19T12:01:05Z",
+      ),
+    ]);
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-1",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+      replayActiveTurnMessages: true,
+      assistantMessagePairMs: 0,
+    });
+
+    await monitor.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(monitor.snapshot).toEqual({
+      state: "running",
+      turnId: "turn-active",
+    });
+    expect(JSON.stringify(events)).not.toContain("old completed");
+    expect(
+      events
+        .filter((entry) => entry.kind === "message")
+        .map((entry) => entry.message.type),
+    ).toEqual([
+      "user_input",
+      "thinking_delta",
+      "assistant",
+      "tool_result",
+      "assistant",
+    ]);
+    expect(JSON.stringify(events)).toContain("current request");
+    expect(JSON.stringify(events)).toContain("current reasoning");
+    expect(JSON.stringify(events)).toContain("git status");
+    expect(JSON.stringify(events)).toContain("clean");
+    expect(JSON.stringify(events)).toContain("current answer");
+    monitor.close();
+  });
+
+  it("marks response-only tail activity as inferred rather than lifecycle running", async () => {
+    const path = await rollout([
+      event(
+        "response_item",
+        {
+          type: "message",
+          id: "orphan-answer",
+          role: "assistant",
+          content: [{ type: "output_text", text: "tail activity" }],
+        },
+        "2020-01-01T00:00:00.000Z",
+      ),
+    ]);
+
+    await expect(
+      inspectCodexRolloutSnapshot({
+        threadId: "thread-response-only",
+        path,
+        seedBytes: 64 * 1024,
+      }),
+    ).resolves.toEqual({
+      state: "running",
+      observedAt: "2020-01-01T00:00:00.000Z",
+      runningEvidence: "activity",
+    });
   });
 
   it("backs off idle fallback polling without slowing active turns", async () => {
@@ -387,8 +523,7 @@ describe("CodexRolloutMonitor", () => {
           entry.kind === "message" &&
           entry.message.type === "assistant" &&
           entry.message.message.content.some(
-            (content) =>
-              content.type === "text" && content.text === "Working",
+            (content) => content.type === "text" && content.text === "Working",
           ),
       ),
     ).toHaveLength(1);
@@ -653,12 +788,13 @@ describe("CodexRolloutMonitor", () => {
 
     const toolStarts = events
       .filter(
-        (entry): entry is Extract<
+        (
+          entry,
+        ): entry is Extract<
           CodexDesktopContinuityMonitorEvent,
           { kind: "message" }
         > =>
-          entry.kind === "message" &&
-          entry.itemKey.startsWith("tool-start:"),
+          entry.kind === "message" && entry.itemKey.startsWith("tool-start:"),
       )
       .map((entry) => {
         const message = entry.message;
@@ -684,18 +820,14 @@ describe("CodexRolloutMonitor", () => {
     );
     expect(toolStarts.filter(([id]) => id === "mcp-item-1")).toHaveLength(1);
     expect(toolStarts.filter(([id]) => id === "file-item-1")).toHaveLength(1);
-    expect(
-      toolStarts.filter(([id]) => id === "image-late-call"),
-    ).toHaveLength(1);
-    expect(
-      toolStarts.filter(([id]) => id === "image-late-item"),
-    ).toHaveLength(0);
-    expect(toolStarts.filter(([id]) => id === "mcp-late-item")).toHaveLength(
+    expect(toolStarts.filter(([id]) => id === "image-late-call")).toHaveLength(
       1,
     );
-    expect(toolStarts.filter(([id]) => id === "mcp-late-call")).toHaveLength(
+    expect(toolStarts.filter(([id]) => id === "image-late-item")).toHaveLength(
       0,
     );
+    expect(toolStarts.filter(([id]) => id === "mcp-late-item")).toHaveLength(1);
+    expect(toolStarts.filter(([id]) => id === "mcp-late-call")).toHaveLength(0);
     const legacySearchStarts = events.filter((entry) => {
       if (entry.kind !== "message" || entry.message.type !== "assistant") {
         return false;
@@ -711,7 +843,9 @@ describe("CodexRolloutMonitor", () => {
 
     const toolResults = events
       .filter(
-        (entry): entry is Extract<
+        (
+          entry,
+        ): entry is Extract<
           CodexDesktopContinuityMonitorEvent,
           { kind: "message" }
         > & { message: Extract<ServerMessage, { type: "tool_result" }> } =>
@@ -804,9 +938,7 @@ describe("CodexRolloutMonitor", () => {
     expect(monitor.snapshot).toEqual({ state: "running", turnId: "turn-b" });
     expect(monitor.externalTurnIdForSteering).toBe("turn-b");
     expect(
-      events.some(
-        (entry) => entry.kind === "state" && entry.state === "idle",
-      ),
+      events.some((entry) => entry.kind === "state" && entry.state === "idle"),
     ).toBe(false);
     expect(events.at(-1)).toMatchObject({
       kind: "state",
@@ -1247,11 +1379,7 @@ describe("CodexRolloutMonitor", () => {
         },
         "2026-07-19T12:00:01Z",
       ),
-      event(
-        "event_msg",
-        { type: "task_started" },
-        "2026-07-19T12:10:00Z",
-      ),
+      event("event_msg", { type: "task_started" }, "2026-07-19T12:10:00Z"),
       event(
         "event_msg",
         {
@@ -1452,8 +1580,7 @@ describe("CodexRolloutMonitor", () => {
 
     await vi.advanceTimersByTimeAsync(40);
     const syntheticAssistants = events.filter(
-      (entry) =>
-        entry.kind === "message" && entry.message.type === "assistant",
+      (entry) => entry.kind === "message" && entry.message.type === "assistant",
     );
     expect(syntheticAssistants).toHaveLength(1);
     expect(syntheticAssistants[0]).toMatchObject({
@@ -1498,8 +1625,8 @@ describe("CodexRolloutMonitor", () => {
     expect((monitor as any).emittedKeys.size).toBe(0);
     await vi.advanceTimersByTimeAsync(40);
     expect(
-      events.some(
-        (entry) => JSON.stringify(entry).includes("must not fire after close"),
+      events.some((entry) =>
+        JSON.stringify(entry).includes("must not fire after close"),
       ),
     ).toBe(false);
   });
@@ -1539,8 +1666,7 @@ describe("CodexRolloutMonitor", () => {
     await monitor.refreshNow();
 
     const assistants = events.filter(
-      (entry) =>
-        entry.kind === "message" && entry.message.type === "assistant",
+      (entry) => entry.kind === "message" && entry.message.type === "assistant",
     );
     expect(assistants).toHaveLength(1);
     expect(assistants[0]).toMatchObject({
@@ -1651,8 +1777,7 @@ describe("CodexRolloutMonitor", () => {
               input: {
                 prompt: "Draw a compact diagram",
                 status: "generating",
-                saved_path:
-                  "/Users/test/.codex/generated_images/output.png",
+                saved_path: "/Users/test/.codex/generated_images/output.png",
               },
             },
           ],
@@ -1708,9 +1833,9 @@ describe("CodexRolloutMonitor", () => {
       outcome: "interrupted",
       timestamp: "2026-07-19T12:00:03Z",
     });
-    expect(
-      monitor.needsRehydrateSince(new Date("2026-07-19T12:00:00Z")),
-    ).toBe(true);
+    expect(monitor.needsRehydrateSince(new Date("2026-07-19T12:00:00Z"))).toBe(
+      true,
+    );
     monitor.close();
   });
 
@@ -1886,8 +2011,7 @@ describe("CodexDesktopContinuityHandler", () => {
       },
       registerInlineImages,
       send: (_client, message) => sent.push(message),
-      supports: (_client, type) =>
-        type === "codex_desktop_continuity_event_v1",
+      supports: (_client, type) => type === "codex_desktop_continuity_event_v1",
     };
     const handler = new CodexDesktopContinuityHandler(runtime, {
       resolveRolloutPath: async () => path,
@@ -1977,8 +2101,7 @@ describe("CodexDesktopContinuityHandler", () => {
         sent.push(message);
         sentByClient.set(client, sent);
       },
-      supports: (_client, type) =>
-        type === "codex_desktop_continuity_event_v1",
+      supports: (_client, type) => type === "codex_desktop_continuity_event_v1",
     };
     const handler = new CodexDesktopContinuityHandler(runtime, {
       resolveRolloutPath: async () => path,
@@ -2022,9 +2145,7 @@ describe("CodexDesktopContinuityHandler", () => {
         text: "shared reasoning",
       }),
     ]);
-    await (handler as any).monitors
-      .get("thread-multi-client")
-      .refreshNow();
+    await (handler as any).monitors.get("thread-multi-client").refreshNow();
 
     for (const [client, requestId] of [
       [client1, "watch-client-1"],
@@ -2057,9 +2178,7 @@ describe("CodexDesktopContinuityHandler", () => {
         turn_id: "turn-multi-client",
       }),
     ]);
-    await (handler as any).monitors
-      .get("thread-multi-client")
-      .refreshNow();
+    await (handler as any).monitors.get("thread-multi-client").refreshNow();
 
     expect(sentByClient.get(client1)).toHaveLength(disconnectedCount);
     expect(sentByClient.get(client2)).toEqual(
@@ -2130,9 +2249,7 @@ describe("CodexDesktopContinuityHandler", () => {
         turn_id: "turn-delayed-watch",
       }),
     ]);
-    await (handler as any).monitors
-      .get("thread-unknown-watch")
-      .refreshNow();
+    await (handler as any).monitors.get("thread-unknown-watch").refreshNow();
     await watch(client2, "watch-during-delay");
 
     expect(sentByClient.get(client2)?.at(-1)).toMatchObject({
@@ -2147,9 +2264,7 @@ describe("CodexDesktopContinuityHandler", () => {
     localTurnId = "turn-delayed-watch";
     await vi.advanceTimersByTimeAsync(100);
     expect(
-      sentByClient
-        .get(client2)
-        ?.some((message) => message.event === "state"),
+      sentByClient.get(client2)?.some((message) => message.event === "state"),
     ).toBe(false);
     handler.close();
   });
@@ -2284,9 +2399,9 @@ describe("CodexDesktopContinuityHandler", () => {
     expect(
       (handler as any).watchersByClient.get(client)?.get(session.id)?.requestId,
     ).toBe("watch-2");
-    expect((handler as any).monitors.get("thread-watch-cas")?.watcherCount).toBe(
-      1,
-    );
+    expect(
+      (handler as any).monitors.get("thread-watch-cas")?.watcherCount,
+    ).toBe(1);
     handler.close();
   });
 
@@ -2646,7 +2761,11 @@ describe("CodexDesktopContinuityHandler", () => {
       rehydrateCodexSessionAfterExternalTurn: rehydrate,
       hasCodexQueuedInput: () => queued,
       drainCodexQueuedInputIfReady: (_sessionId, isStillSafe) => {
-        if (isStillSafe?.() === false || !process.isWaitingForInput || !queued) {
+        if (
+          isStillSafe?.() === false ||
+          !process.isWaitingForInput ||
+          !queued
+        ) {
           return false;
         }
         if (!handler.admitCodexQueuedInputDrain(session)) {
@@ -2710,7 +2829,9 @@ describe("CodexDesktopContinuityHandler", () => {
     ]);
     await monitor.refreshNow();
     await vi.waitFor(() =>
-      expect((handler as any).blockedDrainSessionIds.has(session.id)).toBe(true),
+      expect((handler as any).blockedDrainSessionIds.has(session.id)).toBe(
+        true,
+      ),
     );
     expect(rehydrate).not.toHaveBeenCalled();
     expect(drainCount).toBe(0);

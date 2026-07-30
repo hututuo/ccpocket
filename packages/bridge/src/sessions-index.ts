@@ -14,10 +14,7 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
 import { isAutoRenamePromptText } from "./auto-rename.js";
-import {
-  resolveCodexHome,
-  resolveCodexSessionsDir,
-} from "./codex-home.js";
+import { resolveCodexHome, resolveCodexSessionsDir } from "./codex-home.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import {
   CodexDesktopToolTimelineBuilder,
@@ -87,8 +84,8 @@ interface RawSessionEntry {
 }
 
 export interface GetRecentSessionsOptions {
-  limit?: number;       // default 20
-  offset?: number;      // default 0
+  limit?: number; // default 20
+  offset?: number; // default 0
   projectPath?: string; // filter by project
   /** Exact provider session ID lookup (used by deep-link resolution). */
   sessionId?: string;
@@ -250,7 +247,7 @@ const PARALLEL_FILE_READ_LIMIT = 32;
 
 /** Head/Tail byte sizes for partial JSONL reads. */
 const HEAD_BYTES = 16384; // 16KB — covers first user entry + metadata
-const TAIL_BYTES = 8192;  // 8KB — covers last entries for modified/lastPrompt
+const TAIL_BYTES = 8192; // 8KB — covers last entries for modified/lastPrompt
 const CODEX_HEAD_BYTES = 131072; // 128KB — Codex turn_context can be large
 const CODEX_TAIL_BYTES = 16384;
 const CODEX_SETTINGS_SCAN_BYTES = 65536;
@@ -1255,12 +1252,12 @@ export async function getAllRecentSessions(
       needLastPrompt,
       PARALLEL_FILE_READ_LIMIT,
       async (entry) => {
-      const slug = pathToSlug(entry.projectPath);
-      const jsonlPath = join(projectsDir, slug, `${entry.sessionId}.jsonl`);
-      const lp = await extractLastPromptFromTail(jsonlPath);
-      if (lp && lp !== entry.firstPrompt) {
-        entry.lastPrompt = lp;
-      }
+        const slug = pathToSlug(entry.projectPath);
+        const jsonlPath = join(projectsDir, slug, `${entry.sessionId}.jsonl`);
+        const lp = await extractLastPromptFromTail(jsonlPath);
+        if (lp && lp !== entry.firstPrompt) {
+          entry.lastPrompt = lp;
+        }
       },
     );
   }
@@ -1488,8 +1485,7 @@ function parseCodexSessionJsonl(
       const payload = entry.payload as Record<string, unknown> | undefined;
       if (payload?.type === "thread_settings_applied") {
         const settings = payload.thread_settings as
-          | Record<string, unknown>
-          | undefined;
+          Record<string, unknown> | undefined;
         if (settings) {
           if (typeof settings.approval_policy === "string") {
             approvalPolicy = settings.approval_policy;
@@ -1501,11 +1497,9 @@ function parseCodexSessionJsonl(
             model = settings.model;
           }
           const collaborationMode = settings.collaboration_mode as
-            | Record<string, unknown>
-            | undefined;
+            Record<string, unknown> | undefined;
           const collaborationSettings = collaborationMode?.settings as
-            | Record<string, unknown>
-            | undefined;
+            Record<string, unknown> | undefined;
           const reasoningEffort =
             typeof settings.reasoning_effort === "string"
               ? settings.reasoning_effort
@@ -1577,17 +1571,17 @@ function parseCodexSessionJsonl(
     serviceTier ||
     networkAccessEnabled !== undefined ||
     webSearchMode
-    ? {
-        approvalPolicy,
-        approvalsReviewer,
-        sandboxMode,
-        model,
-        modelReasoningEffort,
-        serviceTier,
-        networkAccessEnabled,
-        webSearchMode,
-      }
-    : undefined;
+      ? {
+          approvalPolicy,
+          approvalsReviewer,
+          sandboxMode,
+          model,
+          modelReasoningEffort,
+          serviceTier,
+          networkAccessEnabled,
+          webSearchMode,
+        }
+      : undefined;
 
   return {
     threadId,
@@ -1712,10 +1706,7 @@ async function findPreviousCodexSettingsMarker(
   let cursor = Math.min(fileSize, upperBound);
   while (cursor > 0) {
     const start = Math.max(0, cursor - CODEX_SETTINGS_SCAN_BYTES);
-    const end = Math.min(
-      fileSize,
-      cursor + CODEX_SETTINGS_MARKER_OVERLAP,
-    );
+    const end = Math.min(fileSize, cursor + CODEX_SETTINGS_MARKER_OVERLAP);
     const buffer = await readFileRange(fh, start, end - start);
     const lastAllowedIndex = cursor - start - 1;
     const turnContextIndex = buffer.lastIndexOf(
@@ -2427,9 +2418,7 @@ export async function getCodexSessionIndexMetadata(
         : authoritativeSettings
           ? { codexSettings: authoritativeSettings }
           : {}),
-      ...(parsed?.entry.resumeCwd
-        ? { resumeCwd: parsed.entry.resumeCwd }
-        : {}),
+      ...(parsed?.entry.resumeCwd ? { resumeCwd: parsed.entry.resumeCwd } : {}),
       ...(parsed?.entry.firstPrompt
         ? { firstPrompt: parsed.entry.firstPrompt }
         : {}),
@@ -2660,8 +2649,8 @@ function applyCodexItemTimestamp(
     const message = messages[index];
     const isToolResult = message.role === "tool_result";
     const timestamp = isToolResult
-      ? timing.completedAt ?? timing.startedAt
-      : timing.startedAt ?? timing.completedAt;
+      ? (timing.completedAt ?? timing.startedAt)
+      : (timing.startedAt ?? timing.completedAt);
     if (!timestamp) continue;
     message.timestamp = timestamp;
     message.timestampIsAuthoritative = true;
@@ -2867,8 +2856,7 @@ export function codexThreadToSessionHistory(
                 : ""),
             {
               imagePaths,
-              imageBase64:
-                imagePaths.length > 0 ? [] : normalized.imageBase64,
+              imageBase64: imagePaths.length > 0 ? [] : normalized.imageBase64,
               ...(itemTimestamp ? { timestamp: itemTimestamp } : {}),
             },
           );
@@ -2901,9 +2889,7 @@ export function codexThreadToSessionHistory(
           appendToolUseMessage(messages, itemId, toolName, {
             tool,
             status,
-            ...(typeof item.prompt === "string"
-              ? { prompt: item.prompt }
-              : {}),
+            ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
             ...(typeof item.senderThreadId === "string"
               ? { senderThreadId: item.senderThreadId }
               : {}),
@@ -3106,9 +3092,7 @@ export function supplementCodexThreadWithDesktopTools(
 
 function supplementCodexItemTimestamps(
   original: unknown[],
-  itemTimestamps:
-    | ReadonlyMap<string, CodexDesktopItemTimestamp>
-    | undefined,
+  itemTimestamps: ReadonlyMap<string, CodexDesktopItemTimestamp> | undefined,
 ): unknown[] {
   if (!itemTimestamps?.size) return original;
 
@@ -3138,9 +3122,7 @@ function supplementCodexTurnItems(
   original: unknown[],
   turnEvents: CodexDesktopToolTimelineEvent[],
 ): unknown[] {
-  const supplementalCallIds = new Set(
-    turnEvents.map((event) => event.callId),
-  );
+  const supplementalCallIds = new Set(turnEvents.map((event) => event.callId));
   const officialToolCounts = new Map<string, number>();
 
   for (const rawItem of original) {
@@ -3508,11 +3490,7 @@ function appendToolResultMessage(
 
   const imagePaths = options?.imagePaths ?? [];
   const imageBase64 = options?.imageBase64 ?? [];
-  if (
-    !content.trim() &&
-    imagePaths.length === 0 &&
-    imageBase64.length === 0
-  ) {
+  if (!content.trim() && imagePaths.length === 0 && imageBase64.length === 0) {
     return;
   }
 
@@ -3567,15 +3545,12 @@ function describeCodexHistoryCommand(payload: Record<string, unknown>): {
   name: string;
   input: Record<string, unknown>;
 } {
-  const command =
-    typeof payload.command === "string" ? payload.command : "";
+  const command = typeof payload.command === "string" ? payload.command : "";
   const rawActions = payload.commandActions ?? payload.command_actions;
   const actions = Array.isArray(rawActions)
     ? rawActions
         .map(asObject)
-        .filter(
-          (value): value is Record<string, unknown> => value !== null,
-        )
+        .filter((value): value is Record<string, unknown> => value !== null)
     : [];
   const baseInput: Record<string, unknown> = {
     command,
@@ -3851,24 +3826,254 @@ async function findSessionJsonlPath(sessionId: string): Promise<string | null> {
 async function findCodexSessionJsonlPath(
   threadId: string,
 ): Promise<string | null> {
-  const files = await listCodexSessionFiles();
-  for (const filePath of files) {
-    const fallbackSessionId = basename(filePath, ".jsonl");
-    if (
-      fallbackSessionId === threadId ||
-      fallbackSessionId.endsWith(`-${threadId}`)
-    ) {
-      return filePath;
-    }
+  ensureCodexSessionPathIndexRoot();
+  const cached = codexSessionJsonlPathCache.get(threadId);
+  if (cached) {
     try {
-      if (await codexJsonlHasThreadId(filePath, threadId)) {
-        return filePath;
+      const info = await stat(cached);
+      const expectedIdentity = codexSessionJsonlPathIdentityCache.get(threadId);
+      if (
+        expectedIdentity === undefined ||
+        expectedIdentity === codexSessionFileIdentity(info)
+      ) {
+        return cached;
       }
+      codexSessionJsonlPathCache.delete(threadId);
+      codexSessionJsonlPathIdentityCache.delete(threadId);
     } catch {
-      continue;
+      codexSessionJsonlPathCache.delete(threadId);
+      codexSessionJsonlPathIdentityCache.delete(threadId);
     }
   }
-  return null;
+  await refreshCodexSessionJsonlPathIndex(false);
+  let indexed = codexSessionJsonlPathCache.get(threadId);
+  if (indexed) return indexed;
+
+  // A newly-created rollout can appear after the shared index was published.
+  // Throttle the compensating directory walk globally: discovery asks for
+  // many thread ids in small batches, and a per-id refresh turns one missing
+  // rollout into O(missing × files) filesystem work.
+  const currentFingerprint = await codexSessionPathIndexFingerprint(
+    codexSessionPathIndexRoot,
+  );
+  if (
+    currentFingerprint !== codexSessionPathIndexFingerprintValue ||
+    Date.now() - codexSessionPathIndexRefreshedAt >=
+      CODEX_SESSION_PATH_INDEX_RECHECK_MS
+  ) {
+    await refreshCodexSessionJsonlPathIndex(true);
+    indexed = codexSessionJsonlPathCache.get(threadId);
+    if (indexed) return indexed;
+  }
+
+  // Legacy/custom rollouts may not carry the thread id in their filename.
+  // Build their content-derived index once per directory generation, shared by
+  // every concurrent or later miss, and cache successful lookups alongside
+  // ordinary UUID filenames.
+  await refreshLegacyCodexSessionJsonlPathIndex();
+  if (
+    codexSessionLegacyPathIndexGeneration !== codexSessionPathIndexGeneration
+  ) {
+    // A directory refresh raced the legacy scan. Index the current generation
+    // before returning rather than exposing a transient false miss.
+    await refreshLegacyCodexSessionJsonlPathIndex();
+  }
+  return codexSessionJsonlPathCache.get(threadId) ?? null;
+}
+
+// Root/current-day fingerprints detect ordinary new rollouts immediately.
+// This slower fallback only covers unusual writes into older date buckets and
+// must remain long enough that one all-thread discovery cannot repeatedly walk
+// the same tree as it advances through batches.
+const CODEX_SESSION_PATH_INDEX_RECHECK_MS = 60_000;
+const codexSessionJsonlPathCache = new Map<string, string>();
+const codexSessionJsonlPathIdentityCache = new Map<string, string>();
+let codexSessionPathIndexReady = false;
+let codexSessionPathIndexFlight: Promise<void> | null = null;
+let codexSessionPathIndexRoot: string | null = null;
+let codexSessionPathIndexFiles: string[] = [];
+let codexSessionPathIndexGeneration = 0;
+let codexSessionPathIndexRefreshedAt = 0;
+let codexSessionPathIndexFingerprintValue = "";
+let codexSessionLegacyPathIndexGeneration = -1;
+let codexSessionLegacyPathIndexFlight: Promise<void> | null = null;
+
+function ensureCodexSessionPathIndexRoot(): void {
+  const root = resolveCodexSessionsDir();
+  if (codexSessionPathIndexRoot === root) return;
+  codexSessionPathIndexRoot = root;
+  codexSessionJsonlPathCache.clear();
+  codexSessionJsonlPathIdentityCache.clear();
+  codexSessionPathIndexReady = false;
+  codexSessionPathIndexFlight = null;
+  codexSessionPathIndexFiles = [];
+  codexSessionPathIndexGeneration += 1;
+  codexSessionPathIndexRefreshedAt = 0;
+  codexSessionPathIndexFingerprintValue = "";
+  codexSessionLegacyPathIndexGeneration = -1;
+  codexSessionLegacyPathIndexFlight = null;
+}
+
+function rolloutThreadIdFromPath(filePath: string): string | null {
+  const stem = basename(filePath, ".jsonl");
+  return (
+    stem.match(
+      /(?:^|-)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+    )?.[1] ?? null
+  );
+}
+
+function refreshCodexSessionJsonlPathIndex(force: boolean): Promise<void> {
+  ensureCodexSessionPathIndexRoot();
+  if (codexSessionPathIndexFlight) return codexSessionPathIndexFlight;
+  if (codexSessionPathIndexReady && !force) return Promise.resolve();
+  const root = codexSessionPathIndexRoot;
+  const flight = listCodexSessionFiles()
+    .then(async (files) => {
+      // Tests and multi-source hosts can switch CODEX_HOME while an earlier
+      // directory walk is still in flight. Never let that stale result poison
+      // the cache belonging to the new source identity.
+      if (codexSessionPathIndexRoot !== root) return;
+      const fingerprint = await codexSessionPathIndexFingerprint(root);
+      if (codexSessionPathIndexRoot !== root) return;
+      const next = new Map<string, string>();
+      for (const filePath of files) {
+        const threadId = rolloutThreadIdFromPath(filePath);
+        // Preserve the existing resolver's first-match behavior if a damaged
+        // or manually copied session tree contains duplicate thread ids.
+        if (threadId && !next.has(threadId)) next.set(threadId, filePath);
+      }
+      codexSessionJsonlPathCache.clear();
+      codexSessionJsonlPathIdentityCache.clear();
+      for (const [threadId, filePath] of next) {
+        codexSessionJsonlPathCache.set(threadId, filePath);
+      }
+      codexSessionPathIndexFiles = files;
+      codexSessionPathIndexGeneration += 1;
+      codexSessionPathIndexRefreshedAt = Date.now();
+      codexSessionPathIndexFingerprintValue = fingerprint;
+      codexSessionLegacyPathIndexGeneration = -1;
+      codexSessionPathIndexReady = true;
+    })
+    .finally(() => {
+      if (codexSessionPathIndexFlight === flight) {
+        codexSessionPathIndexFlight = null;
+      }
+    });
+  codexSessionPathIndexFlight = flight;
+  return flight;
+}
+
+async function codexSessionPathIndexFingerprint(
+  root: string | null,
+): Promise<string> {
+  if (!root) return "";
+  const now = new Date();
+  const dateDirectories = new Set<string>([
+    join(
+      root,
+      String(now.getFullYear()).padStart(4, "0"),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+    ),
+    join(
+      root,
+      String(now.getUTCFullYear()).padStart(4, "0"),
+      String(now.getUTCMonth() + 1).padStart(2, "0"),
+      String(now.getUTCDate()).padStart(2, "0"),
+    ),
+  ]);
+  const paths = [root, ...dateDirectories];
+  const fingerprints = await Promise.all(
+    paths.map(async (path) => {
+      try {
+        const info = await stat(path);
+        return `${path}:${info.dev}:${info.ino}:${info.mtimeMs}`;
+      } catch {
+        return `${path}:missing`;
+      }
+    }),
+  );
+  return fingerprints.join("|");
+}
+
+function refreshLegacyCodexSessionJsonlPathIndex(): Promise<void> {
+  ensureCodexSessionPathIndexRoot();
+  if (
+    codexSessionLegacyPathIndexGeneration === codexSessionPathIndexGeneration
+  ) {
+    return Promise.resolve();
+  }
+  if (codexSessionLegacyPathIndexFlight) {
+    return codexSessionLegacyPathIndexFlight;
+  }
+  const root = codexSessionPathIndexRoot;
+  const generation = codexSessionPathIndexGeneration;
+  const files = codexSessionPathIndexFiles.filter(
+    (filePath) => rolloutThreadIdFromPath(filePath) === null,
+  );
+  const flight = parallelMap(
+    files,
+    PARALLEL_FILE_READ_LIMIT,
+    async (filePath) => {
+      const [threadId, info] = await Promise.all([
+        codexJsonlThreadId(filePath).catch(() => null),
+        stat(filePath).catch(() => null),
+      ]);
+      return {
+        filePath,
+        fallbackSessionId: basename(filePath, ".jsonl"),
+        threadId,
+        identity: info ? codexSessionFileIdentity(info) : null,
+      };
+    },
+  )
+    .then((entries) => {
+      if (
+        codexSessionPathIndexRoot !== root ||
+        codexSessionPathIndexGeneration !== generation
+      ) {
+        return;
+      }
+      for (const {
+        filePath,
+        fallbackSessionId,
+        threadId,
+        identity,
+      } of entries) {
+        if (
+          fallbackSessionId &&
+          !codexSessionJsonlPathCache.has(fallbackSessionId)
+        ) {
+          codexSessionJsonlPathCache.set(fallbackSessionId, filePath);
+          if (identity) {
+            codexSessionJsonlPathIdentityCache.set(fallbackSessionId, identity);
+          }
+        }
+        if (threadId && !codexSessionJsonlPathCache.has(threadId)) {
+          codexSessionJsonlPathCache.set(threadId, filePath);
+          if (identity) {
+            codexSessionJsonlPathIdentityCache.set(threadId, identity);
+          }
+        }
+      }
+      codexSessionLegacyPathIndexGeneration = generation;
+    })
+    .finally(() => {
+      if (codexSessionLegacyPathIndexFlight === flight) {
+        codexSessionLegacyPathIndexFlight = null;
+      }
+    });
+  codexSessionLegacyPathIndexFlight = flight;
+  return flight;
+}
+
+function codexSessionFileIdentity(info: {
+  dev: number | bigint;
+  ino: number | bigint;
+  birthtimeMs: number;
+}): string {
+  return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
 }
 
 /**
@@ -4008,8 +4213,7 @@ function emptyCodexDesktopToolTimeline(): CodexDesktopToolTimeline {
 
 function trimCodexDesktopToolTimelineCache(): void {
   while (
-    codexDesktopToolTimelineCache.size >
-    CODEX_DESKTOP_TOOL_TIMELINE_CACHE_LIMIT
+    codexDesktopToolTimelineCache.size > CODEX_DESKTOP_TOOL_TIMELINE_CACHE_LIMIT
   ) {
     const oldest = codexDesktopToolTimelineCache.keys().next().value;
     if (!oldest) return;
@@ -4017,10 +4221,7 @@ function trimCodexDesktopToolTimelineCache(): void {
   }
 }
 
-async function codexJsonlHasThreadId(
-  filePath: string,
-  threadId: string,
-): Promise<boolean> {
+async function codexJsonlThreadId(filePath: string): Promise<string | null> {
   for await (const { line } of streamJsonlLines(filePath)) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
@@ -4031,9 +4232,11 @@ async function codexJsonlHasThreadId(
     }
     if (entry.type !== "session_meta") continue;
     const payload = asObject(entry.payload);
-    return payload?.id === threadId;
+    return typeof payload?.id === "string" && payload.id.length > 0
+      ? payload.id
+      : null;
   }
-  return false;
+  return null;
 }
 
 /**
@@ -4049,94 +4252,95 @@ export async function getSessionHistory(
   const messages: SessionHistoryMessage[] = [];
   try {
     for await (const { line } of streamJsonlLines(jsonlPath)) {
-    if (!line.trim()) continue;
+      if (!line.trim()) continue;
 
-    let entry: Record<string, unknown>;
-    try {
-      entry = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-
-    const type = entry.type as string;
-    if (type !== "user" && type !== "assistant") continue;
-
-    // Skip context compaction and transcript-only messages (not real user input)
-    if (type === "user") {
-      if (
-        entry.isCompactSummary === true ||
-        entry.isVisibleInTranscriptOnly === true
-      ) {
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
         continue;
       }
-    }
 
-    const message = entry.message as
-      { role: string; content: unknown[] | string } | undefined;
-    if (!message?.content) continue;
+      const type = entry.type as string;
+      if (type !== "user" && type !== "assistant") continue;
 
-    const role = message.role as "user" | "assistant";
-    const isMeta = role === "user" && entry.isMeta === true ? true : undefined;
+      // Skip context compaction and transcript-only messages (not real user input)
+      if (type === "user") {
+        if (
+          entry.isCompactSummary === true ||
+          entry.isVisibleInTranscriptOnly === true
+        ) {
+          continue;
+        }
+      }
 
-    // Handle string content (e.g. user message after interrupt)
-    if (typeof message.content === "string") {
-      if (message.content) {
+      const message = entry.message as
+        { role: string; content: unknown[] | string } | undefined;
+      if (!message?.content) continue;
+
+      const role = message.role as "user" | "assistant";
+      const isMeta =
+        role === "user" && entry.isMeta === true ? true : undefined;
+
+      // Handle string content (e.g. user message after interrupt)
+      if (typeof message.content === "string") {
+        if (message.content) {
+          const uuid = entry.uuid as string | undefined;
+          const ts = entry.timestamp as string | undefined;
+          messages.push({
+            role,
+            content: [{ type: "text" as const, text: message.content }],
+            ...(uuid ? { uuid } : {}),
+            ...(ts ? { timestamp: ts } : {}),
+            ...(isMeta ? { isMeta } : {}),
+          });
+        }
+        continue;
+      }
+
+      if (!Array.isArray(message.content)) continue;
+
+      // Filter content to only text and tool_use (skip tool_result for cleaner display)
+      const content: SessionHistoryContentItem[] = [];
+      let imageCount = 0;
+      for (const c of message.content) {
+        if (typeof c !== "object" || c === null) continue;
+        const item = c as Record<string, unknown>;
+        const contentType = item.type as string;
+
+        if (contentType === "text" && item.text) {
+          content.push({ type: "text", text: item.text as string });
+        } else if (contentType === "tool_use") {
+          content.push({
+            type: "tool_use",
+            id: item.id as string,
+            name: item.name as string,
+            input: (item.input as Record<string, unknown>) ?? {},
+          });
+        } else if (contentType === "image") {
+          imageCount++;
+        }
+      }
+
+      if (content.length > 0 || imageCount > 0) {
         const uuid = entry.uuid as string | undefined;
         const ts = entry.timestamp as string | undefined;
+        // If there are only images and no text, add a placeholder
+        if (content.length === 0 && imageCount > 0) {
+          content.push({
+            type: "text",
+            text: `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`,
+          });
+        }
         messages.push({
           role,
-          content: [{ type: "text" as const, text: message.content }],
+          content,
           ...(uuid ? { uuid } : {}),
           ...(ts ? { timestamp: ts } : {}),
           ...(isMeta ? { isMeta } : {}),
+          ...(imageCount > 0 ? { imageCount } : {}),
         });
       }
-      continue;
-    }
-
-    if (!Array.isArray(message.content)) continue;
-
-    // Filter content to only text and tool_use (skip tool_result for cleaner display)
-    const content: SessionHistoryContentItem[] = [];
-    let imageCount = 0;
-    for (const c of message.content) {
-      if (typeof c !== "object" || c === null) continue;
-      const item = c as Record<string, unknown>;
-      const contentType = item.type as string;
-
-      if (contentType === "text" && item.text) {
-        content.push({ type: "text", text: item.text as string });
-      } else if (contentType === "tool_use") {
-        content.push({
-          type: "tool_use",
-          id: item.id as string,
-          name: item.name as string,
-          input: (item.input as Record<string, unknown>) ?? {},
-        });
-      } else if (contentType === "image") {
-        imageCount++;
-      }
-    }
-
-    if (content.length > 0 || imageCount > 0) {
-      const uuid = entry.uuid as string | undefined;
-      const ts = entry.timestamp as string | undefined;
-      // If there are only images and no text, add a placeholder
-      if (content.length === 0 && imageCount > 0) {
-        content.push({
-          type: "text",
-          text: `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`,
-        });
-      }
-      messages.push({
-        role,
-        content,
-        ...(uuid ? { uuid } : {}),
-        ...(ts ? { timestamp: ts } : {}),
-        ...(isMeta ? { isMeta } : {}),
-        ...(imageCount > 0 ? { imageCount } : {}),
-      });
-    }
     }
   } catch {
     return [];
@@ -4714,160 +4918,66 @@ export async function getCodexSessionHistory(
 
   try {
     for await (const { line, index } of streamJsonlLines(jsonlPath)) {
-    if (!line.trim()) continue;
-    let entry: Record<string, unknown>;
-    try {
-      entry = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-
-    const entryTimestamp = entry.timestamp as string | undefined;
-
-    if (entry.type === "event_msg") {
-      const payload = asObject(entry.payload);
-      if (!payload) continue;
-
-      if (payload.type === "thread_rolled_back") {
-        const rawNumTurns = payload.num_turns ?? payload.numTurns;
-        const numTurns =
-          typeof rawNumTurns === "number" ? rawNumTurns : Number(rawNumTurns);
-        applyCodexThreadRollback(messages, numTurns);
-        userTurnOrdinal = countCodexUserTurns(messages);
+      if (!line.trim()) continue;
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
         continue;
       }
 
-      if (payload.type === "user_message") {
-        const rawMessage =
-          typeof payload.message === "string" ? payload.message : "";
-        const images = Array.isArray(payload.images)
-          ? payload.images.length
-          : 0;
-        const localImages = Array.isArray(payload.local_images)
-          ? payload.local_images.length
-          : 0;
-        const imageCount = images + localImages;
+      const entryTimestamp = entry.timestamp as string | undefined;
 
-        const text =
-          rawMessage.trim().length > 0
-          ? rawMessage
-          : imageCount > 0
-            ? `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`
-            : "";
-        if (imageCount > 0) {
-          // Push directly to include imageCount metadata
-          const normalized = text.trim();
-          if (normalized) {
-            messages.push({
-              role: "user",
-              uuid: codexUserTurnUuid(++userTurnOrdinal),
-              content: [{ type: "text", text }],
-              imageCount,
-              ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
-            });
-          }
-        } else {
-          if (
-            appendTextMessage(
-            messages,
-            "user",
-            text,
-            entryTimestamp,
-            codexUserTurnUuid(userTurnOrdinal + 1),
-            )
-          ) {
-            userTurnOrdinal += 1;
-          }
-        }
-        continue;
-      }
+      if (entry.type === "event_msg") {
+        const payload = asObject(entry.payload);
+        if (!payload) continue;
 
-      if (
-        payload.type === "agent_message" &&
-        typeof payload.message === "string"
-      ) {
-        appendTextMessage(
-          messages,
-          "assistant",
-          payload.message,
-          entryTimestamp,
-        );
-      }
-
-      if (payload.type === "image_generation_end") {
-        appendImageGenerationResult(
-          messages,
-          payload,
-          `image-generation-${index}`,
-          entryTimestamp,
-        );
-      }
-
-      if (payload.type === "mcp_tool_call_end") {
-        const invocation = asObject(payload.invocation);
-        const id =
-          typeof payload.call_id === "string"
-            ? payload.call_id
-            : `mcp-result-${index}`;
-        const server =
-          typeof invocation?.server === "string" ? invocation.server : "mcp";
-        const tool =
-          typeof invocation?.tool === "string" ? invocation.tool : "tool";
-        const normalized = normalizeCodexMcpResult(payload.result);
-        appendToolResultMessage(
-          messages,
-          id,
-          `mcp:${server}/${tool}`,
-          normalized.content,
-          {
-            imageBase64: normalized.imageBase64,
-            ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
-          },
-        );
-      }
-      continue;
-    }
-
-    if (entry.type === "response_item") {
-      const payload = asObject(entry.payload);
-      if (!payload) continue;
-
-      if (payload.type === "message") {
-        const content = Array.isArray(payload.content)
-          ? (payload.content as Array<Record<string, unknown>>)
-          : [];
-
-        if (payload.role === "assistant") {
-          const text = content
-            .filter(
-              (item) =>
-                item.type === "output_text" && typeof item.text === "string",
-            )
-            .map((item) => item.text as string)
-            .join("\n");
-          appendTextMessage(messages, "assistant", text, entryTimestamp);
+        if (payload.type === "thread_rolled_back") {
+          const rawNumTurns = payload.num_turns ?? payload.numTurns;
+          const numTurns =
+            typeof rawNumTurns === "number" ? rawNumTurns : Number(rawNumTurns);
+          applyCodexThreadRollback(messages, numTurns);
+          userTurnOrdinal = countCodexUserTurns(messages);
           continue;
         }
 
-        if (payload.role === "user") {
-          if (content.some((item) => item.type === "input_image")) {
-            continue;
-          }
-          const text = content
-            .filter(
-              (item) =>
-                item.type === "input_text" && typeof item.text === "string",
-            )
-            .map((item) => item.text as string)
-            .join("\n");
-          if (!isCodexInjectedUserContext(text)) {
+        if (payload.type === "user_message") {
+          const rawMessage =
+            typeof payload.message === "string" ? payload.message : "";
+          const images = Array.isArray(payload.images)
+            ? payload.images.length
+            : 0;
+          const localImages = Array.isArray(payload.local_images)
+            ? payload.local_images.length
+            : 0;
+          const imageCount = images + localImages;
+
+          const text =
+            rawMessage.trim().length > 0
+              ? rawMessage
+              : imageCount > 0
+                ? `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`
+                : "";
+          if (imageCount > 0) {
+            // Push directly to include imageCount metadata
+            const normalized = text.trim();
+            if (normalized) {
+              messages.push({
+                role: "user",
+                uuid: codexUserTurnUuid(++userTurnOrdinal),
+                content: [{ type: "text", text }],
+                imageCount,
+                ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+              });
+            }
+          } else {
             if (
               appendTextMessage(
-              messages,
-              "user",
-              text,
-              entryTimestamp,
-              codexUserTurnUuid(userTurnOrdinal + 1),
+                messages,
+                "user",
+                text,
+                entryTimestamp,
+                codexUserTurnUuid(userTurnOrdinal + 1),
               )
             ) {
               userTurnOrdinal += 1;
@@ -4875,227 +4985,319 @@ export async function getCodexSessionHistory(
           }
           continue;
         }
-      }
 
-      if (payload.type === "function_call") {
-        const id =
-          typeof payload.call_id === "string"
-            ? payload.call_id
-            : `tool-${index}`;
-        const rawName =
-          typeof payload.name === "string" ? payload.name : "tool";
-        const descriptor = describeCodexDesktopToolCall(
-          rawName,
-          payload.arguments,
-        );
-        appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
-        responseToolNames.set(id, descriptor.name);
-        const imagePaths = codexDesktopToolImagePaths(
-          descriptor.name,
-          descriptor.input,
-        );
-        if (imagePaths.length > 0) responseToolImagePaths.set(id, imagePaths);
+        if (
+          payload.type === "agent_message" &&
+          typeof payload.message === "string"
+        ) {
+          appendTextMessage(
+            messages,
+            "assistant",
+            payload.message,
+            entryTimestamp,
+          );
+        }
+
+        if (payload.type === "image_generation_end") {
+          appendImageGenerationResult(
+            messages,
+            payload,
+            `image-generation-${index}`,
+            entryTimestamp,
+          );
+        }
+
+        if (payload.type === "mcp_tool_call_end") {
+          const invocation = asObject(payload.invocation);
+          const id =
+            typeof payload.call_id === "string"
+              ? payload.call_id
+              : `mcp-result-${index}`;
+          const server =
+            typeof invocation?.server === "string" ? invocation.server : "mcp";
+          const tool =
+            typeof invocation?.tool === "string" ? invocation.tool : "tool";
+          const normalized = normalizeCodexMcpResult(payload.result);
+          appendToolResultMessage(
+            messages,
+            id,
+            `mcp:${server}/${tool}`,
+            normalized.content,
+            {
+              imageBase64: normalized.imageBase64,
+              ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+            },
+          );
+        }
         continue;
       }
 
-      if (payload.type === "custom_tool_call") {
-        const id =
-          typeof payload.call_id === "string"
-            ? payload.call_id
-            : `tool-${index}`;
-        const rawName =
-          typeof payload.name === "string" ? payload.name : "custom_tool";
-        const descriptor = describeCodexDesktopToolCall(rawName, payload.input);
-        appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
-        responseToolNames.set(id, descriptor.name);
-        const imagePaths = codexDesktopToolImagePaths(
-          descriptor.name,
-          descriptor.input,
-        );
-        if (imagePaths.length > 0) responseToolImagePaths.set(id, imagePaths);
-        continue;
-      }
+      if (entry.type === "response_item") {
+        const payload = asObject(entry.payload);
+        if (!payload) continue;
 
-      if (
-        payload.type === "function_call_output" ||
-        payload.type === "custom_tool_call_output"
-      ) {
-        const id =
-          typeof payload.call_id === "string"
-            ? payload.call_id
-            : `tool-result-${index}`;
-        const toolName = responseToolNames.get(id);
-        const imagePaths = responseToolImagePaths.get(id) ?? [];
-        const normalized = normalizeCodexDesktopToolOutput(payload.output);
-        const imageBase64 =
-          imagePaths.length > 0 ? [] : normalized.imageBase64;
-        appendToolResultMessage(
-          messages,
-          id,
-          toolName,
-          normalized.content ||
-            (imagePaths.length > 0 || imageBase64.length > 0
-              ? toolName === "ViewImage"
-                ? "Viewed image"
-                : "Tool returned an image"
-              : codexDesktopToolOutputText(payload.output)),
-          {
-            imagePaths,
-            imageBase64,
-            ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
-          },
-        );
-        responseToolNames.delete(id);
-        responseToolImagePaths.delete(id);
-        continue;
-      }
+        if (payload.type === "message") {
+          const content = Array.isArray(payload.content)
+            ? (payload.content as Array<Record<string, unknown>>)
+            : [];
 
-      if (payload.type === "web_search_call") {
-        const id =
-          typeof payload.call_id === "string"
-            ? payload.call_id
-            : `web-search-${index}`;
-        appendToolUseMessage(
-          messages,
-          id,
-          "WebSearch",
-          getCodexSearchInput(payload),
-        );
-        responseToolNames.set(id, "WebSearch");
-        continue;
-      }
+          if (payload.role === "assistant") {
+            const text = content
+              .filter(
+                (item) =>
+                  item.type === "output_text" && typeof item.text === "string",
+              )
+              .map((item) => item.text as string)
+              .join("\n");
+            appendTextMessage(messages, "assistant", text, entryTimestamp);
+            continue;
+          }
 
-      if (payload.type === "image_generation_call") {
-        appendImageGenerationResult(
-          messages,
-          payload,
-          `image-generation-${index}`,
-          entryTimestamp,
-        );
-        continue;
-      }
+          if (payload.role === "user") {
+            if (content.some((item) => item.type === "input_image")) {
+              continue;
+            }
+            const text = content
+              .filter(
+                (item) =>
+                  item.type === "input_text" && typeof item.text === "string",
+              )
+              .map((item) => item.text as string)
+              .join("\n");
+            if (!isCodexInjectedUserContext(text)) {
+              if (
+                appendTextMessage(
+                  messages,
+                  "user",
+                  text,
+                  entryTimestamp,
+                  codexUserTurnUuid(userTurnOrdinal + 1),
+                )
+              ) {
+                userTurnOrdinal += 1;
+              }
+            }
+            continue;
+          }
+        }
 
-      // Backward/forward compatibility with older/newer Codex JSONL schemas.
-      if (payload.type === "command_execution") {
-        const id =
-          typeof payload.id === "string"
-          ? payload.id
-          : typeof payload.call_id === "string"
-            ? payload.call_id
-            : `cmd-${index}`;
-        const descriptor = describeCodexHistoryCommand(payload);
-        appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
-        continue;
-      }
+        if (payload.type === "function_call") {
+          const id =
+            typeof payload.call_id === "string"
+              ? payload.call_id
+              : `tool-${index}`;
+          const rawName =
+            typeof payload.name === "string" ? payload.name : "tool";
+          const descriptor = describeCodexDesktopToolCall(
+            rawName,
+            payload.arguments,
+          );
+          appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
+          responseToolNames.set(id, descriptor.name);
+          const imagePaths = codexDesktopToolImagePaths(
+            descriptor.name,
+            descriptor.input,
+          );
+          if (imagePaths.length > 0) responseToolImagePaths.set(id, imagePaths);
+          continue;
+        }
 
-      if (payload.type === "mcp_tool_call") {
-        const id =
-          typeof payload.id === "string"
-          ? payload.id
-          : typeof payload.call_id === "string"
-            ? payload.call_id
-            : `mcp-${index}`;
-        const server =
-          typeof payload.server === "string" ? payload.server : "unknown";
-        const tool = typeof payload.tool === "string" ? payload.tool : "tool";
-        appendToolUseMessage(
-          messages,
-          id,
-          `mcp:${server}/${tool}`,
-          parseObjectLike(payload.arguments),
-        );
-        continue;
-      }
+        if (payload.type === "custom_tool_call") {
+          const id =
+            typeof payload.call_id === "string"
+              ? payload.call_id
+              : `tool-${index}`;
+          const rawName =
+            typeof payload.name === "string" ? payload.name : "custom_tool";
+          const descriptor = describeCodexDesktopToolCall(
+            rawName,
+            payload.input,
+          );
+          appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
+          responseToolNames.set(id, descriptor.name);
+          const imagePaths = codexDesktopToolImagePaths(
+            descriptor.name,
+            descriptor.input,
+          );
+          if (imagePaths.length > 0) responseToolImagePaths.set(id, imagePaths);
+          continue;
+        }
 
-      if (payload.type === "file_change") {
-        const id =
-          typeof payload.id === "string"
-          ? payload.id
-          : typeof payload.call_id === "string"
-            ? payload.call_id
-            : `file-change-${index}`;
-        const input = Array.isArray(payload.changes)
-          ? { changes: payload.changes as unknown[] }
-          : parseObjectLike(payload.changes);
-        appendToolUseMessage(messages, id, "FileChange", input);
-        continue;
-      }
+        if (
+          payload.type === "function_call_output" ||
+          payload.type === "custom_tool_call_output"
+        ) {
+          const id =
+            typeof payload.call_id === "string"
+              ? payload.call_id
+              : `tool-result-${index}`;
+          const toolName = responseToolNames.get(id);
+          const imagePaths = responseToolImagePaths.get(id) ?? [];
+          const normalized = normalizeCodexDesktopToolOutput(payload.output);
+          const imageBase64 =
+            imagePaths.length > 0 ? [] : normalized.imageBase64;
+          appendToolResultMessage(
+            messages,
+            id,
+            toolName,
+            normalized.content ||
+              (imagePaths.length > 0 || imageBase64.length > 0
+                ? toolName === "ViewImage"
+                  ? "Viewed image"
+                  : "Tool returned an image"
+                : codexDesktopToolOutputText(payload.output)),
+            {
+              imagePaths,
+              imageBase64,
+              ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+            },
+          );
+          responseToolNames.delete(id);
+          responseToolImagePaths.delete(id);
+          continue;
+        }
 
-      if (payload.type === "web_search") {
-        const id =
-          typeof payload.id === "string"
-          ? payload.id
-          : typeof payload.call_id === "string"
-            ? payload.call_id
-            : `web-search-${index}`;
-        const input =
-          typeof payload.query === "string"
-          ? { query: payload.query }
-          : getCodexSearchInput(payload);
-        appendToolUseMessage(messages, id, "WebSearch", input);
-        continue;
-      }
+        if (payload.type === "web_search_call") {
+          const id =
+            typeof payload.call_id === "string"
+              ? payload.call_id
+              : `web-search-${index}`;
+          appendToolUseMessage(
+            messages,
+            id,
+            "WebSearch",
+            getCodexSearchInput(payload),
+          );
+          responseToolNames.set(id, "WebSearch");
+          continue;
+        }
 
-      if (
-        payload.type === "collab_agent_tool_call" ||
-        payload.type === "collab_tool_call"
-      ) {
-        const id =
-          typeof payload.id === "string" ? payload.id : `collab-${index}`;
-        const tool =
-          typeof payload.tool === "string" ? payload.tool : "subagent";
-        appendToolUseMessage(
-          messages,
-          id,
-          codexCollabHistoryToolName(tool),
-          parseObjectLike(payload),
-        );
-        continue;
-      }
+        if (payload.type === "image_generation_call") {
+          appendImageGenerationResult(
+            messages,
+            payload,
+            `image-generation-${index}`,
+            entryTimestamp,
+          );
+          continue;
+        }
 
-      if (payload.type === "context_compaction") {
-        appendToolUseMessage(
-          messages,
-          typeof payload.id === "string" ? payload.id : `compact-${index}`,
-          "ContextCompaction",
-          { description: "Compact the conversation context" },
-        );
-        continue;
-      }
+        // Backward/forward compatibility with older/newer Codex JSONL schemas.
+        if (payload.type === "command_execution") {
+          const id =
+            typeof payload.id === "string"
+              ? payload.id
+              : typeof payload.call_id === "string"
+                ? payload.call_id
+                : `cmd-${index}`;
+          const descriptor = describeCodexHistoryCommand(payload);
+          appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
+          continue;
+        }
 
-      if (payload.type === "image_view") {
-        const id =
-          typeof payload.id === "string" ? payload.id : `image-view-${index}`;
-        const path =
-          typeof payload.path === "string" ? payload.path : undefined;
-        appendToolUseMessage(
-          messages,
-          id,
-          "ViewImage",
-          path ? { path } : {},
-        );
-        appendToolResultMessage(
-          messages,
-          id,
-          "ViewImage",
-          path ? `Viewed image: ${path}` : "Image viewed",
-          {
-            ...(path ? { imagePaths: [path] } : {}),
-            ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
-          },
-        );
-        continue;
-      }
+        if (payload.type === "mcp_tool_call") {
+          const id =
+            typeof payload.id === "string"
+              ? payload.id
+              : typeof payload.call_id === "string"
+                ? payload.call_id
+                : `mcp-${index}`;
+          const server =
+            typeof payload.server === "string" ? payload.server : "unknown";
+          const tool = typeof payload.tool === "string" ? payload.tool : "tool";
+          appendToolUseMessage(
+            messages,
+            id,
+            `mcp:${server}/${tool}`,
+            parseObjectLike(payload.arguments),
+          );
+          continue;
+        }
 
-      if (payload.type === "sleep") {
-        appendToolUseMessage(
-          messages,
-          typeof payload.id === "string" ? payload.id : `wait-${index}`,
-          "Wait",
-          parseObjectLike(payload),
-        );
+        if (payload.type === "file_change") {
+          const id =
+            typeof payload.id === "string"
+              ? payload.id
+              : typeof payload.call_id === "string"
+                ? payload.call_id
+                : `file-change-${index}`;
+          const input = Array.isArray(payload.changes)
+            ? { changes: payload.changes as unknown[] }
+            : parseObjectLike(payload.changes);
+          appendToolUseMessage(messages, id, "FileChange", input);
+          continue;
+        }
+
+        if (payload.type === "web_search") {
+          const id =
+            typeof payload.id === "string"
+              ? payload.id
+              : typeof payload.call_id === "string"
+                ? payload.call_id
+                : `web-search-${index}`;
+          const input =
+            typeof payload.query === "string"
+              ? { query: payload.query }
+              : getCodexSearchInput(payload);
+          appendToolUseMessage(messages, id, "WebSearch", input);
+          continue;
+        }
+
+        if (
+          payload.type === "collab_agent_tool_call" ||
+          payload.type === "collab_tool_call"
+        ) {
+          const id =
+            typeof payload.id === "string" ? payload.id : `collab-${index}`;
+          const tool =
+            typeof payload.tool === "string" ? payload.tool : "subagent";
+          appendToolUseMessage(
+            messages,
+            id,
+            codexCollabHistoryToolName(tool),
+            parseObjectLike(payload),
+          );
+          continue;
+        }
+
+        if (payload.type === "context_compaction") {
+          appendToolUseMessage(
+            messages,
+            typeof payload.id === "string" ? payload.id : `compact-${index}`,
+            "ContextCompaction",
+            { description: "Compact the conversation context" },
+          );
+          continue;
+        }
+
+        if (payload.type === "image_view") {
+          const id =
+            typeof payload.id === "string" ? payload.id : `image-view-${index}`;
+          const path =
+            typeof payload.path === "string" ? payload.path : undefined;
+          appendToolUseMessage(messages, id, "ViewImage", path ? { path } : {});
+          appendToolResultMessage(
+            messages,
+            id,
+            "ViewImage",
+            path ? `Viewed image: ${path}` : "Image viewed",
+            {
+              ...(path ? { imagePaths: [path] } : {}),
+              ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+            },
+          );
+          continue;
+        }
+
+        if (payload.type === "sleep") {
+          appendToolUseMessage(
+            messages,
+            typeof payload.id === "string" ? payload.id : `wait-${index}`,
+            "Wait",
+            parseObjectLike(payload),
+          );
+        }
       }
-    }
     }
   } catch {
     return [];

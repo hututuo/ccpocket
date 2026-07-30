@@ -84,9 +84,14 @@ interface MonitorStateEvent {
 export type CodexDesktopContinuityMonitorEvent =
   MonitorMessageEvent | MonitorStateEvent;
 
-interface MonitorSnapshot {
+export interface MonitorSnapshot {
   state: CodexDesktopContinuityState;
   turnId?: string;
+}
+
+export interface CodexRolloutInspectionSnapshot extends MonitorSnapshot {
+  observedAt?: string;
+  runningEvidence?: "lifecycle" | "activity";
 }
 
 interface ActiveTurn {
@@ -743,15 +748,15 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
         }
       }
     }
-    let message =
-      event.kind === "message" ? event.message : undefined;
+    let message = event.kind === "message" ? event.message : undefined;
     if (
       event.kind === "message" &&
       message?.type === "tool_result" &&
       event.imageBase64 &&
       event.imageBase64.length > 0
     ) {
-      const images = this.runtime.registerInlineImages?.(event.imageBase64) ?? [];
+      const images =
+        this.runtime.registerInlineImages?.(event.imageBase64) ?? [];
       if (images.length > 0) {
         const existing = message.images ?? [];
         const merged = new Map(existing.map((image) => [image.id, image]));
@@ -814,7 +819,10 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
       if (this.runtime.getCodexThreadId(session) !== threadId) continue;
       if (!this.admitCodexQueuedInputDrain(session)) continue;
       const drained = this.runtime.drainCodexQueuedInputIfReady?.(sessionId);
-      if (drained || !(this.runtime.hasCodexQueuedInput?.(sessionId) ?? false)) {
+      if (
+        drained ||
+        !(this.runtime.hasCodexQueuedInput?.(sessionId) ?? false)
+      ) {
         this.blockedDrainSessionIds.delete(sessionId);
       }
     }
@@ -1061,6 +1069,14 @@ export interface CodexRolloutMonitorOptions {
   /** Internal wake-up when an unpublished provisional turn proves local. */
   onLocalOwnershipSettled?: () => void;
   assistantMessagePairMs?: number;
+  /**
+   * Replay only the active external turn from the bounded seed window.
+   * Legacy continuity leaves this disabled; v2 enables it to close the
+   * app-server persistence gap when a phone reconnects mid-turn.
+   */
+  replayActiveTurnMessages?: boolean;
+  /** Internal inspection override; normal live monitors keep the 8 MiB bound. */
+  seedBytes?: number;
 }
 
 export class CodexRolloutMonitor {
@@ -1099,7 +1115,9 @@ export class CodexRolloutMonitor {
     PendingCompletedTool
   >();
   private lastExternalTerminalTimestampMs: number | undefined;
+  private lastActivityTimestamp: string | undefined;
   private activityEpochValue = 0;
+  private runningEvidence: "lifecycle" | "activity" | undefined;
   private closed = false;
 
   constructor(private readonly options: CodexRolloutMonitorOptions) {}
@@ -1133,6 +1151,20 @@ export class CodexRolloutMonitor {
     };
   }
 
+  get snapshotObservedAt(): string | undefined {
+    const externalTurn = this.latestExternalTurn();
+    if (externalTurn) {
+      return this.lastActivityTimestamp ?? externalTurn.timestamp;
+    }
+    return this.lastExternalTerminalTimestampMs !== undefined
+      ? new Date(this.lastExternalTerminalTimestampMs).toISOString()
+      : undefined;
+  }
+
+  get snapshotRunningEvidence(): "lifecycle" | "activity" | undefined {
+    return this.snapshot.state === "running" ? this.runningEvidence : undefined;
+  }
+
   get hasExternalTurn(): boolean {
     return this.latestExternalTurn() !== undefined;
   }
@@ -1162,9 +1194,10 @@ export class CodexRolloutMonitor {
     );
   }
 
-  async start(): Promise<void> {
+  async start(options: { watch?: boolean } = {}): Promise<void> {
     this.file = await open(this.options.path, "r");
     await this.seed();
+    if (options.watch === false) return;
     try {
       this.fsWatcher = watch(this.options.path, () => this.scheduleRefresh());
       this.fsWatcher.on("error", () => {
@@ -1256,7 +1289,13 @@ export class CodexRolloutMonitor {
 
   private async seed(): Promise<void> {
     const info = await stat(this.options.path);
-    const start = Math.max(0, info.size - MAX_SEED_BYTES);
+    const seedBytes = boundedInteger(
+      this.options.seedBytes,
+      MAX_SEED_BYTES,
+      READ_CHUNK_BYTES,
+      MAX_SEED_BYTES,
+    );
+    const start = Math.max(0, info.size - seedBytes);
     const length = info.size - start;
     const buffer = Buffer.alloc(length);
     const { bytesRead } = await this.file!.read(buffer, 0, length, start);
@@ -1275,8 +1314,66 @@ export class CodexRolloutMonitor {
         this.discardingLongLine = true;
       }
     }
-    this.seedLifecycle(text.split("\n"), info.mtimeMs, truncatedActiveLine);
+    const lines = text.split("\n");
+    this.seedLifecycle(lines, info.mtimeMs, truncatedActiveLine);
+    if (this.options.replayActiveTurnMessages) {
+      this.replaySeedActiveTurnMessages(lines);
+    }
     this.offset = info.size;
+  }
+
+  private replaySeedActiveTurnMessages(lines: string[]): void {
+    const activeTurn = this.latestExternalTurn();
+    if (!activeTurn) return;
+
+    let startIndex = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      const entry = parseRolloutLine(lines[index]);
+      if (entry?.type !== "event_msg") continue;
+      const payload = asRecord(entry.payload);
+      if (!payload || payload.type !== "task_started") continue;
+      const turnId = rolloutTurnId(payload);
+      if (
+        activeTurn.turnId === undefined
+          ? turnId === undefined
+          : turnId === activeTurn.turnId
+      ) {
+        startIndex = index + 1;
+      }
+    }
+
+    for (let index = startIndex; index < lines.length; index += 1) {
+      const entry = parseRolloutLine(lines[index]);
+      if (!entry) continue;
+      const payload = asRecord(entry.payload);
+      if (!payload) continue;
+      const turnId = rolloutTurnId(payload);
+      if (
+        activeTurn.turnId !== undefined &&
+        turnId !== undefined &&
+        turnId !== activeTurn.turnId
+      ) {
+        continue;
+      }
+      const timestamp = optionalString(entry.timestamp);
+      if (entry.type === "response_item") {
+        this.consumeResponseItem(payload, timestamp);
+        continue;
+      }
+      if (entry.type !== "event_msg") continue;
+      const type = optionalString(payload.type);
+      if (
+        type === "user_message" ||
+        type === "agent_message" ||
+        type === "agent_reasoning" ||
+        type === "mcp_tool_call_end" ||
+        type === "patch_apply_end" ||
+        type === "web_search_end" ||
+        type === "image_generation_end"
+      ) {
+        this.consumeEventMessage(payload, timestamp);
+      }
+    }
   }
 
   private seedLifecycle(
@@ -1287,9 +1384,14 @@ export class CodexRolloutMonitor {
     this.resetObservedState();
     let sawActivity = truncatedActiveLine;
     let sawLifecycle = truncatedActiveLine;
+    let latestActivityTimestamp =
+      truncatedActiveLine && Number.isFinite(fileModifiedAtMs)
+        ? new Date(fileModifiedAtMs).toISOString()
+        : undefined;
     let sawExternalTerminalWithoutTimestamp = false;
     if (truncatedActiveLine) {
       this.addActiveTurn(undefined, "desktop", undefined, false);
+      this.runningEvidence = "activity";
     }
     for (const line of lines) {
       if (!line || line.length > MAX_LINE_BYTES) continue;
@@ -1303,6 +1405,10 @@ export class CodexRolloutMonitor {
         continue;
       }
       sawActivity = true;
+      const entryTimestamp = optionalString(entry.timestamp);
+      if (parseTimestampMs(entryTimestamp) !== undefined) {
+        latestActivityTimestamp = entryTimestamp;
+      }
       const payload = asRecord(entry.payload);
       if (!payload) continue;
       const timestampMs = parseTimestampMs(entry.timestamp);
@@ -1313,6 +1419,7 @@ export class CodexRolloutMonitor {
       const type = payload.type;
       if (type === "task_started") {
         sawLifecycle = true;
+        this.runningEvidence = "lifecycle";
         const turnId = rolloutTurnId(payload);
         this.addActiveTurn(
           turnId,
@@ -1353,7 +1460,9 @@ export class CodexRolloutMonitor {
           continue;
         }
         const candidate = this.turnForCompletion(turnId);
-        const completed = candidate ? this.takeActiveTurn(candidate) : undefined;
+        const completed = candidate
+          ? this.takeActiveTurn(candidate)
+          : undefined;
         const origin = completed?.origin ?? "desktop";
         this.lastObservedTurnId = turnId ?? completed?.turnId;
         if (origin === "desktop" && timestampMs !== undefined) {
@@ -1373,7 +1482,8 @@ export class CodexRolloutMonitor {
       }
     }
     if (sawActivity && !sawLifecycle && this.activeTurns.size === 0) {
-      this.addActiveTurn(undefined, "desktop", undefined, false);
+      this.addActiveTurn(undefined, "desktop", latestActivityTimestamp, false);
+      this.runningEvidence = "activity";
     }
     for (const turn of this.activeTurns.values()) {
       if (turn.origin === null) {
@@ -1393,6 +1503,7 @@ export class CodexRolloutMonitor {
     ) {
       this.lastExternalTerminalTimestampMs = fileModifiedAtMs;
     }
+    this.lastActivityTimestamp = latestActivityTimestamp;
   }
 
   private reconcileSeedResponseTurn(
@@ -1501,6 +1612,12 @@ export class CodexRolloutMonitor {
     const payload = asRecord(entry.payload);
     if (!payload) return;
     const timestamp = optionalString(entry.timestamp);
+    if (
+      (entry.type === "event_msg" || entry.type === "response_item") &&
+      parseTimestampMs(timestamp) !== undefined
+    ) {
+      this.lastActivityTimestamp = timestamp;
+    }
     if (entry.type === "event_msg") {
       this.consumeEventMessage(payload, timestamp);
     } else if (entry.type === "response_item") {
@@ -1570,13 +1687,12 @@ export class CodexRolloutMonitor {
     this.bumpActivityEpoch();
     this.clearTurnDedupe();
     this.state = "running";
+    this.runningEvidence = "lifecycle";
     // A local Bridge turn and a Desktop turn can overlap on the same durable
     // thread. Keep a live start unclassified until the following user_message
     // provides client identity; the short timer remains the fallback for
     // older rollouts that omit that event or its client id.
-    const origin: TurnOrigin = this.isExactlyLocalTurn(turnId)
-      ? "local"
-      : null;
+    const origin: TurnOrigin = this.isExactlyLocalTurn(turnId) ? "local" : null;
     this.addActiveTurn(turnId, origin, timestamp, origin === null);
   }
 
@@ -2088,7 +2204,9 @@ export class CodexRolloutMonitor {
         : undefined;
     const callId =
       previouslyEmittedTransportId ??
-      (preferItemId ? itemId ?? transportCallId : transportCallId ?? itemId) ??
+      (preferItemId
+        ? (itemId ?? transportCallId)
+        : (transportCallId ?? itemId)) ??
       `${idPrefix}-${hashText(
         `${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`,
       )}`;
@@ -2205,7 +2323,9 @@ export class CodexRolloutMonitor {
     );
     const rawCallId = optionalString(payload.call_id);
     const callId =
-      (rawCallId ? this.toolIdAliases.get(rawCallId) ?? rawCallId : undefined) ??
+      (rawCallId
+        ? (this.toolIdAliases.get(rawCallId) ?? rawCallId)
+        : undefined) ??
       (type === "image_generation_end"
         ? `desktop-image-${hashText(
             `${timestamp ?? ""}:${imageStatus}:${imageSavedPath}:${imagePrompt}`,
@@ -2397,8 +2517,7 @@ export class CodexRolloutMonitor {
       const candidateTimestampMs = parseTimestampMs(candidate.timestamp);
       if (
         candidateTimestampMs === undefined ||
-        currentTimestampMs - candidateTimestampMs <
-          STALE_DESKTOP_PREDECESSOR_MS
+        currentTimestampMs - candidateTimestampMs < STALE_DESKTOP_PREDECESSOR_MS
       ) {
         continue;
       }
@@ -2437,8 +2556,7 @@ export class CodexRolloutMonitor {
 
   private isExactlyLocalTurn(turnId?: string): boolean {
     return (
-      turnId !== undefined &&
-      this.options.getLocalActiveTurnId() === turnId
+      turnId !== undefined && this.options.getLocalActiveTurnId() === turnId
     );
   }
 
@@ -2491,6 +2609,8 @@ export class CodexRolloutMonitor {
     this.state = "unknown";
     this.lastObservedTurnId = undefined;
     this.lastExternalTerminalTimestampMs = undefined;
+    this.lastActivityTimestamp = undefined;
+    this.runningEvidence = undefined;
     this.retiredStaleDesktopTurnIds.clear();
     this.emittedKeys.clear();
     this.reasoningKeys.clear();
@@ -2526,6 +2646,46 @@ export class CodexRolloutMonitor {
   }
 }
 
+export async function inspectCodexRolloutSnapshot(options: {
+  threadId: string;
+  path: string;
+  seedBytes?: number;
+}): Promise<CodexRolloutInspectionSnapshot> {
+  const monitor = new CodexRolloutMonitor({
+    threadId: options.threadId,
+    path: options.path,
+    ...(options.seedBytes !== undefined
+      ? { seedBytes: options.seedBytes }
+      : {}),
+    getLocalActiveTurnId: () => undefined,
+    consumeLocalClientMessageId: () => false,
+    onEvent: () => {},
+  });
+  try {
+    await monitor.start({ watch: false });
+    return {
+      ...monitor.snapshot,
+      ...(monitor.snapshotObservedAt
+        ? { observedAt: monitor.snapshotObservedAt }
+        : {}),
+      ...(monitor.snapshotRunningEvidence
+        ? { runningEvidence: monitor.snapshotRunningEvidence }
+        : {}),
+    };
+  } finally {
+    monitor.close();
+  }
+}
+
+function parseRolloutLine(line: string): RolloutEntry | null {
+  if (!line || line.length > MAX_LINE_BYTES) return null;
+  try {
+    return JSON.parse(line) as RolloutEntry;
+  } catch {
+    return null;
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value != null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -2536,9 +2696,7 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function rolloutTurnId(
-  payload: Record<string, unknown>,
-): string | undefined {
+function rolloutTurnId(payload: Record<string, unknown>): string | undefined {
   return (
     optionalString(payload.turn_id) ??
     optionalString(
@@ -2598,12 +2756,10 @@ interface NormalizedToolResult {
   content: string;
 }
 
-function hasCommandExecutionResult(
-  payload: Record<string, unknown>,
-): boolean {
+function hasCommandExecutionResult(payload: Record<string, unknown>): boolean {
   if (
-    ["output", "aggregated_output", "aggregatedOutput", "result"].some(
-      (key) => Object.prototype.hasOwnProperty.call(payload, key),
+    ["output", "aggregated_output", "aggregatedOutput", "result"].some((key) =>
+      Object.prototype.hasOwnProperty.call(payload, key),
     )
   ) {
     return true;
@@ -2760,7 +2916,9 @@ function hashText(value: string): string {
 }
 
 function isMainAssistantEventPhase(value: unknown): boolean {
-  return value === "commentary" || value === "final" || value === "final_answer";
+  return (
+    value === "commentary" || value === "final" || value === "final_answer"
+  );
 }
 
 function normalizeAssistantPhase(value: unknown): AssistantMessagePhase {

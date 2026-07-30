@@ -13,8 +13,10 @@ import type { HistoryToolDetailPayload, ServerMessage } from "../parser.js";
 import {
   codexThreadToSessionHistory,
   getAllRecentSessions,
+  resolveCodexSessionJsonlPath,
   type SessionIndexEntry,
 } from "../sessions-index.js";
+import type { SessionCatalogChange } from "../session-catalog-monitor.js";
 import {
   buildConversationContentSnapshot,
   paginateConversationContentEntries,
@@ -34,6 +36,11 @@ import {
   type ConversationSyncStatus,
   type ConversationSyncTarget,
 } from "./slots/conversation-sync-v2-protocol.js";
+import {
+  CodexRolloutMonitor,
+  inspectCodexRolloutSnapshot,
+  type CodexDesktopContinuityMonitorEvent,
+} from "./slots/codex-desktop-continuity.js";
 import type {
   LocalFeatureClientDeliveryMode,
   LocalFeatureHandleContext,
@@ -74,10 +81,25 @@ const MAX_TOOL_DETAIL_ATTACHMENTS = 4;
 const MAX_CODEX_TURN_SCAN_PAGES = 50;
 const CODEX_TURN_SCAN_PAGE_SIZE = 20;
 const LIVE_CONTENT_BATCH_MS = 32;
+// The one-shot discovery already finds every currently running rollout.
+// Idle recent threads are attached lazily on an exact catalog change or focus,
+// avoiding ten redundant 8 MiB seed parses on every cold phone connection.
+const INITIAL_EXTERNAL_CODEX_MONITORS = 0;
+const MAX_EXTERNAL_CODEX_MONITORS = 32;
+const EXTERNAL_CODEX_DISCOVERY_CONCURRENCY = 8;
+const EXTERNAL_CODEX_DISCOVERY_SEED_BYTES = 64 * 1024;
+const EXTERNAL_CODEX_DISCOVERY_TTL_MS = 2 * 60_000;
+const EXTERNAL_CODEX_INFERRED_RUNNING_FRESHNESS_MS = 2 * 60 * 60_000;
+const MAX_EXTERNAL_LIVE_MESSAGES = 256;
+const MAX_EXTERNAL_LIVE_BYTES_PER_THREAD = 512 * 1024;
 // Bump whenever the meaning of a status snapshot changes without changing the
 // wire shape. This invalidates old persisted state tokens so Mobile clears
 // stale rows before applying the replacement snapshot.
 const STATUS_STATE_SCHEMA_VERSION = 2;
+// Build 208 could persist a content revision without observing Desktop-owned
+// rollout changes. Advance the semantic generation so upgraded clients refresh
+// the bounded hot window once instead of trusting those stale revisions.
+const CONTENT_STATE_SCHEMA_VERSION = 2;
 
 type ConversationKey = string;
 type ConversationSyncEventPayload =
@@ -147,6 +169,10 @@ interface ConversationSyncV2Options {
   ) => Promise<ServerMessage[] | ConversationHistoryWindow>;
   statusWatchdogMs?: number;
   coldReconcileMs?: number;
+  observeCodexThread?: ObserveCodexThread;
+  inspectCodexThread?: InspectCodexThread;
+  initialExternalCodexMonitors?: number;
+  maxExternalCodexMonitors?: number;
 }
 
 interface ConversationHistoryWindow {
@@ -190,6 +216,39 @@ interface LiveContentRevision {
   revision: string;
 }
 
+interface ExternalCodexSnapshot {
+  state: "idle" | "running" | "unknown";
+  turnId?: string;
+  observedAt?: string;
+  runningEvidence?: "lifecycle" | "activity";
+}
+
+interface ExternalCodexObservation {
+  readonly snapshot: ExternalCodexSnapshot;
+  refreshNow(): Promise<void>;
+  close(): void;
+}
+
+type ObserveCodexThread = (
+  threadId: string,
+  onEvent: (event: CodexDesktopContinuityMonitorEvent) => void,
+) => Promise<ExternalCodexObservation>;
+
+type InspectCodexThread = (
+  threadId: string,
+) => Promise<ExternalCodexSnapshot | null>;
+
+interface ExternalCodexMonitorRecord {
+  observation: ExternalCodexObservation;
+  generation: number;
+}
+
+interface ExternalCodexLiveMessage {
+  message: ServerMessage;
+  observedAt: string;
+  bytes: number;
+}
+
 /**
  * Additive v2 synchronizer. It owns one catalog/status scheduler and one
  * bounded provider-history queue for every v2 Mobile client; v1 remains
@@ -215,6 +274,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ) => Promise<ServerMessage[] | ConversationHistoryWindow>;
   private readonly statusWatchdogMs: number;
   private readonly coldReconcileMs: number;
+  private readonly observeCodexThread: ObserveCodexThread;
+  private readonly inspectCodexThread: InspectCodexThread;
+  private readonly initialExternalCodexMonitors: number;
+  private readonly maxExternalCodexMonitors: number;
 
   private readonly subscriptions = new Map<object, SyncSubscription>();
   private catalog = new Map<ConversationKey, CatalogRecord>();
@@ -249,6 +312,36 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     ConversationKey,
     { target: ConversationSyncTarget; observedAt: string }
   >();
+  private readonly externalCodexMonitors = new Map<
+    string,
+    ExternalCodexMonitorRecord
+  >();
+  private readonly externalCodexMonitorFlights = new Map<
+    string,
+    Promise<ExternalCodexObservation | null>
+  >();
+  private readonly externalCodexMonitorGenerations = new Map<string, number>();
+  private readonly externalCodexStatuses = new Map<
+    ConversationKey,
+    ConversationSyncStatus
+  >();
+  private readonly externalCodexLiveMessages = new Map<
+    ConversationKey,
+    Map<string, ExternalCodexLiveMessage>
+  >();
+  private readonly externalCodexLiveBytes = new Map<ConversationKey, number>();
+  private readonly externalCodexDiscoveredRunning = new Map<
+    string,
+    ExternalCodexSnapshot
+  >();
+  private readonly pendingExternalCodexThreads = new Set<string>();
+  private externalCodexMonitorGeneration = 0;
+  private externalCodexDiscoveryGeneration = 0;
+  private externalCodexDiscoveryCompletedAt = 0;
+  private sharedCodexReadProcess?: CodexProcess;
+  private sharedCodexReadProcessFlight?: Promise<CodexProcess>;
+  private sharedCodexReadProcessUsers = 0;
+  private sharedCodexReadProcessCloseRequested = false;
   private turnDetailCacheBytes = 0;
   private catalogFlight?: Promise<void>;
   private catalogDirty = true;
@@ -270,7 +363,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       ((current) => readCurrentStatuses(this.runtime, current));
     this.historyReader =
       options.historyReader ??
-      ((target) => readRecentConversationHistory(this.runtime, target));
+      ((target) => this.readRecentConversationHistory(target));
     this.statusWatchdogMs = positiveInterval(
       options.statusWatchdogMs,
       STATUS_WATCHDOG_MS,
@@ -278,6 +371,26 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.coldReconcileMs = positiveInterval(
       options.coldReconcileMs,
       COLD_RECONCILE_MS,
+    );
+    this.observeCodexThread =
+      options.observeCodexThread ??
+      ((threadId, onEvent) =>
+        observeDurableCodexThread(this.runtime, threadId, onEvent));
+    this.inspectCodexThread =
+      options.inspectCodexThread ??
+      (options.observeCodexThread
+        ? async () => null
+        : inspectDurableCodexThread);
+    this.initialExternalCodexMonitors = nonNegativeInteger(
+      options.initialExternalCodexMonitors,
+      INITIAL_EXTERNAL_CODEX_MONITORS,
+    );
+    this.maxExternalCodexMonitors = Math.max(
+      this.initialExternalCodexMonitors,
+      positiveInterval(
+        options.maxExternalCodexMonitors,
+        MAX_EXTERNAL_CODEX_MONITORS,
+      ),
     );
   }
 
@@ -335,13 +448,40 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     } else {
       subscription.outbound.length = 0;
       subscription.queuedBytes = 0;
+      if (!this.hasInteractiveClients()) {
+        this.clearExternalCodexMonitoring();
+        this.requestSharedCodexReadProcessClose();
+      }
     }
   }
 
-  sessionCatalogChanged(): void {
+  sessionCatalogChanged(change?: SessionCatalogChange): void {
     this.catalogDirty = true;
+    const exactCodexThreadId =
+      change?.provider === "codex" ? change.providerSessionId : undefined;
+    if (exactCodexThreadId) {
+      this.pendingExternalCodexThreads.add(exactCodexThreadId);
+    } else if (!this.hasInteractiveClients()) {
+      this.externalCodexDiscoveryCompletedAt = 0;
+    }
     if (!this.hasInteractiveClients()) return;
-    void this.refreshCatalog()
+    if (exactCodexThreadId) {
+      const target: ConversationSyncTarget = {
+        provider: "codex",
+        providerSessionId: exactCodexThreadId,
+      };
+      this.rememberLiveContent(target, new Date().toISOString());
+    }
+    void (
+      exactCodexThreadId
+        ? this.ensureExternalCodexMonitor(exactCodexThreadId, true)
+            .catch((error) => {
+              this.reportExternalObservationFailure(error);
+              return null;
+            })
+            .then(() => this.refreshCatalog())
+        : this.refreshCatalog()
+    )
       .then(() => this.scheduleInteractiveClients())
       .catch((error) => {
         this.reportBackgroundError("catalog_refresh_failed", error);
@@ -391,7 +531,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   disconnect(client: object): void {
     this.subscriptions.delete(client);
-    if (!this.hasInteractiveClients()) this.cancelTimers();
+    if (!this.hasInteractiveClients()) {
+      this.cancelTimers();
+      this.clearExternalCodexMonitoring();
+      this.requestSharedCodexReadProcessClose();
+    }
   }
 
   close(): void {
@@ -402,6 +546,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.turnDetailCache.clear();
     this.liveContentRevisions.clear();
     this.pendingLiveContent.clear();
+    this.clearExternalCodexMonitoring();
+    this.externalCodexDiscoveredRunning.clear();
+    this.pendingExternalCodexThreads.clear();
+    this.externalCodexDiscoveryCompletedAt = 0;
+    this.requestSharedCodexReadProcessClose();
     this.turnDetailCacheBytes = 0;
     this.cancelTimers();
   }
@@ -540,7 +689,19 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       requestId: message.requestId,
       ...(message.focused ? { focused: message.focused } : {}),
     });
-    if (message.focused) this.scheduleSync(client, subscription);
+    if (!message.focused) return;
+    if (message.focused.provider === "codex") {
+      void this.ensureExternalCodexMonitor(
+        message.focused.providerSessionId,
+        true,
+      )
+        .catch((error) => {
+          this.reportExternalObservationFailure(error);
+        })
+        .finally(() => this.scheduleSync(client, subscription));
+      return;
+    }
+    this.scheduleSync(client, subscription);
   }
 
   private unsubscribe(
@@ -558,7 +719,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     });
     this.flush(client, subscription);
     this.subscriptions.delete(client);
-    if (!this.hasInteractiveClients()) this.cancelTimers();
+    if (!this.hasInteractiveClients()) {
+      this.cancelTimers();
+      this.clearExternalCodexMonitoring();
+      this.requestSharedCodexReadProcessClose();
+    }
   }
 
   private scheduleSync(client: object, subscription: SyncSubscription): void {
@@ -891,18 +1056,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const flight = this.historyReader(target)
       .then((history) => {
         const window = normalizeHistoryWindow(history);
+        const messages = mergeExternalCodexMessages(
+          window.messages,
+          this.externalCodexLiveMessages.get(key)?.values() ?? [],
+        );
         for (const turn of window.turnDetails ?? []) {
           this.rememberTurnDetails(target, turn);
         }
-        const built = buildConversationContentSnapshot(
-          target,
-          window.messages,
-          {
-            maxMessageTextBytes: MAX_MESSAGE_TEXT_BYTES,
-            maxSnapshotBytes: MAX_TIMELINE_BYTES,
-            preserveLatestRootTurnTools,
-          },
-        );
+        const built = buildConversationContentSnapshot(target, messages, {
+          maxMessageTextBytes: MAX_MESSAGE_TEXT_BYTES,
+          maxSnapshotBytes: MAX_TIMELINE_BYTES,
+          preserveLatestRootTurnTools,
+        });
         const snapshot = {
           ...built,
           revision: requestedRevision,
@@ -1127,18 +1292,29 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.catalogDirty = false;
         const seeds = await this.catalogReader();
         if (this.closed) return;
+        const previousCatalog = this.catalog;
         const previousStatuses = statusEntries(this.catalog);
         const next = new Map<ConversationKey, CatalogRecord>();
+        const changedCodexThreads: string[] = [];
         for (const seed of seeds.slice(0, MAX_CATALOG_ENTRIES)) {
           if (seed.entry.availability === "ephemeral") continue;
           const entry = normalizeCatalogEntry(seed.entry);
           const key = targetKey(entry);
+          const previousRecord = previousCatalog.get(key);
+          if (
+            entry.provider === "codex" &&
+            previousRecord &&
+            previousRecord.entry.revision !== entry.revision
+          ) {
+            changedCodexThreads.push(entry.providerSessionId);
+          }
           const live = this.liveContentRevisions.get(key);
           if (
             live &&
             Date.parse(entry.recencyAt) >= Date.parse(live.observedAt)
           ) {
             this.liveContentRevisions.delete(key);
+            this.deleteExternalCodexLiveMessages(key);
           }
           const previous = previousStatuses.get(key);
           next.set(key, {
@@ -1147,9 +1323,61 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           });
         }
         this.catalog = next;
+        const shouldWarmExternalCodex =
+          previousCatalog.size === 0 ||
+          (this.externalCodexMonitors.size === 0 &&
+            this.externalCodexMonitorFlights.size === 0);
+        const codexThreadIds = [...next.values()]
+          .filter((record) => record.entry.provider === "codex")
+          .map((record) => record.entry.providerSessionId);
+        for (const [threadId, snapshot] of this
+          .externalCodexDiscoveredRunning) {
+          if (!codexThreadIds.includes(threadId)) continue;
+          this.applyExternalCodexSnapshot(
+            threadId,
+            snapshot,
+            externalSnapshotObservedAt(snapshot),
+            false,
+          );
+        }
+        const discoveryExpired =
+          this.externalCodexDiscoveryCompletedAt === 0 ||
+          Date.now() - this.externalCodexDiscoveryCompletedAt >=
+            EXTERNAL_CODEX_DISCOVERY_TTL_MS;
+        const discovery =
+          discoveryExpired && this.hasInteractiveClients()
+            ? await this.discoverExternalCodexActivity(
+                codexThreadIds,
+                this.externalCodexDiscoveryGeneration,
+              )
+            : {
+                completed: true,
+                running: [...this.externalCodexDiscoveredRunning.keys()],
+              };
+        const pendingCodexThreads = [...this.pendingExternalCodexThreads];
+        const initialCodexThreads = shouldWarmExternalCodex
+          ? [...next.values()]
+              .filter((record) => record.entry.provider === "codex")
+              .slice(0, this.initialExternalCodexMonitors)
+              .map((record) => record.entry.providerSessionId)
+          : [];
+        await this.ensureExternalCodexMonitors([
+          ...pendingCodexThreads,
+          ...discovery.running,
+          ...initialCodexThreads,
+          ...changedCodexThreads.slice(0, this.maxExternalCodexMonitors),
+        ]);
+        if (discovery.completed) {
+          for (const threadId of pendingCodexThreads) {
+            this.pendingExternalCodexThreads.delete(threadId);
+          }
+        }
         this.applyRuntimeOverlay();
         for (const key of this.liveContentRevisions.keys()) {
-          if (!this.catalog.has(key)) this.liveContentRevisions.delete(key);
+          if (!this.catalog.has(key)) {
+            this.liveContentRevisions.delete(key);
+            this.deleteExternalCodexLiveMessages(key);
+          }
         }
         for (const key of this.resultLedger.keys()) {
           if (!this.catalog.has(key)) this.resultLedger.delete(key);
@@ -1170,33 +1398,630 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   private refreshStatuses(): Promise<void> {
     if (this.statusFlight) return this.statusFlight;
-    const flight = this.statusReader(this.catalog)
-      .then((statuses) => {
-        if (this.closed) return;
-        for (const [key, status] of statuses) {
-          const record = this.catalog.get(key);
-          if (!record) continue;
-          record.status = preserveObservedAt(record.status, status);
-        }
-        this.applyRuntimeOverlay();
-        this.recomputeStates();
-        for (const [client, subscription] of this.subscriptions) {
-          if (subscription.interactive) this.scheduleSync(client, subscription);
-        }
-      })
-      .finally(() => {
-        if (this.statusFlight === flight) this.statusFlight = undefined;
-      });
+    const flight = (async () => {
+      const monitoredThreads = [...this.externalCodexMonitors.keys()];
+      for (
+        let offset = 0;
+        offset < monitoredThreads.length;
+        offset += PROVIDER_HISTORY_CONCURRENCY
+      ) {
+        await Promise.allSettled(
+          monitoredThreads
+            .slice(offset, offset + PROVIDER_HISTORY_CONCURRENCY)
+            .map((threadId) =>
+              this.ensureExternalCodexMonitor(threadId, true, false),
+            ),
+        );
+      }
+      if (this.closed) return;
+      this.applyRuntimeOverlay();
+      this.recomputeStates();
+      for (const [client, subscription] of this.subscriptions) {
+        if (subscription.interactive) this.scheduleSync(client, subscription);
+      }
+    })().finally(() => {
+      if (this.statusFlight === flight) this.statusFlight = undefined;
+    });
     this.statusFlight = flight;
     return flight;
   }
 
+  private async readRecentConversationHistory(
+    target: ConversationSyncTarget,
+  ): Promise<ConversationHistoryWindow> {
+    if (target.provider !== "codex") {
+      return readLegacyHistoryWindow(target);
+    }
+    try {
+      return await this.withSharedCodexReadProcess((process) =>
+        readRecentCodexConversationHistory(process, target),
+      );
+    } catch (error) {
+      if (!isUnsupportedAppServerRead(error)) throw error;
+      return readLegacyHistoryWindow(target);
+    }
+  }
+
+  private async withSharedCodexReadProcess<T>(
+    operation: (process: CodexProcess) => Promise<T>,
+  ): Promise<T> {
+    const active = this.runtime.getActiveCodexProcess();
+    if (active && active.isRunning !== false) return operation(active);
+
+    this.sharedCodexReadProcessCloseRequested = false;
+    const process = await this.ensureSharedCodexReadProcess();
+    if (
+      this.closed ||
+      (this.sharedCodexReadProcessCloseRequested &&
+        !this.hasInteractiveClients())
+    ) {
+      if (this.sharedCodexReadProcess === process) {
+        this.sharedCodexReadProcess.stop();
+        this.sharedCodexReadProcess = undefined;
+      }
+      throw new Error("Conversation sync reader is no longer active");
+    }
+    this.sharedCodexReadProcessUsers += 1;
+    try {
+      return await operation(process);
+    } catch (error) {
+      if (
+        this.sharedCodexReadProcess === process &&
+        process.isRunning === false
+      ) {
+        this.sharedCodexReadProcess = undefined;
+        process.stop();
+      }
+      throw error;
+    } finally {
+      this.sharedCodexReadProcessUsers = Math.max(
+        0,
+        this.sharedCodexReadProcessUsers - 1,
+      );
+      if (
+        this.sharedCodexReadProcessCloseRequested &&
+        this.sharedCodexReadProcessUsers === 0
+      ) {
+        this.stopSharedCodexReadProcess();
+      }
+    }
+  }
+
+  private ensureSharedCodexReadProcess(): Promise<CodexProcess> {
+    if (this.sharedCodexReadProcess?.isRunning === false) {
+      const stopped = this.sharedCodexReadProcess;
+      this.sharedCodexReadProcess = undefined;
+      stopped.stop();
+    }
+    if (this.sharedCodexReadProcess) {
+      return Promise.resolve(this.sharedCodexReadProcess);
+    }
+    if (this.sharedCodexReadProcessFlight) {
+      return this.sharedCodexReadProcessFlight;
+    }
+    const flight = this.runtime
+      .createStandaloneCodexProcess(15_000)
+      .then((process) => {
+        if (this.closed) {
+          process.stop();
+          throw new Error("Conversation sync handler is closed");
+        }
+        this.sharedCodexReadProcess = process;
+        return process;
+      })
+      .finally(() => {
+        if (this.sharedCodexReadProcessFlight === flight) {
+          this.sharedCodexReadProcessFlight = undefined;
+        }
+      });
+    this.sharedCodexReadProcessFlight = flight;
+    return flight;
+  }
+
+  private requestSharedCodexReadProcessClose(): void {
+    this.sharedCodexReadProcessCloseRequested = true;
+    if (this.sharedCodexReadProcessUsers === 0) {
+      this.stopSharedCodexReadProcess();
+    }
+  }
+
+  private stopSharedCodexReadProcess(): void {
+    const process = this.sharedCodexReadProcess;
+    this.sharedCodexReadProcess = undefined;
+    process?.stop();
+  }
+
+  private async discoverExternalCodexActivity(
+    threadIds: readonly string[],
+    generation: number,
+  ): Promise<{ completed: boolean; running: string[] }> {
+    let failures = 0;
+    for (
+      let offset = 0;
+      offset < threadIds.length;
+      offset += EXTERNAL_CODEX_DISCOVERY_CONCURRENCY
+    ) {
+      if (this.closed || !this.hasInteractiveClients()) break;
+      const batch = threadIds.slice(
+        offset,
+        offset + EXTERNAL_CODEX_DISCOVERY_CONCURRENCY,
+      );
+      const inspected = await Promise.allSettled(
+        batch.map((threadId) => this.inspectCodexThread(threadId)),
+      );
+      if (
+        this.closed ||
+        !this.hasInteractiveClients() ||
+        this.externalCodexDiscoveryGeneration !== generation
+      ) {
+        return { completed: false, running: [] };
+      }
+      inspected.forEach((result, index) => {
+        const threadId = batch[index];
+        if (!threadId) return;
+        if (result.status === "rejected") {
+          failures += 1;
+          if (!this.externalCodexMonitors.has(threadId)) {
+            this.clearUnverifiedExternalCodexSnapshot(threadId);
+          }
+          return;
+        }
+        const snapshot = result.value;
+        if (!snapshot) {
+          if (!this.externalCodexMonitors.has(threadId)) {
+            this.clearUnverifiedExternalCodexSnapshot(threadId);
+          }
+          return;
+        }
+        this.applyExternalCodexSnapshot(
+          threadId,
+          snapshot,
+          externalSnapshotObservedAt(snapshot),
+          false,
+        );
+      });
+    }
+    if (failures > 0) {
+      console.warn(
+        `[conversation-sync-v2] Optional rollout discovery skipped ${failures} thread(s)`,
+      );
+    }
+    if (
+      this.closed ||
+      !this.hasInteractiveClients() ||
+      this.externalCodexDiscoveryGeneration !== generation
+    ) {
+      return { completed: false, running: [] };
+    }
+    this.externalCodexDiscoveryCompletedAt = Date.now();
+    const inspectedThreads = new Set(threadIds);
+    return {
+      completed: true,
+      running: [...this.externalCodexDiscoveredRunning.keys()].filter(
+        (threadId) => inspectedThreads.has(threadId),
+      ),
+    };
+  }
+
+  private async ensureExternalCodexMonitors(
+    threadIds: readonly string[],
+  ): Promise<void> {
+    const unique = [...new Set(threadIds.filter(Boolean))];
+    for (
+      let offset = 0;
+      offset < unique.length;
+      offset += PROVIDER_HISTORY_CONCURRENCY
+    ) {
+      await Promise.allSettled(
+        unique
+          .slice(offset, offset + PROVIDER_HISTORY_CONCURRENCY)
+          .map((threadId) =>
+            this.ensureExternalCodexMonitor(threadId, false, false),
+          ),
+      );
+    }
+  }
+
+  private ensureExternalCodexMonitor(
+    threadId: string,
+    refresh: boolean,
+    publish = true,
+  ): Promise<ExternalCodexObservation | null> {
+    if (
+      this.closed ||
+      !this.hasInteractiveClients() ||
+      this.hasActiveLocalCodexRuntime(threadId)
+    ) {
+      this.dropExternalCodexMonitor(threadId);
+      return Promise.resolve(null);
+    }
+    const existing = this.externalCodexMonitors.get(threadId);
+    if (existing) {
+      this.externalCodexMonitors.delete(threadId);
+      this.externalCodexMonitors.set(threadId, existing);
+      if (!refresh) return Promise.resolve(existing.observation);
+      return existing.observation
+        .refreshNow()
+        .then(() => {
+          if (
+            this.externalCodexMonitors.get(threadId) !== existing ||
+            this.externalCodexMonitorGenerations.get(threadId) !==
+              existing.generation
+          ) {
+            return (
+              this.externalCodexMonitors.get(threadId)?.observation ?? null
+            );
+          }
+          this.applyExternalCodexSnapshot(
+            threadId,
+            existing.observation.snapshot,
+            externalSnapshotObservedAt(existing.observation.snapshot),
+            publish,
+          );
+          return existing.observation;
+        })
+        .catch((error) => {
+          if (this.externalCodexMonitors.get(threadId) === existing) {
+            this.dropExternalCodexMonitor(threadId);
+          }
+          throw error;
+        });
+    }
+    const inFlight = this.externalCodexMonitorFlights.get(threadId);
+    if (inFlight) {
+      return refresh
+        ? inFlight.then(async (observation) => {
+            if (!observation) return null;
+            const record = this.externalCodexMonitors.get(threadId);
+            if (!record || record.observation !== observation) {
+              return record?.observation ?? null;
+            }
+            await observation.refreshNow();
+            if (
+              this.externalCodexMonitors.get(threadId) !== record ||
+              this.externalCodexMonitorGenerations.get(threadId) !==
+                record.generation
+            ) {
+              return (
+                this.externalCodexMonitors.get(threadId)?.observation ?? null
+              );
+            }
+            this.applyExternalCodexSnapshot(
+              threadId,
+              observation.snapshot,
+              externalSnapshotObservedAt(observation.snapshot),
+              publish,
+            );
+            return observation;
+          })
+        : inFlight;
+    }
+
+    if (!this.ensureExternalCodexMonitorCapacity()) {
+      return Promise.resolve(null);
+    }
+    const generation = ++this.externalCodexMonitorGeneration;
+    this.externalCodexMonitorGenerations.set(threadId, generation);
+    const flight = (async (): Promise<ExternalCodexObservation | null> => {
+      const observation = await this.observeCodexThread(threadId, (event) =>
+        this.onExternalCodexEvent(threadId, generation, event),
+      );
+      if (
+        this.closed ||
+        !this.hasInteractiveClients() ||
+        this.hasActiveLocalCodexRuntime(threadId) ||
+        this.externalCodexMonitorGenerations.get(threadId) !== generation
+      ) {
+        observation.close();
+        return null;
+      }
+      const raced = this.externalCodexMonitors.get(threadId);
+      if (raced) {
+        observation.close();
+        return raced.observation;
+      }
+      this.externalCodexMonitors.set(threadId, {
+        observation,
+        generation,
+      });
+      this.applyExternalCodexSnapshot(
+        threadId,
+        observation.snapshot,
+        externalSnapshotObservedAt(observation.snapshot),
+        publish,
+      );
+      return observation;
+    })().finally(() => {
+      if (this.externalCodexMonitorFlights.get(threadId) === flight) {
+        this.externalCodexMonitorFlights.delete(threadId);
+      }
+      if (
+        !this.externalCodexMonitors.has(threadId) &&
+        this.externalCodexMonitorGenerations.get(threadId) === generation
+      ) {
+        this.externalCodexMonitorGenerations.delete(threadId);
+      }
+    });
+    this.externalCodexMonitorFlights.set(threadId, flight);
+    return flight;
+  }
+
+  private onExternalCodexEvent(
+    threadId: string,
+    generation: number,
+    event: CodexDesktopContinuityMonitorEvent,
+  ): void {
+    if (
+      this.closed ||
+      !this.hasInteractiveClients() ||
+      this.externalCodexMonitorGenerations.get(threadId) !== generation
+    ) {
+      return;
+    }
+    const target: ConversationSyncTarget = {
+      provider: "codex",
+      providerSessionId: threadId,
+    };
+    const observedAt =
+      event.timestamp && validIso(event.timestamp)
+        ? event.timestamp
+        : new Date().toISOString();
+    const monitor = this.externalCodexMonitors.get(threadId);
+    if (monitor) {
+      this.externalCodexMonitors.delete(threadId);
+      this.externalCodexMonitors.set(threadId, monitor);
+    }
+
+    if (event.kind === "state") {
+      this.applyExternalCodexSnapshot(
+        threadId,
+        {
+          state: event.state,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+        },
+        observedAt,
+        false,
+      );
+      const key = targetKey(target);
+      if (event.state === "running") {
+        this.resultLedger.delete(key);
+      } else if (event.outcome) {
+        this.resultLedger.set(key, {
+          result: event.outcome === "completed" ? "completed" : "failed",
+          observedAt,
+        });
+        this.rememberLiveContent(target, observedAt);
+      }
+      this.applyRuntimeOverlay();
+      this.recomputeStates();
+      this.scheduleInteractiveClients();
+      return;
+    }
+
+    this.rememberExternalCodexMessage(target, event, observedAt);
+    if (event.message.type === "result") {
+      this.resultLedger.set(targetKey(target), {
+        result:
+          Boolean(event.message.error) ||
+          /error|fail/i.test(event.message.subtype) ||
+          /error|fail/i.test(event.message.stopReason ?? "")
+            ? "failed"
+            : "completed",
+        observedAt,
+      });
+    } else if (
+      event.message.type === "assistant" ||
+      event.message.type === "tool_result" ||
+      event.message.type === "user_input"
+    ) {
+      this.resultLedger.delete(targetKey(target));
+    }
+    if (isStreamingConversationDelta(event.message)) {
+      this.queueLiveContent(target, observedAt);
+    } else if (isConversationTimelineMessage(event.message)) {
+      this.publishLiveContent(target, observedAt);
+    }
+  }
+
+  private clearUnverifiedExternalCodexSnapshot(threadId: string): void {
+    this.externalCodexDiscoveredRunning.delete(threadId);
+    const target: ConversationSyncTarget = {
+      provider: "codex",
+      providerSessionId: threadId,
+    };
+    const previous = this.externalCodexStatuses.get(targetKey(target));
+    if (!previous) return;
+    this.applyExternalCodexSnapshot(
+      threadId,
+      { state: "unknown" },
+      previous.observedAt,
+      false,
+    );
+  }
+
+  private applyExternalCodexSnapshot(
+    threadId: string,
+    snapshot: ExternalCodexSnapshot,
+    observedAt: string,
+    publish: boolean,
+  ): void {
+    const target: ConversationSyncTarget = {
+      provider: "codex",
+      providerSessionId: threadId,
+    };
+    const effectiveState =
+      snapshot.state === "running" && !credibleExternalRunning(snapshot)
+        ? "unknown"
+        : snapshot.state;
+    const status: ConversationSyncStatus =
+      effectiveState === "running"
+        ? {
+            ...target,
+            activity: "working",
+            attention: "none",
+            result: "none",
+            runtimeAttachment: "ownedElsewhere",
+            source: "legacyRollout",
+            confidence: "observed",
+            observedAt,
+          }
+        : effectiveState === "idle"
+          ? {
+              ...target,
+              activity: "idle",
+              attention: "none",
+              result: "none",
+              runtimeAttachment: "notLoaded",
+              source: "legacyRollout",
+              confidence: "observed",
+              observedAt,
+            }
+          : unknownStatus(target, observedAt, "legacyRollout");
+    const key = targetKey(target);
+    const previous = this.externalCodexStatuses.get(key);
+    if (previous && Date.parse(observedAt) < Date.parse(previous.observedAt)) {
+      return;
+    }
+    if (effectiveState === "running") {
+      this.externalCodexDiscoveredRunning.set(threadId, {
+        ...snapshot,
+        observedAt,
+      });
+    } else {
+      this.externalCodexDiscoveredRunning.delete(threadId);
+    }
+    this.externalCodexStatuses.set(key, status);
+    if (!publish || !this.catalog.has(key)) return;
+    this.applyRuntimeOverlay();
+    this.recomputeStates();
+    this.scheduleInteractiveClients();
+  }
+
+  private rememberExternalCodexMessage(
+    target: ConversationSyncTarget,
+    event: Extract<CodexDesktopContinuityMonitorEvent, { kind: "message" }>,
+    observedAt: string,
+  ): void {
+    const key = targetKey(target);
+    const bytes = Buffer.byteLength(stableJson(event.message), "utf8");
+    if (bytes > MAX_EXTERNAL_LIVE_BYTES_PER_THREAD) return;
+    const messages =
+      this.externalCodexLiveMessages.get(key) ??
+      new Map<string, ExternalCodexLiveMessage>();
+    let totalBytes = this.externalCodexLiveBytes.get(key) ?? 0;
+    const previous = messages.get(event.itemKey);
+    if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
+    messages.delete(event.itemKey);
+    messages.set(event.itemKey, {
+      message: event.message,
+      observedAt,
+      bytes,
+    });
+    totalBytes += bytes;
+    while (
+      messages.size > MAX_EXTERNAL_LIVE_MESSAGES ||
+      totalBytes > MAX_EXTERNAL_LIVE_BYTES_PER_THREAD
+    ) {
+      const oldest = messages.keys().next().value;
+      if (oldest === undefined) break;
+      const removed = messages.get(oldest);
+      messages.delete(oldest);
+      if (removed) totalBytes = Math.max(0, totalBytes - removed.bytes);
+    }
+    if (messages.size === 0) {
+      this.deleteExternalCodexLiveMessages(key);
+      return;
+    }
+    this.externalCodexLiveMessages.set(key, messages);
+    this.externalCodexLiveBytes.set(key, totalBytes);
+  }
+
+  private hasActiveLocalCodexRuntime(threadId: string): boolean {
+    return (this.runtime.listRuntimeConversationStates?.() ?? []).some(
+      (state) =>
+        state.provider === "codex" &&
+        state.providerSessionId === threadId &&
+        (state.processStatus !== "idle" ||
+          state.pendingAttention !== undefined),
+    );
+  }
+
+  private ensureExternalCodexMonitorCapacity(): boolean {
+    const occupiedCount = () =>
+      new Set([
+        ...this.externalCodexMonitors.keys(),
+        ...this.externalCodexMonitorFlights.keys(),
+      ]).size;
+    while (occupiedCount() >= this.maxExternalCodexMonitors) {
+      const idle = [...this.externalCodexMonitors.entries()].find(
+        ([threadId]) =>
+          !this.externalCodexMonitorFlights.has(threadId) &&
+          this.externalCodexStatuses.get(
+            targetKey({ provider: "codex", providerSessionId: threadId }),
+          )?.activity !== "working",
+      );
+      const oldest =
+        idle ??
+        [...this.externalCodexMonitors.entries()].find(
+          ([threadId]) => !this.externalCodexMonitorFlights.has(threadId),
+        );
+      if (!oldest) return false;
+      this.dropExternalCodexMonitor(oldest[0], true);
+    }
+    return true;
+  }
+
+  private dropExternalCodexMonitor(
+    threadId: string,
+    preserveStatus = false,
+  ): void {
+    const record = this.externalCodexMonitors.get(threadId);
+    if (record) record.observation.close();
+    this.externalCodexMonitors.delete(threadId);
+    this.externalCodexMonitorFlights.delete(threadId);
+    this.externalCodexMonitorGenerations.delete(threadId);
+    const key = targetKey({ provider: "codex", providerSessionId: threadId });
+    if (!preserveStatus) this.externalCodexStatuses.delete(key);
+    this.deleteExternalCodexLiveMessages(key);
+  }
+
+  private clearExternalCodexMonitoring(): void {
+    this.externalCodexDiscoveryGeneration += 1;
+    for (const record of this.externalCodexMonitors.values()) {
+      record.observation.close();
+    }
+    this.externalCodexMonitors.clear();
+    this.externalCodexMonitorFlights.clear();
+    this.externalCodexMonitorGenerations.clear();
+    this.externalCodexStatuses.clear();
+    this.externalCodexLiveMessages.clear();
+    this.externalCodexLiveBytes.clear();
+  }
+
+  private deleteExternalCodexLiveMessages(key: ConversationKey): void {
+    this.externalCodexLiveMessages.delete(key);
+    this.externalCodexLiveBytes.delete(key);
+  }
+
   private applyRuntimeOverlay(): void {
+    for (const [key, status] of this.externalCodexStatuses) {
+      const record = this.catalog.get(key);
+      if (!record) continue;
+      if (!externalStatusMayOverride(record.status, status)) continue;
+      record.status = preserveObservedAt(record.status, status);
+    }
     const runtimeStates = this.runtime.listRuntimeConversationStates?.() ?? [];
     for (const runtimeState of runtimeStates) {
       const target = targetFromRuntime(runtimeState);
       if (!target) continue;
       const key = targetKey(target);
+      const activeLocalCodexRuntime =
+        target.provider === "codex" &&
+        (runtimeState.processStatus !== "idle" ||
+          runtimeState.pendingAttention !== undefined);
+      if (activeLocalCodexRuntime) {
+        this.dropExternalCodexMonitor(target.providerSessionId);
+      }
       let record = this.catalog.get(key);
       if (!record) {
         const timestamp = validIso(runtimeState.observedAt)
@@ -1216,13 +2041,32 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         };
         this.catalog.set(key, record);
       }
-      record.status = statusFromRuntime(runtimeState, record.status);
+      const runtimeStatus = statusFromRuntime(runtimeState, record.status);
+      const externalStatus =
+        target.provider === "codex"
+          ? this.externalCodexStatuses.get(key)
+          : undefined;
+      if (
+        !activeLocalCodexRuntime &&
+        externalStatus?.activity === "working" &&
+        statusObservedAfter(externalStatus, runtimeStatus)
+      ) {
+        record.status = externalStatus;
+      } else {
+        record.status = runtimeStatus;
+      }
     }
     for (const [key, live] of this.liveContentRevisions) {
       const record = this.catalog.get(key);
       if (!record) continue;
-      record.entry.modifiedAt = live.observedAt;
-      record.entry.recencyAt = live.observedAt;
+      record.entry.modifiedAt = laterIso(
+        record.entry.modifiedAt,
+        live.observedAt,
+      );
+      record.entry.recencyAt = laterIso(
+        record.entry.recencyAt,
+        live.observedAt,
+      );
       record.entry.revision = live.revision;
     }
     for (const [key, result] of this.resultLedger) {
@@ -1433,6 +2277,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         subscription.dirty = true;
       }
     }
+  }
+
+  private reportExternalObservationFailure(error: unknown): void {
+    // This compatibility overlay is optional. Do not turn a missing legacy
+    // rollout into a v2 protocol failure while app-server catalog/history is
+    // still usable, and do not print filesystem error messages that may carry
+    // private host paths.
+    const kind = error instanceof Error ? error.name : typeof error;
+    console.warn(
+      `[conversation-sync-v2] Optional rollout observation unavailable (${kind})`,
+    );
   }
 
   private async sendTurnsPage(
@@ -1648,6 +2503,142 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   }
 }
 
+async function observeDurableCodexThread(
+  runtime: LocalFeatureRuntime,
+  threadId: string,
+  onEvent: (event: CodexDesktopContinuityMonitorEvent) => void,
+): Promise<ExternalCodexObservation> {
+  const path = await resolveCodexSessionJsonlPath(threadId);
+  if (!path) {
+    throw new Error(`No durable rollout found for ${threadId}`);
+  }
+  const monitor = new CodexRolloutMonitor({
+    threadId,
+    path,
+    getLocalActiveTurnId: () => runtime.getLocallyActiveCodexTurnId?.(threadId),
+    consumeLocalClientMessageId: () => false,
+    onEvent,
+    replayActiveTurnMessages: true,
+  });
+  try {
+    await monitor.start();
+    return {
+      get snapshot() {
+        return {
+          ...monitor.snapshot,
+          ...(monitor.snapshotObservedAt
+            ? { observedAt: monitor.snapshotObservedAt }
+            : {}),
+          ...(monitor.snapshotRunningEvidence
+            ? { runningEvidence: monitor.snapshotRunningEvidence }
+            : {}),
+        };
+      },
+      refreshNow: () => monitor.refreshNow(),
+      close: () => monitor.close(),
+    };
+  } catch (error) {
+    monitor.close();
+    throw error;
+  }
+}
+
+async function inspectDurableCodexThread(
+  threadId: string,
+): Promise<ExternalCodexSnapshot | null> {
+  const path = await resolveCodexSessionJsonlPath(threadId);
+  if (!path) return null;
+  return inspectCodexRolloutSnapshot({
+    threadId,
+    path,
+    seedBytes: EXTERNAL_CODEX_DISCOVERY_SEED_BYTES,
+  });
+}
+
+function mergeExternalCodexMessages(
+  history: readonly ServerMessage[],
+  observed: Iterable<ExternalCodexLiveMessage>,
+): ServerMessage[] {
+  const merged = [...history];
+  const canonicalUsers = history
+    .map((message, index) => ({ message, index }))
+    .filter((entry) => entry.message.type === "user_input");
+  const matchedCanonicalUsers = new Set<number>();
+  const identities = new Set(
+    history.map(observedMessageIdentity).filter((value) => value !== null),
+  );
+  for (const entry of observed) {
+    if (entry.message.type === "user_input") {
+      const matchingCanonical = canonicalUsers.find(
+        (candidate) =>
+          !matchedCanonicalUsers.has(candidate.index) &&
+          equivalentObservedUserMessage(candidate.message, entry.message),
+      );
+      if (matchingCanonical) {
+        matchedCanonicalUsers.add(matchingCanonical.index);
+        continue;
+      }
+    }
+    const identity = observedMessageIdentity(entry.message);
+    if (identity && identities.has(identity)) continue;
+    merged.push(entry.message);
+    if (identity) identities.add(identity);
+  }
+  return merged;
+}
+
+function observedMessageIdentity(message: ServerMessage): string | null {
+  if (message.type === "user_input") {
+    const clientMessageId =
+      "clientMessageId" in message &&
+      typeof message.clientMessageId === "string"
+        ? message.clientMessageId
+        : undefined;
+    return `user:${
+      message.userMessageUuid ??
+      clientMessageId ??
+      createHash("sha256").update(stableJson(message)).digest("hex")
+    }`;
+  }
+  if (message.type === "assistant") {
+    return `assistant:${message.messageUuid ?? message.message.id}`;
+  }
+  if (message.type === "tool_result") {
+    return `tool-result:${message.toolUseId}`;
+  }
+  // Deltas are ordered chunks. Equal text in two distinct chunks is valid;
+  // the rollout item key already provides the only safe live dedupe identity.
+  if (message.type === "thinking_delta" || message.type === "stream_delta") {
+    return null;
+  }
+  return null;
+}
+
+function equivalentObservedUserMessage(
+  canonical: ServerMessage,
+  live: ServerMessage,
+): boolean {
+  if (canonical.type !== "user_input" || live.type !== "user_input") {
+    return false;
+  }
+  if (
+    canonical.text !== live.text ||
+    (canonical.imageCount ?? 0) !== (live.imageCount ?? 0)
+  ) {
+    return false;
+  }
+  const canonicalTimestamp = canonical.sourceTimestamp ?? canonical.timestamp;
+  const liveTimestamp = live.sourceTimestamp ?? live.timestamp;
+  if (!canonicalTimestamp || !liveTimestamp) return false;
+  const canonicalTime = Date.parse(canonicalTimestamp);
+  const liveTime = Date.parse(liveTimestamp);
+  return (
+    Number.isFinite(canonicalTime) &&
+    Number.isFinite(liveTime) &&
+    Math.abs(canonicalTime - liveTime) <= 1_000
+  );
+}
+
 async function readUnifiedCatalog(
   runtime: LocalFeatureRuntime,
 ): Promise<ConversationSyncCatalogSeed[]> {
@@ -1727,48 +2718,35 @@ async function readCurrentStatuses(
   return statuses;
 }
 
-async function readRecentConversationHistory(
-  runtime: LocalFeatureRuntime,
+async function readRecentCodexConversationHistory(
+  process: CodexProcess,
   target: ConversationSyncTarget,
 ): Promise<ConversationHistoryWindow> {
-  if (target.provider !== "codex") {
-    return readLegacyHistoryWindow(target);
-  }
-  try {
-    return await withCodexProcess(runtime, undefined, async (process) => {
-      const page = await process.listThreadTurns({
-        threadId: target.providerSessionId,
-        limit: 5,
-        sortDirection: "desc",
-        // The current app-server summary view keeps only the user/final spine
-        // and omits tool ids/counts. Read one bounded full page at the Bridge,
-        // then compact the older two turns before crossing the wire.
-        itemsView: "full",
-      });
-      const turns = [...page.data].reverse();
-      const normalized = normalizeCodexTurns(
-        turns,
-        "full",
-        target.providerSessionId,
-      );
-      const fullStart = Math.max(
-        0,
-        normalized.turns.length - FULL_RECENT_TURNS,
-      );
-      return {
-        messages: normalized.turns.flatMap((turn, index) =>
-          index < fullStart
-            ? compactTurnMessages(turn.messages, turn.turnId)
-            : turn.messages,
-        ),
-        nextTurnCursor: page.nextCursor,
-        turnDetails: normalized.turnDetails,
-      };
-    });
-  } catch (error) {
-    if (!isUnsupportedAppServerRead(error)) throw error;
-    return readLegacyHistoryWindow(target);
-  }
+  const page = await process.listThreadTurns({
+    threadId: target.providerSessionId,
+    limit: 5,
+    sortDirection: "desc",
+    // The current app-server summary view keeps only the user/final spine and
+    // omits tool ids/counts. Read one bounded full page at the Bridge, then
+    // compact the older two turns before crossing the wire.
+    itemsView: "full",
+  });
+  const turns = [...page.data].reverse();
+  const normalized = normalizeCodexTurns(
+    turns,
+    "full",
+    target.providerSessionId,
+  );
+  const fullStart = Math.max(0, normalized.turns.length - FULL_RECENT_TURNS);
+  return {
+    messages: normalized.turns.flatMap((turn, index) =>
+      index < fullStart
+        ? compactTurnMessages(turn.messages, turn.turnId)
+        : turn.messages,
+    ),
+    nextTurnCursor: page.nextCursor,
+    turnDetails: normalized.turnDetails,
+  };
 }
 
 async function readLegacyHistoryWindow(
@@ -2558,6 +3536,55 @@ function preserveObservedAt(
     : next;
 }
 
+function externalSnapshotObservedAt(snapshot: ExternalCodexSnapshot): string {
+  return snapshot.observedAt && validIso(snapshot.observedAt)
+    ? snapshot.observedAt
+    : new Date().toISOString();
+}
+
+function credibleExternalRunning(snapshot: ExternalCodexSnapshot): boolean {
+  if (snapshot.state !== "running") return false;
+  if (snapshot.runningEvidence !== "activity") return true;
+  if (!snapshot.observedAt || !validIso(snapshot.observedAt)) return false;
+  const observedAt = Date.parse(snapshot.observedAt);
+  return (
+    Number.isFinite(observedAt) &&
+    Date.now() - observedAt <= EXTERNAL_CODEX_INFERRED_RUNNING_FRESHNESS_MS
+  );
+}
+
+function statusObservedAfter(
+  candidate: ConversationSyncStatus,
+  current: ConversationSyncStatus,
+): boolean {
+  const candidateTime = Date.parse(candidate.observedAt);
+  const currentTime = Date.parse(current.observedAt);
+  return (
+    Number.isFinite(candidateTime) &&
+    Number.isFinite(currentTime) &&
+    candidateTime > currentTime
+  );
+}
+
+function externalStatusMayOverride(
+  current: ConversationSyncStatus,
+  external: ConversationSyncStatus,
+): boolean {
+  if (current.confidence !== "authoritative") return true;
+  if (
+    current.activity === "working" ||
+    current.activity === "compacting" ||
+    current.activity === "systemError" ||
+    current.attention !== "none"
+  ) {
+    return false;
+  }
+  if (current.activity === "unknown") return true;
+  return (
+    external.activity === "working" && statusObservedAfter(external, current)
+  );
+}
+
 function catalogEntries(
   catalog: ReadonlyMap<ConversationKey, CatalogRecord>,
 ): Map<ConversationKey, ConversationSyncCatalogEntry> {
@@ -2594,7 +3621,7 @@ function providerRevision(
 ): string {
   return createHash("sha256")
     .update(
-      `${target.provider}\0${target.providerSessionId}\0${sourceRevision}`,
+      `${CONTENT_STATE_SCHEMA_VERSION}\0${target.provider}\0${target.providerSessionId}\0${sourceRevision}`,
     )
     .digest("hex");
 }
@@ -2725,8 +3752,27 @@ function validIso(value: string): boolean {
   return Number.isFinite(Date.parse(value));
 }
 
+function laterIso(current: string, candidate: string): string {
+  const currentTime = Date.parse(current);
+  const candidateTime = Date.parse(candidate);
+  if (!Number.isFinite(candidateTime)) return current;
+  if (!Number.isFinite(currentTime) || candidateTime > currentTime) {
+    return candidate;
+  }
+  return current;
+}
+
 function positiveInterval(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) && (value ?? 0) > 0
+    ? Math.floor(value!)
+    : fallback;
+}
+
+function nonNegativeInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return Number.isFinite(value) && (value ?? -1) >= 0
     ? Math.floor(value!)
     : fallback;
 }

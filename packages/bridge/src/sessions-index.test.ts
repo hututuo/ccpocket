@@ -17,6 +17,7 @@ import {
   getAllRecentSessions,
   getCodexSessionIndexMetadata,
   getCodexSessionHistory,
+  resolveCodexSessionJsonlPath,
   extractMessageImages,
   codexThreadToSessionHistory,
   supplementCodexThreadWithDesktopTools,
@@ -1142,10 +1143,7 @@ describe("codex sessions integration", () => {
       const sessionsDir = join(root, "sessions", "2026", "02", "13");
       mkdirSync(sessionsDir, { recursive: true });
       writeFileSync(
-        join(
-          sessionsDir,
-          `rollout-2026-02-13T11-26-43-${threadId}.jsonl`,
-        ),
+        join(sessionsDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
         [
           JSON.stringify({
             timestamp: "2026-02-13T11:26:43.995Z",
@@ -1175,6 +1173,111 @@ describe("codex sessions integration", () => {
     expect(sessions.map((session) => session.sessionId)).not.toContain(
       defaultThreadId,
     );
+  });
+
+  it("shares the rollout path index and isolates it by CODEX_HOME", async () => {
+    const firstHome = join(tempHome, "first-codex-home");
+    const secondHome = join(tempHome, "second-codex-home");
+    const firstIds = [
+      "019c56c0-d4d8-7b22-9e3c-200664d68022",
+      "019c56c0-d4d8-7b22-9e3c-200664d68023",
+    ];
+    const writeRollout = (root: string, threadId: string) => {
+      const sessionsDir = join(root, "sessions", "2026", "02", "13");
+      mkdirSync(sessionsDir, { recursive: true });
+      const path = join(
+        sessionsDir,
+        `rollout-2026-02-13T11-26-43-${threadId}.jsonl`,
+      );
+      writeFileSync(
+        path,
+        JSON.stringify({
+          timestamp: "2026-02-13T11:26:43.995Z",
+          type: "session_meta",
+          payload: { id: threadId, cwd: "/tmp/project-a" },
+        }),
+      );
+      return path;
+    };
+
+    process.env.CODEX_HOME = firstHome;
+    const firstPaths = firstIds.map((threadId) =>
+      writeRollout(firstHome, threadId),
+    );
+    expect(
+      await Promise.all(firstIds.map(resolveCodexSessionJsonlPath)),
+    ).toEqual(firstPaths);
+
+    const secondId = "019c56c0-d4d8-7b22-9e3c-200664d68024";
+    process.env.CODEX_HOME = secondHome;
+    const secondPath = writeRollout(secondHome, secondId);
+    expect(await resolveCodexSessionJsonlPath(secondId)).toBe(secondPath);
+    expect(await resolveCodexSessionJsonlPath(firstIds[0]!)).toBeNull();
+  });
+
+  it("caches content-derived paths for legacy rollout filenames", async () => {
+    const legacyHome = join(tempHome, "legacy-codex-home");
+    const sessionsDir = join(legacyHome, "sessions", "2026", "02", "13");
+    const firstId = "019c56c0-d4d8-7b22-9e3c-200664d68025";
+    const secondId = "019c56c0-d4d8-7b22-9e3c-200664d68026";
+    const firstPath = join(sessionsDir, "legacy-first.jsonl");
+    const secondPath = join(sessionsDir, "legacy-second.jsonl");
+    const writeLegacyRollout = (path: string, threadId: string) => {
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          timestamp: "2026-02-13T11:26:43.995Z",
+          type: "session_meta",
+          payload: { id: threadId, cwd: "/tmp/project-a" },
+        }),
+      );
+    };
+
+    process.env.CODEX_HOME = legacyHome;
+    writeLegacyRollout(firstPath, firstId);
+    writeLegacyRollout(secondPath, secondId);
+    expect(
+      await Promise.all([
+        resolveCodexSessionJsonlPath(firstId),
+        resolveCodexSessionJsonlPath(secondId),
+      ]),
+    ).toEqual([firstPath, secondPath]);
+
+    // A cached content-derived binding follows the same stat-validated
+    // semantics as a UUID filename. Rewriting metadata must not trigger
+    // another whole-tree fallback scan on the next lookup.
+    writeLegacyRollout(firstPath, "019c56c0-d4d8-7b22-9e3c-200664d68027");
+    expect(await resolveCodexSessionJsonlPath(firstId)).toBe(firstPath);
+  });
+
+  it("detects a newly-created current-day rollout during the recheck cooldown", async () => {
+    const liveHome = join(tempHome, "live-codex-home");
+    const missingId = "019c56c0-d4d8-7b22-9e3c-200664d68028";
+    const newId = "019c56c0-d4d8-7b22-9e3c-200664d68029";
+    process.env.CODEX_HOME = liveHome;
+    expect(await resolveCodexSessionJsonlPath(missingId)).toBeNull();
+
+    const now = new Date();
+    const sessionsDir = join(
+      liveHome,
+      "sessions",
+      String(now.getFullYear()).padStart(4, "0"),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+    );
+    mkdirSync(sessionsDir, { recursive: true });
+    const newPath = join(sessionsDir, `rollout-now-${newId}.jsonl`);
+    writeFileSync(
+      newPath,
+      JSON.stringify({
+        timestamp: now.toISOString(),
+        type: "session_meta",
+        payload: { id: newId, cwd: "/tmp/project-a" },
+      }),
+    );
+
+    expect(await resolveCodexSessionJsonlPath(newId)).toBe(newPath);
   });
 
   it("preserves Claude and Codex sessions that share the same raw id", async () => {
@@ -1213,7 +1316,9 @@ describe("codex sessions integration", () => {
     );
 
     const { sessions } = await getAllRecentSessions({ limit: 20 });
-    const matching = sessions.filter((session) => session.sessionId === sharedId);
+    const matching = sessions.filter(
+      (session) => session.sessionId === sharedId,
+    );
 
     expect(matching.map((session) => session.provider).sort()).toEqual([
       "claude",
@@ -2378,9 +2483,7 @@ describe("codex sessions integration", () => {
       expect.objectContaining({
         role: "assistant",
         uuid: "call-agent",
-        content: [
-          expect.objectContaining({ name: "SpawnAgent" }),
-        ],
+        content: [expect.objectContaining({ name: "SpawnAgent" })],
       }),
       expect.objectContaining({
         role: "tool_result",
@@ -2897,9 +3000,7 @@ describe("codex sessions integration", () => {
 
     await expect(
       extractMessageImages(threadId, "codex:user-turn:1"),
-    ).resolves.toEqual([
-      { base64: "ZXZlbnQtZmlyc3Q=", mimeType: "image/png" },
-    ]);
+    ).resolves.toEqual([{ base64: "ZXZlbnQtZmlyc3Q=", mimeType: "image/png" }]);
   });
 
   it("supports legacy codex response_item tool schemas", async () => {
