@@ -6,6 +6,8 @@ import {
 
 export const AUTO_APPROVAL_STATE_CAPABILITY =
   "auto_approval_state_v1" as const;
+export const AUTO_APPROVAL_SUPERVISION_CAPABILITY =
+  "auto_approval_supervision_state_v1" as const;
 
 export type AutoApprovalClientMessage =
   | {

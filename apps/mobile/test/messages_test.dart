@@ -886,6 +886,7 @@ void main() {
         'archived_sessions_result',
         'unarchive_result',
         'delete_session_result',
+        autoApprovalSupervisionCapability,
         ...LocalFeatureProtocolHost.supportedServerMessageTypes.where(
           (type) => !fileTransferProtocolSlot.supportedServerMessageTypes
               .contains(type),

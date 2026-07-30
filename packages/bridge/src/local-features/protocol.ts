@@ -71,7 +71,10 @@ export type {
   AutoApprovalClientMessage,
   AutoApprovalStateMessage,
 } from "./slots/auto-approval-protocol.js";
-export { AUTO_APPROVAL_STATE_CAPABILITY } from "./slots/auto-approval-protocol.js";
+export {
+  AUTO_APPROVAL_STATE_CAPABILITY,
+  AUTO_APPROVAL_SUPERVISION_CAPABILITY,
+} from "./slots/auto-approval-protocol.js";
 export type {
   CodexCoreAction,
   CodexCoreActionStatus,

@@ -10,6 +10,10 @@ import {
   isAutoApprovablePermission,
   shellCommandRequiresManualApproval,
 } from "./auto-approval.js";
+import {
+  AUTO_APPROVAL_STATE_CAPABILITY,
+  AUTO_APPROVAL_SUPERVISION_CAPABILITY,
+} from "./slots/auto-approval-protocol.js";
 import type {
   LocalFeatureRuntime,
   LocalFeatureSession,
@@ -202,6 +206,39 @@ describe("AutoApprovalFeatureHandler", () => {
     });
   });
 
+  it("keeps the advertised v1 payload parseable for an older Mobile", async () => {
+    const store = await storeFixture();
+    const fixture = handlerFixture(store, {
+      capabilities: new Set([AUTO_APPROVAL_STATE_CAPABILITY]),
+    });
+    fixture.session.process = {};
+    fixture.handler.capabilitiesChanged(fixture.client);
+
+    await fixture.handler.handle(
+      {
+        type: "get_auto_approval_state",
+        sessionId: fixture.session.id,
+        requestId: "legacy-v1-request",
+      },
+      fixture.context,
+    );
+
+    expect(fixture.sent).toContainEqual({
+      type: "auto_approval_state_v1",
+      requestId: "legacy-v1-request",
+      sessionId: "session-1",
+      enabledConversationCount: 0,
+      reason: "query",
+      errorCode: "external_app_server_approval_unsupported",
+      error: expect.stringContaining("independent Codex app-server"),
+    });
+    expect(fixture.sent).not.toContainEqual(
+      expect.objectContaining({
+        supervisionAvailable: expect.anything(),
+      }),
+    );
+  });
+
   it("approves a safe request without any connected phone", async () => {
     const store = await storeFixture();
     await store.setEnabled("thread-1", true);
@@ -283,7 +320,7 @@ function permission(
 
 function handlerFixture(
   store: AutoApprovalStore,
-  options: { supports?: boolean } = {},
+  options: { supports?: boolean; capabilities?: Set<string> } = {},
 ): {
   handler: AutoApprovalFeatureHandler;
   runtime: LocalFeatureRuntime;
@@ -311,7 +348,8 @@ function handlerFixture(
     getActiveCodexProcess: () => process,
     createStandaloneCodexProcess: async () => process,
     send: (_client, message) => sent.push(message),
-    supports: () => options.supports ?? true,
+    supports: (_client, capability) =>
+      options.capabilities?.has(capability) ?? options.supports ?? true,
     isClientOpen: () => true,
     hasCodexQueuedInput: () => false,
   };
