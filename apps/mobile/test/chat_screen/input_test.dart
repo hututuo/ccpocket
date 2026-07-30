@@ -9,6 +9,14 @@ import 'package:patrol_finders/patrol_finders.dart';
 
 import 'helpers/chat_test_helpers.dart';
 
+Finder durableCodexPreview(String providerSessionId) {
+  final prefix = 'durable-codex-$providerSessionId-';
+  return find.byWidgetPredicate((widget) {
+    final key = widget.key;
+    return key is ValueKey<String> && key.value.startsWith(prefix);
+  });
+}
+
 void main() {
   late MockBridgeService bridge;
 
@@ -193,10 +201,7 @@ void main() {
         );
         await pumpN($.tester);
 
-        expect(
-          find.byKey(const ValueKey('durable-codex-durable-codex-a')),
-          findsOneWidget,
-        );
+        expect(durableCodexPreview('durable-codex-a'), findsOneWidget);
         bridge.emitMessage(
           const SystemMessage(
             subtype: 'session_created',
@@ -209,10 +214,7 @@ void main() {
         );
         await pumpN($.tester);
 
-        expect(
-          find.byKey(const ValueKey('durable-codex-durable-codex-a')),
-          findsOneWidget,
-        );
+        expect(durableCodexPreview('durable-codex-a'), findsOneWidget);
         expect(bridge.lastRequestedSessionId, isNot('runtime-for-thread-b'));
       },
     );
