@@ -1796,6 +1796,8 @@ class BridgeService implements BridgeServiceBase {
           if (epoch != _connectionEpoch) return;
           int? frameBytes;
           String? diagnosticType;
+          String? diagnosticSessionId;
+          var frameModelValidated = false;
           var sessionListModelValidated = false;
           final isSessionListFrame =
               data is String && _sessionListFramePattern.hasMatch(data);
@@ -1808,6 +1810,10 @@ class BridgeService implements BridgeServiceBase {
           try {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
             diagnosticType = _diagnosticToken(json['type']);
+            final rawSessionId = json['sessionId'];
+            if (rawSessionId is String && rawSessionId.isNotEmpty) {
+              diagnosticSessionId = rawSessionId;
+            }
             if (diagnosticType == 'session_list') {
               if (!isSessionListFrame) {
                 _setConnectionBootstrapPhase(
@@ -1835,8 +1841,9 @@ class BridgeService implements BridgeServiceBase {
               );
             }
             if (_shouldSuppressBackgroundWireMessage(json)) return;
-            var sessionId = json['sessionId'] as String?;
+            var sessionId = diagnosticSessionId;
             var msg = ServerMessage.fromJson(json);
+            frameModelValidated = true;
             if (msg is SessionListMessage) {
               sessionListModelValidated = true;
               _setConnectionBootstrapPhase(
@@ -2418,22 +2425,28 @@ class BridgeService implements BridgeServiceBase {
                 _messageController.add(msg);
             }
           } catch (e) {
+            final applyFailure = frameModelValidated;
             if (_claimFrameDiagnosticSlot()) {
               frameBytes ??= _diagnosticFrameBytes(data);
               _logConnectionDiagnostic(
-                sessionListModelValidated
-                    ? 'frame_apply_failed'
-                    : 'frame_parse_failed',
+                applyFailure ? 'frame_apply_failed' : 'frame_parse_failed',
                 epoch: epoch,
+                type: diagnosticType,
                 bytes: frameBytes,
                 errorKind: _diagnosticToken(e.runtimeType.toString()),
                 warning: true,
               );
             }
-            final errorMsg = const ErrorMessage(
-              message: 'Bridge sent an unreadable response.',
+            final errorMsg = ErrorMessage(
+              message: applyFailure
+                  ? 'Bridge response could not be applied.'
+                  : 'Bridge response could not be parsed.',
+              errorCode: applyFailure
+                  ? 'bridge_frame_apply_failed'
+                  : 'bridge_frame_parse_failed',
+              sessionId: diagnosticSessionId,
             );
-            _taggedMessageController.add((errorMsg, null));
+            _taggedMessageController.add((errorMsg, diagnosticSessionId));
             _messageController.add(errorMsg);
             if (diagnosticType == 'session_list' || isSessionListFrame) {
               final errorKind = _diagnosticToken(e.runtimeType.toString());

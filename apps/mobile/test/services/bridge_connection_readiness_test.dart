@@ -401,6 +401,12 @@ void main() {
       final bridge = BridgeService(
         authoritativeSessionListTimeout: _testAuthorityTimeout,
       )..reconnectDelayForTest = (_) => Duration.zero;
+      final frameError = bridge.messages
+          .where((message) => message is ErrorMessage)
+          .cast<ErrorMessage>()
+          .firstWhere(
+            (message) => message.errorCode == 'bridge_frame_parse_failed',
+          );
       try {
         bridge.connect('ws://127.0.0.1:${server.port}');
         await _waitUntil(
@@ -409,6 +415,9 @@ void main() {
               bridge.hasAuthoritativeSessionListForCurrentConnection,
         );
 
+        final error = await frameError.timeout(const Duration(seconds: 1));
+        expect(error.message, 'Bridge response could not be parsed.');
+        expect(error.sessionId, isNull);
         final diagnostics = _connectionDiagnostics().join('\n');
         expect(diagnostics, contains('event=frame_parse_failed'));
         expect(diagnostics, contains('error=FormatException'));
@@ -418,6 +427,61 @@ void main() {
       }
     },
   );
+
+  test('malformed session frame is classified and scoped', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final sockets = <WebSocket>[];
+    server.transform(WebSocketTransformer()).listen((socket) {
+      sockets.add(socket);
+      socket.listen((data) {
+        final message = jsonDecode(data as String) as Map<String, dynamic>;
+        if (message['type'] != 'list_sessions') return;
+        socket
+          ..add(jsonEncode({'type': 'session_list', 'sessions': const []}))
+          ..add(
+            jsonEncode({
+              'type': 'input_ack',
+              'sessionId': 'session-a',
+              'acceptedSeq': 'not-an-integer',
+            }),
+          );
+      });
+    });
+
+    final bridge = BridgeService(
+      authoritativeSessionListTimeout: _testAuthorityTimeout,
+    );
+    final otherSessionErrors = <ErrorMessage>[];
+    final otherSubscription = bridge
+        .messagesForSession('session-b')
+        .where((message) => message is ErrorMessage)
+        .cast<ErrorMessage>()
+        .listen(otherSessionErrors.add);
+    final scopedError = bridge
+        .messagesForSession('session-a')
+        .where((message) => message is ErrorMessage)
+        .cast<ErrorMessage>()
+        .firstWhere(
+          (message) => message.errorCode == 'bridge_frame_parse_failed',
+        );
+    try {
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      final error = await scopedError.timeout(const Duration(seconds: 1));
+
+      expect(error.message, 'Bridge response could not be parsed.');
+      expect(error.sessionId, 'session-a');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(
+        otherSessionErrors.where(
+          (message) => message.errorCode == 'bridge_frame_parse_failed',
+        ),
+        isEmpty,
+      );
+    } finally {
+      await otherSubscription.cancel();
+      await _closeFixture(bridge, server, sockets);
+    }
+  });
 
   test('dispose cancels an armed authority watchdog', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
