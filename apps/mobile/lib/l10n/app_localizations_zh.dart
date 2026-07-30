@@ -1999,6 +1999,29 @@ class AppLocalizationsZh extends AppLocalizations {
   String get resumingLinkedSession => '正在恢复会话...';
 
   @override
+  String sessionLinkProgressStage(String stage) {
+    String _temp0 = intl.Intl.selectLogic(stage, {
+      'waiting_for_connection': '正在连接 Bridge...',
+      'waiting_for_identity': '正在确认数据源...',
+      'request_sent': '正在发送会话请求...',
+      'request_accepted': 'Bridge 已接受请求...',
+      'runtime_checked': '正在检查运行中的会话...',
+      'catalog_scanning': '正在搜索会话目录...',
+      'catalog_scanned': '已检查会话目录...',
+      'resolution_ready': '已找到会话...',
+      'resume_lock_waiting': '正在等待会话访问权...',
+      'resume_lock_acquired': '已取得会话访问权...',
+      'history_reading': '正在加载最近历史...',
+      'history_read': '最近历史已加载...',
+      'runtime_starting': '正在启动会话运行时...',
+      'metadata_loading': '正在加载会话信息...',
+      'ready': '正在打开会话...',
+      'other': '正在加载会话...',
+    });
+    return '$_temp0';
+  }
+
+  @override
   String get sessionUnavailableTitle => '会话不可用';
 
   @override

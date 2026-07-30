@@ -71,6 +71,7 @@ Future<void> _authorizeBridgeIdentity(
   WebSocket socket, {
   required String bridgeInstanceId,
   required String codexSourceId,
+  List<String> bridgeCapabilities = const [],
 }) async {
   final previousGeneration = bridge.authoritativeSessionListGeneration;
   socket.add(
@@ -79,6 +80,7 @@ Future<void> _authorizeBridgeIdentity(
       'sessions': const [],
       'bridgeInstanceId': bridgeInstanceId,
       'codexSourceId': codexSourceId,
+      'bridgeCapabilities': bridgeCapabilities,
     }),
   );
   for (var attempt = 0; attempt < 100; attempt++) {
@@ -1836,6 +1838,169 @@ void main() {
       await server.close(force: true);
       bridge.dispose();
     });
+
+    test(
+      'resolveSessionLink renews only for effective progress on a capable Bridge',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+        final bridge = BridgeService();
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-progress',
+          codexSourceId: 'source-progress',
+          bridgeCapabilities: const [sessionLinkProgressCapability],
+        );
+        final requestFuture = socket
+            .where((event) {
+              final json = jsonDecode(event as String) as Map<String, dynamic>;
+              return json['type'] == 'resolve_session_link';
+            })
+            .map((event) => jsonDecode(event as String) as Map<String, dynamic>)
+            .first;
+        final observed = <SessionLinkProgressMessage>[];
+
+        final resolution = bridge.resolveSessionLink(
+          'claude-progress',
+          provider: 'claude',
+          progressIdleTimeout: const Duration(milliseconds: 250),
+          progressHardTimeout: const Duration(seconds: 2),
+          onProgress: observed.add,
+        );
+        final request = await requestFuture.timeout(const Duration(seconds: 2));
+        final generation = request['sessionLinkGeneration'] as int;
+
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        socket.add(
+          jsonEncode({
+            'type': sessionLinkProgressCapability,
+            'requestId': request['requestId'],
+            'sourceSessionId': 'claude-progress',
+            'generation': generation,
+            'operation': 'resolve',
+            'stage': 'request_accepted',
+            'sequence': 1,
+            'observedAt': '2026-07-31T00:00:00Z',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        socket.add(
+          jsonEncode({
+            'type': sessionLinkProgressCapability,
+            'requestId': request['requestId'],
+            'sourceSessionId': 'claude-progress',
+            'generation': generation,
+            'operation': 'resolve',
+            'stage': 'catalog_scanning',
+            'sequence': 2,
+            'completedUnits': 1,
+            'observedAt': '2026-07-31T00:00:01Z',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        socket.add(
+          jsonEncode({
+            'type': 'session_link_resolution',
+            'requestId': request['requestId'],
+            'sourceSessionId': 'claude-progress',
+            'sessionLinkGeneration': generation,
+            'status': 'live',
+            'bridgeSessionId': 'bridge-live',
+            'provider': 'claude',
+          }),
+        );
+
+        final result = await resolution.timeout(const Duration(seconds: 2));
+        expect(result.support, SessionLinkResolveSupport.resolved);
+        expect(result.generation, generation);
+        expect(
+          observed.map((progress) => progress.stage),
+          containsAllInOrder([
+            SessionLinkProgressStage.requestSent,
+            SessionLinkProgressStage.requestAccepted,
+            SessionLinkProgressStage.catalogScanning,
+          ]),
+        );
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'duplicate session link heartbeat does not renew the idle timeout',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen(socketReady.complete);
+
+        final bridge = BridgeService();
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-progress',
+          codexSourceId: 'source-progress',
+          bridgeCapabilities: const [sessionLinkProgressCapability],
+        );
+        final requestFuture = socket
+            .where((event) {
+              final json = jsonDecode(event as String) as Map<String, dynamic>;
+              return json['type'] == 'resolve_session_link';
+            })
+            .map((event) => jsonDecode(event as String) as Map<String, dynamic>)
+            .first;
+        final resolution = bridge.resolveSessionLink(
+          'claude-stalled',
+          progressIdleTimeout: const Duration(milliseconds: 200),
+          progressHardTimeout: const Duration(seconds: 2),
+        );
+        final request = await requestFuture.timeout(const Duration(seconds: 2));
+        final generation = request['sessionLinkGeneration'] as int;
+        Map<String, Object?> progress(int sequence) => {
+          'type': sessionLinkProgressCapability,
+          'requestId': request['requestId'],
+          'sourceSessionId': 'claude-stalled',
+          'generation': generation,
+          'operation': 'resolve',
+          'stage': 'request_accepted',
+          'sequence': sequence,
+          'observedAt': '2026-07-31T00:00:00Z',
+        };
+
+        socket.add(jsonEncode(progress(1)));
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        socket.add(jsonEncode(progress(2)));
+        final race = await Future.any<String>([
+          resolution.then((_) => 'timed-out'),
+          Future<String>.delayed(
+            const Duration(milliseconds: 120),
+            () => 'still-waiting',
+          ),
+        ]);
+
+        expect(race, 'timed-out');
+        expect(
+          (await resolution).support,
+          SessionLinkResolveSupport.unavailable,
+        );
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
 
     test('resolveSessionLink degrades for an older Bridge', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

@@ -2095,6 +2095,29 @@ class AppLocalizationsEn extends AppLocalizations {
   String get resumingLinkedSession => 'Resuming session...';
 
   @override
+  String sessionLinkProgressStage(String stage) {
+    String _temp0 = intl.Intl.selectLogic(stage, {
+      'waiting_for_connection': 'Connecting to Bridge...',
+      'waiting_for_identity': 'Confirming data source...',
+      'request_sent': 'Sending session request...',
+      'request_accepted': 'Bridge accepted the request...',
+      'runtime_checked': 'Checking active sessions...',
+      'catalog_scanning': 'Searching the session catalog...',
+      'catalog_scanned': 'Session catalog checked...',
+      'resolution_ready': 'Session found...',
+      'resume_lock_waiting': 'Waiting for session access...',
+      'resume_lock_acquired': 'Session access acquired...',
+      'history_reading': 'Loading recent history...',
+      'history_read': 'Recent history loaded...',
+      'runtime_starting': 'Starting the session runtime...',
+      'metadata_loading': 'Loading session details...',
+      'ready': 'Opening session...',
+      'other': 'Loading session...',
+    });
+    return '$_temp0';
+  }
+
+  @override
   String get sessionUnavailableTitle => 'Session unavailable';
 
   @override

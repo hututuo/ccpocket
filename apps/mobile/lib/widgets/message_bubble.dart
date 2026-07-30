@@ -222,6 +222,7 @@ class ServerMessageWidget extends StatelessWidget {
             ? () => onDismissCodexWarning!(msg)
             : null,
       ),
+      SessionLinkProgressMessage() => const SizedBox.shrink(),
       SessionLinkResolutionMessage() => const SizedBox.shrink(),
       final StatusMessage msg => StatusChip(message: msg),
       HistoryMessage() => const SizedBox.shrink(),

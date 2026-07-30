@@ -120,12 +120,18 @@ class _SessionLinkScreenBody extends StatelessWidget {
       },
       builder: (context, state) {
         final isUnavailable = state is SessionLinkUnavailable;
-        return SessionLinkStatusView(
-          unavailable: isUnavailable,
-          resuming: state is SessionLinkResuming,
-          onOpenRecentSessions: () {
-            context.router.replaceAll([AdaptiveHomeRoute()]);
-          },
+        final cubit = context.read<SessionLinkCubit>();
+        return StreamBuilder<SessionLinkProgressMessage>(
+          stream: cubit.progress,
+          initialData: cubit.currentProgress,
+          builder: (context, progress) => SessionLinkStatusView(
+            unavailable: isUnavailable,
+            resuming: state is SessionLinkResuming,
+            progress: progress.data,
+            onOpenRecentSessions: () {
+              context.router.replaceAll([AdaptiveHomeRoute()]);
+            },
+          ),
         );
       },
     );
@@ -215,11 +221,13 @@ class SessionLinkStatusView extends StatelessWidget {
     super.key,
     required this.unavailable,
     required this.resuming,
+    this.progress,
     required this.onOpenRecentSessions,
   });
 
   final bool unavailable;
   final bool resuming;
+  final SessionLinkProgressMessage? progress;
   final VoidCallback onOpenRecentSessions;
 
   @override
@@ -240,9 +248,14 @@ class SessionLinkStatusView extends StatelessWidget {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        resuming
-                            ? l.resumingLinkedSession
-                            : l.resolvingLinkedSession,
+                        progress == null
+                            ? (resuming
+                                  ? l.resumingLinkedSession
+                                  : l.resolvingLinkedSession)
+                            : l.sessionLinkProgressStage(
+                                progress!.stage.wireValue,
+                              ),
+                        key: const ValueKey('session_link_progress_stage'),
                         textAlign: TextAlign.center,
                       ),
                     ],

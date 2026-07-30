@@ -1285,6 +1285,9 @@ sealed class ServerMessage {
               permissionChangeId: json['permissionChangeId'] as String?,
               goalChangeId: json['goalChangeId'] as String?,
             ),
+      sessionLinkProgressCapability => SessionLinkProgressMessage.fromJson(
+        json,
+      ),
       'session_link_resolution' => SessionLinkResolutionMessage(
         requestId: json['requestId'] as String,
         sourceSessionId: json['sourceSessionId'] as String,
@@ -1293,6 +1296,7 @@ sealed class ServerMessage {
         ),
         bridgeSessionId: json['bridgeSessionId'] as String?,
         provider: json['provider'] as String?,
+        generation: (json['sessionLinkGeneration'] as num?)?.toInt(),
         recentSession: switch (json['recentSession']) {
           final Map<String, dynamic> value => RecentSession.fromJson(value),
           _ => null,
@@ -2303,12 +2307,141 @@ enum SessionLinkResolutionStatus {
   }
 }
 
+enum SessionLinkProgressOperation {
+  resolve('resolve'),
+  resume('resume'),
+  unknown('__unknown__');
+
+  final String wireValue;
+  const SessionLinkProgressOperation(this.wireValue);
+
+  static SessionLinkProgressOperation fromWire(Object? value) {
+    return values.firstWhere(
+      (operation) => operation.wireValue == value,
+      orElse: () => unknown,
+    );
+  }
+}
+
+enum SessionLinkProgressStage {
+  waitingForConnection('waiting_for_connection', 0),
+  waitingForIdentity('waiting_for_identity', 1),
+  requestSent('request_sent', 2),
+  requestAccepted('request_accepted', 3),
+  runtimeChecked('runtime_checked', 4),
+  catalogScanning('catalog_scanning', 5),
+  catalogScanned('catalog_scanned', 6),
+  resolutionReady('resolution_ready', 7),
+  resumeLockWaiting('resume_lock_waiting', 8),
+  resumeLockAcquired('resume_lock_acquired', 9),
+  historyReading('history_reading', 10),
+  historyRead('history_read', 11),
+  runtimeStarting('runtime_starting', 12),
+  metadataLoading('metadata_loading', 13),
+  ready('ready', 14),
+  unknown('__unknown__', -1);
+
+  final String wireValue;
+  final int rank;
+  const SessionLinkProgressStage(this.wireValue, this.rank);
+
+  static SessionLinkProgressStage fromWire(Object? value) {
+    return values.firstWhere(
+      (stage) => stage.wireValue == value,
+      orElse: () => unknown,
+    );
+  }
+}
+
+class SessionLinkProgressMessage implements ServerMessage {
+  final String requestId;
+  final String sourceSessionId;
+  final int generation;
+  final SessionLinkProgressOperation operation;
+  final SessionLinkProgressStage stage;
+  final int sequence;
+  final String observedAt;
+  final int? completedUnits;
+  final int? totalUnits;
+
+  const SessionLinkProgressMessage({
+    required this.requestId,
+    required this.sourceSessionId,
+    required this.generation,
+    required this.operation,
+    required this.stage,
+    required this.sequence,
+    required this.observedAt,
+    this.completedUnits,
+    this.totalUnits,
+  });
+
+  factory SessionLinkProgressMessage.fromJson(Map<String, dynamic> json) {
+    String requiredString(String key) {
+      final value = json[key];
+      if (value is! String || value.trim().isEmpty) {
+        throw FormatException('Session link progress $key is invalid.');
+      }
+      return value;
+    }
+
+    int requiredInt(String key, {required int minimum}) {
+      final value = json[key];
+      if (value is! num || value.toInt() != value || value < minimum) {
+        throw FormatException('Session link progress $key is invalid.');
+      }
+      return value.toInt();
+    }
+
+    int? optionalInt(String key) {
+      final value = json[key];
+      if (value == null) return null;
+      if (value is! num || value.toInt() != value || value < 0) {
+        throw FormatException('Session link progress $key is invalid.');
+      }
+      return value.toInt();
+    }
+
+    return SessionLinkProgressMessage(
+      requestId: requiredString('requestId'),
+      sourceSessionId: requiredString('sourceSessionId'),
+      generation: requiredInt('generation', minimum: 1),
+      operation: SessionLinkProgressOperation.fromWire(json['operation']),
+      stage: SessionLinkProgressStage.fromWire(json['stage']),
+      sequence: requiredInt('sequence', minimum: 1),
+      observedAt: requiredString('observedAt'),
+      completedUnits: optionalInt('completedUnits'),
+      totalUnits: optionalInt('totalUnits'),
+    );
+  }
+
+  bool isEffectiveAfter(SessionLinkProgressMessage? previous) {
+    if (operation == SessionLinkProgressOperation.unknown ||
+        stage == SessionLinkProgressStage.unknown) {
+      return false;
+    }
+    if (previous == null) return true;
+    if (requestId != previous.requestId ||
+        sourceSessionId != previous.sourceSessionId ||
+        generation != previous.generation ||
+        operation != previous.operation ||
+        sequence <= previous.sequence) {
+      return false;
+    }
+    if (stage.rank > previous.stage.rank) return true;
+    if (stage != previous.stage) return false;
+    final completed = completedUnits;
+    return completed != null && completed > (previous.completedUnits ?? 0);
+  }
+}
+
 class SessionLinkResolutionMessage implements ServerMessage {
   final String requestId;
   final String sourceSessionId;
   final SessionLinkResolutionStatus status;
   final String? bridgeSessionId;
   final String? provider;
+  final int? generation;
   final RecentSession? recentSession;
 
   const SessionLinkResolutionMessage({
@@ -2317,6 +2450,7 @@ class SessionLinkResolutionMessage implements ServerMessage {
     required this.status,
     this.bridgeSessionId,
     this.provider,
+    this.generation,
     this.recentSession,
   });
 }
@@ -5108,6 +5242,7 @@ const promptHistoryRequestCorrelationCapability =
 const sessionCatalogRequestCorrelationCapability =
     'session_catalog_request_correlation_v1';
 const sessionCatalogChangedMessageType = 'session_catalog_changed_v1';
+const sessionLinkProgressCapability = 'session_link_progress_v1';
 const fileListRequestCorrelationCapability = 'file_list_request_correlation_v1';
 const gitDiffRequestCorrelationCapability = 'git_diff_request_correlation_v1';
 const gitProjectResultCorrelationCapability =
@@ -5149,6 +5284,7 @@ class ClientMessage {
           sessionActivityAtCapability,
           sessionRequestCorrelationCapability,
           sessionCatalogChangedMessageType,
+          sessionLinkProgressCapability,
           'git_status_result',
           'prompt_history_status',
           'artifact_resolved',
@@ -5593,11 +5729,13 @@ class ClientMessage {
     required String requestId,
     required String sessionId,
     String? provider,
+    int? sessionLinkGeneration,
   }) => ClientMessage._(<String, dynamic>{
     'type': 'resolve_session_link',
     'requestId': requestId,
     'sessionId': sessionId,
     'provider': ?provider,
+    'sessionLinkGeneration': ?sessionLinkGeneration,
   });
 
   factory ClientMessage.refreshBranch(String sessionId) =>
@@ -5692,6 +5830,7 @@ class ClientMessage {
     List<String>? additionalWritableRoots,
     String? resumeRequestId,
     String? codexSourceId,
+    int? sessionLinkGeneration,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'resume_session',
@@ -5719,6 +5858,7 @@ class ClientMessage {
       'webSearchMode': ?webSearchMode,
       'resumeRequestId': ?resumeRequestId,
       'codexSourceId': ?codexSourceId,
+      'sessionLinkGeneration': ?sessionLinkGeneration,
       if (additionalWritableRoots != null && additionalWritableRoots.isNotEmpty)
         'additionalWritableRoots': additionalWritableRoots,
     });
