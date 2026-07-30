@@ -599,11 +599,31 @@ class _QueuedInputBadge extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                Icons.chat_bubble_outline,
-                size: 12,
-                color: colorScheme.primary,
-              ),
+              switch (item.deliveryStage) {
+                QueuedInputDeliveryStage.bridgeAccepted => Icon(
+                  Icons.check,
+                  key: const ValueKey('session_card_queue_bridge_accepted'),
+                  size: 12,
+                  color: colorScheme.primary,
+                ),
+                QueuedInputDeliveryStage.providerAccepted => Icon(
+                  Icons.done_all,
+                  key: const ValueKey('session_card_queue_provider_accepted'),
+                  size: 12,
+                  color: colorScheme.primary,
+                ),
+                QueuedInputDeliveryStage.providerRejected => Icon(
+                  Icons.error_outline,
+                  key: const ValueKey('session_card_queue_provider_rejected'),
+                  size: 12,
+                  color: colorScheme.error,
+                ),
+                null => Icon(
+                  Icons.chat_bubble_outline,
+                  size: 12,
+                  color: colorScheme.primary,
+                ),
+              },
               const SizedBox(width: 4),
               Text(
                 l.sessionCardQueuedInput,

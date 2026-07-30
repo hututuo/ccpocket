@@ -172,6 +172,14 @@ export interface QueuedInputItem {
   text: string;
   createdAt: string;
   updatedAt?: string;
+  /** Additive id used to correlate the queue with staged input receipts. */
+  clientMessageId?: string;
+  /** Monotonic delivery fact; absent on legacy Bridges. */
+  deliveryStage?:
+    | "bridge_accepted"
+    | "provider_accepted"
+    | "provider_rejected";
+  deliveryError?: string;
   imageCount?: number;
   skills?: Array<{ name: string; path: string }>;
   mentions?: Array<{ name: string; path: string }>;

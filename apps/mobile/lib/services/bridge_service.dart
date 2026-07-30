@@ -6504,10 +6504,17 @@ class BridgeService implements BridgeServiceBase {
   void _patchSessionQueuedInput(String sessionId, QueuedInputItem? item) {
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx < 0) return;
+    final previous = _sessions[idx].queuedInput;
+    final merged =
+        item != null &&
+            previous != null &&
+            queuedInputItemsShareIdentity(previous, item)
+        ? item.mergeDeliveryStateFrom(previous)
+        : item;
     _sessions = List.of(_sessions)
       ..[idx] = _sessions[idx].copyWith(
-        queuedInput: item,
-        clearQueuedInput: item == null,
+        queuedInput: merged,
+        clearQueuedInput: merged == null,
       );
     _sessionListController.add(_sessions);
   }

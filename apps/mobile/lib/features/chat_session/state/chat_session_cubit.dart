@@ -317,6 +317,39 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     return item!.itemId.substring(deliveryPendingQueuedInputPrefix.length);
   }
 
+  static String? queuedInputClientMessageId(QueuedInputItem? item) {
+    if (item == null) return null;
+    final explicit = item.clientMessageId?.trim();
+    if (explicit != null && explicit.isNotEmpty) return explicit;
+    return offlineQueuedClientMessageId(item) ??
+        deliveryPendingClientMessageId(item);
+  }
+
+  QueuedInputItem? _mergeQueuedInputUpdate(
+    QueuedInputItem? current,
+    QueuedInputItem? incoming,
+  ) {
+    if (incoming == null) return current;
+    if (current == null || !queuedInputItemsShareIdentity(current, incoming)) {
+      return incoming;
+    }
+    return incoming.mergeDeliveryStateFrom(current);
+  }
+
+  QueuedInputItem? _advanceQueuedInputDelivery(
+    QueuedInputItem? item,
+    String? clientMessageId,
+    QueuedInputDeliveryStage stage, {
+    String? error,
+  }) {
+    if (item == null ||
+        clientMessageId == null ||
+        queuedInputClientMessageId(item) != clientMessageId) {
+      return item;
+    }
+    return item.withDeliveryStage(stage, error: error);
+  }
+
   ChatSessionCubit({
     required this.sessionId,
     this.provider,
@@ -2758,7 +2791,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     var nextQueuedInput = update.clearQueuedInput
         ? null
-        : (update.queuedInput ?? current.queuedInput);
+        : _mergeQueuedInputUpdate(current.queuedInput, update.queuedInput);
     QueuedInputItem? deliveredPendingInput;
     String? deliveredPendingClientMessageId;
     if (originalMsg is InputAckMessage && originalMsg.queued == false) {
@@ -2796,14 +2829,31 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     if (originalMsg is InputDeliveryStatusMessage) {
       _deliveryPendingInputs.remove(originalMsg.clientMessageId);
-      if (deliveryPendingClientMessageId(nextQueuedInput) ==
-          originalMsg.clientMessageId) {
+      if (isDeliveryPendingQueuedInput(nextQueuedInput) &&
+          queuedInputClientMessageId(nextQueuedInput) ==
+              originalMsg.clientMessageId) {
         nextQueuedInput = null;
+      } else {
+        nextQueuedInput = _advanceQueuedInputDelivery(
+          nextQueuedInput,
+          originalMsg.clientMessageId,
+          originalMsg.stage == InputDeliveryStage.providerAccepted
+              ? QueuedInputDeliveryStage.providerAccepted
+              : QueuedInputDeliveryStage.providerRejected,
+          error: originalMsg.error,
+        );
       }
     }
     if (originalMsg is InputAckMessage && originalMsg.queued == true) {
       if (originalMsg.clientMessageId != null) {
         _deliveryPendingInputs.remove(originalMsg.clientMessageId);
+      }
+      if (originalMsg.stage == InputAckStage.bridgeAccepted) {
+        nextQueuedInput = _advanceQueuedInputDelivery(
+          nextQueuedInput,
+          originalMsg.clientMessageId,
+          QueuedInputDeliveryStage.bridgeAccepted,
+        );
       }
     }
     if (originalMsg is! InputAckMessage &&
@@ -3983,6 +4033,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             itemId: '$offlineQueuedInputPrefix$effectiveClientMessageId',
             text: text,
             createdAt: DateTime.now().toUtc().toIso8601String(),
+            clientMessageId: effectiveClientMessageId,
             imageCount: images?.length ?? 0,
             skills: structuredMentions.skills,
             mentions: structuredMentions.mentions,
@@ -3997,6 +4048,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 '$deliveryPendingQueuedInputPrefix$effectiveClientMessageId',
             text: text,
             createdAt: DateTime.now().toUtc().toIso8601String(),
+            clientMessageId: effectiveClientMessageId,
             imageCount: images?.length ?? 0,
             skills: structuredMentions.skills,
             mentions: structuredMentions.mentions,
@@ -4560,6 +4612,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         text: text,
         createdAt: item.createdAt,
         updatedAt: DateTime.now().toUtc().toIso8601String(),
+        clientMessageId: item.clientMessageId,
+        deliveryStage: item.deliveryStage,
+        deliveryError: item.deliveryError,
         imageCount: item.imageCount,
         skills: structuredMentions.skills,
         mentions: structuredMentions.mentions,

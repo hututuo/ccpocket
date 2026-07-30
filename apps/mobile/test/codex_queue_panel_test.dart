@@ -13,6 +13,31 @@ Widget _wrap(Widget child) {
 }
 
 void main() {
+  test('conversation queue parses additive staged delivery facts', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'conversation_queue',
+              'sessionId': 's1',
+              'limit': 1,
+              'items': [
+                {
+                  'itemId': 'q1',
+                  'text': 'Queued',
+                  'createdAt': '2026-07-31T00:00:00.000Z',
+                  'clientMessageId': 'cm1',
+                  'deliveryStage': 'provider_accepted',
+                },
+              ],
+            })
+            as ConversationQueueMessage;
+
+    expect(message.items.single.clientMessageId, 'cm1');
+    expect(
+      message.items.single.deliveryStage,
+      QueuedInputDeliveryStage.providerAccepted,
+    );
+  });
+
   testWidgets('CodexQueuedInputPanel exposes steer edit and cancel actions', (
     tester,
   ) async {
@@ -120,6 +145,88 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('codex_queue_cancel_button')));
     expect(canceled, isTrue);
+  });
+
+  testWidgets('CodexQueuedInputPanel shows one then two delivery checks', (
+    tester,
+  ) async {
+    const bridgeAccepted = QueuedInputItem(
+      itemId: 'q1',
+      text: 'Follow up',
+      createdAt: '2026-07-31T00:00:00.000Z',
+      clientMessageId: 'cm1',
+      deliveryStage: QueuedInputDeliveryStage.bridgeAccepted,
+    );
+    await tester.pumpWidget(
+      _wrap(
+        const CodexQueuedInputPanel(
+          item: bridgeAccepted,
+          onSteer: null,
+          onEdit: null,
+          onCancel: null,
+        ),
+      ),
+    );
+    expect(
+      find.byKey(const ValueKey('codex_queue_bridge_accepted')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('codex_queue_provider_accepted')),
+      findsNothing,
+    );
+
+    await tester.pumpWidget(
+      _wrap(
+        CodexQueuedInputPanel(
+          item: bridgeAccepted.withDeliveryStage(
+            QueuedInputDeliveryStage.providerAccepted,
+          ),
+          onSteer: null,
+          onEdit: null,
+          onCancel: null,
+        ),
+      ),
+    );
+    expect(
+      find.byKey(const ValueKey('codex_queue_bridge_accepted')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('codex_queue_provider_accepted')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('CodexQueuedInputPanel exposes provider rejection without '
+      'claiming delivery', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        const CodexQueuedInputPanel(
+          item: QueuedInputItem(
+            itemId: 'q1',
+            text: 'Follow up',
+            createdAt: '2026-07-31T00:00:00.000Z',
+            clientMessageId: 'cm1',
+            deliveryStage: QueuedInputDeliveryStage.providerRejected,
+            deliveryError: 'provider unavailable',
+          ),
+          onSteer: null,
+          onEdit: null,
+          onCancel: null,
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey('codex_queue_provider_rejected')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('codex_queue_provider_accepted')),
+      findsNothing,
+    );
+    expect(find.text('provider unavailable'), findsOneWidget);
   });
 
   test('moveQueuedInputToComposer cancels queue and overwrites input text', () {
