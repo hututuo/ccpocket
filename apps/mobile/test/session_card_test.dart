@@ -343,6 +343,89 @@ void main() {
       },
     );
 
+    testWidgets('v2 cleared attention masks a stale runtime permission', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'v2-cleared-attention',
+        provider: Provider.codex.value,
+        projectPath: '/home/user/my-app',
+        status: 'waiting_approval',
+        createdAt: '',
+        lastActivityAt: '',
+        pendingPermission: const PermissionRequestMessage(
+          toolUseId: 'stale-tool',
+          toolName: 'Bash',
+          input: {'command': 'flutter test'},
+        ),
+      );
+      const status = ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'thread-v2-cleared',
+        activity: 'working',
+        attention: 'none',
+        result: 'none',
+        runtimeAttachment: 'loaded',
+        source: 'appServer',
+        confidence: 'authoritative',
+        observedAt: '2026-07-31T00:00:00Z',
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RunningSessionCard(
+            session: session,
+            conversationStatus: status,
+            onTap: () {},
+          ),
+        ),
+      );
+
+      expect(find.text('Working'), findsOneWidget);
+      expect(find.byKey(const ValueKey('approve_button')), findsNothing);
+    });
+
+    testWidgets('v2 attention keeps its matching runtime approval body', (
+      tester,
+    ) async {
+      final session = SessionInfo(
+        id: 'v2-active-attention',
+        provider: Provider.codex.value,
+        projectPath: '/home/user/my-app',
+        status: 'waiting_approval',
+        createdAt: '',
+        lastActivityAt: '',
+        pendingPermission: const PermissionRequestMessage(
+          toolUseId: 'active-tool',
+          toolName: 'Bash',
+          input: {'command': 'flutter test'},
+        ),
+      );
+      const status = ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'thread-v2-active',
+        activity: 'idle',
+        attention: 'approval',
+        result: 'none',
+        runtimeAttachment: 'loaded',
+        source: 'appServer',
+        confidence: 'authoritative',
+        observedAt: '2026-07-31T00:00:00Z',
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RunningSessionCard(
+            session: session,
+            conversationStatus: status,
+            onTap: () {},
+          ),
+        ),
+      );
+
+      expect(find.byKey(const ValueKey('approve_button')), findsOneWidget);
+    });
+
     testWidgets('shows fork lineage for a running child session', (
       tester,
     ) async {
