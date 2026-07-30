@@ -8,17 +8,22 @@ void useAppResumeCallback(
   AppLifecycleState? lifecycleState,
   VoidCallback onResume,
 ) {
-  final wasBackgrounded = useRef(false);
-  useEffect(() {
-    if (lifecycleState == AppLifecycleState.paused ||
+  final wasBackgrounded = useRef(
+    lifecycleState == AppLifecycleState.paused ||
         lifecycleState == AppLifecycleState.hidden ||
-        lifecycleState == AppLifecycleState.detached) {
+        lifecycleState == AppLifecycleState.detached,
+  );
+  final onResumeRef = useRef(onResume);
+  onResumeRef.value = onResume;
+  useOnAppLifecycleStateChange((_, current) {
+    if (current == AppLifecycleState.paused ||
+        current == AppLifecycleState.hidden ||
+        current == AppLifecycleState.detached) {
       wasBackgrounded.value = true;
-    } else if (lifecycleState == AppLifecycleState.resumed &&
+    } else if (current == AppLifecycleState.resumed &&
         wasBackgrounded.value) {
       wasBackgrounded.value = false;
-      onResume();
+      onResumeRef.value();
     }
-    return null;
-  }, [lifecycleState]);
+  });
 }

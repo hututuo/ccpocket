@@ -1019,6 +1019,9 @@ class _CodexChatBody extends HookWidget {
         lifecycleState != null && lifecycleState != AppLifecycleState.resumed;
     final isBackgroundRef = useRef(isBackground);
     isBackgroundRef.value = isBackground;
+    useOnAppLifecycleStateChange((_, current) {
+      isBackgroundRef.value = current != AppLifecycleState.resumed;
+    });
     final scroll = useScrollTracking(sessionId);
     useKeyboardScrollAdjustment(scroll.controller);
 

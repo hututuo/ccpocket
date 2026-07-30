@@ -408,6 +408,7 @@ void main() {
         sessionId: 'codex-session',
       );
       await tester.pump();
+      await tester.pump();
 
       expect(
         find.byKey(const ValueKey('appbar_explore_button')),
@@ -498,6 +499,7 @@ void main() {
         const UserInputMessage(text: 'hello'),
         sessionId: 'codex-session',
       );
+      await tester.pump();
       await tester.pump();
 
       expect(
