@@ -25,6 +25,7 @@ import {
   SessionManager,
   MAX_HISTORY_PER_SESSION,
   type HistoryEntry,
+  type InputDeliveryReceipt,
   type SessionInfo,
   type WorktreeOptions,
 } from "./session.js";
@@ -311,6 +312,8 @@ const GIT_DIFF_REQUEST_CORRELATION_CAPABILITY =
   "git_diff_request_correlation_v1";
 const GIT_PROJECT_RESULT_CORRELATION_CAPABILITY =
   "git_project_result_correlation_v1";
+const INPUT_DELIVERY_ACK_CAPABILITY = "input_delivery_ack_v1";
+const INPUT_DELIVERY_STATUS_MESSAGE = "input_delivery_status_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
@@ -771,6 +774,7 @@ const OPT_IN_SERVER_MESSAGES = new Set<string>([
   "conversation_queue",
   "goal_state",
   "guardian_approval",
+  INPUT_DELIVERY_STATUS_MESSAGE,
   "prompt_history_status",
   "artifact_resolved",
   PUSH_REGISTRATION_STATE_MESSAGE,
@@ -4734,13 +4738,14 @@ export class BridgeWebSocketServer {
             clientMessageId,
           );
           if (priorAdmission) {
-            this.send(ws, {
-              type: "input_ack",
-              sessionId: session.id,
+            this.sendInputBridgeAcceptance(
+              ws,
+              session,
               clientMessageId,
-              acceptedSeq: priorAdmission.acceptedSeq,
-              queued: priorAdmission.queued,
-            });
+              priorAdmission.acceptedSeq,
+              priorAdmission.queued,
+            );
+            this.sendProviderInputReceipt(ws, session, priorAdmission);
             break;
           }
         }
@@ -4893,13 +4898,13 @@ export class BridgeWebSocketServer {
                 });
             }
           }
-          this.send(ws, {
-            type: "input_ack",
-            sessionId: session.id,
-            ...(clientMessageId ? { clientMessageId } : {}),
-            acceptedSeq: session.historyRevision,
-            queued: true,
-          });
+          this.sendInputBridgeAcceptance(
+            ws,
+            session,
+            clientMessageId,
+            session.historyRevision,
+            true,
+          );
           this.localFeatures.inputAccepted(ws, session, msg, true);
           this.broadcastSessionList();
           break;
@@ -4955,13 +4960,13 @@ export class BridgeWebSocketServer {
 
         // Codex input path
         if (session.provider === "codex") {
-          this.send(ws, {
-            type: "input_ack",
-            sessionId: session.id,
-            ...(clientMessageId ? { clientMessageId } : {}),
+          this.sendInputBridgeAcceptance(
+            ws,
+            session,
+            clientMessageId,
             acceptedSeq,
-            queued: false,
-          });
+            false,
+          );
           this.localFeatures.inputAccepted(ws, session, msg, false);
           const codexProc = session.process as CodexProcess;
           if (images.length > 0) {
@@ -5036,13 +5041,13 @@ export class BridgeWebSocketServer {
         }
         // Legacy imageId mode (backward compatibility)
         else if (msg.imageId && this.galleryStore) {
-          this.send(ws, {
-            type: "input_ack",
-            sessionId: session.id,
-            ...(clientMessageId ? { clientMessageId } : {}),
+          this.sendInputBridgeAcceptance(
+            ws,
+            session,
+            clientMessageId,
             acceptedSeq,
-            queued: isAgentBusySnapshot,
-          });
+            isAgentBusySnapshot,
+          );
           this.galleryStore
             .getImageAsBase64(msg.imageId)
             .then((imageData) => {
@@ -5107,13 +5112,13 @@ export class BridgeWebSocketServer {
         // Acknowledge receipt so the client can mark the message state.
         // queued=true means the input was enqueued instead of being consumed
         // immediately by the SDK stream.
-        this.send(ws, {
-          type: "input_ack",
-          sessionId: session.id,
-          ...(clientMessageId ? { clientMessageId } : {}),
+        this.sendInputBridgeAcceptance(
+          ws,
+          session,
+          clientMessageId,
           acceptedSeq,
-          queued: wasQueued,
-        });
+          wasQueued,
+        );
 
         if (shouldInterrupt) {
           console.log(
@@ -10293,6 +10298,7 @@ export class BridgeWebSocketServer {
         CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
+        INPUT_DELIVERY_ACK_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -10371,6 +10377,7 @@ export class BridgeWebSocketServer {
         CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
+        INPUT_DELIVERY_ACK_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -12290,9 +12297,35 @@ export class BridgeWebSocketServer {
   private findAcceptedClientInput(
     session: SessionInfo,
     clientMessageId: string,
-  ): { acceptedSeq: number; queued: boolean } | null {
+  ): InputDeliveryReceipt | null {
+    // A few legacy adapters and lightweight test doubles implement only the
+    // pre-receipt SessionManager surface. Treat the receipt ledger as an
+    // additive enhancement so those paths keep their existing ACK behavior.
+    const getInputDeliveryReceipt = (
+      this.sessionManager as unknown as {
+        getInputDeliveryReceipt?: (
+          sessionId: string,
+          messageId: string,
+        ) => InputDeliveryReceipt | undefined;
+      }
+    ).getInputDeliveryReceipt;
+    const receipt =
+      typeof getInputDeliveryReceipt === "function"
+        ? getInputDeliveryReceipt.call(
+            this.sessionManager,
+            session.id,
+            clientMessageId,
+          )
+        : undefined;
+    if (receipt) return receipt;
     if (session.codexQueuedInput?.clientMessageId === clientMessageId) {
-      return { acceptedSeq: session.historyRevision, queued: true };
+      return {
+        clientMessageId,
+        stage: "bridge_accepted",
+        acceptedSeq: session.historyRevision,
+        queued: true,
+        occurredAt: new Date().toISOString(),
+      };
     }
 
     for (let index = session.historyEntries.length - 1; index >= 0; index--) {
@@ -12302,10 +12335,90 @@ export class BridgeWebSocketServer {
         message.type === "user_input" &&
         message.clientMessageId === clientMessageId
       ) {
-        return { acceptedSeq: entry.seq, queued: false };
+        return {
+          clientMessageId,
+          stage: "bridge_accepted",
+          acceptedSeq: entry.seq,
+          queued: false,
+          occurredAt: new Date().toISOString(),
+        };
       }
     }
     return null;
+  }
+
+  private sendInputBridgeAcceptance(
+    ws: WebSocket,
+    session: SessionInfo,
+    clientMessageId: string | undefined,
+    acceptedSeq: number,
+    queued: boolean,
+  ): void {
+    if (clientMessageId) {
+      const recordInputBridgeAcceptance = (
+        this.sessionManager as unknown as {
+          recordInputBridgeAcceptance?: (
+            sessionId: string,
+            messageId: string,
+            seq: number,
+            isQueued: boolean,
+          ) => InputDeliveryReceipt | undefined;
+        }
+      ).recordInputBridgeAcceptance;
+      if (typeof recordInputBridgeAcceptance === "function") {
+        recordInputBridgeAcceptance.call(
+          this.sessionManager,
+          session.id,
+          clientMessageId,
+          acceptedSeq,
+          queued,
+        );
+      }
+    }
+    this.send(ws, {
+      type: "input_ack",
+      sessionId: session.id,
+      ...(clientMessageId
+        ? {
+            clientMessageId,
+            stage: "bridge_accepted",
+          }
+        : {}),
+      acceptedSeq,
+      queued,
+    });
+  }
+
+  private sendProviderInputReceipt(
+    ws: WebSocket,
+    session: SessionInfo,
+    receipt: InputDeliveryReceipt,
+  ): void {
+    if (
+      receipt.stage === "bridge_accepted" ||
+      receipt.provider !== "codex" ||
+      !receipt.method
+    ) {
+      return;
+    }
+    this.send(ws, {
+      type: INPUT_DELIVERY_STATUS_MESSAGE,
+      sessionId: session.id,
+      clientMessageId: receipt.clientMessageId,
+      stage: receipt.stage,
+      provider: receipt.provider,
+      method: receipt.method,
+      occurredAt: receipt.occurredAt,
+      acceptedSeq: receipt.acceptedSeq,
+      queued: receipt.queued,
+      ...(receipt.clientUserMessageIdAccepted === undefined
+        ? {}
+        : {
+            clientUserMessageIdAccepted:
+              receipt.clientUserMessageIdAccepted,
+          }),
+      ...(receipt.error ? { error: receipt.error } : {}),
+    });
   }
 
   private sendCodexQueueState(

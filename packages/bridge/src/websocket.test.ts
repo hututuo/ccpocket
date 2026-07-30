@@ -2674,6 +2674,41 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("capability-gates provider input receipts while keeping legacy input_ack compatible", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const receipt = {
+      type: "input_delivery_status_v1",
+      sessionId: "session-1",
+      clientMessageId: "mobile-1",
+      stage: "provider_accepted",
+      provider: "codex",
+      method: "turn/start",
+      occurredAt: "2026-07-31T00:00:00.000Z",
+      acceptedSeq: 1,
+      queued: true,
+      clientUserMessageIdAccepted: true,
+    };
+
+    (bridge as any).send(ws, receipt);
+    expect(ws.send).not.toHaveBeenCalled();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["input_delivery_status_v1"],
+      },
+      ws,
+    );
+    (bridge as any).send(ws, receipt);
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify(receipt));
+
+    bridge.close();
+  });
+
   it("stores mobile host metadata as diagnostics without changing capabilities", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -13927,6 +13962,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       type: "input_ack",
       sessionId,
       clientMessageId: "cm-1",
+      stage: "bridge_accepted",
       acceptedSeq: expect.any(Number),
       queued: false,
     });

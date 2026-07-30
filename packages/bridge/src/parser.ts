@@ -840,6 +840,19 @@ export type ServerMessage = (
       items: QueuedInputItem[];
     }
   | {
+      type: "input_delivery_status_v1";
+      sessionId: string;
+      clientMessageId: string;
+      stage: "provider_accepted" | "provider_rejected";
+      provider: "codex";
+      method: "turn/start" | "turn/steer";
+      occurredAt: string;
+      acceptedSeq?: number;
+      queued?: boolean;
+      clientUserMessageIdAccepted?: boolean;
+      error?: string;
+    }
+  | {
       type: "goal_state";
       sessionId?: string;
       goal: CodexGoal | null;

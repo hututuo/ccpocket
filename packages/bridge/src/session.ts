@@ -17,7 +17,11 @@ import {
   type StartOptions,
   type RewindFilesResult,
 } from "./sdk-process.js";
-import { CodexProcess, type CodexStartOptions } from "./codex-process.js";
+import {
+  CodexProcess,
+  type CodexInputDeliveryEvent,
+  type CodexStartOptions,
+} from "./codex-process.js";
 import { mergeCodexGoalState } from "./codex-goal-controller.js";
 import type {
   ServerMessage,
@@ -112,6 +116,11 @@ export interface SessionInfo {
   sandboxEnabled?: boolean;
   /** Codex-only pending input waiting for the next turn. */
   codexQueuedInput?: QueuedCodexInput;
+  /**
+   * Bounded in-memory delivery receipts keyed by Mobile clientMessageId.
+   * They survive an in-process runtime replacement, but are not a disk queue.
+   */
+  inputDeliveryReceipts?: Map<string, InputDeliveryReceipt>;
   /** Latest Codex goal state. Kept out of chat history. */
   codexGoal?: CodexGoal | null;
   /** Highest non-empty Goal updatedAt observed, retained across a clear. */
@@ -193,6 +202,23 @@ export interface QueuedCodexInput extends QueuedInputItem {
   imageRefs?: ImageRef[];
 }
 
+export type InputDeliveryStage =
+  | "bridge_accepted"
+  | "provider_accepted"
+  | "provider_rejected";
+
+export interface InputDeliveryReceipt {
+  clientMessageId: string;
+  stage: InputDeliveryStage;
+  acceptedSeq: number;
+  queued: boolean;
+  provider?: "codex";
+  method?: "turn/start" | "turn/steer";
+  occurredAt: string;
+  clientUserMessageIdAccepted?: boolean;
+  error?: string;
+}
+
 export interface SessionSummary {
   id: string;
   provider: Provider;
@@ -256,6 +282,7 @@ interface SessionCreateInternalOptions {
 
 export const MAX_HISTORY_PER_SESSION = 100;
 const MAX_IDLE_SESSIONS = 30;
+const MAX_INPUT_DELIVERY_RECEIPTS_PER_SESSION = 512;
 
 export type GalleryImageCallback = (meta: GalleryImageMeta) => void;
 export type SessionUpdatedCallback = (sessionId: string) => void;
@@ -667,6 +694,9 @@ export class SessionManager {
       // or cancel racing an in-flight RPC cannot be mistaken for the snapshot
       // that was actually sent.
       session.codexQueuedInput = replacementSession.codexQueuedInput;
+      session.inputDeliveryReceipts =
+        replacementSession.inputDeliveryReceipts ??
+        session.inputDeliveryReceipts;
       // Keep the old public session's incremental history authoritative until
       // the fresh canonical history is consumed. The replacement preflight
       // already loaded the new durable history into `pastMessages`; marking it
@@ -1220,6 +1250,29 @@ export class SessionManager {
         } else {
           drain();
         }
+      });
+      proc.on("input_delivery", (event) => {
+        if (!ownsRuntimeSlot()) return;
+        const receipt = this.recordProviderInputDelivery(session, event);
+        if (!receipt || !receipt.method) return;
+        this.onMessage(session.id, {
+          type: "input_delivery_status_v1",
+          sessionId: session.id,
+          clientMessageId: receipt.clientMessageId,
+          stage: event.stage,
+          provider: "codex",
+          method: receipt.method,
+          occurredAt: receipt.occurredAt,
+          acceptedSeq: receipt.acceptedSeq,
+          queued: receipt.queued,
+          ...(receipt.clientUserMessageIdAccepted === undefined
+            ? {}
+            : {
+                clientUserMessageIdAccepted:
+                  receipt.clientUserMessageIdAccepted,
+              }),
+          ...(receipt.error ? { error: receipt.error } : {}),
+        });
       });
     }
 
@@ -2001,6 +2054,34 @@ export class SessionManager {
     return true;
   }
 
+  recordInputBridgeAcceptance(
+    id: string,
+    clientMessageId: string,
+    acceptedSeq: number,
+    queued: boolean,
+  ): InputDeliveryReceipt | undefined {
+    const session = this.sessions.get(id);
+    if (!session) return undefined;
+    const existing = session.inputDeliveryReceipts?.get(clientMessageId);
+    if (existing && existing.stage !== "bridge_accepted") return existing;
+    const receipt: InputDeliveryReceipt = {
+      clientMessageId,
+      stage: "bridge_accepted",
+      acceptedSeq,
+      queued,
+      occurredAt: existing?.occurredAt ?? new Date().toISOString(),
+    };
+    this.storeInputDeliveryReceipt(session, receipt);
+    return receipt;
+  }
+
+  getInputDeliveryReceipt(
+    id: string,
+    clientMessageId: string,
+  ): InputDeliveryReceipt | undefined {
+    return this.sessions.get(id)?.inputDeliveryReceipts?.get(clientMessageId);
+  }
+
   updateCodexQueuedInput(
     id: string,
     itemId: string,
@@ -2188,6 +2269,53 @@ export class SessionManager {
       ...(queued.imageCount ? { imageCount: queued.imageCount } : {}),
       ...(queued.imageRefs ? { images: queued.imageRefs } : {}),
     } as ServerMessage;
+  }
+
+  private recordProviderInputDelivery(
+    session: SessionInfo,
+    event: CodexInputDeliveryEvent,
+  ): InputDeliveryReceipt | undefined {
+    const existing = session.inputDeliveryReceipts?.get(event.clientMessageId);
+    if (
+      existing?.stage === "provider_accepted" ||
+      existing?.stage === "provider_rejected"
+    ) {
+      return undefined;
+    }
+    const receipt: InputDeliveryReceipt = {
+      clientMessageId: event.clientMessageId,
+      stage: event.stage,
+      acceptedSeq: existing?.acceptedSeq ?? session.historyRevision,
+      queued: existing?.queued ?? false,
+      provider: "codex",
+      method: event.method,
+      occurredAt: event.occurredAt,
+      ...(event.clientUserMessageIdAccepted === undefined
+        ? {}
+        : {
+            clientUserMessageIdAccepted:
+              event.clientUserMessageIdAccepted,
+          }),
+      ...(event.error ? { error: event.error } : {}),
+    };
+    this.storeInputDeliveryReceipt(session, receipt);
+    return receipt;
+  }
+
+  private storeInputDeliveryReceipt(
+    session: SessionInfo,
+    receipt: InputDeliveryReceipt,
+  ): void {
+    const receipts =
+      session.inputDeliveryReceipts ?? new Map<string, InputDeliveryReceipt>();
+    session.inputDeliveryReceipts = receipts;
+    receipts.delete(receipt.clientMessageId);
+    receipts.set(receipt.clientMessageId, receipt);
+    while (receipts.size > MAX_INPUT_DELIVERY_RECEIPTS_PER_SESSION) {
+      const oldest = receipts.keys().next().value;
+      if (oldest === undefined) break;
+      receipts.delete(oldest);
+    }
   }
 
   getCachedCommands(

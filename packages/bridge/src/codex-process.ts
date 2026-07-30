@@ -176,6 +176,32 @@ export interface CodexProcessEvents {
   status: [ProcessStatus];
   exit: [number | null];
   input_ready: [];
+  input_delivery: [CodexInputDeliveryEvent];
+}
+
+export type CodexInputDeliveryStage =
+  | "provider_accepted"
+  | "provider_rejected";
+
+/**
+ * Authoritative acknowledgement from the Codex app-server RPC boundary.
+ *
+ * Bridge queue admission is deliberately not represented here: callers learn
+ * that earlier through input_ack. This event fires only after turn/start or
+ * turn/steer resolves or rejects.
+ */
+export interface CodexInputDeliveryEvent {
+  clientMessageId: string;
+  stage: CodexInputDeliveryStage;
+  method: "turn/start" | "turn/steer";
+  occurredAt: string;
+  clientUserMessageIdAccepted?: boolean;
+  error?: string;
+}
+
+interface CodexInputRpcReceipt {
+  result: unknown;
+  clientUserMessageIdAccepted: boolean;
 }
 
 interface PendingInput {
@@ -2412,7 +2438,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       if (!input) {
         throw new Error("No Codex input to steer");
       }
-      await this.requestWithClientUserMessageIdFallback(
+      const receipt = await this.requestWithClientUserMessageIdFallback(
         "turn/steer",
         {
           threadId: this._threadId,
@@ -2421,7 +2447,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         },
         options?.clientMessageId,
       );
+      this.emitInputDelivery(
+        options?.clientMessageId,
+        "provider_accepted",
+        "turn/steer",
+        receipt.clientUserMessageIdAccepted,
+      );
     } catch (err) {
+      this.emitInputDelivery(
+        options?.clientMessageId,
+        "provider_rejected",
+        "turn/steer",
+        undefined,
+        err,
+      );
       this.steerTempPaths = this.steerTempPaths.filter(
         (path) => !tempPaths.includes(path),
       );
@@ -3849,15 +3888,28 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           params,
           pendingInput.clientMessageId,
         )
-          .then((result) => {
+          .then((receipt) => {
+            this.emitInputDelivery(
+              pendingInput.clientMessageId,
+              "provider_accepted",
+              "turn/start",
+              receipt.clientUserMessageIdAccepted,
+            );
             if (!this.isRuntimeActive(runtimeGeneration)) return;
-            const turn = (result as Record<string, unknown>).turn as
+            const turn = (receipt.result as Record<string, unknown>).turn as
               Record<string, unknown> | undefined;
             if (typeof turn?.id === "string") {
               this.bindPendingTurnCompletion(turnCompletion, turn.id);
             }
           })
           .catch((err) => {
+            this.emitInputDelivery(
+              pendingInput.clientMessageId,
+              "provider_rejected",
+              "turn/start",
+              undefined,
+              err,
+            );
             if (this.pendingTurnCompletion === turnCompletion) {
               this.pendingTurnCompletion = null;
             }
@@ -5286,12 +5338,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     method: "turn/start" | "turn/steer",
     params: Record<string, unknown>,
     clientMessageId?: string,
-  ): Promise<unknown> {
+  ): Promise<CodexInputRpcReceipt> {
     if (
       !clientMessageId ||
       this.clientUserMessageIdSupport.get(method) === false
     ) {
-      return this.request(method, params);
+      return {
+        result: await this.request(method, params),
+        clientUserMessageIdAccepted: false,
+      };
     }
     try {
       const result = await this.request(method, {
@@ -5299,15 +5354,45 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         clientUserMessageId: clientMessageId,
       });
       this.clientUserMessageIdSupport.set(method, true);
-      return result;
+      return { result, clientUserMessageIdAccepted: true };
     } catch (error) {
       if (!isUnsupportedClientUserMessageIdError(error)) throw error;
       this.clientUserMessageIdSupport.set(method, false);
       console.warn(
         "[codex-process] app-server does not support clientUserMessageId; retrying without durable client acknowledgement",
       );
-      return this.request(method, params);
+      return {
+        result: await this.request(method, params),
+        clientUserMessageIdAccepted: false,
+      };
     }
+  }
+
+  private emitInputDelivery(
+    clientMessageId: string | undefined,
+    stage: CodexInputDeliveryStage,
+    method: "turn/start" | "turn/steer",
+    clientUserMessageIdAccepted?: boolean,
+    error?: unknown,
+  ): void {
+    if (!clientMessageId) return;
+    this.emit("input_delivery", {
+      clientMessageId,
+      stage,
+      method,
+      occurredAt: new Date().toISOString(),
+      ...(clientUserMessageIdAccepted === undefined
+        ? {}
+        : { clientUserMessageIdAccepted }),
+      ...(error === undefined
+        ? {}
+        : {
+            error:
+              error instanceof Error
+                ? error.message
+                : String(error),
+          }),
+    });
   }
 
   private request(

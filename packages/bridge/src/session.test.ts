@@ -1609,6 +1609,68 @@ describe("SessionManager codex path", () => {
     ).toBe(true);
   });
 
+  it("keeps staged input receipts monotonic across delayed and duplicate acknowledgements", () => {
+    const forwarded: Array<{ sessionId: string; msg: ServerMessage }> = [];
+    const manager = new SessionManager((sessionId, msg) => {
+      forwarded.push({ sessionId, msg });
+    });
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+
+    expect(
+      manager.recordInputBridgeAcceptance(
+        sessionId,
+        "mobile-receipt-1",
+        7,
+        true,
+      ),
+    ).toMatchObject({
+      stage: "bridge_accepted",
+      acceptedSeq: 7,
+      queued: true,
+    });
+
+    codexInstances[0].emit("input_delivery", {
+      clientMessageId: "mobile-receipt-1",
+      stage: "provider_accepted",
+      method: "turn/start",
+      occurredAt: "2026-07-31T00:00:00.000Z",
+      clientUserMessageIdAccepted: true,
+    });
+    codexInstances[0].emit("input_delivery", {
+      clientMessageId: "mobile-receipt-1",
+      stage: "provider_rejected",
+      method: "turn/start",
+      occurredAt: "2026-07-31T00:00:01.000Z",
+      error: "late rejection",
+    });
+    manager.recordInputBridgeAcceptance(
+      sessionId,
+      "mobile-receipt-1",
+      9,
+      false,
+    );
+
+    expect(
+      manager.getInputDeliveryReceipt(sessionId, "mobile-receipt-1"),
+    ).toMatchObject({
+      stage: "provider_accepted",
+      acceptedSeq: 7,
+      queued: true,
+      clientUserMessageIdAccepted: true,
+    });
+    expect(
+      forwarded.filter(
+        (entry) => entry.msg.type === "input_delivery_status_v1",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("guards both input_ready and explicit Codex queue drains", () => {
     let allowDrain = false;
     const onBlocked = vi.fn();
