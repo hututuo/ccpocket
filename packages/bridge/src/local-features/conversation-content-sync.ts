@@ -80,12 +80,35 @@ export interface ConversationContentSnapshotEntry extends ConversationContentEnt
   sourceIndex: number;
 }
 
+export interface ConversationContentLatestTurnGap {
+  /** Stable provider turn identity when the provider exposes one. */
+  turnId?: string;
+  /** Raw provider entries whose full payload is not present in this snapshot. */
+  missingEntryCount: number;
+  /** At least one retained entry was reduced to a bounded text/tool shell. */
+  payloadOmitted: boolean;
+  /** The first raw entry that an on-demand repair must cover. */
+  firstMissingSourceIndex?: number;
+  /** The read-only request that can repair this gap without resuming the thread. */
+  repair: "items_page" | "turns_page";
+}
+
 export interface ConversationContentSnapshot extends ConversationContentTarget {
   revision: string;
   entries: ConversationContentSnapshotEntry[];
   hasEarlier: boolean;
   /// Opaque app-server/provider cursor for the next older turn page.
   turnsNextCursor?: string | null;
+  /**
+   * Whether the newest provider turn is represented without detail loss.
+   *
+   * A false value never means the existing entries are unsafe to render. It
+   * means Mobile should use `latestTurnGap.repair` if the user asks to reveal
+   * the omitted current-turn payload instead of advancing the older-turn
+   * cursor and silently skipping it.
+   */
+  latestTurnComplete: boolean;
+  latestTurnGap?: ConversationContentLatestTurnGap;
   sourceEntryCount: number;
   /** Exact UTF-8 JSON size used for deterministic cache accounting. */
   cacheBytes: number;
@@ -1039,6 +1062,8 @@ export function buildConversationContentSnapshot(
     rawMessages,
     TURN_AWARE_HISTORY_ROOT_TURNS,
   );
+  const latestTurnStart = latestRootTurnStart(rawMessages, 1);
+  const latestTurnId = providerTurnId(rawMessages.slice(latestTurnStart));
   const source: Array<{ sourceIndex: number; message: ServerMessage }> = [];
   for (
     let sourceIndex = firstRelevantIndex;
@@ -1053,103 +1078,253 @@ export function buildConversationContentSnapshot(
   const selected = selectTurnAwareHistoryWindow(source, {
     preserveLatestRootTurnTools: limits.preserveLatestRootTurnTools,
   });
-  const retained: Array<{
-    sourceIndex: number;
-    message: ServerMessage;
-    serialized: string;
-  }> = [];
-  let retainedMessageBytes = 0;
-  let omitted = false;
-  for (let index = selected.length - 1; index >= 0; index -= 1) {
-    const value = selected[index]!;
-    const message = boundHistoryMessage(
-      value.message,
-      limits.maxMessageTextBytes,
-    );
-    const serialized = safeJsonSerialize(message, limits.maxSnapshotBytes);
-    if (!serialized) {
+  let candidates = prepareSnapshotEntries(
+    selected,
+    limits.maxMessageTextBytes,
+    limits.maxSnapshotBytes,
+  );
+
+  // The ordinary fast path retains the existing exact window. Only if the
+  // serialized 512 KiB budget is exceeded do we project heavy tool payloads
+  // into stable historyToolDetailGaps. This keeps the current user/final/
+  // thinking/process spine together rather than cutting into the newest turn
+  // from the front.
+  if (
+    materializeCandidateSnapshot(
+      target,
+      candidates,
+      rawMessages,
+      latestTurnStart,
+      latestTurnId,
+    ).cacheBytes > limits.maxSnapshotBytes
+  ) {
+    const compactionStages = [
+      { envelopeEntries: 300, messageBytes: limits.maxMessageTextBytes },
+      { envelopeEntries: 128, messageBytes: 8 * 1024 },
+      { envelopeEntries: 64, messageBytes: 4 * 1024 },
+      { envelopeEntries: 32, messageBytes: 2 * 1024 },
+      { envelopeEntries: 16, messageBytes: 1024 },
+      { envelopeEntries: 8, messageBytes: 512 },
+      { envelopeEntries: 4, messageBytes: 256 },
+      { envelopeEntries: 2, messageBytes: 128 },
+      { envelopeEntries: 0, messageBytes: MIN_MAX_MESSAGE_TEXT_BYTES },
+    ] as const;
+    let compacted: PreparedSnapshotEntry[] | undefined;
+    for (const stage of compactionStages) {
+      const projected = selectTurnAwareHistoryWindow(source, {
+        preserveLatestRootTurnTools: false,
+        toolCalls: 0,
+        envelopeEntries: stage.envelopeEntries,
+      });
+      const prepared = prepareSnapshotEntries(
+        projected,
+        Math.min(limits.maxMessageTextBytes, stage.messageBytes),
+        limits.maxSnapshotBytes,
+      );
+      const latest = prepared.filter(
+        (entry) => entry.sourceIndex >= latestTurnStart,
+      );
+      if (
+        materializeCandidateSnapshot(
+          target,
+          latest,
+          rawMessages,
+          latestTurnStart,
+          latestTurnId,
+        ).cacheBytes <= limits.maxSnapshotBytes
+      ) {
+        compacted = prepared;
+        break;
+      }
+    }
+    if (!compacted) {
       throw new Error(
-        "Conversation message exceeds safe serialized byte budget",
+        "Latest conversation turn structure exceeds safe snapshot byte budget",
       );
     }
-    if (retainedMessageBytes + serialized.bytes > limits.maxSnapshotBytes) {
-      omitted = true;
-      break;
-    }
-    retainedMessageBytes += serialized.bytes;
-    retained.unshift({
-      sourceIndex: value.sourceIndex,
-      message,
-      serialized: serialized.value,
-    });
+    candidates = compacted;
   }
 
-  const usedIds = new Map<string, number>();
-  const candidateEntries: ConversationContentSnapshotEntry[] = retained.map(
-    (value) => {
-      const message = value.message;
-      const baseId = messageIdentity(
-        message,
-        value.sourceIndex,
-        value.serialized,
-      );
-      const occurrence = (usedIds.get(baseId) ?? 0) + 1;
-      usedIds.set(baseId, occurrence);
-      const entryId = occurrence === 1 ? baseId : `${baseId}:${occurrence}`;
-      return {
-        entryId,
-        index: value.sourceIndex,
-        sourceIndex: value.sourceIndex,
-        contentHash: sha256(value.serialized),
-        message,
-      };
-    },
+  const latestCandidates = candidates.filter(
+    (entry) => entry.sourceIndex >= latestTurnStart,
   );
-  const emptySnapshotBytes = materializeSnapshot(
-    target,
-    [],
-    true,
-    rawMessages.length,
-  ).cacheBytes;
-  let entryBytes = emptySnapshotBytes + 32;
-  let firstEntry = candidateEntries.length;
-  for (let index = candidateEntries.length - 1; index >= 0; index -= 1) {
-    const candidateBytes = Buffer.byteLength(
-      JSON.stringify(candidateEntries[index]),
-      "utf8",
-    );
-    const separatorBytes = firstEntry === candidateEntries.length ? 0 : 1;
+  const olderCandidates = candidates.filter(
+    (entry) => entry.sourceIndex < latestTurnStart,
+  );
+  const entries = [...latestCandidates];
+  let estimatedBytes =
+    materializeCandidateSnapshot(
+      target,
+      latestCandidates,
+      rawMessages,
+      latestTurnStart,
+      latestTurnId,
+    ).cacheBytes + 64;
+  for (let index = olderCandidates.length - 1; index >= 0; index -= 1) {
+    const candidate = olderCandidates[index]!;
+    const separatorBytes = entries.length === 0 ? 0 : 1;
     if (
-      entryBytes + separatorBytes + candidateBytes >
+      estimatedBytes + separatorBytes + candidate.serializedEntryBytes >
       limits.maxSnapshotBytes
     ) {
-      omitted = true;
       break;
     }
-    entryBytes += separatorBytes + candidateBytes;
-    firstEntry = index;
+    entries.unshift(candidate);
+    estimatedBytes += separatorBytes + candidate.serializedEntryBytes;
   }
-  if (candidateEntries.length > 0 && firstEntry === candidateEntries.length) {
-    throw new Error("Conversation snapshot entry exceeds snapshot byte budget");
-  }
-  const entries = candidateEntries.slice(firstEntry);
-  const hasEarlier =
-    omitted ||
-    retained.length < selected.length ||
-    firstEntry > 0 ||
-    (entries[0]?.sourceIndex ?? rawMessages.length) > 0;
-  const snapshot = materializeSnapshot(
+  let snapshot = materializeCandidateSnapshot(
     target,
     entries,
-    hasEarlier,
-    rawMessages.length,
+    rawMessages,
+    latestTurnStart,
+    latestTurnId,
   );
+  while (
+    snapshot.cacheBytes > limits.maxSnapshotBytes &&
+    entries.length > latestCandidates.length
+  ) {
+    entries.shift();
+    snapshot = materializeCandidateSnapshot(
+      target,
+      entries,
+      rawMessages,
+      latestTurnStart,
+      latestTurnId,
+    );
+  }
   if (snapshot.cacheBytes > limits.maxSnapshotBytes) {
     throw new Error(
       "Conversation snapshot exceeds safe serialized byte budget",
     );
   }
   return snapshot;
+}
+
+interface PreparedSnapshotEntry extends ConversationContentSnapshotEntry {
+  payloadOmitted: boolean;
+  serializedEntryBytes: number;
+}
+
+function prepareSnapshotEntries(
+  values: readonly { sourceIndex: number; message: ServerMessage }[],
+  maxMessageTextBytes: number,
+  maxSnapshotBytes: number,
+): PreparedSnapshotEntry[] {
+  const usedIds = new Map<string, number>();
+  return values.map((value) => {
+    const bounded = boundHistoryMessage(value.message, maxMessageTextBytes);
+    const message = bounded.message;
+    const serialized = safeJsonSerialize(message, maxSnapshotBytes);
+    if (!serialized) {
+      throw new Error(
+        "Conversation message exceeds safe serialized byte budget",
+      );
+    }
+    const baseId = messageIdentity(
+      message,
+      value.sourceIndex,
+      serialized.value,
+    );
+    const occurrence = (usedIds.get(baseId) ?? 0) + 1;
+    usedIds.set(baseId, occurrence);
+    const entryId = occurrence === 1 ? baseId : `${baseId}:${occurrence}`;
+    const entry: ConversationContentSnapshotEntry = {
+      entryId,
+      index: value.sourceIndex,
+      sourceIndex: value.sourceIndex,
+      contentHash: sha256(serialized.value),
+      message,
+    };
+    return {
+      ...entry,
+      payloadOmitted:
+        bounded.payloadOmitted || messageContainsHistoryGap(message),
+      serializedEntryBytes: Buffer.byteLength(JSON.stringify(entry), "utf8"),
+    };
+  });
+}
+
+function materializeCandidateSnapshot(
+  target: ConversationContentTarget,
+  preparedEntries: readonly PreparedSnapshotEntry[],
+  rawMessages: readonly ServerMessage[],
+  latestTurnStart: number,
+  latestTurnId?: string,
+): ConversationContentSnapshot {
+  const entries = preparedEntries.map(
+    ({ payloadOmitted: _, serializedEntryBytes: __, ...entry }) => entry,
+  );
+  const presentLatestIndexes = new Set(
+    preparedEntries
+      .filter((entry) => entry.sourceIndex >= latestTurnStart)
+      .map((entry) => entry.sourceIndex),
+  );
+  const missingLatestIndexes: number[] = [];
+  for (
+    let sourceIndex = latestTurnStart;
+    sourceIndex < rawMessages.length;
+    sourceIndex += 1
+  ) {
+    if (!presentLatestIndexes.has(sourceIndex)) {
+      missingLatestIndexes.push(sourceIndex);
+    }
+  }
+  const payloadOmitted = preparedEntries.some(
+    (entry) => entry.sourceIndex >= latestTurnStart && entry.payloadOmitted,
+  );
+  const latestTurnComplete =
+    missingLatestIndexes.length === 0 && !payloadOmitted;
+  const latestTurnGap = latestTurnComplete
+    ? undefined
+    : {
+        ...(latestTurnId ? { turnId: latestTurnId } : {}),
+        missingEntryCount: missingLatestIndexes.length,
+        payloadOmitted,
+        ...(missingLatestIndexes[0] !== undefined
+          ? { firstMissingSourceIndex: missingLatestIndexes[0] }
+          : {}),
+        repair:
+          target.provider === "codex" && latestTurnId
+            ? ("items_page" as const)
+            : ("turns_page" as const),
+      };
+  const hasEarlier =
+    entries.length < rawMessages.length ||
+    (entries[0]?.sourceIndex ?? rawMessages.length) > 0 ||
+    !latestTurnComplete;
+  return materializeSnapshot(
+    target,
+    entries,
+    hasEarlier,
+    rawMessages.length,
+    latestTurnComplete,
+    latestTurnGap,
+  );
+}
+
+function providerTurnId(
+  messages: readonly ServerMessage[],
+): string | undefined {
+  for (const message of messages) {
+    if (
+      (message.type === "assistant" || message.type === "tool_result") &&
+      message.historyTurnId?.trim()
+    ) {
+      return message.historyTurnId.trim();
+    }
+  }
+  // A user UUID (or source index) is only a Bridge-local grouping key. Never
+  // advertise it as an app-server turn id: thread/items/list would reject that
+  // synthetic identity. Without authoritative historyTurnId provenance the
+  // safe repair is a fresh latest-turn page.
+  return undefined;
+}
+
+function messageContainsHistoryGap(message: ServerMessage): boolean {
+  return (
+    message.type === "assistant" &&
+    (message.historyToolDetailGaps?.length ?? 0) > 0
+  );
 }
 
 function latestRootTurnStart(
@@ -1170,11 +1345,15 @@ function materializeSnapshot(
   entries: ConversationContentSnapshotEntry[],
   hasEarlier: boolean,
   sourceEntryCount: number,
+  latestTurnComplete = true,
+  latestTurnGap?: ConversationContentLatestTurnGap,
 ): ConversationContentSnapshot {
   const revision = sha256(
     JSON.stringify({
       sourceEntryCount,
       hasEarlier,
+      latestTurnComplete,
+      latestTurnGap,
       entries: entries.map((entry) => [
         entry.entryId,
         entry.index,
@@ -1187,6 +1366,8 @@ function materializeSnapshot(
     revision,
     entries,
     hasEarlier,
+    latestTurnComplete,
+    ...(latestTurnGap ? { latestTurnGap } : {}),
     sourceEntryCount,
   };
   let cacheBytes = Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -1200,85 +1381,114 @@ function materializeSnapshot(
   }
 }
 
+interface BoundedHistoryMessage {
+  message: ServerMessage;
+  payloadOmitted: boolean;
+}
+
 function boundHistoryMessage(
   message: ServerMessage,
   maxMessageTextBytes: number,
-): ServerMessage {
+): BoundedHistoryMessage {
   const budget = { remaining: maxMessageTextBytes };
   if (message.type === "user_input") {
+    const text = takeBoundedText(
+      message.text,
+      budget,
+      maxMessageTextBytes,
+    );
     return {
-      ...message,
-      text: takeBoundedText(message.text, budget, maxMessageTextBytes),
+      message: { ...message, text },
+      payloadOmitted: text !== message.text,
     };
   }
   if (message.type === "tool_result") {
+    const content = takeBoundedText(
+      message.content,
+      budget,
+      MAX_TOOL_RESULT_TEXT,
+    );
     return {
-      ...message,
-      content: takeBoundedText(message.content, budget, MAX_TOOL_RESULT_TEXT),
+      message: { ...message, content },
+      payloadOmitted: content !== message.content,
     };
   }
   if (message.type === "tool_use_summary") {
+    const summary = takeBoundedText(
+      message.summary,
+      budget,
+      maxMessageTextBytes,
+    );
     return {
-      ...message,
-      summary: takeBoundedText(message.summary, budget, maxMessageTextBytes),
+      message: { ...message, summary },
+      payloadOmitted: summary !== message.summary,
     };
   }
-  if (message.type !== "assistant") return message;
+  if (message.type !== "assistant") {
+    return { message, payloadOmitted: false };
+  }
   if (message.message.content.length > MAX_ASSISTANT_CONTENT_BLOCKS) {
     throw new Error(
       `Assistant message exceeds ${MAX_ASSISTANT_CONTENT_BLOCKS} content blocks`,
     );
   }
+  let payloadOmitted = false;
   return {
-    ...message,
     message: {
-      ...message.message,
-      content: message.message.content.map((content) => {
-        if (content.type === "text") {
-          return {
-            ...content,
-            text: takeBoundedText(content.text, budget, MAX_ASSISTANT_TEXT),
-          };
-        }
-        if (content.type === "thinking") {
-          return {
-            ...content,
-            thinking: takeBoundedText(
+      ...message,
+      message: {
+        ...message.message,
+        content: message.message.content.map((content) => {
+          if (content.type === "text") {
+            const text = takeBoundedText(
+              content.text,
+              budget,
+              MAX_ASSISTANT_TEXT,
+            );
+            payloadOmitted ||= text !== content.text;
+            return { ...content, text };
+          }
+          if (content.type === "thinking") {
+            const thinking = takeBoundedText(
               content.thinking,
               budget,
               MAX_ASSISTANT_TEXT,
-            ),
-          };
-        }
-        if (content.type !== "tool_use") return content;
-        const encoded = safeJsonSerialize(
-          content.input,
-          Math.min(MAX_TOOL_INPUT_JSON, budget.remaining),
-        );
-        if (encoded) {
-          budget.remaining -= encoded.bytes;
-          return content;
-        }
-        const replacement = {
-          ccpocketTruncated: true,
-          preview: "[tool input omitted: exceeds safe byte budget]",
-        };
-        const replacementBytes = Buffer.byteLength(
-          JSON.stringify(replacement),
-          "utf8",
-        );
-        if (replacementBytes > budget.remaining) {
-          throw new Error(
-            "Assistant message exceeds aggregate text/input byte budget",
+            );
+            payloadOmitted ||= thinking !== content.thinking;
+            return { ...content, thinking };
+          }
+          if (content.type !== "tool_use") return content;
+          const encoded = safeJsonSerialize(
+            content.input,
+            Math.min(MAX_TOOL_INPUT_JSON, budget.remaining),
           );
-        }
-        budget.remaining -= replacementBytes;
-        return {
-          ...content,
-          input: replacement,
-        };
-      }),
+          if (encoded) {
+            budget.remaining -= encoded.bytes;
+            return content;
+          }
+          const replacement = {
+            ccpocketTruncated: true,
+            preview: "[tool input omitted: exceeds safe byte budget]",
+          };
+          const replacementBytes = Buffer.byteLength(
+            JSON.stringify(replacement),
+            "utf8",
+          );
+          if (replacementBytes > budget.remaining) {
+            throw new Error(
+              "Assistant message exceeds aggregate text/input byte budget",
+            );
+          }
+          budget.remaining -= replacementBytes;
+          payloadOmitted = true;
+          return {
+            ...content,
+            input: replacement,
+          };
+        }),
+      },
     },
+    payloadOmitted,
   };
 }
 

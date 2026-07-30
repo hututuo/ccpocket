@@ -97,9 +97,11 @@ const MAX_EXTERNAL_LIVE_BYTES_PER_THREAD = 512 * 1024;
 // stale rows before applying the replacement snapshot.
 const STATUS_STATE_SCHEMA_VERSION = 2;
 // Build 208 could persist a content revision without observing Desktop-owned
-// rollout changes. Advance the semantic generation so upgraded clients refresh
-// the bounded hot window once instead of trusting those stale revisions.
-const CONTENT_STATE_SCHEMA_VERSION = 2;
+// rollout changes, and the first v2 snapshot could cut into an oversized latest
+// turn without declaring that gap. Advance the semantic generation so upgraded
+// clients refresh the bounded hot window once and receive the completeness
+// metadata instead of trusting those stale revisions.
+const CONTENT_STATE_SCHEMA_VERSION = 3;
 
 type ConversationKey = string;
 type ConversationSyncEventPayload =
@@ -204,6 +206,10 @@ interface ConversationItemsPage {
   nextCursor: string | null;
   turnDetails?: ConversationTurnDetails;
 }
+
+type CodexReadRunner = <T>(
+  operation: (process: CodexProcess) => Promise<T>,
+) => Promise<T>;
 
 interface CachedTurnDetails {
   details: Map<string, HistoryToolDetailPayload>;
@@ -1182,6 +1188,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: deletePages[pageIndex] ?? [],
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        latestTurnComplete: snapshot.latestTurnComplete,
+        latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
       });
     }
@@ -1222,6 +1230,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: [],
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        latestTurnComplete: snapshot.latestTurnComplete,
+        latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
       });
     });
@@ -1259,6 +1269,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: [],
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        latestTurnComplete: snapshot.latestTurnComplete,
+        latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
       }),
       "utf8",
@@ -2348,10 +2360,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!subscription) return;
     try {
       const page = await readTurnsPage(
-        this.runtime,
         message,
         this.historyReader,
         signal,
+        (operation) => this.withSharedCodexReadProcess(operation),
       );
       for (const turn of page.turnDetails ?? []) {
         this.rememberTurnDetails(message, turn);
@@ -2394,10 +2406,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       const page = cached
         ? historyToolDetailsPage(message, cached)
         : await readItemsPage(
-            this.runtime,
             message,
             this.historyReader,
             signal,
+            (operation) => this.withSharedCodexReadProcess(operation),
           );
       if (page.turnDetails) {
         this.rememberTurnDetails(message, page.turnDetails);
@@ -2829,7 +2841,6 @@ async function readLegacyHistoryWindow(
 }
 
 async function readTurnsPage(
-  runtime: LocalFeatureRuntime,
   message: Extract<
     ConversationSyncClientMessage,
     { type: "conversation_turns_page" }
@@ -2838,9 +2849,10 @@ async function readTurnsPage(
     target: ConversationSyncTarget,
   ) => Promise<ServerMessage[] | ConversationHistoryWindow>,
   signal: AbortSignal,
+  runCodexRead: CodexReadRunner,
 ): Promise<ConversationTurnsPage> {
   if (message.provider === "codex") {
-    return withCodexProcess(runtime, undefined, async (process) => {
+    return runCodexRead(async (process) => {
       const page = await process.listThreadTurns(
         {
           threadId: message.providerSessionId,
@@ -2908,7 +2920,6 @@ async function readTurnsPage(
 }
 
 async function readItemsPage(
-  runtime: LocalFeatureRuntime,
   message: Extract<
     ConversationSyncClientMessage,
     { type: "conversation_items_page" }
@@ -2917,9 +2928,10 @@ async function readItemsPage(
     target: ConversationSyncTarget,
   ) => Promise<ServerMessage[] | ConversationHistoryWindow>,
   signal: AbortSignal,
+  runCodexRead: CodexReadRunner,
 ): Promise<ConversationItemsPage> {
   if (message.provider === "codex") {
-    return withCodexProcess(runtime, undefined, async (process) => {
+    return runCodexRead(async (process) => {
       const turnId = message.turnId ?? "paged-items";
       let messages: ServerMessage[];
       let nextCursor: string | null = null;

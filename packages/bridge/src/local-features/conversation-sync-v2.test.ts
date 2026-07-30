@@ -234,6 +234,150 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("keeps the latest turn spine intact when one turn exceeds 512 KiB", async () => {
+    const turnId = "turn-current";
+    const largeTurn: ServerMessage[] = [
+      {
+        type: "user_input",
+        text: "current prompt",
+        userMessageUuid: "current-user",
+      },
+      {
+        type: "assistant",
+        messageUuid: "current-thinking",
+        historyTurnId: turnId,
+        message: {
+          id: "current-thinking",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "thinking", thinking: "investigating" }],
+        },
+      },
+      ...Array.from({ length: 180 }, (_, index) => {
+        const toolUseId = `large-tool-${index}`;
+        return [
+          {
+            type: "assistant" as const,
+            messageUuid: `large-tool-call-${index}`,
+            historyTurnId: turnId,
+            message: {
+              id: `large-tool-call-${index}`,
+              role: "assistant" as const,
+              model: "test",
+              content: [
+                {
+                  type: "tool_use" as const,
+                  id: toolUseId,
+                  name: "Read",
+                  input: { payload: "x".repeat(2 * 1024) },
+                },
+              ],
+            },
+          },
+          {
+            type: "tool_result" as const,
+            toolUseId,
+            toolName: "Read",
+            historyTurnId: turnId,
+            content: "y".repeat(4 * 1024),
+          },
+        ];
+      }).flat(),
+      {
+        type: "assistant",
+        messageUuid: "current-final",
+        historyTurnId: turnId,
+        message: {
+          id: "current-final",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "current final answer" }],
+        },
+      },
+    ];
+    const record = codexSeed(0, "thread-current");
+    record.status = {
+      ...record.status,
+      activity: "working",
+      confidence: "authoritative",
+      runtimeAttachment: "loaded",
+    };
+    const fixture = createFixture(
+      [record],
+      vi.fn(async () => ({
+        messages: largeTurn,
+        nextTurnCursor: "older-turns-after-current",
+      })),
+      {
+        initialExternalCodexMonitors: 0,
+        inspectCodexThread: async () => null,
+      },
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    const timeline = events(fixture.sent, client, "timeline_page");
+    const messages = timeline.flatMap((page) =>
+      page.entries.map((entry) => entry.message),
+    );
+    expect(messages[0]).toMatchObject({
+      type: "user_input",
+      userMessageUuid: "current-user",
+    });
+    expect(
+      messages.some(
+        (message) =>
+          message.type === "assistant" &&
+          message.message.content.some(
+            (content) =>
+              content.type === "thinking" &&
+              content.thinking === "investigating",
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      messages.some(
+        (message) =>
+          message.type === "assistant" &&
+          message.message.content.some(
+            (content) =>
+              content.type === "text" &&
+              content.text === "current final answer",
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      messages.some(
+        (message) =>
+          message.type === "assistant" &&
+          (message.historyToolDetailGaps?.length ?? 0) > 0,
+      ),
+    ).toBe(true);
+    expect(timeline[0]).toMatchObject({
+      latestTurnComplete: false,
+      latestTurnGap: {
+        turnId,
+        payloadOmitted: true,
+        repair: "items_page",
+      },
+      turnsNextCursor: "older-turns-after-current",
+    });
+    expect(timeline[0]!.latestTurnGap?.missingEntryCount).toBeGreaterThan(0);
+    for (const message of fixture.sent.get(client) ?? []) {
+      expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
+        64 * 1024,
+      );
+    }
+    fixture.handler.close();
+  });
+
   it("sends special state first, limits provider concurrency, and reuses revisions", async () => {
     const seeds = Array.from({ length: 12 }, (_, index) =>
       seed(index, index === 10 ? workingStatus(index) : undefined),
@@ -1582,8 +1726,16 @@ describe("ConversationSyncV2FeatureHandler", () => {
       data: [],
       nextCursor: null,
     }));
+    const listThreadItems = vi.fn(async () => ({
+      data: [],
+      nextCursor: null,
+    }));
     const stop = vi.fn();
-    const standalone = { listThreadTurns, stop } as unknown as CodexProcess;
+    const standalone = {
+      listThreadTurns,
+      listThreadItems,
+      stop,
+    } as unknown as CodexProcess;
     const createStandaloneCodexProcess = vi.fn(async () => standalone);
     const runtime: LocalFeatureRuntime = {
       bridgeInstanceId: "bridge-1",
@@ -1615,13 +1767,139 @@ describe("ConversationSyncV2FeatureHandler", () => {
       coldReconcileMs: 60_000,
     });
     const client = {};
-    await handler.handle(subscribeMessage(), context(client, runtime));
+    const subscription = subscribeMessage();
+    await handler.handle(subscription, context(client, runtime));
     await vi.waitFor(() =>
       expect(sent.some((message) => message.event === "sync_complete")).toBe(
         true,
       ),
     );
-    expect(listThreadTurns).toHaveBeenCalledTimes(2);
+    await handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "shared-turns-page",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-0",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+      context(client, runtime),
+    );
+    await handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "shared-items-page",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-0",
+        turnId: "turn-current",
+        limit: 50,
+        sortDirection: "asc",
+      },
+      context(client, runtime),
+    );
+
+    expect(listThreadTurns).toHaveBeenCalledTimes(3);
+    expect(listThreadItems).toHaveBeenCalledTimes(1);
+    expect(createStandaloneCodexProcess).toHaveBeenCalledTimes(1);
+    handler.close();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to bounded turns/list on the shared reader when items/list is unavailable", async () => {
+    const sent: ConversationSyncServerMessage[] = [];
+    const listThreadTurns = vi.fn(async () => ({
+      data: [
+        {
+          id: "turn-current",
+          items: [
+            {
+              type: "userMessage",
+              id: "user-current",
+              content: [{ type: "inputText", text: "prompt" }],
+            },
+            {
+              type: "agentMessage",
+              id: "assistant-current",
+              text: "answer",
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    }));
+    const listThreadItems = vi.fn(async () => {
+      throw new Error("Method not found");
+    });
+    const stop = vi.fn();
+    const standalone = {
+      isRunning: true,
+      listThreadTurns,
+      listThreadItems,
+      stop,
+    } as unknown as CodexProcess;
+    const createStandaloneCodexProcess = vi.fn(async () => standalone);
+    const runtime: LocalFeatureRuntime = {
+      bridgeInstanceId: "bridge-1",
+      codexSourceId: "source-1",
+      getSession: () => undefined,
+      getCodexThreadId: () => undefined,
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess,
+      send(_client, message) {
+        sent.push(message as ConversationSyncServerMessage);
+      },
+      isClientOpen: () => true,
+      supports: (_client, capability) =>
+        capability === CONVERSATION_SYNC_V2_CAPABILITY,
+    };
+    const handler = new ConversationSyncV2FeatureHandler(runtime, {
+      catalogReader: async () => [],
+      statusReader: async () => new Map(),
+      inspectCodexThread: async () => null,
+      statusWatchdogMs: 60_000,
+      coldReconcileMs: 60_000,
+    });
+    const client = {};
+    const subscription = subscribeMessage();
+    await handler.handle(subscription, context(client, runtime));
+    await vi.waitFor(() =>
+      expect(sent.some((message) => message.event === "sync_complete")).toBe(
+        true,
+      ),
+    );
+
+    await handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "fallback-items-page",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-current",
+        turnId: "turn-current",
+        limit: 50,
+        sortDirection: "asc",
+      },
+      context(client, runtime),
+    );
+
+    const response = sent.find(
+      (message) =>
+        message.event === "items_page_response" &&
+        message.requestId === "fallback-items-page",
+    );
+    expect(response).toMatchObject({
+      event: "items_page_response",
+      turnId: "turn-current",
+      nextCursor: null,
+    });
+    expect(listThreadItems).toHaveBeenCalledTimes(1);
+    expect(listThreadTurns).toHaveBeenCalledTimes(1);
     expect(createStandaloneCodexProcess).toHaveBeenCalledTimes(1);
     handler.close();
     expect(stop).toHaveBeenCalledTimes(1);

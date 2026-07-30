@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ServerMessage } from "../parser.js";
 import type { SessionIndexEntry } from "../sessions-index.js";
-import { ConversationContentSyncFeatureHandler } from "./conversation-content-sync.js";
+import {
+  buildConversationContentSnapshot,
+  ConversationContentSyncFeatureHandler,
+} from "./conversation-content-sync.js";
 import {
   CONVERSATION_CONTENT_EVENT_CAPABILITY,
   conversationContentProtocolContribution,
@@ -87,6 +90,71 @@ describe("conversation content protocol", () => {
 });
 
 describe("ConversationContentSyncFeatureHandler", () => {
+  it("does not advertise a synthetic user UUID as an app-server turn id", () => {
+    const messages: ServerMessage[] = [
+      {
+        type: "user_input",
+        text: "prompt",
+        userMessageUuid: "user-only-identity",
+      },
+      ...Array.from({ length: 30 }, (_, index) => {
+        const toolUseId = `tool-${index}`;
+        return [
+          {
+            type: "assistant" as const,
+            messageUuid: `tool-call-${index}`,
+            message: {
+              id: `tool-call-${index}`,
+              role: "assistant" as const,
+              model: "test",
+              content: [
+                {
+                  type: "tool_use" as const,
+                  id: toolUseId,
+                  name: "Read",
+                  input: { payload: "x".repeat(256) },
+                },
+              ],
+            },
+          },
+          {
+            type: "tool_result" as const,
+            toolUseId,
+            toolName: "Read",
+            content: "y".repeat(256),
+          },
+        ];
+      }).flat(),
+      {
+        type: "assistant",
+        messageUuid: "final",
+        message: {
+          id: "final",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "answer" }],
+        },
+      },
+    ];
+
+    const snapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "thread-1" },
+      messages,
+      {
+        maxMessageTextBytes: 256,
+        maxSnapshotBytes: 4 * 1024,
+        preserveLatestRootTurnTools: true,
+      },
+    );
+
+    expect(snapshot.latestTurnComplete).toBe(false);
+    expect(snapshot.latestTurnGap).toMatchObject({
+      repair: "turns_page",
+      payloadOmitted: true,
+    });
+    expect(snapshot.latestTurnGap).not.toHaveProperty("turnId");
+  });
+
   it("bounds aggregate text per message without changing the wire envelope", async () => {
     const fixture = createFixture(1, {
       maxMessageTextBytes: 64,

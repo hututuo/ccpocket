@@ -114,6 +114,14 @@ export interface ConversationSyncNextState {
   threadContentStates: ConversationSyncThreadState[];
 }
 
+export interface ConversationSyncLatestTurnGap {
+  turnId?: string;
+  missingEntryCount: number;
+  payloadOmitted: boolean;
+  firstMissingSourceIndex?: number;
+  repair: "items_page" | "turns_page";
+}
+
 interface ConversationSyncEventBase {
   type: typeof CONVERSATION_SYNC_V2_CAPABILITY;
   subscriptionId: string;
@@ -161,6 +169,8 @@ export type ConversationSyncServerMessage =
         deletes: string[];
         hasEarlier: boolean;
         turnsNextCursor?: string | null;
+        latestTurnComplete?: boolean;
+        latestTurnGap?: ConversationSyncLatestTurnGap;
         sourceEntryCount: number;
       })
   | (ConversationSyncEventBase & {
