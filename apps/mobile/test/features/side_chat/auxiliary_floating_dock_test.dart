@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:ccpocket/features/side_chat/state/ephemeral_side_chat_registry_service.dart';
 import 'package:ccpocket/features/side_chat/widgets/auxiliary_floating_dock.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter/material.dart';
@@ -9,8 +11,39 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _Bridge extends BridgeService {
+  final tagged =
+      StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
+  final sent = <ClientMessage>[];
+
   @override
   bool get isConnected => true;
+
+  @override
+  bool get hasAuthoritativeSessionListForCurrentConnection => true;
+
+  @override
+  Set<String> get bridgeCapabilities => const {
+    detachedSubagentsReadCapability,
+  };
+
+  @override
+  String? get codexSourceId => 'source-1';
+
+  @override
+  Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
+    String sessionId,
+  ) => tagged.stream
+      .where((pair) => pair.$2 == sessionId)
+      .map((pair) => pair.$1);
+
+  @override
+  void send(ClientMessage message) => sent.add(message);
+
+  @override
+  void dispose() {
+    tagged.close();
+    super.dispose();
+  }
 }
 
 class _Gateway implements EphemeralSideChatBridgeGateway {
@@ -127,6 +160,53 @@ void main() {
     expect(openedProviderParent, 'parent-1');
     expect(openedChild, 'child-1');
   });
+
+  testWidgets(
+    'detached dock subagents use provider identity without sessionId',
+    (tester) async {
+      final bridge = _Bridge();
+      final gateway = _Gateway()
+        ..capabilities = {}
+        ..isConnected = true;
+      final registry = EphemeralSideChatRegistryService(bridge: gateway);
+      addTearDown(registry.dispose);
+      addTearDown(gateway.dispose);
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: AuxiliaryFloatingDock(
+              sessionId: 'pane-1',
+              parentProviderSessionId: 'provider-parent',
+              detachedSubagentsProviderThreadId: 'provider-parent',
+              detachedSubagentsCodexSourceId: 'source-1',
+              bridgeService: bridge,
+              registryService: registry,
+              onOpenSideChat: (_, _, _) async {},
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('auxiliary_floating_dock_tap')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Subagents'));
+      await tester.pumpAndSettle();
+
+      final request =
+          jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
+      expect(request['type'], 'get_detached_subagents');
+      expect(request['ownerSessionId'], 'pane-1');
+      expect(request['providerThreadId'], 'provider-parent');
+      expect(request['codexSourceId'], 'source-1');
+      expect(request.containsKey('sessionId'), isFalse);
+    },
+  );
 
   testWidgets(
     'filters detached and attached runtimes by the canonical provider parent',

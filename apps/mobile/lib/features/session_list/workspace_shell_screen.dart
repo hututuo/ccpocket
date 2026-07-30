@@ -243,11 +243,13 @@ class _LocalFeatureToolPaneSnapshot extends _WorkspaceToolPaneSnapshot {
   final String featureId;
   final String sessionId;
   final String title;
+  final Map<String, Object?> arguments;
 
   const _LocalFeatureToolPaneSnapshot({
     required this.featureId,
     required this.sessionId,
     required this.title,
+    required this.arguments,
   });
 
   @override
@@ -255,6 +257,7 @@ class _LocalFeatureToolPaneSnapshot extends _WorkspaceToolPaneSnapshot {
     featureId: featureId,
     sessionId: sessionId,
     title: title,
+    arguments: arguments,
     rememberPerSession: true,
   );
 }
@@ -553,6 +556,7 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
         :final featureId,
         :final sessionId,
         :final title,
+        :final arguments,
         :final rememberPerSession,
       ) =>
         rememberPerSession
@@ -560,6 +564,7 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
                 featureId: featureId,
                 sessionId: sessionId,
                 title: title,
+                arguments: Map.unmodifiable(arguments),
               )
             : null,
     };

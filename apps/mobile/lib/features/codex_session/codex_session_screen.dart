@@ -1230,6 +1230,13 @@ class _CodexChatBody extends HookWidget {
                     ...arguments,
                     'parentProviderSessionId': sessionInsightsSessionId,
                   }
+                : featureId == 'subagents' && detachedPreview
+                ? {
+                    ...arguments,
+                    'providerThreadId':
+                        sessionInsightsSessionId ?? sessionId,
+                    'codexSourceId': dataSourceIdentity.codexSourceId,
+                  }
                 : arguments,
           ),
     );
@@ -2369,6 +2376,12 @@ class _CodexChatBody extends HookWidget {
                       sessionId: sessionId,
                       parentProviderSessionId:
                           sessionInsightsSessionId ?? sessionId,
+                      detachedSubagentsProviderThreadId: detachedPreview
+                          ? sessionInsightsSessionId ?? sessionId
+                          : null,
+                      detachedSubagentsCodexSourceId: detachedPreview
+                          ? dataSourceIdentity.codexSourceId
+                          : null,
                       bridgeService: bridge,
                       registryService: ephemeralSideChatRegistry,
                       onOpenSideChat:

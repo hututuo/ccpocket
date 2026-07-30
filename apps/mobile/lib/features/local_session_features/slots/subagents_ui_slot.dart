@@ -26,10 +26,20 @@ class _SubagentsUiSlot extends LocalSessionFeatureSlot {
       WorkspaceFeaturePaneDescriptor(
         featureId: featureId,
         title: (context) => SubagentsStrings.of(context).title,
-        builder: (context) => SubagentsPanel(
-          sessionId: context.sessionId,
-          bridgeService: context.bridge,
-          onClose: context.onClose,
-        ),
+        builder: (context) {
+          final providerThreadId = context.arguments['providerThreadId'];
+          final codexSourceId = context.arguments['codexSourceId'];
+          return SubagentsPanel(
+            sessionId: context.sessionId,
+            bridgeService: context.bridge,
+            detachedProviderThreadId: providerThreadId is String
+                ? providerThreadId
+                : null,
+            detachedCodexSourceId: codexSourceId is String
+                ? codexSourceId
+                : null,
+            onClose: context.onClose,
+          );
+        },
       );
 }

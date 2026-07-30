@@ -33,6 +33,8 @@ class AuxiliaryFloatingDock extends StatefulWidget {
     required this.bridgeService,
     required this.registryService,
     required this.onOpenSideChat,
+    this.detachedSubagentsProviderThreadId,
+    this.detachedSubagentsCodexSourceId,
   });
 
   final String sessionId;
@@ -40,6 +42,8 @@ class AuxiliaryFloatingDock extends StatefulWidget {
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
   final OpenAuxiliarySideChat onOpenSideChat;
+  final String? detachedSubagentsProviderThreadId;
+  final String? detachedSubagentsCodexSourceId;
 
   @override
   State<AuxiliaryFloatingDock> createState() => _AuxiliaryFloatingDockState();
@@ -508,6 +512,10 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
                     parentProviderSessionId: parentProviderSessionId,
                     bridgeService: widget.bridgeService,
                     registryService: widget.registryService,
+                    detachedSubagentsProviderThreadId:
+                        widget.detachedSubagentsProviderThreadId,
+                    detachedSubagentsCodexSourceId:
+                        widget.detachedSubagentsCodexSourceId,
                     onOpenSideChat: _openSideChat,
                     onCollapse: _collapse,
                     onHeaderPointerMove: _dragPanel,
@@ -603,6 +611,8 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
     required this.parentProviderSessionId,
     required this.bridgeService,
     required this.registryService,
+    this.detachedSubagentsProviderThreadId,
+    this.detachedSubagentsCodexSourceId,
     required this.onOpenSideChat,
     required this.onCollapse,
     required this.onHeaderPointerMove,
@@ -614,6 +624,8 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
   final String parentProviderSessionId;
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
+  final String? detachedSubagentsProviderThreadId;
+  final String? detachedSubagentsCodexSourceId;
   final OpenAuxiliarySideChat onOpenSideChat;
   final VoidCallback onCollapse;
   final PointerMoveEventListener onHeaderPointerMove;
@@ -675,6 +687,8 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
                   SubagentsPanel(
                     sessionId: currentSessionId,
                     bridgeService: bridgeService,
+                    detachedProviderThreadId: detachedSubagentsProviderThreadId,
+                    detachedCodexSourceId: detachedSubagentsCodexSourceId,
                   ),
                 ],
               ),
@@ -739,11 +753,7 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              SideChatStrings.of(context).closeFailed,
-            ),
-          ),
+          SnackBar(content: Text(SideChatStrings.of(context).closeFailed)),
         );
       }
     } finally {
@@ -773,9 +783,7 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
                     )
                   : null,
               icon: const Icon(Icons.add_comment_outlined),
-              label: Text(
-                SideChatStrings.of(context).newTemporarySideChat,
-              ),
+              label: Text(SideChatStrings.of(context).newTemporarySideChat),
             ),
           ),
         ),

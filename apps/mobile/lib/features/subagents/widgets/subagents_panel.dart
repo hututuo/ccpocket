@@ -26,12 +26,16 @@ class SubagentsPanel extends StatefulWidget {
     super.key,
     required this.sessionId,
     required this.bridgeService,
+    this.detachedProviderThreadId,
+    this.detachedCodexSourceId,
     this.onClose,
     this.controller,
   });
 
   final String sessionId;
   final BridgeService bridgeService;
+  final String? detachedProviderThreadId;
+  final String? detachedCodexSourceId;
   final VoidCallback? onClose;
   final SubagentsController? controller;
 
@@ -54,6 +58,8 @@ class _SubagentsPanelState extends State<SubagentsPanel> {
         SubagentsController(
           sessionId: widget.sessionId,
           bridge: widget.bridgeService,
+          detachedProviderThreadId: widget.detachedProviderThreadId,
+          detachedCodexSourceId: widget.detachedCodexSourceId,
         );
     _controller.addListener(_changed);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -65,6 +71,8 @@ class _SubagentsPanelState extends State<SubagentsPanel> {
   void didUpdateWidget(covariant SubagentsPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.sessionId == widget.sessionId &&
+        oldWidget.detachedProviderThreadId == widget.detachedProviderThreadId &&
+        oldWidget.detachedCodexSourceId == widget.detachedCodexSourceId &&
         oldWidget.controller == widget.controller &&
         oldWidget.bridgeService == widget.bridgeService) {
       return;
@@ -77,6 +85,8 @@ class _SubagentsPanelState extends State<SubagentsPanel> {
         SubagentsController(
           sessionId: widget.sessionId,
           bridge: widget.bridgeService,
+          detachedProviderThreadId: widget.detachedProviderThreadId,
+          detachedCodexSourceId: widget.detachedCodexSourceId,
         );
     _controller.addListener(_changed);
     _selectedThreadId = null;
@@ -454,5 +464,8 @@ String _localizedError(SubagentsStrings strings, String error) =>
     switch (error) {
       'bridge_disconnected' => strings.bridgeDisconnected,
       'unsupported' => strings.unsupported,
+      'source_unavailable' ||
+      'codex_source_unavailable' => strings.sourceUnavailable,
+      'codex_source_mismatch' => strings.sourceMismatch,
       _ => error,
     };

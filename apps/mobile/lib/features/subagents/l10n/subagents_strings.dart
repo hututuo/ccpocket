@@ -12,6 +12,8 @@ class SubagentsStrings {
     required this.emptyHistory,
     required this.bridgeDisconnected,
     required this.unsupported,
+    required this.sourceUnavailable,
+    required this.sourceMismatch,
     required this.truncatedTemplate,
     required this.user,
     required this.assistant,
@@ -29,6 +31,8 @@ class SubagentsStrings {
   final String emptyHistory;
   final String bridgeDisconnected;
   final String unsupported;
+  final String sourceUnavailable;
+  final String sourceMismatch;
   final String truncatedTemplate;
   final String user;
   final String assistant;
@@ -60,6 +64,10 @@ class SubagentsStrings {
     emptyHistory: 'No history available',
     bridgeDisconnected: 'Reconnect to the Bridge to load subagents.',
     unsupported: 'This Bridge does not support subagent browsing yet.',
+    sourceUnavailable:
+        'Reconnect after the Bridge confirms the Codex data source.',
+    sourceMismatch:
+        'This session belongs to a different Codex data source. Reopen it from the current Bridge.',
     truncatedTemplate: 'Bounded response: {count} shown.',
     user: 'User',
     assistant: 'Assistant',
@@ -78,6 +86,8 @@ class SubagentsStrings {
     emptyHistory: '暂无历史记录',
     bridgeDisconnected: '请重新连接 Bridge 后查看子 Agent。',
     unsupported: '当前 Bridge 暂不支持查看子 Agent。',
+    sourceUnavailable: '请等待 Bridge 确认 Codex 数据来源后重试。',
+    sourceMismatch: '此会话属于另一 Codex 数据来源，请从当前 Bridge 重新打开。',
     truncatedTemplate: '为保证性能，仅显示 {count} 条结果。',
     user: '用户',
     assistant: '助手',
@@ -96,6 +106,8 @@ class SubagentsStrings {
     emptyHistory: '履歴はありません',
     bridgeDisconnected: 'Bridge に再接続してサブエージェントを読み込んでください。',
     unsupported: 'この Bridge はまだサブエージェントの表示に対応していません。',
+    sourceUnavailable: 'Bridge が Codex データソースを確認してから再試行してください。',
+    sourceMismatch: 'このセッションは別の Codex データソースに属しています。現在の Bridge から開き直してください。',
     truncatedTemplate: 'パフォーマンスのため、{count} 件の結果のみ表示しています。',
     user: 'ユーザー',
     assistant: 'アシスタント',
@@ -114,6 +126,8 @@ class SubagentsStrings {
     emptyHistory: '사용 가능한 기록이 없습니다',
     bridgeDisconnected: 'Bridge에 다시 연결하여 하위 에이전트를 불러오세요.',
     unsupported: '이 Bridge는 아직 하위 에이전트 보기를 지원하지 않습니다.',
+    sourceUnavailable: 'Bridge가 Codex 데이터 소스를 확인한 뒤 다시 시도하세요.',
+    sourceMismatch: '이 세션은 다른 Codex 데이터 소스에 속합니다. 현재 Bridge에서 다시 여세요.',
     truncatedTemplate: '성능을 위해 제한된 결과 {count}개만 표시합니다.',
     user: '사용자',
     assistant: '어시스턴트',

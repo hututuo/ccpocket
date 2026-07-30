@@ -5,18 +5,20 @@ import { describe, expect, it, vi } from "vitest";
 import { CodexRpcError, type CodexProcess } from "../codex-process.js";
 import type { ServerMessage } from "../parser.js";
 import type { CodexSubagentInfo as CodexThreadSummary } from "./protocol.js";
+import type {
+  LocalFeatureHandleContext,
+  LocalFeatureRuntime,
+} from "./runtime.js";
 import {
   childThreadToServerMessages,
   CodexSubagentService,
   descendantsOf,
   limitSubagentHistoryResponse,
   MAX_SUBAGENT_HISTORY_MESSAGES,
+  SubagentsFeatureHandler,
 } from "./subagents.js";
 
-function thread(
-  id: string,
-  parentThreadId: string | null,
-): CodexThreadSummary {
+function thread(id: string, parentThreadId: string | null): CodexThreadSummary {
   return {
     id,
     sessionId: "tree",
@@ -39,35 +41,41 @@ function thread(
   };
 }
 
-function processWith(
-  overrides: Record<string, unknown>,
-): CodexProcess {
+function processWith(overrides: Record<string, unknown>): CodexProcess {
   const listThreads =
     (overrides.listThreads as ReturnType<typeof vi.fn> | undefined) ??
     vi.fn(async () => ({ data: [], nextCursor: null }));
   const listThreadItems =
     (overrides.listThreadItems as ReturnType<typeof vi.fn> | undefined) ??
-    vi.fn().mockRejectedValue(
-      new CodexRpcError(
-        "thread/items/list",
-        "Method not found: thread/items/list",
-        -32601,
-      ),
-    );
+    vi
+      .fn()
+      .mockRejectedValue(
+        new CodexRpcError(
+          "thread/items/list",
+          "Method not found: thread/items/list",
+          -32601,
+        ),
+      );
   const listThreadTurns =
     (overrides.listThreadTurns as ReturnType<typeof vi.fn> | undefined) ??
-    vi.fn().mockRejectedValue(
-      new CodexRpcError(
-        "thread/turns/list",
-        "Method not found: thread/turns/list",
-        -32601,
-      ),
-    );
+    vi
+      .fn()
+      .mockRejectedValue(
+        new CodexRpcError(
+          "thread/turns/list",
+          "Method not found: thread/turns/list",
+          -32601,
+        ),
+      );
   const readThread =
     (overrides.readThread as ReturnType<typeof vi.fn> | undefined) ?? vi.fn();
   return {
     requestReadOnlyRpc: vi.fn(
-      async (method: string, params: Record<string, unknown>, options: unknown) => {
+      async (
+        method: string,
+        params: Record<string, unknown>,
+        options: unknown,
+      ) => {
         if (method === "thread/list") return listThreads(params, options);
         if (method === "thread/items/list") {
           return listThreadItems(
@@ -92,12 +100,28 @@ function processWith(
           );
         }
         if (method === "thread/read") {
-          return { thread: await readThread(params.threadId, params.includeTurns, options) };
+          return {
+            thread: await readThread(
+              params.threadId,
+              params.includeTurns,
+              options,
+            ),
+          };
         }
         throw new Error(`Unexpected RPC: ${method}`);
       },
     ),
   } as unknown as CodexProcess;
+}
+
+function handlerProcess(
+  overrides: Record<string, unknown>,
+  options: { running?: boolean } = {},
+): CodexProcess {
+  return Object.assign(processWith(overrides), {
+    isRunning: options.running ?? true,
+    stop: vi.fn(),
+  }) as unknown as CodexProcess;
 }
 
 function assistantText(id: string, text: string): ServerMessage {
@@ -193,9 +217,7 @@ describe("CodexSubagentService", () => {
     expect(listThreads.mock.calls[0]?.[0]).toMatchObject({
       useStateDbOnly: true,
     });
-    expect(listThreads.mock.calls[1]?.[0]).not.toHaveProperty(
-      "useStateDbOnly",
-    );
+    expect(listThreads.mock.calls[1]?.[0]).not.toHaveProperty("useStateDbOnly");
     expect(listThreads.mock.calls[1]?.[0]).toMatchObject({
       ancestorThreadId: "root",
       sourceKinds: expect.arrayContaining(["subAgentThreadSpawn"]),
@@ -203,7 +225,10 @@ describe("CodexSubagentService", () => {
   });
 
   it("keeps descendants scoped to the exact conversation across archive states", async () => {
-    const currentChild = { ...thread("current-child", "current"), updatedAt: 3 };
+    const currentChild = {
+      ...thread("current-child", "current"),
+      updatedAt: 3,
+    };
     const archivedCurrentChild = {
       ...thread("archived-current-child", "current"),
       updatedAt: 2,
@@ -251,7 +276,9 @@ describe("CodexSubagentService", () => {
   });
 
   it("replaces the first-message preview with the latest bounded exchange", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "ccpocket-subagent-preview-"));
+    const directory = await mkdtemp(
+      join(tmpdir(), "ccpocket-subagent-preview-"),
+    );
     try {
       const filePath = join(directory, "child.jsonl");
       await writeFile(
@@ -293,12 +320,10 @@ describe("CodexSubagentService", () => {
         preview: "shared first prompt",
         path: filePath,
       };
-      const listThreads = vi.fn(
-        async (params: { archived?: boolean }) => ({
-          data: params.archived ? [] : [rawThread],
-          nextCursor: null,
-        }),
-      );
+      const listThreads = vi.fn(async (params: { archived?: boolean }) => ({
+        data: params.archived ? [] : [rawThread],
+        nextCursor: null,
+      }));
 
       const result = await new CodexSubagentService().list(
         processWith({
@@ -317,7 +342,9 @@ describe("CodexSubagentService", () => {
   });
 
   it("does not pair an inherited first prompt with a later answer", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "ccpocket-subagent-answer-"));
+    const directory = await mkdtemp(
+      join(tmpdir(), "ccpocket-subagent-answer-"),
+    );
     try {
       const filePath = join(directory, "child.jsonl");
       await writeFile(
@@ -354,12 +381,10 @@ describe("CodexSubagentService", () => {
         preview: "shared first prompt",
         path: filePath,
       };
-      const listThreads = vi.fn(
-        async (params: { archived?: boolean }) => ({
-          data: params.archived ? [] : [rawThread],
-          nextCursor: null,
-        }),
-      );
+      const listThreads = vi.fn(async (params: { archived?: boolean }) => ({
+        data: params.archived ? [] : [rawThread],
+        nextCursor: null,
+      }));
 
       const result = await new CodexSubagentService().list(
         processWith({
@@ -520,9 +545,7 @@ describe("CodexSubagentService", () => {
         expect(params.sortOrder).toBe("desc");
         return params.cursor === null
           ? {
-              data: [
-                { type: "agentMessage", id: "a1", text: "newest" },
-              ],
+              data: [{ type: "agentMessage", id: "a1", text: "newest" }],
               nextCursor: "older",
             }
           : {
@@ -622,13 +645,15 @@ describe("CodexSubagentService", () => {
   });
 
   it("refuses an unbounded legacy read when both pagination adapters are unsupported", async () => {
-    const listThreadTurns = vi.fn().mockRejectedValue(
-      new CodexRpcError(
-        "thread/turns/list",
-        "Method not found: thread/turns/list",
-        -32601,
-      ),
-    );
+    const listThreadTurns = vi
+      .fn()
+      .mockRejectedValue(
+        new CodexRpcError(
+          "thread/turns/list",
+          "Method not found: thread/turns/list",
+          -32601,
+        ),
+      );
     const listThreadItems = vi
       .fn()
       .mockRejectedValue(new Error("Unsupported item/list method"));
@@ -681,7 +706,11 @@ describe("CodexSubagentService", () => {
     try {
       const process = {
         requestReadOnlyRpc: vi.fn(
-          (_method: string, _params: unknown, options: { signal: AbortSignal }) =>
+          (
+            _method: string,
+            _params: unknown,
+            options: { signal: AbortSignal },
+          ) =>
             new Promise((_resolve, reject) => {
               options.signal.addEventListener(
                 "abort",
@@ -764,6 +793,200 @@ describe("childThreadToServerMessages", () => {
   });
 });
 
+describe("SubagentsFeatureHandler", () => {
+  it("reads a detached Desktop thread without resolving or acquiring a runtime session", async () => {
+    const listThreads = vi.fn(async (params: { archived?: boolean }) => ({
+      data: params.archived ? [] : [thread("child", "provider-parent")],
+      nextCursor: null,
+    }));
+    const listThreadItems = vi.fn(async () => ({
+      data: [{ type: "agentMessage", id: "answer-1", text: "done" }],
+      nextCursor: null,
+    }));
+    const process = handlerProcess({ listThreads, listThreadItems });
+    const sent: unknown[] = [];
+    const getSession = vi.fn();
+    const acquireWriterOwnership = vi.fn();
+    const createStandaloneCodexProcess = vi.fn(async () => process);
+    const runtime = {
+      codexSourceId: "source-1",
+      getSession,
+      getCodexThreadId: vi.fn(),
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess,
+      createPersistedCodexChildSession: acquireWriterOwnership,
+      hasCodexQueuedInput: () => false,
+      send: (_client: object, message: unknown) => sent.push(message),
+      supports: (_client: object, type: string) =>
+        type === "detached_subagent_list" ||
+        type === "detached_subagent_history",
+    } as unknown as LocalFeatureRuntime;
+    const context: LocalFeatureHandleContext = {
+      client: {},
+      signal: new AbortController().signal,
+      runtime,
+    };
+
+    const handler = new SubagentsFeatureHandler();
+    await handler.handle(
+      {
+        type: "get_detached_subagents",
+        ownerSessionId: "pane-1",
+        providerThreadId: "provider-parent",
+        codexSourceId: "source-1",
+        requestId: "request-1",
+      },
+      context,
+    );
+    await handler.handle(
+      {
+        type: "get_detached_subagent_history",
+        ownerSessionId: "pane-1",
+        providerThreadId: "provider-parent",
+        codexSourceId: "source-1",
+        threadId: "child",
+        requestId: "history-1",
+      },
+      context,
+    );
+
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "detached_subagent_list",
+        ownerSessionId: "pane-1",
+        providerThreadId: "provider-parent",
+        codexSourceId: "source-1",
+        requestId: "request-1",
+        subagents: [expect.objectContaining({ id: "child" })],
+      }),
+      expect.objectContaining({
+        type: "detached_subagent_history",
+        ownerSessionId: "pane-1",
+        providerThreadId: "provider-parent",
+        codexSourceId: "source-1",
+        requestId: "history-1",
+        threadId: "child",
+        messages: [expect.objectContaining({ type: "assistant" })],
+      }),
+    ]);
+    expect(getSession).not.toHaveBeenCalled();
+    expect(acquireWriterOwnership).not.toHaveBeenCalled();
+    expect(createStandaloneCodexProcess).toHaveBeenCalledTimes(2);
+    expect(createStandaloneCodexProcess).toHaveBeenCalledWith(15_000);
+    expect(process.stop).toHaveBeenCalledTimes(2);
+    const readMethods = (
+      process.requestReadOnlyRpc as ReturnType<typeof vi.fn>
+    ).mock.calls.map(([method]) => method);
+    expect(readMethods).toEqual([
+      "thread/list",
+      "thread/list",
+      "thread/list",
+      "thread/list",
+      "thread/items/list",
+    ]);
+    expect(readMethods).not.toContain("thread/resume");
+    expect(readMethods).not.toContain("thread/start");
+    expect(readMethods).not.toContain("thread/fork");
+  });
+
+  it("rejects a detached source mismatch before opening any provider reader", async () => {
+    const process = handlerProcess({});
+    const sent: unknown[] = [];
+    const getSession = vi.fn();
+    const createStandaloneCodexProcess = vi.fn(async () => process);
+    const runtime = {
+      codexSourceId: "authenticated-source",
+      getSession,
+      getCodexThreadId: vi.fn(),
+      getActiveCodexProcess: vi.fn(() => null),
+      createStandaloneCodexProcess,
+      hasCodexQueuedInput: () => false,
+      send: (_client: object, message: unknown) => sent.push(message),
+      supports: () => true,
+    } as unknown as LocalFeatureRuntime;
+
+    await new SubagentsFeatureHandler().handle(
+      {
+        type: "get_detached_subagents",
+        ownerSessionId: "pane-1",
+        providerThreadId: "provider-parent",
+        codexSourceId: "other-source",
+        requestId: "request-1",
+      },
+      {
+        client: {},
+        signal: new AbortController().signal,
+        runtime,
+      },
+    );
+
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "detached_subagent_list",
+        errorCode: "codex_source_mismatch",
+        codexSourceId: "authenticated-source",
+        subagents: [],
+      }),
+    ]);
+    expect(getSession).not.toHaveBeenCalled();
+    expect(runtime.getActiveCodexProcess).not.toHaveBeenCalled();
+    expect(createStandaloneCodexProcess).not.toHaveBeenCalled();
+    expect(process.requestReadOnlyRpc).not.toHaveBeenCalled();
+  });
+
+  it("keeps the attached runtime-session read path unchanged", async () => {
+    const listThreads = vi.fn(async (params: { archived?: boolean }) => ({
+      data: params.archived ? [] : [thread("child", "runtime-parent")],
+      nextCursor: null,
+    }));
+    const process = handlerProcess({ listThreads });
+    const sent: unknown[] = [];
+    const getSession = vi.fn(() => ({
+      id: "runtime-session",
+      provider: "codex",
+      process,
+    }));
+    const createStandaloneCodexProcess = vi.fn();
+    const runtime = {
+      codexSourceId: "source-1",
+      getSession,
+      getCodexThreadId: vi.fn(() => "runtime-parent"),
+      getActiveCodexProcess: vi.fn(() => null),
+      createStandaloneCodexProcess,
+      hasCodexQueuedInput: () => false,
+      send: (_client: object, message: unknown) => sent.push(message),
+      supports: (_client: object, type: string) => type === "subagent_list",
+    } as unknown as LocalFeatureRuntime;
+
+    await new SubagentsFeatureHandler().handle(
+      {
+        type: "get_subagents",
+        sessionId: "runtime-session",
+        requestId: "request-1",
+      },
+      {
+        client: {},
+        signal: new AbortController().signal,
+        runtime,
+      },
+    );
+
+    expect(getSession).toHaveBeenCalledWith("runtime-session");
+    expect(createStandaloneCodexProcess).not.toHaveBeenCalled();
+    expect(process.stop).not.toHaveBeenCalled();
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "subagent_list",
+        sessionId: "runtime-session",
+        requestId: "request-1",
+        subagents: [expect.objectContaining({ id: "child" })],
+      }),
+    ]);
+    expect(sent[0]).not.toHaveProperty("providerThreadId");
+    expect(sent[0]).not.toHaveProperty("codexSourceId");
+  });
+});
+
 describe("limitSubagentHistoryResponse", () => {
   it("keeps the newest 400 messages deterministically", () => {
     const messages = Array.from({ length: 405 }, (_, index) =>
@@ -796,8 +1019,8 @@ describe("limitSubagentHistoryResponse", () => {
     expect(JSON.stringify(limited.messages)).toContain(
       "earlier content truncated",
     );
-    expect(Buffer.byteLength(JSON.stringify(limited.messages), "utf8")).toBeLessThanOrEqual(
-      300,
-    );
+    expect(
+      Buffer.byteLength(JSON.stringify(limited.messages), "utf8"),
+    ).toBeLessThanOrEqual(300);
   });
 });
