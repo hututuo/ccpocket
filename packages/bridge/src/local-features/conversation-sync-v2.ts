@@ -4590,6 +4590,7 @@ function statusFromRuntime(
 ): ConversationSyncStatus {
   const target = targetFromRuntime(state)!;
   const activity =
+    state.processStatus === "starting" ||
     state.processStatus === "running" ||
     state.processStatus === "waiting_approval"
       ? "working"

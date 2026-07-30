@@ -2787,6 +2787,44 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("projects a starting Bridge runtime as working instead of unavailable", async () => {
+    const codex = codexSeed(0, "thread-0");
+    const fixture = createFixture([codex], async () => history("thread-0"), {
+      initialExternalCodexMonitors: 0,
+      inspectCodexThread: async () => null,
+    });
+    fixture.runtime.listRuntimeConversationStates = () => [
+      {
+        bridgeSessionId: "runtime-starting",
+        provider: "codex",
+        providerSessionId: "thread-0",
+        projectPath: "/project/0",
+        processStatus: "starting",
+        observedAt: "2026-07-30T00:00:02.000Z",
+      },
+    ];
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "status_changes")
+          .flatMap((event) => event.changes)
+          .find((status) => status.providerSessionId === "thread-0"),
+      ).toMatchObject({
+        activity: "working",
+        runtimeAttachment: "loaded",
+        source: "bridgeRuntime",
+        confidence: "authoritative",
+      }),
+    );
+    fixture.handler.close();
+  });
+
   it("discovers a running thread outside the hot set and rewarms it without rescanning after reconnect", async () => {
     const seeds = Array.from({ length: 12 }, (_, index) =>
       codexSeed(index, `thread-${index}`),
