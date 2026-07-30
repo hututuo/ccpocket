@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DURABLE_SESSION_INSIGHTS_CAPABILITY,
   isLocalFeatureServerMessageType,
   parseLocalFeatureClientMessage,
 } from "./protocol.js";
@@ -10,8 +11,20 @@ describe("session insights protocol slot", () => {
       parseLocalFeatureClientMessage({
         type: "get_context_usage",
         sessionId: "session-1",
+        requestId: "context-1",
       }),
-    ).toEqual({ type: "get_context_usage", sessionId: "session-1" });
+    ).toEqual({
+      type: "get_context_usage",
+      sessionId: "session-1",
+      requestId: "context-1",
+    });
+    expect(
+      parseLocalFeatureClientMessage({
+        type: "get_context_usage",
+        sessionId: "session-1",
+        requestId: "",
+      }),
+    ).toBeNull();
     expect(
       parseLocalFeatureClientMessage({
         type: "get_session_usage",
@@ -40,6 +53,9 @@ describe("session insights protocol slot", () => {
   });
 
   it("registers only its own response capabilities", () => {
+    expect(DURABLE_SESSION_INSIGHTS_CAPABILITY).toBe(
+      "durable_session_insights_v1",
+    );
     expect(isLocalFeatureServerMessageType("context_usage")).toBe(true);
     expect(isLocalFeatureServerMessageType("context_usage_result")).toBe(true);
     expect(isLocalFeatureServerMessageType("context_usage_error")).toBe(true);

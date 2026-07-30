@@ -1,5 +1,7 @@
 part of '../../messages.dart';
 
+const durableSessionInsightsCapability = 'durable_session_insights_v1';
+
 const LocalFeatureProtocolSlot sessionInsightsProtocolSlot =
     _SessionInsightsProtocolSlot();
 
@@ -56,11 +58,7 @@ class _SessionInsightsProtocolSlot
     ServerMessage response,
   ) {
     return switch (request.requestType) {
-      'get_context_usage' =>
-        (response is ContextUsageResultMessage ||
-                response is ContextUsageErrorMessage) &&
-            (response as LocalFeatureServerMessage).sessionId ==
-                request.ownerSessionId,
+      'get_context_usage' => _matchesContextUsageTerminal(request, response),
       'get_session_usage' =>
         response is SessionUsageResultMessage &&
             response.sessionId == request.ownerSessionId &&
@@ -84,11 +82,37 @@ class _SessionInsightsProtocolSlot
   }
 }
 
-ClientMessage requestContextUsage(String sessionId) {
+bool _matchesContextUsageTerminal(
+  LocalFeatureRequestDescriptor request,
+  ServerMessage response,
+) {
+  final responseSessionId = switch (response) {
+    ContextUsageMessage() => response.sessionId,
+    ContextUsageResultMessage() => response.sessionId,
+    ContextUsageErrorMessage() => response.sessionId,
+    _ => null,
+  };
+  if (responseSessionId != request.ownerSessionId) return false;
+  final responseRequestId = switch (response) {
+    ContextUsageResultMessage() => response.requestId,
+    ContextUsageErrorMessage() => response.requestId,
+    _ => null,
+  };
+  if (request.requestId == null) {
+    return response is ContextUsageMessage || responseRequestId == null;
+  }
+  return responseRequestId == request.requestId;
+}
+
+ClientMessage requestContextUsage(String sessionId, {String? requestId}) {
   _requireSessionInsightsId(sessionId, 'sessionId', 256);
+  if (requestId != null) {
+    _requireSessionInsightsId(requestId, 'requestId', 128);
+  }
   return LocalFeatureProtocolHost.ephemeralRequest(
     type: 'get_context_usage',
     sessionId: sessionId,
+    requestId: requestId,
   );
 }
 
@@ -132,10 +156,12 @@ class ContextUsageMessage implements LocalFeatureTransientMessage {
 class ContextUsageResultMessage implements LocalFeatureTransientMessage {
   @override
   final String sessionId;
+  final String? requestId;
   final ContextUsage usage;
 
   const ContextUsageResultMessage({
     required this.sessionId,
+    this.requestId,
     required this.usage,
   });
 
@@ -144,13 +170,16 @@ class ContextUsageResultMessage implements LocalFeatureTransientMessage {
 
   factory ContextUsageResultMessage.fromJson(Map<String, dynamic> json) {
     final sessionId = _sessionUsageNonEmptyString(json['sessionId']);
-    if (sessionId == null) {
+    final requestId = _sessionUsageNonEmptyString(json['requestId']);
+    if (sessionId == null ||
+        (json.containsKey('requestId') && requestId == null)) {
       throw const FormatException(
-        'context_usage_result requires non-empty sessionId',
+        'context_usage_result requires non-empty sessionId/requestId',
       );
     }
     return ContextUsageResultMessage(
       sessionId: sessionId,
+      requestId: requestId,
       usage: ContextUsage.fromJson(json),
     );
   }
@@ -159,11 +188,13 @@ class ContextUsageResultMessage implements LocalFeatureTransientMessage {
 class ContextUsageErrorMessage implements LocalFeatureTransientMessage {
   @override
   final String sessionId;
+  final String? requestId;
   final String errorCode;
   final String message;
 
   const ContextUsageErrorMessage({
     required this.sessionId,
+    this.requestId,
     required this.errorCode,
     required this.message,
   });
@@ -173,15 +204,20 @@ class ContextUsageErrorMessage implements LocalFeatureTransientMessage {
 
   factory ContextUsageErrorMessage.fromJson(Map<String, dynamic> json) {
     final sessionId = _sessionUsageNonEmptyString(json['sessionId']);
+    final requestId = _sessionUsageNonEmptyString(json['requestId']);
     final errorCode = _sessionUsageNonEmptyString(json['errorCode']);
     final message = _sessionUsageNonEmptyString(json['message']);
-    if (sessionId == null || errorCode == null || message == null) {
+    if (sessionId == null ||
+        (json.containsKey('requestId') && requestId == null) ||
+        errorCode == null ||
+        message == null) {
       throw const FormatException(
-        'context_usage_error requires sessionId, errorCode, and message',
+        'context_usage_error requires sessionId/requestId, errorCode, and message',
       );
     }
     return ContextUsageErrorMessage(
       sessionId: sessionId,
+      requestId: requestId,
       errorCode: errorCode,
       message: message,
     );

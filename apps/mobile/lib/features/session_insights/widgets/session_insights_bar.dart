@@ -18,6 +18,7 @@ class SessionInsightsBar extends StatefulWidget {
   const SessionInsightsBar({
     super.key,
     required this.sessionId,
+    this.runtimeSessionId,
     required this.bridgeService,
     this.selectedModel,
     this.controller,
@@ -27,6 +28,7 @@ class SessionInsightsBar extends StatefulWidget {
   });
 
   final String sessionId;
+  final String? runtimeSessionId;
   final BridgeService bridgeService;
   final String? selectedModel;
   final SessionInsightsController? controller;
@@ -52,6 +54,7 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
   void didUpdateWidget(covariant SessionInsightsBar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.sessionId == widget.sessionId &&
+        oldWidget.runtimeSessionId == widget.runtimeSessionId &&
         oldWidget.bridgeService == widget.bridgeService &&
         oldWidget.controller == widget.controller) {
       return;
@@ -66,6 +69,7 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
         widget.controller ??
         SessionInsightsController(
           sessionId: widget.sessionId,
+          runtimeSessionId: widget.runtimeSessionId,
           bridge: widget.bridgeService,
         );
     _controller.addListener(_changed);
@@ -300,13 +304,17 @@ class SessionInsightsPanel extends StatefulWidget {
   const SessionInsightsPanel({
     super.key,
     required this.sessionId,
+    this.runtimeSessionId,
     required this.bridgeService,
     this.controller,
+    this.requestTimeout = const Duration(seconds: 12),
   });
 
   final String sessionId;
+  final String? runtimeSessionId;
   final BridgeService bridgeService;
   final SessionInsightsController? controller;
+  final Duration requestTimeout;
 
   @override
   State<SessionInsightsPanel> createState() => _SessionInsightsPanelState();
@@ -319,15 +327,40 @@ class _SessionInsightsPanelState extends State<SessionInsightsPanel> {
   @override
   void initState() {
     super.initState();
+    _installController();
+  }
+
+  @override
+  void didUpdateWidget(covariant SessionInsightsPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sessionId == widget.sessionId &&
+        oldWidget.runtimeSessionId == widget.runtimeSessionId &&
+        oldWidget.bridgeService == widget.bridgeService &&
+        oldWidget.controller == widget.controller &&
+        oldWidget.requestTimeout == widget.requestTimeout) {
+      return;
+    }
+    _removeController();
+    _installController();
+  }
+
+  void _installController() {
     _ownsController = widget.controller == null;
     _controller =
         widget.controller ??
         SessionInsightsController(
           sessionId: widget.sessionId,
+          runtimeSessionId: widget.runtimeSessionId,
           bridge: widget.bridgeService,
+          requestTimeout: widget.requestTimeout,
         );
     _controller.addListener(_changed);
     _controller.start();
+  }
+
+  void _removeController() {
+    _controller.removeListener(_changed);
+    if (_ownsController) _controller.dispose();
   }
 
   void _changed() {
@@ -336,8 +369,7 @@ class _SessionInsightsPanelState extends State<SessionInsightsPanel> {
 
   @override
   void dispose() {
-    _controller.removeListener(_changed);
-    if (_ownsController) _controller.dispose();
+    _removeController();
     super.dispose();
   }
 

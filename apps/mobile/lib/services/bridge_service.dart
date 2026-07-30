@@ -247,6 +247,7 @@ class SessionLinkResolveResult {
 class BridgeService implements BridgeServiceBase {
   static const gitMutationOperationLane = 'git-mutation';
   static final Object _gitOperationQuarantine = Object();
+  static final Object _legacySessionInsightsContextQuarantine = Object();
   void Function(ClientMessage message)? onOutgoingMessage;
   FutureOr<void> Function()? onDisconnect;
 
@@ -357,6 +358,7 @@ class BridgeService implements BridgeServiceBase {
   final _gitRemoteStatusResultController =
       StreamController<GitRemoteStatusResultMessage>.broadcast();
   final Map<String, Object> _gitOperationLaneOwners = {};
+  final Map<String, Object> _legacySessionInsightsContextLaneOwners = {};
   BridgeConnectionState _connectionState = BridgeConnectionState.disconnected;
   BridgeConnectionBootstrapSnapshot _connectionBootstrap =
       const BridgeConnectionBootstrapSnapshot(
@@ -678,6 +680,53 @@ class BridgeService implements BridgeServiceBase {
 
   void releaseGitOperationLanes(Object owner) {
     _gitOperationLaneOwners.removeWhere(
+      (_, current) => identical(current, owner),
+    );
+  }
+
+  /// Serializes the uncorrelated context RPC used by pre-capability Bridges.
+  ///
+  /// A timeout quarantines exactly one runtime-session lane until the socket
+  /// generation changes. This prevents a late old-Bridge response from being
+  /// consumed by a rebuilt insights controller.
+  bool tryAcquireLegacySessionInsightsContextLane(
+    String sessionId,
+    Object owner,
+  ) {
+    final current = _legacySessionInsightsContextLaneOwners[sessionId];
+    if (current != null && !identical(current, owner)) return false;
+    _legacySessionInsightsContextLaneOwners[sessionId] = owner;
+    return true;
+  }
+
+  bool ownsLegacySessionInsightsContextLane(String sessionId, Object owner) =>
+      identical(_legacySessionInsightsContextLaneOwners[sessionId], owner);
+
+  bool isLegacySessionInsightsContextLaneQuarantined(String? sessionId) =>
+      sessionId != null &&
+      identical(
+        _legacySessionInsightsContextLaneOwners[sessionId],
+        _legacySessionInsightsContextQuarantine,
+      );
+
+  void releaseLegacySessionInsightsContextLane(String sessionId, Object owner) {
+    if (identical(_legacySessionInsightsContextLaneOwners[sessionId], owner)) {
+      _legacySessionInsightsContextLaneOwners.remove(sessionId);
+    }
+  }
+
+  void quarantineLegacySessionInsightsContextLane(
+    String sessionId,
+    Object owner,
+  ) {
+    if (identical(_legacySessionInsightsContextLaneOwners[sessionId], owner)) {
+      _legacySessionInsightsContextLaneOwners[sessionId] =
+          _legacySessionInsightsContextQuarantine;
+    }
+  }
+
+  void releaseLegacySessionInsightsContextLanes(Object owner) {
+    _legacySessionInsightsContextLaneOwners.removeWhere(
       (_, current) => identical(current, owner),
     );
   }
@@ -1541,6 +1590,7 @@ class BridgeService implements BridgeServiceBase {
       _cancelAuthoritativeSessionListWatchdog();
       _hasAuthoritativeSessionListForCurrentConnection = false;
       _gitOperationLaneOwners.clear();
+      _legacySessionInsightsContextLaneOwners.clear();
     }
     final previousState = _connectionState;
     _connectionState = state;
@@ -6679,6 +6729,7 @@ class BridgeService implements BridgeServiceBase {
     _gitStatusResultController.close();
     _gitRemoteStatusResultController.close();
     _gitOperationLaneOwners.clear();
+    _legacySessionInsightsContextLaneOwners.clear();
     clearDiffImageCache();
   }
 }

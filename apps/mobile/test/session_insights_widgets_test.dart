@@ -28,6 +28,9 @@ class _Bridge extends BridgeService {
   String? get codexSourceId => stableCodexSourceId;
 
   @override
+  bool get hasAuthoritativeSessionListForCurrentConnection => connected;
+
+  @override
   Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
     String sessionId,
   ) => tagged.stream
@@ -325,6 +328,86 @@ void main() {
       expect(
         find.byKey(const ValueKey('session_insights_bar')),
         findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'details pane rebuilds its owned controller when session identity changes',
+    (tester) async {
+      final bridge = _Bridge();
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(
+        _app(
+          SessionInsightsPanel(
+            key: const ValueKey('insights-pane'),
+            sessionId: 'durable-one',
+            runtimeSessionId: 'runtime-one',
+            bridgeService: bridge,
+            requestTimeout: const Duration(seconds: 1),
+          ),
+        ),
+      );
+      expect(
+        bridge.sent
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .where((message) => message['sessionId'] == 'runtime-one'),
+        hasLength(2),
+      );
+
+      await tester.pumpWidget(
+        _app(
+          SessionInsightsPanel(
+            key: const ValueKey('insights-pane'),
+            sessionId: 'durable-two',
+            runtimeSessionId: 'runtime-two',
+            bridgeService: bridge,
+            requestTimeout: const Duration(seconds: 2),
+          ),
+        ),
+      );
+      expect(
+        bridge.sent
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .where((message) => message['sessionId'] == 'runtime-two'),
+        hasLength(2),
+      );
+
+      await tester.pumpWidget(
+        _app(
+          SessionInsightsPanel(
+            key: const ValueKey('insights-pane'),
+            sessionId: 'durable-two',
+            runtimeSessionId: 'runtime-two',
+            bridgeService: bridge,
+            requestTimeout: const Duration(seconds: 3),
+          ),
+        ),
+      );
+      expect(
+        bridge.sent
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .where((message) => message['sessionId'] == 'runtime-two'),
+        hasLength(3),
+      );
+      expect(
+        bridge.sent
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .where(
+              (message) =>
+                  message['sessionId'] == 'runtime-two' &&
+                  message['type'] == 'get_session_usage',
+            ),
+        hasLength(2),
       );
     },
   );

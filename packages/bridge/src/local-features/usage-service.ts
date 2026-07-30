@@ -250,7 +250,11 @@ function normalizeTimeout(value: number | undefined, fallback: number): number {
 
 function usageFailureKind(error: unknown): string {
   if (error instanceof UsageOperationTimeoutError) return "timeout";
-  if (error instanceof Error) return error.name || "error";
+  if (error instanceof TypeError) return "type_error";
+  if (error instanceof SyntaxError) return "syntax_error";
+  if (error instanceof RangeError) return "range_error";
+  if (error instanceof Error && error.name === "AbortError") return "aborted";
+  if (error instanceof Error) return "error";
   return "unknown";
 }
 

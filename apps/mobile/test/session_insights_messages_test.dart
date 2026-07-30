@@ -39,12 +39,14 @@ void main() {
         ServerMessage.fromJson({
               'type': 'context_usage_result',
               'sessionId': 's1',
+              'requestId': 'context-1',
               'last': {'totalTokens': 30},
               'total': {'totalTokens': 40},
               'modelContextWindow': 100,
             })
             as ContextUsageResultMessage;
     expect(explicitResult.sessionId, 's1');
+    expect(explicitResult.requestId, 'context-1');
     expect(explicitResult.usage.last.totalTokens, 30);
     expect(
       () => ServerMessage.fromJson({
@@ -60,11 +62,13 @@ void main() {
         ServerMessage.fromJson({
               'type': 'context_usage_error',
               'sessionId': 's1',
+              'requestId': 'context-2',
               'errorCode': 'context_usage_failed',
               'message': 'scan failed',
             })
             as ContextUsageErrorMessage;
     expect(explicitError.sessionId, 's1');
+    expect(explicitError.requestId, 'context-2');
     expect(explicitError.errorCode, 'context_usage_failed');
   });
 
@@ -120,6 +124,18 @@ void main() {
   });
 
   test('session usage request and result preserve correlation fields', () {
+    expect(
+      jsonDecode(requestContextUsage('s1', requestId: 'context-1').toJson()),
+      {
+        'type': 'get_context_usage',
+        'sessionId': 's1',
+        'requestId': 'context-1',
+      },
+    );
+    expect(jsonDecode(requestContextUsage('s1').toJson()), {
+      'type': 'get_context_usage',
+      'sessionId': 's1',
+    });
     expect(
       jsonDecode(
         requestSessionUsage(sessionId: 's1', requestId: 'usage-1').toJson(),

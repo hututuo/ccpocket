@@ -67,6 +67,7 @@ void main() {
       expect(modeBars.single.showLeadingDivider, isTrue);
       expect(modeBars.single.onCompact, isNotNull);
       expect(modeBars.single.sessionId, 'durable-thread');
+      expect(modeBars.single.runtimeSessionId, 'runtime-before-attach');
 
       final attachedContext = CodexSessionFeatureContext(
         context: featureContext.context,
@@ -82,6 +83,7 @@ void main() {
         attachedContext,
       ).whereType<SessionInsightsBar>().single;
       expect(attachedBar.sessionId, 'durable-thread');
+      expect(attachedBar.runtimeSessionId, 'runtime-after-attach');
       expect(attachedBar.key, modeBars.single.key);
 
       modeBars.single.onCompact!();

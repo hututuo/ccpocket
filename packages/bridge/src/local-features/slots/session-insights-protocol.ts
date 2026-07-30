@@ -4,6 +4,9 @@ import {
   type LocalFeatureProtocolContribution,
 } from "../protocol-slot.js";
 
+export const DURABLE_SESSION_INSIGHTS_CAPABILITY =
+  "durable_session_insights_v1" as const;
+
 export interface CodexTokenUsageBreakdown {
   totalTokens: number;
   inputTokens: number;
@@ -28,11 +31,13 @@ export type ContextUsageResultMessage = Omit<
 > & {
   type: "context_usage_result";
   sessionId: string;
+  requestId?: string;
 };
 
 export interface ContextUsageErrorMessage {
   type: "context_usage_error";
   sessionId: string;
+  requestId?: string;
   errorCode: string;
   message: string;
 }
@@ -84,7 +89,7 @@ export interface SessionUsageInfoPayload {
 }
 
 export type SessionInsightsClientMessage =
-  | { type: "get_context_usage"; sessionId: string }
+  | { type: "get_context_usage"; sessionId: string; requestId?: string }
   | { type: "get_session_usage"; sessionId: string; requestId: string };
 
 export type SessionInsightsServerMessage =
@@ -121,11 +126,22 @@ export const sessionInsightsProtocolContribution: LocalFeatureProtocolContributi
     }
 
     switch (message.type) {
-      case "get_context_usage":
-        return hasOnlyLocalFeatureKeys(message, ["type", "sessionId"]) &&
-          validLocalFeatureId(message.sessionId, 256)
-          ? { type: message.type, sessionId: message.sessionId }
+      case "get_context_usage": {
+        const requestId = message.requestId;
+        return hasOnlyLocalFeatureKeys(message, [
+          "type",
+          "sessionId",
+          "requestId",
+        ]) &&
+          validLocalFeatureId(message.sessionId, 256) &&
+          (requestId === undefined || validLocalFeatureId(requestId, 128))
+          ? {
+              type: message.type,
+              sessionId: message.sessionId,
+              ...(requestId === undefined ? {} : { requestId }),
+            }
           : null;
+      }
       case "get_session_usage":
         return hasOnlyLocalFeatureKeys(message, [
           "type",

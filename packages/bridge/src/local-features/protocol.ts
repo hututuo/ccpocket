@@ -96,6 +96,7 @@ export type {
   SessionUsageResetCreditPayload,
   SessionUsageWindowPayload,
 } from "./slots/session-insights-protocol.js";
+export { DURABLE_SESSION_INSIGHTS_CAPABILITY } from "./slots/session-insights-protocol.js";
 export type {
   SideChatEventMessage,
   SideChatMessagePayload,

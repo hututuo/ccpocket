@@ -74,6 +74,7 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
     if (!context.runtime.supports(context.client, "context_usage")) {
       this.sendFailure(
         message.sessionId,
+        message.requestId,
         context,
         "unsupported_capability",
         "Context usage capability was not negotiated",
@@ -98,6 +99,7 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
     ) {
       this.sendFailure(
         message.sessionId,
+        message.requestId,
         context,
         "context_usage_session_not_found",
         "Codex session not found",
@@ -125,12 +127,16 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
                 ...usage,
                 type: "context_usage_result",
                 sessionId: message.sessionId,
+                ...(message.requestId === undefined
+                  ? {}
+                  : { requestId: message.requestId }),
               }
             : { ...usage, sessionId: message.sessionId },
         );
       } else if (requireVerifiedIdentity) {
         this.sendFailure(
           message.sessionId,
+          message.requestId,
           context,
           "context_usage_unavailable",
           "Context usage is unavailable for this durable thread",
@@ -140,6 +146,7 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
       if (context.signal.aborted) return;
       this.sendFailure(
         message.sessionId,
+        message.requestId,
         context,
         "context_usage_failed",
         error instanceof Error ? error.message : String(error),
@@ -149,6 +156,7 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
 
   private sendFailure(
     sessionId: string,
+    requestId: string | undefined,
     context: LocalFeatureHandleContext,
     errorCode: string,
     message: string,
@@ -156,7 +164,13 @@ export class ContextFeatureHandler implements LocalFeatureHandler {
     context.runtime.send(
       context.client,
       context.runtime.supports(context.client, "context_usage_error")
-        ? { type: "context_usage_error", sessionId, errorCode, message }
+        ? {
+            type: "context_usage_error",
+            sessionId,
+            ...(requestId === undefined ? {} : { requestId }),
+            errorCode,
+            message,
+          }
         : { type: "error", errorCode, message },
     );
   }

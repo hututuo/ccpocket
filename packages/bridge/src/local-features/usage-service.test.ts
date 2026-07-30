@@ -346,9 +346,11 @@ describe("UsageService", () => {
     try {
       const active = {
         requestReadOnlyRpc: vi.fn(async () => {
-          throw new Error(
+          const error = new Error(
             "private thread 019f1234-5678-7abc-8def-0123456789ab failed",
           );
+          error.name = "private-thread-019f1234";
+          throw error;
         }),
         stop: vi.fn(),
       } as unknown as CodexProcess;
@@ -361,10 +363,11 @@ describe("UsageService", () => {
       await expect(service.getUsage()).resolves.toEqual([]);
       const output = warning.mock.calls.flat().join(" ");
       expect(output).toContain("result=fallback");
-      expect(output).toContain("reason=Error");
+      expect(output).toContain("reason=error");
       expect(output).toMatch(/elapsedMs=\d+/);
       expect(output).not.toContain("019f1234");
       expect(output).not.toContain("private thread");
+      expect(output).not.toContain("private-thread");
     } finally {
       warning.mockRestore();
     }

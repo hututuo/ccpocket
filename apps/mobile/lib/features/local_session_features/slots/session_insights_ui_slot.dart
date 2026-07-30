@@ -18,6 +18,7 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
       SessionInsightsBar(
         key: ValueKey('session_insights_$insightsSessionId'),
         sessionId: insightsSessionId,
+        runtimeSessionId: context.sessionId,
         bridgeService: context.bridge,
         selectedModel: context.codexModel,
         compact: true,
@@ -34,6 +35,7 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
         title: (context) => SessionInsightsStrings.of(context).title,
         builder: (context) => SessionInsightsPanel(
           sessionId: _sessionInsightsPaneSessionId(context),
+          runtimeSessionId: context.sessionId,
           bridgeService: context.bridge,
         ),
         rememberPerSession: false,

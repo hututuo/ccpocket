@@ -231,7 +231,11 @@ describe("Codex context usage", () => {
     );
 
     await handler.handle(
-      { type: "get_context_usage", sessionId: "session-1" },
+      {
+        type: "get_context_usage",
+        sessionId: "session-1",
+        requestId: "context-1",
+      },
       {
         client: {},
         signal: new AbortController().signal,
@@ -252,6 +256,7 @@ describe("Codex context usage", () => {
       expect.objectContaining({
         type: "context_usage_result",
         sessionId: "session-1",
+        requestId: "context-1",
         last: expect.objectContaining({ totalTokens: 10 }),
       }),
     ]);
@@ -323,7 +328,11 @@ describe("Codex context usage", () => {
     );
 
     await new ContextFeatureHandler({ load }).handle(
-      { type: "get_context_usage", sessionId: "../../not-a-thread" },
+      {
+        type: "get_context_usage",
+        sessionId: "../../not-a-thread",
+        requestId: "context-invalid",
+      },
       {
         client: {},
         signal: new AbortController().signal,
@@ -335,6 +344,7 @@ describe("Codex context usage", () => {
     expect(sent).toEqual([
       expect.objectContaining({
         type: "context_usage_error",
+        requestId: "context-invalid",
         errorCode: "context_usage_session_not_found",
       }),
     ]);
@@ -415,6 +425,44 @@ describe("Codex context usage", () => {
         sessionId: "session-1",
         errorCode: "context_usage_failed",
         message: expect.stringContaining("timed out"),
+      }),
+    ]);
+  });
+
+  it("echoes requestId on a typed context failure", async () => {
+    const sent: unknown[] = [];
+    const handler = new ContextFeatureHandler({
+      load: async () => {
+        throw new Error("bounded read failed");
+      },
+    });
+
+    await handler.handle(
+      {
+        type: "get_context_usage",
+        sessionId: "session-1",
+        requestId: "context-error-1",
+      },
+      {
+        client: {},
+        signal: new AbortController().signal,
+        runtime: contextRuntime(
+          sent,
+          new Set([
+            "context_usage",
+            "context_usage_result",
+            "context_usage_error",
+          ]),
+        ),
+      },
+    );
+
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "context_usage_error",
+        sessionId: "session-1",
+        requestId: "context-error-1",
+        errorCode: "context_usage_failed",
       }),
     ]);
   });
