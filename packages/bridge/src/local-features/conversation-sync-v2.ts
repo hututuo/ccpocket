@@ -706,6 +706,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         scope: "catalog",
         reason: "state_unavailable",
       });
+      // A client whose global catalog cursor can no longer be continued may
+      // also hold per-thread revisions from a cache generation the Bridge can
+      // no longer relate to the current catalog. Preserve user read
+      // watermarks, but force one bounded hot-window bootstrap.
+      subscription.threadStates.clear();
+      subscription.pendingThreadStates.clear();
     }
     const current = catalogEntries(this.catalog);
     const changes: Array<
@@ -780,6 +786,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         scope: "status",
         reason: "state_unavailable",
       });
+      subscription.threadStates.clear();
+      subscription.pendingThreadStates.clear();
     }
     const current = statusEntries(this.catalog);
     const supportsAppServerStatusSemantics = this.runtime.supports(

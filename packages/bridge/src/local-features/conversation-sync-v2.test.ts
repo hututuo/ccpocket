@@ -248,6 +248,33 @@ describe("ConversationSyncV2FeatureHandler", () => {
       { timeout: 3_000 },
     );
     expect(historyReader).toHaveBeenCalledTimes(readsAfterFirstSync);
+
+    const staleClient = {};
+    await fixture.handler.handle(
+      subscribeMessage(completion.nextState.threadContentStates, {
+        catalogState: "unavailable-catalog-state",
+        statusState: "unavailable-status-state",
+      }),
+      context(staleClient, fixture.runtime),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          events(fixture.sent, staleClient, "sync_complete"),
+        ).toHaveLength(1),
+      { timeout: 3_000 },
+    );
+    expect(
+      events(fixture.sent, staleClient, "sync_reset").map(
+        (event) => event.scope,
+      ),
+    ).toEqual(expect.arrayContaining(["catalog", "status"]));
+    expect(
+      events(fixture.sent, staleClient, "timeline_page").length,
+    ).toBeGreaterThan(0);
+    // The full hot-window bootstrap reuses the Bridge snapshot cache rather
+    // than rereading provider history for every reconnecting phone.
+    expect(historyReader).toHaveBeenCalledTimes(readsAfterFirstSync);
     fixture.handler.close();
   });
 
