@@ -15,9 +15,23 @@ class _SessionLinkBridge extends BridgeService {
   BridgeDataSourceIdentity? expectedDataSourceIdentity;
   SessionLinkProgressCallback? onProgress;
   bool progressSupported = false;
+  bool identityConnected = true;
+  bool identityAuthoritative = true;
+  BridgeDataSourceIdentity currentDataSourceIdentity =
+      BridgeDataSourceIdentity.unscoped;
 
   @override
   bool get supportsSessionLinkProgress => progressSupported;
+
+  @override
+  bool get isConnected => identityConnected;
+
+  @override
+  bool get hasAuthoritativeSessionListForCurrentConnection =>
+      identityConnected && identityAuthoritative;
+
+  @override
+  BridgeDataSourceIdentity get dataSourceIdentity => currentDataSourceIdentity;
 
   @override
   Stream<ServerMessage> get messages => controller.stream;
@@ -197,6 +211,53 @@ void main() {
       'bridge-2',
     );
     expect((cubit.state as SessionLinkOpenResumed).gitBranch, 'main');
+  });
+
+  test('rejects resume when the authenticated Codex source changed', () async {
+    const sourceA = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'source-a',
+    );
+    const sourceB = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'source-b',
+    );
+    const recentSession = RecentSession(
+      sessionId: 'codex-thread',
+      provider: 'codex',
+      codexSourceId: 'source-a',
+      firstPrompt: 'Continue Codex work',
+      created: '2026-07-24T00:00:00Z',
+      modified: '2026-07-24T01:00:00Z',
+      gitBranch: 'main',
+      projectPath: '/workspace/app',
+      isSidechain: false,
+    );
+    bridge.currentDataSourceIdentity = sourceB;
+    bridge.result = const SessionLinkResolveResult.resolved(
+      SessionLinkResolutionMessage(
+        requestId: 'request-source-a',
+        sourceSessionId: 'codex-thread',
+        status: SessionLinkResolutionStatus.recent,
+        provider: 'codex',
+        recentSession: recentSession,
+      ),
+      dataSourceIdentity: sourceA,
+    );
+    final coordinator = _ResumeCoordinator(bridge: bridge);
+    final cubit = SessionLinkCubit(
+      bridge: bridge,
+      sourceSessionId: recentSession.sessionId,
+      provider: 'codex',
+      expectedDataSourceIdentity: sourceA,
+      resumeCoordinator: coordinator,
+    );
+    addTearDown(cubit.close);
+
+    await cubit.resolve();
+
+    expect(cubit.state, const SessionLinkState.unavailable());
+    expect(coordinator.resumedSession, isNull);
   });
 
   test(

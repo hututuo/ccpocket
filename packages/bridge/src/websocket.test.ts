@@ -2095,6 +2095,54 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("stamps a resolved recent Codex session with the current source", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    getAllRecentSessionsMock.mockResolvedValue({
+      sessions: [
+        {
+          sessionId: "codex-recent-thread",
+          provider: "codex",
+          projectPath: "/tmp/project",
+          firstPrompt: "continue Codex work",
+          codexSourceId: "stale-source-from-index",
+        },
+      ],
+      hasMore: false,
+    });
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "resolve_session_link",
+        requestId: "req-codex-recent",
+        sessionId: "codex-recent-thread",
+        provider: "codex",
+      },
+      ws,
+    );
+
+    const resolution = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "session_link_resolution");
+    expect(resolution).toMatchObject({
+      requestId: "req-codex-recent",
+      status: "recent",
+      provider: "codex",
+      recentSession: {
+        sessionId: "codex-recent-thread",
+        codexSourceId: (bridge as any).codexSourceId,
+      },
+    });
+    expect(resolution.recentSession.codexSourceId).not.toBe(
+      "stale-source-from-index",
+    );
+
+    bridge.close();
+  });
+
   it("returns unavailable for an unknown session link", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {

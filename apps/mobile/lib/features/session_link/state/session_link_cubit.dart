@@ -58,6 +58,7 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
   String? _resumeGitBranch;
   String? _resumeSourceSessionId;
   int? _linkGeneration;
+  BridgeDataSourceIdentity? _resolvedDataSourceIdentity;
   SessionLinkProgressMessage? _currentProgress;
   SessionLinkProgressMessage? _lastResumeProgress;
   String? _lastFailureCode;
@@ -130,6 +131,7 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
       return;
     }
     _linkGeneration = result.generation;
+    _resolvedDataSourceIdentity = result.dataSourceIdentity;
     switch (resolution.status) {
       case SessionLinkResolutionStatus.live:
         final bridgeSessionId = resolution.bridgeSessionId;
@@ -157,6 +159,12 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
 
   Future<void> _resume(RecentSession session) async {
     await _resumeSubscription?.cancel();
+    if (!_canResumeFromCurrentSource(session)) {
+      if (!isClosed) {
+        emit(const SessionLinkState.unavailable());
+      }
+      return;
+    }
     _resumeSubscription = _bridge.messages.listen(_handleResumeMessage);
     _resumeSourceSessionId = session.sessionId;
     _lastResumeProgress = null;
@@ -196,6 +204,30 @@ class SessionLinkCubit extends Cubit<SessionLinkState> {
         () => _onResumeTimeout('legacy_resume_timeout'),
       );
     }
+  }
+
+  bool _canResumeFromCurrentSource(RecentSession session) {
+    final resolvedIdentity = _resolvedDataSourceIdentity;
+    // Injected/legacy resolvers without identity metadata keep their existing
+    // behavior. Production BridgeService stamps every resolved result.
+    if (resolvedIdentity == null) return true;
+    if (!_bridge.isConnected ||
+        !_bridge.hasAuthoritativeSessionListForCurrentConnection) {
+      return false;
+    }
+    final currentIdentity = _bridge.dataSourceIdentity;
+    if (!resolvedIdentity.isSatisfiedBy(currentIdentity, provider: _provider) ||
+        !_expectedDataSourceIdentity.isSatisfiedBy(
+          currentIdentity,
+          provider: _provider,
+        )) {
+      return false;
+    }
+    if (_provider != 'codex') return true;
+    final resolvedSourceId = session.codexSourceId?.trim();
+    return resolvedSourceId == null ||
+        resolvedSourceId.isEmpty ||
+        resolvedSourceId == currentIdentity.codexSourceId;
   }
 
   void _handleResumeMessage(ServerMessage message) {

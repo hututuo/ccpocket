@@ -231,23 +231,31 @@ class SessionLinkResolveResult {
   final SessionLinkResolveSupport support;
   final SessionLinkResolutionMessage? resolution;
   final int? generation;
+  final BridgeDataSourceIdentity? dataSourceIdentity;
 
   const SessionLinkResolveResult._(
     this.support,
     this.resolution,
     this.generation,
+    this.dataSourceIdentity,
   );
 
   const SessionLinkResolveResult.resolved(
     SessionLinkResolutionMessage resolution, {
     int? generation,
-  }) : this._(SessionLinkResolveSupport.resolved, resolution, generation);
+    BridgeDataSourceIdentity? dataSourceIdentity,
+  }) : this._(
+         SessionLinkResolveSupport.resolved,
+         resolution,
+         generation,
+         dataSourceIdentity,
+       );
 
   const SessionLinkResolveResult.unsupported()
-    : this._(SessionLinkResolveSupport.unsupported, null, null);
+    : this._(SessionLinkResolveSupport.unsupported, null, null, null);
 
   const SessionLinkResolveResult.unavailable()
-    : this._(SessionLinkResolveSupport.unavailable, null, null);
+    : this._(SessionLinkResolveSupport.unavailable, null, null, null);
 }
 
 typedef SessionLinkProgressCallback =
@@ -4820,6 +4828,13 @@ class BridgeService implements BridgeServiceBase {
             provider: provider,
           )) {
         return const SessionLinkResolveResult.unavailable();
+      }
+      if (result.resolution case final resolution?) {
+        return SessionLinkResolveResult.resolved(
+          resolution,
+          generation: result.generation,
+          dataSourceIdentity: requestIdentity,
+        );
       }
       return result;
     } finally {
