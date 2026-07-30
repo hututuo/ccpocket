@@ -8,7 +8,10 @@ import type {
   AutoApprovalClientMessage,
   AutoApprovalStateMessage,
 } from "./slots/auto-approval-protocol.js";
-import { AUTO_APPROVAL_STATE_CAPABILITY } from "./slots/auto-approval-protocol.js";
+import {
+  AUTO_APPROVAL_STATE_CAPABILITY,
+  AUTO_APPROVAL_SUPERVISION_CAPABILITY,
+} from "./slots/auto-approval-protocol.js";
 import type {
   LocalFeatureHandleContext,
   LocalFeatureHandler,
@@ -247,7 +250,7 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
           sessionId: message.sessionId,
           reason: "disabled_all",
         });
-        context.runtime.send(context.client, state);
+        this.sendState(context.client, state);
         await this.broadcastState(
           { sessionId: message.sessionId, reason: "disabled_all" },
           context.client,
@@ -266,7 +269,7 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
           sessionId: message.sessionId,
           reason: "legacy_imported",
         });
-        context.runtime.send(context.client, state);
+        this.sendState(context.client, state);
         await this.broadcastState(
           { sessionId: message.sessionId, reason: "legacy_imported" },
           context.client,
@@ -308,7 +311,7 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
         providerSessionId: target.threadId,
         reason: message.type === "set_auto_approval" ? "updated" : "query",
       });
-      context.runtime.send(context.client, state);
+      this.sendState(context.client, state);
       if (message.type === "set_auto_approval") {
         await this.broadcastState(
           {
@@ -432,6 +435,28 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
     return this.runtime.supports?.(client, AUTO_APPROVAL_STATE_CAPABILITY) ?? false;
   }
 
+  private supportsSupervisionState(client: object): boolean {
+    return (
+      this.runtime.supports?.(
+        client,
+        AUTO_APPROVAL_SUPERVISION_CAPABILITY,
+      ) ?? false
+    );
+  }
+
+  private sendState(client: object, state: AutoApprovalStateMessage): void {
+    if (this.supportsSupervisionState(client)) {
+      this.runtime.send(client, state);
+      return;
+    }
+    const {
+      supervisionAvailable: _supervisionAvailable,
+      unavailableReason: _unavailableReason,
+      ...legacyState
+    } = state;
+    this.runtime.send(client, legacyState);
+  }
+
   private async buildState(
     fields: Pick<AutoApprovalStateMessage, "reason"> &
       Partial<
@@ -465,7 +490,7 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
       if (client === excludedClient || this.runtime.isClientOpen?.(client) === false) {
         continue;
       }
-      this.runtime.send(client, state);
+      this.sendState(client, state);
     }
   }
 
@@ -477,7 +502,7 @@ export class AutoApprovalFeatureHandler implements LocalFeatureHandler {
     unavailableReason?: "external_app_server" | "unsupported_session",
   ): Promise<void> {
     const visible = await this.store.visibleState();
-    context.runtime.send(context.client, {
+    this.sendState(context.client, {
       type: AUTO_APPROVAL_STATE_CAPABILITY,
       requestId: message.requestId,
       sessionId: message.sessionId,

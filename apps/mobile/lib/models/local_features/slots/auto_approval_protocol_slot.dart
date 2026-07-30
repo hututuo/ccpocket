@@ -1,6 +1,7 @@
 part of '../../messages.dart';
 
 const autoApprovalStateCapability = 'auto_approval_state_v1';
+const autoApprovalSupervisionCapability = 'auto_approval_supervision_state_v1';
 
 const LocalFeatureProtocolSlot autoApprovalProtocolSlot =
     _AutoApprovalProtocolSlot();
@@ -97,23 +98,6 @@ class AutoApprovalStateMessage implements LocalFeatureTransientMessage {
   bool get isSuccess => error == null;
 
   factory AutoApprovalStateMessage.fromJson(Map<String, dynamic> json) {
-    const allowedKeys = {
-      'type',
-      'sessionId',
-      'requestId',
-      'providerSessionId',
-      'enabled',
-      'enabledConversationCount',
-      'approvedCount',
-      'supervisionAvailable',
-      'unavailableReason',
-      'reason',
-      'error',
-      'errorCode',
-    };
-    if (json.keys.any((key) => !allowedKeys.contains(key))) {
-      throw const FormatException('Unexpected auto-approval state field.');
-    }
     final sessionId = _autoApprovalRequiredString(json, 'sessionId', 256);
     final requestId = _autoApprovalOptionalString(json, 'requestId', 128);
     final providerSessionId = _autoApprovalOptionalString(

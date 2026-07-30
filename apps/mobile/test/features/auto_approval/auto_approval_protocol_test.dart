@@ -51,17 +51,18 @@ void main() {
     expect(message.unavailableReason, 'external_app_server');
   });
 
-  test('rejects unbounded or extended state payloads', () {
-    expect(
-      () => ServerMessage.fromJson({
-        'type': 'auto_approval_state_v1',
-        'sessionId': 'runtime-1',
-        'enabledConversationCount': 0,
-        'reason': 'query',
-        'unexpected': true,
-      }),
-      throwsFormatException,
-    );
+  test('ignores future optional fields but keeps known fields bounded', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'auto_approval_state_v1',
+              'sessionId': 'runtime-1',
+              'enabledConversationCount': 0,
+              'reason': 'query',
+              'futureOptionalState': {'mode': 'future'},
+            })
+            as AutoApprovalStateMessage;
+    expect(message.sessionId, 'runtime-1');
+
     expect(
       () => ServerMessage.fromJson({
         'type': 'auto_approval_state_v1',
@@ -70,6 +71,19 @@ void main() {
         'reason': 'query',
       }),
       throwsFormatException,
+    );
+  });
+
+  test('advertises supervision metadata independently from v1 state', () {
+    final payload =
+        jsonDecode(ClientMessage.clientCapabilities().toJson())
+            as Map<String, dynamic>;
+    expect(
+      payload['supportedServerMessages'],
+      containsAll([
+        autoApprovalStateCapability,
+        autoApprovalSupervisionCapability,
+      ]),
     );
   });
 
