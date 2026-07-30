@@ -121,17 +121,51 @@ tie-breaker，不能用到达顺序或全量按时间重排代替权威结构顺
 
 以下是开工时已由源码索引确认的事实，后续不得退回凭 UI 猜测：
 
-- `RunningSessionCard` 先用 `sessionVisualStatusFor(...)` 生成统一状态标签；
+- `RunningSessionCard` 先用 runtime `SessionInfo.status` 经
+  `sessionVisualStatusFor(...)` 生成左上角状态；
 - 同一卡片又用 `externalDesktopTurnActive` 强制把 raw status 当作 running，并额外
   加 `Icons.computer`；
-- 同一行还独立渲染 `ConversationMirrorRunningBadge(session: session)`；
-- 因此用户看到三套“处理中”有真实代码来源，不是单纯的文案重复；
+- `RecentSessionCard` 则在标题右侧、Mirror 下载按钮左侧，用独立的
+  `_ConversationSyncStatusIndicator` 显示 v2 状态；用户看到的第三枚“处理中”来自
+  这里，而不是 Mirror 本身；
+- Mirror badge 只表达下载、本地副本和同步 spinner，仍须保持与运行状态完全独立；
+- `home_content.dart` 会根据 runtime 是否存在，在 `RecentSessionCard` 与
+  `RunningSessionCard` 两套整卡之间切换；后者还完全没有接收同一会话的 v2
+  `syncStatus`。因此 runtime attach/detach 会同时换状态源、内层 key 和卡片子树，
+  是状态闪烁、排序跳动及局部 UI 状态丢失的直接根因；
+- v2 状态已经携带 `source = appServer | bridgeRuntime | legacyRollout`，足以映射
+  “电脑端 Codex”或“Bridge”托管；`externalDesktopTurnActive` 只应作为旧 Bridge
+  没有 v2 状态时的兼容回退；
 - `SessionInfo` 同时携带 runtime `status`、`externalDesktopTurnActive`、
   `queuedInput`、provider 和 Codex settings，多来源尚未形成单一可审计投影；
 - Bridge 已存在 `auto_approval_state_v1`、持久状态文件和 Bridge-side supervisor，
   所以本轮重点是核对所有托管来源是否真正接入，而不是再写一套手机端批准器；
-- source 不匹配错误当前至少由 Conversation Mirror 的来源校验抛出，仍需继续追踪
-  为什么发送/打开路径会把同一真实来源判成不同来源。
+- source 不匹配错误当前至少由 Conversation Mirror 的来源校验抛出；同时
+  `_CodexSessionScreenState` 在 `initState` 把 `dataSourceIdentity` 保存为
+  `late final`，`didUpdateWidget` 不会采用随后到达的权威身份，可能令从缓存打开的
+  页面持续使用旧 source。修复必须只允许同一已认证 Bridge、且目录确认 thread
+  存在时迁移 legacy/null 身份；两个非空且不同的 source 仍须 fail closed；
+- Codex Desktop 的普通 history/read 路径会合并 JSONL item timeline，但
+  conversation sync v2/Mirror 的 turn 转换没有传入该 timeline，因而同一 turn 的
+  reasoning、tool、result 和 assistant 会退化成同一 turn 时间；这就是 Codex 托管
+  时间戳不准而 Bridge live 时间正常的实现差异；
+- SQLite 的 v2 窗口按 `entry_index` 原子提交和升序读取；退出重进后恢复正确，说明
+  持久层页顺序不是首要根因。运行页同时合并 canonical history 与 live runtime，
+  未匹配 live entry 被统一追加尾部，且 legacy snapshot 会丢失 seq，才是刷新时
+  乱序的主要原因；
+- 会话链接当前至少叠加 10 秒 resolve deadline、30 秒 Codex runtime ready timer
+  和 5 分钟 resume operation 墙钟，且 Bridge 只返回最终结果，没有
+  request-correlated progress；必须增加真实阶段进度和 Mobile idle-timeout；
+- `BridgeService` 当前用一个大 `try/catch` 同时包住 JSON decode、模型解析和所有
+  reducer/controller 应用。任何下游异常都会被翻译成同一个
+  `Bridge sent an unreadable response.`，必须拆成 parse/apply 两类经过脱敏的
+  结构化错误，并限制到对应 session；
+- 当前 `input_ack` 只证明 Bridge 接纳；Codex 真正的第二阶段证据在
+  `turn/start`/`turn/steer` RPC 成功返回。协议必须把两者分开，不能继续让 synthetic
+  `user_input` 或 queued=false 的第一阶段 ACK 提前画出第二勾；
+- Bridge 已有持久化自动批准 supervisor；它能在手机离线时处理 Bridge 自己持有的
+  CodexProcess，但不能批准另一个私有 Desktop app-server 独占的请求。后者必须走
+  shared app-server/官方跨客户端 API，或明确显示 unsupported，不能伪造成功。
 
 ## 三、目标内部契约
 
@@ -212,18 +246,18 @@ localDraft
 
 | 原始问题 | 当前状态 | 主要核对链 | 完成门禁 |
 |---|---|---|---|
-| 三套“处理中” | 已确认实现偏离 | status projection、external desktop、Mirror badge | 只保留一个主状态和一个来源标识 |
-| Codex 托管打开失败 | 调查中 | catalog identity → history/read/resume → Mobile binding | 新旧 app-server、缓存/在线打开测试 |
-| Codex 托管状态错误 | 调查中 | app-server status event → Bridge projection → card | working/idle/unknown/ownedElsewhere 测试 |
-| Codex 托管 guide 失败 | 调查中 | message intent → steer/start → ownership → response | 正在运行与空闲两种路径测试 |
-| Codex 托管时间戳错误 | 调查中 | provider timestamp → protocol → SQLite → ChatEntry | 两托管来源一致的真实时间测试 |
-| Codex 托管悬浮窗消失 | 调查中 | canonical parent ID → registry → composition | 两托管来源及增量重建后保持 |
-| 增量排序错乱 | 调查中 | generation/revision/ordinal → SQLite → reducer | 迟到、重复、分页交错、重进一致 |
-| 固定超时 | 调查中 | loading phases/progress events/UI timer | 进度持续不误超时，无进展可恢复 |
+| 三套“处理中” | 根因已确认，待实现 | v2 status、runtime status、双卡片切换 | 只保留一个主状态和一个来源标识 |
+| Codex 托管打开失败 | 已定位身份陈旧风险，继续核对 | catalog identity → history/read/resume → Mobile binding | 新旧 app-server、缓存/在线打开测试 |
+| Codex 托管状态错误 | 根因已确认，待实现 | app-server status event → Bridge overlay → 单一卡片投影 | working/idle/unknown/ownedElsewhere 测试 |
+| Codex 托管 guide 失败 | 所有权边界已确认，待实现 | private/shared app-server → steer/start → structured result | 正在运行与空闲两种路径测试 |
+| Codex 托管时间戳错误 | 根因已确认，待实现 | JSONL item timeline → v2/Mirror → SQLite → ChatEntry | 两托管来源一致的真实时间测试 |
+| Codex 托管悬浮窗消失 | UI 条件已确认，创建能力待实现 | canonical parent ID → lazy attach/capability → registry | 两托管来源及增量重建后保持 |
+| 增量排序错乱 | 根因已确认，待实现 | canonical/live 单写入投影与结构顺序 | 迟到、重复、分页交错、重进一致 |
+| 固定超时 | 根因已确认，待实现 | request-correlated progress、idle timer、hard cap | 进度持续不误超时，无进展可恢复 |
 | 自动批准离开手机失效 | 部分已有 | Bridge policy/supervisor/ownership | Bridge 断开手机后测试及边界文案 |
-| different Codex source | 调查中 | machine/source/thread identity and migration | 同源多路线通过、真异源拒绝 |
-| unreadable response | 调查中 | request/response parser/error envelope | 所有 send/steer/queue 响应结构化 |
-| 排队消息双勾 | 未实现完整语义 | queue persistence/provider ACK/Mobile UI | 重连幂等与两阶段状态测试 |
+| different Codex source | 已定位 stale screen identity 风险，待实现 | machine/source/thread identity and migration | 同源多路线通过、真异源拒绝 |
+| unreadable response | 根因已确认，待实现 | frame parse 与 frame apply 分层、session scope | 所有 send/steer/queue 响应结构化 |
+| 排队消息双勾 | 协议缺口已确认，待实现 | Bridge admission/provider RPC ACK/Mobile UI | 重连幂等与两阶段状态测试 |
 
 ## 五、提交顺序
 
