@@ -168,6 +168,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, _SnapshotStage> _stages = {};
   final Map<String, _PendingTurnsPage> _pendingTurnsPages = {};
   final Map<String, _PendingItemsPage> _pendingItemsPages = {};
+  final Set<Completer<void>> _subscriptionReadyWaiters = {};
 
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
   StreamSubscription<List<SessionInfo>>? _sessionListSubscription;
@@ -343,6 +344,34 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String providerSessionId,
     int limit = 5,
   }) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await _loadOlderTurnsOnce(
+          provider: provider,
+          providerSessionId: providerSessionId,
+          limit: limit,
+        );
+      } on _ConversationPagingInterrupted {
+        if (attempt > 0 || !_canProcessContent) rethrow;
+        final scope = Object.hash(
+          provider,
+          providerSessionId,
+        ).toUnsigned(32).toRadixString(16).padLeft(8, '0');
+        logger.info(
+          '[conversation_sync_v2] event=turns_page_retry '
+          'reason=subscription_replaced scope=$scope',
+        );
+        await _waitForActiveSubscription(const Duration(seconds: 8));
+      }
+    }
+    return const ConversationTurnsPageLoadResult(loaded: false, hasMore: true);
+  }
+
+  Future<ConversationTurnsPageLoadResult> _loadOlderTurnsOnce({
+    required String provider,
+    required String providerSessionId,
+    required int limit,
+  }) async {
     if (!bridge.supportsConversationSyncV2 || !_canProcessContent) {
       return const ConversationTurnsPageLoadResult(
         loaded: false,
@@ -372,13 +401,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     final requestId = _nextRequestId('turns');
     final completer = Completer<ConversationTurnsPageLoadResult>();
-    _pendingTurnsPages[requestId] = _PendingTurnsPage(
+    final pending = _PendingTurnsPage(
       generation: _generation,
       targetFingerprint: target.fingerprint,
       provider: provider,
       providerSessionId: providerSessionId,
       completer: completer,
     );
+    _pendingTurnsPages[requestId] = pending;
     try {
       bridge.send(
         conversationSyncV2TurnsPage(
@@ -395,7 +425,46 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       );
       return await completer.future.timeout(const Duration(seconds: 15));
     } finally {
-      _pendingTurnsPages.remove(requestId);
+      if (identical(_pendingTurnsPages[requestId], pending)) {
+        _pendingTurnsPages.remove(requestId);
+      }
+    }
+  }
+
+  Future<void> _waitForActiveSubscription(Duration timeout) {
+    if (_activeSubscriptionId != null && _canProcessContent) {
+      return Future<void>.value();
+    }
+    if (_disposed || !_canProcessContent) {
+      return Future<void>.error(const _ConversationPagingInterrupted());
+    }
+    final completer = Completer<void>();
+    _subscriptionReadyWaiters.add(completer);
+    return completer.future
+        .timeout(
+          timeout,
+          onTimeout: () => throw TimeoutException(
+            'Conversation sync subscription did not recover in time.',
+            timeout,
+          ),
+        )
+        .whenComplete(() => _subscriptionReadyWaiters.remove(completer));
+  }
+
+  void _notifySubscriptionReady() {
+    if (_activeSubscriptionId == null || !_canProcessContent) return;
+    final waiters = _subscriptionReadyWaiters.toList(growable: false);
+    _subscriptionReadyWaiters.clear();
+    for (final waiter in waiters) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
+  }
+
+  void _failSubscriptionReadyWaiters(Object error) {
+    final waiters = _subscriptionReadyWaiters.toList(growable: false);
+    _subscriptionReadyWaiters.clear();
+    for (final waiter in waiters) {
+      if (!waiter.isCompleted) waiter.completeError(error);
     }
   }
 
@@ -500,9 +569,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
-    _failPendingTurnsPages(
-      StateError('Conversation history paging was interrupted.'),
-    );
+    _failPendingTurnsPages(const _ConversationPagingInterrupted());
     _failPendingItemsPages(
       StateError('Conversation item paging was interrupted.'),
     );
@@ -659,6 +726,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         if (event.requestId != _pendingSubscriptionId) return;
         _activeSubscriptionId = event.subscriptionId;
         _pendingSubscriptionId = null;
+        _notifySubscriptionReady();
       case ConversationContentEventKind.focusApplied:
       case ConversationContentEventKind.unsubscribed:
         return;
@@ -776,6 +844,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             target: target,
             subscriptionId: event.subscriptionId,
           );
+          _notifySubscriptionReady();
           publish = const ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.started,
           );
@@ -1279,9 +1348,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
-    _failPendingTurnsPages(
-      StateError('Conversation history paging was interrupted.'),
-    );
+    _failPendingTurnsPages(const _ConversationPagingInterrupted());
     _failPendingItemsPages(
       StateError('Conversation item paging was interrupted.'),
     );
@@ -1414,6 +1481,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _failSubscriptionReadyWaiters(
+      StateError('Conversation content sync was disposed.'),
+    );
     WidgetsBinding.instance.removeObserver(this);
     _stopSubscription(sendUnsubscribe: true);
     await Future.wait([
@@ -1444,6 +1514,13 @@ class _ConversationSyncSequenceGap implements Exception {
 
 class _ConversationSyncBeginMismatch implements Exception {
   const _ConversationSyncBeginMismatch();
+}
+
+class _ConversationPagingInterrupted implements Exception {
+  const _ConversationPagingInterrupted();
+
+  @override
+  String toString() => 'Conversation history paging was interrupted.';
 }
 
 class _SnapshotStage {

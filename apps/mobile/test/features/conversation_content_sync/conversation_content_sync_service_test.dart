@@ -738,6 +738,152 @@ void main() {
     );
   });
 
+  test(
+    'retries an older turn page after the subscription is replaced',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+        retryBaseDelay: const Duration(milliseconds: 1),
+        retryMaxDelay: const Duration(milliseconds: 1),
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final firstSubscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final firstSubscriptionId = firstSubscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-turn-retry-1',
+          sequence: 1,
+          requestId: firstSubscriptionId,
+          catalogState: 'catalog-turn-retry-1',
+          statusState: 'status-turn-retry-1',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-turn-retry-1',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-turn-retry',
+          revision: 'revision-turn-retry',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('current-retry-entry', 0)],
+          hasEarlier: true,
+          turnsNextCursor: 'cursor-turn-retry',
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final load = service.loadOlderTurns(
+        provider: 'codex',
+        providerSessionId: 'thread-turn-retry',
+      );
+      final firstPageRequest = await gateway.nextOutgoing(
+        'conversation_turns_page',
+      );
+      expect(firstPageRequest['cursor'], 'cursor-turn-retry');
+
+      gateway.addEvent(
+        _catalogRecoveryEvent(
+          subscriptionId: firstSubscriptionId,
+          batchId: 'batch-turn-retry-1',
+          sequence: 4,
+          catalogState: 'catalog-turn-retry-gap',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+
+      final secondSubscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final secondSubscriptionId = secondSubscribe['requestId']! as String;
+      expect(secondSubscriptionId, isNot(firstSubscriptionId));
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-turn-retry-2',
+          sequence: 1,
+          requestId: secondSubscriptionId,
+          catalogState: 'catalog-turn-retry-2',
+          statusState: 'status-turn-retry-2',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final retriedPageRequest = await gateway.nextOutgoing(
+        'conversation_turns_page',
+      );
+      expect(
+        retriedPageRequest['requestId'],
+        isNot(firstPageRequest['requestId']),
+      );
+      expect(retriedPageRequest['cursor'], 'cursor-turn-retry');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.turnsPageResponse,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-turn-retry-2',
+          sequence: 2,
+          requestId: retriedPageRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-turn-retry',
+          data: const [
+            {
+              'turnId': 'turn-before-retry',
+              'messages': [
+                {
+                  'type': 'user_input',
+                  'text': 'Recovered earlier prompt',
+                  'userMessageUuid': 'user-before-retry',
+                },
+              ],
+              'itemCount': 1,
+              'itemsView': 'summary',
+            },
+          ],
+          nextCursor: null,
+        ),
+      );
+
+      final result = await load;
+      expect(result.loaded, isTrue);
+      expect(result.hasMore, isFalse);
+      final cached = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-turn-retry',
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'user:user-before-retry',
+        'current-retry-entry',
+      ]);
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        2,
+      );
+    },
+  );
+
   test('loads detached tool details by provider turn before ACK', () async {
     await service.dispose();
     gateway.supportsConversationSyncV2 = true;
