@@ -24,6 +24,7 @@ class _ConversationSyncV2ProtocolSlot implements LocalFeatureProtocolSlot {
   @override
   List<String> get supportedServerMessageTypes => const [
     conversationSyncV2Capability,
+    appServerStatusV1Capability,
   ];
 
   @override

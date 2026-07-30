@@ -4,6 +4,16 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'advertises app-server status semantics to compatible Bridge versions',
+    () {
+      expect(
+        LocalFeatureProtocolHost.supportedServerMessageTypes,
+        contains(appServerStatusV1Capability),
+      );
+    },
+  );
+
   test('decodes an authoritative unknown status without inventing idle', () {
     final decoded =
         ServerMessage.fromJson(<String, dynamic>{

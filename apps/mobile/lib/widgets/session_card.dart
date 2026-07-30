@@ -3052,7 +3052,8 @@ class _ConversationSyncStatusIndicator extends StatelessWidget {
         (localizations.statusWorking, appColors.statusRunning),
       _
           when current.activity == 'systemError' ||
-              current.activity == 'unknown' ||
+              (current.activity == 'unknown' &&
+                  current.runtimeAttachment != 'notLoaded') ||
               current.runtimeAttachment == 'ownedElsewhere' =>
         (localizations.statusUnavailable, appColors.subtleText),
       _ when isUnseen => (

@@ -1519,6 +1519,85 @@ void main() {
       expect(find.text('Ready'), findsNothing);
     });
 
+    testWidgets(
+      'does not treat an unobserved notLoaded thread as unavailable',
+      (tester) async {
+        const session = RecentSession(
+          sessionId: 'v2-not-loaded',
+          provider: 'codex',
+          firstPrompt: 'prompt',
+          created: '2026-07-30T00:00:00Z',
+          modified: '2026-07-30T00:01:00Z',
+          gitBranch: 'main',
+          projectPath: '/repo',
+          isSidechain: false,
+        );
+        const status = ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'v2-not-loaded',
+          activity: 'unknown',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'notLoaded',
+          source: 'appServer',
+          confidence: 'unknown',
+          observedAt: '2026-07-30T00:01:00Z',
+        );
+
+        await tester.pumpWidget(
+          _wrap(
+            RecentSessionCard(
+              session: session,
+              conversationStatus: status,
+              onTap: () {},
+            ),
+          ),
+        );
+
+        expect(find.text('Status unavailable'), findsNothing);
+        expect(find.text('Ready'), findsNothing);
+      },
+    );
+
+    testWidgets('still surfaces a genuinely unknown loaded runtime', (
+      tester,
+    ) async {
+      const session = RecentSession(
+        sessionId: 'v2-loaded-unknown',
+        provider: 'codex',
+        firstPrompt: 'prompt',
+        created: '2026-07-30T00:00:00Z',
+        modified: '2026-07-30T00:01:00Z',
+        gitBranch: 'main',
+        projectPath: '/repo',
+        isSidechain: false,
+      );
+      const status = ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'v2-loaded-unknown',
+        activity: 'unknown',
+        attention: 'none',
+        result: 'none',
+        runtimeAttachment: 'loaded',
+        source: 'appServer',
+        confidence: 'unknown',
+        observedAt: '2026-07-30T00:01:00Z',
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          RecentSessionCard(
+            session: session,
+            conversationStatus: status,
+            onTap: () {},
+          ),
+        ),
+      );
+
+      expect(find.text('Status unavailable'), findsOneWidget);
+      expect(find.text('Ready'), findsNothing);
+    });
+
     testWidgets('uses only a blue dot for completed unread v2 sessions', (
       tester,
     ) async {

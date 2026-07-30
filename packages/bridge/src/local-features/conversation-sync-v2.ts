@@ -25,6 +25,7 @@ import {
 } from "./conversation-content-sync.js";
 import { sessionHistoryToServerMessages } from "./codex-thread-history.js";
 import {
+  APP_SERVER_STATUS_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
   type ConversationSyncCatalogEntry,
   type ConversationSyncClientMessage,
@@ -73,6 +74,10 @@ const MAX_TOOL_DETAIL_ATTACHMENTS = 4;
 const MAX_CODEX_TURN_SCAN_PAGES = 50;
 const CODEX_TURN_SCAN_PAGE_SIZE = 20;
 const LIVE_CONTENT_BATCH_MS = 32;
+// Bump whenever the meaning of a status snapshot changes without changing the
+// wire shape. This invalidates old persisted state tokens so Mobile clears
+// stale rows before applying the replacement snapshot.
+const STATUS_STATE_SCHEMA_VERSION = 2;
 
 type ConversationKey = string;
 type ConversationSyncEventPayload =
@@ -214,7 +219,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private readonly subscriptions = new Map<object, SyncSubscription>();
   private catalog = new Map<ConversationKey, CatalogRecord>();
   private catalogState = hashState([]);
-  private statusState = hashState([]);
+  private statusState = hashState([STATUS_STATE_SCHEMA_VERSION]);
   private readonly catalogHistory = new Map<
     string,
     Map<ConversationKey, ConversationSyncCatalogEntry>
@@ -777,12 +782,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       });
     }
     const current = statusEntries(this.catalog);
+    const supportsAppServerStatusSemantics = this.runtime.supports(
+      client,
+      APP_SERVER_STATUS_CAPABILITY,
+    );
     const changes = [...current]
       .filter(([key, value]) => {
         const prior = previous?.get(key);
         return !prior || stableJson(prior) !== stableJson(value);
       })
-      .map(([, value]) => value);
+      .map(([, value]) =>
+        statusForClient(value, supportsAppServerStatusSemantics),
+      );
     const pages = chunkByJsonBytes(changes, FRAME_CONTENT_BUDGET);
     const effectivePages = pages.length > 0 ? pages : [[]];
     effectivePages.forEach((page, pageIndex) => {
@@ -1224,7 +1235,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const catalog = catalogEntries(this.catalog);
     const statuses = statusEntries(this.catalog);
     this.catalogState = hashState([...catalog].sort(compareStateEntries));
-    this.statusState = hashState([...statuses].sort(compareStateEntries));
+    this.statusState = hashState([
+      STATUS_STATE_SCHEMA_VERSION,
+      ...[...statuses].sort(compareStateEntries),
+    ]);
     rememberState(this.catalogHistory, this.catalogState, catalog);
     rememberState(this.statusHistory, this.statusState, statuses);
   }
@@ -2427,8 +2441,35 @@ function statusFromCodexThread(
         observedAt,
       };
     case "unknown":
-      return unknownStatus(target, observedAt, "appServer");
+      return {
+        ...unknownStatus(target, observedAt, "appServer"),
+        // The app-server returned a status object, but its type is newer than
+        // this Bridge understands. Keep that distinct from the ordinary
+        // notLoaded case so capable clients can surface a real degraded state.
+        runtimeAttachment: "loaded",
+      };
   }
+}
+
+function statusForClient(
+  status: ConversationSyncStatus,
+  supportsAppServerStatusSemantics: boolean,
+): ConversationSyncStatus {
+  if (
+    supportsAppServerStatusSemantics ||
+    status.activity !== "unknown" ||
+    status.runtimeAttachment !== "notLoaded" ||
+    status.confidence !== "unknown" ||
+    status.attention !== "none"
+  ) {
+    return status;
+  }
+  // Build 206 and older mapped every `activity: unknown` row to a visible
+  // error, even when `runtimeAttachment: notLoaded` only meant that no live
+  // runtime observation existed. Preserve the honest confidence/attachment
+  // fields while projecting the neutral legacy activity that those clients
+  // already render without inventing a Ready badge.
+  return { ...status, activity: "idle" };
 }
 
 function statusFromRuntime(

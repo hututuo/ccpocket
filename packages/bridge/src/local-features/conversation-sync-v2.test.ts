@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ServerMessage } from "../parser.js";
 import { ConversationSyncV2FeatureHandler } from "./conversation-sync-v2.js";
 import {
+  APP_SERVER_STATUS_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
   conversationSyncV2ProtocolContribution,
   type ConversationSyncCatalogEntry,
@@ -219,8 +220,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
         .flatMap((event) => event.changes)
         .find((status) => status.providerSessionId === "session-0"),
     ).toMatchObject({
-      activity: "unknown",
+      activity: "idle",
       confidence: "unknown",
+      runtimeAttachment: "notLoaded",
     });
     for (const message of fixture.sent.get(firstClient) ?? []) {
       expect(
@@ -246,6 +248,60 @@ describe("ConversationSyncV2FeatureHandler", () => {
       { timeout: 3_000 },
     );
     expect(historyReader).toHaveBeenCalledTimes(readsAfterFirstSync);
+    fixture.handler.close();
+  });
+
+  it("keeps notLoaded status truthful for capable clients and neutral for legacy Mobile", async () => {
+    const fixture = createFixture([seed(0)], async (target) =>
+      history(target.providerSessionId),
+    );
+    const legacyClient = {};
+    const capableClient = {};
+    fixture.runtime.supports = (client: object, type: string) =>
+      type === CONVERSATION_SYNC_V2_CAPABILITY ||
+      (client === capableClient && type === APP_SERVER_STATUS_CAPABILITY);
+
+    await fixture.handler.handle(
+      subscribeMessage([], { statusState: "legacy-status-state" }),
+      context(legacyClient, fixture.runtime),
+    );
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(capableClient, fixture.runtime),
+    );
+    await vi.waitFor(
+      () => {
+        expect(
+          events(fixture.sent, legacyClient, "sync_complete"),
+        ).toHaveLength(1);
+        expect(
+          events(fixture.sent, capableClient, "sync_complete"),
+        ).toHaveLength(1);
+      },
+      { timeout: 3_000 },
+    );
+
+    expect(events(fixture.sent, legacyClient, "sync_reset")).toContainEqual(
+      expect.objectContaining({ scope: "status" }),
+    );
+    expect(
+      events(fixture.sent, legacyClient, "status_changes")
+        .flatMap((event) => event.changes)
+        .find((status) => status.providerSessionId === "session-0"),
+    ).toMatchObject({
+      activity: "idle",
+      runtimeAttachment: "notLoaded",
+      confidence: "unknown",
+    });
+    expect(
+      events(fixture.sent, capableClient, "status_changes")
+        .flatMap((event) => event.changes)
+        .find((status) => status.providerSessionId === "session-0"),
+    ).toMatchObject({
+      activity: "unknown",
+      runtimeAttachment: "notLoaded",
+      confidence: "unknown",
+    });
     fixture.handler.close();
   });
 
