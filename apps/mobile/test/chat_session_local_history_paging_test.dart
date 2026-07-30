@@ -572,6 +572,88 @@ void main() {
   );
 
   test(
+    'late canonical item is inserted between existing mirror anchors',
+    () async {
+      bridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'running',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ];
+      const user = UserInputMessage(
+        text: 'Inspect the file',
+        userMessageUuid: 'shared-user',
+      );
+      const assistant = AssistantServerMessage(
+        message: AssistantMessage(
+          id: 'shared-assistant',
+          role: 'assistant',
+          content: [TextContent(text: 'Inspection complete')],
+          model: 'codex',
+        ),
+        messageUuid: 'shared-assistant-uuid',
+      );
+      const tool = ToolResultMessage(
+        toolUseId: 'late-tool',
+        toolName: 'Read',
+        content: 'file contents',
+      );
+      bridge.configureSessionHistoryBootstrap(({
+        required runtimeSessionId,
+        required provider,
+        required providerSessionId,
+        required projectPath,
+        required force,
+      }) async {
+        bridge.publishExternalSessionHistory(runtimeSessionId, const [
+          user,
+          assistant,
+        ]);
+        return true;
+      });
+      bridge.configureSessionHistoryPaging(
+        hasMore: (_) => true,
+        loader: ({required runtimeSessionId, required limit}) async =>
+            const LocalSessionHistoryPage(messages: [], hasMore: true),
+      );
+
+      final cubit = createCubit();
+      await settleBootstrap();
+      bridge.emitMessage(
+        const HistoryMessage(messages: [user, tool, assistant]),
+        sessionId: 's1',
+      );
+      await settleBootstrap();
+
+      expect(
+        cubit.state.entries
+            .map(
+              (entry) => switch (entry) {
+                UserChatEntry(:final messageUuid)
+                    when messageUuid == 'shared-user' =>
+                  'user',
+                ServerChatEntry(message: ToolResultMessage(:final toolUseId))
+                    when toolUseId == 'late-tool' =>
+                  'tool',
+                ServerChatEntry(
+                  message: AssistantServerMessage(:final message),
+                )
+                    when message.id == 'shared-assistant' =>
+                  'assistant',
+                _ => null,
+              },
+            )
+            .whereType<String>(),
+        ['user', 'tool', 'assistant'],
+      );
+    },
+  );
+
+  test(
     'an unbounded canonical refresh keeps the latest five root turns',
     () async {
       bridge.sessionSnapshot = const [

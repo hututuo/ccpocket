@@ -2499,18 +2499,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           historyEntries: nonStreamingEntries,
         );
 
-        final extraLiveEntries = _entriesToPreserveAfterHistoryReplace(
+        final reconciledHistoryEntries = _mergeHistoryWithPreservedLiveEntries(
           existingNonPast: existingNonPast,
           historyEntries: mergedHistoryEntries,
         );
 
-        entries = [
-          ...pastEntries,
-          ...mergedHistoryEntries,
-          ...extraLiveEntries,
-        ];
+        entries = [...pastEntries, ...reconciledHistoryEntries];
         if (isLocalMirrorSnapshot) {
-          _localMirrorEntryCount = mergedHistoryEntries.length;
+          _localMirrorEntryCount = reconciledHistoryEntries.length;
         } else if (discardLocalMirrorEntries) {
           _localMirrorEntryCount = 0;
         }
@@ -2901,17 +2897,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
   }
 
-  List<ChatEntry> _entriesToPreserveAfterHistoryReplace({
+  List<ChatEntry> _mergeHistoryWithPreservedLiveEntries({
     required List<ChatEntry> existingNonPast,
     required List<ChatEntry> historyEntries,
   }) {
     final lastUserIndex = existingNonPast.lastIndexWhere(
       (entry) => entry is UserChatEntry,
     );
-    final candidates = existingNonPast.skip(
-      lastUserIndex == -1 ? 0 : lastUserIndex,
-    );
-    final preserved = <ChatEntry>[];
+    final candidates = existingNonPast
+        .skip(lastUserIndex == -1 ? 0 : lastUserIndex)
+        .toList(growable: false);
     final historyCurrentUserIndex = lastUserIndex == -1
         ? -1
         : historyEntries.lastIndexWhere(
@@ -2920,31 +2915,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               existingNonPast[lastUserIndex],
             ),
           );
-    final covered = lastUserIndex == -1
-        ? [...historyEntries]
+    final minimumCanonicalIndex = lastUserIndex == -1
+        ? 0
         : historyCurrentUserIndex == -1
-        ? <ChatEntry>[]
-        : historyEntries.skip(historyCurrentUserIndex).toList();
-    final consumedWeakCoveredIndexes = <int>{};
-
-    for (final candidate in candidates) {
-      if (_indexOfEquivalentEntry(covered, candidate) != -1) {
-        continue;
-      }
-      final weakCoveredIndex = _indexOfConsumableHistoryAlias(
-        covered,
-        candidate,
-        consumedWeakCoveredIndexes,
-      );
-      if (weakCoveredIndex != -1) {
-        consumedWeakCoveredIndexes.add(weakCoveredIndex);
-        continue;
-      }
-      if (!_shouldPreserveEntryAcrossHistoryReplace(candidate)) continue;
-      preserved.add(candidate);
-      covered.add(candidate);
-    }
-    return preserved;
+        ? historyEntries.length
+        : historyCurrentUserIndex;
+    return _weavePreservedEntriesIntoCanonicalHistory(
+      canonicalEntries: historyEntries,
+      existingEntries: candidates,
+      minimumCanonicalIndex: minimumCanonicalIndex,
+      unanchoredExistingBeforeCanonical: false,
+      allowBroadLegacyAliases: true,
+    );
   }
 
   /// Keeps the downloaded mirror as a progressively pageable prefix while a
@@ -2989,39 +2971,162 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> existingEntries,
     required List<ChatEntry> canonicalEntries,
   }) {
-    var next = List<ChatEntry>.from(existingEntries);
-    for (final canonical in canonicalEntries) {
-      var matchIndex = _indexOfEquivalentEntry(next, canonical);
-      if (matchIndex == -1 && _isCanonicalAssistantEntry(canonical)) {
-        final lastUserIndex = next.lastIndexWhere((entry) {
-          return entry is UserChatEntry;
-        });
-        matchIndex = _indexOfProvisionalAssistantAlias(
-          next,
+    return _weavePreservedEntriesIntoCanonicalHistory(
+      canonicalEntries: canonicalEntries,
+      existingEntries: existingEntries,
+      minimumCanonicalIndex: 0,
+      // With no shared envelope these are two adjacent windows: downloaded
+      // mirror first, newer canonical/runtime tail second.
+      unanchoredExistingBeforeCanonical: true,
+      allowBroadLegacyAliases: false,
+    );
+  }
+
+  /// Reconciles a canonical ordered snapshot with live/cache-only entries
+  /// without flattening every unmatched entry onto the end of the transcript.
+  ///
+  /// Stable provider ids (and bounded legacy aliases) act as anchors. An
+  /// unmatched live entry stays after its preceding canonical anchor and
+  /// before the next one, preserving the order observed on the socket while
+  /// leaving canonical order authoritative. No display timestamp participates
+  /// in ordering.
+  List<ChatEntry> _weavePreservedEntriesIntoCanonicalHistory({
+    required List<ChatEntry> canonicalEntries,
+    required List<ChatEntry> existingEntries,
+    required int minimumCanonicalIndex,
+    required bool unanchoredExistingBeforeCanonical,
+    required bool allowBroadLegacyAliases,
+  }) {
+    final canonical = List<ChatEntry>.from(canonicalEntries);
+    final minimum = minimumCanonicalIndex < 0
+        ? 0
+        : minimumCanonicalIndex > canonical.length
+        ? canonical.length
+        : minimumCanonicalIndex;
+    final before = List.generate(
+      canonical.length,
+      (_) => <ChatEntry>[],
+      growable: false,
+    );
+    final after = List.generate(
+      canonical.length,
+      (_) => <ChatEntry>[],
+      growable: false,
+    );
+    final consumedCanonicalIndexes = <int>{};
+    final leadingUnanchored = <ChatEntry>[];
+    var lastAnchor = minimum - 1;
+    var foundAnchor = false;
+
+    for (final existing in existingEntries) {
+      final forwardStart = lastAnchor + 1 > minimum ? lastAnchor + 1 : minimum;
+      var matchIndex = _indexOfCanonicalAliasInRange(
+        canonical,
+        existing,
+        consumedCanonicalIndexes,
+        start: forwardStart,
+        end: canonical.length,
+        allowBroadLegacyAliases: allowBroadLegacyAliases,
+      );
+      if (matchIndex == -1 && lastAnchor >= minimum) {
+        // If the existing list was already scrambled, consume an equivalent
+        // canonical entry behind the current anchor but never move the anchor
+        // backwards. The canonical sequence repairs that old ordering.
+        matchIndex = _indexOfCanonicalAliasInRange(
           canonical,
-          start: lastUserIndex + 1,
+          existing,
+          consumedCanonicalIndexes,
+          start: minimum,
+          end: lastAnchor + 1 > canonical.length
+              ? canonical.length
+              : lastAnchor + 1,
+          allowBroadLegacyAliases: allowBroadLegacyAliases,
         );
-      } else if (matchIndex == -1 && _canWeakMatchAppendedEntry(canonical)) {
-        final lastUserIndex = next.lastIndexWhere((entry) {
-          return entry is UserChatEntry;
-        });
-        matchIndex = _indexOfEquivalentEntry(
-          next,
-          canonical,
-          start: lastUserIndex + 1,
-          allowWeakMatch: true,
-        );
+        if (matchIndex != -1) {
+          consumedCanonicalIndexes.add(matchIndex);
+          canonical[matchIndex] = _mergeCanonicalMirrorEntry(
+            existing,
+            canonical[matchIndex],
+          );
+          continue;
+        }
       }
-      if (matchIndex == -1) {
-        next.add(canonical);
-      } else {
-        next[matchIndex] = _mergeCanonicalMirrorEntry(
-          next[matchIndex],
-          canonical,
+      if (matchIndex != -1) {
+        consumedCanonicalIndexes.add(matchIndex);
+        canonical[matchIndex] = _mergeCanonicalMirrorEntry(
+          existing,
+          canonical[matchIndex],
         );
+        if (!foundAnchor && leadingUnanchored.isNotEmpty) {
+          before[matchIndex].addAll(leadingUnanchored);
+          leadingUnanchored.clear();
+        }
+        foundAnchor = true;
+        lastAnchor = matchIndex;
+        continue;
+      }
+      if (!_shouldPreserveEntryAcrossHistoryReplace(existing)) continue;
+      if (foundAnchor) {
+        after[lastAnchor].add(existing);
+      } else {
+        leadingUnanchored.add(existing);
       }
     }
-    return next;
+
+    if (!foundAnchor) {
+      return unanchoredExistingBeforeCanonical
+          ? [...leadingUnanchored, ...canonical]
+          : [...canonical, ...leadingUnanchored];
+    }
+
+    final merged = <ChatEntry>[];
+    for (var index = 0; index < canonical.length; index++) {
+      merged
+        ..addAll(before[index])
+        ..add(canonical[index])
+        ..addAll(after[index]);
+    }
+    return merged;
+  }
+
+  int _indexOfCanonicalAliasInRange(
+    List<ChatEntry> canonicalEntries,
+    ChatEntry existing,
+    Set<int> excludedIndexes, {
+    required int start,
+    required int end,
+    required bool allowBroadLegacyAliases,
+  }) {
+    for (var index = start; index < end; index++) {
+      if (excludedIndexes.contains(index)) continue;
+      if (_entriesEquivalent(canonicalEntries[index], existing)) return index;
+    }
+    if (existing is ServerChatEntry &&
+        existing.message is AssistantServerMessage) {
+      for (var index = start; index < end; index++) {
+        if (excludedIndexes.contains(index)) continue;
+        if (_isProvisionalAssistantAlias(existing, canonicalEntries[index])) {
+          return index;
+        }
+      }
+      // Two stable assistant ids with the same text remain distinct.
+      return -1;
+    }
+    if (!allowBroadLegacyAliases &&
+        !_canWeakMatchAppendedEntry(existing)) {
+      return -1;
+    }
+    for (var index = start; index < end; index++) {
+      if (excludedIndexes.contains(index)) continue;
+      if (_entriesEquivalent(
+        canonicalEntries[index],
+        existing,
+        allowWeakMatch: true,
+      )) {
+        return index;
+      }
+    }
+    return -1;
   }
 
   ChatEntry _mergeCanonicalMirrorEntry(
@@ -3212,32 +3317,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     for (var i = 0; i < entries.length; i++) {
       if (excludedIndexes.contains(i)) continue;
       if (_entriesEquivalent(entries[i], target)) return i;
-    }
-    return -1;
-  }
-
-  int _indexOfConsumableHistoryAlias(
-    List<ChatEntry> historyEntries,
-    ChatEntry liveCandidate,
-    Set<int> consumedIndexes,
-  ) {
-    for (var i = 0; i < historyEntries.length; i++) {
-      if (consumedIndexes.contains(i)) continue;
-      final historyEntry = historyEntries[i];
-      if (liveCandidate is ServerChatEntry &&
-          liveCandidate.message is AssistantServerMessage) {
-        if (_isProvisionalAssistantAlias(liveCandidate, historyEntry)) {
-          return i;
-        }
-        continue;
-      }
-      if (_entriesEquivalent(
-        historyEntry,
-        liveCandidate,
-        allowWeakMatch: true,
-      )) {
-        return i;
-      }
     }
     return -1;
   }

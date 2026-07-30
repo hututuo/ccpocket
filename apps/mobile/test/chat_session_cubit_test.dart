@@ -3592,6 +3592,86 @@ void main() {
     );
 
     test(
+      'history replace keeps a live item between its canonical anchors',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        const user = UserInputMessage(
+          text: 'Run the check',
+          userMessageUuid: 'user-anchor',
+        );
+        const tool = ToolResultMessage(
+          toolUseId: 'tool-between-anchors',
+          toolName: 'Read',
+          content: 'live tool result',
+        );
+        const assistant = AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'assistant-anchor',
+            role: 'assistant',
+            content: [TextContent(text: 'Finished')],
+            model: 'codex',
+          ),
+          messageUuid: 'assistant-anchor-uuid',
+        );
+
+        mockBridge.emitMessage(user, sessionId: 's1');
+        mockBridge.emitMessage(tool, sessionId: 's1');
+        mockBridge.emitMessage(assistant, sessionId: 's1');
+        await pumpEventQueue();
+
+        List<String> visibleOrder() => cubit.state.entries
+            .map((entry) {
+              if (entry is UserChatEntry &&
+                  entry.messageUuid == 'user-anchor') {
+                return 'user';
+              }
+              if (entry is ServerChatEntry) {
+                final message = entry.message;
+                if (message is ToolResultMessage &&
+                    message.toolUseId == 'tool-between-anchors') {
+                  return 'tool';
+                }
+                if (message is AssistantServerMessage &&
+                    message.message.id == 'assistant-anchor') {
+                  return 'assistant';
+                }
+              }
+              return '';
+            })
+            .where((label) => label.isNotEmpty)
+            .toList(growable: false);
+
+        // The first canonical snapshot has not materialized the tool result
+        // yet. It must not move the already observed result after the reply.
+        mockBridge.emitMessage(
+          const HistoryMessage(messages: [user, assistant]),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        expect(visibleOrder(), ['user', 'tool', 'assistant']);
+
+        // Once canonical history catches up, it replaces the live item at the
+        // same stable position rather than duplicating it.
+        mockBridge.emitMessage(
+          const HistoryMessage(messages: [user, tool, assistant]),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        expect(visibleOrder(), ['user', 'tool', 'assistant']);
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().where(
+            (entry) =>
+                entry.message is ToolResultMessage &&
+                (entry.message as ToolResultMessage).toolUseId ==
+                    'tool-between-anchors',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
       'history replace keeps completed live assistant missing from snapshot',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);

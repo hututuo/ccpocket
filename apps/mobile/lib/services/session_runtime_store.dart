@@ -252,7 +252,6 @@ class SessionRuntimeStore {
       if (_shouldIgnore(entry.message)) continue;
       _upsertMessage(state, entry.message, entry.seq);
     }
-    _sortSequencedMessages(state);
   }
 
   void _upsertMessage(
@@ -260,37 +259,37 @@ class SessionRuntimeStore {
     ServerMessage message,
     int? historySeq,
   ) {
-    final existingIndex = historySeq == null
-        ? -1
-        : state._messageSeqs.indexOf(historySeq);
-    if (existingIndex >= 0) {
-      state._messages[existingIndex] = message;
-      state._messageSeqs[existingIndex] = historySeq;
+    if (historySeq == null) {
+      state._messages.add(message);
+      state._messageSeqs.add(null);
       return;
     }
-    state._messages.add(message);
-    state._messageSeqs.add(historySeq);
+    final insertionIndex = _sequencedInsertionIndex(
+      state._messageSeqs,
+      historySeq,
+    );
+    if (insertionIndex < state._messageSeqs.length &&
+        state._messageSeqs[insertionIndex] == historySeq) {
+      state._messages[insertionIndex] = message;
+      return;
+    }
+    state._messages.insert(insertionIndex, message);
+    state._messageSeqs.insert(insertionIndex, historySeq);
   }
 
-  void _sortSequencedMessages(SessionRuntimeState state) {
-    final pairs = <({ServerMessage message, int? seq})>[];
-    for (var i = 0; i < state._messages.length; i++) {
-      pairs.add((message: state._messages[i], seq: state._messageSeqs[i]));
+  int _sequencedInsertionIndex(List<int?> sequences, int target) {
+    var low = 0;
+    var high = sequences.length;
+    while (low < high) {
+      final middle = low + ((high - low) >> 1);
+      final sequence = sequences[middle];
+      if (sequence == null || sequence >= target) {
+        high = middle;
+      } else {
+        low = middle + 1;
+      }
     }
-    pairs.sort((a, b) {
-      final aSeq = a.seq;
-      final bSeq = b.seq;
-      if (aSeq == null && bSeq == null) return 0;
-      if (aSeq == null) return 1;
-      if (bSeq == null) return -1;
-      return aSeq.compareTo(bSeq);
-    });
-    state._messages
-      ..clear()
-      ..addAll(pairs.map((pair) => pair.message));
-    state._messageSeqs
-      ..clear()
-      ..addAll(pairs.map((pair) => pair.seq));
+    return low;
   }
 
   void _advanceCachedHistorySeq(SessionRuntimeState state) {
