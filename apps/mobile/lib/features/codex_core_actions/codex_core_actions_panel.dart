@@ -23,12 +23,14 @@ class CodexCoreActionsPanel extends StatefulWidget {
     required this.bridge,
     this.initialSection,
     this.controller,
+    this.sessionIdIsCurrent,
   });
 
   final String sessionId;
   final BridgeService bridge;
   final String? initialSection;
   final CodexCoreActionsController? controller;
+  final bool Function(String sessionId)? sessionIdIsCurrent;
 
   @override
   State<CodexCoreActionsPanel> createState() => _CodexCoreActionsPanelState();
@@ -52,6 +54,7 @@ class _CodexCoreActionsPanelState extends State<CodexCoreActionsPanel> {
         CodexCoreActionsController(
           sessionId: widget.sessionId,
           bridge: widget.bridge,
+          sessionIdIsCurrent: widget.sessionIdIsCurrent,
         );
     _controller.addListener(_changed);
     _controller.start();

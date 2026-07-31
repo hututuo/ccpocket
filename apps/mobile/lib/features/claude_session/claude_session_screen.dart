@@ -30,6 +30,7 @@ import '../../utils/terminal_launcher.dart';
 import '../session_list/pending_session_binding.dart';
 import '../session_list/workspace_shell_screen.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
+import '../conversation_content_sync/conversation_route_focus_restorer.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
 import '../session_link/widgets/session_unavailable_view.dart';
 import '../settings/state/settings_cubit.dart';
@@ -182,15 +183,19 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   StreamSubscription<ServerMessage>? _sessionSwitchSub;
   StreamSubscription<String>? _sessionStoppedSub;
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
+  StreamSubscription<List<SessionInfo>>? _identitySessionListSub;
+  StreamSubscription<List<RecentSession>>? _identityRecentSessionsSub;
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
   String? _expectedCacheTargetFingerprint;
+  String? _cachedPreviewTargetFingerprint;
+  String? _loadingCachedPreviewTargetFingerprint;
   ChatComposerSubmission? _deferredSubmission;
   PendingSessionBinding? _retainedPendingBinding;
   final Object _sessionRouteOwner = Object();
   Object? _sessionRouteIdentity;
-  late final BridgeDataSourceIdentity _dataSourceIdentity;
+  late BridgeDataSourceIdentity _dataSourceIdentity;
 
   @override
   void initState() {
@@ -216,6 +221,79 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     _startDurablePreview();
     _listenForSessionSwitch();
     _listenForSessionStopped();
+    _listenForAuthoritativeDataSourceIdentity(bridge);
+  }
+
+  void _listenForAuthoritativeDataSourceIdentity(BridgeService bridge) {
+    _identitySessionListSub = bridge.sessionList.listen((_) {
+      _reconcileAuthoritativeDataSourceIdentity(bridge);
+    });
+    _identityRecentSessionsSub = bridge.recentSessionsStream.listen((_) {
+      _reconcileAuthoritativeDataSourceIdentity(bridge);
+    });
+    _reconcileAuthoritativeDataSourceIdentity(bridge);
+  }
+
+  void _reconcileAuthoritativeDataSourceIdentity(BridgeService bridge) {
+    if (!mounted || !bridge.hasAuthoritativeSessionListForCurrentConnection) {
+      return;
+    }
+    final durableId = widget.durableProviderSessionId?.trim();
+    final providerSessionId = durableId == null || durableId.isEmpty
+        ? _sessionId
+        : durableId;
+    final runtimeConfirmsThread = bridge.sessions.any(
+      (session) =>
+          session.provider == Provider.claude.value &&
+          (session.id == _sessionId ||
+              session.claudeSessionId == providerSessionId),
+    );
+    final catalogConfirmsThread =
+        bridge.hasAuthoritativeRecentSessionsForCurrentConnection &&
+        bridge.recentSessions.any(
+          (session) =>
+              session.provider == Provider.claude.value &&
+              session.sessionId == providerSessionId,
+        );
+    if (!runtimeConfirmsThread && !catalogConfirmsThread) return;
+
+    final authenticatedIdentity = bridge.dataSourceIdentity;
+    final next = _dataSourceIdentity.reconciledWithAuthenticated(
+      authenticatedIdentity,
+      provider: Provider.claude.value,
+    );
+    if (!next.isSatisfiedBy(
+      authenticatedIdentity,
+      provider: Provider.claude.value,
+    )) {
+      return;
+    }
+    final previousIdentity = _dataSourceIdentity;
+    if (next != previousIdentity) {
+      setState(() => _dataSourceIdentity = next);
+      _syncSessionRouteIdentity();
+      final shell = WorkspaceShellScreen.maybeOf(context);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            _dataSourceIdentity != next ||
+            !next.isSatisfiedBy(
+              bridge.dataSourceIdentity,
+              provider: Provider.claude.value,
+            )) {
+          return;
+        }
+        shell?.reconcileSelectedSessionDataSourceIdentity(
+          provider: Provider.claude,
+          routeIdentitySessionId:
+              widget.isPending && durableId?.isNotEmpty == true
+              ? durableId!
+              : _sessionId,
+          previousIdentity: previousIdentity,
+          authenticatedIdentity: authenticatedIdentity,
+        );
+      });
+    }
+    _reloadDurablePreviewForCurrentTarget();
   }
 
   void _startDurablePreview() {
@@ -249,16 +327,96 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     }
   }
 
+  void _restoreDurableConversationFocusIfCurrentSource() {
+    final durableId = widget.durableProviderSessionId?.trim();
+    if (durableId == null || durableId.isEmpty) return;
+    try {
+      final sync = context.read<ConversationContentSyncService>();
+      if (!sync.matchesCurrentDataSource(
+        _dataSourceIdentity,
+        provider: Provider.claude.value,
+      )) {
+        return;
+      }
+      sync.setFocusedConversation(
+        provider: Provider.claude.value,
+        providerSessionId: durableId,
+      );
+    } catch (_) {
+      // Official/isolated hosts may omit the optional cache service.
+    }
+  }
+
+  void _reloadDurablePreviewForCurrentTarget() {
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || durableId.isEmpty) return;
+    ConversationContentSyncService sync;
+    try {
+      sync = context.read<ConversationContentSyncService>();
+    } catch (_) {
+      return;
+    }
+    if (sync.hasAuthoritativeDataSourceConflict(
+      _dataSourceIdentity,
+      provider: Provider.claude.value,
+    )) {
+      return;
+    }
+    final targetFingerprint = sync.cacheTargetFingerprintForDataSource(
+      _dataSourceIdentity,
+    );
+    _expectedCacheTargetFingerprint = targetFingerprint;
+    if (sync.matchesCurrentDataSource(
+      _dataSourceIdentity,
+      provider: Provider.claude.value,
+    )) {
+      sync.setFocusedConversation(
+        provider: Provider.claude.value,
+        providerSessionId: durableId,
+      );
+    }
+    if (_cachedPreviewTargetFingerprint == targetFingerprint &&
+        (!_loadingCachedPreview ||
+            _loadingCachedPreviewTargetFingerprint == targetFingerprint)) {
+      return;
+    }
+    if (_cachedPreview != null &&
+        _cachedPreviewTargetFingerprint != targetFingerprint) {
+      setState(() => _cachedPreview = null);
+    }
+    _loadDurablePreview();
+  }
+
   void _loadDurablePreview() {
     final durableId = widget.durableProviderSessionId;
     if (durableId == null) return;
+    ConversationContentSyncService sync;
+    try {
+      sync = context.read<ConversationContentSyncService>();
+    } catch (_) {
+      return;
+    }
+    if (sync.hasAuthoritativeDataSourceConflict(
+      _dataSourceIdentity,
+      provider: Provider.claude.value,
+    )) {
+      return;
+    }
+    final targetFingerprint = sync.cacheTargetFingerprintForDataSource(
+      _dataSourceIdentity,
+    );
+    if (_expectedCacheTargetFingerprint != null &&
+        _expectedCacheTargetFingerprint != targetFingerprint) {
+      return;
+    }
+    _expectedCacheTargetFingerprint ??= targetFingerprint;
     if (_loadingCachedPreview) {
       _cachedPreviewDirty = true;
       return;
     }
     _loadingCachedPreview = true;
+    _loadingCachedPreviewTargetFingerprint = targetFingerprint;
     _cachedPreviewDirty = false;
-    final sync = context.read<ConversationContentSyncService>();
     unawaited(
       sync
           .loadCachedWindow(
@@ -269,10 +427,20 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           .then((snapshot) {
             if (!mounted ||
                 widget.durableProviderSessionId != durableId ||
-                !_isPending) {
+                !_isPending ||
+                sync.hasAuthoritativeDataSourceConflict(
+                  _dataSourceIdentity,
+                  provider: Provider.claude.value,
+                )) {
+              if (mounted && widget.durableProviderSessionId == durableId) {
+                _cachedPreviewDirty = true;
+              }
               return;
             }
-            setState(() => _cachedPreview = snapshot);
+            setState(() {
+              _cachedPreview = snapshot;
+              _cachedPreviewTargetFingerprint = targetFingerprint;
+            });
           })
           .catchError((Object error) {
             debugPrint('Failed to load cached Claude preview: $error');
@@ -280,6 +448,13 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           .whenComplete(() {
             if (mounted && widget.durableProviderSessionId == durableId) {
               _loadingCachedPreview = false;
+              _loadingCachedPreviewTargetFingerprint = null;
+              if (sync.hasAuthoritativeDataSourceConflict(
+                _dataSourceIdentity,
+                provider: Provider.claude.value,
+              )) {
+                _cachedPreviewDirty = true;
+              }
               if (_cachedPreviewDirty) {
                 _cachedPreviewDirty = false;
                 _loadDurablePreview();
@@ -606,6 +781,14 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   @override
   void didUpdateWidget(covariant ClaudeSessionScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final bridge = context.read<BridgeService>();
+    final identityCandidate =
+        widget.dataSourceIdentity ?? bridge.dataSourceIdentity;
+    final nextIdentity = _dataSourceIdentity.reconciledWithAuthenticated(
+      identityCandidate,
+      provider: Provider.claude.value,
+    );
+    final identityChanged = nextIdentity != _dataSourceIdentity;
     final pendingLifecycleChanged =
         oldWidget.pendingSessionCreated != widget.pendingSessionCreated ||
         oldWidget.isPending != widget.isPending;
@@ -618,17 +801,17 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             widget.durableProviderSessionId &&
         oldWidget.pendingSessionCreated == widget.pendingSessionCreated &&
         oldWidget.initialPermissionMode == widget.initialPermissionMode &&
-        oldWidget.initialSandboxMode == widget.initialSandboxMode) {
+        oldWidget.initialSandboxMode == widget.initialSandboxMode &&
+        !identityChanged) {
       return;
     }
 
     if (pendingLifecycleChanged) {
       _detachPendingBinding(oldWidget.pendingSessionCreated);
     }
-    final explorerHistory = context.read<BridgeService>().getExplorerHistory(
-      widget.sessionId,
-    );
+    final explorerHistory = bridge.getExplorerHistory(widget.sessionId);
     setState(() {
+      _dataSourceIdentity = nextIdentity;
       _sessionId = widget.sessionId;
       _projectPath = widget.projectPath;
       _worktreePath = widget.worktreePath;
@@ -640,6 +823,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _recentPeekedFiles = explorerHistory.recentPeekedFiles;
     });
     _syncSessionRouteIdentity();
+    if (identityChanged) {
+      _reloadDurablePreviewForCurrentTarget();
+    }
     if (_isPending && pendingLifecycleChanged) {
       _listenForSessionCreated();
     }
@@ -661,6 +847,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     _sessionSwitchSub?.cancel();
     _sessionStoppedSub?.cancel();
     _cachedPreviewSub?.cancel();
+    _identitySessionListSub?.cancel();
+    _identityRecentSessionsSub?.cancel();
     final durableId = widget.durableProviderSessionId;
     if (durableId != null) {
       try {
@@ -678,33 +866,36 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final durableId = widget.durableProviderSessionId;
     final cachedPreview = _cachedPreview;
     if (_isPending && durableId != null) {
-      return _ChatScreenProviders(
-        key: ValueKey('durable-claude-$durableId'),
-        sessionId: durableId,
-        projectPath: _projectPath,
-        gitBranch: _gitBranch,
-        worktreePath: _worktreePath,
-        permissionMode: _permissionMode,
-        sandboxMode: _sandboxMode,
-        detachedPreview: true,
-        previewRevision: cachedPreview == null
-            ? ''
-            : '${cachedPreview.revision}:'
-                  '${cachedPreview.entries.length}:'
-                  '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
-        initialHistoryMessages:
-            cachedPreview?.entries
-                .map((entry) => entry.decodeMessage())
-                .toList(growable: false) ??
-            const [],
-        initialHistoryHasEarlier: cachedPreview?.hasEarlier ?? false,
-        detachedHistoryPageLoader: _loadOlderDurableHistory,
-        expectedSourceFingerprint: _expectedCacheTargetFingerprint,
-        deferredSubmissionPending: _deferredSubmission != null,
-        onDeferredSubmit: _queueDeferredSubmission,
-        onBackToSessions: widget.onBackToSessions,
-        hideSessionBackButton: widget.hideSessionBackButton,
-        dataSourceIdentity: _dataSourceIdentity,
+      return ConversationRouteFocusRestorer(
+        onRouteCurrent: _restoreDurableConversationFocusIfCurrentSource,
+        child: _ChatScreenProviders(
+          key: ValueKey('durable-claude-$durableId'),
+          sessionId: durableId,
+          projectPath: _projectPath,
+          gitBranch: _gitBranch,
+          worktreePath: _worktreePath,
+          permissionMode: _permissionMode,
+          sandboxMode: _sandboxMode,
+          detachedPreview: true,
+          previewRevision: cachedPreview == null
+              ? ''
+              : '${cachedPreview.revision}:'
+                    '${cachedPreview.entries.length}:'
+                    '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
+          initialHistoryMessages:
+              cachedPreview?.entries
+                  .map((entry) => entry.decodeMessage())
+                  .toList(growable: false) ??
+              const [],
+          initialHistoryHasEarlier: cachedPreview?.hasEarlier ?? false,
+          detachedHistoryPageLoader: _loadOlderDurableHistory,
+          expectedSourceFingerprint: _expectedCacheTargetFingerprint,
+          deferredSubmissionPending: _deferredSubmission != null,
+          onDeferredSubmit: _queueDeferredSubmission,
+          onBackToSessions: widget.onBackToSessions,
+          hideSessionBackButton: widget.hideSessionBackButton,
+          dataSourceIdentity: _dataSourceIdentity,
+        ),
       );
     }
     if (_isPending) {
@@ -750,7 +941,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       );
     }
 
-    return _ChatScreenProviders(
+    final providers = _ChatScreenProviders(
       key: ValueKey(_sessionId),
       sessionId: _sessionId,
       projectPath: _projectPath,
@@ -766,6 +957,12 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       hideSessionBackButton: widget.hideSessionBackButton,
       dataSourceIdentity: _dataSourceIdentity,
     );
+    return durableId == null
+        ? providers
+        : ConversationRouteFocusRestorer(
+            onRouteCurrent: _restoreDurableConversationFocusIfCurrentSource,
+            child: providers,
+          );
   }
 }
 

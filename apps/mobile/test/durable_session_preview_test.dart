@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
+import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_database.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_repository.dart';
@@ -135,9 +137,7 @@ void main() {
     'detached projection rejects status and settings from another source',
     (tester) async {
       final bridge = MockBridgeService()
-        ..advertisedBridgeCapabilities = const {
-          conversationSyncV2Capability,
-        };
+        ..advertisedBridgeCapabilities = const {conversationSyncV2Capability};
       final streaming = StreamingStateCubit();
       final cubit = ChatSessionCubit(
         sessionId: 'same-thread',
@@ -371,6 +371,379 @@ void main() {
         await tester.pump();
         await tester.pump();
         expect(repository.loadConversationWindowCalls, 1);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'provisional identity authentication preserves the chat state subtree',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..mockLogicalConnectionIdentity = 'machine:provisional-upgrade'
+        ..mockLastUrl = 'wss://provisional-upgrade.test/socket';
+      final provisionalTarget = SessionCatalogCacheTarget.fromBridge(
+        logicalConnectionIdentity: bridge.mockLogicalConnectionIdentity,
+        websocketUrl: bridge.mockLastUrl,
+      );
+      final authenticatedTarget = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-authenticated-upgrade',
+        codexSourceId: 'source-authenticated-upgrade',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-upgrade-cache.db'),
+        snapshots: {
+          provisionalTarget.fingerprint: _previewSnapshot(
+            partitionId: provisionalTarget.fingerprint,
+            providerSessionId: 'durable-upgrade-thread',
+            revision: 'provisional-revision',
+            entryId: 'provisional-entry',
+            text: 'Provisional cached turn',
+          ),
+          authenticatedTarget.fingerprint: _previewSnapshot(
+            partitionId: authenticatedTarget.fingerprint,
+            providerSessionId: 'durable-upgrade-thread',
+            revision: 'authenticated-revision',
+            entryId: 'authenticated-entry',
+            text: 'Authenticated cached turn',
+          ),
+        },
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+      final provisionalIdentity = bridge.dataSourceIdentity;
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-upgrade-runtime',
+            isPending: true,
+            durableProviderSessionId: 'durable-upgrade-thread',
+            dataSourceIdentity: provisionalIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        final inputFinder = find.byKey(const ValueKey('message_input'));
+        final cubitBefore = BlocProvider.of<ChatSessionCubit>(
+          tester.element(inputFinder),
+        );
+        await tester.enterText(inputFinder, 'draft survives authentication');
+
+        bridge
+          ..authenticatedBridgeInstanceId = 'bridge-authenticated-upgrade'
+          ..authenticatedCodexSourceId = 'source-authenticated-upgrade';
+        bridge.emitSessionList([
+          const SessionInfo(
+            id: 'runtime-authenticated-upgrade',
+            provider: 'codex',
+            projectPath: '/workspace/upgrade',
+            claudeSessionId: 'durable-upgrade-thread',
+            status: 'idle',
+            createdAt: '2026-08-01T00:00:00.000Z',
+            lastActivityAt: '2026-08-01T00:00:00.000Z',
+          ),
+        ]);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        final cubitAfter = BlocProvider.of<ChatSessionCubit>(
+          tester.element(inputFinder),
+        );
+        expect(cubitAfter, same(cubitBefore));
+        expect(find.text('draft survives authentication'), findsOneWidget);
+        expect(find.text('Authenticated cached turn'), findsOneWidget);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'Claude authentication rebinds cache without replacing chat state',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..mockLogicalConnectionIdentity = 'machine:claude-upgrade'
+        ..mockLastUrl = 'wss://claude-upgrade.test/socket';
+      final provisionalTarget = SessionCatalogCacheTarget.fromBridge(
+        logicalConnectionIdentity: bridge.mockLogicalConnectionIdentity,
+        websocketUrl: bridge.mockLastUrl,
+      );
+      final authenticatedTarget = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-claude-authenticated',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: 'unused-claude-upgrade-cache.db',
+        ),
+        snapshots: {
+          provisionalTarget.fingerprint: _previewSnapshot(
+            partitionId: provisionalTarget.fingerprint,
+            provider: Provider.claude.value,
+            providerSessionId: 'durable-claude-upgrade',
+            revision: 'claude-provisional-revision',
+            entryId: 'claude-provisional-entry',
+            text: 'Claude provisional cached turn',
+          ),
+          authenticatedTarget.fingerprint: _previewSnapshot(
+            partitionId: authenticatedTarget.fingerprint,
+            provider: Provider.claude.value,
+            providerSessionId: 'durable-claude-upgrade',
+            revision: 'claude-authenticated-revision',
+            entryId: 'claude-authenticated-entry',
+            text: 'Claude authenticated cached turn',
+          ),
+        },
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+      final provisionalIdentity = bridge.dataSourceIdentity;
+
+      try {
+        await tester.pumpWidget(
+          await buildTestClaudeSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-claude-upgrade-runtime',
+            isPending: true,
+            durableProviderSessionId: 'durable-claude-upgrade',
+            dataSourceIdentity: provisionalIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        final inputFinder = find.byKey(const ValueKey('message_input'));
+        final cubitBefore = BlocProvider.of<ChatSessionCubit>(
+          tester.element(inputFinder),
+        );
+        await tester.enterText(inputFinder, 'Claude draft survives auth');
+
+        bridge.authenticatedBridgeInstanceId = 'bridge-claude-authenticated';
+        bridge.emitSessionList([
+          const SessionInfo(
+            id: 'runtime-claude-authenticated',
+            provider: 'claude',
+            projectPath: '/workspace/claude-upgrade',
+            claudeSessionId: 'durable-claude-upgrade',
+            status: 'idle',
+            createdAt: '2026-08-01T00:00:00.000Z',
+            lastActivityAt: '2026-08-01T00:00:00.000Z',
+          ),
+        ]);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        final cubitAfter = BlocProvider.of<ChatSessionCubit>(
+          tester.element(inputFinder),
+        );
+        expect(cubitAfter, same(cubitBefore));
+        expect(find.text('Claude draft survives auth'), findsOneWidget);
+        expect(find.text('Claude authenticated cached turn'), findsOneWidget);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'returning to a durable route restores focus only for the same source',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-focus'
+        ..authenticatedCodexSourceId = 'source-focus-a'
+        ..mockLogicalConnectionIdentity = 'machine:focus'
+        ..mockLastUrl = 'wss://focus.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-focus-cache.db'),
+        snapshots: {
+          target.fingerprint: _previewSnapshot(
+            partitionId: target.fingerprint,
+            providerSessionId: 'durable-focus-thread',
+            revision: 'focus-revision',
+            entryId: 'focus-entry',
+            text: 'Focused cached turn',
+          ),
+        },
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-focus-runtime',
+            isPending: true,
+            durableProviderSessionId: 'durable-focus-thread',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        final navigator = Navigator.of(
+          tester.element(find.byType(CodexSessionScreen)),
+        );
+
+        unawaited(
+          navigator.push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(body: Text('Cover route')),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        sync.setFocusedConversation(
+          provider: Provider.codex.value,
+          providerSessionId: 'other-thread',
+        );
+        navigator.pop();
+        await tester.pumpAndSettle();
+        expect(
+          sync.focusedTargets.last?.providerSessionId,
+          'durable-focus-thread',
+        );
+
+        unawaited(
+          navigator.push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(body: Text('Second cover')),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        sync.setFocusedConversation(
+          provider: Provider.codex.value,
+          providerSessionId: 'other-thread',
+        );
+        bridge.authenticatedCodexSourceId = 'source-focus-b';
+        navigator.pop();
+        await tester.pumpAndSettle();
+        expect(sync.focusedTargets.last?.providerSessionId, 'other-thread');
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'returning to a Claude route does not restore focus across Bridges',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-claude-focus-a'
+        ..mockLogicalConnectionIdentity = 'machine:claude-focus'
+        ..mockLastUrl = 'wss://claude-focus.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: 'unused-claude-focus-cache.db',
+        ),
+        snapshots: {
+          target.fingerprint: _previewSnapshot(
+            partitionId: target.fingerprint,
+            provider: Provider.claude.value,
+            providerSessionId: 'durable-claude-focus',
+            revision: 'claude-focus-revision',
+            entryId: 'claude-focus-entry',
+            text: 'Claude focused cached turn',
+          ),
+        },
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestClaudeSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-claude-focus-runtime',
+            isPending: true,
+            durableProviderSessionId: 'durable-claude-focus',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        final navigator = Navigator.of(
+          tester.element(find.byType(ClaudeSessionScreen)),
+        );
+
+        unawaited(
+          navigator.push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(body: Text('Claude cover')),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        sync.setFocusedConversation(
+          provider: Provider.claude.value,
+          providerSessionId: 'other-claude-thread',
+        );
+        navigator.pop();
+        await tester.pumpAndSettle();
+        expect(
+          sync.focusedTargets.last?.providerSessionId,
+          'durable-claude-focus',
+        );
+
+        unawaited(
+          navigator.push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(body: Text('Other Bridge')),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        sync.setFocusedConversation(
+          provider: Provider.claude.value,
+          providerSessionId: 'other-claude-thread',
+        );
+        bridge.authenticatedBridgeInstanceId = 'bridge-claude-focus-b';
+        navigator.pop();
+        await tester.pumpAndSettle();
+        expect(
+          sync.focusedTargets.last?.providerSessionId,
+          'other-claude-thread',
+        );
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
@@ -655,10 +1028,11 @@ ConversationHotWindowSnapshot _previewSnapshot({
   required String revision,
   required String entryId,
   required String text,
+  String provider = 'codex',
 }) {
   return ConversationHotWindowSnapshot(
     partitionId: partitionId,
-    provider: Provider.codex.value,
+    provider: provider,
     providerSessionId: providerSessionId,
     revision: revision,
     entries: [
@@ -716,9 +1090,26 @@ class _ControllableConversationContentSyncService
 
   final StreamController<ConversationContentCacheUpdate> _testUpdates =
       StreamController<ConversationContentCacheUpdate>.broadcast();
+  final List<ConversationContentTarget?> focusedTargets = [];
 
   @override
   Stream<ConversationContentCacheUpdate> get updates => _testUpdates.stream;
+
+  @override
+  void setFocusedConversation({String? provider, String? providerSessionId}) {
+    focusedTargets.add(
+      provider == null || providerSessionId == null
+          ? null
+          : ConversationContentTarget(
+              provider: provider,
+              providerSessionId: providerSessionId,
+            ),
+    );
+    super.setFocusedConversation(
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+  }
 
   void emitTimelineCommit({
     required String provider,
@@ -771,8 +1162,7 @@ class _ProjectionSessionListCubit extends SessionListCubit {
   RecentSession? conversationMetadataFor(
     String provider,
     String providerSessionId,
-  ) => provider == metadata.provider &&
-      providerSessionId == metadata.sessionId
+  ) => provider == metadata.provider && providerSessionId == metadata.sessionId
       ? metadata
       : null;
 

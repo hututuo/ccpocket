@@ -40,6 +40,7 @@ import '../session_list/workspace_shell_screen.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
+import '../conversation_content_sync/conversation_route_focus_restorer.dart';
 import '../codex_core_actions/codex_core_actions_controller.dart';
 import '../codex_core_actions/codex_core_actions_strings.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
@@ -297,12 +298,13 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         );
     if (!runtimeConfirmsThread && !catalogConfirmsThread) return;
 
+    final authenticatedIdentity = bridge.dataSourceIdentity;
     final next = _dataSourceIdentity.reconciledWithAuthenticated(
-      bridge.dataSourceIdentity,
+      authenticatedIdentity,
       provider: Provider.codex.value,
     );
     if (!next.isSatisfiedBy(
-      bridge.dataSourceIdentity,
+      authenticatedIdentity,
       provider: Provider.codex.value,
     )) {
       // Keep the already-rendered offline snapshot, but never reload it from
@@ -310,9 +312,27 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       // the same durable thread id.
       return;
     }
-    if (next != _dataSourceIdentity) {
+    final previousIdentity = _dataSourceIdentity;
+    if (next != previousIdentity) {
       setState(() => _dataSourceIdentity = next);
       _syncSessionRouteIdentity();
+      final shell = WorkspaceShellScreen.maybeOf(context);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            _dataSourceIdentity != next ||
+            !next.isSatisfiedBy(
+              bridge.dataSourceIdentity,
+              provider: Provider.codex.value,
+            )) {
+          return;
+        }
+        shell?.reconcileSelectedSessionDataSourceIdentity(
+          provider: Provider.codex,
+          routeIdentitySessionId: providerSessionId,
+          previousIdentity: previousIdentity,
+          authenticatedIdentity: authenticatedIdentity,
+        );
+      });
     }
     // The route may already carry the same canonical identity as a cache
     // hint. The service itself still used a provisional route target before
@@ -347,6 +367,26 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       _loadDurablePreview();
     } catch (_) {
       // Official/isolated widget hosts may not provide the optional cache.
+    }
+  }
+
+  void _restoreDurableConversationFocusIfCurrentSource() {
+    final durableId = widget.durableProviderSessionId?.trim();
+    if (durableId == null || durableId.isEmpty) return;
+    try {
+      final sync = context.read<ConversationContentSyncService>();
+      if (!sync.matchesCurrentDataSource(
+        _dataSourceIdentity,
+        provider: Provider.codex.value,
+      )) {
+        return;
+      }
+      sync.setFocusedConversation(
+        provider: Provider.codex.value,
+        providerSessionId: durableId,
+      );
+    } catch (_) {
+      // Official/isolated hosts may omit the optional cache service.
     }
   }
 
@@ -995,45 +1035,45 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final durableId = widget.durableProviderSessionId;
     final cachedPreview = _cachedPreview;
     if (durableId != null && durableId.isNotEmpty) {
-      return _CodexProviders(
-        key: ValueKey(
-          'durable-codex-$durableId-'
-          '${_dataSourceIdentity.notificationDiscriminatorForProvider('codex')}',
+      return ConversationRouteFocusRestorer(
+        onRouteCurrent: _restoreDurableConversationFocusIfCurrentSource,
+        child: _CodexProviders(
+          key: ValueKey('durable-codex-$durableId'),
+          sessionId: durableId,
+          sessionInsightsSessionId: durableId,
+          projectPath: _projectPath,
+          gitBranch: _gitBranch,
+          worktreePath: _worktreePath,
+          sandboxMode: _sandboxMode,
+          permissionMode: _permissionMode,
+          codexApprovalPolicy: _codexApprovalPolicy,
+          codexApprovalsReviewer: _codexApprovalsReviewer,
+          codexPermissionsMode: _codexPermissionsMode,
+          detachedPreview: true,
+          hideAuxiliaryDock: widget.hideAuxiliaryDock,
+          previewRevision: cachedPreview == null
+              ? ''
+              : '${cachedPreview.revision}:'
+                    '${cachedPreview.entries.length}:'
+                    '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
+          initialHistoryMessages:
+              cachedPreview?.entries
+                  .map((entry) => entry.decodeMessage())
+                  .toList(growable: false) ??
+              const [],
+          initialHistoryHasEarlier: cachedPreview?.hasEarlier ?? false,
+          detachedHistoryPageLoader: _loadOlderDurableHistory,
+          expectedSourceFingerprint: _expectedCacheTargetFingerprint,
+          liveRuntimeSessionId: _isPending ? null : _sessionId,
+          deferredSubmissionPending: _deferredSubmission != null,
+          onDeferredSubmit: _queueDeferredSubmission,
+          initialSubmission: _deferredSubmission,
+          onInitialSubmissionConsumed: _consumeDeferredSubmission,
+          onBackToSessions: widget.onBackToSessions,
+          hideSessionBackButton: widget.hideSessionBackButton,
+          allowMessageFork: false,
+          dataSourceIdentity: _dataSourceIdentity,
         ),
-        sessionId: durableId,
-        sessionInsightsSessionId: durableId,
-        projectPath: _projectPath,
-        gitBranch: _gitBranch,
-        worktreePath: _worktreePath,
-        sandboxMode: _sandboxMode,
-        permissionMode: _permissionMode,
-        codexApprovalPolicy: _codexApprovalPolicy,
-        codexApprovalsReviewer: _codexApprovalsReviewer,
-        codexPermissionsMode: _codexPermissionsMode,
-        detachedPreview: true,
-        hideAuxiliaryDock: widget.hideAuxiliaryDock,
-        previewRevision: cachedPreview == null
-            ? ''
-            : '${cachedPreview.revision}:'
-                  '${cachedPreview.entries.length}:'
-                  '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
-        initialHistoryMessages:
-            cachedPreview?.entries
-                .map((entry) => entry.decodeMessage())
-                .toList(growable: false) ??
-            const [],
-        initialHistoryHasEarlier: cachedPreview?.hasEarlier ?? false,
-        detachedHistoryPageLoader: _loadOlderDurableHistory,
-        expectedSourceFingerprint: _expectedCacheTargetFingerprint,
-        liveRuntimeSessionId: _isPending ? null : _sessionId,
-        deferredSubmissionPending: _deferredSubmission != null,
-        onDeferredSubmit: _queueDeferredSubmission,
-        initialSubmission: _deferredSubmission,
-        onInitialSubmissionConsumed: _consumeDeferredSubmission,
-        onBackToSessions: widget.onBackToSessions,
-        hideSessionBackButton: widget.hideSessionBackButton,
-        allowMessageFork: false,
-        dataSourceIdentity: _dataSourceIdentity,
       );
     }
     if (_isPending) {
@@ -1079,10 +1119,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     }
 
     return _CodexProviders(
-      key: ValueKey(
-        'codex-$_sessionId-'
-        '${_dataSourceIdentity.notificationDiscriminatorForProvider('codex')}',
-      ),
+      key: ValueKey('codex-$_sessionId'),
       sessionId: _sessionId,
       sessionInsightsSessionId: widget.durableProviderSessionId,
       projectPath: _projectPath,
@@ -1414,12 +1451,20 @@ class _CodexChatBody extends HookWidget {
     final runtimeMutationSessionId = chatSessionCubit
         .runtimeSessionIdForMutation(allowSteerable: false);
     final coreActionSessionId = detachedPreview
-        ? liveRuntimeSessionId ?? sessionId
+        ? runtimeMutationSessionId ?? sessionId
         : sessionId;
     final compactActionController = useMemoized(
       () => CodexCoreActionsController(
         sessionId: coreActionSessionId,
         bridge: bridge,
+        sessionIdIsCurrent: detachedPreview
+            ? (candidate) =>
+                  !chatSessionCubit.isClosed &&
+                  chatSessionCubit.runtimeSessionIdForMutation(
+                        allowSteerable: false,
+                      ) ==
+                      candidate
+            : null,
       ),
       [coreActionSessionId, bridge],
     );
@@ -1522,6 +1567,13 @@ class _CodexChatBody extends HookWidget {
                     ...arguments,
                     'durableRoute': true,
                     'runtimeSessionId': runtimeMutationSessionId,
+                    'runtimeSessionIdResolver': () => chatSessionCubit.isClosed
+                        ? null
+                        : chatSessionCubit.runtimeSessionIdForMutation(
+                            allowSteerable: false,
+                          ),
+                    'runtimeRevisionListenable':
+                        chatSessionCubit.detachedLiveRuntimeRevision,
                   }
                 : arguments,
           ),

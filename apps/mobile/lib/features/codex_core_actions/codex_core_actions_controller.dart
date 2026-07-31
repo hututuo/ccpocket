@@ -24,11 +24,13 @@ class CodexCoreActionsController extends ChangeNotifier {
   CodexCoreActionsController({
     required this.sessionId,
     required this.bridge,
+    this.sessionIdIsCurrent,
     this.requestTimeout = const Duration(seconds: 20),
   });
 
   final String sessionId;
   final BridgeService bridge;
+  final bool Function(String sessionId)? sessionIdIsCurrent;
   final Duration requestTimeout;
 
   StreamSubscription<LocalFeatureServerMessage>? _messageSubscription;
@@ -91,7 +93,12 @@ class CodexCoreActionsController extends ChangeNotifier {
     required String requestType,
     required ClientMessage Function(String requestId) build,
   }) {
-    if (_disposed || !bridge.isConnected || actionLoading) return false;
+    if (_disposed ||
+        !bridge.isConnected ||
+        actionLoading ||
+        sessionIdIsCurrent?.call(sessionId) == false) {
+      return false;
+    }
     final requestId = _uuid.v4();
     _actionTimer?.cancel();
     _actionRequestId = requestId;
@@ -114,7 +121,12 @@ class CodexCoreActionsController extends ChangeNotifier {
   }
 
   bool refreshMcpStatus() {
-    if (_disposed || !bridge.isConnected || mcpLoading) return false;
+    if (_disposed ||
+        !bridge.isConnected ||
+        mcpLoading ||
+        sessionIdIsCurrent?.call(sessionId) == false) {
+      return false;
+    }
     final requestId = _uuid.v4();
     _mcpTimer?.cancel();
     _mcpRequestId = requestId;

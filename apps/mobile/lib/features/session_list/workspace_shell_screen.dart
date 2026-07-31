@@ -298,6 +298,7 @@ class WorkspaceSessionSelection {
   final String? approvalsReviewer;
   final ValueNotifier<SystemMessage?>? pendingSessionCreated;
   final BridgeDataSourceIdentity dataSourceIdentity;
+  final String? stablePresentationKey;
 
   const WorkspaceSessionSelection({
     required this.sessionId,
@@ -313,6 +314,7 @@ class WorkspaceSessionSelection {
     this.approvalsReviewer,
     this.pendingSessionCreated,
     this.dataSourceIdentity = BridgeDataSourceIdentity.unscoped,
+    this.stablePresentationKey,
   });
 
   /// Stable pane identity for a durable Codex thread.
@@ -342,6 +344,31 @@ class WorkspaceSessionSelection {
       dataSourceIdentity: dataSourceIdentity,
     );
   }
+
+  /// Keeps the mounted conversation subtree stable while a provisional route
+  /// identity is upgraded to the authenticated Bridge/source identity.
+  /// Explicitly selecting another source creates a fresh selection and hence
+  /// a different presentation key.
+  String get presentationKey => stablePresentationKey ?? workspaceStateKey;
+
+  WorkspaceSessionSelection withDataSourceIdentity(
+    BridgeDataSourceIdentity identity,
+  ) => WorkspaceSessionSelection(
+    sessionId: sessionId,
+    durableProviderSessionId: durableProviderSessionId,
+    projectPath: projectPath,
+    gitBranch: gitBranch,
+    worktreePath: worktreePath,
+    isPending: isPending,
+    provider: provider,
+    permissionMode: permissionMode,
+    sandboxMode: sandboxMode,
+    approvalPolicy: approvalPolicy,
+    approvalsReviewer: approvalsReviewer,
+    pendingSessionCreated: pendingSessionCreated,
+    dataSourceIdentity: identity,
+    stablePresentationKey: presentationKey,
+  );
 }
 
 class WorkspaceShellScreen extends StatefulWidget {
@@ -651,9 +678,7 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     _toolPaneSnapshots.remove(workspaceStateKey);
   }
 
-  _WorkspaceToolPaneData? _restoreToolPaneForSession(
-    String workspaceStateKey,
-  ) {
+  _WorkspaceToolPaneData? _restoreToolPaneForSession(String workspaceStateKey) {
     final restored = _toolPaneSnapshots[workspaceStateKey]?.restore();
     if (restored case _LocalFeatureToolPaneData(:final featureId)) {
       if (LocalSessionFeatureHost.paneDescriptor(featureId) == null) {
@@ -772,7 +797,8 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
       initialPath: result.currentPath,
       recentPeekedFiles: result.recentPeekedFiles,
     );
-    final key = _selectedSession?.workspaceStateKey ??
+    final key =
+        _selectedSession?.workspaceStateKey ??
         _workspaceStateKeyForSessionId(pane.sessionId);
     _rememberToolPaneForSession(key);
     _toolPaneBindings[key]?.onExploreResultChanged?.call(result);
@@ -781,10 +807,12 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
   void _handleDiffSelection(DiffSelection selection) {
     final pane = _toolPane;
     if (pane is! _GitToolPaneData) return;
-    final key = _selectedSession?.workspaceStateKey ??
+    final key =
+        _selectedSession?.workspaceStateKey ??
         _workspaceStateKeyForSessionId(pane.sessionId);
-    _toolPaneBindings[key]?.diffSelectionNotifier?.value =
-        selection.isEmpty ? null : selection;
+    _toolPaneBindings[key]?.diffSelectionNotifier?.value = selection.isEmpty
+        ? null
+        : selection;
     closeToolPane();
   }
 
@@ -793,7 +821,8 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     if (pane is! _GitToolPaneData) return;
     final sessionId = pane.sessionId;
     if (_selectedSession == null && sessionId == null) return;
-    final key = _selectedSession?.workspaceStateKey ??
+    final key =
+        _selectedSession?.workspaceStateKey ??
         _workspaceStateKeyForSessionId(sessionId!);
     _toolPaneBindings[key]?.onFilePeekOpened?.call(filePath);
   }
@@ -826,6 +855,90 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
       sessionId: selection.routeIdentitySessionId,
       provider: selection.provider == Provider.codex ? 'codex' : 'claude',
       dataSourceIdentity: selection.dataSourceIdentity,
+    );
+    _notifyPresentationChanged();
+  }
+
+  /// Canonicalizes the selected session's cache/pane scope without replacing
+  /// the mounted conversation subtree. The caller must provide the exact
+  /// provisional identity it upgraded from; stale or cross-source routes are
+  /// ignored.
+  void reconcileSelectedSessionDataSourceIdentity({
+    required Provider provider,
+    required String routeIdentitySessionId,
+    required BridgeDataSourceIdentity previousIdentity,
+    required BridgeDataSourceIdentity authenticatedIdentity,
+  }) {
+    final current = _selectedSession;
+    if (current == null ||
+        current.provider != provider ||
+        current.routeIdentitySessionId != routeIdentitySessionId ||
+        current.dataSourceIdentity != previousIdentity) {
+      return;
+    }
+    final providerValue = provider.value;
+    final canonical = current.dataSourceIdentity.reconciledWithAuthenticated(
+      authenticatedIdentity,
+      provider: providerValue,
+    );
+    if (canonical == current.dataSourceIdentity ||
+        !canonical.isSatisfiedBy(
+          authenticatedIdentity,
+          provider: providerValue,
+        )) {
+      return;
+    }
+
+    final previousStateKey = current.workspaceStateKey;
+    _rememberToolPaneForSession(previousStateKey);
+    final canonicalSelection = current.withDataSourceIdentity(canonical);
+    final canonicalStateKey = canonicalSelection.workspaceStateKey;
+    setState(() {
+      if (canonicalStateKey != previousStateKey) {
+        final snapshot = _toolPaneSnapshots.remove(previousStateKey);
+        if (snapshot != null) {
+          _toolPaneSnapshots[canonicalStateKey] = snapshot;
+        }
+        final bindings = _toolPaneBindings.remove(previousStateKey);
+        if (bindings != null) {
+          _toolPaneBindings[canonicalStateKey] = bindings;
+        }
+      }
+      final pane = _toolPane;
+      if (provider == Provider.codex &&
+          pane is _LocalFeatureToolPaneData &&
+          (pane.featureId == 'subagents' ||
+              pane.arguments.containsKey('codexSourceId') ||
+              pane.arguments.containsKey('bridgeInstanceId'))) {
+        final arguments = <String, Object?>{...pane.arguments};
+        if (pane.featureId == 'subagents' ||
+            arguments.containsKey('codexSourceId')) {
+          arguments['codexSourceId'] = canonical.codexSourceId;
+        }
+        if (arguments.containsKey('bridgeInstanceId')) {
+          arguments['bridgeInstanceId'] = canonical.bridgeInstanceId;
+        }
+        _toolPane = _LocalFeatureToolPaneData(
+          featureId: pane.featureId,
+          sessionId: pane.sessionId,
+          title: pane.title,
+          arguments: Map.unmodifiable(arguments),
+          rememberPerSession: pane.rememberPerSession,
+        );
+        final reboundSnapshot = _snapshotForPane(
+          _toolPane!,
+          fallbackSessionId: canonicalSelection.routeIdentitySessionId,
+        );
+        if (reboundSnapshot != null) {
+          _toolPaneSnapshots[canonicalStateKey] = reboundSnapshot;
+        }
+      }
+      _selectedSession = canonicalSelection;
+    });
+    NotificationService.instance.setActiveSession(
+      sessionId: canonicalSelection.routeIdentitySessionId,
+      provider: providerValue,
+      dataSourceIdentity: canonical,
     );
     _notifyPresentationChanged();
   }
@@ -1268,10 +1381,7 @@ class _WorkspaceContentHost extends StatelessWidget {
 
     return switch (selection.provider) {
       Provider.codex => CodexSessionScreen(
-        key: ValueKey(
-          'workspace_codex_${selection.routeIdentitySessionId}_'
-          '${selection.dataSourceIdentity.notificationDiscriminatorForProvider('codex')}',
-        ),
+        key: ValueKey('workspace_codex_${selection.presentationKey}'),
         sessionId: selection.sessionId,
         projectPath: selection.projectPath,
         gitBranch: selection.gitBranch,
@@ -1290,10 +1400,7 @@ class _WorkspaceContentHost extends StatelessWidget {
         dataSourceIdentity: selection.dataSourceIdentity,
       ),
       _ => ClaudeSessionScreen(
-        key: ValueKey(
-          'workspace_claude_${selection.sessionId}_'
-          '${selection.dataSourceIdentity.notificationDiscriminatorForProvider('claude')}',
-        ),
+        key: ValueKey('workspace_claude_${selection.presentationKey}'),
         sessionId: selection.sessionId,
         projectPath: selection.projectPath,
         gitBranch: selection.gitBranch,

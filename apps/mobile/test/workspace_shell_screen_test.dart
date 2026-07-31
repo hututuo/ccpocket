@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
 import 'package:ccpocket/features/session_list/session_list_screen.dart';
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/session_list/workspace_shell_screen.dart';
 import 'package:ccpocket/features/settings/state/settings_cubit.dart';
+import 'package:ccpocket/features/subagents/widgets/subagents_panel.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/machine.dart';
@@ -621,6 +623,121 @@ void main() {
 
       expect(sourceA.routeIdentitySessionId, sourceB.routeIdentitySessionId);
       expect(sourceA.workspaceStateKey, isNot(sourceB.workspaceStateKey));
+    },
+  );
+
+  testWidgets(
+    'canonical identity migrates pane state without rebuilding the session',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+      const provisionalIdentity = BridgeDataSourceIdentity(
+        legacyRouteIdentity: 'logical:workspace-upgrade-route',
+      );
+      const authenticatedIdentity = BridgeDataSourceIdentity(
+        bridgeInstanceId: 'workspace-shell-test-bridge',
+        codexSourceId: 'workspace-source',
+        legacyRouteIdentity: 'logical:workspace-upgrade-route',
+      );
+      const provisional = WorkspaceSessionSelection(
+        sessionId: 'durable-workspace-upgrade',
+        durableProviderSessionId: 'durable-workspace-upgrade',
+        projectPath: '/Users/demo/workspace-upgrade',
+        provider: Provider.codex,
+        isPending: true,
+        dataSourceIdentity: provisionalIdentity,
+      );
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(provisional);
+      expect(
+        shellKey.currentState!.openLocalFeaturePane(
+          featureId: 'subagents',
+          sessionId: provisional.routeIdentitySessionId,
+          arguments: const {
+            'providerThreadId': 'durable-workspace-upgrade',
+            'codexSourceId': null,
+          },
+        ),
+        isTrue,
+      );
+      await _pumpUi(tester);
+      final sessionElementBefore = tester.element(
+        find.byType(CodexSessionScreen),
+      );
+      expect(find.byType(SubagentsPanel), findsOneWidget);
+      expect(
+        tester
+            .widget<SubagentsPanel>(find.byType(SubagentsPanel))
+            .detachedCodexSourceId,
+        isNull,
+      );
+
+      shellKey.currentState!.reconcileSelectedSessionDataSourceIdentity(
+        provider: Provider.codex,
+        routeIdentitySessionId: provisional.routeIdentitySessionId,
+        previousIdentity: provisionalIdentity,
+        authenticatedIdentity: authenticatedIdentity,
+      );
+      await _pumpUi(tester);
+
+      final canonicalSelection = shellKey.currentState!.selectedSession!;
+      expect(canonicalSelection.dataSourceIdentity, authenticatedIdentity);
+      expect(canonicalSelection.presentationKey, provisional.presentationKey);
+      expect(
+        tester.element(find.byType(CodexSessionScreen)),
+        same(sessionElementBefore),
+      );
+      expect(find.byType(SubagentsPanel), findsOneWidget);
+      expect(
+        tester
+            .widget<SubagentsPanel>(find.byType(SubagentsPanel))
+            .detachedCodexSourceId,
+        'workspace-source',
+      );
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'other-workspace-thread',
+          provider: Provider.codex,
+          isPending: true,
+          dataSourceIdentity: authenticatedIdentity,
+        ),
+      );
+      await _pumpUi(tester);
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'durable-workspace-upgrade',
+          durableProviderSessionId: 'durable-workspace-upgrade',
+          projectPath: '/Users/demo/workspace-upgrade',
+          provider: Provider.codex,
+          isPending: true,
+          dataSourceIdentity: authenticatedIdentity,
+        ),
+      );
+      await _pumpUi(tester);
+      expect(find.byType(SubagentsPanel), findsOneWidget);
+      expect(
+        tester
+            .widget<SubagentsPanel>(find.byType(SubagentsPanel))
+            .detachedCodexSourceId,
+        'workspace-source',
+      );
     },
   );
 

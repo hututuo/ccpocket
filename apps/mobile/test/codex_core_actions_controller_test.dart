@@ -222,4 +222,25 @@ void main() {
     expect(controller.actionErrorCode, 'disconnected');
     expect(controller.mcpErrorCode, 'disconnected');
   });
+
+  test('stale runtime binding fails closed before any core action send', () {
+    final bridge = _Bridge();
+    var currentSessionId = 's1';
+    final controller = CodexCoreActionsController(
+      sessionId: 's1',
+      bridge: bridge,
+      sessionIdIsCurrent: (candidate) => candidate == currentSessionId,
+    )..start();
+    addTearDown(controller.dispose);
+    addTearDown(bridge.dispose);
+
+    currentSessionId = 's2';
+    expect(controller.requestCompact(), isFalse);
+    expect(
+      controller.requestReview(const CodexReviewUncommittedTarget()),
+      isFalse,
+    );
+    expect(controller.refreshMcpStatus(), isFalse);
+    expect(bridge.sent, isEmpty);
+  });
 }

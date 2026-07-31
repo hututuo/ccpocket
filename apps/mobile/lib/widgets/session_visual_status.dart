@@ -138,12 +138,23 @@ SessionVisualStatus _syncVisualStatus(
     );
   }
   if (status.activity == 'systemError' ||
-      status.runtimeAttachment == 'ownedElsewhere' ||
-      (status.activity == 'unknown' &&
-          status.runtimeAttachment != 'notLoaded')) {
+      status.runtimeAttachment == 'ownedElsewhere') {
     return SessionVisualStatus(
       primary: SessionPrimaryStatus.error,
       label: SessionVisualLabel.unavailable,
+      showPlanBadge: showPlanBadge,
+      animate: false,
+    );
+  }
+  if (status.activity == 'unknown') {
+    final explicitlyUnavailable =
+        status.controlState == 'unavailable' ||
+        status.controlState == 'blocked';
+    return SessionVisualStatus(
+      primary: explicitlyUnavailable
+          ? SessionPrimaryStatus.error
+          : SessionPrimaryStatus.unknown,
+      label: explicitlyUnavailable ? SessionVisualLabel.unavailable : null,
       showPlanBadge: showPlanBadge,
       animate: false,
     );

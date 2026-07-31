@@ -552,7 +552,7 @@ void main() {
       expect(presentation.executionHost, SessionExecutionHost.desktopAppServer);
     });
 
-    test('keeps ordinary app-server notLoaded status neutral', () {
+    test('keeps unknown app-server notLoaded status distinct from idle', () {
       final presentation = sessionCardPresentationFor(
         syncStatus: const ConversationSyncV2Status(
           provider: 'codex',
@@ -567,7 +567,7 @@ void main() {
         ),
       );
 
-      expect(presentation.visualStatus.primary, SessionPrimaryStatus.idle);
+      expect(presentation.visualStatus.primary, SessionPrimaryStatus.unknown);
       expect(presentation.visualStatus.label, isNull);
     });
 
@@ -1962,7 +1962,7 @@ void main() {
     });
 
     testWidgets(
-      'does not treat an unobserved notLoaded thread as unavailable',
+      'keeps an unobserved notLoaded thread unknown without an error label',
       (tester) async {
         const session = RecentSession(
           sessionId: 'v2-not-loaded',
@@ -2001,7 +2001,7 @@ void main() {
       },
     );
 
-    testWidgets('still surfaces a genuinely unknown loaded runtime', (
+    testWidgets('surfaces an explicitly unavailable unknown loaded runtime', (
       tester,
     ) async {
       const session = RecentSession(
@@ -2024,6 +2024,7 @@ void main() {
         source: 'appServer',
         confidence: 'unknown',
         observedAt: '2026-07-30T00:01:00Z',
+        controlState: 'unavailable',
       );
 
       await tester.pumpWidget(

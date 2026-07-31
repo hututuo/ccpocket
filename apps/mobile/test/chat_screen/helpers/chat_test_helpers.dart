@@ -203,14 +203,18 @@ Future<Widget> buildTestClaudeSessionScreen({
   bool isPending = false,
   String? durableProviderSessionId,
   ValueNotifier<SystemMessage?>? pendingSessionCreated,
+  BridgeDataSourceIdentity? dataSourceIdentity,
+  ConversationContentSyncService? conversationContentSync,
 }) => _buildTestSessionScreen(
   bridge: bridge,
+  conversationContentSync: conversationContentSync,
   child: ClaudeSessionScreen(
     sessionId: sessionId,
     projectPath: projectPath,
     isPending: isPending,
     durableProviderSessionId: durableProviderSessionId,
     pendingSessionCreated: pendingSessionCreated,
+    dataSourceIdentity: dataSourceIdentity,
   ),
 );
 

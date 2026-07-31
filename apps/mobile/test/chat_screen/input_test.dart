@@ -13,11 +13,7 @@ import 'package:patrol_finders/patrol_finders.dart';
 import 'helpers/chat_test_helpers.dart';
 
 Finder durableCodexPreview(String providerSessionId) {
-  final prefix = 'durable-codex-$providerSessionId-';
-  return find.byWidgetPredicate((widget) {
-    final key = widget.key;
-    return key is ValueKey<String> && key.value.startsWith(prefix);
-  });
+  return find.byKey(ValueKey('durable-codex-$providerSessionId'));
 }
 
 void main() {
@@ -359,6 +355,40 @@ void main() {
         expect(input['sessionId'], isNot('runtime-before-stop'));
         expect(input['text'], 'Continue after runtime replacement');
         expect(findAllSentMessages(bridge, 'resume_session'), hasLength(1));
+
+        stoppedCubit.updateDetachedLiveRuntime('runtime-inline-replacement');
+        stoppedCubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-stopped-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T06:00:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-inline-replacement',
+          ),
+          sourceFingerprint: bridge.dataSourceIdentity.scopeKeyForProvider(
+            Provider.codex.value,
+          ),
+        );
+        await pumpN($.tester);
+
+        bridge.sentMessages.clear();
+        await $.tester.enterText(
+          find.byKey(const ValueKey('message_input')),
+          '/compact',
+        );
+        await pumpN($.tester);
+        await $(#send_button).tap();
+        await pumpN($.tester);
+        final compact = findSentMessage(bridge, 'codex_compact_request');
+        expect(compact, isNotNull);
+        expect(compact!['sessionId'], 'runtime-inline-replacement');
       },
     );
 
