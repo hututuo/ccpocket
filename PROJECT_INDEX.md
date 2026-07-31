@@ -2,6 +2,10 @@
 
 | Path or ref | Type | Purpose | Deletable | Status |
 |---|---|---|---|---|
+| `ccpocket-worktrees/mobile-desktop-runtime-queue-fix-20260731` | Active coordinator worktree | Fix delivery queue semantics and Desktop detail facts | No while review/release gates remain | branch `fix/mobile-desktop-runtime-queue-20260731`; verified code `9cde3249`; base `4fcdcd25` |
+| `ccpocket-worktrees/parallel-bugfix-a-20260731` / thread `019fb6c0-73c3-72e0-aaad-811126f41ca9` | User-directed Codex lane | Reserved independent bug-fix workspace A | No while user assignment is pending | clean branch `fix/parallel-bugfix-a-20260731`; base `4fcdcd25` |
+| `ccpocket-worktrees/parallel-bugfix-b-20260731` / thread `019fb6c1-6891-7050-be72-ab495e14940a` | User-directed Codex lane | Reserved independent bug-fix workspace B | No while user assignment is pending | clean branch `fix/parallel-bugfix-b-20260731`; base `4fcdcd25` |
+| `notes/mobile-desktop-runtime-queue-fix_v01_20260731-140949.md` | Source-candidate audit note | Separate ordinary delivery/local outbox/Bridge queue and restore Desktop detail status/effort facts | No | `verified-source-candidate`; Mobile 2765 + 4 skipped, Bridge 1949; merge/deploy/OTA/device gates open |
 | `plans/mobile-provider-state-consistency_v01_20260731-005052.md` | Accepted implementation plan | Unify Bridge/Codex-hosted state, source identity, ordering, loading progress, auto approval, and queued-message acknowledgements | No | `accepted`; code candidate `583222be`; independent audit approved |
 | `notes/mobile-provider-state-consistency-audit_v01_20260731-060222.md` | Final audit | Original-requirement ledger, two audit rounds, compatibility, performance, builds, branch mapping, and remaining release/device gates | No | `accepted`; `0 P0 / 0 P1 / 0 P2 / 1 P3` |
 | `refs/archive/ccpocket/provider-state-consistency-20260731/*` | Exact task branch-tip archive | Preserve all 16 deleted provider-state, performance, compatibility, and worker branch tips | No until later archive-retention audit | `16 refs`; ordinary branches deleted only after ancestry registration |
@@ -37,6 +41,9 @@
 | Branch | Disposition |
 |---|---|
 | `integration/mobile-session-sync-v2-20260730` | Authoritative provider-state integration line |
+| `fix/mobile-desktop-runtime-queue-20260731` | Active reviewed source candidate; not yet merged or released |
+| `fix/parallel-bugfix-a-20260731` | User-directed isolated lane A; waiting for task |
+| `fix/parallel-bugfix-b-20260731` | User-directed isolated lane B; waiting for task |
 | `main` | Long-lived default; not the current integration target |
 | `compat/artifact-download` | Historical compatibility anchor |
 | `backup/pre-upstream-1.67.4-20260719` | Historical rollback anchor |
