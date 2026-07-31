@@ -1339,3 +1339,28 @@
   entries. Omitted revisions are replayed by Bridge; they are never treated as
   proof that cached content is current. This is a safe startup bound, not
   permission to skip later incremental reconciliation.
+
+## Shared Codex runtime begins with a reversible exact-version pilot
+
+- The accepted shared-runtime plan is active, but source work must follow the
+  Stage 0 deviation ledger rather than unverified protocol assumptions.
+- Pilot Desktop and Bridge must use the exact Codex version bundled with the
+  installed Desktop. The daemon is verified and connected over a local Unix
+  socket; Bridge never owns, starts, stops or bootstraps that daemon.
+- A global `thread/started` observation is not proof of a writable attachment.
+  A thread with no durable rollout remains discoverable but may not yet be
+  resumable from another connection; first-turn ownership and later adoption
+  are separate states and separate tests.
+- Shared-daemon pilot is observer-first and single-writer. A server request can
+  be delivered to multiple subscribers and the first response wins, so a
+  Bridge attachment must prove thread, turn, connection generation and local
+  write authority before answering it. Incompatible single-subscriber
+  features fail closed.
+- Desktop is switched only through its existing local-daemon environment gate;
+  the application bundle is not patched or re-signed. Static store behavior is
+  insufficient: correct project sidebar visibility remains a user-observed
+  pilot gate.
+- Stage 0–2 do not modify Mobile, SQLite, native iOS code, notifications,
+  production Bridge or release channels. After the real pilot, private mode is
+  restored and implementation stops until the user explicitly confirms the
+  next stage.

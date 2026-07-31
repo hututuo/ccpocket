@@ -1,6 +1,6 @@
 # CC Pocket Compatibility Fork Context
 
-## Draft shared Codex runtime implementation plan
+## Active shared Codex runtime implementation
 
 The current proposed implementation plan is:
 
@@ -9,7 +9,11 @@ The current proposed implementation plan is:
   `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/codex-shared-runtime-20260731`
 - Branch: `feature/codex-shared-runtime-20260731`
 - Base: `a007dc712543c1410a26be980f2d838637c95c60`
-- Status: `draft`; no shared-runtime source implementation has started.
+- Status: `active`; Stage 0 live exploration is complete enough to establish
+  the initial deviation ledger. Source implementation starts only after the
+  ledger is finalized and the latest upstream is semantically merged.
+- Stage 0 evidence:
+  `notes/codex-shared-runtime-stage0-deviation-ledger_v01_20260731-234929.md`
 
 The plan preserves the full daemon/coordinator/action-broker/Mobile/compatibility
 design, but changes the execution order. The first deliverable is a minimal,
@@ -18,6 +22,12 @@ the task must stop for a user-observed Desktop sidebar and same-thread test,
 restore the private production baseline, and wait for explicit confirmation
 before full implementation, integration, release work, or contacting the
 persistent release task.
+
+The first live probes confirmed that the exact Desktop Codex daemon requires a
+managed CLI path inside its explicit `CODEX_HOME`, UDS WebSocket compression
+must be disabled, and a newly started thread cannot be resumed by another
+connection before its first durable rollout exists. These facts override the
+corresponding plan assumptions without reducing the product goal.
 
 ## Active isolated lanes on 2026-07-31
 
