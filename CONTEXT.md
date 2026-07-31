@@ -19,9 +19,9 @@ All three lanes started from clean
 independent Codex threads, not coordinator subagents; they wait for direct user
 assignment and must not edit the integration or another lane's worktree.
 
-## Pending integration: delivery queue and Desktop detail facts
+## Integrated source: delivery queue and Desktop detail facts
 
-The isolated source candidate is in:
+The verified source lane is in:
 
 - Worktree:
   `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-desktop-runtime-queue-fix-20260731`
@@ -31,13 +31,14 @@ The isolated source candidate is in:
 - Evidence note:
   `notes/mobile-desktop-runtime-queue-fix_v01_20260731-140949.md`
 
-This candidate separates ordinary online delivery, true local outbox, and the
+This change separates ordinary online delivery, true local outbox, and the
 Bridge-owned next-turn queue. It also projects source-scoped Desktop activity
 and factual model/effort into detached details without provider resume, and
 protects externally owned turns from stale Mobile model/speed writes. Mobile
 full tests passed 2765 with 4 environment skips; Bridge single-worker full tests
-passed 96 files / 1949 tests. It has not yet been merged, deployed, OTA-published, or
-accepted on a physical device.
+passed 96 files / 1949 tests. It was fast-forwarded into
+`integration/mobile-session-sync-v2-20260730` at source node `5bd82e7c`; it has
+not yet been deployed, OTA-published, or accepted on a physical device.
 
 ## Verified provider-state implementation after repository convergence
 

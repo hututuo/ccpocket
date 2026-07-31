@@ -1,6 +1,6 @@
 # Mobile 发送队列与 Desktop 会话事实修复
 
-状态：`verified-source-candidate`
+状态：`integrated-source-verified`
 
 日期：2026-07-31
 
@@ -13,6 +13,8 @@
   `integration/mobile-session-sync-v2-20260730 @ 4fcdcd25ef96658a9137ddc4bb85a13c1b84f0a0`
 - 已验证代码提交：
   `9cde3249`（修复：分离消息回执并同步 Desktop 会话事实）
+- 已快进合入：`integration/mobile-session-sync-v2-20260730`，源验证节点
+  `5bd82e7c`；后续仅发布/设备门禁仍开放。
 - 本轮只修改 Dart、TypeScript、测试和项目文档；没有 Swift、Xcode、
   Info.plist、Podfile、数据库 schema 或破坏性 wire 变更。
 
