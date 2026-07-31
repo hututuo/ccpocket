@@ -1364,3 +1364,18 @@
   production Bridge or release channels. After the real pilot, private mode is
   restored and implementation stops until the user explicitly confirms the
   next stage.
+- The automated Stage 2 gate is now proven on an isolated
+  `1.69.6-compat.12` candidate: two authenticated Bridge clients observed one
+  real canary, settings-neutral resume did not replay transcript history,
+  Bridge-only restart preserved the daemon identity, and a replacement
+  attachment followed one already-active turn to completion. This is runtime
+  evidence only; it does not satisfy the independent Desktop sidebar gate.
+- The global control connection remains initialize-only. It never resumes a
+  thread or answers a server request. Turn diagnostics are contributed by the
+  single authoritative Bridge attachment only after exact thread and runtime
+  generation filtering, and contain no title, path, body or tool payload.
+- Pilot assets are exact-version, manifest-hashed copies inside a private
+  `CODEX_HOME`; daemon verification checks the managed path and uses only a
+  bounded short-lived metadata cache. Desktop GUI environment changes are a
+  one-use `captured → shared → restored` transaction with verified rollback,
+  not an ambient permanent configuration.

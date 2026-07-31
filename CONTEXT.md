@@ -9,11 +9,14 @@ The current proposed implementation plan is:
   `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/codex-shared-runtime-20260731`
 - Branch: `feature/codex-shared-runtime-20260731`
 - Base: `a007dc712543c1410a26be980f2d838637c95c60`
-- Status: `active`; Stage 0 live exploration is complete enough to establish
-  the initial deviation ledger. Source implementation starts only after the
-  ledger is finalized and the latest upstream is semantically merged.
+- Status: `active`; Stage 0–2 source implementation and isolated automated
+  Pilot have passed. The task is now at the mandatory user-observed Desktop
+  gate; Stage 3 and production work remain forbidden until that experiment is
+  restored to private mode and the user explicitly confirms continuation.
 - Stage 0 evidence:
   `notes/codex-shared-runtime-stage0-deviation-ledger_v01_20260731-234929.md`
+- Stage 2 automated evidence:
+  `notes/codex-shared-runtime-stage2-pilot-evidence_v01_20260801-014302.md`
 
 The plan preserves the full daemon/coordinator/action-broker/Mobile/compatibility
 design, but changes the execution order. The first deliverable is a minimal,
@@ -28,6 +31,13 @@ managed CLI path inside its explicit `CODEX_HOME`, UDS WebSocket compression
 must be disabled, and a newly started thread cannot be resumed by another
 connection before its first durable rollout exists. These facts override the
 corresponding plan assumptions without reducing the product goal.
+
+The isolated `1.69.6-compat.12` candidate has now passed a real Codex canary,
+two authenticated Bridge clients, settings-neutral resume without transcript
+replay, Bridge-only restart continuity, and active-turn re-attachment while
+preserving one daemon socket identity. Bridge full tests passed 2035/2035. The
+candidate remains isolated on `127.0.0.1:18765`; production compat.11 on 8765
+and the current Desktop private runtime remain unchanged.
 
 ## Active isolated lanes on 2026-07-31
 

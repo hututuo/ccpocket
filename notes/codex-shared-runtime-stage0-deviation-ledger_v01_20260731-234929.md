@@ -72,10 +72,17 @@
 7. 停止候选，精确恢复 Desktop 原环境和 private 模式，确认私有 app-server 恢复。
 8. 向用户汇报证据并停止，等待明确确认。
 
+截至 2026-08-01，步骤 1–2 的自动部分已经完成：隔离 daemon、18765
+候选、双 Bridge 客户端、真实 canary、无 turns 回放的中性 resume、
+Bridge-only restart 和 active-turn re-attachment 均通过。完整证据见
+`notes/codex-shared-runtime-stage2-pilot-evidence_v01_20260801-014302.md`。
+Desktop GUI 环境尚未改变，因此步骤 3–8 仍是当前硬门。
+
 ## 5. 尚未验收的事实
 
 - 当前 Desktop 是否把 Bridge 新建 thread 立即放入正确项目侧栏。
-- 首个 durable turn 后，两连接之间 `resume`/实时事件/审批的完整行为。
+- Desktop 与 Bridge 两个真实订阅连接之间的 `resume`、实时事件和审批
+  行为；两个 Bridge 测试客户端已通过，但不能替代 Desktop。
 - Desktop 与 Bridge 同时对一个 active thread 发 mutation 时的官方冲突语义。
 - app-server daemon 重启后的 active turn 和 pending request 恢复上限。
 - 正式 standalone 安装、升级和回滚方式。
