@@ -1374,8 +1374,17 @@
   thread or answers a server request. Turn diagnostics are contributed by the
   single authoritative Bridge attachment only after exact thread and runtime
   generation filtering, and contain no title, path, body or tool payload.
+- A shared Bridge attachment may answer a server request or steer only a turn
+  whose successful `turn/start` response was received by that exact
+  attachment. Ownership is removed on completion, stop and generation change;
+  adopted/Desktop turns fail closed. This prevents Bridge from answering a
+  Desktop turn, but it is not the future Action Broker: Desktop may still be a
+  first responder for a Bridge-originated request, so the Stage 2 Desktop Pilot
+  remains strictly no-tool and serial.
 - Pilot assets are exact-version, manifest-hashed copies inside a private
-  `CODEX_HOME`; daemon verification checks the managed path and uses only a
-  bounded short-lived metadata cache. Desktop GUI environment changes are a
-  one-use `captured → shared → restored` transaction with verified rollback,
-  not an ambient permanent configuration.
+  `CODEX_HOME`; daemon verification checks the managed path, requires the
+  audited `pid` lifecycle backend, and uses only a bounded short-lived metadata
+  cache. Desktop GUI environment changes are a one-use
+  `captured → enabling → shared → restoring → restored` transaction with
+  verified rollback and interrupted-state recovery, not an ambient permanent
+  configuration.

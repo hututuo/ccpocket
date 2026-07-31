@@ -35,9 +35,20 @@ corresponding plan assumptions without reducing the product goal.
 The isolated `1.69.6-compat.12` candidate has now passed a real Codex canary,
 two authenticated Bridge clients, settings-neutral resume without transcript
 replay, Bridge-only restart continuity, and active-turn re-attachment while
-preserving one daemon socket identity. Bridge full tests passed 2035/2035. The
+preserving one daemon socket identity. Final hardening binds server requests
+and steering to turns started by the exact Bridge attachment, makes Desktop
+environment switching recoverable from interrupted enabling/restoring states,
+and locks the Pilot daemon to its audited `pid` lifecycle backend. Bridge full
+tests passed 2039/2039, and a post-hardening real resume/turn completed in
+1681 ms without changing the daemon socket identity. The
 candidate remains isolated on `127.0.0.1:18765`; production compat.11 on 8765
 and the current Desktop private runtime remain unchanged.
+
+The remaining Stage 2 P2 is asymmetric first-responder behavior: Desktop has
+not yet been converted to the future Action Broker, so a Bridge-originated turn
+request can still be visible to Desktop. The user-observed Pilot is therefore
+restricted to strictly serial no-tool prompts with no approvals, questions or
+external current-time. Normal dual-client request arbitration remains Stage 3.
 
 ## Active isolated lanes on 2026-07-31
 

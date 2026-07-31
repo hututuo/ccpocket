@@ -69,14 +69,42 @@
 ## 5. 自动测试
 
 - 合并后定向回归：`14 files / 615 tests` 全部通过。
-- Bridge 全量回归：`102 files / 2035 tests` 全部通过。
+- 最终安全收口定向回归：`4 files / 194 tests` 全部通过。
+- Bridge 最终全量回归：`102 files / 2039 tests` 全部通过。
 - TypeScript build 和 native file-browser helper build 通过。
 - `git diff --check` 通过。
 - 全量首跑唯一失败是既有 `session-catalog-monitor` 测试在同一文件上并发启动两个 `appendFile`，macOS 没有产生 watch 事件。该夹具不符合项目的单 writer 合同；改为同一 debounce 窗口内顺序追加后，隔离连续 3 次 `8/8` 通过，随后全量 `2035/2035` 通过。
 
+最终独立审计最初报告 `1 P1 / 2 P2`，随后均完成源码收口：
+
+- 共享 Bridge attachment 只响应本 attachment 成功 `turn/start` 后登记的
+  exact turn；完成、停止和新 runtime generation 都清除所有权。Desktop
+  发起或被重新附着观察的 turn 继续 fail closed；Bridge 也拒绝 steer
+  非本 attachment 发起的 turn。
+- Desktop 环境事务在改写任何 GUI 环境变量前先原子记录为 `enabling`，恢复前
+  记录为 `restoring`；进程在任一步被终止后，`restore-private` 都可以从这两个
+  中断态恢复原环境并收束为 `restored`。
+- supervisor 与 Pilot launcher 都要求 daemon 真实 `version` 响应的
+  `backend === "pid"`；其他未审计生命周期后端直接拒绝。
+
+用包含上述修补的当前构建重启 18765 后，生产 8765 PID 和 daemon socket
+device/inode 均未改变。对原 canary thread 再次执行中性恢复并完成真实 turn：
+
+- Bridge runtime session：`24e482f4`；
+- turn：`019fb954-d481-7d11-89b4-5afde9fa38f7`；
+- settings-neutral resume 与模型应答均确认；
+- daemon inode 仍为 `101796358`；
+- 总耗时 `1681 ms`。
+
 ## 6. 已知边界与下一门禁
 
 - 当前不支持共享拓扑中的 external current-time 多 subscriber；检测不到明确请求所有权时继续 fail closed。
+- 上述修补解决了“Bridge 误答 Desktop turn 请求”，但没有在 Desktop 侧加入
+  Action Broker。Bridge 自己启动的 turn 所产生的 server request 仍可能同时
+  广播给 Desktop，由 first responder 决定结果。这是已确认的非阻断 P2，只有
+  Stage 3 的统一 Action Broker/持久请求台账才能完整消除。因此本次用户参与
+  Desktop Pilot 必须严格串行，并禁止工具、审批、问题和 external current-time；
+  不得把短试验结果表述为双客户端审批仲裁已完成。
 - 完整 Action Broker、持久请求台账、Mobile 状态协议、通知与常态生产温和切换仍属于 Stage 3+。
 - Candidate 日志中的 Claude model/app/plugin 元数据读取失败是隔离环境缺少 Claude API key/Cloudflare 条件的非阻断噪声；Codex canary 本身正常完成。
 - Desktop GUI 环境尚未修改，Desktop 尚未重启到 Pilot daemon，手机尚未连接 18765。
