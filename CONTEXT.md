@@ -246,6 +246,17 @@ changes in this convergence remain pending explicit user deployment command.
 Both original worker worktrees remain clean and their sessions acknowledged
 that this batch is closed and they should wait for later commands.
 
+## Bridge compat.11 runtime
+
+After explicit user authorization, production Bridge was rebuilt from the
+clean integration HEAD `c64bf5ed` and switched to the versioned runtime
+`1.69.5-compat.11.c64bf5ed`. LaunchAgent PID `11545`, the sole
+`127.0.0.1:8765` listener, `/health`, `/version`, runtime entry, and unchanged
+Tailscale Serve mapping were verified. The prior `compat.10-4fcdcd25` runtime
+and the timestamped pre-switch plist remain the immediate rollback. No OTA was
+published. See the deployment record and warm-switch investigation in
+`PROJECT_INDEX.md`.
+
 ## New task worktree rule
 
 Create every new code task from the authoritative branch with an absolute
